@@ -423,6 +423,65 @@ func (q *Queries) ListDecisionBatchActions(ctx context.Context, arg ListDecision
 	return items, nil
 }
 
+const listDecisionBatchItems = `-- name: ListDecisionBatchItems :many
+SELECT action.id AS action_id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix,
+    issue.number AS issue_number, issue.title AS issue_title, action.state, action.result,
+    COALESCE(action.error_code, '')::text AS error_code
+FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.batch_id = $2
+ORDER BY action.id
+`
+
+type ListDecisionBatchItemsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+}
+
+type ListDecisionBatchItemsRow struct {
+	ActionID    pgtype.UUID `json:"action_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	IssuePrefix string      `json:"issue_prefix"`
+	IssueNumber int32       `json:"issue_number"`
+	IssueTitle  string      `json:"issue_title"`
+	State       string      `json:"state"`
+	Result      []byte      `json:"result"`
+	ErrorCode   string      `json:"error_code"`
+}
+
+// A batch card's read: one row per item, in id order (the order the card lists
+// and the choices are keyed by).
+func (q *Queries) ListDecisionBatchItems(ctx context.Context, arg ListDecisionBatchItemsParams) ([]ListDecisionBatchItemsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionBatchItems, arg.WorkspaceID, arg.BatchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionBatchItemsRow{}
+	for rows.Next() {
+		var i ListDecisionBatchItemsRow
+		if err := rows.Scan(
+			&i.ActionID,
+			&i.IssueID,
+			&i.IssuePrefix,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.State,
+			&i.Result,
+			&i.ErrorCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentRejectedProposalParams = `-- name: ListRecentRejectedProposalParams :many
 SELECT a.params, a.updated_at
 FROM decision_action a

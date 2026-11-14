@@ -40,6 +40,9 @@ export const PasskeyDecisionOutcomeSchema = z.object({
   error_code: z.string().optional(),
   error_message: z.string().optional(),
 });
+/** The batch card's read after approve: one outcome per item. */
+export const PasskeyBatchOutcomeSchema = z.object({ batch_id: z.string(), items: z.array(PasskeyDecisionOutcomeSchema) });
+export type PasskeyBatchOutcome = z.infer<typeof PasskeyBatchOutcomeSchema>;
 
 /** What the server verifies for revoke and approve: the challenge it answers plus the WebAuthn credential. */
 export type PasskeyAssertionEnvelope = { challenge_id: string; credential: unknown };

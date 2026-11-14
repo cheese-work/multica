@@ -1158,6 +1158,17 @@ export const DecisionRequestCardSchema = z.lazy(() => z.object({
     }).loose()).catch([]),
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
+  batch_id: z.string().optional().catch(undefined),
+  // A malformed list degrades to none: the card then offers no per-item choice.
+  batch_items: z.array(z.object({
+    action_id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    state: z.string().default(""),
+    result: z.unknown().optional(),
+    error_code: z.string().optional().catch(undefined),
+  }).loose()).optional().catch(undefined),
 }).loose());
 
 export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
