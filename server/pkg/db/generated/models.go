@@ -272,6 +272,8 @@ type AskGuardEvent struct {
 	SourceText         pgtype.Text        `json:"source_text"`
 	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
 	RepairReason       pgtype.Text        `json:"repair_reason"`
+	RootID             pgtype.UUID        `json:"root_id"`
+	RepairHandledAt    pgtype.Timestamptz `json:"repair_handled_at"`
 }
 
 type AskRecoveryNotice struct {
@@ -286,6 +288,20 @@ type AskRecoveryNotice struct {
 	State         string             `json:"state"`
 	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
 	AnsweredAt    pgtype.Timestamptz `json:"answered_at"`
+}
+
+type AskRepairRoot struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	RepairTaskID     pgtype.UUID        `json:"repair_task_id"`
+	State            string             `json:"state"`
+	FailureReason    pgtype.Text        `json:"failure_reason"`
+	FailureCommentID pgtype.UUID        `json:"failure_comment_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SettledAt        pgtype.Timestamptz `json:"settled_at"`
+	FailedAt         pgtype.Timestamptz `json:"failed_at"`
 }
 
 type Attachment struct {
@@ -3294,6 +3310,22 @@ type SkillToLabel struct {
 	SkillID   pgtype.UUID        `json:"skill_id"`
 	LabelID   pgtype.UUID        `json:"label_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SkillVersion struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SkillID             pgtype.UUID        `json:"skill_id"`
+	Version             int32              `json:"version"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Content             string             `json:"content"`
+	Files               []byte             `json:"files"`
+	ContentHash         string             `json:"content_hash"`
+	Source              string             `json:"source"`
+	RestoredFromVersion pgtype.Int4        `json:"restored_from_version"`
+	CreatedBy           pgtype.UUID        `json:"created_by"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
 type Squad struct {

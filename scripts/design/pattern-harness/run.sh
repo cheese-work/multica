@@ -256,4 +256,25 @@ cap wakeup-condition-params \
   --component packages/views/issues/components/wakeup-condition-params.tsx \
   --token pillClass --token text-muted-foreground
 
+# SS2 (CHE-5535)
+cap wakeup-fields \
+  --component packages/views/issues/components/wakeup-fields.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap wakeup-pickers \
+  --component packages/views/issues/components/wakeup-pickers.tsx \
+  --token pillClass --token text-muted-foreground
+
+cap workspace-wakeup-rules \
+  --component packages/views/settings/components/workspace-wakeup-rules.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap chat-search \
+  --component packages/views/chat/components/chat-search.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap config-change-viewer \
+  --component packages/views/chat/components/config-change-viewer.tsx \
+  --token text-caption --token text-muted-foreground
+
 rm -rf "$build"

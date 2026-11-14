@@ -79,6 +79,8 @@ import type {
   User,
   Skill,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
@@ -532,6 +534,10 @@ import {
   PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
+  SkillVersionSchema,
+  EMPTY_SKILL_VERSION,
+  SkillVersionSummaryListSchema,
+  EMPTY_SKILL_VERSION_SUMMARY_LIST,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -4080,6 +4086,39 @@ export class ApiClient {
     }).names;
   }
 
+  // Content history, newest first. Metadata only; fetch one version for its
+  // snapshot.
+  async listSkillVersions(skillId: string): Promise<SkillVersionSummary[]> {
+    const raw = await this.fetch<unknown>(`/api/skills/${skillId}/versions`);
+    return parseWithFallback(
+      raw,
+      SkillVersionSummaryListSchema,
+      EMPTY_SKILL_VERSION_SUMMARY_LIST,
+      { endpoint: "GET /api/skills/:id/versions" },
+    );
+  }
+
+  async getSkillVersion(skillId: string, version: number): Promise<SkillVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/skills/${skillId}/versions/${version}`,
+    );
+    return parseWithFallback(raw, SkillVersionSchema, EMPTY_SKILL_VERSION, {
+      endpoint: "GET /api/skills/:id/versions/:version",
+    });
+  }
+
+  // Writes the version's snapshot back to the skill. The server records the
+  // result as a new latest version.
+  async restoreSkillVersion(skillId: string, version: number): Promise<Skill> {
+    const raw = await this.fetch<unknown>(
+      `/api/skills/${skillId}/versions/${version}/restore`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
+      endpoint: "POST /api/skills/:id/versions/:version/restore",
+    });
+  }
+
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
     return this.fetch(`/api/agents/${agentId}/skills`);
   }
@@ -4405,6 +4444,15 @@ export class ApiClient {
     input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; preview_sha256?: string; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  /** Revoke (B v9 S6): its own challenge, bound to the word "revoke" so an approval's assertion cannot revoke. */
+  challengeDecisionRevoke(requestId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokeDecision(requestId: string, input: { reason: string; assertion: PasskeyAssertionEnvelope }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke`, { method: "POST", body: JSON.stringify(input) });
   }
 
   /** Ends a pending action as rejected. No passkey: declining changes nothing. */
@@ -5225,8 +5273,9 @@ export class ApiClient {
   }
 
   /**
-   * What a quick action WOULD post, without posting it. Backs the composer
-   * hand-off (⌥-click and the `/` menu) so the user can edit before sending.
+   * What a quick action WOULD post, with server-side validation but no send.
+   * Retained for callers that resolve drafts over HTTP; the comment composer
+   * builds its draft synchronously from the quick-action catalog.
    * Returns "" when the response cannot be read — callers must treat an empty
    * string as "insert nothing" rather than clearing the composer.
    */

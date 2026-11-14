@@ -8931,16 +8931,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
-	selfBin, selfErr := resolveSelfExecutable()
-	if selfErr == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	// Ensure the multica CLI is on PATH inside the agent's environment and pin
+	// its path in MULTICA_CLI_PATH (MUL-8603). Some runtimes (e.g. Codex) run in
+	// an isolated sandbox that may not inherit the daemon's PATH, and login
+	// shells can reorder it. A failure only costs the pin and the guard shims,
+	// never the run (fork behaviour).
+	selfBin := ""
+	if err := configureTaskCLIEnvironment(agentEnv); err != nil {
+		taskLog.Warn("task CLI path not pinned; run continues without it", "error", err)
 	} else {
-		selfBin = ""
+		selfBin = agentEnv["MULTICA_CLI_PATH"]
 	}
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
 	// failure only costs the guard, never the run.

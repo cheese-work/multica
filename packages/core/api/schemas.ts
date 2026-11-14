@@ -100,6 +100,8 @@ import type {
   Skill,
   SkillImportResult,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
   Squad,
   TimelineEntry,
   User,
@@ -1104,6 +1106,13 @@ const DecisionActionSchema = z.lazy(() => z.object({
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
   owner_only: z.boolean().optional().catch(undefined),
+  effect: z.string().optional().catch(undefined),
+  effect_reason: z.string().optional().catch(undefined),
+  decided_at: z.string().optional().catch(undefined),
+  decided_by_name: z.string().optional().catch(undefined),
+  on_behalf_of_name: z.string().optional().catch(undefined),
+  revocable: z.boolean().optional().catch(undefined),
+  revoke: z.object({ at: z.string(), by_name: z.string().optional().catch(undefined), reason: z.string().catch("") }).loose().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -4306,6 +4315,55 @@ export const EMPTY_SKILL: Skill = {
 };
 
 export const SkillSummaryListSchema = z.lazy(() => z.array(SkillSummarySchema).default([]));
+
+const SKILL_VERSION_SOURCES = [
+  "baseline",
+  "create",
+  "update",
+  "import",
+  "refresh",
+  "restore",
+] as const;
+
+export const SkillVersionSummarySchema = z.lazy(() => z.object({
+  id: z.string(),
+  skill_id: z.string(),
+  version: z.number(),
+  name: z.string().optional().default(""),
+  source: z.enum(SKILL_VERSION_SOURCES).catch("update"),
+  restored_from_version: z.number().nullable().optional().default(null),
+  created_by: z.string().nullable().optional().default(null),
+  created_at: z.string().optional().default(""),
+}).loose());
+
+export const SkillVersionSummaryListSchema = z.lazy(() => z
+  .array(SkillVersionSummarySchema)
+  .default([]));
+
+export const EMPTY_SKILL_VERSION_SUMMARY_LIST: SkillVersionSummary[] = [];
+
+export const SkillVersionSchema = z.lazy(() => SkillVersionSummarySchema.unwrap().extend({
+  description: z.string().optional().default(""),
+  content: z.string().optional().default(""),
+  files: z
+    .array(z.object({ path: z.string(), content: z.string().optional().default("") }).loose())
+    .optional()
+    .default([]),
+}).loose());
+
+export const EMPTY_SKILL_VERSION: SkillVersion = {
+  id: "",
+  skill_id: "",
+  version: 0,
+  name: "",
+  source: "update",
+  restored_from_version: null,
+  created_by: null,
+  created_at: "",
+  description: "",
+  content: "",
+  files: [],
+};
 
 export const EMPTY_SKILL_SUMMARY_LIST: SkillSummary[] = [];
 

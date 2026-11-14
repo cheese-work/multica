@@ -62,6 +62,20 @@ multica me background-agents set <job> [--agent <id|name|none>] [--fallback <id|
   reads, edits one job and writes back). Writes are human-only: a task token gets
   403 `background_agents_human_only`, printed with exit code 3.
 
+## Audit trail
+
+```bash
+multica audit list [--kind agent.] [--target <agent name or id>] [--actor <id>] [--since 2h|1d] [--until <time>] [--limit N] [--all] --output json|table
+```
+
+- Owner or admin only; a task token is refused (403). Newest first.
+- `--kind` is a prefix (`agent.` matches `agent.update`). `--since` and `--until`
+  take a duration (`2h`, `1d`) or an RFC 3339 time. `--target` resolves an agent
+  name; an ambiguous name errors with the candidates and sends nothing.
+- One page by default; the table prints a stderr hint when more rows exist and
+  `--output json` carries `next_cursor`. `--all` follows the cursor to the end.
+- Redacted fields show the stored `"changed"` marker, never the value.
+
 ## Workspace MCP servers
 
 ```bash

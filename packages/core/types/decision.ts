@@ -114,6 +114,15 @@ export interface DecisionRequestAction {
   config_change?: DecisionConfigChange;
   /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */
   owner_only?: boolean;
+  /** Readback of a decided action (B v9 S9). `applied`, `not_applied` or `expired`; absent while pending or on an older server. */
+  effect?: "applied" | "not_applied" | "expired" | (string & {});
+  effect_reason?: string;
+  decided_at?: string;
+  decided_by_name?: string;
+  on_behalf_of_name?: string;
+  /** True while a revoke would be accepted; the card shows Revoke only then. */
+  revocable?: boolean;
+  revoke?: { at: string; by_name?: string; reason: string };
 }
 
 /** The run that resumed the issue after the answer was recorded. */
