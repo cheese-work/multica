@@ -1048,6 +1048,15 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if existed, err := h.Queries.ChatSessionHasPublicUserMessage(r.Context(), session.ID); err == nil {
 		hadUserMessage = existed
 	}
+	// CHE-4107: re-title milestone of the next message (first one after a
+	// compaction, first one of a fork). A manual rename is never re-titled; an
+	// unreadable milestone is "none" (best-effort, never blocks the send).
+	var milestone dmTitleMilestone
+	if hadUserMessage && !session.TitleManuallySet {
+		if m, err := h.Queries.ChatSessionTitleMilestone(r.Context(), session.ID); err == nil {
+			milestone = dmTitleMilestone(m)
+		}
+	}
 	channelBacked := false
 	channelSourceKnown := true
 	if !hadUserMessage {
@@ -1162,6 +1171,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
 	if shouldGenerateTitle {
 		h.maybeGenerateChatTitleAsync(workspaceID, userID, session.ID, currentTitle, req.Content)
+	} else if milestone != "" {
+		h.enqueueDMTitle(workspaceID, userID, session.ID, milestone, currentTitle, req.Content, msg.ID)
 	}
 
 	writeJSON(w, http.StatusCreated, SendChatMessageResponse{
