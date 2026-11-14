@@ -129,16 +129,30 @@ thread_stats AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+),
+thread_resolutions AS (
+    SELECT DISTINCT ON (m.root_id)
+           m.root_id,
+           c.id AS resolution_id,
+           c.content AS resolution_content
+    FROM membership m
+    JOIN comment c ON c.id = m.id
+    WHERE m.id <> m.root_id
+      AND c.resolved_at IS NOT NULL
+    ORDER BY m.root_id, c.resolved_at DESC, c.created_at ASC, c.id ASC
 )
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
        c.source_task_id, c.quick_action_id, c.revision, c.deleted_at,
        ts.reply_count AS reply_count,
-       ts.last_activity_at AS last_activity_at
+       ts.last_activity_at AS last_activity_at,
+       tr.resolution_id AS resolution_id,
+       tr.resolution_content AS resolution_content
 FROM selected_roots sr
 JOIN comment c ON c.id = sr.id
 JOIN thread_stats ts ON ts.root_id = sr.id
+LEFT JOIN thread_resolutions tr ON tr.root_id = sr.id
 ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: ListRootCommentsSinceForIssue :many
@@ -175,16 +189,30 @@ thread_stats AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+),
+thread_resolutions AS (
+    SELECT DISTINCT ON (m.root_id)
+           m.root_id,
+           c.id AS resolution_id,
+           c.content AS resolution_content
+    FROM membership m
+    JOIN comment c ON c.id = m.id
+    WHERE m.id <> m.root_id
+      AND c.resolved_at IS NOT NULL
+    ORDER BY m.root_id, c.resolved_at DESC, c.created_at ASC, c.id ASC
 )
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
        c.source_task_id, c.quick_action_id, c.revision, c.deleted_at,
        ts.reply_count AS reply_count,
-       ts.last_activity_at AS last_activity_at
+       ts.last_activity_at AS last_activity_at,
+       tr.resolution_id AS resolution_id,
+       tr.resolution_content AS resolution_content
 FROM selected_roots sr
 JOIN comment c ON c.id = sr.id
 JOIN thread_stats ts ON ts.root_id = sr.id
+LEFT JOIN thread_resolutions tr ON tr.root_id = sr.id
 ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: ListThreadCommentsForIssuePaged :many
@@ -404,33 +432,28 @@ SELECT c.* FROM comment c
 WHERE c.issue_id = @issue_id
   AND (c.id = ANY(@planned_comment_ids::uuid[])
        OR comment_thread_root_id(c.id) = sqlc.narg('comment_thread_id')::uuid
-       -- An agent comment, or a member comment folded in by default, that
-       -- steered this run but was never read took the place of the follow-up
-       -- its mention would have queued; replay it.
-       OR ((c.author_type = 'agent' OR EXISTS (
-               SELECT 1 FROM task_supplement imp
-               WHERE imp.comment_id = c.id AND imp.task_id = sqlc.narg('task_id')::uuid AND imp.implicit
-           )) AND EXISTS (
+       -- A comment that steered this run but was never read took the place of
+       -- the follow-up its mention would have queued; replay it. This covers an
+       -- explicit member steer too (CHE-5542): the turn ended before the agent
+       -- read it, so the member's reply would otherwise be lost.
+       OR EXISTS (
            SELECT 1 FROM task_supplement steered
            WHERE steered.comment_id = c.id AND steered.task_id = sqlc.narg('task_id')::uuid
              AND steered.status <> 'delivered'
-       )))
+       ))
   -- A deleted comment is no longer input, even when replies keep its row.
   AND c.deleted_at IS NULL
-  -- A member comment that the member chose to steer into this agent's running
-  -- turn belongs to that turn, regardless of delivery status: failed delivery
-  -- must not become an automatic new run, because the member sees the failure
-  -- and can retry or send it as a new run. No one watches the receipt of an
-  -- agent comment or of an implicit member steer (the author never asked to
-  -- steer, CHE-5286), so those belong to the turn only once delivered;
-  -- otherwise they are replayed like any other mention. The same comment still reconciles
-  -- normally for any other agent it addressed without steering.
+  -- A comment that a steer already delivered into this agent's running turn
+  -- belongs to that turn. One the turn never read (pending, delivering or
+  -- failed) does not: it is replayed like any other mention, whether the steer
+  -- was explicit or implicit (CHE-5286, CHE-5542). The same comment still
+  -- reconciles normally for any other agent it addressed without steering.
   AND NOT EXISTS (
       SELECT 1 FROM task_supplement s
       JOIN agent_task_queue bound ON bound.id = s.task_id
       WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
         AND bound.agent_id = @agent_id
-        AND ((c.author_type <> 'agent' AND NOT s.implicit) OR s.status = 'delivered')
+        AND s.status = 'delivered'
   )
   -- An explicit member/agent cancellation acknowledges the planned input for
   -- this agent only for completing tasks already in flight at cancellation;

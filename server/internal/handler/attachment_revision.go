@@ -217,11 +217,12 @@ func (h *Handler) readAttachmentText(ctx context.Context, a db.Attachment) (stri
 		return "", http.StatusNotFound, "attachment object not found"
 	}
 	defer reader.Close()
-	body, err := io.ReadAll(io.LimitReader(reader, maxPreviewTextSize+1))
+	limit := h.maxPreviewSizeBytes()
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return "", http.StatusBadGateway, "failed to read attachment body"
 	}
-	if len(body) > maxPreviewTextSize {
+	if int64(len(body)) > limit {
 		return "", http.StatusRequestEntityTooLarge, "file too large to diff"
 	}
 	return string(body), 0, ""

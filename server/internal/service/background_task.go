@@ -29,6 +29,9 @@ var (
 	// ErrInvalidBackgroundOutput is returned by a BackgroundWriter that rejected
 	// the output before writing anything.
 	ErrInvalidBackgroundOutput = errors.New("invalid background task output")
+	// ErrBackgroundMissingSourceSession: a DM-derived task needs the DM it came
+	// from, or its content could not be kept private to that DM's owner.
+	ErrBackgroundMissingSourceSession = errors.New("background task: DM-derived task has no source chat session")
 	// ErrBackgroundChainChanged is returned by EnqueueBackgroundTask when the
 	// workspace's chain changed between the resolver's read and the insert. The
 	// caller enqueues again.
@@ -60,12 +63,22 @@ type BackgroundTaskInput struct {
 	WorkspaceID pgtype.UUID
 	AgentID     pgtype.UUID // ignored when Resolve is set
 	MemberID    pgtype.UUID // the DM creator; zero when the task is not member-attributable
-	Source      bgagents.Source
-	Slot        bgagents.SlotName
+	// SourceChatSessionID is the DM the task derives from; required for a
+	// user-scoped (DM-derived) job. It decides who may read the task's content.
+	SourceChatSessionID pgtype.UUID
+	Source              bgagents.Source
+	Slot                bgagents.SlotName
 	// FallbackAgentID is the agent a provider failure of this run moves to; zero
 	// when this run holds the last slot.
 	FallbackAgentID pgtype.UUID
 	Input           string
+	// Guard is opaque state the job's writer compares at completion (dm_title:
+	// the title the DM had when the job was queued).
+	Guard string
+	// Milestone and SourceMessageID key a job's idempotence (dm_title: the
+	// conversation event and the message that raised it); empty when unused.
+	Milestone       string
+	SourceMessageID string
 	// Resolve, when set, picks the chain slot instead of AgentID/Source/Slot/
 	// FallbackAgentID. EnqueueBackgroundTask calls it after taking the member's
 	// lock, so a personal write is either fully visible to it or waits for the
@@ -97,6 +110,9 @@ type BackgroundTaskContext struct {
 	ClaimSeconds    int    `json:"claim_deadline_seconds"`
 	RunSeconds      int    `json:"run_deadline_seconds"`
 	Input           string `json:"input"`
+	Guard           string `json:"guard,omitempty"`
+	Milestone       string `json:"milestone,omitempty"`
+	SourceMessageID string `json:"source_message_id,omitempty"`
 }
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
@@ -150,6 +166,9 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, errors.New("agent has no runtime")
 	}
+	if spec.UserScoped && !in.SourceChatSessionID.Valid {
+		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundMissingSourceSession, in.Job)
+	}
 	input := in.Input
 	if r := []rune(input); len(r) > BackgroundInputMaxRunes {
 		input = string(r[:BackgroundInputMaxRunes])
@@ -158,7 +177,8 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 		Type: BackgroundTaskContextType, Job: string(in.Job), WorkspaceID: util.UUIDToString(in.WorkspaceID),
 		ChainSource: string(target.Source), Slot: string(target.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
-		Input: input,
+		Input: input, Guard: in.Guard,
+		Milestone: in.Milestone, SourceMessageID: in.SourceMessageID,
 	}
 	if target.FallbackAgentID.Valid {
 		payload.FallbackAgentID = util.UUIDToString(target.FallbackAgentID)
@@ -184,7 +204,8 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	task, err := q.CreateBackgroundTask(ctx, db.CreateBackgroundTaskParams{
 		ID: dbid.NewV7(), AgentID: target.AgentID, RuntimeID: agent.RuntimeID, Priority: priorityToInt("low"),
 		Context: contextJSON, Purpose: pgtype.Text{String: bgagents.Purpose(in.Job), Valid: true},
-		OriginatorUserID: in.MemberID, AccountableUserID: attr.AccountableUserID,
+		SourceChatSessionID: in.SourceChatSessionID,
+		OriginatorUserID:    in.MemberID, AccountableUserID: attr.AccountableUserID,
 		OriginatorSource: attrSource, TriggerEvidenceKind: attrEvidenceKind, TriggerEvidenceRefID: attrEvidenceRef,
 	})
 	if err != nil {
@@ -249,6 +270,9 @@ func (s *TaskService) writeBackgroundOutput(ctx context.Context, q *db.Queries, 
 	write := s.BackgroundWriters[task.Purpose.String]
 	if !task.Purpose.Valid || write == nil {
 		return nil
+	}
+	if backgroundRunExpired(task) {
+		return fmt.Errorf("%w: %s", ErrBackgroundAttemptExpired, util.UUIDToString(task.ID))
 	}
 	err := write(ctx, q, task, result)
 	if errors.Is(err, ErrInvalidBackgroundOutput) {

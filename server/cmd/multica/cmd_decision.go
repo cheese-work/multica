@@ -59,6 +59,7 @@ func init() {
 	decisionRequestCmd.Flags().String("kind", "decision", "decision (default) asks the person to choose; action asks them to do something an agent cannot")
 	decisionRequestCmd.Flags().StringSlice("covers", nil, "Batch card: ids of open plain choice cards (reversible or product_direction, with no action, governed write or artifact) for the same human that this answer also closes (max 25); every covered card must offer each batch option with the same label and the same what_happens meaning; withdrawing the batch answer withdraws the covered answers too")
 	decisionRequestCmd.Flags().String("expires-in", "", "With --kind action: how long the ask stays open, e.g. 72h (default 72h, maximum 168h)")
+	decisionRequestCmd.Flags().String("recovers", "", "Ask guard event ID this request answers (from a refusal or a recovery notice); the request clears that event for the person it asks")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -125,6 +126,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if err := checkRequestKind(kind, expiresIn, actionPath != ""); err != nil {
 		return err
 	}
+	recovers, _ := command.Flags().GetString("recovers")
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
 	}
@@ -179,6 +181,9 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 		if expiresIn != "" {
 			body["expires_in"] = expiresIn
 		}
+	}
+	if recovers != "" {
+		body["recovers"] = recovers
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {

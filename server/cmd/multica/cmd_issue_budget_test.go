@@ -168,3 +168,39 @@ func TestRunIssueBudgetTopUpRequestsWithoutACap(t *testing.T) {
 		t.Fatalf("output %q lacks the approve URL", out)
 	}
 }
+
+// CHE-5503: the budget read names the one next step.
+func TestRunIssueBudgetGetPrintsTheNextCommand(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"budgeted": true, "runs_used": 25, "runs_limit": 25, "state": "over",
+			"open_card":    map[string]any{"request_id": "req-1", "action_id": "act-1", "url": "/acme/issues/x?approve=act-1"},
+			"next_command": "Wait for the approval card /acme/issues/x?approve=act-1. Do not open another.",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := &cobra.Command{Use: "get"}
+	cmd.Flags().String("output", "table", "")
+	out, err := captureStdout(t, func() error { return runIssueBudgetGet(cmd, []string{testIssueUUID}) })
+	if err != nil || !strings.Contains(out, "Wait for the approval card /acme/issues/x?approve=act-1. Do not open another.") {
+		t.Fatalf("out = %q err = %v", out, err)
+	}
+}
+
+func TestBudgetTopUpIsHiddenFromAgentHelp(t *testing.T) {
+	t.Cleanup(hideMemberOnlyBudgetCommands)
+	for token, hidden := range map[string]bool{"mat_task-token": true, "mul_member-pat": false} {
+		t.Setenv("MULTICA_TOKEN", token)
+		hideMemberOnlyBudgetCommands()
+		if got := !issueBudgetTopUpCmd.IsAvailableCommand(); got != hidden {
+			t.Fatalf("token %q: top-up hidden = %v, want %v", token, got, hidden)
+		}
+		if !issueBudgetRaiseCmd.IsAvailableCommand() {
+			t.Fatalf("token %q: raise must stay listed", token)
+		}
+	}
+}

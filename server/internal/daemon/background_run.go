@@ -103,7 +103,9 @@ func (d *Daemon) runBackgroundTask(ctx context.Context, task Task, provider stri
 		out.Status, out.Comment = "blocked", msg
 		out.FailureReason = taskfailure.Classify(msg).String()
 		if result.Status == "timeout" {
-			out.FailureReason = "timeout"
+			// The run deadline is the job's own: the server moves the chain to
+			// the next slot instead of retrying (CHE-4103).
+			out.FailureReason = taskfailure.ReasonBgRunTimeout.String()
 		}
 	}
 	return out, nil

@@ -177,6 +177,20 @@ func TestRoutingFailoverKeepsTheAssigneeWhenTheEnqueueFails(t *testing.T) {
 	}
 }
 
+// The generic failover rule (CHE-4117): a fallback whose runtime is not live is
+// not handed the step; the issue keeps its assignee and the failure stays visible.
+func TestRoutingFailoverSkipsAnUnreachableFallback(t *testing.T) {
+	f, svc, rows := routingFailoverFixture(t, "todo")
+	rows.Exec(t, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, f.runtimeID)
+	failSource(t, svc, f, providerDown)
+	if got := fallbackRuns(t, rows, f, f.worker); got != 0 {
+		t.Fatalf("fallback runs = %d, want 0 for an unreachable fallback", got)
+	}
+	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, f.coordinator); got != 1 {
+		t.Fatal("the issue left its assignee for an unreachable fallback")
+	}
+}
+
 // ownWorkerByAnotherMember makes the fallback agent a private agent of a second
 // workspace member; the failed run's originator stays the first member.
 func ownWorkerByAnotherMember(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture) string {

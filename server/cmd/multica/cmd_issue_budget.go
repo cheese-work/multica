@@ -48,9 +48,10 @@ var issueBudgetTopUpCmd = &cobra.Command{
 
 const goalFlagHelp = "Task token, several issues: the goal the batch card shows (default: names the action and the issue count)"
 
-const forFlagHelp = "Task token only: user ID of the person who approves the proposal (an issue task needs it; a chat task asks the chat's creator)"
+const forFlagHelp = "Task token only: user ID of the person who approves the proposal (default: a workspace owner on an issue task; a chat task asks the chat's creator)"
 
 func init() {
+	hideMemberOnlyBudgetCommands()
 	issueBudgetTopUpCmd.Flags().String("output", "table", "Output format: table or json")
 	issueBudgetTopUpCmd.Flags().String("for", "", forFlagHelp)
 	issueBudgetTopUpCmd.Flags().String("goal", "", goalFlagHelp)
@@ -270,6 +271,7 @@ type issueBudgetSnapshot struct {
 	State        string   `json:"state"`
 	Blocking     []string `json:"blocking"`
 	CanRaise     bool     `json:"can_raise"`
+	NextCommand  string   `json:"next_command"`
 	RaisePreview *struct {
 		AddRuns       int `json:"add_runs"`
 		BalanceAfter  int `json:"balance_after"`
@@ -308,5 +310,14 @@ func runIssueBudgetGet(cmd *cobra.Command, args []string) error {
 	if p := snap.RaisePreview; p != nil {
 		fmt.Fprintf(os.Stdout, "raise: approve a raise to %d runs in the web app (%d left)\n", p.LimitAfter, p.BalanceAfter)
 	}
+	if snap.NextCommand != "" {
+		fmt.Fprintf(os.Stdout, "next: %s\n", snap.NextCommand)
+	}
 	return nil
+}
+
+// hideMemberOnlyBudgetCommands keeps top-up out of a task token's help: an agent
+// asks with raise. The command still runs for members and the server path.
+func hideMemberOnlyBudgetCommands() {
+	issueBudgetTopUpCmd.Hidden = strings.HasPrefix(strings.TrimSpace(os.Getenv("MULTICA_TOKEN")), cli.TaskTokenPrefix)
 }

@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -98,4 +100,98 @@ func (h *Handler) evaluatePRMergeOwed(ctx context.Context, w db.IssueWakeup) err
 	return h.runPRMergeOwed(ctx, w.WorkspaceID, w.IssueID, func(ctx context.Context) error {
 		return h.autoCompleteIssue(ctx, w.WorkspaceID, w.IssueID, nil)
 	})
+}
+
+// owePRMerge writes the intent for each issue and for the parent of each whose
+// workflow counts child PRs, through q. Pass the transaction-bound queries of
+// the event that owes the decision: the rows commit with it, or an error rolls
+// both back so the sender retries. It returns every issue it wrote, for the
+// post-commit attempt.
+func (h *Handler) owePRMerge(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, issueIDs []pgtype.UUID) ([]pgtype.UUID, error) {
+	return h.owePRMergeWithLinked(ctx, q, workspaceID, issueIDs, nil)
+}
+
+// owePRMergeWithLinked is owePRMerge plus the parent, not the issue itself, of
+// each linked issue. A PR event that changes no link (a close of an unmerged
+// PR) still changes what its linked children's parent counts (CHE-5242).
+func (h *Handler) owePRMergeWithLinked(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, issueIDs, linkedIDs []pgtype.UUID) ([]pgtype.UUID, error) {
+	var owed []pgtype.UUID
+	seen := map[pgtype.UUID]bool{}
+	add := func(id pgtype.UUID) error {
+		if seen[id] {
+			return nil
+		}
+		seen[id] = true
+		if err := upsertPRMergeOwed(ctx, q, workspaceID, id); err != nil {
+			return fmt.Errorf("owe pr merge for issue %s: %w", uuidToString(id), err)
+		}
+		owed = append(owed, id)
+		return nil
+	}
+	addParent := func(id pgtype.UUID) error {
+		parentID, err := parentCountingChildPRs(ctx, q, workspaceID, id)
+		if err != nil || !parentID.Valid {
+			return err
+		}
+		return add(parentID)
+	}
+	for _, id := range issueIDs {
+		if err := add(id); err != nil {
+			return nil, err
+		}
+		if err := addParent(id); err != nil {
+			return nil, err
+		}
+	}
+	for _, id := range linkedIDs {
+		if err := addParent(id); err != nil {
+			return nil, err
+		}
+	}
+	return owed, nil
+}
+
+// parentCountingChildPRs is the parent of issueID when its workflow reads the
+// PRs of its children, else the zero UUID.
+func parentCountingChildPRs(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) (pgtype.UUID, error) {
+	issue, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !issue.ParentIssueID.Valid) {
+		return pgtype.UUID{}, nil
+	}
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("load issue for parent: %w", err)
+	}
+	parent, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ParentIssueID, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil
+	}
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("load parent: %w", err)
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, q, workspaceID, parent.WorkflowID, parent.ProjectID)
+	if errors.Is(err, issueworkflow.ErrOverrideMissing) || (err == nil && def == nil) {
+		return pgtype.UUID{}, nil
+	}
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("load parent workflow: %w", err)
+	}
+	if !def.IncludeChildPRs {
+		return pgtype.UUID{}, nil
+	}
+	return parent.ID, nil
+}
+
+// attemptPRMergeOwed is the inline attempt after the source transaction
+// committed, fenced like the scheduler's. A failure leaves the row for it.
+func (h *Handler) attemptPRMergeOwed(ctx context.Context, workspaceID pgtype.UUID, issueIDs []pgtype.UUID, resolver *issuestatus.Resolver) []error {
+	var errs []error
+	for _, id := range issueIDs {
+		err := h.runPRMergeOwed(ctx, workspaceID, id, func(ctx context.Context) error {
+			return h.autoCompleteIssue(ctx, workspaceID, id, resolver)
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("issue %s: %w", uuidToString(id), err))
+		}
+	}
+	return errs
 }

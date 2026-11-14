@@ -128,7 +128,7 @@ func TestBoundIssueWorkflowSetRefusals(t *testing.T) {
 		body     func(b boundRebind) map[string]any
 		want     int
 	}{
-		{name: "no decision", delegate: true, want: http.StatusForbidden,
+		{name: "no decision", delegate: true, want: http.StatusAccepted, // opens a card (CHE-5505)
 			body: func(b boundRebind) map[string]any { return map[string]any{"workflow_id": b.wide} }},
 		{name: "agent not delegated", delegate: false, want: http.StatusForbidden,
 			body: func(b boundRebind) map[string]any { return b.binding(map[string]any{"workflow_id": b.wide}) }},

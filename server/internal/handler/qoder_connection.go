@@ -351,11 +351,36 @@ func (h *Handler) saveQoderConnection(w http.ResponseWriter, r *http.Request, re
 		writeError(w, 500, "cannot encrypt Qoder Cloud Agents configuration")
 		return
 	}
+	// The advisory lock serializes writers, so this read is the state the save replaces.
+	var before map[string]any
+	if prev, prevEnabled, prevStatus, _, readErr := h.readQoderSettings(r.Context(), uuidToString(ws)); readErr == nil {
+		before = qoderAuditFields(prev, prevEnabled, prevStatus)
+	} else if !errors.Is(readErr, pgx.ErrNoRows) {
+		writeError(w, 500, "cannot read Qoder Cloud Agents configuration")
+		return
+	}
+	var enabled bool
+	var status string
 	_, err = tx.Exec(r.Context(), `DELETE FROM daemon_token WHERE id IN (SELECT token_id FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1)`, ws)
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO cloud_agent_connection(workspace_id,provider,owner_id,token_id,config_encrypted) VALUES($1,'qoder_cloud',$2,$3,$4) ON CONFLICT(workspace_id,provider) DO UPDATE SET owner_id=excluded.owner_id,token_id=excluded.token_id,config_encrypted=excluded.config_encrypted,enabled=($5 OR cloud_agent_connection.enabled),journal_encrypted='',revision=cloud_agent_connection.revision+1,status=CASE WHEN $5 OR cloud_agent_connection.enabled THEN 'starting' ELSE cloud_agent_connection.status END,last_error='',updated_at=now()`, ws, parseUUID(user), pat.ID, encrypted, resume)
+		err = tx.QueryRow(r.Context(), `INSERT INTO cloud_agent_connection(workspace_id,provider,owner_id,token_id,config_encrypted) VALUES($1,'qoder_cloud',$2,$3,$4) ON CONFLICT(workspace_id,provider) DO UPDATE SET owner_id=excluded.owner_id,token_id=excluded.token_id,config_encrypted=excluded.config_encrypted,enabled=($5 OR cloud_agent_connection.enabled),journal_encrypted='',revision=cloud_agent_connection.revision+1,status=CASE WHEN $5 OR cloud_agent_connection.enabled THEN 'starting' ELSE cloud_agent_connection.status END,last_error='',updated_at=now() RETURNING enabled,status`, ws, parseUUID(user), pat.ID, encrypted, resume).Scan(&enabled, &status)
 	}
-	if err != nil || tx.Commit(r.Context()) != nil {
+	if err != nil {
+		writeError(w, 500, "cannot save Qoder Cloud Agents configuration")
+		return
+	}
+	kind := "qoder.save"
+	if resume {
+		kind = "qoder.resume"
+	}
+	if err := h.writeAudit(r.Context(), q, r, auditInput{
+		Kind: kind, WorkspaceID: ws, TargetID: ws,
+		Before: before, After: qoderAuditFields(cfg, enabled, status),
+	}); err != nil {
+		writeAuditFailure(w, r, err, kind)
+		return
+	}
+	if tx.Commit(r.Context()) != nil {
 		writeError(w, 500, "cannot save Qoder Cloud Agents configuration")
 		return
 	}

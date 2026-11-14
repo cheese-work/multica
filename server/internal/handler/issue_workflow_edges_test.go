@@ -30,6 +30,9 @@ func newEdgeCase(t *testing.T, installationID int64, steps []map[string]any) edg
 	t.Helper()
 	giveBackRunBudgetHooks()
 	seedTestCatalog(t)
+	// The stored pr.merged edges these tests move on need the setting off: a
+	// chosen status refuses a new edge and bridges a stored one (CHE-5245).
+	setWorkspacePRMergeStatusForTest(t, "none")
 	fx := newPRMergeWebhookFixture(t, installationID)
 	wf := createTestWorkflowSteps(t, "Edges "+workflowTestSuffix(), steps)
 	projectID := createWorkflowTestProject(t, "Edges project")

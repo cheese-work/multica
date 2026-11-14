@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -139,8 +140,14 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	if issue.ProjectID.Valid {
 		project, _ = s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
 	}
-	fallback, err := util.ParseUUID(RoutingAgentFromSettings(settings).FailoverFor(util.UUIDToString(failed.AgentID), WorkflowScope(ctx, s.Queries, project), issue.Status))
+	fallbackID := RoutingAgentFromSettings(settings).FailoverFor(util.UUIDToString(failed.AgentID), WorkflowScope(ctx, s.Queries, project), issue.Status)
+	fallback, err := util.ParseUUID(fallbackID)
 	if err != nil {
+		return false
+	}
+	// The generic rule (CHE-4117): a configured fallback means the failed run held
+	// the primary slot; the same decision as every background job.
+	if !s.shouldFailOver(ctx, bgagents.Routing, issue.WorkspaceID, bgagents.Primary, fallbackID, failureReason) {
 		return false
 	}
 	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: fallback, WorkspaceID: issue.WorkspaceID})

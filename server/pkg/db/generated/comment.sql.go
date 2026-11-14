@@ -2098,33 +2098,28 @@ SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.create
 WHERE c.issue_id = $1
   AND (c.id = ANY($2::uuid[])
        OR comment_thread_root_id(c.id) = $3::uuid
-       -- An agent comment, or a member comment folded in by default, that
-       -- steered this run but was never read took the place of the follow-up
-       -- its mention would have queued; replay it.
-       OR ((c.author_type = 'agent' OR EXISTS (
-               SELECT 1 FROM task_supplement imp
-               WHERE imp.comment_id = c.id AND imp.task_id = $4::uuid AND imp.implicit
-           )) AND EXISTS (
+       -- A comment that steered this run but was never read took the place of
+       -- the follow-up its mention would have queued; replay it. This covers an
+       -- explicit member steer too (CHE-5542): the turn ended before the agent
+       -- read it, so the member's reply would otherwise be lost.
+       OR EXISTS (
            SELECT 1 FROM task_supplement steered
            WHERE steered.comment_id = c.id AND steered.task_id = $4::uuid
              AND steered.status <> 'delivered'
-       )))
+       ))
   -- A deleted comment is no longer input, even when replies keep its row.
   AND c.deleted_at IS NULL
-  -- A member comment that the member chose to steer into this agent's running
-  -- turn belongs to that turn, regardless of delivery status: failed delivery
-  -- must not become an automatic new run, because the member sees the failure
-  -- and can retry or send it as a new run. No one watches the receipt of an
-  -- agent comment or of an implicit member steer (the author never asked to
-  -- steer, CHE-5286), so those belong to the turn only once delivered;
-  -- otherwise they are replayed like any other mention. The same comment still reconciles
-  -- normally for any other agent it addressed without steering.
+  -- A comment that a steer already delivered into this agent's running turn
+  -- belongs to that turn. One the turn never read (pending, delivering or
+  -- failed) does not: it is replayed like any other mention, whether the steer
+  -- was explicit or implicit (CHE-5286, CHE-5542). The same comment still
+  -- reconciles normally for any other agent it addressed without steering.
   AND NOT EXISTS (
       SELECT 1 FROM task_supplement s
       JOIN agent_task_queue bound ON bound.id = s.task_id
       WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
         AND bound.agent_id = $5
-        AND ((c.author_type <> 'agent' AND NOT s.implicit) OR s.status = 'delivered')
+        AND s.status = 'delivered'
   )
   -- An explicit member/agent cancellation acknowledges the planned input for
   -- this agent only for completing tasks already in flight at cancellation;
@@ -2278,16 +2273,30 @@ thread_stats AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+),
+thread_resolutions AS (
+    SELECT DISTINCT ON (m.root_id)
+           m.root_id,
+           c.id AS resolution_id,
+           c.content AS resolution_content
+    FROM membership m
+    JOIN comment c ON c.id = m.id
+    WHERE m.id <> m.root_id
+      AND c.resolved_at IS NOT NULL
+    ORDER BY m.root_id, c.resolved_at DESC, c.created_at ASC, c.id ASC
 )
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
        c.source_task_id, c.quick_action_id, c.revision, c.deleted_at,
        ts.reply_count AS reply_count,
-       ts.last_activity_at AS last_activity_at
+       ts.last_activity_at AS last_activity_at,
+       tr.resolution_id AS resolution_id,
+       tr.resolution_content AS resolution_content
 FROM selected_roots sr
 JOIN comment c ON c.id = sr.id
 JOIN thread_stats ts ON ts.root_id = sr.id
+LEFT JOIN thread_resolutions tr ON tr.root_id = sr.id
 ORDER BY c.created_at ASC, c.id ASC
 `
 
@@ -2298,25 +2307,27 @@ type ListRootCommentsForIssueParams struct {
 }
 
 type ListRootCommentsForIssueRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	AuthorType     string             `json:"author_type"`
-	AuthorID       pgtype.UUID        `json:"author_id"`
-	Content        string             `json:"content"`
-	Type           string             `json:"type"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	ParentID       pgtype.UUID        `json:"parent_id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
-	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
-	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
-	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
-	QuickActionID  pgtype.UUID        `json:"quick_action_id"`
-	Revision       int64              `json:"revision"`
-	DeletedAt      pgtype.Timestamptz `json:"deleted_at"`
-	ReplyCount     int32              `json:"reply_count"`
-	LastActivityAt pgtype.Timestamptz `json:"last_activity_at"`
+	ID                pgtype.UUID        `json:"id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	AuthorType        string             `json:"author_type"`
+	AuthorID          pgtype.UUID        `json:"author_id"`
+	Content           string             `json:"content"`
+	Type              string             `json:"type"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	ParentID          pgtype.UUID        `json:"parent_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ResolvedAt        pgtype.Timestamptz `json:"resolved_at"`
+	ResolvedByType    pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID      pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	QuickActionID     pgtype.UUID        `json:"quick_action_id"`
+	Revision          int64              `json:"revision"`
+	DeletedAt         pgtype.Timestamptz `json:"deleted_at"`
+	ReplyCount        int32              `json:"reply_count"`
+	LastActivityAt    pgtype.Timestamptz `json:"last_activity_at"`
+	ResolutionID      pgtype.UUID        `json:"resolution_id"`
+	ResolutionContent pgtype.Text        `json:"resolution_content"`
 }
 
 // Top-level comments only, in issue chronological order, each annotated with
@@ -2360,6 +2371,8 @@ func (q *Queries) ListRootCommentsForIssue(ctx context.Context, arg ListRootComm
 			&i.DeletedAt,
 			&i.ReplyCount,
 			&i.LastActivityAt,
+			&i.ResolutionID,
+			&i.ResolutionContent,
 		); err != nil {
 			return nil, err
 		}
@@ -2398,16 +2411,30 @@ thread_stats AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+),
+thread_resolutions AS (
+    SELECT DISTINCT ON (m.root_id)
+           m.root_id,
+           c.id AS resolution_id,
+           c.content AS resolution_content
+    FROM membership m
+    JOIN comment c ON c.id = m.id
+    WHERE m.id <> m.root_id
+      AND c.resolved_at IS NOT NULL
+    ORDER BY m.root_id, c.resolved_at DESC, c.created_at ASC, c.id ASC
 )
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
        c.source_task_id, c.quick_action_id, c.revision, c.deleted_at,
        ts.reply_count AS reply_count,
-       ts.last_activity_at AS last_activity_at
+       ts.last_activity_at AS last_activity_at,
+       tr.resolution_id AS resolution_id,
+       tr.resolution_content AS resolution_content
 FROM selected_roots sr
 JOIN comment c ON c.id = sr.id
 JOIN thread_stats ts ON ts.root_id = sr.id
+LEFT JOIN thread_resolutions tr ON tr.root_id = sr.id
 ORDER BY c.created_at ASC, c.id ASC
 `
 
@@ -2419,25 +2446,27 @@ type ListRootCommentsSinceForIssueParams struct {
 }
 
 type ListRootCommentsSinceForIssueRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	AuthorType     string             `json:"author_type"`
-	AuthorID       pgtype.UUID        `json:"author_id"`
-	Content        string             `json:"content"`
-	Type           string             `json:"type"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	ParentID       pgtype.UUID        `json:"parent_id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
-	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
-	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
-	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
-	QuickActionID  pgtype.UUID        `json:"quick_action_id"`
-	Revision       int64              `json:"revision"`
-	DeletedAt      pgtype.Timestamptz `json:"deleted_at"`
-	ReplyCount     int32              `json:"reply_count"`
-	LastActivityAt pgtype.Timestamptz `json:"last_activity_at"`
+	ID                pgtype.UUID        `json:"id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	AuthorType        string             `json:"author_type"`
+	AuthorID          pgtype.UUID        `json:"author_id"`
+	Content           string             `json:"content"`
+	Type              string             `json:"type"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	ParentID          pgtype.UUID        `json:"parent_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ResolvedAt        pgtype.Timestamptz `json:"resolved_at"`
+	ResolvedByType    pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID      pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	QuickActionID     pgtype.UUID        `json:"quick_action_id"`
+	Revision          int64              `json:"revision"`
+	DeletedAt         pgtype.Timestamptz `json:"deleted_at"`
+	ReplyCount        int32              `json:"reply_count"`
+	LastActivityAt    pgtype.Timestamptz `json:"last_activity_at"`
+	ResolutionID      pgtype.UUID        `json:"resolution_id"`
+	ResolutionContent pgtype.Text        `json:"resolution_content"`
 }
 
 // Top-level comments created strictly after @since, each annotated with the
@@ -2481,6 +2510,8 @@ func (q *Queries) ListRootCommentsSinceForIssue(ctx context.Context, arg ListRoo
 			&i.DeletedAt,
 			&i.ReplyCount,
 			&i.LastActivityAt,
+			&i.ResolutionID,
+			&i.ResolutionContent,
 		); err != nil {
 			return nil, err
 		}

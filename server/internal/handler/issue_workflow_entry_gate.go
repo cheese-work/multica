@@ -33,6 +33,14 @@ type EntryGateError struct {
 }
 
 func (e *EntryGateError) Error() string {
+	if e.Step == "create" {
+		// A refused create reads as one line that starts with the guard's fact.
+		parts := make([]string, len(e.Failed))
+		for i, f := range e.Failed {
+			parts[i] = fmt.Sprintf("%s. Fix: %s", f.Fact, f.Fix)
+		}
+		return strings.Join(parts, "; ")
+	}
 	parts := make([]string, len(e.Failed))
 	for i, f := range e.Failed {
 		parts[i] = fmt.Sprintf("%s (%s; fix: %s)", f.Guard, f.Fact, f.Fix)

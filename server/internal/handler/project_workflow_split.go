@@ -4,35 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// ProjectWorkflowSplit is the CHE-5238 A/B setting: between StartsAt and EndsAt
-// issues created in the project may follow arm B's workflow instead of the
-// project's own (arm A). Selection happens at issue create (S1b), not here.
-type ProjectWorkflowSplit struct {
-	ArmBWorkflowID      string    `json:"arm_b_workflow_id"`
-	StartsAt            time.Time `json:"starts_at"`
-	EndsAt              time.Time `json:"ends_at"`
-	ExcludedAssigneeIDs []string  `json:"excluded_assignee_ids"`
-	ExcludedSquadIDs    []string  `json:"excluded_squad_ids"`
-}
+// ProjectWorkflowSplit is the CHE-5238 A/B setting; issue create (service)
+// selects the arm.
+type ProjectWorkflowSplit = service.WorkflowSplit
 
-func decodeWorkflowSplit(raw []byte) *ProjectWorkflowSplit {
-	if len(raw) == 0 {
-		return nil
-	}
-	var s ProjectWorkflowSplit
-	if json.Unmarshal(raw, &s) != nil {
-		return nil
-	}
-	return &s
-}
+func decodeWorkflowSplit(raw []byte) *ProjectWorkflowSplit { return service.DecodeWorkflowSplit(raw) }
 
 // SetProjectWorkflowSplit stores the project's split. Same access rule as the
 // project's workflow (canManageProjectWorkflow). Arm B must exist in the
@@ -97,9 +81,12 @@ func (h *Handler) ClearProjectWorkflowSplit(w http.ResponseWriter, r *http.Reque
 }
 
 // storeWorkflowSplit writes split (nil clears) and answers with the project.
+// The audit row lands in the same transaction as the write.
 func (h *Handler) storeWorkflowSplit(w http.ResponseWriter, r *http.Request, workspaceID string, member db.Member, id, wsID pgtype.UUID, split *ProjectWorkflowSplit) {
 	var raw []byte
+	kind := "project.workflow_split.clear"
 	if split != nil {
+		kind = "project.workflow_split.update"
 		if split.ExcludedAssigneeIDs == nil {
 			split.ExcludedAssigneeIDs = []string{}
 		}
@@ -108,10 +95,35 @@ func (h *Handler) storeWorkflowSplit(w http.ResponseWriter, r *http.Request, wor
 		}
 		raw, _ = json.Marshal(split)
 	}
-	updated, err := h.Queries.SetProjectWorkflowSplit(r.Context(), db.SetProjectWorkflowSplitParams{ID: id, WorkspaceID: wsID, WorkflowSplit: raw})
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow split")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.publishProjectWorkflowUpdate(r.Context(), workspaceID, member, updated))
+	defer tx.Rollback(ctx)
+	// Lock the row so the audit row records the split this write replaces.
+	var prev []byte
+	if err := tx.QueryRow(ctx, `SELECT workflow_split FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, id, wsID).Scan(&prev); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow split")
+		return
+	}
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.SetProjectWorkflowSplit(ctx, db.SetProjectWorkflowSplitParams{ID: id, WorkspaceID: wsID, WorkflowSplit: raw})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow split")
+		return
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: kind, WorkspaceID: wsID, TargetID: id,
+		Before: workflowSplitAuditFields(decodeWorkflowSplit(prev)), After: workflowSplitAuditFields(split),
+	}); err != nil {
+		writeAuditFailure(w, r, err, kind)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow split")
+		return
+	}
+	writeJSON(w, http.StatusOK, h.publishProjectWorkflowUpdate(ctx, workspaceID, member, updated))
 }

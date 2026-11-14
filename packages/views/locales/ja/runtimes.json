@@ -718,5 +718,29 @@
       "ends_in": "{{duration}}後に終了します。",
       "ends_soon": "{{duration}}後に終了します。その後 {{machine}} は再び作業を受け付けます。"
     }
+  },
+  "intro": {
+    "title": "エージェントに作業用のコンピューターを",
+    "description": "ランタイムは、エージェントが実際にタスクを実行する場所です。手元のコンピューター、サーバー、またはクラウドサービスを使えます。",
+    "slides": {
+      "local": {
+        "title": "このコンピューターは自動で接続",
+        "description": "デスクトップアプリをダウンロードしてサインインすると、このコンピューターの Claude Code や Codex などが自動的に表示されます。"
+      },
+      "remote": {
+        "title": "ほかのマシンはコマンド 2 つ",
+        "description": "サーバーや別のコンピューターに CLI をインストールし、multica setup を実行すれば接続できます。"
+      },
+      "cloud": {
+        "title": "クラウドノードも使える",
+        "description": "マシンを自分で管理したくないなら、Multica がホストするクラウドノードを作成できます。"
+      }
+    },
+    "art": {
+      "this_computer": "このコンピューター · デスクトップ",
+      "detected": "検出された harness",
+      "run_there": "そのマシンで実行",
+      "connected": "{{name}} が Multica に接続されました"
+    }
   }
 }

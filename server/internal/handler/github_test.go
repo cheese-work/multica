@@ -1406,6 +1406,14 @@ func TestWebhook_TitleBranchAndKeywordLinksAllMove(t *testing.T) {
 // merge / edited after merge).
 func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) {
 	t.Helper()
+	if code, resp := postPRWebhook(t, testHandler, secret, installationID, prNumber, title, body, branch, lifecycle); code != http.StatusAccepted {
+		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, code, resp)
+	}
+}
+
+// postPRWebhook delivers one PR webhook to h and returns the status and body.
+func postPRWebhook(t *testing.T, h *Handler, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) (int, string) {
+	t.Helper()
 	var action, state string
 	var merged bool
 	var mergedAt, closedAt any
@@ -1462,10 +1470,8 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	req := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
 	req.Header.Set("X-GitHub-Event", "pull_request")
 	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := testutil.Call(t, testHandler.HandleGitHubWebhook, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, h.HandleGitHubWebhook, req)
+	return rec.Code, rec.Body.String()
 }
 
 // TestWebhook_IdentifierRemovedBeforeMergeUnlinks: automatic links follow the
