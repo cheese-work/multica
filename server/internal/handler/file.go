@@ -394,7 +394,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	err := parseUploadForm(w, r)
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 	if err != nil {
 		var sizeErr *http.MaxBytesError
