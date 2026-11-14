@@ -71,6 +71,30 @@ cap settings-number-row \
   --component packages/views/settings/components/settings-layout.tsx \
   --token text-caption --token text-destructive
 
+cap settings-page \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token text-title-lg --token text-body --token text-caption --token divide-surface-border --token min-h-16 \
+  --copy "scope badge=settings:layout.scope.device" \
+  --copy "scope badge, workspace=settings:layout.scope.workspace"
+
+cap settings-navigation \
+  --component packages/views/settings/components/settings-page.tsx \
+  --token h-10 --token text-body --token bg-surface-selected --token border-input \
+  --copy "select label=settings:page.navigate" \
+  --copy "search placeholder=settings:page.search" \
+  --copy "page title=settings:page.title"
+
+cap read-only-member-view \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token bg-surface --token border-surface-border --token text-caption --token text-muted-foreground \
+  --copy "title=settings:layout.read_only.title" \
+  --copy "with names=settings:layout.read_only.contact" \
+  --copy "no names=settings:layout.read_only.description"
+
+cap save-state \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token text-caption --token text-muted-foreground --token text-success --token text-destructive
+
 cap decision-action-approval \
   --component packages/views/common/decision-action-approval.tsx \
   --component packages/ui/components/ui/button.tsx \
