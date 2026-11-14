@@ -10,15 +10,17 @@ func init() {
 		"POST /api/workspaces/":                                   "workspace.create",
 		"PUT /api/workspaces/{id}/qoder":                          "qoder.save",
 		"POST /api/workspaces/{id}/qoder/resume":                  "qoder.resume",
+		"PUT /api/projects/{id}/workflow-split":                   "project.workflow_split.update",
+		"DELETE /api/projects/{id}/workflow-split":                "project.workflow_split.clear",
 	} {
 		auditedRoutes[route] = kind
 		delete(auditPendingL5b, route)
 	}
 
 	for route, reason := range map[string]string{
-		"POST /api/workspaces/{id}/qoder/check":        "calls the Qoder API with a PAT to test it and stores nothing; the PAT is saved, and audited, by qoder.save",
-		"POST /api/workspaces/{id}/qoder/environments": "lists Qoder environments with a PAT and stores nothing; the chosen environment is saved, and audited, by qoder.save",
-		"PUT /api/github/dispatch-halt":                "records the halt and its actor in github_dispatch_halt_audit in the same transaction",
+		"POST /api/workspaces/{id}/qoder/check":          "calls the Qoder API with a PAT to test it and stores nothing; the PAT is saved, and audited, by qoder.save",
+		"POST /api/workspaces/{id}/qoder/environments":   "lists Qoder environments with a PAT and stores nothing; the chosen environment is saved, and audited, by qoder.save",
+		"PUT /api/github/dispatch-halt":                  "records the halt and its actor in github_dispatch_halt_audit in the same transaction",
 		"POST /api/github/intake/revisions/{id}/approve": "records the approver and snapshot hash in github_snapshot_approval in the same transaction",
 	} {
 		auditExemptRoutes[route] = reason

@@ -165,6 +165,44 @@ func wssCases() []wssCase {
 			},
 		},
 		{
+			name: "project-workflow-split-set", kind: "project.workflow_split.update", targetType: "project", wantStatus: http.StatusOK,
+			setup: func(t *testing.T) wssRun {
+				f := newSplitFixture(t)
+				req := withURLParam(workflowRequest("PUT", "/api/projects/"+f.projectID+"/workflow-split", f.body(nil)), "id", f.projectID)
+				req.Header.Set("X-User-ID", testUserID)
+				return wssRun{
+					workspaceID: testWorkspaceID, targetID: f.projectID,
+					call:    func() *httptest.ResponseRecorder { return wssRecord(testHandler.SetProjectWorkflowSplit, req) },
+					applied: wssCount(t, `SELECT count(*) FROM project WHERE id = $1 AND workflow_split IS NOT NULL`, f.projectID),
+					check: func(t *testing.T, row auditRow) {
+						if row.After["arm_b_workflow_id"] != f.armB {
+							t.Errorf("after = %v; want arm B %s", row.After, f.armB)
+						}
+					},
+				}
+			},
+		},
+		{
+			name: "project-workflow-split-clear", kind: "project.workflow_split.clear", targetType: "project", wantStatus: http.StatusOK,
+			setup: func(t *testing.T) wssRun {
+				f := newSplitFixture(t)
+				f.put(t, testUserID, f.body(nil)).Want(http.StatusOK)
+				req := withURLParam(workflowRequest("DELETE", "/api/projects/"+f.projectID+"/workflow-split", nil), "id", f.projectID)
+				req.Header.Set("X-User-ID", testUserID)
+				stillSplit := wssCount(t, `SELECT count(*) FROM project WHERE id = $1 AND workflow_split IS NOT NULL`, f.projectID)
+				return wssRun{
+					workspaceID: testWorkspaceID, targetID: f.projectID,
+					call:    func() *httptest.ResponseRecorder { return wssRecord(testHandler.ClearProjectWorkflowSplit, req) },
+					applied: func() bool { return !stillSplit() },
+					check: func(t *testing.T, row auditRow) {
+						if row.Before["arm_b_workflow_id"] != f.armB {
+							t.Errorf("before = %v; want arm B %s", row.Before, f.armB)
+						}
+					},
+				}
+			},
+		},
+		{
 			name: "qoder-save", kind: "qoder.save", targetType: "qoder_connection", wantStatus: http.StatusOK,
 			setup: func(t *testing.T) wssRun {
 				wssQoderCleanup(t)

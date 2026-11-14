@@ -3,6 +3,7 @@ package handler
 import (
 	"sort"
 	"strings"
+	"time"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -19,6 +20,13 @@ func init() {
 	auditKinds["workspace.protected_path_policy.update"] = auditKindSpec{
 		TargetType: "workspace",
 		Allow:      []string{"name", "patterns"},
+	}
+	split := auditKindSpec{
+		TargetType: "project",
+		Allow:      []string{"arm_b_workflow_id", "starts_at", "ends_at", "excluded_assignee_ids", "excluded_squad_ids"},
+	}
+	for _, kind := range []string{"project.workflow_split.update", "project.workflow_split.clear"} {
+		auditKinds[kind] = split
 	}
 	// The link code is a bearer secret and is never snapshotted.
 	auditKinds["share_link.revoke"] = auditKindSpec{
@@ -71,5 +79,20 @@ func qoderAuditFields(cfg qoderSettings, enabled bool, status string) map[string
 		"status":              status,
 		"qoder_token":         cfg.QoderToken,
 		"github_tokens":       strings.Join(repos, ","),
+	}
+}
+
+// workflowSplitAuditFields snapshots a project's A/B workflow split; nil (no
+// split) is an empty snapshot. Ids are joined so a list change stays readable.
+func workflowSplitAuditFields(s *ProjectWorkflowSplit) map[string]any {
+	if s == nil {
+		return nil
+	}
+	return map[string]any{
+		"arm_b_workflow_id":     s.ArmBWorkflowID,
+		"starts_at":             s.StartsAt.UTC().Format(time.RFC3339),
+		"ends_at":               s.EndsAt.UTC().Format(time.RFC3339),
+		"excluded_assignee_ids": sortedJoin(s.ExcludedAssigneeIDs),
+		"excluded_squad_ids":    sortedJoin(s.ExcludedSquadIDs),
 	}
 }
