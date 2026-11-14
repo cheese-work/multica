@@ -1388,6 +1388,20 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			}
 		}
 	}
+	if w.SystemRule.String == SystemRulePRChecksPassed {
+		var stale []db.IssueWakeupReceipt
+		if receipts, stale, err = splitStaleHeadReceipts(ctx, tx, issue.WorkspaceID, receipts); err != nil {
+			return err
+		}
+		if len(stale) > 0 {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(stale)}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivityTriggered, map[string]any{"rule": w.SystemRule.String, "outcome": wakeupOutcomeStaleHead, "dropped": len(stale)}); err != nil {
+				return err
+			}
+		}
+	}
 	for _, run := range taken {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err
@@ -1896,4 +1910,37 @@ func setChildDoneDefaultTx(ctx context.Context, tx pgx.Tx, q *db.Queries, worksp
 		}
 	}
 	return int64(len(changed)), nil
+}
+
+// splitStaleHeadReceipts separates green-check receipts whose head the PR has
+// left. The receipt waited for an active run, an aggregate or a hold, so the PR
+// may have moved since capture; waking on it asks the owner to act on a state
+// that no longer exists. The next green on the current head wakes as usual
+// (CHE-5699). A missing PR row or an empty stored head is not evidence of a move.
+func splitStaleHeadReceipts(ctx context.Context, tx pgx.Tx, workspace pgtype.UUID, receipts []db.IssueWakeupReceipt) (kept, stale []db.IssueWakeupReceipt, err error) {
+	for _, r := range receipts {
+		var facts struct {
+			Owner  string `json:"repo_owner"`
+			Name   string `json:"repo_name"`
+			Number int32  `json:"pr_number"`
+			Head   string `json:"head_sha"`
+		}
+		if json.Unmarshal(r.Payload, &facts) != nil || facts.Head == "" {
+			kept = append(kept, r)
+			continue
+		}
+		var moved bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM github_pull_request
+			WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4
+			AND (COALESCE(snapshot_head_sha,'') NOT IN ('',$5) OR head_sha NOT IN ('',$5)))`,
+			workspace, facts.Owner, facts.Name, facts.Number, facts.Head).Scan(&moved); err != nil {
+			return nil, nil, err
+		}
+		if moved {
+			stale = append(stale, r)
+		} else {
+			kept = append(kept, r)
+		}
+	}
+	return kept, stale, nil
 }

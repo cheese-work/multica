@@ -349,6 +349,7 @@ const (
 	wakeupOutcomeTargetUnavailable  = "target_unavailable"
 	wakeupOutcomeTargetUnauthorized = "target_unauthorized"
 	wakeupOutcomeFiltered           = "filtered_out"
+	wakeupOutcomeStaleHead          = "stale_head"
 	wakeupOutcomeOwnChange          = "own_change"
 )
 
