@@ -56,6 +56,12 @@ An event that cannot be sent as a notice goes to the agent whose run produced it
 
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
 
+### Tool guard
+
+**Settings → Guard** lists the tool-guard plugins of the workspace and what each one did in the last 7 days. Each plugin shows how many calls it fixed, refused or failed on, a chart of hits per day, and its latest decisions. The numbers come from the same rows as `multica guard stats` and `multica guard log`. Days follow your viewing time zone.
+
+The page is read-only. **Edit with passkey** shows the CLI steps: an agent creates the policy change with `multica guard plugin set`, and a person approves it on the decision card with a passkey. Without a saved policy, the page shows the built-in defaults.
+
 ### Delegated governed writes
 
 The workspace setting `delegated_governed_writes` decides which agents may write governed fields, and whether each write still needs a person's decision. Find it in workspace settings under **Delegated governed writes**.

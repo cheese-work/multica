@@ -215,6 +215,11 @@ export function useSettingsSearchIndex(
         description: t(($) => $.provider_breakers.description),
       },
       {
+        tab: "guard",
+        title: t(($) => $.page.tabs.guard),
+        description: t(($) => $.guard.description),
+      },
+      {
         tab: "labels",
         title: t(($) => $.page.tabs.labels),
         description: t(($) => $.labels.description),

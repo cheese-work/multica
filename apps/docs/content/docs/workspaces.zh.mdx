@@ -56,6 +56,12 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 守卫也覆盖智能体注册人可触发的唤醒。用 `--decision` 绑定、标记 `--purpose observe`，或限定为仅智能体；见[唤醒](/cli#wakeups)。
 
+### 工具守卫
+
+**设置 → Guard** 列出工作区的工具守卫插件，以及每个插件在过去 7 天里做了什么。每个插件显示被修正、被拒绝或出错的调用数量、按天统计的命中图表，以及最近的判定。数字与 `multica guard stats`、`multica guard log` 来自同一批记录。日期按你的查看时区计算。
+
+该页面为只读。**用通行密钥编辑** 会显示 CLI 步骤：由智能体用 `multica guard plugin set` 创建策略变更，再由人在决策卡片上用通行密钥批准。没有已保存的策略时，页面显示内置默认值。
+
 ### 委托的受管写入
 
 工作区设置 `delegated_governed_writes` 决定哪些智能体可以写入受管字段，以及每次写入是否仍需要人来决定。它位于工作区设置的 **委托的受管写入** 下。
