@@ -8,10 +8,10 @@ import { ApiClient } from "@multica/core/api/client";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { ApiError } from "@multica/core/api/client";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
 import { useIssueTitleDraftStore } from "@multica/core/issues/stores/unsent-edit-drafts";
-import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -3103,6 +3103,29 @@ describe("IssueDetail (shared)", () => {
     expect(
       executionLog.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("keeps an unsaved comment mounted when the primary background refresh fails", async () => {
+    const queryClient = createTestQueryClient();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    await screen.findByText("Implement authentication");
+    fireEvent.click(screen.getByTestId("comment-composer-shell"));
+    const editor = await screen.findByPlaceholderText("Leave a comment...");
+    fireEvent.change(editor, { target: { value: "Unsaved synthetic comment" } });
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("unavailable", 503, "Unavailable"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: issueKeys.detail("ws-1", "issue-1"), exact: true });
+    });
+    expect(queryClient.getQueryState(issueKeys.detail("ws-1", "issue-1"))?.status).toBe("error");
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveValue("Unsaved synthetic comment");
+    expect(screen.queryByText("Could not load issue.")).not.toBeInTheDocument();
   });
 
   it("shows 'not found' message when issue does not exist", async () => {

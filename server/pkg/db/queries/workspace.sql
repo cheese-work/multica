@@ -4,11 +4,11 @@ SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
        w.export_redaction_mode, w.export_manifest_retention_days,
        w.decision_passkey_gate, w.policy_revision,
-       w.scheduling_paused_at, w.scheduling_paused_by
+       w.scheduling_paused_at, w.scheduling_paused_by, m.pinned_at
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
-ORDER BY w.created_at ASC;
+ORDER BY m.pinned_at DESC NULLS LAST, w.created_at ASC;
 
 -- name: ListDaemonWorkspaces :many
 -- Daemons only need the membership set and display name to discover which
@@ -360,3 +360,9 @@ RETURNING *;
 -- name: ListWorkspaceIDsWithLegacyRoutingAgent :many
 -- CHE-4116: workspaces still holding the routing setting under its old key.
 SELECT id FROM workspace WHERE settings ? 'routing_agent';
+
+-- name: SetWorkspacePinned :one
+UPDATE member
+SET pinned_at = CASE WHEN @pinned::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
+WHERE workspace_id = @workspace_id AND user_id = @user_id
+RETURNING pinned_at;
