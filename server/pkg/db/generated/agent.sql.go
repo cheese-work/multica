@@ -12724,28 +12724,32 @@ func (q *Queries) RegisterPlannedCommentForActiveTask(ctx context.Context, arg R
 
 const releaseStopsAttestedByDaemon = `-- name: ReleaseStopsAttestedByDaemon :many
 UPDATE agent_task_queue t
-SET cancel_acked_at = now(), cancel_ack_reason = 'daemon_reconcile'
+SET cancel_acked_at = now(),
+    cancel_ack_reason = CASE WHEN t.dispatched_at < $1 THEN 'host_scan' ELSE 'daemon_reconcile' END
 FROM agent_runtime r
 WHERE r.id = t.runtime_id
   AND r.status = 'online'
-  AND t.runtime_id = $1
+  AND t.runtime_id = $2
   AND t.status = 'cancelled'
   AND t.failure_reason IN ('superseded_head', 'pr_merged', 'pr_closed')
   AND t.cancel_acked_at IS NULL
   AND t.stop_unconfirmed_at IS NULL
   AND t.dispatched_at IS NOT NULL
-  AND t.dispatched_at < $2
-  AND t.dispatched_at >= $3
-  AND NOT (t.id = ANY($4::uuid[]))
+  AND t.dispatched_at < $3
+  AND ($4::boolean OR t.dispatched_at >= $1)
+  AND NOT (t.id = ANY($5::uuid[]))
+  AND NOT (t.id = ANY($6::uuid[]))
   AND COALESCE(t.result->>'process_cleanup_pending', '') <> 'true'
 RETURNING t.id, t.issue_id
 `
 
 type ReleaseStopsAttestedByDaemonParams struct {
+	DispatchedAfter  pgtype.Timestamptz `json:"dispatched_after"`
 	RuntimeID        pgtype.UUID        `json:"runtime_id"`
 	DispatchedBefore pgtype.Timestamptz `json:"dispatched_before"`
-	DispatchedAfter  pgtype.Timestamptz `json:"dispatched_after"`
+	HostScanOk       bool               `json:"host_scan_ok"`
 	LiveTaskIds      []pgtype.UUID      `json:"live_task_ids"`
+	HostTaskIds      []pgtype.UUID      `json:"host_task_ids"`
 }
 
 type ReleaseStopsAttestedByDaemonRow struct {
@@ -12758,16 +12762,21 @@ type ReleaseStopsAttestedByDaemonRow struct {
 // dispatched before the grace cutoff (so a claim still in flight to the daemon
 // is not mistaken for a stopped run) and since the daemon process booted (a
 // restarted daemon cannot vouch for a run it did not start), is proven stopped: stamp cancel_acked_at
-// with reason 'daemon_reconcile'. An offline runtime attests nothing. A run
+// with reason 'daemon_reconcile'. CHE-5745: when the daemon's host scan was
+// clean (host_scan_ok) and no process carries the task id (host_task_ids), a run
+// from before the boot is proven stopped too, reason 'host_scan'. An offline
+// runtime attests nothing. A run
 // rewritten after the cancel (stop_unconfirmed_at) or whose cancel result
 // reports a pending process cleanup is not released: only a cleanup-confirmed
 // cancel-ack settles those. The first ack wins.
 func (q *Queries) ReleaseStopsAttestedByDaemon(ctx context.Context, arg ReleaseStopsAttestedByDaemonParams) ([]ReleaseStopsAttestedByDaemonRow, error) {
 	rows, err := q.db.Query(ctx, releaseStopsAttestedByDaemon,
+		arg.DispatchedAfter,
 		arg.RuntimeID,
 		arg.DispatchedBefore,
-		arg.DispatchedAfter,
+		arg.HostScanOk,
 		arg.LiveTaskIds,
+		arg.HostTaskIds,
 	)
 	if err != nil {
 		return nil, err

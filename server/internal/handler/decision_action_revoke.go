@@ -91,6 +91,9 @@ func (handler *Handler) revocableNow(ctx context.Context, action db.DecisionActi
 	if _, err := revokeRefusal(action); err != nil {
 		return false
 	}
+	if actionTargetKind(action) == decisionaction.TargetNone {
+		return true
+	}
 	guard := revokeGuards[action.ActionType]
 	if guard == nil {
 		return false
