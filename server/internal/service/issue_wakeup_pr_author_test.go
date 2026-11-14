@@ -23,6 +23,7 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 		binding    bool
 		archived   bool
 		own        bool
+		worked     bool
 		notOwner   bool
 		target     bool
 		wantRun    bool
@@ -33,6 +34,8 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 		{name: "agent fallback without author", rule: SystemRulePRAttention, assignee: "agent", wantRun: true},
 		{name: "member conflict without author gets FYI", rule: SystemRulePRAttention, assignee: "member", wantFYI: true},
 		{name: "member failed checks without author get FYI", rule: SystemRulePRChecksFailed, assignee: "member", wantFYI: true},
+		{name: "member conflict without author wakes last agent", rule: SystemRulePRAttention, assignee: "member", worked: true, wantRun: true},
+		{name: "member failed checks without author wake last agent", rule: SystemRulePRChecksFailed, assignee: "member", worked: true, wantRun: true},
 		{name: "member merged notification unchanged", rule: SystemRulePRMerged, assignee: "member", author: true},
 		{name: "member passed checks drop for non-owner author", rule: SystemRulePRChecksPassed, assignee: "member", author: true, notOwner: true},
 		{name: "agent passed checks drop for non-owner author", rule: SystemRulePRChecksPassed, assignee: "agent", author: true, notOwner: true},
@@ -67,6 +70,14 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 			}
 			if scenario.target {
 				env.define(t, WakeupScopeWorkspace, scenario.rule, `"target":{"type":"assignee"}`)
+			}
+			if scenario.worked {
+				var runtimeID string
+				if err := fixture.Pool.QueryRow(context.Background(), "SELECT runtime_id FROM agent WHERE id=$1", env.agent).Scan(&runtimeID); err != nil {
+					t.Fatal(err)
+				}
+				task := fixture.Task(t, env.agent, testutil.Cols{"issue_id": util.UUIDToString(env.issue), "runtime_id": runtimeID, "status": "completed"})
+				fixture.Exec(t, "UPDATE agent_task_queue SET started_at=now() WHERE id=$1", task)
 			}
 			if scenario.author {
 				var runtimeID string
