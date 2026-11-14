@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -60,4 +61,18 @@ func ownerSession(t db.AgentTaskQueue) pgtype.UUID {
 		return t.ChatSessionID
 	}
 	return t.SourceChatSessionID
+}
+
+// isOwnerPrivateTask reports whether the task's content belongs to one chat
+// session creator: a chat task, or a bg:* task (DM-derived or unresolvable).
+func isOwnerPrivateTask(t db.AgentTaskQueue) bool {
+	return ownerSession(t).Valid || strings.HasPrefix(t.Purpose.String, "bg:")
+}
+
+// taskContentHiddenFrom reports whether viewerID may not read the task's
+// transcript or content. scope comes from ResolveTaskScopeChecked on the same
+// task, so ChatSessionOwnerID is the owner session's creator, or "" when it
+// cannot be resolved; an unresolvable owner hides the content from everyone.
+func taskContentHiddenFrom(t db.AgentTaskQueue, scope service.TaskScope, viewerID string) bool {
+	return isOwnerPrivateTask(t) && (scope.ChatSessionOwnerID == "" || scope.ChatSessionOwnerID != viewerID)
 }

@@ -2216,11 +2216,12 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		queuedOnly = true
 	}
 
-	if task.ChatSessionID.Valid {
+	if session := ownerSession(task); session.Valid {
 		// Chat privacy: only the member who opened the conversation may
-		// cancel its task, even though the workspace is shared.
+		// cancel its task, even though the workspace is shared. A DM-derived
+		// background task answers to the same member.
 		cs, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
-			ID:          task.ChatSessionID,
+			ID:          session,
 			WorkspaceID: wsUUID,
 		})
 		if err != nil {
@@ -2269,6 +2270,15 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	resp := CancelTaskByUserResponse{
 		AgentTaskResponse: taskToResponse(cancelled.Task, workspaceID),
 	}
+	// A bg:* task with no resolvable DM falls through to the agent gate above;
+	// its result and error stay hidden from everyone but an owner.
+	one := []AgentTaskResponse{resp.AgentTaskResponse}
+	if err := h.redactForeignChatTaskContent(r.Context(), userID, []db.AgentTaskQueue{cancelled.Task}, one); err != nil {
+		slog.Warn("redact cancelled task failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load task")
+		return
+	}
+	resp.AgentTaskResponse = one[0]
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.AgentTaskResponse.Attribution})
 	if cancelled.CancelledChatMessage != nil {
 		attachments := make([]AttachmentResponse, 0, len(cancelled.CancelledChatMessage.Attachments))
