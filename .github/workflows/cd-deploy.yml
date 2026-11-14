@@ -615,6 +615,11 @@ jobs:
     # admission result keeps the gate: admission itself needs the
     # authorize-c00 actor check.
     if: always() && needs.admission.result == 'success'
+    outputs:
+      decision: ${{ steps.deploy.outputs.decision }}
+      receipt_old: ${{ steps.receipt.outputs.old }}
+      receipt_new: ${{ steps.receipt.outputs.new }}
+      receipt_digest: ${{ steps.receipt.outputs.digest }}
     # Reserved for the C00-reachable deploy runner, distinct from D1's
     # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
     # current host/runner-label mapping; this label is a placeholder for
@@ -792,6 +797,22 @@ jobs:
 
           exit "$deploy_status"
 
+      # Release receipt inputs. The receipt itself is the release-receipt job
+      # below: it runs only after the readback and the 15-minute confirm passed.
+      - name: Compute release receipt
+        id: receipt
+        if: success() && steps.deploy.outputs.decision == 'deploy'
+        continue-on-error: true
+        shell: bash
+        env:
+          NEW_SHA: ${{ needs.admission.outputs.source_sha }}
+        run: |
+          old="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync("live-baseline-tuple.json","utf8")).application_sha)')"
+          digest="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync("cutover-input/manifest.json","utf8")).image_digests.backend)')"
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW_SHA" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Record outcome
         if: always() && steps.deploy.outputs.decision != 'skip'
         shell: bash
@@ -927,6 +948,25 @@ jobs:
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
           C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
         run: bash deploy/cd/post-deploy-confirm.sh check "$SOURCE_SHA" "$T0" "$RESTARTS" "$OBSERVATION_ID" cutover-input/manifest.json
+
+  # CHE-4937: the release receipt. The signed workflow_job webhook opens the
+  # release issue from the name of this job's step (parsed in
+  # ghrun.ParseReleaseReceipt), so the job exists only when the deploy was real
+  # (not a skip) and the readback and the 15-minute confirm both passed. A
+  # failed or superseded deploy never reaches it, so it can never open a
+  # release issue. No secret and no C00 access: it runs on a hosted runner.
+  release-receipt:
+    needs: [deploy, readback, readback-confirm]
+    if: >-
+      always() && needs.deploy.result == 'success' && needs.deploy.outputs.decision == 'deploy'
+      && needs.readback.result == 'success' && needs.readback-confirm.result == 'success'
+      && needs.deploy.outputs.receipt_old != '' && needs.deploy.outputs.receipt_digest != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: release-receipt old=${{ needs.deploy.outputs.receipt_old }} new=${{ needs.deploy.outputs.receipt_new }} digest=${{ needs.deploy.outputs.receipt_digest }}
+        run: "true"
 
   # CHE-2365, CHE-5175: a failed readback, readback-delay or readback-confirm
   # rolls C00 back by digest to the retained predecessor (a failed delay skips

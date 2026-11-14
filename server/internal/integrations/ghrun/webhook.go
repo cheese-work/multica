@@ -3,6 +3,7 @@ package ghrun
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -50,6 +51,14 @@ type jobDelivery struct {
 		RunAttempt int32  `json:"run_attempt"`
 		Name       string `json:"name"`
 		HeadSHA    string `json:"head_sha"`
+		// The fields below feed ParseReleaseReceipt only.
+		WorkflowName string `json:"workflow_name"`
+		HeadBranch   string `json:"head_branch"`
+		Conclusion   string `json:"conclusion"`
+		Steps        []struct {
+			Name       string `json:"name"`
+			Conclusion string `json:"conclusion"`
+		} `json:"steps"`
 	} `json:"workflow_job"`
 	Repository   deliveryRepository `json:"repository"`
 	Installation struct {
@@ -147,4 +156,53 @@ func jobPhase(action string) int32 {
 		return PhaseCompleted
 	}
 	return 0
+}
+
+// ReleaseReceipt is a verified C00 deploy read from a completed deploy job.
+type ReleaseReceipt struct {
+	InstallationID      int64
+	RepoOwner, RepoName string
+	RunID               int64
+	OldSHA, NewSHA      string
+	Digest              string
+}
+
+// The cd-deploy `release-receipt` job runs after the deploy, the readback and
+// the 15-minute confirm all passed, and names a step with the deployed tuple.
+// The workflow_run payload carries neither the digest nor the skip decision, so
+// this step name is the receipt.
+const (
+	deployWorkflowName = "CD deploy to C00"
+	deployJobName      = "release-receipt"
+	deployBranch       = "main"
+)
+
+var receiptStep = regexp.MustCompile(`^release-receipt old=([0-9a-f]{40}) new=([0-9a-f]{40}) digest=(sha256:[0-9a-f]{64})$`)
+
+// ParseReleaseReceipt reads a completed workflow_job delivery. It reports true
+// only for a successful main-branch `release-receipt` job of the C00 deploy workflow
+// whose receipt step succeeded and names a well-formed old SHA, new SHA and
+// digest. A skipped deploy never runs the receipt step. The job head_sha is not
+// the binding: the receipt is.
+func ParseReleaseReceipt(body []byte) (ReleaseReceipt, bool) {
+	var d jobDelivery
+	if json.Unmarshal(body, &d) != nil || d.Action != "completed" {
+		return ReleaseReceipt{}, false
+	}
+	job, repo := d.WorkflowJob, d.Repository
+	if d.Installation.ID == 0 || job.RunID == 0 || repo.Name == "" || repo.Owner.Login == "" ||
+		job.WorkflowName != deployWorkflowName || job.Name != deployJobName ||
+		job.HeadBranch != deployBranch || job.Conclusion != "success" {
+		return ReleaseReceipt{}, false
+	}
+	for _, step := range job.Steps {
+		if m := receiptStep.FindStringSubmatch(step.Name); m != nil && step.Conclusion == "success" {
+			return ReleaseReceipt{
+				InstallationID: d.Installation.ID,
+				RepoOwner:      strings.ToLower(repo.Owner.Login), RepoName: strings.ToLower(repo.Name),
+				RunID: job.RunID, OldSHA: m[1], NewSHA: m[2], Digest: m[3],
+			}, true
+		}
+	}
+	return ReleaseReceipt{}, false
 }

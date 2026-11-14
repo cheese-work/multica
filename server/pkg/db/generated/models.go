@@ -1651,6 +1651,30 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubReleaseDeploy struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	SourceSha   string             `json:"source_sha"`
+	ImageDigest string             `json:"image_digest"`
+	OldSha      string             `json:"old_sha"`
+	RunID       int64              `json:"run_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	LabeledAt   pgtype.Timestamptz `json:"labeled_at"`
+	ClaimedAt   pgtype.Timestamptz `json:"claimed_at"`
+}
+
+type GithubReleasePending struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	RunID       int64              `json:"run_id"`
+	OldSha      string             `json:"old_sha"`
+	SourceSha   string             `json:"source_sha"`
+	ImageDigest string             `json:"image_digest"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubRouteGrant struct {
 	ProjectID pgtype.UUID        `json:"project_id"`
 	UserID    pgtype.UUID        `json:"user_id"`
