@@ -134,6 +134,9 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 	if err != nil {
 		return db.IssueHandoffDispatch{}, fmt.Errorf("read handoff intent: %w", err)
 	}
+	// The connected-app overlay is built before the transaction opens: it reads
+	// the network and must not hold the row locks.
+	overlay := h.prepareIntentOverlay(ctx, intent)
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.IssueHandoffDispatch{}, err
@@ -150,7 +153,7 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 	if intent.State != handoffPending {
 		return intent, nil
 	}
-	settled, afterCommit, err := h.settleHandoffIntentInTx(ctx, q, intent)
+	settled, afterCommit, err := h.settleHandoffIntentInTx(ctx, q, intent, overlay)
 	if err != nil {
 		return db.IssueHandoffDispatch{}, err
 	}
@@ -160,16 +163,23 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 	if afterCommit != nil {
 		afterCommit()
 	}
-	if settled.State == handoffDispatched {
-		h.settleIntentReceipts(ctx, settled)
-	}
 	return settled, nil
 }
 
 // settleHandoffIntentInTx finds or starts the intent's run and records the
 // outcome on the intent, all with q. The run and its link commit together.
-func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, intent db.IssueHandoffDispatch) (db.IssueHandoffDispatch, func(), error) {
+func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, intent db.IssueHandoffDispatch, overlay *service.PreparedRuntimeMCPOverlay) (db.IssueHandoffDispatch, func(), error) {
+	// The receipts the handoff's write left for the run's agent settle in the
+	// transaction that records the delivery, so a crash cannot leave a delivered
+	// intent with a receipt that triggers a second run.
 	dispatched := func(taskID pgtype.UUID) (db.IssueHandoffDispatch, error) {
+		if agent := h.intentRunAgent(ctx, q, intent); agent.Valid {
+			if err := q.ConsumeHandoffWakeupReceipts(ctx, db.ConsumeHandoffWakeupReceiptsParams{
+				IssueID: intent.IssueID, AgentID: agent, Write: intent.HandoffWrite,
+			}); err != nil {
+				return db.IssueHandoffDispatch{}, fmt.Errorf("settle handoff receipts: %w", err)
+			}
+		}
 		return q.SettleHandoffDispatch(ctx, db.SettleHandoffDispatchParams{ID: intent.ID, State: handoffDispatched, TaskID: taskID})
 	}
 	skipped := func(reason string) (db.IssueHandoffDispatch, func(), error) {
@@ -194,12 +204,7 @@ func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, in
 	}
 	// The run is built as the original write would have built it: the acting
 	// task and the handoff comment ride on the context.
-	if intent.SourceTaskID.Valid {
-		ctx = service.WithActingTask(ctx, intent.SourceTaskID)
-	}
-	if len(intent.ContextCommentIds) > 0 {
-		ctx = service.WithStatusHandoffComment(ctx, intent.ContextCommentIds[0])
-	}
+	ctx = intentRunContext(ctx, intent)
 	th := h.onQueries(q)
 	actorUser := memberActorUserID(intent.ActorType, util.UUIDToString(intent.ActorID))
 	var (
@@ -207,9 +212,9 @@ func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, in
 		after  func()
 	)
 	if intent.TargetType == "squad" {
-		taskID, after, err = th.enqueueSquadLeaderRunAsInTx(ctx, q, issue, pgtype.UUID{}, intent.ActorType, util.UUIDToString(intent.ActorID))
+		taskID, after, err = th.enqueueSquadLeaderRunWithOverlayInTx(ctx, q, issue, pgtype.UUID{}, intent.ActorType, util.UUIDToString(intent.ActorID), overlay)
 	} else {
-		taskID, after, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, issue, pgtype.UUID{}, actorUser, nil)
+		taskID, after, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, issue, pgtype.UUID{}, actorUser, overlay)
 	}
 	switch {
 	case err == nil:
@@ -262,13 +267,29 @@ func (h *Handler) intentRunAgent(ctx context.Context, q *db.Queries, intent db.I
 	return squad.LeaderID
 }
 
-// settleIntentReceipts settles the receipts the handoff's write left for the
-// agent whose run now exists. A receipt left pending delivers the change again:
-// a duplicate, never a loss.
-func (h *Handler) settleIntentReceipts(ctx context.Context, intent db.IssueHandoffDispatch) {
-	agent := h.intentRunAgent(ctx, h.Queries, intent)
-	if !agent.Valid {
-		return
+// prepareIntentOverlay builds, outside any transaction, the connected-app overlay
+// of the run the intent asks for, for an agent target or a squad leader. The
+// run is built as the original write would build it: the acting task and the
+// handoff comment ride on the context. If the assignee changed since, the
+// insert finds the overlay built for another agent and takes none.
+func (h *Handler) prepareIntentOverlay(ctx context.Context, intent db.IssueHandoffDispatch) *service.PreparedRuntimeMCPOverlay {
+	issue, err := h.Queries.GetIssue(ctx, intent.IssueID)
+	if err != nil {
+		return nil
 	}
-	h.consumeHandedWakeups(ctx, intent.IssueID, wakeupHandoff{agent: util.UUIDToString(agent), write: intent.HandoffWrite})
+	agent := h.intentRunAgent(ctx, h.Queries, intent)
+	ctx = intentRunContext(ctx, intent)
+	return h.TaskService.PrepareStatusHandoffRunOverlay(ctx, issue, agent, memberActorUserID(intent.ActorType, util.UUIDToString(intent.ActorID)))
+}
+
+// intentRunContext carries the acting task and the handoff comment of the
+// write the intent records, as the write's own run would have had them.
+func intentRunContext(ctx context.Context, intent db.IssueHandoffDispatch) context.Context {
+	if intent.SourceTaskID.Valid {
+		ctx = service.WithActingTask(ctx, intent.SourceTaskID)
+	}
+	if len(intent.ContextCommentIds) > 0 {
+		ctx = service.WithStatusHandoffComment(ctx, intent.ContextCommentIds[0])
+	}
+	return ctx
 }

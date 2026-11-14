@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -160,6 +162,46 @@ func TestDispatchHandoffIntent_EventWakeupRuleGivesOneRunAndSettlesReceipt(t *te
 	}
 	if n := pendingEventReceipts(t, wakeupID); n != 0 {
 		t.Fatalf("pending receipts = %d, want 0: the change would reach the agent twice", n)
+	}
+}
+
+// A failure while the receipt is settled must not leave the run behind with
+// the receipt unsettled: the run, the receipt and the intent move together, so
+// the retry delivers once and the receipt cannot trigger a second run.
+func TestDispatchHandoffIntent_DeliveryAndReceiptSettleTogether(t *testing.T) {
+	issueID, agentID := handoffDispatchFixture(t)
+	wakeupID := subscribeToIssueEvent(t, issueID, agentID, "issue.status_changed")
+	suffix := strings.ReplaceAll(workflowTestSuffix(), "-", "")
+	fn := "che5486_refuse_fn_" + suffix
+	dbfx.Exec(t, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		RAISE EXCEPTION 'receipt not settled for the test'; END $$`, fn))
+	dbfx.Exec(t, fmt.Sprintf(`CREATE TRIGGER %s BEFORE UPDATE ON issue_wakeup_receipt FOR EACH ROW WHEN (NEW.wakeup_id = '%s' AND NEW.processed_at IS NOT NULL) EXECUTE FUNCTION %s()`, fn, wakeupID, fn))
+	dropTrigger := func() {
+		testPool.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON issue_wakeup_receipt`, fn))
+		testPool.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn))
+	}
+	t.Cleanup(dropTrigger)
+
+	moveIntoHandoffStep(t, issueID, nil)
+
+	intent := wantOneIntent(t, issueID)
+	if runs := pendingStepRuns(t, issueID, agentID); intent.State != "pending" || len(runs) != 0 {
+		t.Fatalf("after the failed receipt settlement: intent = %+v, runs = %d, want a pending intent and no run", intent, len(runs))
+	}
+	if n := pendingEventReceipts(t, wakeupID); n != 1 {
+		t.Fatalf("pending receipts = %d, want 1: the change is still owed", n)
+	}
+
+	dropTrigger()
+	got, err := testHandler.dispatchHandoffIntent(context.Background(), parseUUID(intent.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs := pendingStepRuns(t, issueID, agentID); got.State != handoffDispatched || len(runs) != 1 {
+		t.Fatalf("after the retry: intent = %s, runs = %d, want dispatched with one run", got.State, len(runs))
+	}
+	if n := pendingEventReceipts(t, wakeupID); n != 0 {
+		t.Fatalf("pending receipts after the retry = %d, want 0", n)
 	}
 }
 

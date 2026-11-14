@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -129,12 +130,40 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 	}, nil
 }
 
+// PrepareStatusHandoffRunOverlay builds, outside any transaction, the Composio
+// overlay of the run a status handoff to agentID inserts: the agent is the
+// issue's assignee, or the leader of the squad it is assigned to. The
+// attribution is the one the insert will compute for a handoff (the acting
+// task in ctx, else the actor), so the insert accepts the overlay. Nil means
+// there is nothing to prepare, or that the insert will refuse and report why.
+func (s *TaskService) PrepareStatusHandoffRunOverlay(ctx context.Context, issue db.Issue, agentID, actorUserID pgtype.UUID) *PreparedRuntimeMCPOverlay {
+	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) || !agentID.Valid {
+		return nil
+	}
+	agent, err := s.Queries.GetAgent(ctx, agentID)
+	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return nil
+	}
+	attr, err := s.statusHandoffAttribution(ctx, s.Queries, issue, actorUserID)
+	if err != nil {
+		return nil
+	}
+	if attr, err = s.applyAttributionFallback(ctx, attr, agent); err != nil {
+		return nil
+	}
+	return &preparedRuntimeMCPOverlay{
+		agentID:          agent.ID,
+		originatorUserID: attr.UserID,
+		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
+	}
+}
+
 // EnqueueSquadLeaderRunInTx inserts the squad leader's run an assignment to a
 // squad starts, with the caller's queries. A pending run of the leader on the
 // reviewed head is ErrDuplicatePendingTask, checked under the caller's issue
 // row lock so the insert never trips the unique index. The returned func
 // publishes the run after commit. taskID is as for EnqueueIssueRunInTx.
-func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, triggerCommentID, actorUserID pgtype.UUID) (taskID pgtype.UUID, afterCommit func(), err error) {
+func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (taskID pgtype.UUID, afterCommit func(), err error) {
 	survivor, err := q.PendingTaskForIssueAndAgent(ctx, db.PendingTaskForIssueAndAgentParams{
 		IssueID: issue.ID,
 		AgentID: leaderID,
@@ -146,7 +175,7 @@ func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queri
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return pgtype.UUID{}, nil, fmt.Errorf("check pending leader run: %w", err)
 	}
-	params, attr, err := s.prepareMentionTaskWithQueries(ctx, q, issue, leaderID, triggerCommentID, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived)
+	params, attr, err := s.prepareMentionTaskWithQueriesAndOverlay(ctx, q, issue, leaderID, triggerCommentID, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived, overlay)
 	if err != nil {
 		return pgtype.UUID{}, nil, err
 	}
