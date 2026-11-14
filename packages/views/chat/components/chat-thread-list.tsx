@@ -737,6 +737,12 @@ export function ChatThreadList({
       .map((g) => ({ ...g, label: label[g.key] }));
   }, [visibleSessions, listView, locale, t]);
   const visibleInOrder = useMemo(() => sections.flatMap((g) => g.sessions), [sections]);
+  // computeItemKey is called with the flat index, group headers included
+  // (itemContent gets the item index only), so keys follow that layout.
+  const flatKeys = useMemo(
+    () => sections.flatMap((g) => [`group:${g.key}`, ...g.sessions.map((s) => s.id)]),
+    [sections],
+  );
 
   // Virtuoso needs the real scroll container (the page owns it); until the
   // wrapper has found it, a bounded slice of real rows keeps the first frame
@@ -791,7 +797,7 @@ export function ChatThreadList({
           groupCounts={sections.map((g) => g.sessions.length)}
           groupContent={(i) => renderGroupHeader(sections[i]!)}
           itemContent={(i) => renderRow(visibleInOrder[i]!)}
-          computeItemKey={(i) => visibleInOrder[i]!.id}
+          computeItemKey={(i) => flatKeys[i] ?? i}
           initialItemCount={Math.min(visibleInOrder.length, VIRTUOSO_SEED_COUNT)}
           defaultItemHeight={ROW_HEIGHT_PX}
           increaseViewportBy={{ top: 400, bottom: 400 }}

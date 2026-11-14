@@ -131,4 +131,17 @@ describe("ChatThreadList virtualization", () => {
     expect(counts.reduce((a, b) => a + b, 0)).toBe(300);
     expect(virtuoso.props!.customScrollParent).toBeInstanceOf(HTMLElement);
   });
+
+  // Virtuoso calls computeItemKey with the flat index (headers included) and
+  // itemContent with the item index; the last flat index is past the sessions.
+  it("keys every flat position, headers included, and never reads past the end", () => {
+    renderList(true);
+    const counts = virtuoso.props!.groupCounts as number[];
+    const key = virtuoso.props!.computeItemKey as (i: number) => string | number;
+    const flatLength = 300 + counts.length;
+    const keys = Array.from({ length: flatLength }, (_, i) => key(i));
+    expect(new Set(keys).size).toBe(flatLength);
+    expect(keys.filter((k) => typeof k === "string" && k.startsWith("group:"))).toHaveLength(counts.length);
+    expect(keys[1]).toMatch(/^s\d+$/);
+  });
 });
