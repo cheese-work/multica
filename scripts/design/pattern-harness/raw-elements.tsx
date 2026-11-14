@@ -1,6 +1,6 @@
 // S0b raw-element pages (CHE-5534, S4b-SS1): the real component, seeded with query data, one page per file.
 // Not a pattern: these exist so scripts/design/capture-frame.mjs can screenshot files the S4b audit lists.
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 import { setApiInstance } from "@multica/core/api";
@@ -18,6 +18,15 @@ import { IssueDecisionBanner } from "../../../packages/views/issues/components/i
 import { IssueHierarchy } from "../../../packages/views/issues/components/hierarchy/hierarchy-minimap";
 import { HierarchyDialog } from "../../../packages/views/issues/components/hierarchy/hierarchy-dialog";
 import { WakeupEventRow } from "../../../packages/views/chat/components/wakeup-event-row";
+import { WakeupFields } from "../../../packages/views/issues/components/wakeup-fields";
+import { PillMenu, Segmented, AgentChoice, ActorChoice, AssigneeChoice } from "../../../packages/views/issues/components/wakeup-pickers";
+import { WorkspaceWakeupRules } from "../../../packages/views/settings/components/workspace-wakeup-rules";
+import { ChatSearch } from "../../../packages/views/chat/components/chat-search";
+import { ConfigChangeViewer } from "../../../packages/views/chat/components/config-change-viewer";
+import { WORKSPACE_WAKEUP_SCOPE, wakeupDefinitionsOptions } from "@multica/core/workspace/wakeup-definitions";
+import { chatSearchKeys, useChatSearchStore } from "@multica/core/chat/search";
+import { squadListOptions } from "../../../packages/core/workspace/queries";
+import * as stub from "./workspace-stub"; // the aliased core/workspace/queries the picker components read
 import { ConditionParams } from "../../../packages/views/issues/components/wakeup-condition-params";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
@@ -105,6 +114,7 @@ export function seedRawElements(qc: QueryClient) {
   set(issueDecisionCardsOptions(WS, "iss-5702").queryKey, [card("rq-used", 5702, "answered", {
     answer: { state: "delivered", text: "One frame, grows", option: "One frame, grows" }, record_comment_id: "cm1",
   })]);
+  seedSS2(set);
   for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
 }
 
@@ -190,6 +200,141 @@ export function ConditionParamsPage() {
           <ConditionParams draft={d} scope={scope} update={noop} />
         </div>
       ))}
+    </div>
+  );
+}
+
+// ---- SS2 (CHE-5535): wakeup-fields, wakeup-pickers, workspace-wakeup-rules, chat-search, config-change-viewer ----
+const DEF = (key: string, name: string, instruction: string, trigger: { kind: string; events?: string[] }) => ({
+  scope: "workspace", scope_id: WS, rule_key: key, root: true, revision: "7", updated_at: NOW, redacted: false,
+  config: { v: 1, name, instruction, trigger, target: { type: "agent", id: AGENT }, mode: "once", expiry: { after_seconds: 7 * 86400 } },
+});
+const HIT = (n: number, title: string, snippet: string | null, extra: Record<string, unknown> = {}) => ({
+  session_id: `cs-${n}`, title, agent_id: AGENT, message_id: snippet ? `msg-${n}` : null, snippet: snippet ?? "",
+  updated_at: "2026-11-12T10:20:00Z", archived: false, ...extra,
+});
+
+function seedSS2(set: (key: readonly unknown[], data: unknown) => void) {
+  // wakeup-pickers/-fields import core/workspace/queries through the harness alias (workspace-stub): seed its keys too.
+  set(stub.agentListOptions(WS).queryKey, [{ id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", runtime_id: "rt1", archived_at: null }, { id: "agent-ux", workspace_id: WS, name: "x99-codex-terra", runtime_id: "rt2", archived_at: null }]);
+  set(stub.memberListOptions(WS).queryKey, [{ id: "m1", user_id: "u1", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }]);
+  set(stub.squadListOptions(WS).queryKey, [{ id: "sq1", workspace_id: WS, name: "Design squad", archived_at: null }]);
+  set(squadListOptions(WS).queryKey, [{ id: "sq1", workspace_id: WS, name: "Design squad", archived_at: null }]);
+  set(wakeupDefinitionsOptions(WS, WORKSPACE_WAKEUP_SCOPE).queryKey, {
+    capabilities: { definition_writes: true, trigger_kinds: [], fields: [] },
+    definitions: [
+      DEF("4f1c2d3e-0000-4000-8000-000000000001", "Nudge stalled design reviews", "Check the doop frame for an open Cheese comment and reply in thread.", { kind: "event", events: ["comment.created"] }),
+      DEF("4f1c2d3e-0000-4000-8000-000000000002", "Weekly capture drift check", "Re-run the pattern harness and report any frame that changed.", { kind: "event", events: ["task.completed"] }),
+    ],
+  });
+  useChatSearchStore.setState({ queries: { page: "frame" } });
+  set(chatSearchKeys.query(WS, "frame"), {
+    pages: [{ next_cursor: null, results: [
+      HIT(1, "Reference frame layout", null),
+      HIT(2, "Capture batch SS2", "…add the 1440 and 390 shots to the existing reference frame, labelled with the file path…"),
+      HIT(3, "Patterns page notes", "…each frame note names the pattern id and the source file…", { archived: true }),
+    ] }],
+    pageParams: [null],
+  });
+}
+
+const HIGHLIGHT_ROW = "flex flex-wrap items-center gap-2 py-1.5";
+
+export function WakeupFieldsPage() {
+  const [reply, setReply] = useState<WakeupDraft>(() => draft("reply", { agentId: AGENT, replyActor: { type: "member", id: "u1" }, instruction: "Reply to Cheese's last comment and update the frame." }));
+  const [pr, setPr] = useState<WakeupDraft>(() => draft("pull_request", { agentId: AGENT, prEvent: "merged", mode: "continuous", instruction: "Read the failing check and push a fix to the same PR." }));
+  const [rec, setRec] = useState<WakeupDraft>(() => draft("recurring", { agentId: AGENT, recurrence: "weekdays", instruction: "Summarise open design threads." }));
+  const sc = { workspaceId: WS, issueId: CURRENT.id };
+  const block = (label: string, d: WakeupDraft, set: (d: WakeupDraft) => void) => (
+    <div className="rounded-xl border border-surface-border p-4">
+      <p className="text-caption text-muted-foreground">{label}</p>
+      <WakeupFields draft={d} update={(patch) => set({ ...d, ...patch })} scope={sc} assigneeAgentId={AGENT} />
+    </div>
+  );
+  return (
+    <div className="grid gap-4 p-6 md:grid-cols-3">
+      {block("comment reply (assignee hint)", reply, setReply)}
+      {block("pull request, continuous", pr, setPr)}
+      {block("recurring, until date", rec, setRec)}
+    </div>
+  );
+}
+
+export function WakeupPickersPage() {
+  const [v, setV] = useState("now");
+  const [seg, setSeg] = useState<"once" | "continuous">("continuous");
+  const [agent, setAgent] = useState(AGENT);
+  const [actor, setActor] = useState<WakeupDraft["replyActor"]>({ type: "member", id: "u1" });
+  const [assignee, setAssignee] = useState<WakeupDraft["assignee"]>({ type: "agent", id: AGENT });
+  const open = useRef<HTMLDivElement>(null);
+  // A popup opens after hydration settles, like the PillMenu pattern page.
+  useEffect(() => { const t = setTimeout(() => open.current?.querySelector<HTMLElement>("button")?.click(), 300); return () => clearTimeout(t); }, []);
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>PillMenu, value chosen / placeholder</Label>
+      <div className={HIGHLIGHT_ROW}>
+        <PillMenu label="Wake" value={v} options={[{ value: "now", label: "Right away" }, { value: "hour", label: "In 1 hour" }]} onChange={setV} />
+        <PillMenu label="Condition" value="" options={[]} placeholder="Choose condition" onChange={noop} />
+      </div>
+      <Label>Segmented</Label>
+      <Segmented label="Trigger count" value={seg} options={[{ value: "once", label: "Once" }, { value: "continuous", label: "Every time" }]} onChange={setSeg} />
+      <Label>ActorChoice / AssigneeChoice (closed)</Label>
+      <div className={HIGHLIGHT_ROW}>
+        <ActorChoice workspaceId={WS} value={actor} onChange={setActor} />
+        <AssigneeChoice workspaceId={WS} value={assignee} onChange={setAssignee} />
+      </div>
+      <Label>AgentChoice (open, searchable)</Label>
+      <div ref={open} className="min-h-56"><AgentChoice workspaceId={WS} value={agent} onChange={setAgent} placeholder="Choose agent" /></div>
+    </div>
+  );
+}
+
+export function WorkspaceWakeupRulesPage() {
+  return (
+    <div className="max-w-[720px] p-6">
+      <WorkspaceWakeupRules workspaceId={WS} canManage />
+    </div>
+  );
+}
+
+export function ChatSearchPage() {
+  const sessions = [{ id: "cs-2", agent_id: AGENT, title: "Capture batch SS2", pinned: false }];
+  return (
+    <div className="w-[360px] p-6">
+      <ChatSearch
+        scope="page"
+        sessions={sessions as never}
+        agents={[{ id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", archived_at: null }] as never}
+        activeSessionId="cs-2"
+        onOpenHit={noop}
+        onUnarchive={noop}
+        onTogglePin={noop}
+        onArchive={noop}
+      >
+        <p className="px-2 py-1.5 text-caption text-muted-foreground">Chat list shows here while the field is empty.</p>
+      </ChatSearch>
+    </div>
+  );
+}
+
+const CHANGE = {
+  field: "agent.instructions", target_id: "96744546-f5b7-462f-bfee-8816d42cd031", keys: ["instructions"],
+  diff_kind: "text", sha256: "0".repeat(64), before_sha256: "1".repeat(64), after_sha256: "2".repeat(64),
+  meta: { unit: "code_points", chars_before: 1204, chars_after: 1312 },
+  diff: [{ old_start: 4, new_start: 4, lines: [" ## Writes", "-Read the frame first.", "+Read the frame first and pass its updatedAt with every write.", " After one refusal, re-read and retry once."] }],
+  after: "## Writes\nRead the frame first and pass its updatedAt with every write.\nAfter one refusal, re-read and retry once.",
+};
+
+export function ConfigChangeViewerPage() {
+  const tab = (name: string) => (root: HTMLElement) => root.querySelector<HTMLElement>(`[data-testid=config-change-tab-${name}]`);
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>collapsed</Label>
+      <ConfigChangeViewer change={CHANGE as never} />
+      <Label>Changes tab open</Label>
+      <After pick={tab("changes")}><ConfigChangeViewer change={CHANGE as never} /></After>
+      <Label>Result tab open</Label>
+      <After pick={tab("result")}><ConfigChangeViewer change={{ ...CHANGE, field: "workspace.settings" } as never} /></After>
     </div>
   );
 }

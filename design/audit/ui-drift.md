@@ -278,11 +278,11 @@ Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element 
 3. `issues/components/hierarchy/hierarchy-minimap.tsx` (batch 2, S4b) — captured (CHE-5534)
 4. `chat/components/wakeup-event-row.tsx` (batch 2, S4b) — captured (CHE-5534)
 5. `issues/components/wakeup-condition-params.tsx` (batch 2, S4b) — captured (CHE-5534)
-6. `issues/components/wakeup-fields.tsx` (batch 2, S4b)
-7. `issues/components/wakeup-pickers.tsx` (batch 2, S4b)
-8. `settings/components/workspace-wakeup-rules.tsx` (batch 2, S4b)
-9. `chat/components/chat-search.tsx` (batch 2, S4b)
-10. `chat/components/config-change-viewer.tsx` (batch 2, S4b)
+6. `issues/components/wakeup-fields.tsx` (batch 2, S4b) — captured (CHE-5535)
+7. `issues/components/wakeup-pickers.tsx` (batch 2, S4b) — captured (CHE-5535)
+8. `settings/components/workspace-wakeup-rules.tsx` (batch 2, S4b) — captured (CHE-5535)
+9. `chat/components/chat-search.tsx` (batch 2, S4b) — captured (CHE-5535)
+10. `chat/components/config-change-viewer.tsx` (batch 2, S4b) — captured (CHE-5535)
 11. `chat/components/decision-artifacts.tsx` (batch 2, S4b)
 12. `chat/components/decision-request-card.tsx` (batch 2, S4b)
 13. `chat/components/needs-you-list.tsx` (batch 2, S4b)
@@ -309,4 +309,4 @@ Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element 
 34. `rich-content/next-self-mention.tsx` (batch 4, S4b)
 35. `workflows/project-workflow-menu.tsx` (batch 4, S4b)
 
-Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5.
+Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5. CHE-5535 (S4b-SS2) captured 5 more: items 6 to 10. 10 of 35 captured.

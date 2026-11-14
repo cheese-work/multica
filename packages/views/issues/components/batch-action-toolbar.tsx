@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { useQuery } from "@tanstack/react-query";
+import { useIssueDeletion } from "@multica/core/issues/use-issue-deletion";
 import type { BatchUpdateIssuesResponse, Issue, UpdateIssueRequest } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { commonIssueFields } from "@multica/core/issues/batch";
@@ -109,6 +110,8 @@ export function BatchActionToolbar({
     return first && selectedIssues.every((i) => i.project_id === first) ? first : null;
   }, [selectedIssues]);
   const wsId = useWorkspaceId();
+  const { canDelete } = useIssueDeletion(wsId);
+  const canDeleteSelection = selectedIssues.every(canDelete);
   const { workflows, isLoaded: workflowsLoaded, retry: retryWorkflows } = useIssueWorkflows(wsId);
   // The projects tell which workflow each selected issue follows, so a selection
   // with any project issue needs them, whether or not it shares one project.
@@ -314,6 +317,7 @@ export function BatchActionToolbar({
   };
 
   const handleBatchDelete = async () => {
+    if (!canDeleteSelection) return;
     try {
       if (surfaceActions) {
         await surfaceActions.batchDelete(ids);
@@ -391,7 +395,8 @@ export function BatchActionToolbar({
         <Button
           variant="ghost"
           size="sm"
-          disabled={loading}
+          disabled={loading || !canDeleteSelection}
+          title={!canDeleteSelection ? t(($) => $.batch.delete_restricted) : undefined}
           onClick={() => setDeleteOpen(true)}
           className="text-destructive hover:text-destructive"
         >
@@ -418,14 +423,12 @@ export function BatchActionToolbar({
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t(($) => $.batch.delete_dialog_desc, { count })}
-              <span className="mt-2 block text-caption text-muted-foreground">
-                {t(($) => $.batch.delete_dialog_warning)}
-              </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t(($) => $.batch.cancel)}</AlertDialogCancel>
             <AlertDialogAction
+              disabled={loading || !canDeleteSelection}
               onClick={handleBatchDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

@@ -19,7 +19,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "层级画布（已缩小）",
     "canvas_cards": "层级画布（已放大）",
-    "dialog_description": "平移和缩放层级。打开事项即可跳转。",
+    "dialog_description": "逐层浏览层级。打开事项即可跳转。",
+    "step_in": "进入下一层",
+    "step_out": "返回上一层",
+    "depth": "第 {{depth}} / {{max}} 层",
+    "depth_announce": "第 {{depth}} 层，共 {{max}} 层，{{count}} 张卡片，其中 {{withChildren}} 张有子项",
+    "more_cards": "另有 {{count}} 个",
+    "more_cards_pending": "另有 {{count}}+ 个，仍在加载",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − 切换层级 · 方向键移动 · 回车打开 · 空格进入或返回 · Esc 返回上一层",
+    "canvas_focus": "层级画布，第 {{depth}} 层",
     "zoom_in": "放大",
     "zoom_out": "缩小",
     "zoom_level": "缩放 {{percent}}%",
@@ -1011,6 +1020,7 @@
     "confirm": "停止运行"
   },
   "batch": {
+    "delete_restricted": "你可以删除本人或本人拥有的智能体创建的任务。工作区 owner 和 admin 可以删除任意任务。",
     "selected": "已选择 {{count}} 个",
     "status": "状态",
     "priority": "优先级",
@@ -1028,7 +1038,6 @@
     "delete_failed": "删除任务失败",
     "delete_dialog_title_other": "删除 {{count}} 个任务？",
     "delete_dialog_desc_other": "此操作无法撤销，所选任务及其全部关联数据都会被永久删除。",
-    "delete_dialog_warning": "任何工作区成员都可以删除任务。",
     "cancel": "取消"
   },
   "card": {

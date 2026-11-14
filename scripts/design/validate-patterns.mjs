@@ -40,12 +40,13 @@ function approvedRows(designMd) {
 const hasToken = (cell, token) => cell.split(/[^\w-]+/).includes(token);
 const isList = (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && x);
 
-function checkFrame(id, frame, rows, errors, warnings) {
+function checkFrame(id, frame, rows, errors, warnings, status) {
   if (!frame || typeof frame !== "object") return errors.push(`${id}: frame is required`);
   const extra = (allowed) => Object.keys(frame).filter((k) => !allowed.includes(k));
   switch (frame.state) {
     case "pending":
-      warnings.push(`${id}: frame.state pending (allowed until S4b)`);
+      if (status === "active") errors.push(`${id}: frame.state pending is not allowed on an active entry (capture its frame)`);
+      else warnings.push(`${id}: frame.state pending (allowed on deprecated entries)`);
       for (const k of extra(["state"])) errors.push(`${id}: frame.state pending allows no other field (found ${k})`);
       break;
     case "locked": {
@@ -87,7 +88,7 @@ function checkEntry(e, ctx, errors, warnings) {
     if (!m) errors.push(`${id}: copy.${name} must be <namespace>:<key>, got ${key}`);
     else if (!ctx.i18nHas(m[1], m[2])) errors.push(`${id}: copy.${name} i18n key not found in en locale: ${key}`);
   }
-  checkFrame(id, e.frame, ctx.rows, errors, warnings);
+  checkFrame(id, e.frame, ctx.rows, errors, warnings, e.status);
 }
 
 export function validatePatterns({ entries, base = null, designMd, pathExists, i18nHas }) {
@@ -149,7 +150,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const { errors, warnings, count } = validateRepo(resolve(import.meta.dirname, "../.."), { baseRef });
   // One plain line, not a `warning:` line per entry: the CI warning budget fails on any new warning signature.
   const pending = warnings.map((w) => w.split(":")[0]);
-  if (pending.length) console.log(`pending frames (allowed until S4b): ${pending.join(", ")}`);
+  if (pending.length) console.log(`pending frames (deprecated entries only): ${pending.join(", ")}`);
   for (const e of errors) console.error(`error: ${e}`);
   console.log(`${LEDGER}: ${count} entries, ${errors.length} errors, ${warnings.length} warnings`);
   process.exit(errors.length ? 1 : 0);

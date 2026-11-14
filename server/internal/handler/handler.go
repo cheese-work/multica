@@ -643,6 +643,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
+	service.SetOnWeeklyRunGuardTripped(h.onWeeklyRunGuardTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
