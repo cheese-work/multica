@@ -60,6 +60,10 @@ type TaskService struct {
 	Wakeup           TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
+	// MergeFacts is the facts source every wakeup service built on this task
+	// service reads when it judges a merge_eligibility candidate, so the claim
+	// and start checks in the daemon handler see what the scheduler saw.
+	MergeFacts MergeFactsSource
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
 	// moves the issue along an edge whose guard holds, or reschedules or drops
 	// the watch. Nil leaves the watches untouched.

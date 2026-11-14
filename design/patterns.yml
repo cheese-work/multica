@@ -8,7 +8,7 @@
   copy: {error: "chat:needs_you.error", action: "chat:needs_you.retry"}
   surfaces: ["chat-search", "chat-session-stats-dialog", "decision-artifacts", "needs-you-list", "plan-revision-viewer", "issue-decision-banner", "media-page", "machine-pause-card", "batch-handoff-confirm-dialog"]
   open: "S3 item 1: collapse the other Retry and Try again keys (15 keys) onto one label."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=mA8N3kWUmL"}
 - id: inline-notice
   intent: "Warning, muted, success or destructive notice box."
   origin: fork
@@ -16,7 +16,7 @@
   components: ["packages/ui/components/ui/alert.tsx"]
   surfaces: ["interactive-login-banner", "status-summary", "wakeup-fields", "wakeups-paused-banner", "wakeups-tab", "workspace-wakeup-rules", "workflow-budget-request-banner"]
   open: "Alert has default and destructive tones only. Decide warning, muted and success tone values before any change to Alert."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=UYfeQwU9vI"}
 - id: integration-tab
   intent: "Settings tab for one chat integration: provider card, installation row, bot row, loading/empty/not-enabled states, disconnect dialog."
   origin: fork
@@ -25,14 +25,14 @@
   copy: {revoked: "settings:slack.revoked_badge", installed: "settings:slack.installed_at_label", not_enabled: "settings:slack.not_enabled_title", empty: "settings:slack.empty_title", disconnected: "settings:slack.toast_disconnected"}
   surfaces: ["integrations-tab", "dingtalk-tab", "lark-tab", "slack-tab", "telegram-tab", "wecom-tab"]
   build: "One shared integration tab (copied 5 times). S3 items 3 to 8 merge the 5 duplicated keys."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=IiowtxABGu"}
 - id: diff-dialog
   intent: "Dialog or panel with diff hunks."
   origin: fork
   status: active
   components: ["packages/views/chat/components/diff-hunks.tsx", "packages/ui/components/ui/tabs.tsx", "packages/ui/components/ui/collapsible.tsx"]
   surfaces: ["config-change-viewer", "decision-artifacts", "diff-hunks", "plan-revision-viewer", "attachment-revision-diff"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=apLCi-H0lg"}
 - id: property-picker
   intent: "Popover picker for one property."
   origin: fork
@@ -47,7 +47,7 @@
   components: []
   surfaces: ["decision-recent-runs", "decision-request-card", "use-dm-session-surface", "plan-revision-viewer", "issue-decision-banner"]
   build: "One shared ICT formatter (6 local copies; 5 use Asia/Bangkok, 1 uses Asia/Ho_Chi_Minh). The literal ' ICT' in decision-recent-runs moves to a locale key."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=dxCUb6csKP"}
 - id: lazy-detail
   intent: "Suspense wrapper with a null fallback for a lazy surface."
   origin: fork
@@ -146,7 +146,7 @@
   copy: {title: "runtimes:machine_pause.title"}
   surfaces: ["machine-pause-banner", "workspace-pause-banner", "machine-pause-card"]
   build: "One shared banner (2 opacity sets today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=leNqyjL3on"}
 - id: run-budget
   intent: "Meter for a budget or a context window."
   origin: fork
@@ -154,7 +154,7 @@
   components: ["packages/ui/components/ui/progress.tsx", "packages/views/issues/components/progress-ring.tsx"]
   surfaces: ["chat-context-meter", "decision-recent-runs", "run-budget-meter"]
   open: "Use role=meter."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=RVrN9fCE-8"}
 - id: attachment-card-list
   intent: "Attachment cards with a revision badge."
   origin: fork
@@ -163,7 +163,7 @@
   copy: {badge: "issues:deliverables.version_short"}
   surfaces: ["decision-artifacts", "attachment-list"]
   open: "S3 item 9: retire attachment_revision.badge."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1mMP-9owTU"}
 - id: wakeup-rule-form
   intent: "Instruction, enable switch, 4000-byte limit and 409 message for a wakeup rule."
   origin: fork
@@ -172,7 +172,7 @@
   copy: {invalid: "issues:wakeups.instruction_invalid", conflict: "issues:wakeups.conflict_error"}
   surfaces: ["issue-wakeup-defaults", "workspace-wakeup-rules"]
   build: "One form shared by issue and settings (2 copies, 2 namespaces)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=_wRWCO-9QT"}
 - id: settings-number-row
   intent: "Number input with inline error."
   origin: fork
@@ -180,7 +180,7 @@
   components: ["packages/views/settings/components/auto-compact-tokens-row.tsx"]
   surfaces: ["agent-auto-compact-section", "auto-compact-tokens-row"]
   open: "3 copies today."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=aOAZfkP9LP"}
 - id: integration-card-grid
   intent: "Card for a connectable app with a status."
   origin: fork

@@ -166,6 +166,7 @@ var concurrentIndexCleanups = map[string]string{
 	"99961_browser_profile_name_idx":                            "browser_profile_workspace_name_uidx",
 	"99962_browser_instance_name_idx":                           "browser_instance_workspace_name_uidx",
 	"99963_browser_lease_one_holder_idx":                        "browser_lease_one_holder_uidx",
+	"99973_system1_epoch_open_idx":                              "system1_epoch_open",
 	"99964_browser_lease_epoch_idx":                             "browser_lease_instance_epoch_uidx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",

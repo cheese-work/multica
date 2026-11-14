@@ -279,6 +279,23 @@ type AskGuardEvent struct {
 	MemberID           pgtype.UUID        `json:"member_id"`
 	ClearedAt          pgtype.Timestamptz `json:"cleared_at"`
 	ClearedByRequestID pgtype.UUID        `json:"cleared_by_request_id"`
+	SourceText         pgtype.Text        `json:"source_text"`
+	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
+	RepairReason       pgtype.Text        `json:"repair_reason"`
+}
+
+type AskRecoveryNotice struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	MemberID      pgtype.UUID        `json:"member_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	State         string             `json:"state"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	AnsweredAt    pgtype.Timestamptz `json:"answered_at"`
 }
 
 type Attachment struct {
@@ -3385,6 +3402,16 @@ type SysCronExecution struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type System1Epoch struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Scope            string             `json:"scope"`
+	PredictorID      string             `json:"predictor_id"`
+	PredictorVersion string             `json:"predictor_version"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	DemotedAt        pgtype.Timestamptz `json:"demoted_at"`
+}
+
 type System1Label struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -3398,6 +3425,18 @@ type System1Label struct {
 	TaskID        pgtype.UUID        `json:"task_id"`
 	AgentID       pgtype.UUID        `json:"agent_id"`
 	Supersedes    pgtype.UUID        `json:"supersedes"`
+}
+
+type System1LabelSample struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	Kind           string             `json:"kind"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	Seed           int64              `json:"seed"`
+	ObservationIds []pgtype.UUID      `json:"observation_ids"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type System1Observation struct {
@@ -3607,9 +3646,10 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone          pgtype.Text `json:"timezone"`
-	SessionGeneration int32       `json:"session_generation"`
-	PasskeyState      string      `json:"passkey_state"`
+	Timezone            pgtype.Text `json:"timezone"`
+	SessionGeneration   int32       `json:"session_generation"`
+	PasskeyState        string      `json:"passkey_state"`
+	WhatsNewSeenVersion pgtype.Text `json:"whats_new_seen_version"`
 }
 
 type UserComposioConnection struct {

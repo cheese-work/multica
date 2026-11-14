@@ -14,6 +14,7 @@
     "issues": "タスク",
     "autopilots": "オートパイロット",
     "chats": "チャット",
+    "messages": "メッセージ",
     "skills": "スキル",
     "cancelled": "キャンセル済み",
     "recent": "最近の項目",
@@ -130,7 +131,9 @@
     "no_results": "結果が見つかりません。",
     "no_labels": "ラベルがありません",
     "type_to_find_issue": "入力してタスクを検索",
-    "type_to_find_people": "入力してメンバーとエージェントを検索"
+    "type_to_find_people": "入力してメンバーとエージェントを検索",
+    "no_results_for": "「{{query}}」の結果はありません",
+    "no_results_hint": "別のキーワードをお試しください。"
   },
   "delegate": {
     "heading": "エージェントに依頼",
@@ -164,9 +167,26 @@
     "back": "戻る",
     "prefix_commands": "コマンド",
     "prefix_issues": "タスク",
-    "prefix_people": "メンバーとエージェント"
+    "prefix_people": "メンバーとエージェント",
+    "add_filter": "フィルターを追加",
+    "remove_filter": "フィルターを外す"
   },
   "trigger": {
     "label": "検索..."
+  },
+  "messages": {
+    "untitled": "無題のチャット",
+    "searching": "メッセージを検索中…",
+    "error_title": "メッセージ内容を検索できませんでした",
+    "error_failed": "サーバーでエラーが発生しました。チャットはタイトルで絞り込めます。",
+    "error_timed_out": "検索に時間がかかりすぎました。チャットはタイトルで絞り込めます。",
+    "retry": "再試行",
+    "offline_title": "オフラインです",
+    "offline_body_other": "保存済みの {{count}} 件のチャットをタイトルでのみ検索します。メッセージ内容は検索しません。"
+  },
+  "chips": {
+    "agent": "エージェント: {{name}}",
+    "active": "適用中のフィルター: {{names}}",
+    "none": "フィルターなし"
   }
 }

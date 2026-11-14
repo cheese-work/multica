@@ -1312,11 +1312,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// Timeline entries are written with the rule's changes and published only
 	// once they commit.
 	var activities []wakeupActivity
+	var polled []db.AgentTaskQueue // queued merge runs the condition poll withdrew
 	commit := func() error {
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 		s.publishWakeupActivities(activities...)
+		s.publishWithdrawn(ctx, polled)
 		return nil
 	}
 	note := func(action string, details map[string]any) error {
@@ -1368,7 +1370,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// one condition.met input; a rule that ended only drops the hints.
 	if len(w.Condition) > 0 {
 		if w.Enabled && !timedOut {
-			if next, err = s.pollCondition(ctx, tx, q, w, now); err != nil {
+			if next, polled, err = s.pollCondition(ctx, tx, q, w, now); err != nil {
 				return err
 			}
 		} else if _, _, err = consumeConditionHints(ctx, tx, w.ID); err != nil {
@@ -1769,6 +1771,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if custom != nil {
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
 		}
+		if isMergeEligibilityCondition(w.Condition) {
+			taskContext["wakeup_merge"] = true // the candidate is judged again at claim and start
+		}
 		if heartbeatFP != "" {
 			taskContext[wakeupFingerprintKey] = heartbeatFP
 		}
@@ -2027,6 +2032,11 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 	if isDefaultDerivedWakeup(w) {
 		return s.checkCustomClaim(ctx, task, w)
 	}
+	if isMergeEligibilityCondition(w.Condition) {
+		if err := s.checkMergeClaim(ctx, task, w); err != nil {
+			return err
+		}
+	}
 	agent, err := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrWakeupForbidden
@@ -2046,12 +2056,13 @@ func (s *IssueWakeupService) CheckStart(ctx context.Context, task db.AgentTaskQu
 	var source struct {
 		System string         `json:"wakeup_system"`
 		Custom bool           `json:"wakeup_custom"`
+		Merge  bool           `json:"wakeup_merge"`
 		Joined []joinedWakeup `json:"wakeup_joined"`
 	}
 	if task.StartedAt.Valid || task.Status == "running" || json.Unmarshal(task.Context, &source) != nil {
 		return nil
 	}
-	if source.System != "" || source.Custom {
+	if source.System != "" || source.Custom || source.Merge {
 		if err := s.CheckClaim(ctx, task); err != nil {
 			return err
 		}

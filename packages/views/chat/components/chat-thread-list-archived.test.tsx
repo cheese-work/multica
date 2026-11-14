@@ -35,6 +35,8 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useSetChatSessionPinned: () => ({ mutate: pinMutate, mutateAsync: vi.fn(), isPending: false }),
   useMarkChatSessionUnread: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useMarkChatSessionRead: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useUpdateChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: vi.fn(), mutateAsync: archiveAsync, isPending: false }),
 }));
 vi.mock("@multica/core/chat/attention-mutations", () => {
@@ -123,8 +125,6 @@ describe("ChatThreadList archived view", () => {
     openArchivedView();
     const list = within(screen.getByTestId("chat-thread-group-archived"));
     expect(list.queryByLabelText(enChat.list.pinned)).not.toBeInTheDocument();
-    expect(list.queryByRole("button", { name: enChat.list.pin })).not.toBeInTheDocument();
-    expect(list.queryByRole("button", { name: enChat.list.unpin })).not.toBeInTheDocument();
     const rows = screen.getAllByRole("button", { name: enChat.list.row_actions_aria });
     fireEvent.click(rows[0]!);
     const menu = await screen.findAllByRole("menuitem");
@@ -136,7 +136,8 @@ describe("ChatThreadList archived view", () => {
     archiveAsync.mockResolvedValue(undefined);
     openArchivedView();
 
-    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.unarchive })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[0]!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${enChat.list.unarchive}`) }));
 
     await waitFor(() =>
       expect(archiveAsync).toHaveBeenCalledWith({ sessionId: "new-plain", archived: false }),
@@ -145,7 +146,7 @@ describe("ChatThreadList archived view", () => {
     expect(pinMutate).not.toHaveBeenCalled();
   });
 
-  it("keeps the pin icon and Pin item on an active row", () => {
+  it("keeps the pin icon and Pin item on an active row", async () => {
     const pinned = [makeSession({ id: "live", pinned: true })];
     render(
       <I18nProvider locale="en" resources={{ en: { chat: enChat, issues: enIssues } }}>
@@ -160,6 +161,9 @@ describe("ChatThreadList archived view", () => {
     );
     const row = screen.getByText("Chat live").closest("[tabindex]") as HTMLElement;
     expect(within(row).getByLabelText(enChat.list.pinned)).toBeInTheDocument();
-    expect(within(row).getByRole("button", { name: enChat.list.unpin })).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("button", { name: enChat.list.row_actions_aria }));
+    expect(
+      await screen.findByRole("menuitem", { name: new RegExp(`^${enChat.list.unpin}`) }),
+    ).toBeInTheDocument();
   });
 });

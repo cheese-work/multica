@@ -10,35 +10,46 @@ import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
+import { memberListOptions } from "@multica/core/workspace/queries";
+import { openDecisionRequestsOptions } from "@multica/core/chat/queries";
+import { runtimeListOptions } from "@multica/core/runtimes/queries";
+import { runBudgetKeys } from "@multica/core/run-budget";
+import { issueWakeupsOptions } from "@multica/core/issues/wakeups";
+import { MachinePauseBanner } from "../../../packages/views/layout/machine-pause-banner";
+import { RunBudgetMeter } from "../../../packages/views/issues/components/run-budget-meter";
+import { AttachmentList } from "../../../packages/views/issues/components/attachment-list";
+import { WakeupInstructionEditor } from "../../../packages/views/issues/components/wakeup-instruction-editor";
+import { AutoCompactTokensRow } from "../../../packages/views/settings/components/auto-compact-tokens-row";
 import { getApi, setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { useT } from "../../../packages/views/i18n";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { Input } from "@multica/ui/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
+import { Card, CardContent } from "@multica/ui/components/ui/card";
+import { Spinner } from "@multica/ui/components/ui/spinner";
+import { Input } from "@multica/ui/components/ui/input";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@multica/ui/components/ui/field";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { DecisionActionApproval } from "../../../packages/views/common/decision-action-approval";
 import { DescriptionDisclosure } from "../../../packages/views/issues/components/description-disclosure";
 import { RunBudgetChip } from "../../../packages/views/issues/components/run-budget-chip";
-import { Spinner } from "@multica/ui/components/ui/spinner";
 import { Label } from "@multica/ui/components/ui/label";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
+import { HunksRegion } from "../../../packages/views/chat/components/diff-hunks";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@multica/ui/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { cn } from "@multica/ui/lib/utils";
 import { SettingsCard, SettingsRow, SettingsSection } from "../../../packages/views/settings/components/settings-layout";
 import { PillMenu } from "../../../packages/views/issues/components/wakeup-pickers";
 import {
-  Archive, TriangleAlert, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
+  Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2, TriangleAlert,
 } from "@multica/ui/icons";
-import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
 import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
 import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
@@ -73,6 +84,48 @@ const nav = {
 qc.setQueryData(issueListOptions(WS).queryKey, {
   byStatus: { [STATUS_ORDER[0]!]: { issues: ISSUES, total: ISSUES.length } },
 });
+
+const MIN = 60_000;
+const runtime = (id: string, name: string, daemon: string, tasks: number, pause: object | null) => ({
+  id, workspace_id: WS, daemon_id: daemon, name, runtime_mode: "local", provider: "claude", launch_header: "",
+  status: "online", device_info: "Linux x86_64", metadata: {}, owner_id: "u-owner", visibility: "private",
+  pause, daemon_running_tasks: tasks, last_seen_at: new Date().toISOString(),
+  created_at: "2026-11-01T00:00:00Z", updated_at: new Date().toISOString(),
+});
+const paused = (reason: string, inMin: number) => ({
+  reason, paused_by: "u-owner", paused_at: new Date(Date.now() - 10 * MIN).toISOString(),
+  expires_at: new Date(Date.now() + inMin * MIN).toISOString(),
+});
+qc.setQueryData(runtimeListOptions(WS).queryKey, [
+  runtime("r1", "x99 (Claude)", "d-x99", 3, paused("maintenance", 42)),
+  runtime("r2", "c00 (Codex)", "d-c00", 0, paused("incident", 3)),
+]);
+qc.setQueryData(memberListOptions(WS).queryKey, [
+  { id: "m1", workspace_id: WS, user_id: "u-owner", role: "owner", created_at: "2026-09-01T00:00:00Z", name: "Cheese", email: "cheese@example.com", avatar_url: null },
+]);
+qc.setQueryData(openDecisionRequestsOptions(WS).queryKey, []);
+const budget = (used: number, left: number, state: string, canRaise: boolean) => ({
+  budgeted: true, runsUsed: used, runsLeft: left, runsLimit: 20, state, windowId: "w1",
+  windowStartedAt: "2026-11-13T00:00:00Z", blocking: [], canRaise,
+  raisePreview: canRaise ? { addRuns: 10, limitAfter: 30 } : null,
+});
+qc.setQueryData(runBudgetKeys.issue(WS, "b-ok"), budget(8, 12, "ok", true));
+qc.setQueryData(runBudgetKeys.issue(WS, "b-near"), budget(17, 3, "near", true));
+qc.setQueryData(runBudgetKeys.issue(WS, "b-limit"), budget(20, 0, "at_limit", false));
+qc.setQueryData(issueWakeupsOptions(WS, "i-wake").queryKey, [{
+  id: "w1", issue_id: "i-wake", agent_id: "a1", agent_name: "x99-claude-sonnet-design",
+  instruction: "Check the PR for CI results and post the verdict on the issue.", kind: "event", mode: "once",
+  event_types: ["pr.checks"], filter_agent_id: null, filter_task_id: null, interval_seconds: null, cron_expression: null,
+  timezone: "Asia/Bangkok", next_fire_at: null, enabled: true, revision: 3, disabled_at: null, last_task_id: null, last_error: null,
+}]);
+
+// Runs after the first paint: click, type, submit. Virtual time in the capture makes the delays free.
+const drive = (...steps: Array<() => void>) => steps.forEach((step, i) => setTimeout(step, 400 * (i + 1)));
+const typeInto = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+};
 
 const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="flex items-center gap-4 py-2">
@@ -141,6 +194,62 @@ function IssueMentionChip() {
       </div>
       <p className="mt-4 text-body">Unresolved issue falls back: <IssueChip issueId="deleted-issue-id" fallbackLabel="CHE-0000" /></p>
     </div>
+  );
+}
+
+const bar = (children: React.ReactNode) => <div className="p-6 max-w-[760px]">{children}</div>;
+const Pad = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <section className="mb-6"><p className="mb-2 text-caption text-muted-foreground">{label}</p>{children}</section>
+);
+
+const PauseBanner = () => bar(<div className="-mx-3 -mt-3"><MachinePauseBanner /></div>);
+
+const RunBudget = () => bar(
+  <div className="w-[260px]">
+    <Pad label="ok, 8 of 20"><RunBudgetMeter issueId="b-ok" /></Pad>
+    <Pad label="near the limit (80 %)"><RunBudgetMeter issueId="b-near" /></Pad>
+    <Pad label="exhausted"><RunBudgetMeter issueId="b-limit" /></Pad>
+  </div>,
+);
+
+const att = (id: string, filename: string, content_type: string, size_bytes: number, revision = 1, revision_of: string | null = null) => ({
+  id, workspace_id: WS, issue_id: "i1", comment_id: null, chat_session_id: null, chat_message_id: null,
+  uploader_type: "agent", uploader_id: "a1", filename, url: `https://files.example/${id}`,
+  download_url: `https://files.example/${id}`, markdown_url: `https://files.example/${id}`,
+  content_type, size_bytes, created_at: "2026-11-13T09:00:00Z", revision, revision_of,
+});
+const ATTACHMENTS = [
+  att("a1", "CHE-5529-patterns-report.html", "text/html", 48_213),
+  att("a2", "release-notes.md", "text/markdown", 3_120, 3, "a2-prev"),
+  att("a2-prev", "release-notes.md", "text/markdown", 2_900, 2),
+  att("a3", "capture-frame.log", "text/plain", 912),
+  att("a4", "design-review.pdf", "application/pdf", 1_204_551),
+];
+const AttachmentCards = () => bar(<AttachmentList attachments={ATTACHMENTS as never} />);
+
+function WakeupRuleForm() {
+  useEffect(() => drive(
+    () => document.querySelector<HTMLButtonElement>("#root button")?.click(),
+    () => {
+      const area = document.querySelector<HTMLTextAreaElement>("form textarea");
+      if (area) typeInto(area, "");
+    },
+    () => document.querySelector<HTMLButtonElement>("form button[type=submit]")?.click(),
+  ), []);
+  return bar(<WakeupInstructionEditor workspaceId={WS} issueId="i-wake" wakeupId="w1" />);
+}
+
+function SettingsNumberRow() {
+  useEffect(() => drive(() => {
+    const input = document.querySelector<HTMLInputElement>("input[name=hard]");
+    if (input) typeInto(input, "9999999");
+  }), []);
+  const common = { min: 1000, max: 1_000_000, disabled: false, invalidText: "Enter a whole number from 1,000 to 1,000,000.", onSave: async () => {} };
+  return bar(
+    <div className="divide-y rounded-lg border">
+      <AutoCompactTokensRow {...common} label="Soft limit (tokens)" name="soft" saved={150_000} />
+      <AutoCompactTokensRow {...common} label="Hard limit (tokens)" name="hard" saved={200_000} />
+    </div>,
   );
 }
 
@@ -551,6 +660,105 @@ function PillMenuDemo() {
   );
 }
 
+function InlineRetry() {
+  const { t } = useT("chat");
+  return (
+    <div className="p-6 max-w-[560px]">
+      <Row label="needs-you list error">
+        <p className="text-caption text-destructive">{t(($) => $.needs_you.error)}</p>
+        <Button variant="outline" size="sm">{t(($) => $.needs_you.retry)}</Button>
+      </Row>
+      <Row label="stats dialog error">
+        <p className="text-caption text-destructive">{t(($) => $.stats.error)}</p>
+        <Button variant="outline" size="sm">{t(($) => $.stats.retry)}</Button>
+      </Row>
+      <Row label="narrow parent (240px)">
+        <div className="w-[240px] rounded-md border p-2 space-y-2">
+          <p className="text-caption text-destructive">{t(($) => $.needs_you.error)}</p>
+          <Button variant="outline" size="sm">{t(($) => $.needs_you.retry)}</Button>
+        </div>
+      </Row>
+      <Row label="retry disabled"><Button variant="outline" size="sm" disabled>{t(($) => $.needs_you.retry)}</Button></Row>
+    </div>
+  );
+}
+
+function InlineNotice() {
+  return (
+    <div className="p-6 max-w-[620px] space-y-3">
+      <p className="text-caption text-muted-foreground">Alert tones today: default and destructive. Warning, muted and success are ad-hoc classes at the call sites (open decision, see ledger).</p>
+      <Alert>
+        <AlertTitle>Wakeups paused</AlertTitle>
+        <AlertDescription>No wakeup rule fires until an owner resumes them.</AlertDescription>
+      </Alert>
+      <Alert variant="destructive">
+        <TriangleAlert />
+        <AlertTitle>Interactive login failed</AlertTitle>
+        <AlertDescription>The runtime could not sign in. Re-run login on the machine.</AlertDescription>
+      </Alert>
+      <div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-body text-warning">Warning box (call-site classes, not an Alert variant)</div>
+      <div className="rounded-lg border bg-muted px-2.5 py-2 text-body text-muted-foreground">Muted box (call-site classes)</div>
+      <div className="rounded-lg border border-success/40 bg-success/10 px-2.5 py-2 text-body text-success">Success box (call-site classes)</div>
+    </div>
+  );
+}
+
+// The real SlackTab reads the auth store and api (the auth store hangs headless Chrome), so this view
+// composes the same Card and AlertDialog primitives and the same locale keys, states side by side.
+function IntegrationTab() {
+  const { t } = useT("settings");
+  const Block = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <section className="space-y-2"><p className="text-micro uppercase tracking-wide text-muted-foreground">{label}</p>{children}</section>
+  );
+  return (
+    <div className="p-6 max-w-[680px] space-y-5">
+      {/* Frame only: drop the scrim so the page stays legible and park the dialog beside the rows. */}
+      <style>{`[data-slot="alert-dialog-overlay"]{background:transparent!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+@media (min-width:1024px){[data-slot="alert-dialog-content"]{top:420px!important;left:calc(50% + 140px)!important;transform:none!important}}`}</style>
+      <Block label="not enabled">
+        <Card><CardContent className="space-y-2">
+          <p className="text-body font-medium">{t(($) => $.slack.not_enabled_title)}</p>
+          <p className="text-caption text-muted-foreground">{t(($) => $.slack.not_enabled_description_prefix)} <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">MULTICA_SLACK_SECRET_KEY</code> {t(($) => $.slack.not_enabled_description_suffix)}</p>
+        </CardContent></Card>
+      </Block>
+      <Block label="loading">
+        <Card><CardContent><p className="text-body text-muted-foreground">{t(($) => $.slack.loading)}</p></CardContent></Card>
+      </Block>
+      <Block label="empty">
+        <Card><CardContent className="space-y-2">
+          <p className="text-body font-medium">{t(($) => $.slack.empty_title)}</p>
+          <p className="text-caption text-muted-foreground">{t(($) => $.slack.empty_description_prefix)} <strong>{t(($) => $.slack.empty_description_cta)}</strong> {t(($) => $.slack.empty_description_suffix)}</p>
+        </CardContent></Card>
+      </Block>
+      <Block label="installation rows (active, revoked)">
+        <Card><CardContent className="divide-y">
+          {[["Release bot", false], ["Docs bot", true]].map(([name, revoked]) => (
+            <div key={String(name)} className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
+              <div className="space-y-1">
+                <p className="text-body font-medium">{name}{revoked && <span className="ml-2 rounded-xs bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">{t(($) => $.slack.revoked_badge)}</span>}</p>
+                <p className="text-micro text-muted-foreground">{t(($) => $.slack.installed_at_label, { when: "13/11/2026, 09:30" })}</p>
+              </div>
+              {!revoked && <Button variant="outline" size="sm"><Trash2 className="h-3 w-3" />{t(($) => $.slack.disconnect)}</Button>}
+            </div>
+          ))}
+        </CardContent></Card>
+      </Block>
+      <AlertDialog open onOpenChange={() => {}}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.slack.disconnect_confirm_title)}</AlertDialogTitle>
+            <AlertDialogDescription>{t(($) => $.slack.disconnect_confirm_description)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t(($) => $.slack.disconnect_confirm_cancel)}</AlertDialogCancel>
+            <AlertDialogAction>{t(($) => $.slack.disconnect)}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 const APPS: [string, string, "default" | "secondary" | "outline", string][] = [
   ["GitHub", "Pull requests, issues and checks for cheese-work repos.", "default", "Connected"],
   ["Linear", "Read and write issues from agent runs.", "secondary", "Needs reauth"],
@@ -655,6 +863,32 @@ function ConfirmDialog() {
   );
 }
 
+const HUNKS = [
+  { old_start: 3, new_start: 3, lines: [" ## Goal", "-Capture 3 pilot frames.", "+Capture the remaining Patterns frames.", " ", "+Each batch has 5 items at most."] },
+  { old_start: 20, new_start: 21, lines: [" ## Done when", "-Three entries link a frame.", "+No active entry is pending."] },
+];
+function DiffDialog() {
+  const { t } = useT("chat");
+  return (
+    <div className="p-6 max-w-[640px] space-y-4">
+      <Tabs defaultValue="diff">
+        <TabsList>
+          <TabsTrigger value="diff">Diff</TabsTrigger>
+          <TabsTrigger value="after">After</TabsTrigger>
+        </TabsList>
+        <TabsContent value="diff" className="mt-3">
+          <HunksRegion hunks={HUNKS} label="Plan revision 18 to 19, changed lines" />
+        </TabsContent>
+        <TabsContent value="after" />
+      </Tabs>
+      <Collapsible defaultOpen>
+        <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground"><ChevronRight className="size-3" />{t(($) => $.decision.artifacts.lines_hidden, { count: 14 })}</CollapsibleTrigger>
+        <CollapsibleContent className="mt-2 text-caption text-muted-foreground">Folded unchanged lines open here.</CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
 // Raw-class views: these ledger entries list no shared component yet (build: "one shared ..."),
 // so each view renders the classes the fork uses today, copied from the cited files.
 function SectionEyebrow() {
@@ -725,6 +959,21 @@ function TypeRoleTokens() {
   );
 }
 
+// Each local copy formats with Intl.DateTimeFormat; 5 use Asia/Bangkok, 1 uses Asia/Ho_Chi_Minh, one appends " ICT" by literal.
+function IctTimestamp() {
+  const d = new Date("2026-11-13T07:30:00Z");
+  const fmt = (timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+  return (
+    <div className="p-6 max-w-[620px]">
+      <Row label="recent runs (literal suffix)"><span className="text-body"><time dateTime={d.toISOString()}>{fmt("Asia/Bangkok")} ICT</time></span></Row>
+      <Row label="Asia/Bangkok"><span className="text-body">{fmt("Asia/Bangkok")} ICT</span></Row>
+      <Row label="Asia/Ho_Chi_Minh"><span className="text-body">{fmt("Asia/Ho_Chi_Minh")} ICT</span></Row>
+      <Row label="no suffix (the defect)"><span className="text-body text-destructive">{fmt("Asia/Bangkok")}</span></Row>
+      <p className="mt-3 text-caption text-muted-foreground">Rule: every time a person reads is ICT with the ICT suffix. Both zones are UTC+7, so the output matches.</p>
+    </div>
+  );
+}
+
 function InlineLinkAction() {
   return (
     <div className="p-6 max-w-[560px] space-y-4 text-body">
@@ -784,6 +1033,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
   "issue-mention-chip": IssueMentionChip,
+  "pause-banner": PauseBanner,
+  "run-budget": RunBudget,
+  "attachment-card-list": AttachmentCards,
+  "wakeup-rule-form": WakeupRuleForm,
+  "settings-number-row": SettingsNumberRow,
   "decision-action-approval": DecisionActionApprovalDemo,
   "description-disclosure": DescriptionDisclosureDemo,
   "status-pill": StatusPillDemo,
@@ -804,6 +1058,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "collapsible-section": CollapsibleSection,
   "settings-select-row": SettingsSelectRow,
   "pill-menu": PillMenuDemo,
+  "inline-retry": InlineRetry,
+  "inline-notice": InlineNotice,
+  "integration-tab": IntegrationTab,
+  "diff-dialog": DiffDialog,
+  "ict-timestamp": IctTimestamp,
   "integration-card-grid": IntegrationCardGrid,
   "settings-table-section": SettingsTableSection,
   "settings-action-row": SettingsActionRow,

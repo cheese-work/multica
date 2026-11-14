@@ -337,6 +337,9 @@ const (
 	ChatMessageKindDecisionReference    = "decision_reference"
 	ChatMessageKindDecisionRequest      = "decision_request"
 	ChatMessageKindDecisionCancelNotice = "decision_cancel_notice"
+	// ChatMessageKindAskRecovery is the automatic notice that an ask never
+	// reached this person. It is not a decision request and carries no action.
+	ChatMessageKindAskRecovery = "ask_recovery"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this
