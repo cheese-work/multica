@@ -3028,13 +3028,15 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-		ID:         agent.ID,
-		ArchivedBy: parseUUID(userID),
-	})
+	var archived db.Agent
+	err := h.applyAgentChange(r, agent, "agent.archive", agentLifecycleAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) (err error) {
+			archived, err = q.ArchiveAgent(ctx, db.ArchiveAgentParams{ID: agent.ID, ArchivedBy: parseUUID(userID)})
+			return err
+		})
 	if err != nil {
 		slog.Warn("archive agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to archive agent")
+		writeAgentChangeError(w, r, err, "agent.archive", "agent not found", "failed to archive agent")
 		return
 	}
 
@@ -3075,10 +3077,15 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	restored, err := h.Queries.RestoreAgent(r.Context(), agent.ID)
+	var restored db.Agent
+	err := h.applyAgentChange(r, agent, "agent.restore", agentLifecycleAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) (err error) {
+			restored, err = q.RestoreAgent(ctx, agent.ID)
+			return err
+		})
 	if err != nil {
 		slog.Warn("restore agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to restore agent")
+		writeAgentChangeError(w, r, err, "agent.restore", "agent not found", "failed to restore agent")
 		return
 	}
 
@@ -3123,10 +3130,19 @@ func (h *Handler) CancelAgentTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cancelled, err := h.TaskService.CancelTasksForAgent(r.Context(), parseUUID(id))
+	cancelled, err := h.TaskService.CancelTasksForAgentInTx(r.Context(), agent.ID,
+		func(ctx context.Context, q *db.Queries, tasks []db.AgentTaskQueue) error {
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "agent.tasks.cancel", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+				Before: map[string]any{"active_tasks": len(tasks)}, After: map[string]any{"active_tasks": 0},
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
 	if err != nil {
 		slog.Warn("cancel agent tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to cancel tasks")
+		writeAgentChangeError(w, r, err, "agent.tasks.cancel", "agent not found", "failed to cancel tasks")
 		return
 	}
 
