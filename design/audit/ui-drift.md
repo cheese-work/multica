@@ -271,7 +271,7 @@ The batch files stay unchanged. Totals above apply these two corrections.
 
 ## S4b raw-element files (CHE-5430)
 
-Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element reference](https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=tGd4_CW9vU). One labelled 1440 and 390 capture per file. `captured` = on the frame. Captured by `scripts/design/pattern-harness/run.sh` on X99.
+Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element reference](https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=tGd4_CW9vU). One labelled 1440 and 390 capture per file. `captured` = on the frame. `captured locally` = PNGs and HTML made by `run.sh`, not yet on the frame. Captured by `scripts/design/pattern-harness/run.sh` on X99.
 
 1. `issues/components/issue-decision-banner.tsx` (batch 1, raw*, not marked S4b) — captured (CHE-5534)
 2. `issues/components/hierarchy/hierarchy-dialog.tsx` (batch 2, S4b) — captured (CHE-5534)
@@ -283,11 +283,11 @@ Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element 
 8. `settings/components/workspace-wakeup-rules.tsx` (batch 2, S4b) — captured (CHE-5535)
 9. `chat/components/chat-search.tsx` (batch 2, S4b) — captured (CHE-5535)
 10. `chat/components/config-change-viewer.tsx` (batch 2, S4b) — captured (CHE-5535)
-11. `chat/components/decision-artifacts.tsx` (batch 2, S4b)
-12. `chat/components/decision-request-card.tsx` (batch 2, S4b)
-13. `chat/components/needs-you-list.tsx` (batch 2, S4b)
-14. `chat/components/quick-agent-bar.tsx` (batch 2, S4b)
-15. `settings/components/delegated-writes-section.tsx` (batch 3, S4b)
+11. `chat/components/decision-artifacts.tsx` (batch 2, S4b) — captured locally (CHE-5536); frame write NOT-WRITTEN: no doop access
+12. `chat/components/decision-request-card.tsx` (batch 2, S4b) — captured locally (CHE-5536); frame write NOT-WRITTEN: no doop access
+13. `chat/components/needs-you-list.tsx` (batch 2, S4b) — captured locally (CHE-5536); frame write NOT-WRITTEN: no doop access
+14. `chat/components/quick-agent-bar.tsx` (batch 2, S4b) — captured locally (CHE-5536); frame write NOT-WRITTEN: no doop access
+15. `settings/components/delegated-writes-section.tsx` (batch 3, S4b) — captured locally (CHE-5536); frame write NOT-WRITTEN: no doop access
 16. `settings/components/dingtalk-tab.tsx` (batch 3, S4b)
 17. `settings/components/lark-tab.tsx` (batch 3, S4b)
 18. `settings/components/slack-tab.tsx` (batch 3, S4b)
@@ -309,4 +309,4 @@ Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element 
 34. `rich-content/next-self-mention.tsx` (batch 4, S4b)
 35. `workflows/project-workflow-menu.tsx` (batch 4, S4b)
 
-Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5. CHE-5535 (S4b-SS2) captured 5 more: items 6 to 10. 10 of 35 captured.
+Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5. CHE-5535 (S4b-SS2) captured 5 more: items 6 to 10. CHE-5536 (S4b-SS3) made local captures of 5 more: items 11 to 15. The doop frame write for them is NOT-WRITTEN: this run had no doop MCP access (`POST /mcp` returned `Unauthorized: this MCP server requires OAuth`). 10 of 35 captured on the frame; 15 of 35 captured locally.
