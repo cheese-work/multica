@@ -65,7 +65,7 @@ const TOKENS = [
 
 // Drops HTML comments (an unclosed one runs to the end) and fenced code. A fence
 // closes only on the same character, at least as long, with nothing else on the line.
-function liveLines(body) {
+export function liveLines(body) {
   const text = body.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?(-->|$)/g, "");
   let fence = null;
   return text.split("\n").filter((line) => {
