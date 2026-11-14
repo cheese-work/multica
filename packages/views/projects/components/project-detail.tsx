@@ -37,6 +37,7 @@ import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
 import { ProjectWorkflowMenuHost } from "../../workflows/project-workflow-menu";
 import { IssueSurface } from "../../issues/surface/issue-surface";
+import { PROJECT_ISSUE_MODES } from "../../issues/surface/modes";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
@@ -539,7 +540,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         <div ref={rightSidebarShortcutTargetRef} className="flex h-full flex-col">
           <IssueSurface
             scope={issueScope}
-            modes={["board", "list", "table", "swimlane", "gantt"]}
+            modes={PROJECT_ISSUE_MODES}
             renderHeader={({ controller }) => (
               <ProjectWorkflowMenuHost project={project}>
                 {(workflowSubmenu) => (

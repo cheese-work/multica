@@ -15,6 +15,7 @@ import {
   squadListOptions,
   workspaceListOptions,
 } from "@multica/core/workspace/queries";
+import { ApiError } from "@multica/core/api/client";
 import { RESOURCES } from "../locales";
 import enLayout from "../locales/en/layout.json";
 import zhHansProjects from "../locales/zh-Hans/projects.json";
@@ -44,6 +45,7 @@ const {
   foldCallOrder,
   mockThreadCollapseAll,
   mockThreadExpandAll,
+  chatSearch,
 } = vi.hoisted(() => {
   const apiFns = new Map<string, ReturnType<typeof vi.fn>>();
   const toast = Object.assign(vi.fn(), {
@@ -86,6 +88,12 @@ const {
     foldCallOrder: [] as string[],
     mockThreadCollapseAll: vi.fn(),
     mockThreadExpandAll: vi.fn(),
+    // What the palette's chat message search (useInfiniteQuery) answers with.
+    chatSearch: {
+      hits: [] as unknown[],
+      error: null as Error | null,
+      refetch: vi.fn(),
+    },
   };
 });
 
@@ -133,6 +141,18 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     useQueries: (opts: { queries: Opts[]; combine?: (r: unknown[]) => unknown }) => {
       const results = opts.queries.map((q) => ({ data: read(q) }));
       return opts.combine ? opts.combine(results) : results;
+    },
+    useInfiniteQuery: (opts: { enabled?: boolean }) => {
+      const idle = opts.enabled === false;
+      return {
+        data: idle ? undefined : { pages: [{ results: chatSearch.hits, next_cursor: null }] },
+        error: chatSearch.error,
+        isPending: idle,
+        isError: !idle && !!chatSearch.error,
+        isPlaceholderData: false,
+        fetchStatus: "idle",
+        refetch: chatSearch.refetch,
+      };
     },
     useQueryClient: () => client,
     // Mutations run their mutationFn (which calls the mocked api) and the
@@ -444,6 +464,9 @@ describe("SearchCommand", () => {
     mockThreadCollapseAll.mockReset();
     mockThreadExpandAll.mockReset();
     foldCallOrder.length = 0;
+    chatSearch.hits = [];
+    chatSearch.error = null;
+    chatSearch.refetch.mockReset();
 
     seed(memberListOptions("ws-test"), [makeMember(ME, "Me Myself", "me@example.com")]);
     seed(agentListOptions("ws-test"), []);
@@ -814,6 +837,50 @@ describe("SearchCommand", () => {
       fireEvent.click(await rowText("Acme Corp"));
 
       expect(mockPush).toHaveBeenCalledWith("/acme-hq/issues");
+    });
+  });
+
+  describe("chat messages", () => {
+    const messageHit = {
+      session_id: "s-1",
+      title: "sub2api budget",
+      agent_id: "a-1",
+      message_id: "m-1",
+      snippet: "the november budget is capped",
+      updated_at: "2026-11-13T07:15:00Z",
+      archived: false,
+    };
+
+    it("lists a content hit under Messages and opens the DM at that message", async () => {
+      const user = userEvent.setup();
+      chatSearch.hits = [messageHit];
+      renderSearch();
+      await user.type(input(), "budget");
+
+      await waitFor(() => expect(renderedHeadings()).toContain("Messages"));
+      fireEvent.click(await rowText("sub2api budget"));
+      expect(mockPush).toHaveBeenCalledWith("/ws-test/chat?session=s-1&message=m-1");
+    });
+
+    it("shows the error copy with a Retry that refetches instead of the empty state", async () => {
+      const user = userEvent.setup();
+      chatSearch.error = new ApiError("boom", 500, "Internal Server Error");
+      renderSearch();
+      await user.type(input(), "budget");
+
+      expect(await screen.findByText("Couldn't search message content")).toBeInTheDocument();
+      expect(screen.queryByText(/No results for/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+      expect(chatSearch.refetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows the no-results copy when nothing matches", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "zzzxq");
+
+      expect(await screen.findByText("No results for “zzzxq”")).toBeInTheDocument();
+      expect(screen.getByText("Try a different keyword.")).toBeInTheDocument();
     });
   });
 

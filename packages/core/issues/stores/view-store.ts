@@ -34,7 +34,7 @@ export {
   type NegatableFilterDimension,
 };
 
-export type ViewMode = "board" | "list" | "table" | "gantt" | "swimlane";
+export type ViewMode = "board" | "list" | "table" | "gantt" | "swimlane" | "swimlane2";
 export type GanttZoom = "day" | "week" | "month";
 /**
  * Board grouping. Besides the three built-ins, a select-type custom property
@@ -273,7 +273,7 @@ export function defaultSortDirection(field: SortField): SortDirection {
 
 /** Only expose card controls that the active renderer can honor. */
 export function cardPropertyOptionsForView(viewMode: ViewMode) {
-  if (viewMode === "table" || viewMode === "gantt") return [];
+  if (viewMode === "table" || viewMode === "gantt" || viewMode === "swimlane2") return [];
   if (viewMode === "list") {
     return CARD_PROPERTY_OPTIONS.filter((option) => option.key !== "description");
   }

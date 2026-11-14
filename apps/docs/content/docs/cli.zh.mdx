@@ -364,7 +364,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `workflow.budget <workflow-id>` 用 `--max-runs <n>`（1 到 1000；0 表示清除上限）和 `--include-child-prs=<true|false>` 代替 `--file`；至少指定一个，省略的字段保持已存储的值。智能体不能直接写入工作流的这两个字段（`budget_requires_decision`）：先提出修改并请求决定，批准后若工作流仍与 CLI 读到的摘要一致，服务端即应用。
 
-持有任务令牌的智能体一次调用就能打开审批卡：`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 读取当前工作流，只用你指定的预算标志提出 `workflow.budget.set`，并打印卡片 URL；所有者批准之前不写入任何内容。重复同一调用会返回同一张卡。预算调用不能带 `--name`、`--description`、`--steps-file`、`--start-status`、`--map` 或 `--dry-run`；命令会在发出请求之前拒绝，请分成两条命令运行。`--print-hash` 打印预算修改的 `before_sha256` 和 `after_sha256`。`multica config propose workflow.budget` 中同一个标志叫 `--max-runs`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。
+持有任务令牌的智能体一次调用就能打开审批卡：`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 读取当前工作流，只用你指定的预算标志提出 `workflow.budget.set`，并打印卡片 URL；所有者批准之前不写入任何内容。重复同一调用会返回同一张卡。预算调用不能带 `--name`、`--description`、`--steps-file`、`--start-status`、`--map` 或 `--dry-run`；命令会在发出请求之前拒绝，请分成两条命令运行。`--print-hash` 打印预算修改的 `before_sha256` 和 `after_sha256`。`multica config propose workflow.budget` 中同一个标志叫 `--max-runs`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
 
 其他任何字段都会在读取任何内容之前以 `denylisted` 拒绝：`project.description`、passkey 与决策闸门、成员与角色、所有者转移、认证与集成密钥、工作区删除、动作注册表和 `delegated_governed_writes`。不在服务端允许表中的设置键同样被拒绝，混有允许键和拒绝键的补丁整体被拒绝。服务端会在请求时和批准时再次检查。
 
@@ -411,6 +411,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 `decision` 和 `routing` 块覆盖全部时间。`route` 块覆盖 `[since, until)` 窗口：`--since` 和 `--until` 接受 RFC 3339 时间，`--until` 默认为现在，`--since` 默认为 `--until` 之前 24 小时。时间格式错误或 `--since` 晚于 `--until` 时，服务器返回 400。
 
 `route` 块统计同一批事件：被标记为离开路由步骤的智能体状态变更（`eligible_exits`），以及带有相同事件 ID 的 route 标签（`matched_labels`）。`label_coverage` 等于 `matched_labels / eligible_exits`，不会超过 1。`via_route_share` 是已匹配事件中，第一个标签来自 `issue route` 而不是状态回退的比例。`duplicate_labels` 统计与更早标签共享同一事件的标签（目标为 0）。`labels_total`、`owner_only_labels`（保持状态不变的 route，因此没有事件）和 `non_routing_labels`（来自没有路由智能体的步骤的 route）不计入覆盖率。`overridden` 统计 1 小时内被人撤销的智能体标签，`override_rate` 等于 `overridden / labels_total`。该块还包含按类别统计的 `decided`、`predicted`、`agreed`、`coverage` 和 `precision`。
+
+任何工作区成员都可以读取每个范围和预测器版本的 System 1 资格状态：
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` 为 `test_first_waiver` 或 `ci:<repo>:<protocol>`。每一行对应一个预测器版本的最新纪元。只统计纪元开始之后创建的观测，新的预测器版本会开启自己的纪元。一个案例是带有记录标签（最新且未被取代的标签）的一次预测。`denominator` 统计有非弃权预测且标签已映射的案例，`agreed` 为两者一致的案例，`abstained` 为预测器弃权的已标注案例，`unmapped` 为自由文本回答。满足 7 天、`denominator` 至少 20、一致率至少 90% 时 `status` 为 `qualified`；4 周后统计案例仍少于 20 为 `insufficient_data`，被降级的纪元为 `demoted`，其余为 `collecting`。
 
 ## ID 和输出格式
 
@@ -547,7 +555,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `config` | `show`、`set <key> <value>` | 查看或修改当前 profile 的本地配置 | 优先级：命令行 flag > 环境变量 > `config.json` > 内置默认；设为空串可清除 |
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
-| `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request 会被拒绝 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request（含 GraphQL mutation）会被拒绝；等待 CI 的调用（`gh pr checks --watch`、`gh run watch`、20 秒及以上的 `sleep`）会被拒绝，并提示应改用的 wakeup 命令 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
 | `guard` | `check-pr <pr-url\|number\|branch>` | 对照策略和仓库的 `.github/agent-rules.yml` 检查一个拉取请求，不做任何修改。文件作为数据从 PR 受保护基础分支的当前末端读取，绝不从 PR 分支读取；文件缺失不增加规则，格式错误的文件或无法读取的基础分支会使检查失败。可用作 CI 检查 | 退出码：0 通过，1 违反规则，2 被拒绝。`-R owner/name` 指定仓库 |
 | `guard` | `plugin list\|get\|set` | 读取已存储的守卫策略（`list`、`get <name>`），或写出替换它的决策动作文件（`set --file <policy.json> --out <action.json>`，或 `--dry-run`）。策略包含工作区插件和评审规则，以及 org、仓库和路径层；更深的层按键覆盖更浅的层，带 `locked` 的层或工作区会把其键锁定，不受更深层影响。`set` 不会发送任何内容：由人通过 passkey 批准 `workspace.settings.patch`。守护进程把已批准的策略作为工作树之外的文件 `MULTICA_GUARD_POLICY` 连同 `MULTICA_GUARD_POLICY_SHA256` 交给每次运行 | 输出：JSON 行（`--output table` 为表格）；`set` 打印 `before_sha256` 和 `after_sha256` |
 

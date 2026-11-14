@@ -38,7 +38,7 @@ var errBudgetRebinding = errors.New(budgetRebindingCode)
 
 func writeBudgetRebindingRefused(w http.ResponseWriter) {
 	writeErrorCode(w, http.StatusForbidden, budgetRebindingCode,
-		"widening a run budget needs an interactive sign-in (web or desktop app) or an owner-approved issue.workflow decision: run `multica issue update <id> --workflow <workflow-id> --print-hash`, submit it with `multica decision request`, then repeat the command with --decision-id")
+		"widening a run budget needs an interactive sign-in (web or desktop app) or an owner-approved issue.workflow decision; an agent run's `multica issue update <id> --workflow <workflow-id>` opens an approval card for the owners instead. For a decision, run `multica issue update <id> --workflow <workflow-id> --print-hash`, submit it with `multica decision request`, then repeat the command with --decision-id")
 }
 
 // writeBudgetRebindingError renders errBudgetRebinding and reports whether it

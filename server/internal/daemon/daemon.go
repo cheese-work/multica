@@ -8934,9 +8934,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err := configureTaskCLIEnvironment(agentEnv); err != nil {
 		return TaskResult{}, err
 	}
+	selfBin := agentEnv["MULTICA_CLI_PATH"]
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
 	// failure only costs the guard, never the run.
-	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
+	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
 	}
 	// Hand the guard the workspace's stored policy (CHE-5204); without one it

@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
   Clock,
+  EyeOff,
+  ListChecks,
   Loader2,
+  Pencil,
   Pin,
   PinOff,
   Square,
@@ -22,19 +26,21 @@ import {
   chatKeys,
   filterChatSessions,
   openDecisionRequestsOptions,
+  sessionActivityTime,
   sortArchivedChatSessions,
   sortChatSessions,
 } from "@multica/core/chat/queries";
 import {
   useDeleteChatSession,
   useSetChatSessionPinned,
+  useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
 import type { Agent, ChatSearchHit, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { DeferredTooltip } from "../../common/deferred-tooltip";
 import {
   RowActionsMenu,
+  RowContextMenu,
   handleRowActivationKey,
   type RowActionItem,
 } from "../../common/row-actions-menu";
@@ -43,8 +49,11 @@ import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
+import { handleRowShortcut } from "./use-row-shortcuts";
+import { SessionRenameInput } from "./session-rename-input";
 import { ChatSearch } from "./chat-search";
-import { formatChatTime } from "./format-chat-time";
+import { formatChatClock } from "./format-chat-time";
+import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
 import { NeedsYouList } from "./needs-you-list";
 import { useAttentionRefresh } from "./use-attention-refresh";
 import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
@@ -117,6 +126,11 @@ interface ChatThreadListProps {
   /** First load of the list. Only shown while there are no rows to show. */
   loadState?: "loading" | "error";
   onRetry?: () => void;
+  /**
+   * Enters multi-select with this row. Seam for the select UI: while the host
+   * does not pass it, the `X` shortcut and the "Select multiple" item are off.
+   */
+  onEnterSelectMode?: (session: ChatSession) => void;
 }
 
 function ChatThreadListBody({
@@ -127,6 +141,7 @@ function ChatThreadListBody({
   onArchive,
   loadState,
   onRetry,
+  onEnterSelectMode,
 }: ChatThreadListProps) {
   const { t } = useT("chat");
   const locale = useLocale();
@@ -187,7 +202,9 @@ function ChatThreadListBody({
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const deleteSession = useDeleteChatSession();
+  const updateSession = useUpdateChatSession();
   const setPinned = useSetChatSessionPinned();
   const sessionActions = useChatSessionActions();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
@@ -256,6 +273,20 @@ function ChatThreadListBody({
     });
   };
 
+  const handleRenameSubmit = (session: ChatSession, raw: string) => {
+    setRenamingId(null);
+    const title = raw.trim();
+    if (!title || title === session.title) return;
+    if (title.length > 200) {
+      toast.error(t(($) => $.input.rename_title_too_long_toast));
+      return;
+    }
+    updateSession.mutate(
+      { sessionId: session.id, title },
+      { onError: () => toast.error(t(($) => $.input.rename_failed_toast)) },
+    );
+  };
+
   const renderRow = (session: ChatSession) => {
     const isCurrent = session.id === activeSessionId;
     const agent = agentById.get(session.agent_id) ?? null;
@@ -274,9 +305,12 @@ function ChatThreadListBody({
     const isConfirmingAction = isConfirmingDelete || isConfirmingStop;
     const titleText = session.title?.trim() || t(($) => $.window.untitled);
     const last = session.last_message ?? null;
-    const timeText = last
-      ? formatChatTime(last.created_at, locale)
-      : formatChatTime(session.updated_at, locale);
+    const timeText = formatChatClock(sessionActivityTime(session), locale);
+    const unseen = !isCurrent && (session.has_unread || (session.unread_count ?? 0) > 0);
+    // The active chip already says "Decisions" / "Unseen"; only day-grouped
+    // views need the tag.
+    const showDecisionTag =
+      decisionSessionIds.has(session.id) && listView !== "decisions" && listView !== "unseen";
 
     // The second line: typing/waiting → failed → preview.
     let previewNode: React.ReactNode;
@@ -309,7 +343,7 @@ function ChatThreadListBody({
       );
     } else if (last) {
       previewNode = (
-        <span className={cn("block truncate", unread > 0 ? "text-foreground" : "text-muted-foreground")}>
+        <span className={cn("block truncate", unseen ? "font-semibold text-foreground" : "text-muted-foreground")}>
           {last.role === "user" ? t(($) => $.list.you_prefix) : ""}
           {toPreview(last.content)}
         </span>
@@ -318,10 +352,27 @@ function ChatThreadListBody({
       previewNode = <span className="block truncate text-muted-foreground">{t(($) => $.list.no_messages)}</span>;
     }
 
-    // One list drives both action surfaces — the compact menu without hover
-    // and the hover strip with it — so they cannot drift. The archived view
-    // is the only place hard-delete lives; the history view offers the
-    // reversible archive instead.
+    // One list drives every action surface (⋯ menu, right-click menu, row
+    // shortcuts), so they cannot drift. The archived view is the only place
+    // hard-delete lives; the history view offers the reversible archive.
+    const renameItem: RowActionItem = {
+      key: "rename",
+      icon: <Pencil className="size-3.5" />,
+      label: t(($) => $.list.rename),
+      shortcut: "R",
+      onSelect: () => setRenamingId(session.id),
+    };
+    const selectItem: RowActionItem[] = onEnterSelectMode
+      ? [
+          {
+            key: "select",
+            icon: <ListChecks className="size-3.5" />,
+            label: t(($) => $.list.select),
+            shortcut: "X",
+            onSelect: () => onEnterSelectMode(session),
+          },
+        ]
+      : [];
     const rowActions: RowActionItem[] =
       session.status === "archived"
         ? [
@@ -329,6 +380,7 @@ function ChatThreadListBody({
               key: "unarchive",
               icon: <ArchiveRestore className="size-3.5" />,
               label: t(($) => $.list.unarchive),
+              shortcut: "E",
               onSelect: () =>
                 void sessionActions.unarchive(session),
             },
@@ -342,6 +394,18 @@ function ChatThreadListBody({
           ]
         : [
             {
+              key: "unseen",
+              icon: <EyeOff className="size-3.5" />,
+              label: t(($) => $.list.unseen),
+              shortcut: "U",
+              onSelect: () =>
+                void sessionActions.markUnseen(session, {
+                  onMarked: () => {
+                    if (isCurrent) setActiveSession(null);
+                  },
+                }),
+            },
+            {
               key: "pin",
               icon: session.pinned ? (
                 <PinOff className="size-3.5" />
@@ -351,6 +415,7 @@ function ChatThreadListBody({
               label: session.pinned
                 ? t(($) => $.list.unpin)
                 : t(($) => $.list.pin),
+              shortcut: "P",
               onSelect: () =>
                 setPinned.mutate({ sessionId: session.id, pinned: !session.pinned }),
             },
@@ -366,13 +431,18 @@ function ChatThreadListBody({
                   key: "archive",
                   icon: <Archive className="size-3.5" />,
                   label: t(($) => $.list.archive),
+                  shortcut: "E",
                   onSelect: () => onArchive(session),
                 },
           ];
+    const menuGroups = [rowActions, [renameItem, ...selectItem]];
+    const shortcutItems = menuGroups.flat();
+    const isRenaming = renamingId === session.id;
 
     return (
-      <div
+      <RowContextMenu
         key={session.id}
+        groups={isConfirmingAction ? [] : menuGroups}
         data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
@@ -410,11 +480,14 @@ function ChatThreadListBody({
         onKeyDown={(e) => {
           if (isConfirmingAction) return;
           handleRowActivationKey(e, () => onSelectSession(session));
+          // A portal (the open ⋯ menu) still bubbles React events to the row;
+          // only keys pressed inside the row's own DOM are row shortcuts.
+          if (e.currentTarget.contains(e.target as Node)) handleRowShortcut(e, shortcutItems);
         }}
         className={cn(
           // Fixed height so nothing (hover actions, confirm prompts) can change
           // the row size and make the list jump. Content is vertically centered.
-          "group/row relative flex h-14 min-w-0 cursor-default items-center gap-3 rounded-md px-2 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring",
+          "group/row relative flex h-14 min-w-0 cursor-default items-center gap-3 rounded-md px-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
           isCurrent ? "bg-accent" : "hover:bg-accent/50",
           isConfirmingAction && "bg-destructive/5 hover:bg-destructive/5",
         )}
@@ -436,10 +509,20 @@ function ChatThreadListBody({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
-            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
-              {titleText}
-            </span>
-            <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
+            {isRenaming ? (
+              <div className="min-w-0 flex-1">
+                <SessionRenameInput
+                  initialValue={session.title?.trim() ?? ""}
+                  onSubmit={(value) => handleRenameSubmit(session, value)}
+                  onCancel={() => setRenamingId(null)}
+                />
+              </div>
+            ) : (
+              <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unseen ? "font-bold text-foreground" : "font-medium")}>
+                {titleText}
+              </span>
+            )}
+            <span className={cn("ml-auto shrink-0 text-micro", unseen ? "font-semibold text-brand" : "text-muted-foreground")}>{timeText}</span>
           </div>
 
           {/* Line 2: preview + unread badge, or an inline confirm prompt */}
@@ -473,6 +556,22 @@ function ChatThreadListBody({
               ) : (
                 <>
                   <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-caption">
+                    {unseen && (
+                      <span
+                        data-testid="chat-unseen-dot"
+                        role="img"
+                        aria-label={t(($) => $.list.unseen_dot)}
+                        className="size-[7px] shrink-0 rounded-full bg-brand"
+                      />
+                    )}
+                    {showDecisionTag && (
+                      <span
+                        data-testid="chat-decision-tag"
+                        className="shrink-0 rounded-xs bg-brand/15 px-1.5 text-caption font-semibold text-brand"
+                      >
+                        {t(($) => $.list.tag_decision)}
+                      </span>
+                    )}
                     {agentName && (
                       <>
                         <span className="max-w-[40%] shrink-0 truncate font-medium text-muted-foreground">
@@ -500,37 +599,39 @@ function ChatThreadListBody({
             </div>
         </div>
 
-        {/* Compact action menu — the touch equivalent of the hover strip
-            below, which a pointer without hover can never reach. It takes real
-            layout space (rather than overlaying the preview) and gives way to
-            the hover strip on a hover-capable pointer. */}
+        {/* One ⋯ menu. Where the pointer can hover it shows on row hover or
+            keyboard focus; right-click opens the same menu. */}
         {!isConfirmingAction && (
           <RowActionsMenu
             label={t(($) => $.list.row_actions_aria)}
-            groups={[rowActions]}
+            groups={menuGroups}
+            revealOnHover
           />
         )}
-
-        {/* Hover actions — absolutely positioned so showing/hiding them never
-            changes the row height (which was making the list jump). Keyboard
-            focus reveals them too, so they are reachable without a mouse. */}
-        {!isConfirmingAction && (
-          <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded-md bg-gradient-to-l from-accent from-40% to-transparent pl-10 pr-1 [@media(hover:hover)]:group-hover/row:flex [@media(hover:hover)]:group-focus-within/row:flex">
-            {rowActions.map((action) => (
-              <RowAction
-                key={action.key}
-                icon={action.icon}
-                label={action.label}
-                danger={action.danger}
-                onClick={action.onSelect}
-                testId={`chat-thread-row-${action.key}-item`}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      </RowContextMenu>
     );
   };
+
+  // Pinned rows get their own header in Main / All; everything else sits under
+  // its day. The Pinned chip is all pinned rows, so a header there says nothing.
+  const sections = useMemo(() => {
+    const label: Record<DayGroupKey | "pinned", string> = {
+      pinned: t(($) => $.list.group.pinned),
+      today: `${t(($) => $.list.group.today)} · ${new Date().toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "numeric" })}`,
+      yesterday: t(($) => $.list.group.yesterday),
+      thisWeek: t(($) => $.list.group.this_week),
+      older: t(($) => $.list.group.older),
+    };
+    const splitPinned = listView === "main" || listView === "all";
+    const pinned = splitPinned ? visibleSessions.filter((s) => s.pinned && s.status !== "archived") : [];
+    const rest = pinned.length > 0 ? visibleSessions.filter((s) => !pinned.includes(s)) : visibleSessions;
+    return [
+      { key: "pinned" as const, sessions: pinned },
+      ...groupByDay(rest, new Date(), Intl.DateTimeFormat().resolvedOptions().timeZone),
+    ]
+      .filter((g) => g.sessions.length > 0)
+      .map((g) => ({ ...g, label: label[g.key] }));
+  }, [visibleSessions, listView, locale, t]);
 
   let body: React.ReactNode;
   if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
@@ -542,7 +643,22 @@ function ChatThreadListBody({
   else
     body = (
       <div className="contents" data-testid={`chat-thread-group-${listView}`}>
-        {visibleSessions.map(renderRow)}
+        {sections.map((g) => (
+          <section key={g.key}>
+            <div
+              data-testid="chat-day-header"
+              data-group={g.key}
+              style={{ position: "sticky", top: 0 }}
+              className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
+            >
+              {/* Slot for the group checkbox (select mode). */}
+              <span data-slot="group-select" className="empty:hidden" />
+              <span className="min-w-0 flex-1 truncate">{g.label}</span>
+              <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
+            </div>
+            {g.sessions.map(renderRow)}
+          </section>
+        ))}
       </div>
     );
 
@@ -552,50 +668,6 @@ function ChatThreadListBody({
       {!online && <ListOffline />}
       {body}
     </>
-  );
-}
-
-function RowAction({
-  icon,
-  label,
-  onClick,
-  danger,
-  testId,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-  testId?: string;
-}) {
-  return (
-    <DeferredTooltip
-      content={label}
-      trigger={
-        <button
-          type="button"
-          data-testid={testId}
-          aria-label={label}
-          onPointerDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onClick();
-          }}
-          className={cn(
-            "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors focus-visible:outline-none",
-            danger
-              ? "hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
-              : "hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
-          )}
-        >
-          {icon}
-        </button>
-      }
-    />
   );
 }
 
