@@ -149,7 +149,7 @@ export async function installHarness(
   page: Page,
   context: BrowserContext,
   origin: string,
-  scenario: (pathname: string) => unknown | undefined,
+  scenario: (pathname: string, url: URL) => unknown | undefined,
 ): Promise<Harness & { cdp: CDPSession }> {
   const h: Harness = {
     keyLookups: new Map(), unmocked: [], external: [], pageErrors: [],
@@ -189,7 +189,7 @@ export async function installHarness(
     if (url.origin !== origin) { h.external.push(url.href); return route.abort(); }
     if (!url.pathname.startsWith("/api/")) return route.continue();
     // The scenario's own routes win, so the page's issue is never taken for a chip key.
-    const own = scenario(url.pathname);
+    const own = scenario(url.pathname, url);
     if (own !== undefined) return route.fulfill(json(own));
     const keyed = /^\/api\/issues\/(PERF-\d+)$/.exec(url.pathname);
     if (keyed) {

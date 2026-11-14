@@ -25,7 +25,7 @@
  *             settled-but-malformed fence still renders as source.
  */
 
-import { createContext, isValidElement, memo, useContext, useMemo, useRef, useSyncExternalStore } from "react";
+import { createContext, isValidElement, memo, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import ReactMarkdown, {
   type Components,
   type ExtraProps,
@@ -601,6 +601,35 @@ const REHYPE_PLUGINS = [
   rehypeKatex,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
+// Remount cache
+
+interface Rendered {
+  processed: string;
+  closedFences: ReturnType<typeof computeClosedFences>;
+  tree: ReactNode;
+}
+
+const RENDERED_LIMIT = 100;
+// Keyed by content and CDN domain, the only inputs of the pipeline. Insertion
+// order doubles as recency; the oldest entry goes first.
+const rendered = new Map<string, Rendered>();
+const renderedKey = (content: string, cdnDomain: string) => `${cdnDomain}\0${content}`;
+
+function readRendered(content: string, cdnDomain: string): Rendered | undefined {
+  const key = renderedKey(content, cdnDomain);
+  const hit = rendered.get(key);
+  if (hit) {
+    rendered.delete(key);
+    rendered.set(key, hit);
+  }
+  return hit;
+}
+
+function writeRendered(content: string, cdnDomain: string, entry: Rendered): void {
+  rendered.set(renderedKey(content, cdnDomain), entry);
+  if (rendered.size > RENDERED_LIMIT) rendered.delete(rendered.keys().next().value!);
+}
+
 // Component
 
 export interface RichContentProps {
@@ -640,19 +669,44 @@ export const RichContent = memo(function RichContent({
   // late config arrival reprocesses exactly once.
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
 
+  // Settled content is cached across remounts: Virtuoso unmounts rows that
+  // scroll away and mounts them again inside its scroll handler, so recomputing
+  // here made every scroll step pay the whole markdown pipeline (CHE-4808).
+  const cached = useMemo(
+    () => (phase === "settled" ? readRendered(content, cdnDomain) : undefined),
+    [content, cdnDomain, phase],
+  );
+
   const processed = useMemo(
     () =>
-      highlightToHtml(
-        preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true }),
-      ),
-    [content, cdnDomain],
+      cached?.processed ??
+      highlightToHtml(preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true })),
+    [cached, content, cdnDomain],
   );
 
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up
   // with the hast node positions the `code`/`pre` renderers observe. Computing
   // it from the raw pre-preprocess text would mis-match every rewritten node.
-  const closedFences = useMemo(() => computeClosedFences(processed), [processed]);
+  const closedFences = useMemo(() => cached?.closedFences ?? computeClosedFences(processed), [cached, processed]);
   const tableSource = useMemo(() => ({ source: content, rendered: processed }), [content, processed]);
+
+  // `ReactMarkdown` is a pure function of its options, so it is called here
+  // and its element tree kept: a cached tree mounts without parsing again.
+  const tree = useMemo(
+    () =>
+      cached?.tree ??
+      ReactMarkdown({
+        remarkPlugins: REMARK_PLUGINS,
+        rehypePlugins: REHYPE_PLUGINS,
+        urlTransform: markdownUrlTransform,
+        components: COMPONENTS,
+        children: processed,
+      }),
+    [cached, processed],
+  );
+  useEffect(() => {
+    if (phase === "settled" && !cached) writeRendered(content, cdnDomain, { processed, closedFences, tree });
+  }, [phase, cached, content, cdnDomain, processed, closedFences, tree]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const hover = useLinkHover(wrapperRef);
@@ -668,18 +722,11 @@ export const RichContent = memo(function RichContent({
     () => (
       <ClosedFenceContext.Provider value={closedFences}>
         <RichTableSourceContext.Provider value={tableSource}>
-          <ReactMarkdown
-            remarkPlugins={REMARK_PLUGINS}
-            rehypePlugins={REHYPE_PLUGINS}
-            urlTransform={markdownUrlTransform}
-            components={COMPONENTS}
-          >
-            {processed}
-          </ReactMarkdown>
+          {tree}
         </RichTableSourceContext.Provider>
       </ClosedFenceContext.Provider>
     ),
-    [processed, closedFences, tableSource],
+    [tree, closedFences, tableSource],
   );
 
   return (
