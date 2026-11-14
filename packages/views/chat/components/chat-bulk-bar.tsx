@@ -80,7 +80,7 @@ export function ChatBulkBar({
       role="toolbar"
       aria-label={t(($) => $.list.bulk.toolbar_aria, { count: sessions.length })}
       className={cn(
-        "mx-2 mb-2 flex items-center gap-[5px] rounded-[10px] border bg-popover p-[7px] shadow-lg [&>:first-child]:ml-auto",
+        "mx-2 mb-2 flex items-center gap-[5px] rounded-xl border bg-popover p-[7px] shadow-lg [&>:first-child]:ml-auto",
         compact && "justify-around gap-2 [&>:first-child]:ml-0",
       )}
     >
