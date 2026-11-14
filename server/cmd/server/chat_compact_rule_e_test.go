@@ -112,6 +112,27 @@ func TestChatCompactRefusesTaskClaimedJustBefore(t *testing.T) {
 	assertCompactUntouched(t, fx.sessionID)
 }
 
+// (q, two agents) agent B's queued DM task is claimed once agent A's task has
+// settled; a compact from A's settled task then answers 403 or 409 and the DM
+// epoch stays put. A second active row for the DM cannot exist any more (the
+// one-active-per-DM index), so the refusal comes from the caller check.
+func TestChatCompactRefusesAfterOtherAgentClaimsJustBefore(t *testing.T) {
+	fx := newRuleEFixture(t)
+	b := newAdmissionAgent(t, "q")
+	queued := addAdmissionTask(t, b, fx.sessionID, "", "queued")
+	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
+		t.Fatal(err)
+	}
+	claimNow(t, b.agentID, b.runtimeID)
+	if got := taskStatus(t, queued); got != "dispatched" {
+		t.Fatalf("agent B task = %q, want dispatched", got)
+	}
+	if status, body := postCompact(t, fx.token, "x"); status != http.StatusConflict && status != http.StatusForbidden {
+		t.Fatalf("compact after the other agent's claim = %d %s, want 403 or 409", status, body)
+	}
+	assertCompactUntouched(t, fx.sessionID)
+}
+
 func ruleEUUID(t *testing.T, s string) pgtype.UUID {
 	t.Helper()
 	u, err := util.ParseUUID(s)
@@ -141,15 +162,31 @@ func claimNow(t *testing.T, agentID, runtimeID string) *db.AgentTaskQueue {
 // caller completes, the queued task is claimable afterwards, and a claimed
 // task's epoch stamp equals the DM epoch (Rule E).
 func TestChatCompactClaimLockOrderHasNoDeadlock(t *testing.T) {
+	lockOrderRace(t, false)
+}
+
+// (s, two agents) the same race, but the queued successor belongs to another
+// agent on its own runtime (CHE-2894 step 8).
+func TestChatCompactClaimLockOrderHasNoDeadlockTwoAgents(t *testing.T) {
+	lockOrderRace(t, true)
+}
+
+func lockOrderRace(t *testing.T, otherAgent bool) {
 	svc := service.NewTaskService(db.New(testPool), testPool, nil, events.New())
 	for i := 0; i < 40; i++ {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			fx := newRuleEFixture(t)
-			queued := addRuleEChatTask(t, fx.sessionID, "queued")
-			// Each subtest's fixture cleanup frees the agent's concurrency slot.
-			var runtimeID string
-			if err := testPool.QueryRow(ctx(), `SELECT runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&runtimeID); err != nil {
-				t.Fatal(err)
+			var queued, runtimeID string
+			if otherAgent {
+				b := newAdmissionAgent(t, fmt.Sprintf("s%d", i))
+				queued = addAdmissionTask(t, b, fx.sessionID, "", "queued")
+				runtimeID = b.runtimeID
+			} else {
+				queued = addRuleEChatTask(t, fx.sessionID, "queued")
+				// Each subtest's fixture cleanup frees the agent's concurrency slot.
+				if err := testPool.QueryRow(ctx(), `SELECT runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&runtimeID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := testPool.Exec(ctx(), `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`, runtimeID); err != nil {
 				t.Fatal(err)
