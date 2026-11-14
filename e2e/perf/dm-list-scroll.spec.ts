@@ -92,9 +92,14 @@ test("DM list scroll: 300 DMs, top to bottom, 4x CPU", async ({ page, baseURL })
   });
 
   const requestUrls: string[] = [];
+  let agentListPolls = 0;
   const onRequest = (r: { url(): string }) => {
     const u = new URL(r.url());
-    if (u.pathname.startsWith("/api/")) requestUrls.push(u.pathname);
+    if (!u.pathname.startsWith("/api/")) return;
+    // agentListOptions polls every 30 s while an agent is online; the 4x pass
+    // outlasts that. A timer, not scrolling, so it is counted apart.
+    if (u.pathname === "/api/agents") agentListPolls += 1;
+    else requestUrls.push(u.pathname);
   };
   const metrics = async () =>
     Object.fromEntries((await cdp.send("Performance.getMetrics")).metrics.map((m) => [m.name, m.value]));
@@ -134,7 +139,7 @@ test("DM list scroll: 300 DMs, top to bottom, 4x CPU", async ({ page, baseURL })
 
   const longTasks = perf.long.filter((d) => d > 50);
   const report = {
-    dms: DM_COUNT, wheel_steps: steps, requests_during_scroll: requestUrls.length,
+    dms: DM_COUNT, wheel_steps: steps, requests_during_scroll: requestUrls.length, agent_list_polls: agentListPolls,
     long_tasks_over_50ms: longTasks.length, longest_task_ms: Math.round(Math.max(0, ...perf.long)),
     // A frame longer than 2 vsync intervals (33 ms) is dropped.
     dropped_frames: perf.frames.filter((d) => d > 33.4).length, total_frames: perf.frames.length,
