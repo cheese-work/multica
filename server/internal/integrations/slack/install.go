@@ -133,6 +133,9 @@ type installPersist struct {
 	// configJSON holds the Slack app id (config->>'app_id') used for inbound
 	// routing; the ROW itself is keyed by (workspace, agent) — one bot per agent.
 	configJSON []byte
+	// audit, when set, runs in the install transaction after the upsert. An
+	// error from it rolls the install back and is returned unwrapped.
+	audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 // pgUniqueViolation is the Postgres SQLSTATE for a unique-constraint violation.
@@ -185,6 +188,11 @@ func (s *InstallService) persistInstall(ctx context.Context, p installPersist) (
 			return db.ChannelInstallation{}, s.liveOwnerConflictErr(ctx, p.wsID, p.appIDKey)
 		}
 		return db.ChannelInstallation{}, fmt.Errorf("upsert slack installation: %w", err)
+	}
+	if p.audit != nil {
+		if err := p.audit(tx, inst); err != nil {
+			return db.ChannelInstallation{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.ChannelInstallation{}, fmt.Errorf("commit slack install: %w", err)

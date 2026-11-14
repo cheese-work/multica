@@ -134,6 +134,9 @@ type installPersist struct {
 	// lookup that drives the accurate conflict message.
 	appIDKey   string
 	configJSON []byte
+	// audit, when set, runs in the install transaction after the upsert. An
+	// error from it rolls the install back and is returned unwrapped.
+	audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 // pgUniqueViolation is the Postgres SQLSTATE for a unique-constraint violation.
@@ -215,6 +218,11 @@ func (s *InstallService) persistInstall(ctx context.Context, p installPersist) (
 			return db.ChannelInstallation{}, s.liveOwnerConflictErr(ctx, p.wsID, p.appIDKey)
 		}
 		return db.ChannelInstallation{}, fmt.Errorf("upsert dingtalk installation: %w", err)
+	}
+	if p.audit != nil {
+		if err := p.audit(tx, inst); err != nil {
+			return db.ChannelInstallation{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.ChannelInstallation{}, fmt.Errorf("commit dingtalk install: %w", err)
