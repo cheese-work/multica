@@ -55,7 +55,7 @@ func episodeLiveRequests(snapshot decisionWakeSnapshot) map[pgtype.UUID]bool {
 
 // classifyEpisodeRequest is the §6.1 map. Every value the check constraints
 // allow lands in a row; a value without an explicit row falls to other_terminal.
-func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]bool) terminalRow {
+func classifyEpisodeRequest(request db.DecisionRequest, live, actionExpired map[pgtype.UUID]bool) terminalRow {
 	switch request.Status {
 	case "answered":
 		if live[request.ID] {
@@ -66,6 +66,9 @@ func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]boo
 		case "human_removed", "lane_archived":
 			return terminalRow{2, "reask"}
 		case "expired":
+			if actionExpired[request.ID] {
+				return terminalRow{3, "action_expired"}
+			}
 			return terminalRow{3, "expired"}
 		case "agent_withdrawn":
 			if request.WithdrawnByUserID.Valid {
@@ -92,9 +95,22 @@ type episodeVerdict struct {
 	unauthorized bool
 }
 
-// memberMovedAfter reports whether a person changed the issue's status after t.
+// memberMovedAfter reports whether a person's move opened a run-budget window
+// after t: only an interactive session's move does (CHE-2798 S1d).
 func memberMovedAfter(ctx context.Context, queries *db.Queries, issueID pgtype.UUID, t time.Time) (bool, error) {
 	moved, err := queries.LatestMemberStatusChange(ctx, issueID)
+	return movedAfter(moved, err, t)
+}
+
+// memberMovedStatusAfter reports whether a person moved the issue's status
+// after t, whatever session made the move. A refused dispatch resumes on it, so
+// it must match the dispatch_refused branch of ListDecisionEpisodeCandidates.
+func memberMovedStatusAfter(ctx context.Context, queries *db.Queries, issueID pgtype.UUID, t time.Time) (bool, error) {
+	moved, err := queries.LatestMemberStatusMove(ctx, issueID)
+	return movedAfter(moved, err, t)
+}
+
+func movedAfter(moved pgtype.Timestamptz, err error, t time.Time) (bool, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -128,7 +144,7 @@ func (handler *Handler) episodeResumeHolds(ctx context.Context, queries *db.Quer
 			}
 			switch task.Status {
 			case "queued", "dispatched", "running", "waiting_local_directory":
-				return memberMovedAfter(ctx, queries, issue.ID, suspendedAt)
+				return memberMovedStatusAfter(ctx, queries, issue.ID, suspendedAt)
 			}
 		}
 		return true, nil
@@ -168,12 +184,20 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 			return verdict, err
 		}
 	}
+	expiredActions, err := queries.ListDecisionWaitExpiredActionRequests(ctx, db.ListDecisionWaitExpiredActionRequestsParams{WorkspaceID: snapshot.wait.WorkspaceID, RequestIds: snapshot.wait.RequestIds})
+	if err != nil {
+		return verdict, err
+	}
+	actionExpired := make(map[pgtype.UUID]bool, len(expiredActions))
+	for _, id := range expiredActions {
+		actionExpired[id] = true
+	}
 	verdict.wait, verdict.rows = false, make(map[pgtype.UUID]terminalRow, len(snapshot.requests))
 	best := terminalRow{priority: 99}
 	allTaskWithdrawn := len(snapshot.requests) > 0
 	var withdrawnBy pgtype.UUID
 	for _, request := range snapshot.requests {
-		row := classifyEpisodeRequest(request, live)
+		row := classifyEpisodeRequest(request, live, actionExpired)
 		verdict.rows[request.ID] = row
 		if row.priority < best.priority {
 			best = row
@@ -189,7 +213,7 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return verdict, err
 		}
-		if err == nil && task.Status == "running" && task.AgentID == snapshot.wait.AskingAgentID && task.IssueID == snapshot.issue.ID {
+		if err == nil && task.Status == "running" && task.AgentID == snapshot.recipient.ID && task.IssueID == snapshot.issue.ID {
 			verdict.running = task.ID
 		}
 	}
@@ -240,8 +264,56 @@ func (handler *Handler) loadDecisionEpisode(ctx context.Context, queries *db.Que
 			snapshot.squadID = squad.ID
 		}
 	}
-	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, wait.AskingAgentID)
+	recipientID, err := handler.episodeRecipient(ctx, queries, &snapshot)
+	if err != nil {
+		return snapshot, err
+	}
+	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, recipientID)
 	return snapshot, err
+}
+
+// episodeRecipient is the agent the continuation wakes: the issue's owner
+// (the placement the episode restores, or the current assignee when nothing is
+// restored) when that is an eligible agent, otherwise the asking agent. A squad
+// owner wakes its leader in the squad context.
+func (handler *Handler) episodeRecipient(ctx context.Context, queries *db.Queries, snapshot *decisionWakeSnapshot) (pgtype.UUID, error) {
+	wait, issue := snapshot.wait, snapshot.issue
+	ownerType, ownerID := issue.AssigneeType, issue.AssigneeID
+	if wait.RestoreOnResume {
+		ownerType, ownerID = wait.RestoreAssigneeType, wait.RestoreAssigneeID
+	}
+	agentID, squadID := pgtype.UUID{}, pgtype.UUID{}
+	switch ownerType.String {
+	case "agent":
+		agentID = ownerID
+	case "squad":
+		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: ownerID, WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return wait.AskingAgentID, nil
+		} else if err != nil {
+			return wait.AskingAgentID, err
+		}
+		agentID, squadID = squad.LeaderID, squad.ID
+	}
+	if !agentID.Valid || agentID == wait.AskingAgentID {
+		return wait.AskingAgentID, nil
+	}
+	owner, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return wait.AskingAgentID, nil
+	} else if err != nil {
+		return wait.AskingAgentID, err
+	}
+	if owner.ArchivedAt.Valid || !owner.RuntimeID.Valid || owner.Kind == "system" {
+		return wait.AskingAgentID, nil
+	}
+	if invocable, err := handler.personMayInvoke(ctx, queries, owner.ID, wait.HumanUserID, issue.WorkspaceID); err != nil {
+		return wait.AskingAgentID, err
+	} else if !invocable {
+		return wait.AskingAgentID, nil
+	}
+	snapshot.squadID = squadID
+	return owner.ID, nil
 }
 
 // episodeRestore is design §4.4.2 step 6: one explicit-assignee write of the
@@ -304,8 +376,16 @@ func (handler *Handler) episodeInputs(ctx context.Context, queries *db.Queries, 
 			// The quotes are listed with the answers below.
 		case "reask":
 			fmt.Fprintf(&summary, "- Request %s was cancelled (%s). Ask again through a new decision-intent window and a fresh lane listing. No automatic re-ping or server-created DM.\n", id, request.CancelReason.String)
-		case "expired":
-			fmt.Fprintf(&summary, "- Request %s expired. It was cancelled `expired` and no answer was delivered.\n", id)
+		case "expired", "action_expired":
+			human, err := queries.GetUser(ctx, request.HumanUserID)
+			if err != nil {
+				return nil, "", trigger, err
+			}
+			what, next := "expired", "Re-resolve the human in charge, or move the issue to blocked with this reason."
+			if row.reason == "action_expired" {
+				what, next = "expired: the prepared action expired before approval", "Move the issue to blocked with the expiry stated as the reason."
+			}
+			fmt.Fprintf(&summary, "- Request %s %s. It was cancelled `expired` and no answer was delivered. Expiry is not an answer: do not ask %s the same question again. %s\n", id, what, human.Name, next)
 		case "human_withdrawn":
 			human, err := queries.GetUser(ctx, request.WithdrawnByUserID)
 			if err != nil {

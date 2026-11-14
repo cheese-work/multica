@@ -89,6 +89,100 @@ func TestPRChecksPassedWakesOwnerOncePerHead(t *testing.T) {
 	}
 }
 
+// contexts replaces the check runs the snapshot reports for the head.
+func (g *greenSnapshot) contexts(cs ...ghsnapshot.CheckContext) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.current.Contexts = cs
+}
+
+var (
+	buildDone    = ghsnapshot.CheckContext{Name: "build", Status: "completed", Conclusion: "success"}
+	buildRunning = ghsnapshot.CheckContext{Name: "build", Status: "in_progress"}
+	verdictWait  = ghsnapshot.CheckContext{Name: "security-gate", Status: "in_progress", IsStatusContext: true}
+)
+
+// The security-gate status stays PENDING until a verdict exists, so a head whose
+// only unfinished context is that status counts as green (CHE-4938). The verdict
+// arriving later turns the rollup SUCCESS on the same head and wakes nobody twice.
+func TestPRChecksPassedWakesWhileOnlyVerdictPending(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 1966002
+	const prNumber int32 = 196602
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "verdict pending wake", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	linkedPRForWakeup(t, fx, installationID, prNumber, "verdict-head-a")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	setWorkspacePRWakeSetting(t, "github_wake_on_ci_success", true)
+	snap := newGreenSnapshot("verdict-head-a")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	count := func() int { return prRuleWakeups(t, fx.child.ID, agentID, "pr_checks_passed") }
+
+	snap.set(t, prNumber, "verdict-head-a", "PENDING")
+	snap.contexts(buildRunning, verdictWait)
+	refresh()
+	if got := count(); got != 0 {
+		t.Fatalf("another check still running woke the owner: %d wakeups, want 0", got)
+	}
+
+	snap.contexts(buildDone, verdictWait)
+	refresh()
+	if got := count(); got != 1 {
+		t.Fatalf("only the verdict pending queued %d wakeups, want 1", got)
+	}
+
+	snap.set(t, prNumber, "verdict-head-a", "SUCCESS")
+	snap.contexts(buildDone, ghsnapshot.CheckContext{Name: "security-gate", Status: "completed", Conclusion: "success", IsStatusContext: true})
+	refresh()
+	if got := count(); got != 1 {
+		t.Fatalf("verdict arriving on the same head woke again: %d wakeups, want 1", got)
+	}
+}
+
+// A red run re-run to green on the same head is a new green (CHE-4938); the
+// same green delivered again is not.
+func TestPRChecksPassedWakesAgainAfterRedOnSameHead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 1966003
+	const prNumber int32 = 196603
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "rerun green wake", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	linkedPRForWakeup(t, fx, installationID, prNumber, "rerun-head")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	setWorkspacePRWakeSetting(t, "github_wake_on_ci_success", true)
+	snap := newGreenSnapshot("rerun-head")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	count := func() int { return prRuleWakeups(t, fx.child.ID, agentID, "pr_checks_passed") }
+	finish := func() {
+		testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, fx.child.ID)
+	}
+
+	refresh()
+	if got := count(); got != 1 {
+		t.Fatalf("green head queued %d wakeups, want 1", got)
+	}
+	finish()
+	snap.set(t, prNumber, "rerun-head", "FAILURE")
+	refresh()
+	finish()
+	snap.set(t, prNumber, "rerun-head", "SUCCESS")
+	refresh()
+	if got := count(); got != 2 {
+		t.Fatalf("red then green on one head queued %d green wakeups in total, want 2", got)
+	}
+	finish()
+	refresh()
+	if got := count(); got != 2 {
+		t.Fatalf("the re-run green delivered again woke again: %d, want 2", got)
+	}
+}
+
 func TestCIGreenAdvancesWorkflowExactlyOneStep(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -298,4 +392,63 @@ func TestHandoffSaveKeepsEdgesAndValidatesThem(t *testing.T) {
 		"steps": []map[string]any{{"status_key": "in_progress", "edges": []map[string]any{{"to": "done", "guard": "pr.merged"}}}},
 	})
 	testutil.Call(t, testHandler.CreateIssueWorkflow, createBad).Want(http.StatusBadRequest)
+}
+
+// The default workflow keeps a parent in in_progress while a sub-issue is open
+// (step 5), so a green PR on the parent must not advance it until every child
+// is done or closed. No children advances as before.
+func TestCIGreenAdvanceWaitsForOpenChildren(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	cases := []struct {
+		name     string
+		children []string
+		want     string
+	}{
+		{"open child", []string{"in_progress"}, "in_progress"},
+		{"one open of two", []string{"done", "todo"}, "in_progress"},
+		{"all done or cancelled", []string{"done", "cancelled"}, "in_review"},
+		{"no children", nil, "in_review"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installationID := int64(1966010 + i)
+			prNumber := int32(196610 + i)
+			fx := newPRMergeWebhookFixture(t, installationID)
+			wf := createTestWorkflowSteps(t, "CI children "+workflowTestSuffix(), []map[string]any{
+				{"status_key": "backlog"},
+				{"status_key": "in_progress", "edges": []map[string]any{
+					{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+				}},
+				{"status_key": "in_review"},
+				{"status_key": "blocked"},
+			})
+			projectID := createWorkflowTestProject(t, "CI children project")
+			setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID); err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range tc.children {
+				var childID string
+				if err := testPool.QueryRow(context.Background(), `
+					INSERT INTO issue (workspace_id, creator_type, creator_id, title, status, priority, number, position, parent_issue_id)
+					VALUES ($1, 'member', $2, 'CHE-5701 sub-issue', $4, 'none',
+					        (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1), 0, $3)
+					RETURNING id
+				`, testWorkspaceID, testUserID, fx.child.ID, status).Scan(&childID); err != nil {
+					t.Fatalf("create %s sub-issue: %v", status, err)
+				}
+				t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, childID) })
+			}
+			linkedPRForWakeup(t, fx, installationID, prNumber, "green-kids-a")
+			setWorkspacePRWakeSetting(t, "github_enabled", true)
+			refresh := startSnapshotRefresh(t, installationID, prNumber, newGreenSnapshot("green-kids-a").get)
+			refresh()
+			if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != tc.want {
+				t.Fatalf("green head with sub-issues %v left the issue at %s, want %s", tc.children, got, tc.want)
+			}
+		})
+	}
 }

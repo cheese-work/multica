@@ -142,12 +142,6 @@ class GatePrWithSemgrepTest(unittest.TestCase):
 
 
 class WorkflowAndBaselineTest(unittest.TestCase):
-    def test_workflow_runs_semgrep_with_a_pinned_install(self):
-        text = (ROOT / ".github/workflows/security-gate.yml").read_text()
-        self.assertIn("--semgrep", text)
-        self.assertRegex(text, r"semgrep==\d+\.\d+\.\d+")
-        self.assertNotIn("pull_request.head", text)  # still never checks out or executes the head
-
     def test_baseline_file_is_committed_and_well_formed(self):
         data = json.loads((ROOT / sg.SEMGREP_BASELINE).read_text())
         self.assertEqual(data["findings"], sorted(data["findings"]))

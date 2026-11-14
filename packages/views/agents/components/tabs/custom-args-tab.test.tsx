@@ -156,4 +156,32 @@ describe("CustomArgsTab", () => {
     renderTab({ id: "agent-editor", custom_args: [] });
     expect(screen.getByRole("textbox", { name: /new argument/i })).toHaveValue("--half-typed");
   });
+
+  it("keeps the unsaved list when the tab unmounts mid-save and the save then fails", async () => {
+    const user = userEvent.setup();
+    let reject: (e: Error) => void = () => {};
+    const onSave = vi.fn(() => new Promise<void>((_, r) => { reject = r; }));
+    const first = renderTab({ id: "agent-failing", custom_args: [] }, onSave);
+    await user.click(screen.getByRole("button", { name: /add argument/i }));
+    await user.type(screen.getByRole("textbox", { name: /new argument/i }), "--lost");
+    await user.click(screen.getByRole("button", { name: /^add$/i }));
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // The parent applies the save optimistically: the agent now matches the list.
+    first.rerender(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <CustomArgsTab
+          agent={{ ...baseAgent, id: "agent-failing", custom_args: ["--lost"] }}
+          runtimeDevice={runtimeDevice}
+          onSave={onSave}
+        />
+      </I18nProvider>,
+    );
+    first.unmount();
+    reject(new Error("boom"));
+    await Promise.resolve();
+
+    renderTab({ id: "agent-failing", custom_args: [] });
+    expect(screen.getByText("--lost")).toBeInTheDocument();
+  });
 });

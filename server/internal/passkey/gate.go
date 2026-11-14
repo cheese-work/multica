@@ -93,7 +93,10 @@ func (service *Service) IssueGateChange(ctx context.Context, userID, workspaceID
 // SetDecisionGate moves the workspace's decision gate to target once the owner
 // signed that exact change, and bumps policy_revision. A sign-count regression
 // marks the signing credential suspect, outside the aborted transaction.
-func (service *Service) SetDecisionGate(ctx context.Context, userID, workspaceID pgtype.UUID, target string, assertion json.RawMessage) error {
+//
+// audit, when set, runs in the same transaction after the change and before the
+// commit; its error rolls the change back and is returned as is.
+func (service *Service) SetDecisionGate(ctx context.Context, userID, workspaceID pgtype.UUID, target string, assertion json.RawMessage, audit GateAuditFn) error {
 	tx, err := service.Tx.Begin(ctx)
 	if err != nil {
 		return err
@@ -139,8 +142,17 @@ func (service *Service) SetDecisionGate(ctx context.Context, userID, workspaceID
 	}); err != nil {
 		return err
 	}
+	if audit != nil {
+		if err := audit(ctx, queries, current.DecisionPasskeyGate, changed); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
+
+// GateAuditFn writes the audit row for a decision-gate change inside the
+// change's transaction: previous is the gate state before it, changed the row after.
+type GateAuditFn func(ctx context.Context, queries *db.Queries, previous string, changed db.SetWorkspaceDecisionGateRow) error
 
 // abortAssertion rolls the transaction back after a refused assertion and, for
 // a sign-count regression, flags the credential in its own statement.

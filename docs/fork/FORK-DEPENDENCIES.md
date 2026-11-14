@@ -1,7 +1,7 @@
 # Fork feature dependencies
 
-Companion to [FORK-FEATURES.md](FORK-FEATURES.md) (CHE-2792). Evidence for each `Depends on` value.
-Static read of fork `main` `ee8b37834f56f7219f17d2046c8155a731cb80d8` (2026-11-02 16:33 ICT). No runtime qualification.
+Companion to [FORK-FEATURES.md](FORK-FEATURES.md) (CHE-4789). Evidence for each `Depends on` value.
+Static read of fork `main` `e8f066f3eaba3a2f3ea2f832b2a962e4356e310a` (2026-11-09 08:44 ICT). No runtime qualification.
 
 ## Method
 
@@ -15,10 +15,10 @@ Static read of fork `main` `ee8b37834f56f7219f17d2046c8155a731cb80d8` (2026-11-0
 
 | Item | Count |
 | --- | --- |
-| Rows | 168 |
-| Rows with `Depends on: none` | 90 |
-| Hard edges | 130 |
-| Soft edges | 10 |
+| Rows | 248 |
+| Rows with `Depends on: none` | 131 |
+| Hard edges | 168 |
+| Soft edges | 20 |
 
 ## Cycles
 
@@ -48,6 +48,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | C08 | C26 | hard | server/internal/handler/decision_worker.go:197 calls deliverDecisionVetoNotice defined in decision_veto_notice.go:18 |
 | C08 | C28 | hard | server/cmd/multica/cmd_decision.go:228 calls runDecisionListOpenAsks defined in cmd_decision_open_asks.go:35 |
 | C08 | C29 | hard | server/internal/handler/decision_worker.go:219 calls completeDecisionActionPostCommit defined in decision_action_approve.go:319 |
+| C08 | C54 | soft | server/internal/handler/decision_delivery.go:83 calls GetBindingDecisionWait, reading decision_wait episodes (reverse edge) |
 | C09 | C05 | hard | server/internal/handler/decision_request_api.go:238 calls isMachineCredentialActor (actor_guards.go:60) |
 | C09 | C10 | hard | server/internal/handler/decision_request_api.go:111 calls createDecisionRequest defined in decision_request.go:69 |
 | C09 | C24 | hard | server/internal/handler/decision_request_api.go:49 calls decisiontx.DecodeAsk (decisiontx/ask.go) |
@@ -72,6 +73,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | C28 | B03 | hard | server/internal/handler/decision_authority.go:34 isServerDecision (run_budget_decision.go) |
 | C28 | C08 | hard | server/internal/handler/chat_decision_reply.go:147 DecisionWorker (decision_worker.go) |
 | C28 | C12 | hard | server/internal/handler/chat_decision_reply.go:23 service.IsCompactCommand (service/auto_compact.go:81) |
+| C28 | C61 | soft | server/internal/handler/chat_decision_reply.go:130 calls ResolveChatAttentionOnHumanSend, so a human reply settles DM attention (reverse edge) |
 | C29 | B03 | hard | server/internal/handler/decision_action_approve.go:192 isServerDecision (run_budget_decision.go) |
 | C29 | C06 | hard | server/internal/handler/decision_action_approve.go:74 decisionIntentRefusal (decision_intent.go) |
 | C29 | C28 | hard | server/internal/handler/decision_action_approve.go:79 decisionClassNeedsOwner, :197 requireDecisionAuthorityIn (decision_authority.go) |
@@ -89,9 +91,28 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | C37 | C22 | soft | apps/web/app/[workspaceSlug]/opensearch.xml/route.ts:32,45 advertises the suggestions URL; layout.tsx:73 links the descriptor (C22 #219) |
 | C41 | C25 | hard | server/internal/handler/comment_supersede.go:160,167 h.withDecisionFields (defined decision_cards.go:247) |
 | C45 | C44 | hard | packages/views/issues/components/hierarchy/use-hierarchy.ts:8 imports issueRelationsOptions from @multica/core/issues/relations; :34 useQuery on it |
+| C45 | C67 | hard | packages/views/issues/components/hierarchy/hierarchy-layout.ts:1 imports Box from ../canvas/canvas-math, the split engine file (reverse edge) |
 | C48 | C11 | soft | server/internal/handler/chat_continue.go:93 returns WebURL via weblink.Build in the continue response |
 | C48 | C13 | soft | server/internal/handler/chat_fork.go:254,318 returns WebURL via weblink.Build in the fork response |
 | C49 | C16 | hard | server/pkg/db/queries/push.sql:119 inbox_item_visible() (migration 650_inbox_item_dm_reply, #276) and :112-116 notification_channel_preference (#272) |
+| C50 | C25 | soft | packages/views/common/decision-request-card.tsx:225 renders DecisionActionApproval for a proposal on the quote card |
+| C50 | C29 | hard | server/internal/handler/decision_action_proposal.go:64 calls decisionaction.Canonical to canonicalise the proposed action before it is stored |
+| C51 | C29 | hard | server/internal/handler/decision_action_approve.go:156 looks up configChanges[preview.ActionType] to run a registered config change |
+| C51 | G24 | soft | server/internal/handler/decision_action_config_change.go:189 calls delegatedWriteAllowed (workspace delegated-write setting, workspace_delegated_writes.go:27) |
+| C52 | C51 | hard | server/internal/handler/decision_action_agent_instructions.go:24 calls registerConfigChange to register the action with the C51 core |
+| C54 | C08 | hard | server/internal/handler/decision_wait_delivery.go:46 takes decisionWakeSnapshot (decision_delivery.go:22) to deliver the episode |
+| C54 | C53 | hard | server/internal/handler/decision_wait_entry.go:129 calls resolveHumanInCharge to pick the waiting person |
+| C55 | C09 | hard | server/internal/handler/agent_decision.go:535 inserts the agent decision into decision_request |
+| C57 | C24 | hard | server/internal/handler/system1_shadow.go:26 takes the decisiontx ask package to record the shadow ask |
+| C58 | C30 | hard | server/internal/handler/decision_card_answer_gate.go:12 imports server/internal/passkey and uses passkey.GateBlock (:29) |
+| C59 | C30 | hard | packages/views/settings/components/passkeys-tab.tsx:8 imports the passkey schema (packages/core/api/passkey-schema.ts, C30 source) |
+| C62 | C61 | hard | packages/views/chat/components/needs-you-list.tsx:46 reads attention_since from the session-list projection |
+| C71 | C72 | hard | server/migrations/99955_dm_progress_capture.up.sql:17 capture function reads the dm_progress_follow table owned by C72 |
+| C72 | C05 | hard | server/pkg/db/queries/dm_progress.sql:20 |
+| C72 | C11 | hard | server/pkg/db/queries/dm_progress.sql:7 |
+| C74 | C09 | hard | server/pkg/db/queries/decision_wake_receipt.sql:33 |
+| C75 | C09 | hard | server/internal/service/issue_wakeup_ask_guard.go:30 |
+| C76 | C24 | hard | server/internal/decisiontx/ask_waiver.go:75 |
 | H02 | C03 | hard | server/internal/handler/pr_auto_complete.go:304 h.childStatusResolver / isTerminalChildStatus defined in handler/issue_child_done.go:704 |
 | H05 | W05 | soft | server/internal/handler/github.go:1403 fires SystemRulePRAttention; recheck still refreshes without the wakeup |
 | H08 | C05 | hard | server/internal/handler/auth.go:762 requires X-Actor-Source interactive_jwt, set from JWT amr claim at server/internal/middleware/auth.go:331 |
@@ -99,8 +120,11 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | H10 | H09 | hard | server/internal/handler/github_intake_worker.go:308 calls TaskService.PrepareTaskForMention / EnqueuePreparedTaskForMentionInTx defined in service/task.go:1769 by #389 |
 | H11 | D08 | hard | server/internal/daemon/duplicate_delivery.go:94 startTaskWithCurrentClaim (defined by #358, return type changed by #535) |
 | H11 | W05 | soft | server/pkg/db/queries/task_pr_event.sql:204 ListPROnlyRunIDs matches wakeup receipt types written by service/issue_wakeup_system.go:163 |
-| W04 | W15 | hard | server/internal/handler/issue_workflow_ci_advance.go:50 issueworkflow.FirstMatch over def.EdgesOf(status); server/internal/issueworkflow/edges.go:212 FirstMatch is the fork edge engine |
+| H12 | H05 | hard | server/internal/handler/github_allowlist.go:55 |
+| H13 | H10 | hard | server/internal/handler/github_intake_worker.go:314 |
+| H14 | H10 | soft | server/internal/handler/github_intake.go:107 asks allowedGitHubInstallations before the signed delivery is stored |
 | W04 | W05 | soft | server/internal/handler/github.go:1432 advanceIssueOnCIGreen runs inside the PR-checks block that W05 also drives; falls back to server/internal/service/issue_wakeup_system.go:44 pr_checks_passed wakeup |
+| W04 | W15 | hard | server/internal/handler/issue_workflow_ci_advance.go:50 issueworkflow.FirstMatch over def.EdgesOf(status); server/internal/issueworkflow/edges.go:212 FirstMatch is the fork edge engine |
 | W05 | W06 | hard | server/internal/service/issue_wakeup_system.go:253 loadBuiltinWakeup(ctx,q,issue,in.Rule,legacy) reads the W06 definition cascade |
 | W05 | W08 | hard | server/internal/service/issue_wakeup_system.go:1489 config.aggregateCaps() + admitAggregateStart in the system-wakeup start path |
 | W05 | W09 | hard | server/internal/service/issue_wakeup_system.go:1392 config.defersActiveRun(); :1455 deferForActiveRun |
@@ -116,11 +140,20 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | W16 | W15 | hard | server/internal/handler/issue_workflow_edges.go:71 spawn happens inside the edge-advance loop; stage join reads edge Facts (server/internal/issueworkflow/edges.go:212) |
 | W17 | W15 | hard | server/internal/handler/issue_workflow_edges.go:197 facts.Webhooks = h.guardedWebhooks(...); server/internal/issueworkflow/edges.go:35 GuardWebhook guard consumes verified events |
 | W19 | W15 | hard | server/internal/handler/issue_workflow_entry_gate.go:84 h.loadEdgeFacts(...); :206 issueworkflow.Edge; server/internal/issueworkflow/entry.go:16 MaxEntryGatesPerStep = MaxEdgesPerStep, :63 ParseGuard |
-| W20 | H07 | hard | server/internal/handler/github_workflow.go:62 `githubEnabledForWorkspace(ws)`; the helper is defined at server/internal/handler/github.go:2679 (added by fork commit cec25ddc8b, row H07) and is absent from upstream `3794359792` (upstream has the `github_enabled` setting, read in server/internal/daemon/daemon.go:3294, but no handler helper). The H07 writer was removed (149e45f53e); the 17-line helper stayed. W20 needs it bundled |
+| W20 | H07 | hard | server/internal/handler/github_workflow.go:62 `githubEnabledForWorkspace(ws)`; the helper is defined at server/internal/handler/github.go:2679 (added by fork commit cec25ddc8b, row H07) and is absent from upstream `7397565332` (upstream has the `github_enabled` setting, read in server/internal/daemon/daemon.go:3300, but no handler helper). The H07 writer was removed (149e45f53e); the 17-line helper stayed. W20 needs it bundled |
 | W21 | W06 | hard | server/internal/service/wakeup_custom_exec.go:47 b := &builtinWakeup{Eff: r.eff, ...} |
 | W21 | W07 | hard | server/internal/service/wakeup_custom_instance.go:139 ApplyDefaultWakeupInstance; wakeup_custom_sweep.go:312 same call |
 | W21 | W08 | hard | server/internal/service/wakeup_custom_exec.go:262 admitAggregateStart(...) |
 | W21 | W09 | hard | server/internal/service/wakeup_custom_exec.go:237 deferForActiveRun(...) |
+| W23 | W06 | hard | packages/core/workspace/wakeup-definitions.ts:29 |
+| W24 | W06 | hard | server/internal/handler/wakeup_definition.go:199 |
+| W25 | H05 | soft | server/internal/integrations/ghsnapshot/checks_enrich.go:34 |
+| W25 | W15 | hard | server/internal/handler/issue_workflow_edges.go:47 |
+| W26 | W15 | hard | server/internal/workflowlint/workflowlint.go:38 |
+| W28 | W05 | soft | server/internal/service/issue_wakeup_system.go:1496 |
+| W31 | W02 | hard | packages/core/api/client.ts:1701 PUTs /api/issues/{id}/workflow, the W02 override endpoint (router.go:2210 SetIssueWorkflow) |
+| W32 | W15 | hard | server/internal/workflowlint/env.go:11 imports internal/issueworkflow and lints its Definition and Step types |
+| W33 | H05 | hard | server/internal/integrations/ghsnapshot/ratelimit.go:14 calls client.restGet on the ghsnapshot Client that the snapshot refresh owns |
 | G02 | G01 | hard | server/internal/handler/governed_instruction_owner_cas.go:158 returns hermesExceptionSwapResult (governed_instruction_hermes_exception.go:217) |
 | G02 | G03 | hard | server/cmd/multica/cmd_workspace.go:568 mirrors resolveSquadInstructions (cmd_squad.go:291); squad CLI path calls it at cmd_squad.go:274 |
 | G04 | G01 | hard | server/internal/handler/governed_instruction_vote.go:395 returns hermesExceptionSwapResult (governed_instruction_hermes_exception.go:217) |
@@ -141,26 +174,40 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | G24 | G01 | hard | server/internal/handler/governed_instruction_decision.go:41 governed instruction write path |
 | G24 | G02 | hard | server/cmd/multica/governed_cas.go:179 owner-only digest CAS |
 | G24 | G04 | hard | server/cmd/multica/governed_instruction_vote.go:65 decisionIDKey vote receipts |
+| G26 | C29 | hard | server/internal/handler/decision_action_workflow_step_instructions.go:21 |
+| G27 | G04 | hard | server/internal/handler/governed_instruction_receipt.go:26 |
+| G30 | G02 | hard | server/internal/handler/config_sync.go:30 |
 | D09 | G04 | hard | server/internal/handler/agent.go:434 ClaimedModel reads claimed_model column added by migrations/668_governed_vote_task_identity.up.sql:9 |
 | D14 | D06 | hard | server/internal/service/provider_failure_guard.go:297 uses RecordProviderFailureRecoveryParams reservation (D06 layer) |
 | D15 | D21 | hard | server/internal/handler/silence_alert.go:118 calls redact.Prose (server/pkg/redact/redact.go:227) |
 | D19 | W04 | hard | server/internal/handler/idle_started_guard_act.go:173 calls tryMoveIssueOnEdge defined at server/internal/handler/issue_workflow_ci_advance.go:104 |
 | D20 | G04 | hard | server/internal/handler/daemon_preset.go:80 writes ClaimedModel (claimed_model column, migrations/668_governed_vote_task_identity.up.sql:9) |
+| D22 | D02 | soft | server/internal/daemon/daemon.go:5072 builds the update progress reporter inside the daemon update flow; without D02 there is no update flow to report on |
+| D23 | D06 | hard | server/internal/service/task.go:6156 trips the breaker when a failed task carries ReasonAgentProviderServerError (classification D06 owns) |
+| D23 | G09 | hard | server/internal/service/provider_breaker.go:95 resolves the agent model to a provider with ResolveModelProvider (provider_hold.go:83) |
 | B01 | B02 | hard | server/internal/service/run_budget_ledger.go:78 openRunBudget calls loadRunBudgetUsage defined in run_budget_snapshot.go:112 |
 | B01 | C05 | hard | server/internal/handler/issue_run_budget.go:152 calls isMachineCredentialActor defined in actor_guards.go:60 |
-| B02 | B01 | hard | server/internal/service/run_budget_snapshot.go:145 calls openRunBudget (run_budget_ledger.go:67); :177 calls activationEpoch (run_budget_tokens.go:78) |
+| B02 | B01 | hard | server/internal/service/run_budget_snapshot.go:145 calls openRunBudget (run_budget_ledger.go:67) |
 | B03 | B01 | hard | server/internal/handler/issue_wakeup.go:199 uses errRecoveryCaused defined in issue_run_budget.go:411 |
 | B03 | C08 | hard | server/internal/handler/run_budget_decision.go:253 calls h.DecisionWorker.Notify() (decision_worker.go; field at handler.go:249) |
 | B03 | C10 | hard | server/internal/handler/run_budget_decision.go:172 builds decisionRequestInput and :201 calls createDecisionDM (decision_request.go:24,440) |
+| B04 | B01 | hard | server/internal/handler/decision_action_run_budget.go:29 calls service.LockRunBudgetWindow to lock the ledger window before raising or topping up |
+| B04 | C29 | hard | server/internal/handler/decision_action_approve.go:73 maps the new action types into the approve-to-execute executor table |
+| B05 | B04 | hard | server/internal/handler/issue_run_budget_request.go:93 looks up the open refusal and tests service.ErrRunBudgetRefusalNotFound, both owned by the refusal record |
 | S01 | S02 | hard | server/internal/daemon/sandbox/args.go:77-78 uses egressDir/bridgeMount defined at bridge.go:29-30 |
 | S01 | S04 | hard | server/internal/handler/run_profile.go:74 GetIssueTaintIDs from issue_taint.sql |
 | S02 | S01 | hard | sandbox/bridge.go:54 func (l *Launcher) bridgeExe; Spec.EgressSocket in sandbox/args.go |
 | S03 | S01 | hard | server/internal/daemon/health.go:561 refuses elevated checkout when broker.PinnedSource(...)==""; pins from handler/run_profile.go:120 grantPins, daemon.go:2912 |
 | S03 | S04 | hard | server/internal/handler/github_revision_check.go:82 uses task.TaintIds and te.State |
 | S04 | S01 | hard | server/internal/handler/task_elevation.go:60 calls validGrantScope defined at run_capability_grant.go:37 |
+| S06 | S05 | hard | server/internal/daemon/broker/broker.go:331 calls b.translate inside the push handler of the broker |
+| S07 | S05 | hard | server/internal/daemon/broker/broker.go:137 registers POST /readtoken on the broker mux |
+| S08 | S03 | hard | server/internal/daemon/readproxy/proxy.go:246 mounts p.externalRoutes on the read proxy mux |
+| S09 | S04 | hard | server/internal/handler/elevated_read_filter.go:20 stubs bodies marked external_read or carrying taint, fields S04 owns |
+| S10 | S01 | hard | server/internal/daemon/types.go:386 EffectiveProfile reads the profile the server set; DisableProviderWebTools (line 395) builds on it |
 | O03 | O05 | hard | deploy/cd/deploy.sh:169 exits if deploy-lib.sh is missing, then sources it (added by 126a8612c3, #66) |
-| O04 | O08 | hard | deploy/cd/cutover.sh:553 runs release-packet.mjs verify |
 | O04 | O05 | soft | deploy/cd/cutover.sh:140 compose_files includes docker-compose.ab.yml; :474/:694/:810/:928 call router.sh (quiescence.mjs also runs standalone via migrate-supervised.sh) |
+| O04 | O08 | hard | deploy/cd/cutover.sh:553 runs release-packet.mjs verify |
 | O05 | O04 | hard | deploy/cd/cutover.sh:616 runs quiescence.mjs preflight; :727 final-gate |
 | O05 | O08 | hard | deploy/cd/cutover.sh:553 runs release-packet.mjs verify |
 | O06 | O03 | hard | deploy/cd/candidate-preflight.sh:19 runs admission.mjs checks; check-deploy-queue.py:24 queries cd-deploy runs |
@@ -170,7 +217,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | O10 | O01 | soft | CI sets CI: "true" at .github/workflows/ci.yml:527,783; server/internal/testutil/nodb.go ExitWithoutDatabase fails only when CI is set |
 | O15 | O27 | hard | apps/web/features/landing/components/changelog-page-client.tsx:22 imports ./fork-changelog (O27 file) |
 | O16 | D06 | hard | server/internal/service/provider_failure_guard.go (defined in D06's source) holds the probe/guard; service/task.go:94 ProviderFailureProbe field and handler.go:517-521 wiring need it |
-| O21 | O03 | hard | cd-deploy.yml:26-28 workflow_run on 'CD qualification build'; :372 admission.mjs verify |
+| O21 | O03 | hard | cd-deploy.yml schedule (4 h) resolving the newest 'CD qualification build' success; :372 admission.mjs verify |
 | O21 | O04 | hard | cd-deploy.yml:564-567 render-cutover-remote-script.sh runs cutover.sh |
 | O21 | O05 | hard | deploy/cd/cutover.sh:474 router.sh |
 | O21 | O06 | hard | cd-deploy.yml:153 runs candidate-preflight.sh |
@@ -179,6 +226,8 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | O25 | O20 | hard | ci.yml:20 needs changes; :186 runs ci-scope.mjs decide |
 | O25 | O22 | hard | ci.yml:20 needs migration-prefix-check (job at :48) |
 | O27 | O15 | hard | scripts/fork-changelog-fetch.mjs:5 imports from ./fork-changelog.mjs |
+| O28 | O24 | soft | .github/workflows/security-weekly.yml:43 scans the whole tree with the security-gate rule packs; without O24 the scan loses its rule packs |
+| O33 | O26 | soft | playwright.perf.config.ts:17 matches the chip-stability, chip-retention and compact-thread-reply specs in the perf project |
 
 ## Notes recorded while tracing
 
@@ -213,6 +262,18 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 - **C45**: Dropped packages/ui dialog.tsx (shared).
 - **C47**: issue_workflow_write.go (W19) is touched by #383 but has no project-admission reference at HEAD; no dependency recorded.
 - **C49**: Dropped auth/store.ts, use-logout.ts, shutdown.go (shared).
+- **C50**: also uses C58 passkey approval component (shared file decision-action-approval.tsx, listed in both Sources); no separate edge.
+- **C51**: workspace_delegated_writes.go is in both C51 and G24 territory; G24 edge is soft because config-change runs when the setting is off.
+- **C54**: C54 is hard on C08 delivery; C08 reads episodes back through a soft edge, so there is no hard cycle. server/internal/issueworkflow/issueworkflow.go:52 HandlerHumanInCharge is used at decision_wait_entry.go:77; no ledger row owns that constant (W15/W18 nearest), so no edge.
+- **C56**: runs without C09 in the code read; no call line found, edge is none.
+- **C57**: shadow only; issue.go:4755 recordSystem1Routing is a shared-file hook.
+- **C60**: session_generation.go handler uses the C30 session-generation lock (LockUserSessionGeneration at :58) but C30 Source names other files; no edge written.
+- **C61**: C28 file chat_decision_reply.go calls into attention (reverse edge above). Shared files with C34 and C35 (task.go): applyHumanSendAttention at service/task.go:3191.
+- **C63**: no draft consumer call line verified; edge none.
+- **C65**: extends the status-history core named in C30 title (#773). C30 Source does not list status_history.go, so ownership is unresolved and no edge is written.
+- **C66**: TimelineRow type mentions status_changed rows only in a comment (issue_actual_timeline.go:24); no code edge to C65.
+- **C67**: C45 now imports canvas-math from the split (reverse edge above).
+- **C68, C69, C70**: no row-to-row edge verified. C70 shares chat_compact.go with C34 (same file, no call line).
 - **H01**: Source list had two commit hashes (ffa2f9711, 2b558f361), not paths; dropped router.go as shared.
 - **H03**: Upstream 6388272a8a (#9598) touched the same file (skip move when project workflow lacks target) but is not the custom-state behavior.
 - **H05**: BaseSHA/BaseRef in snapshot.go come from H11, not H05.
@@ -273,8 +334,9 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 - **O16**: D06 and D14 also edit provider_failure_guard.go and task.go.
 - **O17**: Both source files are shared with upstream edits, so syncs conflict here.
 - **O21**: cd-deploy.yml:89-91 concurrency cd-deploy-c00-approval; :168-170 queue max.
-- **O23**: fork-sync-guard.yml:37 runs the script.
+- **O23**: pr-guards.yml (fork-sync-guard job) runs the script.
 - **O24**: trusted-authors.json read at security_gate.py:214 (same row).
 - **O25**: warning-budget.mjs:162,168 baselines come from main push runs and throw if none; push jobs are skipped when merge_group_green (ci.yml:780).
 - **O26**: Only the web page-load baseline survives; the governance teardown flake and stale-verdict race tests were removed with governance.
 - **O27**: help-launcher.tsx shared with O14; issues.md shared with O17.
+- **X06 to X14**: design-only, none.

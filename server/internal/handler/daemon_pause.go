@@ -201,14 +201,25 @@ func (h *Handler) PauseDaemon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	pause, err := qtx.UpsertDaemonPause(r.Context(), db.UpsertDaemonPauseParams{
-		MachineOwnerID: machineOwnerID(rt),
-		DaemonID:       rt.DaemonID.String,
-		WorkspaceID:    rt.WorkspaceID,
-		Reason:         req.Reason,
-		PausedBy:       member.UserID,
-	})
+	before, err := livePauseOf(r.Context(), qtx, rt)
+	var pause db.DaemonPause
 	if err == nil {
+		pause, err = qtx.UpsertDaemonPause(r.Context(), db.UpsertDaemonPauseParams{
+			MachineOwnerID: machineOwnerID(rt),
+			DaemonID:       rt.DaemonID.String,
+			WorkspaceID:    rt.WorkspaceID,
+			Reason:         req.Reason,
+			PausedBy:       member.UserID,
+		})
+	}
+	if err == nil {
+		if err = h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind: "runtime.pause", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+			Before: pauseAuditFields(before), After: pauseAuditFields(&pause),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "runtime.pause")
+			return
+		}
 		err = tx.Commit(r.Context())
 	}
 	if err != nil {
@@ -218,6 +229,22 @@ func (h *Handler) PauseDaemon(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publishMachineRefresh(r.Context(), rt, "member", uuidToString(member.UserID), "pause")
 	writeJSON(w, http.StatusOK, pauseToResponse(pause))
+}
+
+// livePauseOf reads the machine's live pause through q; nil when none.
+func livePauseOf(ctx context.Context, q *db.Queries, rt db.AgentRuntime) (*db.DaemonPause, error) {
+	p, err := q.GetLiveDaemonPauseByRuntime(ctx, db.GetLiveDaemonPauseByRuntimeParams{
+		ID:              rt.ID,
+		MaintenanceSecs: int32(maintenancePauseTTL.Seconds()),
+		OtherSecs:       int32(otherPauseTTL.Seconds()),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // pauseLockTimeout bounds how long Pause or Resume waits behind a workspace
@@ -270,8 +297,18 @@ func (h *Handler) ResumeDaemon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	_, err := qtx.DeleteDaemonPause(r.Context(), db.DeleteDaemonPauseParams{MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String})
+	before, err := livePauseOf(r.Context(), qtx, rt)
 	if err == nil {
+		_, err = qtx.DeleteDaemonPause(r.Context(), db.DeleteDaemonPauseParams{MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String})
+	}
+	if err == nil {
+		if err = h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind: "runtime.resume", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+			Before: pauseAuditFields(before), After: pauseAuditFields(nil),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "runtime.resume")
+			return
+		}
 		err = tx.Commit(r.Context())
 	}
 	if err != nil {

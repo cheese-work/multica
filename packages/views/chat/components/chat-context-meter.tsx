@@ -10,31 +10,47 @@ function formatWindow(tokens: number): string {
 
 /**
  * How full the DM's context is: the latest completed run's last prompt against
- * the model's window. Ten points below the auto-compact threshold it warns that
- * the DM compacts after the next reply. Hidden when the run reported no size.
- * `thresholdPct` is null when auto-compact is off for this DM.
+ * the model's window. Near the auto-compact token threshold it shows where the
+ * DM compacts: with a known last-turn size, "after the next reply" only when
+ * less than one turn remains; otherwise from 90% of the threshold tokens.
+ * Hidden when the run reported no size. `thresholdTokens` is null when
+ * auto-compact is off for this DM.
  */
 export function ChatContextMeter({
   tokens,
   window,
-  thresholdPct,
+  thresholdTokens,
+  lastTurnTokens,
 }: {
   tokens?: number | null;
   window?: number | null;
-  thresholdPct: number | null;
+  thresholdTokens: number | null;
+  /** Prompt growth of the last turn, when known. */
+  lastTurnTokens?: number | null;
 }) {
   const { t } = useT("chat");
   if (!tokens || !window || tokens < 0 || window <= 0) return null;
   const pct = Math.floor((tokens * 100) / window);
-  const warn = thresholdPct !== null && pct >= thresholdPct - 10;
+  const turn = lastTurnTokens && lastTurnTokens > 0 ? lastTurnTokens : null;
+  const finalTurn =
+    thresholdTokens !== null && turn !== null && thresholdTokens - tokens < turn;
+  const nearThreshold =
+    thresholdTokens !== null && turn === null && tokens >= thresholdTokens * 0.9;
   return (
     <div className="flex shrink-0 flex-col items-end leading-tight tabular-nums">
       <span className="text-caption text-muted-foreground">
         {t(($) => $.header.context_meter, { pct, window: formatWindow(window) })}
       </span>
-      {warn ? (
+      {finalTurn ? (
         <span className="text-caption text-warning">
           {t(($) => $.header.context_meter_warning)}
+        </span>
+      ) : nearThreshold ? (
+        <span className="text-caption text-warning">
+          {t(($) => $.header.context_meter_threshold, {
+            threshold: formatWindow(thresholdTokens),
+            now: formatWindow(tokens),
+          })}
         </span>
       ) : null}
     </div>

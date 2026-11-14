@@ -17,7 +17,11 @@ export const ISSUE_SURFACE_VIEW_STORAGE_KEY = "multica_issue_surface_views";
 
 type PersistedIssueViewState = ReturnType<
   ReturnType<typeof viewStorePersistOptions>["partialize"]
->;
+> & { agentRunningFilter?: boolean };
+
+// The running filter is ephemeral everywhere except saved-view surfaces, where
+// it is part of the user-authored definition and must survive a reload.
+const keepsAgentRunningFilter = (surfaceKey: string) => surfaceKey.startsWith("view:");
 
 interface IssueSurfaceViewEntry {
   state: PersistedIssueViewState;
@@ -91,8 +95,16 @@ function migrateLegacySurfaceState(
   return next;
 }
 
-function persistedIssueViewState(state: IssueViewState): PersistedIssueViewState {
-  return basePersist.partialize(state);
+function persistedIssueViewState(
+  surfaceKey: string,
+  state: IssueViewState,
+): PersistedIssueViewState {
+  return {
+    ...basePersist.partialize(state),
+    ...(keepsAgentRunningFilter(surfaceKey)
+      ? { agentRunningFilter: state.agentRunningFilter }
+      : {}),
+  };
 }
 
 const issueSurfaceViewRegistryStore = createStore<IssueSurfaceViewRegistryState>()(
@@ -104,7 +116,7 @@ const issueSurfaceViewRegistryStore = createStore<IssueSurfaceViewRegistryState>
           surfaces: {
             ...current.surfaces,
             [surfaceKey]: {
-              state: persistedIssueViewState(state),
+              state: persistedIssueViewState(surfaceKey, state),
               updatedAt: new Date().toISOString(),
             },
           },

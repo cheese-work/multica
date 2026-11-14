@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { useChatSearchStore } from "@multica/core/chat/search";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
@@ -14,12 +12,11 @@ vi.mock("@multica/core/hooks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/hooks")>()),
   useWorkspaceId: () => "ws-1",
 }));
-const searchChats = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/api")>();
   return {
     ...actual,
-    api: { ...actual.api, getPendingChatTasks: vi.fn(async () => ({ tasks: [] })), searchChats },
+    api: { ...actual.api, getPendingChatTasks: vi.fn(async () => ({ tasks: [] })) },
   };
 });
 
@@ -51,9 +48,8 @@ function setup(sessions: ChatSession[] = [one]) {
     onSelectSession: vi.fn(),
     onArchiveSession: vi.fn(),
     onTogglePin: vi.fn(),
+    onMarkUnseen: vi.fn(),
     onOpenStatistics: vi.fn(),
-    onUnarchiveSession: vi.fn(),
-    onOpenMessageHit: vi.fn(),
   };
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -80,17 +76,17 @@ function openRowMenu(index: number) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useChatSearchStore.setState({ queries: {} });
 });
 
 describe("floating window session menu", () => {
-  it("lists Statistics, Pin, Rename and Archive in the same order as the page menu", () => {
+  it("lists Statistics, Pin, Mark as unseen, Rename and Archive in the same order as the page menu", () => {
     setup();
     openRowMenu(0);
     const labels = screen.getAllByRole("menuitem").map((item) => item.textContent?.trim());
     expect(labels).toEqual([
       enChat.header.statistics,
       enChat.list.pin,
+      enChat.list.unseen,
       enChat.session_history.row_rename_aria,
       enChat.list.archive,
     ]);
@@ -110,6 +106,14 @@ describe("floating window session menu", () => {
     expect(onTogglePin).toHaveBeenCalledWith(pinned);
   });
 
+  it("hands Mark as unseen to the owner for the row it belongs to", async () => {
+    const { onMarkUnseen, onSelectSession } = setup([one, pinned]);
+    openRowMenu(1);
+    fireEvent.click(await screen.findByRole("menuitem", { name: enChat.list.unseen }));
+    expect(onMarkUnseen).toHaveBeenCalledWith(pinned);
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+
   it("hands Archive to the owner, which advances the selection after the server accepted it", async () => {
     const { onArchiveSession, onSelectSession } = setup();
     openRowMenu(0);
@@ -119,57 +123,10 @@ describe("floating window session menu", () => {
   });
 });
 
-describe("floating window history search", () => {
-  const hit = (over: Record<string, unknown>) => ({
-    session_id: "one", title: "Chat one", agent_id: "agent-1", message_id: "m-1",
-    snippet: "plan the launch", updated_at: "2026-10-28T03:00:00Z", archived: false, ...over,
-  });
-  const field = () => screen.getByRole("searchbox", { name: enChat.search.label });
-
-  it("puts the field first in the popover and swaps the history for hits", async () => {
-    searchChats.mockResolvedValue({ results: [hit({})], next_cursor: null });
+describe("floating window history search (CHE-5593)", () => {
+  it("has no search field in the history popover", () => {
     setup([one, pinned]);
-    await userEvent.type(field(), "launch");
-    const list = await screen.findByRole("list", { name: enChat.search.results_label });
-    expect(list.querySelectorAll("li")).toHaveLength(1);
-    expect(screen.queryByText("Chat two")).toBeNull();
-  });
-
-  it("opens a title hit's chat and closes the popover", async () => {
-    searchChats.mockResolvedValue({ results: [hit({ message_id: null })], next_cursor: null });
-    const { onSelectSession } = setup([one, pinned]);
-    await userEvent.type(field(), "launch");
-    fireEvent.click(await screen.findByRole("link", { name: /Chat one/ }));
-    expect(onSelectSession).toHaveBeenCalledWith(one);
     expect(screen.queryByRole("searchbox")).toBeNull();
-  });
-
-  it("hands a message hit to the owner with its message, and closes the popover", async () => {
-    searchChats.mockResolvedValue({ results: [hit({})], next_cursor: null });
-    const { onSelectSession, onOpenMessageHit } = setup([one, pinned]);
-    await userEvent.type(field(), "launch");
-    fireEvent.click(await screen.findByRole("link", { name: /Chat one/ }));
-    expect(onOpenMessageHit).toHaveBeenCalledWith(one, "m-1");
-    expect(onSelectSession).not.toHaveBeenCalled();
-    expect(screen.queryByRole("searchbox")).toBeNull();
-  });
-
-  it("Escape drops the query first and keeps the popover open", async () => {
-    searchChats.mockResolvedValue({ results: [hit({})], next_cursor: null });
-    setup([one, pinned]);
-    await userEvent.type(field(), "launch");
-    await screen.findByRole("list", { name: enChat.search.results_label });
-    await userEvent.keyboard("{Escape}");
-    expect((field() as HTMLInputElement).value).toBe("");
     expect(screen.getByText("Chat two")).toBeTruthy();
-  });
-
-  it("unarchives an archived hit through the owner", async () => {
-    const archived = makeSession({ id: "arch", status: "archived" });
-    searchChats.mockResolvedValue({ results: [hit({ session_id: "arch", title: "Chat arch", archived: true })], next_cursor: null });
-    const { onUnarchiveSession } = setup([one, archived]);
-    await userEvent.type(field(), "launch");
-    fireEvent.click(await screen.findByRole("button", { name: enChat.list.unarchive }));
-    expect(onUnarchiveSession).toHaveBeenCalledWith(archived);
   });
 });

@@ -1,0 +1,98 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHE-4122 v2 A2</title><style>
+*{margin:0;box-sizing:border-box;font-family:Inter,"Segoe UI",Roboto,"Helvetica Neue",Helvetica,Arial,"Liberation Sans","DejaVu Sans",sans-serif}
+:root{--shell:oklch(0.155 0.005 285.823);--surface:oklch(0.21 0.006 285.885);--raised:oklch(0.235 0.007 285.885);--hover:oklch(0.274 0.006 286.033);--sel:oklch(0.3 0.006 286.033);--bd:oklch(1 0 0 / 10%);--fg:oklch(0.985 0 0);--mut:oklch(0.705 0.015 286.067);--faint:oklch(0.60 0.015 286.067);--inp:oklch(1 0 0 / 15%);--ring:oklch(0.552 0.016 285.938);--pri:oklch(0.92 0.004 286.32);--prifg:oklch(0.21 0.006 285.885);--ok:oklch(0.65 0.15 145);--warn:oklch(0.70 0.16 85);--err:oklch(0.704 0.191 22.216);--info:oklch(0.72 0.12 250);--menu:0 10px 28px rgb(0 0 0 / .3),0 2px 8px rgb(0 0 0 / .18)}
+body{font-size:13px;line-height:18px;color:var(--fg);background:var(--shell);padding:24px}
+h1{font-size:20px;line-height:28px;font-weight:600}.lead{font-size:14px;line-height:20px;color:var(--mut);max-width:1200px;margin:4px 0 8px}
+.cols{display:grid;grid-template-columns:900px 390px;gap:48px;align-items:start}
+.band{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);font-weight:600;margin:22px 0 8px}
+.pg{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:20px;display:grid;gap:14px}.ph{width:390px;padding:16px}
+.shell{display:grid;grid-template-columns:168px minmax(0,1fr);gap:20px;align-items:start}
+.nav{display:grid;gap:2px;font-size:13px}.nav b{font-size:11px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600;padding:8px 8px 2px}
+.nav span{padding:6px 8px;border-radius:6px;color:var(--mut)}.nav .on{background:var(--sel);color:var(--fg);font-weight:600}
+.main{display:grid;gap:14px;min-width:0}
+.crumb{color:var(--mut);font-size:12px;line-height:16px}.sh{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.sh h3{font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center}
+.d{color:var(--mut);font-size:13px}.ss{display:inline-flex;gap:6px;align-items:center;color:var(--mut);font-size:12px;white-space:nowrap}.ss .i{color:var(--ok)}
+.scope{display:inline-flex;gap:5px;align-items:center;height:22px;padding:0 8px;border:1px solid var(--inp);border-radius:99px;font-size:12px;font-weight:600;color:var(--fg);background:oklch(1 0 0 / 6%)}
+.scope.ws{border-color:oklch(0.72 0.12 250 / 55%);color:var(--info)}.scope.me{border-color:oklch(0.70 0.16 85 / 55%);color:var(--warn)}
+.info{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--bd);border-radius:10px;padding:10px 12px;background:oklch(1 0 0 / 4%);color:var(--mut);font-size:13px;line-height:18px}.info .i{margin-top:2px;color:var(--info)}.info.w .i{color:var(--warn)}.info.e .i{color:var(--err)}
+.info b{color:var(--fg);font-weight:600}a,.lk{color:var(--fg);text-decoration:underline;text-underline-offset:2px}
+.card{background:var(--raised);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.hd,.row{display:grid;grid-template-columns:minmax(0,1fr) 200px 200px;gap:16px;padding:14px 16px;align-items:start}
+.hd{padding:8px 16px;font-size:12px;line-height:16px;color:var(--mut);font-weight:600}.row{border-top:1px solid var(--bd)}
+.t{font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.m{color:var(--mut);font-size:12px;line-height:16px;margin-top:2px}
+.no{display:flex;gap:6px;align-items:flex-start;color:var(--mut);font-size:12px;line-height:16px;margin-top:6px}.no .i{margin-top:1px}
+.lbl{display:none;font-size:12px;line-height:16px;color:var(--mut);margin-bottom:4px}
+.sel{width:100%;height:32px;border:1px solid var(--inp);border-radius:8px;background:oklch(1 0 0 / 5%);color:var(--fg);padding:0 8px 0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:13px;text-align:left}
+.sel span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sel.u span{color:var(--mut)}.sel[disabled]{opacity:.55}.sel.f{outline:2px solid var(--ring);outline-offset:1px}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.tag{display:inline-flex;height:20px;align-items:center;padding:0 7px;border:1px solid var(--bd);border-radius:99px;font-size:12px;color:var(--mut);margin:6px 4px 0 0}
+.mn{width:260px;border:1px solid var(--bd);background:var(--raised);border-radius:8px;box-shadow:var(--menu);padding:4px}
+.mi{padding:6px 8px;border-radius:6px;display:flex;justify-content:space-between;gap:8px;align-items:center}.mi.s{background:var(--sel)}.mi.x{color:var(--faint)}.mi small{font-size:12px;color:var(--faint)}.mn p{padding:4px 8px;font-size:12px;color:var(--mut)}
+.sp{height:1px;background:var(--bd);margin:4px 0}
+.ph .row{grid-template-columns:1fr;gap:10px;padding:14px}.ph .hd{display:none}.ph .lbl{display:block}.ph .sel{height:40px}.ph .mn{width:100%}
+.ann{font-size:12px;line-height:16px;color:var(--mut);max-width:900px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="cd" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol><symbol id="in" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v.5M12 11v5"/></symbol><symbol id="ck" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol><symbol id="al" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></symbol><symbol id="us" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 4.8a3.5 3.5 0 010 6.4M18 14.4c2 .8 3.5 2.6 3.5 5.6"/></symbol><symbol id="u1" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></symbol><symbol id="lk" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol><symbol id="ar" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol></defs></svg>
+<h1>A2 · Workspace → "Background agents" tab</h1>
+<p class="lead">v2: Workspace and Personal are two tabs (Cheese, option A). This tab sits in Settings → Workspace group and sets the picks for everyone. Owners and admins edit; members see it read-only (frame D2). Scope is always visible: the "Workspace" badge sits next to the title. Rows are one shared component: Job, Agent, Fallback agent. Unset means "No agent" everywhere. Left: 900 px column. Right: 390 px phone. Agent names are sample data.</p>
+<div class="cols"><div>
+<p class="band">1 · Owner or admin view</p>
+<div class="pg"><div class="shell">
+<nav class="nav" aria-label="Settings"><b>Personal</b><span>Profile</span><span>Preferences</span><span>Notifications</span><span>Background agents</span><b>Workspace</b><span>General</span><span>Members</span><span class="on" aria-current="page">Background agents</span><span>Labels</span></nav>
+<div class="main">
+<div class="crumb">Settings · Workspace · Background agents</div>
+<div class="sh"><div><h3>Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3><p class="d">Small jobs agents do behind the scenes for everyone in this workspace. A job with no agent uses its plain fallback. It never calls a model directly.</p></div><span class="ss" role="status"><svg class="i"><use href="#ck"/></svg>Saved</span></div>
+<div class="info"><svg class="i"><use href="#in"/></svg><div>Members can pick their own agent for <b>DM title</b> and <b>Quick actions</b> in <a href="#">Personal → Background agents</a>. A personal pick wins over this tab for that member. <b>Routing</b> is only set here.</div></div>
+<div class="card">
+<div class="hd"><span>Job</span><span>Agent</span><span>Fallback agent</span></div>
+<div class="row"><div><div class="t">DM title</div><div class="m">Names a DM after its first message.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: uses the title cut (first 60 characters).</div></div>
+<div><div class="lbl">Agent</div><button class="sel u" aria-label="DM title, Agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-disabled="true" aria-label="DM title, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button><div class="m">Pick an agent first.</div></div></div>
+<div class="row"><div><div class="t">Quick actions</div><div class="m">Suggests follow-up buttons under a reply.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: no buttons.</div></div>
+<div><div class="lbl">Agent</div><button class="sel f" aria-expanded="true" aria-haspopup="listbox" aria-label="Quick actions, Agent"><span>x99-claude-haiku</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" aria-label="Quick actions, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="row"><div><div class="t">Compact</div><div class="m">Summarises a long DM so it can keep going.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: the DM's own agent compacts.</div></div>
+<div><div class="lbl">Agent</div><button class="sel u" aria-label="Compact, Agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-disabled="true" aria-label="Compact, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button><div class="m">Pick an agent first.</div></div></div>
+<div class="row"><div><div class="t">Routing <span class="scope ws"><svg class="i"><use href="#lk"/></svg>Workspace only</span></div><div class="m">Handles routing-only workflow steps. No agent keeps each step's own agent.</div><span class="tag">todo</span><span class="tag">blocked</span><span class="tag">merged</span><span class="tag">need decision</span><div class="no"><svg class="i"><use href="#in"/></svg>No agent: each step keeps its own agent.</div></div>
+<div><div class="lbl">Agent</div><button class="sel" aria-label="Routing, Agent"><span>Routing lead</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" aria-label="Routing, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button><div class="m">Takes over a step when the routing agent fails with a provider error.</div></div></div>
+</div></div></div></div>
+<p class="band">1b · "Agent" select open on Quick actions. Only agents the whole workspace can run are pickable</p>
+<div class="pg"><div class="mn" role="listbox" aria-label="Quick actions, Agent">
+<p>Agents everyone can run, on a workspace runtime</p>
+<div class="mi s" role="option" aria-selected="true"><span>x99-claude-haiku</span><svg class="i"><use href="#ck"/></svg></div>
+<div class="mi" role="option"><span>x99-codex-luna</span></div>
+<div class="mi" role="option"><span>Routing lead</span></div>
+<div class="sp"></div>
+<div class="mi x" role="option" aria-disabled="true"><span>Dana's notes bot</span><small>Access: only Dana</small></div>
+<div class="mi x" role="option" aria-disabled="true"><span>Design reviewer</span><small>Access: 3 people</small></div>
+<div class="mi x" role="option" aria-disabled="true"><span>old-summariser</span><small>Archived</small></div>
+<div class="sp"></div>
+<div class="mi" role="option"><span>No agent</span><small>No buttons</small></div></div>
+<p class="ann">Agents whose access is narrowed (Only me, or specific people) stay in the list greyed out, with the reason as visible text. A workspace job needs an agent the whole workspace can run. The server checks the same rule on write and again when the job runs. The agent's own page shows this as a note (frame E).</p></div>
+</div>
+<div>
+<p class="band">Phone · same tab, one column</p>
+<div class="pg ph">
+<div class="crumb">Settings · Workspace · Background agents</div>
+<div><h3 style="font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap">Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3><p class="d">Small jobs agents do behind the scenes for everyone in this workspace.</p></div>
+<span class="ss" role="status"><svg class="i"><use href="#ck"/></svg>Saved</span>
+<div class="info"><svg class="i"><use href="#in"/></svg><div>Members can pick their own agent for <b>DM title</b> and <b>Quick actions</b> in <a href="#">Personal → Background agents</a>.</div></div>
+<div class="card">
+<div class="row" style="border-top:0"><div><div class="t">DM title</div><div class="m">Names a DM after its first message.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: uses the title cut (first 60 characters).</div></div>
+<div><div class="lbl">Agent</div><button class="sel u" aria-label="DM title, Agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-label="DM title, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button><div class="m">Pick an agent first.</div></div></div>
+<div class="row"><div><div class="t">Quick actions</div><div class="m">Suggests follow-up buttons under a reply.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: no buttons.</div></div>
+<div><div class="lbl">Agent</div><button class="sel" aria-label="Quick actions, Agent"><span>x99-claude-haiku</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" aria-label="Quick actions, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="row"><div><div class="t">Compact</div><div class="m">Summarises a long DM so it can keep going.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: the DM's own agent compacts.</div></div>
+<div><div class="lbl">Agent</div><button class="sel u" aria-label="Compact, Agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-label="Compact, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button><div class="m">Pick an agent first.</div></div></div>
+<div class="row"><div><div class="t">Routing <span class="scope ws"><svg class="i"><use href="#lk"/></svg>Workspace only</span></div><div class="m">Handles routing-only workflow steps: todo, blocked, merged, need decision.</div><div class="no"><svg class="i"><use href="#in"/></svg>No agent: each step keeps its own agent.</div></div>
+<div><div class="lbl">Agent</div><button class="sel" aria-label="Routing, Agent"><span>Routing lead</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" aria-label="Routing, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button><div class="m">Takes over a step when the routing agent fails with a provider error.</div></div></div>
+</div></div>
+<p class="ann" style="margin-top:12px">Phone: selects are 40 px tall, labels sit above each select, nothing is hover-only. Settings navigation is the native select above the page (existing behaviour).</p>
+</div></div>
+</body></html>

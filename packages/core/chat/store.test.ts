@@ -217,6 +217,21 @@ describe("chat store — draft attachments", () => {
   });
 });
 
+describe("chat store — moveInputDraft", () => {
+  it("moves text and attachments to the target slot and clears the source", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().setInputDraft("__new__", "hello");
+    store.getState().addInputDraftAttachment("__new__", makeAttachment("att-1"));
+
+    store.getState().moveInputDraft("__new__", "sess-1");
+
+    expect(store.getState().inputDrafts["sess-1"]).toBe("hello");
+    expect(store.getState().inputDraftAttachments["sess-1"]?.length).toBe(1);
+    expect(store.getState().inputDrafts["__new__"]).toBeUndefined();
+    expect(store.getState().inputDraftAttachments["__new__"]).toBeUndefined();
+  });
+});
+
 describe("chat store — floating window preference", () => {
   it("defaults ON when no preference is stored", () => {
     const store = createChatStore({ storage: memStorage() });
@@ -452,5 +467,38 @@ describe("session action guard", () => {
     store.getState().endSessionAction("s1");
     expect(store.getState().sessionActionPending).toEqual({});
     expect(store.getState().beginSessionAction("s1", "unarchive")).toBe(true);
+  });
+});
+
+describe("suppressAutoRead", () => {
+  it("holds the session until the next open, and survives leaving the DM", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().setActiveSession("s1");
+    store.getState().suppressAutoRead("s1");
+    store.getState().setActiveSession(null);
+    expect(store.getState().autoReadSuppressedId).toBe("s1");
+
+    store.getState().setActiveSession("s1");
+    expect(store.getState().autoReadSuppressedId).toBeNull();
+  });
+
+  it("is dropped when another DM opens", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().suppressAutoRead("s1");
+    store.getState().setActiveSession("s2");
+    expect(store.getState().autoReadSuppressedId).toBeNull();
+  });
+});
+
+describe("chat store: DM list chip", () => {
+  it("defaults to Hộp chính, keeps the selected chip, and resets on leaving Chat", () => {
+    const store = createChatStore({ storage: memStorage() });
+    expect(store.getState().listView).toBe("main");
+    store.getState().setListView("unseen");
+    store.getState().setActiveSession("s1");
+    store.getState().setActiveSession(null);
+    expect(store.getState().listView).toBe("unseen");
+    store.getState().resetListView();
+    expect(store.getState().listView).toBe("main");
   });
 });

@@ -69,6 +69,58 @@ curl https://api.multica.ai/api/issues \
 
 スクリプト内のトークンは secret manager か保護された環境変数から取得し、ハードコードしないでください。セルフホストインスタンスでは、ドメインを自分の公開 API アドレスに置き換えます。
 
+## CI 向けスコープ付きトークン
+
+PAT は `scopes` リスト付きで作成できます。スコープ付き PAT は、そのスコープのルートだけを開き、他は開きません。サーバーは呼び出しのたびにトークン行からスコープを読むため、失効または再スコープされたトークンは即座に止まります。PAT のユーザーはワークスペースのオーナーである必要があります。
+
+| スコープ | 開くもの |
+| --- | --- |
+| `decisions:feed` | `GET /api/decisions/feed` とその確認応答 |
+| `decisions:ci_request` | `POST /api/decisions/ci` |
+| `decisions:read` | `GET /api/decisions/{id}/state` |
+
+`decisions:ci_request` により、実行中のエージェントタスクを持たない CI ジョブが、決定カードを 1 枚作成できます。カードのクラスは常に `deploy` で、指定した issue と指定したメンバー（`for`）宛てです。本文には、構造化された `ask`、`candidate_sha`（16 進数 7〜64 桁）、`candidate_at`（RFC 3339 のコミット時刻）を含めます。`action` と対象カードは含められません。
+
+```bash
+curl -X POST https://api.multica.ai/api/decisions/ci \
+  -H "Authorization: Bearer $MULTICA_CI_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "issue_id": "<issue-id>",
+    "for": "<member-user-id>",
+    "ask": { ... },
+    "candidate_sha": "<commit-sha>",
+    "candidate_at": "2026-11-10T07:32:29Z"
+  }'
+```
+
+- ある SHA への最初の呼び出しは、新しいカードとともに `201` を返します。
+- 同じ SHA をもう一度呼ぶと、重複せず既存のカードとともに `200` を返します。
+- より新しい SHA（`candidate_at` 基準）は、その issue の古い未決カードを取り下げます。
+- 新しい SHA の後に古い SHA を送ると `409` を返し、何も作成しません。
+- それ以外の認証情報、スコープのない PAT、ユーザーがワークスペースのオーナーでない PAT は `403` を返します。
+
+`decisions:read` により、CI ジョブは `doop.deploy_lift`（バージョン 1、params は `marker_value` と `repo`）のようなアクション決定がどうなったかを読み取れます。このアクションに答えられるのは、ワークスペースオーナーのパスキー承認だけです。このルートは読み取り専用で、決定（リクエスト）ID をキーにします。
+
+```bash
+curl https://api.multica.ai/api/decisions/<decision-id>/state \
+  -H "Authorization: Bearer $MULTICA_READ_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID"
+```
+
+`200` のレスポンスには `decision_id`、`action_id`、`action_type`、`action_version`、`state`、`approver_id`、`answered_at`、`withdrawn_at`、`revoked_at`、`expires_at`、`params` が含まれます。`state` は次のいずれかです。
+
+- `pending`: オーナーの回答待ち。
+- `approved`: オーナーがパスキーで承認しました。`approver_id` と `answered_at` が設定されます。
+- `rejected`: オーナーが却下しました。
+- `withdrawn`: 回答される前にリクエストが取り下げられました。
+- `revoked`: オーナーが承認後に、パスキーを使って取り消しルート（`POST /api/decision-requests/{id}/revoke`）で承認を取り消しました。未使用の承認を無効にする方法です。`revoked_at` が設定されます。
+- `expired`: 期限が切れました。期限を過ぎた承認も `expired` と表示されます。
+- `cancelled` と `failed`: 承認が効力を持たないままアクションが終了しました。
+
+存在しない決定は `404` を返します。他の認証情報、このスコープを持たない PAT、ユーザーがワークスペースのオーナーではない PAT は `403` を返します。
+
 ## サインアウトと失効
 
 `multica auth logout` は、現在の CLI プロファイルに保存された PAT を削除するだけです。Web のサインアウトも、現在のブラウザの cookie を削除するだけです。どちらもサーバー上の個人アクセストークンを失効させません。

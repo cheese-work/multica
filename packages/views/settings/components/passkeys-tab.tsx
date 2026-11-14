@@ -62,7 +62,7 @@ function PasskeysManager() {
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const hasOtherSigner = passkeys.some((p) => p.id !== revokeId && p.state === "active");
   // Sole-key revoke: no other active key can sign, so a mailed code stands in for the assertion.
-  const [codeRevoke, setCodeRevoke] = useState<{ id: string; ceremonyId: string } | null>(null);
+  const [codeRevoke, setCodeRevoke] = useState<{ id: string; ceremonyId: string; tag?: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -115,7 +115,7 @@ function PasskeysManager() {
       // The mailed code also covers a signer that exists but is lost; the server still enforces the gate floor.
       if (forceCode || !passkeys.some((p) => p.id !== id && p.state === "active")) {
         const started = await api.startPasskeyRevocationByCode(id);
-        setCodeRevoke({ id, ceremonyId: started.ceremony_id });
+        setCodeRevoke({ id, ceremonyId: started.ceremony_id, tag: started.tag });
         setCode("");
         return;
       }
@@ -152,6 +152,7 @@ function PasskeysManager() {
           <Card>
             <CardContent className="space-y-3">
               <p className="text-caption text-muted-foreground">{t(($) => $.passkeys.revoke_code_hint)}</p>
+              {codeRevoke.tag && <p className="text-caption text-muted-foreground">{t(($) => $.passkeys.attempt_tag, { tag: codeRevoke.tag })}</p>}
               <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
                 <Input
                   autoComplete="one-time-code"
@@ -173,6 +174,7 @@ function PasskeysManager() {
           <Card>
             <CardContent className="space-y-3">
               <p className="text-caption text-muted-foreground">{t(($) => $.passkeys.code_hint)}</p>
+              {ceremony.tag && <p className="text-caption text-muted-foreground">{t(($) => $.passkeys.attempt_tag, { tag: ceremony.tag })}</p>}
               <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
                 <Input
                   autoComplete="one-time-code"

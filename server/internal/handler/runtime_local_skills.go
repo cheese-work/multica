@@ -529,6 +529,13 @@ type reportedRuntimeLocalSkill struct {
 	Files       []CreateSkillFileRequest `json:"files,omitempty"`
 }
 
+func optString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 func cleanOptionalString(value *string) *string {
 	if value == nil {
 		return nil
@@ -679,7 +686,7 @@ func (h *Handler) InitiateImportLocalSkill(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	importReq, err := h.LocalSkillImportStore.Create(r.Context(), LocalSkillImportRequestInput{
+	input := LocalSkillImportRequestInput{
 		RuntimeID:     rt.runtimeID,
 		CreatorID:     creatorID,
 		SkillKey:      strings.TrimSpace(req.SkillKey),
@@ -690,7 +697,21 @@ func (h *Handler) InitiateImportLocalSkill(w http.ResponseWriter, r *http.Reques
 		// An overwrite request is inherently a new-client action, so it implies
 		// the structured-conflict contract even if the flag is omitted.
 		SupportsConflict: req.SupportsConflict || req.Action == LocalSkillImportActionOverwrite,
+	}
+	var importReq *RuntimeLocalSkillImportRequest
+	err := h.auditThenEnqueue(r.Context(), r, auditInput{
+		Kind: "runtime.local_skill.import", WorkspaceID: parseUUID(rt.workspaceID), TargetID: parseUUID(rt.runtimeID),
+		After: map[string]any{
+			"skill_key": input.SkillKey, "action": string(input.Action), "target_skill_id": input.TargetSkillID,
+			"name": optString(input.Name), "description": optString(input.Description),
+		},
+	}, func() (err error) {
+		importReq, err = h.LocalSkillImportStore.Create(r.Context(), input)
+		return err
 	})
+	if failedAudit(w, r, err, "runtime.local_skill.import") {
+		return
+	}
 	if err != nil {
 		slog.Warn("enqueue local skill import failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue local skill import")
@@ -880,7 +901,7 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusInternalServerError, failMsg)
 			return
 		}
-		resp, oerr := h.overwriteSkillWithFiles(r.Context(), skillOverwriteInput{
+		resp, oerr := h.overwriteSkillWithFiles(r.Context(), r, skillOverwriteInput{
 			WorkspaceID:   rt.WorkspaceID,
 			TargetSkillID: targetUUID,
 			UserID:        req.CreatorID,
@@ -891,6 +912,11 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 			Files:         files,
 		})
 		if oerr != nil {
+			// An audit failure is not the import's failure: answer 500 so the
+			// daemon retries instead of recording a terminal failed import.
+			if failedAudit(w, r, oerr, "skill.update") {
+				return
+			}
 			switch {
 			case errors.Is(oerr, errSkillOverwriteNotFound):
 				h.failLocalSkillImport(w, r, requestID, "target skill no longer exists")
@@ -931,16 +957,20 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	resp, err := h.createSkillWithFiles(r.Context(), skillCreateInput{
-		WorkspaceID: rt.WorkspaceID,
-		CreatorID:   creatorUUID,
-		Name:        name,
-		Description: description,
-		Content:     body.Skill.Content,
-		Config:      config,
-		Files:       files,
+	resp, err := h.createSkillWithFiles(r.Context(), r, skillCreateInput{
+		VersionSource: skillVersionSourceImport,
+		WorkspaceID:   rt.WorkspaceID,
+		CreatorID:     creatorUUID,
+		Name:          name,
+		Description:   description,
+		Content:       body.Skill.Content,
+		Config:        config,
+		Files:         files,
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "skill.create") {
+			return
+		}
 		// A unique-violation here means another import won the race between our
 		// lookup and the insert — surface it as a conflict, not a hard failure.
 		if isUniqueViolation(err) {

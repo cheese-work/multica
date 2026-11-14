@@ -86,6 +86,7 @@ import { WORKFLOW_TEMPLATES, type WorkflowTemplateId } from "./templates";
 import { WorkflowEdgeEditor } from "./workflow-edge-editor";
 import { WorkflowGraph } from "./workflow-graph";
 import { WorkflowMappingDialog } from "./workflow-mapping-dialog";
+import { WorkflowBudgetRequestBanner } from "./workflow-budget-request-banner";
 
 /**
  * The name and description edit in place. A hover or focus background tells
@@ -101,7 +102,7 @@ const NEW_WORKFLOW_MIDDLE = ["in_progress", "in_review"];
 type DraftColumn = { id: string; status_key: string } | { id: string; new_name: string; category?: "unstarted" | "started" };
 
 /** What entering a column does, keyed in the draft by column id. */
-type Handoff = Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "edges">;
+type Handoff = Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "keep_other_assignee" | "edges">;
 
 const NO_HANDOFF: Handoff = { handler: { type: "none" }, instructions: "" };
 
@@ -112,6 +113,20 @@ interface Draft {
   blocked: boolean;
   middle: DraftColumn[];
   handoffs: Record<string, Handoff>;
+  /** The run cap as typed; empty keeps the platform default. */
+  maxRuns: string;
+  /** Whether PR guards also read the PRs of sub-issues; on unless the server says off. */
+  includeChildPrs: boolean;
+}
+
+/** The platform's run cap for a workflow that sets none (server DefaultMaxRunsPerIssue). */
+const DEFAULT_MAX_RUNS = 15;
+const MAX_RUNS_LIMIT = 1000;
+
+/** True when the typed cap is empty (platform default) or a whole number in 1..1000. */
+function validMaxRuns(value: string): boolean {
+  const v = value.trim();
+  return v === "" || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= MAX_RUNS_LIMIT);
 }
 
 /**
@@ -123,10 +138,10 @@ function columnKey(column: DraftColumn): string {
 }
 
 function hasHandoff(h: Handoff | undefined): h is Handoff {
-  return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key || !!h.advance_on_ci_green || !!h.edges?.length);
+  return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key || !!h.advance_on_ci_green || !!h.keep_other_assignee || !!h.edges?.length);
 }
 
-function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps">): Draft {
+function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps" | "max_runs_per_issue" | "include_child_prs">): Draft {
   const keys = workflow.steps.map((s) => s.status_key);
   const handoffs: Record<string, Handoff> = {};
   for (const s of workflow.steps) {
@@ -136,6 +151,7 @@ function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps
       next_status_key: s.next_status_key,
       back_status_key: s.back_status_key,
       advance_on_ci_green: s.advance_on_ci_green,
+      keep_other_assignee: s.keep_other_assignee,
       edges: s.edges,
     };
     if (hasHandoff(h)) handoffs[s.status_key] = h;
@@ -147,6 +163,8 @@ function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps
     blocked: keys.includes("blocked"),
     middle: workflowMiddleKeys(workflow).map((key) => ({ id: key, status_key: key })),
     handoffs,
+    maxRuns: workflow.max_runs_per_issue ? String(workflow.max_runs_per_issue) : "",
+    includeChildPrs: workflow.include_child_prs !== false,
   };
 }
 
@@ -227,7 +245,7 @@ export function WorkflowEditorPage({
   const isDefault = !!saved?.is_default;
   const baseline = useMemo<Draft>(() => {
     if (saved) return draftFrom(saved);
-    if (seed) return { ...draftFrom(seed), name: t(($) => $.workflows.editor.copy_name, { name: seed.name }) };
+    if (seed) return { ...draftFrom(seed), name: t(($) => $.workflows.editor.copy_name, { name: seed.name }), maxRuns: "", includeChildPrs: true };
     const tpl = template ? WORKFLOW_TEMPLATES.find((x) => x.id === template) : undefined;
     if (tpl) {
       const statusName = (name: string) =>
@@ -238,6 +256,8 @@ export function WorkflowEditorPage({
         backlog: true,
         blocked: true,
         handoffs: {},
+        maxRuns: "",
+        includeChildPrs: true,
         middle: tpl.columns.map((column): DraftColumn => {
           if ("status" in column) return { id: column.status, status_key: column.status };
           const name = statusName(column.name);
@@ -255,6 +275,8 @@ export function WorkflowEditorPage({
       blocked: true,
       middle: NEW_WORKFLOW_MIDDLE.map((key) => ({ id: key, status_key: key })),
       handoffs: {},
+      maxRuns: "",
+      includeChildPrs: true,
     };
     // Re-seed when the target changes or the saved row is refreshed. The version
     // is in the key because updated_at has one-second resolution: two saves in a
@@ -357,7 +379,8 @@ export function WorkflowEditorPage({
     const { draft: back, baseVersion } = heldRef.current;
     if (!back) return;
     holding.current = true;
-    setDraft(back);
+    // A draft held before these fields existed has no budget: keep the saved one.
+    setDraft({ ...back, maxRuns: back.maxRuns ?? baseline.maxRuns, includeChildPrs: back.includeChildPrs ?? baseline.includeChildPrs });
     if (workflowId && baseVersion !== (latestVersion ?? "")) {
       // The edits sit on the older version: keep naming it, so the stored base
       // survives further reloads and a save cannot pass for the newer one.
@@ -382,7 +405,7 @@ export function WorkflowEditorPage({
     [draft],
   );
   const graphIssues = useMemo(() => validateWorkflowGraph(graphSteps), [graphSteps]);
-  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
+  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && validMaxRuns(draft.maxRuns) && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
     : [];
@@ -415,8 +438,8 @@ export function WorkflowEditorPage({
       const handoffs = { ...d.handoffs };
       for (const s of next) {
         if (s === before.get(s.status_key)) continue;
-        const { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, edges } = s;
-        handoffs[s.status_key] = { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, edges };
+        const { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, keep_other_assignee, edges } = s;
+        handoffs[s.status_key] = { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, keep_other_assignee, edges };
       }
       return { ...d, handoffs };
     });
@@ -458,6 +481,7 @@ export function WorkflowEditorPage({
             ...(h.next_status_key && listed.has(h.next_status_key) ? { next_status_key: h.next_status_key } : {}),
             ...(h.back_status_key && listed.has(h.back_status_key) ? { back_status_key: h.back_status_key } : {}),
             ...(h.advance_on_ci_green ? { advance_on_ci_green: true } : {}),
+            ...(h.keep_other_assignee ? { keep_other_assignee: true } : {}),
             ...(h.edges?.length ? { edges: h.edges } : {}),
           }
         : {};
@@ -470,6 +494,10 @@ export function WorkflowEditorPage({
       description: draft.description.trim(),
       steps,
       ...(mapping ? { status_mapping: mapping } : {}),
+      // Only a changed budget field is sent: the server takes a budget change
+      // from an interactive session alone, so an untouched field must stay out of the write.
+      ...(draft.maxRuns !== baseline.maxRuns ? { max_runs_per_issue: Number(draft.maxRuns.trim() || 0) } : {}),
+      ...(draft.includeChildPrs !== baseline.includeChildPrs ? { include_child_prs: draft.includeChildPrs } : {}),
       // Save against the version the editor started from, so a save that
       // arrives after another admin's cannot replace it.
       ...(workflowId && acceptedVersion.current ? { expected_version: acceptedVersion.current } : {}),
@@ -633,6 +661,7 @@ export function WorkflowEditorPage({
     <div className="space-y-6">
       <div className="space-y-3">
         <Breadcrumb onBack={onBack} current={title} />
+        {workflowId && <WorkflowBudgetRequestBanner workflowId={workflowId} />}
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <input
@@ -666,6 +695,37 @@ export function WorkflowEditorPage({
                     : t(($) => $.workflows.editor.unused_note)}
               </span>
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label htmlFor="workflow-max-runs" className="text-caption font-medium">
+                {t(($) => $.workflows.editor.max_runs)}
+              </label>
+              <Input
+                id="workflow-max-runs"
+                inputMode="numeric"
+                maxLength={4}
+                value={draft.maxRuns}
+                readOnly={!canEdit}
+                aria-invalid={!validMaxRuns(draft.maxRuns)}
+                placeholder={String(DEFAULT_MAX_RUNS)}
+                onChange={(e) => setDraft((d) => ({ ...d, maxRuns: e.target.value }))}
+                className="h-8 w-24"
+              />
+              {!validMaxRuns(draft.maxRuns) && (
+                <p role="alert" className="text-caption text-destructive">
+                  {t(($) => $.workflows.editor.max_runs_invalid, { max: MAX_RUNS_LIMIT, default: DEFAULT_MAX_RUNS })}
+                </p>
+              )}
+              <label htmlFor="workflow-child-prs" className="ml-2 text-caption font-medium">
+                {t(($) => $.workflows.editor.include_child_prs)}
+              </label>
+              <Switch
+                id="workflow-child-prs"
+                size="sm"
+                checked={draft.includeChildPrs}
+                disabled={!canEdit}
+                onCheckedChange={(checked) => setDraft((d) => ({ ...d, includeChildPrs: checked }))}
+              />
+            </div>
           </div>
           {(canEdit || canDuplicate) && (
             <div className="flex shrink-0 items-center gap-2">

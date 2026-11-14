@@ -216,7 +216,7 @@ func TestTwoAnswersOnOneActionRequestWriteTwoEventsWithoutKeyCollision(test *tes
 	if err != nil {
 		test.Fatal(err)
 	}
-	if err := recordDecisionWakeEvent(ctx, testHandler.Queries.WithTx(tx), request, "answered", second, pgtype.UUID{}); err != nil {
+	if err := testHandler.recordDecisionWakeEvent(ctx, testHandler.Queries.WithTx(tx), request, "answered", second, pgtype.UUID{}); err != nil {
 		test.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -241,5 +241,77 @@ func TestAnsweredDecisionRequestWritesNoEventAndKeepsLegacyWake(test *testing.T)
 	}
 	if !slices.ContainsFunc(candidates, func(c db.DecisionRequest) bool { return c.ID == fixture.decision.ID }) {
 		test.Fatal("kind=decision lost its legacy wake")
+	}
+}
+
+// A need_decision issue belongs to its assignee: an answered action card
+// writes one receipt, for the assignee, and no run goes to the requester.
+func TestAnsweredActionOnNeedDecisionIssueWakesOnlyTheAssignee(test *testing.T) {
+	runner := newDeliveryRunner(test)
+	fixture := newAskedRecordFixture(test)
+	assignee := createHandlerTestAgent(test, "need decision assignee", []byte("[]"))
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	receipts := wakeReceipts(test, fixture.decision.ID)
+	if len(receipts) != 1 || receipts[0].Role != "assignee" || receipts[0].Agent != assignee {
+		test.Fatalf("receipts = %+v, want one assignee receipt for %s", receipts, assignee)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
+	decisionPass(test, runner)
+	decisionPass(test, runner)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`, fixture.issueID, assignee); n != 1 {
+		test.Fatalf("assignee runs = %d, want 1", n)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`, fixture.issueID, fixture.agentID); n != 0 {
+		test.Fatalf("requester runs = %d, want 0", n)
+	}
+}
+
+// Negative control: an assignee the person cannot invoke gets no receipt; the
+// requester keeps the wake.
+func TestAnsweredActionOnNeedDecisionIssueSkipsAnAssigneeThePersonCannotInvoke(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	assignee := dbfx.Agent(test, "restricted assignee", handlerTestRuntimeID(test))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = NULL WHERE id = $1`, assignee)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	receipts := wakeReceipts(test, fixture.decision.ID)
+	if len(receipts) != 1 || receipts[0].Role != "requester" || receipts[0].Agent != fixture.agentID {
+		test.Fatalf("receipts = %+v, want one requester receipt", receipts)
+	}
+}
+
+// Negative control: permission revoked after the receipt was written but
+// before it dispatches. The receipt settles without a run.
+func TestAnsweredActionReceiptDoesNotDispatchAfterTheAssigneeInvokeIsRevoked(test *testing.T) {
+	runner := newDeliveryRunner(test)
+	fixture := newAskedRecordFixture(test)
+	assignee := createHandlerTestAgent(test, "revoked assignee", []byte("[]"))
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	receipts := wakeReceipts(test, fixture.decision.ID)
+	if len(receipts) != 1 || receipts[0].Role != "assignee" {
+		test.Fatalf("receipts = %+v, want one assignee receipt", receipts)
+	}
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, assignee, createEphemeralUser(test, "revoker"))
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
+	decisionPass(test, runner)
+	decisionPass(test, runner)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assignee); n != 0 {
+		test.Fatalf("revoked assignee runs = %d, want 0", n)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_wake_receipt WHERE event_id IN (SELECT id FROM decision_wake_event WHERE request_id = $1) AND status = 'skipped_ineligible'`, fixture.decision.ID); n != 1 {
+		test.Fatalf("skipped receipts = %d, want 1", n)
 	}
 }

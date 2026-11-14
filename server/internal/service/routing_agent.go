@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -18,8 +19,16 @@ import (
 // routing-only workflow steps, a fallback, and per-status overrides. The handler
 // package owns the route that changes it; this file owns reading it.
 
-// RoutingAgentSettingsKey is the key inside workspace.settings.
+// RoutingAgentSettingsKey is the retired key inside workspace.settings. The
+// setting now lives at background_agents.routing (CHE-4116); the key is kept
+// only so the startup copy and a generic save can recognise the old value.
 const RoutingAgentSettingsKey = "routing_agent"
+
+// BackgroundAgentsSettingsKey and RoutingJobKey locate the setting.
+const (
+	BackgroundAgentsSettingsKey = "background_agents"
+	RoutingJobKey               = "routing"
+)
 
 // DefaultRoutingStatuses are the steps that only route work to the next owner.
 var DefaultRoutingStatuses = []string{"todo", "blocked", "merged", "need_decision"}
@@ -38,8 +47,8 @@ type RoutingAgentConfig struct {
 
 func RoutingAgentFromSettings(settings map[string]any) RoutingAgentConfig {
 	var cfg RoutingAgentConfig
-	if raw, ok := settings[RoutingAgentSettingsKey]; ok {
-		if b, err := json.Marshal(raw); err == nil {
+	if jobs, ok := settings[BackgroundAgentsSettingsKey].(map[string]any); ok {
+		if b, err := json.Marshal(jobs[RoutingJobKey]); err == nil {
 			_ = json.Unmarshal(b, &cfg) // a malformed value routes nothing
 		}
 	}
@@ -111,18 +120,19 @@ var providerFailureReasons = map[string]bool{
 
 // failOverRoutingTask hands a routing step to the fallback agent after its
 // routing agent's run failed on a provider error and will not be retried. Best
-// effort: on any doubt the failure stays visible on the issue as before.
-func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTaskQueue, failureReason string) {
+// effort: on any doubt the failure stays visible on the issue as before. It
+// reports whether the fallback agent now owns the step.
+func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTaskQueue, failureReason string) bool {
 	if !providerFailureReasons[failureReason] || !failed.IssueID.Valid {
-		return
+		return false
 	}
 	issue, err := s.Queries.GetIssue(ctx, failed.IssueID)
 	if err != nil || !issue.AssigneeID.Valid || issue.AssigneeID != failed.AgentID {
-		return
+		return false
 	}
 	ws, err := s.Queries.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
-		return
+		return false
 	}
 	var settings map[string]any
 	_ = json.Unmarshal(ws.Settings, &settings)
@@ -130,13 +140,19 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	if issue.ProjectID.Valid {
 		project, _ = s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
 	}
-	fallback, err := util.ParseUUID(RoutingAgentFromSettings(settings).FailoverFor(util.UUIDToString(failed.AgentID), WorkflowScope(ctx, s.Queries, project), issue.Status))
+	fallbackID := RoutingAgentFromSettings(settings).FailoverFor(util.UUIDToString(failed.AgentID), WorkflowScope(ctx, s.Queries, project), issue.Status)
+	fallback, err := util.ParseUUID(fallbackID)
 	if err != nil {
-		return
+		return false
+	}
+	// The generic rule (CHE-4117): a configured fallback means the failed run held
+	// the primary slot; the same decision as every background job.
+	if !s.shouldFailOver(ctx, bgagents.Routing, issue.WorkspaceID, bgagents.Primary, fallbackID, failureReason) {
+		return false
 	}
 	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: fallback, WorkspaceID: issue.WorkspaceID})
 	if err != nil || agent.ArchivedAt.Valid {
-		return
+		return false
 	}
 	// The fallback brings its owner's connected apps. Judge it by the invocation
 	// policy every other trigger uses, against the human behind the run that
@@ -144,17 +160,18 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	if !CanMemberInvokeAgent(ctx, s.Queries, agent, failed.OriginatorUserID, issue.WorkspaceID) {
 		slog.Warn("routing failover: the failed run's originator may not invoke the fallback agent; the issue keeps its assignee",
 			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback))
-		return
+		return false
 	}
 	note := "Routing failover: the routing agent's run failed with a provider error (" + failureReason + "). You are the fallback agent and now own this step."
 	if err := s.handStepToFallback(ctx, issue, failed, fallback, note); err != nil {
 		slog.Warn("routing failover: hand the step to the fallback agent failed; the issue keeps its assignee",
 			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback), "error", err)
-		return
+		return false
 	}
 	slog.Info("routing failover: fallback agent queued",
 		"issue_id", util.UUIDToString(issue.ID), "failed_agent_id", util.UUIDToString(failed.AgentID),
 		"fallback_agent_id", util.UUIDToString(fallback), "reason", failureReason)
+	return true
 }
 
 var errRoutingStepMoved = errors.New("the issue changed since the routing run failed")

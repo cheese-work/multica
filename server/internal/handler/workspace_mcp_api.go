@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -206,6 +207,13 @@ func (h *Handler) CreateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to create the MCP server")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "mcp_server.create", WorkspaceID: idUUID, TargetID: server.ID,
+		After: workspaceMcpServerAuditFields(server),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "mcp_server.create")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create the MCP server")
 		return
@@ -215,6 +223,22 @@ func (h *Handler) CreateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 	slog.Info("workspace mcp server created", append(logger.RequestAttrs(r),
 		"workspace_id", workspaceID, "server_id", uuidToString(server.ID), "name", server.Name)...)
 	writeJSON(w, http.StatusCreated, workspaceMcpServerToResponse(server))
+}
+
+// lockWorkspaceMcpServer takes the row lock and returns the row it protects,
+// so an audit before-state is the one the caller then replaces or deletes.
+// It writes the response and returns false when the server is missing.
+func (h *Handler) lockWorkspaceMcpServer(w http.ResponseWriter, r *http.Request, qtx *db.Queries, serverID, workspaceID pgtype.UUID) (db.WorkspaceMcpServer, bool) {
+	if _, err := qtx.LockWorkspaceMcpServerForUpdate(r.Context(), db.LockWorkspaceMcpServerForUpdateParams{ID: serverID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "MCP server not found")
+		return db.WorkspaceMcpServer{}, false
+	}
+	server, err := qtx.GetWorkspaceMcpServer(r.Context(), db.GetWorkspaceMcpServerParams{ID: serverID, WorkspaceID: workspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "MCP server not found")
+		return db.WorkspaceMcpServer{}, false
+	}
+	return server, true
 }
 
 // UpdateWorkspaceMcpServer replaces one library entry. Renaming is safe here:
@@ -254,13 +278,37 @@ func (h *Handler) UpdateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 		params.Config = append([]byte(nil), req.Config...)
 	}
 
-	server, err := h.Queries.UpdateWorkspaceMcpServer(r.Context(), params)
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update the MCP server")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// The row lock makes the audited before-state the one this update replaces.
+	before, ok := h.lockWorkspaceMcpServer(w, r, qtx, serverUUID, idUUID)
+	if !ok {
+		return
+	}
+	server, err := qtx.UpdateWorkspaceMcpServer(r.Context(), params)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "an MCP server with this name already exists in the workspace")
 			return
 		}
 		writeError(w, http.StatusNotFound, "MCP server not found")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "mcp_server.update", WorkspaceID: idUUID, TargetID: server.ID,
+		Before: workspaceMcpServerAuditFields(before), After: workspaceMcpServerAuditFields(server),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "mcp_server.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update the MCP server")
 		return
 	}
 	slog.Info("workspace mcp server updated", append(logger.RequestAttrs(r),
@@ -298,11 +346,8 @@ func (h *Handler) DeleteWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 	// before this transaction (and is swept below) or waits and then finds the
 	// server gone. Without it the add could insert after the sweep, leaving a
 	// binding to a server that no longer exists.
-	if _, err := qtx.LockWorkspaceMcpServerForUpdate(r.Context(), db.LockWorkspaceMcpServerForUpdateParams{
-		ID:          serverUUID,
-		WorkspaceID: idUUID,
-	}); err != nil {
-		writeError(w, http.StatusNotFound, "MCP server not found")
+	before, ok := h.lockWorkspaceMcpServer(w, r, qtx, serverUUID, idUUID)
+	if !ok {
 		return
 	}
 
@@ -322,6 +367,13 @@ func (h *Handler) DeleteWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 	if err := qtx.DeleteAgentMcpServersByServer(r.Context(), serverUUID); err != nil {
 		slog.Warn("sweep agent mcp bindings failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete the MCP server")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "mcp_server.delete", WorkspaceID: idUUID, TargetID: serverUUID,
+		Before: workspaceMcpServerAuditFields(before),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "mcp_server.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -432,12 +484,30 @@ func (h *Handler) AddAgentMcpServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "MCP server not found in this workspace")
 		return
 	}
+	beforeServers, err := agentMcpServersAuditField(r.Context(), qtx, agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add the MCP server")
+		return
+	}
 	if err := qtx.AddAgentMcpServer(r.Context(), db.AddAgentMcpServerParams{
 		AgentID:  agent.ID,
 		ServerID: serverUUID,
 	}); err != nil {
 		slog.Warn("add agent mcp server failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to add the MCP server")
+		return
+	}
+	afterServers, err := agentMcpServersAuditField(r.Context(), qtx, agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add the MCP server")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.mcp_server.add", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+		Before: map[string]any{"mcp_server_ids": beforeServers},
+		After:  map[string]any{"mcp_server_ids": afterServers},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.mcp_server.add")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -474,17 +544,20 @@ func (h *Handler) SetAgentMcpServerEnabled(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
-	rows, err := h.Queries.SetAgentMcpServerEnabled(r.Context(), db.SetAgentMcpServerEnabledParams{
-		AgentID:  agent.ID,
-		ServerID: serverUUID,
-		Enabled:  *req.Enabled,
-	})
+	err := h.applyAgentChange(r, agent, "agent.mcp_server.enable", agentMcpServersAuditSnapshot(agent, true),
+		func(ctx context.Context, q *db.Queries) error {
+			rows, err := q.SetAgentMcpServerEnabled(ctx, db.SetAgentMcpServerEnabledParams{
+				AgentID:  agent.ID,
+				ServerID: serverUUID,
+				Enabled:  *req.Enabled,
+			})
+			if err == nil && rows == 0 {
+				return errAgentChangeNotFound
+			}
+			return err
+		})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update the MCP server")
-		return
-	}
-	if rows == 0 {
-		writeError(w, http.StatusNotFound, "this MCP server is not assigned to the agent")
+		writeAgentChangeError(w, r, err, "agent.mcp_server.enable", "this MCP server is not assigned to the agent", "failed to update the MCP server")
 		return
 	}
 	slog.Info("agent mcp server toggled", append(logger.RequestAttrs(r),
@@ -503,16 +576,19 @@ func (h *Handler) RemoveAgentMcpServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Queries.RemoveAgentMcpServer(r.Context(), db.RemoveAgentMcpServerParams{
-		AgentID:  agent.ID,
-		ServerID: serverUUID,
-	})
+	err := h.applyAgentChange(r, agent, "agent.mcp_server.remove", agentMcpServersAuditSnapshot(agent, false),
+		func(ctx context.Context, q *db.Queries) error {
+			rows, err := q.RemoveAgentMcpServer(ctx, db.RemoveAgentMcpServerParams{
+				AgentID:  agent.ID,
+				ServerID: serverUUID,
+			})
+			if err == nil && rows == 0 {
+				return errAgentChangeNotFound
+			}
+			return err
+		})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to remove the MCP server")
-		return
-	}
-	if rows == 0 {
-		writeError(w, http.StatusNotFound, "this MCP server is not assigned to the agent")
+		writeAgentChangeError(w, r, err, "agent.mcp_server.remove", "this MCP server is not assigned to the agent", "failed to remove the MCP server")
 		return
 	}
 	slog.Info("agent mcp server removed", append(logger.RequestAttrs(r),

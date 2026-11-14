@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -20,11 +23,12 @@ spec.loader.exec_module(sg)
 BOT = 282619718
 PR = {"head_ref": "agent/x99-claude-sonnet/che-3610-1c5d373a16a5", "author_id": BOT,
       "repo": "cheese-work/multica", "number": 918, "base_ref": "main", "default_branch": "main"}
+DIGEST_FOR_SERVER = r"^[0-9a-f]{64}$"  # sha256HexPattern, server/internal/handler/decision_bound_write.go
 DIFF = "+++ b/app.py\n@@ -1 +1,2 @@\n+x = 1\n"
 
 
 def verdict(sha, digest=None):
-    lines = ["Security-Gate-Verdict: PASS", "Reviewer: x99-codex-sol (gpt-6.1-sol)", "Signed: x99-codex-sol, 2026-11-04 23:50 ICT",
+    lines = ["Security-Gate-Verdict: PASS", "Reviewer: x99-claude-opus (claude-opus-5-5)", "Signed: x99-claude-opus, 2026-11-04 23:50 ICT",
              "Repo: cheese-work/multica", "PR: 918", "Base: main", f"SHA: {sha}", "Findings: none"]
     if digest:
         lines.append(f"Diff-Digest: {digest}")
@@ -135,7 +139,7 @@ class DiffDigestTest(unittest.TestCase):
         self.assertNotEqual(sg.evaluate(pr, c, {BOT}, DIFF, human_ids=set(), digest=self.d1)[0], "success")
 
     def _vd(self, result, agent, sha, digest=None):
-        lines = [f"Security-Gate-Verdict: {result}", f"Reviewer: {agent} (gpt-6.1)", f"Signed: {agent}, 2026-11-04 23:55 ICT",
+        lines = [f"Security-Gate-Verdict: {result}", f"Reviewer: {agent} ({'claude-opus-5-5' if 'opus' in agent else 'gpt-6.1'})", f"Signed: {agent}, 2026-11-04 23:55 ICT",
                  "Repo: cheese-work/multica", "PR: 918", "Base: main", f"SHA: {sha}",
                  "Findings:" if result == "FAIL" else "Findings: none"]
         if result == "FAIL":
@@ -150,19 +154,19 @@ class DiffDigestTest(unittest.TestCase):
 
     def test_delayed_stale_pass_does_not_erase_the_same_reviewers_current_fail(self):
         stale = "a" * 40
-        got = self._eval([self._vd("PASS", "x99-codex-terra", self.h1, self.d1),
+        got = self._eval([self._vd("PASS", "x99-claude-opus", self.h1, self.d1),
                           self._vd("FAIL", "x99-codex-sol", self.h1, self.d1),
                           self._vd("PASS", "x99-codex-sol", stale)], self.h1)
         self.assertEqual(got, "failure")
 
     def test_other_reviewers_digestless_fail_survives_an_unchanged_digest_head(self):
-        got = self._eval([self._vd("PASS", "x99-codex-terra", self.h1, self.d1),
+        got = self._eval([self._vd("PASS", "x99-claude-opus", self.h1, self.d1),
                           self._vd("FAIL", "x99-codex-sol", self.h1)], "e" * 40)
         self.assertEqual(got, "failure")
 
     def test_same_reviewers_newer_applicable_pass_supersedes_its_earlier_fail(self):
-        got = self._eval([self._vd("FAIL", "x99-codex-sol", self.h1),
-                          self._vd("PASS", "x99-codex-sol", "e" * 40, self.d1)], "e" * 40)
+        got = self._eval([self._vd("FAIL", "x99-claude-opus", self.h1),
+                          self._vd("PASS", "x99-claude-opus", "e" * 40, self.d1)], "e" * 40)
         self.assertEqual(got, "success")
 
     def test_pass_survives_only_while_the_digest_matches(self):
@@ -200,6 +204,92 @@ class DiffDigestTest(unittest.TestCase):
         m = self.advance_main("other.txt", "o2\n")
         h2 = self.merge_main()
         self.assertEqual(run(m, h2), {"head": h2, "digest": self.d1})  # clean merge: same digest, PASS kept
+
+    def _cli(self, base, head, *extra):
+        """Run the published command: `security_gate.py --github o/r --pr 918 --default-branch main --print-digest`."""
+        pull = json.dumps({"head": {"sha": head}, "base": {"sha": base}})
+        argv = ["x", "--repo", self.tmp.name, "--github", "o/r", "--pr", "918", "--default-branch", "main",
+                "--print-digest", *extra]
+        out = io.StringIO()
+        with mock.patch.object(sg, "_gh", return_value=pull), mock.patch("sys.argv", argv), redirect_stdout(out):
+            rc = sg.main()
+        return rc, json.loads(out.getvalue())
+
+    def _record(self, body):
+        f = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False)
+        self.addCleanup(os.unlink, f.name)
+        f.write(body)
+        f.close()
+        return f.name
+
+    def test_human_waiver_follows_the_diff_through_a_main_merge_and_dies_on_a_pr_edit(self):
+        """CHE-4326. A human test-first waiver is a decision record that names the PR diff digest. The command says
+        whether it still applies: yes after a main-only merge, no after any change to a PR file."""
+        rc, first = self._cli(self.base, self.h1)
+        self.assertEqual(rc, 0)
+        self.assertRegex(first["digest"], DIGEST_FOR_SERVER)
+        record = self._record(f"Cheese chose \"Waive this PR diff\".\nStatus: WAIVED, not PASS.\nWaiver-Diff-Digest: {first['digest']}\n")
+        rc, out = self._cli(self.base, self.h1, "--waiver-record", record)
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))
+        m = self.advance_main("other.txt", "o2\n")
+        h2 = self.merge_main()
+        rc, out = self._cli(m, h2, "--waiver-record", record)
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))  # head moved, diff did not
+        self.r.write("pr.txt", "l1\nPR2\n" + "".join(f"l{i}\n" for i in range(3, 11)))
+        h3 = self.r.commit("edit")
+        rc, out = self._cli(m, h3, "--waiver-record", record)
+        self.assertEqual((rc, out["waiver_applies"]), (3, False))  # the PR's own diff changed
+
+    def test_record_without_a_scope_line_never_applies_even_if_it_names_the_head(self):
+        """CHE-4326 round 3. Prose is not a scope. A waiver recorded before the line existed names a head in prose,
+        and the prose may as well reject that head. The command fails closed; the owner re-records it once with the
+        `Waiver-Diff-Digest:` line (a human reads the old record, the checker never parses it)."""
+        for body in (f"Cheese waived the test-first red for head `{self.h1[:8]}` only. Status: WAIVED, not PASS.\n",
+                     f"Cheese did NOT waive head {self.h1}. Status: REJECTED.\n",
+                     f"Not waived for {self.h1[:12]}\n"):
+            for head_base in ((self.base, self.h1),):
+                rc, out = self._cli(*head_base, "--waiver-record", self._record(body))
+                self.assertEqual((rc, out["waiver_applies"]), (3, False), body)
+
+    def test_ambiguous_or_malformed_scope_lines_fail_closed(self):
+        """A valid digest line beside a second, malformed, repeated or indented scope line is ambiguous: no waiver."""
+        _, first = self._cli(self.base, self.h1)
+        good = f"Waiver-Diff-Digest: {first['digest']}"
+        other = "Waiver-Diff-Digest: " + "1" * 64
+        for body in (f"{good}\n{other}\n", f"{other}\n{good}\n", f"{good}\n{good}\n", f"{good}\nWaiver-Diff-Digest: xyz\n",
+                     f"{good}\nWaiver-Diff-Digest:\n", f"{good} \n", f" {good}\n", f"{good}\nwaiver-diff-digest: {first['digest']}\n",
+                     f"{good}0\n", f"Waiver-Diff-Digest:{first['digest']}\n"):
+            rc, out = self._cli(self.base, self.h1, "--waiver-record", self._record(body))
+            self.assertEqual((rc, out["waiver_applies"]), (3, False), repr(body))
+        rc, out = self._cli(self.base, self.h1, "--waiver-record", self._record(f"Status: WAIVED\r\n{good}\r\n"))
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))  # one exact line, CRLF record
+
+    def test_unrelated_or_malformed_records_never_apply(self):
+        _, first = self._cli(self.base, self.h1)
+        for body in ("", "no scope here\n", "Waiver-Diff-Digest: xyz\n", f"Waiver-Diff-Digest: {first['digest'].upper()}\n",
+                     f"Waiver-Diff-Digest: {'0' * 64}\n", f"see {first['digest']} in prose\n"):
+            rc, out = self._cli(self.base, self.h1, "--waiver-record", self._record(body))
+            self.assertEqual((rc, out["waiver_applies"]), (3, False), body)
+
+    def test_docs_publish_a_command_that_parses_and_the_record_line(self):
+        agent = (ROOT / "docs/agent-decisions.md").read_text()
+        records = (ROOT / "docs/decision-records.md").read_text()
+        record = self._record(f"Waiver-Diff-Digest: {self.d1}\n")
+        for doc in (agent, records):
+            lines = re.findall(r"^python3 scripts/security-gate/security_gate\.py .*--print-digest.*$", doc, re.M)
+            self.assertTrue(lines, "no published command")
+            for line in lines:
+                argv = shlex.split(line.replace("<owner/repo>", "o/r").replace("<n>", "918").replace("<record.md>", record))
+                pull = json.dumps({"head": {"sha": self.h1}, "base": {"sha": self.base}})
+                with mock.patch.object(sg, "_gh", return_value=pull), mock.patch("sys.argv", ["x", "--repo", self.tmp.name, *argv[2:]]), \
+                        redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(sg.main(), 0)  # argparse accepts the published command and the record applies
+                self.assertEqual(json.loads(out.getvalue())["digest"], self.d1)
+        self.assertIn("Waiver-Diff-Digest:", records)
+        self.assertIn("--waiver-record", records)
+        self.assertIn("re-record it once", records)
+        self.assertIn("main-only merge", agent)
+        self.assertIn("main-only merge", records)
 
 
 if __name__ == "__main__":

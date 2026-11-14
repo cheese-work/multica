@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Skill } from "@multica/core/types";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { useSkillEditDraftStore } from "@multica/core/skills/draft-stores";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -33,9 +34,13 @@ vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: (wsId: string) => ({ queryKey: ["agents", wsId], queryFn: () => Promise.resolve([]) }),
   memberListOptions: (wsId: string) => ({
     queryKey: ["members", wsId],
-    queryFn: () => Promise.resolve([{ user_id: "user-1", role: "member" }]),
+    queryFn: () => Promise.resolve([{ user_id: "user-1", role: "member", name: "Ada", email: "ada@example.com", avatar_url: null }]),
   }),
   selectSkillAssignments: () => new Map(),
+  skillVersionsOptions: (wsId: string, id: string) => ({
+    queryKey: ["skill-versions", wsId, id],
+    queryFn: () => Promise.resolve([]),
+  }),
   workspaceKeys: { skills: (wsId: string) => ["skills", wsId], agents: (wsId: string) => ["agents", wsId] },
 }));
 vi.mock("@multica/core/runtimes", () => ({
@@ -100,17 +105,39 @@ describe("SkillDetailPage unsaved edits", () => {
     const first = mount();
     const name = (await screen.findByDisplayValue("animations")) as HTMLInputElement;
     fireEvent.change(name, { target: { value: "animations-v2" } });
-    fireEvent.change(screen.getByDisplayValue("Animate things"), { target: { value: "Edited" } });
+    // 1.0 layout: the description edits inside a popover opened from its value.
+    fireEvent.click(screen.getByRole("button", { name: "Animate things" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Description" }), { target: { value: "Edited" } });
     first.unmount();
 
     const second = mount();
     expect(await screen.findByDisplayValue("animations-v2")).toBeTruthy();
-    expect(screen.getByDisplayValue("Edited")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edited" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Discard/ }));
     second.unmount();
 
     mount();
     expect(await screen.findByDisplayValue("animations")).toBeTruthy();
+  });
+
+  it("keeps the original base version of a restored stale draft, so the conflict survives a later visit", async () => {
+    const staleBase = "2026-07-28T18:00:00Z";
+    useSkillEditDraftStore.getState().setDraft("skill-1", {
+      name: "animations-mine",
+      description: "Animate things",
+      content: "# Animations\n",
+      files: [],
+      baseUpdatedAt: staleBase,
+    });
+
+    const first = mount();
+    expect(await screen.findByDisplayValue("animations-mine")).toBeTruthy();
+    expect(await screen.findByText("Someone else updated this skill")).toBeTruthy();
+    expect(useSkillEditDraftStore.getState().getDraft("skill-1")?.baseUpdatedAt).toBe(staleBase);
+    first.unmount();
+
+    mount();
+    expect(await screen.findByText("Someone else updated this skill")).toBeTruthy();
   });
 });

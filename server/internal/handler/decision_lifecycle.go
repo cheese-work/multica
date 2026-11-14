@@ -164,8 +164,19 @@ func cancelDecisionLifecycleLocked(ctx context.Context, queries *db.Queries, cur
 			}
 		}
 	}
+	if reason == "issue_closed" {
+		// Receipts still pending never dispatch into a closed issue; settle them here, not only at delivery.
+		if _, err := queries.SuppressPendingRequestWakeReceipts(ctx, requestID); err != nil {
+			return out, err
+		}
+	}
 	if answer.ID.Valid && !answer.WokenAt.Valid {
-		rows, err := queries.AcknowledgeDecisionWake(ctx, db.AcknowledgeDecisionWakeParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: pgtype.Text{String: "skipped_ineligible", Valid: true}})
+		// A receipt delivered before the close keeps its outcome; with none, the answer was skipped.
+		outcome, err := queries.SummarizeDecisionAnswerWake(ctx, answer.ID)
+		if err != nil {
+			return out, err
+		}
+		rows, err := queries.AcknowledgeDecisionWake(ctx, db.AcknowledgeDecisionWakeParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: pgtype.Text{String: outcome, Valid: true}})
 		if err != nil {
 			return out, err
 		}
@@ -175,6 +186,9 @@ func cancelDecisionLifecycleLocked(ctx context.Context, queries *db.Queries, cur
 	}
 	out.withdrawal.Request, err = queries.CancelDecisionLifecycleRequest(ctx, db.CancelDecisionLifecycleRequestParams{WorkspaceID: workspaceID, ID: requestID, Reason: pgtype.Text{String: reason, Valid: true}})
 	if err != nil {
+		return out, err
+	}
+	if err := withdrawCoveredAnswers(ctx, queries, current, &out.withdrawal, pgtype.UUID{}); err != nil {
 		return out, err
 	}
 	if root != nil {

@@ -25,13 +25,16 @@ WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open'
   AND s.chain_root_session_id IS NOT NULL;
 
 -- name: ListChatAttentionLatestTurns :many
--- C2: the latest finished chat task of each chain. Untyped until L5 records outcomes.
-SELECT DISTINCT ON (s.chain_root_session_id) s.chain_root_session_id, t.id AS task_id
-FROM agent_task_queue t
-JOIN chat_session s ON s.id = t.chat_session_id
-WHERE s.workspace_id = $1 AND s.creator_id = $2 AND t.status = 'completed'
-  AND s.chain_root_session_id IS NOT NULL
-ORDER BY s.chain_root_session_id, t.created_at DESC, t.id DESC;
+-- C2: the unclassified turn of each chain, if its latest recorded turn ended with no outcome (CHE-4149).
+SELECT chain_root_session_id, task_id FROM (
+  SELECT DISTINCT ON (o.chain_root_session_id) o.chain_root_session_id, o.task_id, o.kind
+  FROM chat_turn_outcome o
+  JOIN agent_task_queue t ON t.id = o.task_id
+  JOIN chat_session s ON s.id = o.chat_session_id
+  WHERE s.workspace_id = $1 AND o.user_id = $2
+  ORDER BY o.chain_root_session_id, t.created_at DESC, t.id DESC
+) latest
+WHERE kind = 'unclassified';
 
 -- name: ListChatAttentionMarks :many
 SELECT subject_key, snoozed_until, acked_at FROM chat_attention_mark WHERE user_id = $1;
@@ -62,3 +65,71 @@ WHERE chain_root_session_id = @chain_root_session_id AND user_id = @user_id
 UPDATE chat_attention_item
 SET waiting_message_id = @message_id, waiting_task_id = @task_id
 WHERE id = ANY(@ids::uuid[]) AND kind = 'ask' AND resolved_at IS NULL;
+
+-- Agent outcomes and task end (CHE-4149). All run in one transaction per call.
+
+-- name: ListChatAttentionAsksOfAgent :many
+-- The agent's asks among ids (any state) in this chain for this user; outcomes may name only these.
+SELECT id, (resolved_at IS NULL)::boolean AS open FROM chat_attention_item
+WHERE id = ANY(@ids::uuid[]) AND chain_root_session_id = @chain_root_session_id AND user_id = @user_id
+  AND agent_id = @agent_id AND kind = 'ask';
+
+-- name: ListOpenChatAttentionAsksOfAgent :many
+SELECT id FROM chat_attention_item
+WHERE chain_root_session_id = @chain_root_session_id AND user_id = @user_id AND agent_id = @agent_id
+  AND kind = 'ask' AND resolved_at IS NULL
+ORDER BY opened_at, id;
+
+-- name: GetChatAttentionAskOpenedByTask :one
+SELECT id FROM chat_attention_item WHERE source_task_id = $1 AND kind = 'ask';
+
+-- name: CreateChatAttentionAsk :one
+-- T6 new: opened_at is the default clock_timestamp().
+INSERT INTO chat_attention_item (workspace_id, chain_root_session_id, chat_session_id, user_id, agent_id, kind, source_task_id, last_outcome_task_id)
+VALUES (@workspace_id, @chain_root_session_id, @chat_session_id, @user_id, @agent_id, 'ask', @source_task_id, @source_task_id)
+RETURNING id;
+
+-- name: ContinueChatAttentionAsks :exec
+-- T6 continue: the ask returns to Cheese with its original opened_at. Waiting is cleared unless a
+-- later task is the one it waits on. The watermark makes an older task or a repeat a no-op (T11);
+-- tasks are ordered by (created_at, id).
+UPDATE chat_attention_item i
+SET last_outcome_task_id = @task_id,
+    waiting_message_id = CASE WHEN i.waiting_task_id IS NULL OR i.waiting_task_id = @task_id THEN NULL ELSE i.waiting_message_id END,
+    waiting_task_id = CASE WHEN i.waiting_task_id IS NULL OR i.waiting_task_id = @task_id THEN NULL ELSE i.waiting_task_id END
+WHERE i.id = ANY(@ids::uuid[]) AND i.kind = 'ask' AND i.resolved_at IS NULL
+  AND (i.last_outcome_task_id IS NULL OR (
+        SELECT (o.created_at, o.id) FROM agent_task_queue o WHERE o.id = i.last_outcome_task_id
+      ) < (SELECT (n.created_at, n.id) FROM agent_task_queue n WHERE n.id = @task_id));
+
+-- name: ResolveChatAttentionAsksDone :exec
+-- T7: only the named asks, under the same watermark.
+UPDATE chat_attention_item i
+SET resolved_at = clock_timestamp(), resolved_by = 'agent_done', last_outcome_task_id = @task_id,
+    waiting_message_id = NULL, waiting_task_id = NULL
+WHERE i.id = ANY(@ids::uuid[]) AND i.kind = 'ask' AND i.resolved_at IS NULL
+  AND (i.last_outcome_task_id IS NULL OR (
+        SELECT (o.created_at, o.id) FROM agent_task_queue o WHERE o.id = i.last_outcome_task_id
+      ) < (SELECT (n.created_at, n.id) FROM agent_task_queue n WHERE n.id = @task_id));
+
+-- name: RecordChatTurnOutcome :exec
+-- One row per task; the first outcome wins.
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+VALUES (@task_id, @workspace_id, @chat_session_id, @chain_root_session_id, @user_id, @kind)
+ON CONFLICT (task_id) DO NOTHING;
+
+-- name: ClearChatAttentionWaitingForTasks :exec
+-- T10: whichever way a task ends, the asks that waited on it go back to Cheese.
+UPDATE chat_attention_item
+SET waiting_message_id = NULL, waiting_task_id = NULL
+WHERE waiting_task_id = ANY(@task_ids::uuid[]);
+
+-- name: RecordUnclassifiedChatTurns :exec
+-- T9: a completed chat task that reported no outcome is an unclassified turn. Compaction tasks are not turns.
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+SELECT t.id, s.workspace_id, s.id, s.chain_root_session_id, s.creator_id, 'unclassified'
+FROM agent_task_queue t
+JOIN chat_session s ON s.id = t.chat_session_id
+WHERE t.id = ANY(@task_ids::uuid[]) AND t.status = 'completed' AND t.task_kind IS DISTINCT FROM 'compact'
+  AND s.chain_root_session_id IS NOT NULL
+ON CONFLICT (task_id) DO NOTHING;
