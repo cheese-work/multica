@@ -352,7 +352,7 @@ function PluginDetail({
         </dd>
       </dl>
       <HitsChart row={row} since={since} tz={tz} />
-      <RecentDecisions plugin={row.name} tz={tz} />
+      <RecentDecisions plugin={row.name} />
     </section>
   );
 }
@@ -397,7 +397,7 @@ function HitsChart({ row, since, tz }: { row: GuardRow; since: string; tz: strin
   );
 }
 
-function RecentDecisions({ plugin, tz }: { plugin: string; tz: string }) {
+function RecentDecisions({ plugin }: { plugin: string }) {
   const { t } = useT("settings");
   const locale = useLocale();
   const viewingTz = useViewingTimezone();
@@ -413,7 +413,6 @@ function RecentDecisions({ plugin, tz }: { plugin: string; tz: string }) {
     })[action] ?? action;
   const pill = (d: GuardDecision) =>
     d.action === "refused" ? "bg-destructive/10 text-destructive" : d.action === "fixed" ? "bg-info/10 text-info" : "bg-muted text-muted-foreground";
-  void tz;
   return (
     <div className="space-y-2 p-4">
       <h3 className="text-label font-semibold">{t(($) => $.guard.decisions_title)}</h3>
