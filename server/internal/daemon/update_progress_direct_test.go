@@ -90,8 +90,11 @@ func TestHandleUpdate_DirectDownloadReportsProgressAndKeepsBinaryOnFailure(t *te
 	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: directTestTag})
 
 	reports := srv.progressReports()
-	if len(reports) != 1 { // the fake download takes well under 1s: one throttled report
-		t.Fatalf("progress reports = %d, want exactly 1: %v", len(reports), reports)
+	if len(reports) != 2 { // the fake download takes well under 1s: first report + flushed final one
+		t.Fatalf("progress reports = %d, want 2: %v", len(reports), reports)
+	}
+	if fin := reports[1]["progress"].(map[string]any); fin["bytes_done"].(float64) != 1<<20 {
+		t.Fatalf("final progress = %v, want bytes_done == bytes_total", fin)
 	}
 	prog := reports[0]["progress"].(map[string]any)
 	if prog["phase"] != "downloading" || prog["bytes_total"].(float64) != 1<<20 {
