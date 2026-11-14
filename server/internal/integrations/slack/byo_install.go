@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/slack-go/slack"
 
@@ -38,6 +39,9 @@ type RegisterBYOParams struct {
 	InitiatorID pgtype.UUID
 	BotToken    string // xoxb-… — outbound Web API (chat.postMessage)
 	AppToken    string // xapp-… — this app's OWN Socket Mode connection (inbound)
+	// Audit, when set, runs inside the install transaction before commit; an
+	// error rolls the install back and is returned unchanged.
+	Audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 // RegisterBYO installs a user-supplied ("bring your own") Slack app for an agent.
@@ -125,6 +129,7 @@ func (s *InstallService) RegisterBYO(ctx context.Context, p RegisterBYOParams) (
 		installerID: p.InitiatorID,
 		appIDKey:    appID,
 		configJSON:  cfgJSON,
+		audit:       p.Audit,
 	})
 }
 
