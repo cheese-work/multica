@@ -5,19 +5,19 @@ import { useScrollPointerShield } from "./use-scroll-pointer-shield";
 afterEach(() => vi.useRealTimers());
 
 describe("useScrollPointerShield", () => {
-  it("ignores the pointer while scrolling and restores it 150 ms after the last scroll", () => {
+  it("covers the list while scrolling and removes the cover 150 ms after the last scroll", () => {
     vi.useFakeTimers();
     const scroller = document.createElement("div");
-    const target = document.createElement("div");
-    renderHook(() => useScrollPointerShield({ current: target }, scroller));
+    const shield = () => scroller.querySelector("[data-scroll-shield]");
+    renderHook(() => useScrollPointerShield(scroller));
 
     scroller.dispatchEvent(new Event("scroll"));
-    expect(target.style.pointerEvents).toBe("none");
+    expect(shield()).not.toBeNull();
     vi.advanceTimersByTime(100);
     scroller.dispatchEvent(new Event("scroll"));
     vi.advanceTimersByTime(100);
-    expect(target.style.pointerEvents).toBe("none");
+    expect(shield()).not.toBeNull();
     vi.advanceTimersByTime(60);
-    expect(target.style.pointerEvents).toBe("");
+    expect(shield()).toBeNull();
   });
 });

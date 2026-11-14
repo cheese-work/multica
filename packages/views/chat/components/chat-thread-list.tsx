@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { GroupedVirtuoso } from "react-virtuoso";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -748,14 +748,12 @@ export function ChatThreadList({
   // wrapper has found it, a bounded slice of real rows keeps the first frame
   // populated. The same slice is what renders where nothing scrolls (tests).
   const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
-  const shieldRef = useRef<HTMLDivElement | null>(null);
   const attachBody = useCallback((el: HTMLDivElement | null) => {
-    shieldRef.current = el;
     setScrollEl(el ? findScrollParent(el) : null);
   }, []);
   // Rows slide under a still cursor while scrolling; keep that from opening
   // avatar hover cards (and their queries).
-  useScrollPointerShield(shieldRef, scrollEl);
+  useScrollPointerShield(scrollEl);
 
   const renderGroupHeader = (g: (typeof sections)[number]) => (
     <div

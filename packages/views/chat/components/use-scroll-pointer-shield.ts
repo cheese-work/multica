@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect } from "react";
 
 /** Pointer events return this long after the last scroll event. */
 const SETTLE_MS = 150;
@@ -15,30 +15,37 @@ export function findScrollParent(el: HTMLElement): HTMLElement | null {
 /**
  * Rows slide under a still cursor while the list scrolls, and each one fires
  * `mouseenter`, which opens avatar hover cards and their queries. While
- * `scrollEl` scrolls, `target` ignores the pointer; the scroller itself still
- * takes the wheel. Toggled on the element, not through state, so scrolling
- * never re-renders the list.
+ * `scrollEl` scrolls, a transparent overlay inside it takes the pointer; wheel
+ * events still bubble to the scroller. An overlay, not `pointer-events: none`
+ * on the list: that property inherits, so toggling it re-styled every row on
+ * each scroll burst (about 20 s of style recalc over one 300-row pass at 4x CPU).
+ * Done on the DOM, not through state, so scrolling never re-renders the list.
  */
-export function useScrollPointerShield(
-  target: RefObject<HTMLElement | null>,
-  scrollEl: HTMLElement | null,
-) {
+export function useScrollPointerShield(scrollEl: HTMLElement | null) {
   useEffect(() => {
-    const el = target.current;
-    if (!scrollEl || !el) return;
+    if (!scrollEl) return;
+    let shield: HTMLDivElement | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const remove = () => {
+      shield?.remove();
+      shield = null;
+    };
     const onScroll = () => {
-      el.style.pointerEvents = "none";
+      if (!shield) {
+        const r = scrollEl.getBoundingClientRect();
+        shield = document.createElement("div");
+        shield.dataset.scrollShield = "";
+        shield.style.cssText = `position:fixed;z-index:1;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px`;
+        scrollEl.appendChild(shield);
+      }
       clearTimeout(timer);
-      timer = setTimeout(() => {
-        el.style.pointerEvents = "";
-      }, SETTLE_MS);
+      timer = setTimeout(remove, SETTLE_MS);
     };
     scrollEl.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       scrollEl.removeEventListener("scroll", onScroll);
       clearTimeout(timer);
-      el.style.pointerEvents = "";
+      remove();
     };
-  }, [target, scrollEl]);
+  }, [scrollEl]);
 }
