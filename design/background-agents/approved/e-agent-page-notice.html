@@ -1,0 +1,87 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHE-4122 v2 E</title><style>
+*{margin:0;box-sizing:border-box;font-family:Inter,"Segoe UI",Roboto,"Helvetica Neue",Helvetica,Arial,"Liberation Sans","DejaVu Sans",sans-serif}
+:root{--shell:oklch(0.155 0.005 285.823);--surface:oklch(0.21 0.006 285.885);--raised:oklch(0.235 0.007 285.885);--hover:oklch(0.274 0.006 286.033);--sel:oklch(0.3 0.006 286.033);--bd:oklch(1 0 0 / 10%);--fg:oklch(0.985 0 0);--mut:oklch(0.705 0.015 286.067);--faint:oklch(0.60 0.015 286.067);--inp:oklch(1 0 0 / 15%);--ring:oklch(0.552 0.016 285.938);--pri:oklch(0.92 0.004 286.32);--prifg:oklch(0.21 0.006 285.885);--ok:oklch(0.65 0.15 145);--warn:oklch(0.70 0.16 85);--err:oklch(0.704 0.191 22.216);--info:oklch(0.72 0.12 250)}
+body{font-size:13px;line-height:18px;color:var(--fg);background:var(--shell);padding:24px}
+h1{font-size:20px;line-height:28px;font-weight:600}.lead{font-size:14px;line-height:20px;color:var(--mut);max-width:1200px;margin:4px 0 8px}
+.cols{display:grid;grid-template-columns:900px 390px;gap:48px;align-items:start}
+.band{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);font-weight:600;margin:22px 0 8px}
+.pg{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:20px;display:grid;gap:14px}.ph{width:390px;padding:16px}
+.main{display:grid;gap:14px;min-width:0}
+.crumb{color:var(--mut);font-size:12px;line-height:16px}
+.d{color:var(--mut);font-size:13px}
+.scope{display:inline-flex;gap:5px;align-items:center;height:22px;padding:0 8px;border:1px solid var(--inp);border-radius:99px;font-size:12px;font-weight:600;color:var(--fg);background:oklch(1 0 0 / 6%)}
+.scope.ws{border-color:oklch(0.72 0.12 250 / 55%);color:var(--info)}.scope.me{border-color:oklch(0.70 0.16 85 / 55%);color:var(--warn)}
+.ban{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--bd);border-radius:10px;padding:10px 12px;background:oklch(1 0 0 / 4%);color:var(--mut);font-size:13px;line-height:18px}.ban .i{margin-top:2px;flex:none}.ban b{color:var(--fg);font-weight:600}.ban.bg{border-color:oklch(0.72 0.12 250 / 45%);background:oklch(0.72 0.12 250 / 8%)}.ban.bg>.i{color:var(--info)}.ban.w>.i{color:var(--warn)}.ban.a>.i{color:var(--faint)}
+a,.lk{color:var(--fg);text-decoration:underline;text-underline-offset:2px}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--inp);background:oklch(1 0 0 / 5%);color:var(--fg);font-size:13px;font-weight:500;white-space:nowrap}.btn.p{background:var(--pri);color:var(--prifg);border-color:transparent}.ph .btn{height:40px}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ann{font-size:12px;line-height:16px;color:var(--mut);max-width:900px}
+.ah{display:flex;gap:12px;align-items:center}.av{width:40px;height:40px;border-radius:10px;background:var(--sel);display:grid;place-items:center;font-weight:600;font-size:15px}.ah h3{font-size:16px;line-height:24px;font-weight:600}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--bd)}.tabs span{padding:6px 10px;color:var(--mut)}.tabs .on{color:var(--fg);font-weight:600;border-bottom:2px solid var(--fg);margin-bottom:-1px}
+.jobs{display:grid;gap:6px;margin-top:6px;list-style:none;padding:0}.jobs li{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--fg)}.jobs .k{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--mut)}
+.sec{border:1px solid var(--bd);border-radius:10px;background:var(--raised);padding:14px 16px;display:grid;gap:10px}.sec h4{font-size:14px;line-height:20px;font-weight:600}
+.opt{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--bd);border-radius:8px}.opt.on{background:var(--sel);border-color:var(--inp)}.opt .r{width:16px;height:16px;border-radius:99px;border:2px solid var(--inp);margin-top:1px;flex:none}.opt.on .r{border:5px solid var(--fg)}.opt b{font-weight:600}.opt small{display:block;color:var(--mut);font-size:12px;line-height:16px}.opt.ro{opacity:.6}
+.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border:1px solid var(--bd);border-radius:99px;font-size:12px;color:var(--mut)}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="in" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v.5M12 11v5"/></symbol><symbol id="ck" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol><symbol id="al" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></symbol><symbol id="us" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 4.8a3.5 3.5 0 010 6.4M18 14.4c2 .8 3.5 2.6 3.5 5.6"/></symbol><symbol id="u1" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></symbol><symbol id="lk" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol><symbol id="ar" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol><symbol id="bg" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6M9 12h6M9 15h3"/></symbol><symbol id="ac" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9M10 13h4"/></symbol><symbol id="rt" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol></defs></svg>
+<h1>E · Agent page: "Background agent" notice and access note</h1>
+<p class="lead">New in v2 (Cheese: the agent detail page must say the agent works as a background agent, and the permission section needs a note). Notice sits with the existing archived and runtime banners. Each job links to its own tab, so one component serves both scopes. Icon plus text, never colour alone. Agent names are sample data. Left: 900 px. Right: 390 px phone.</p>
+<div class="cols"><div>
+<p class="band">1 · Agent detail page, owner or admin: notice + access section</p>
+<div class="pg"><div class="main">
+<div class="crumb">Agents · x99-claude-haiku</div>
+<div class="ah"><div class="av">H</div><div><h3>x99-claude-haiku</h3><p class="d">Fast, cheap model for small jobs.</p></div></div>
+<div class="tabs"><span class="on">Overview</span><span>Instructions</span><span>Skills</span><span>Tasks</span><span>Settings</span></div>
+<div class="ban bg" role="status"><svg class="i"><use href="#bg"/></svg><div><b>Background agent</b> · This agent does small jobs behind the scenes. It is not a chat agent for these jobs.
+<ul class="jobs"><li><span>DM title</span><span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span><a href="#">Workspace → Background agents</a><span class="k">dm_title</span></li><li><span>Quick actions</span><span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span><a href="#">Workspace → Background agents</a><span class="k">quick_actions</span></li><li><span>Quick actions</span><span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal · yours</span><a href="#">Personal → Background agents</a><span class="k">quick_actions</span></li></ul></div></div>
+<div class="sec"><h4>Who can run this agent</h4>
+<div class="opt"><span class="r"></span><div><b>Only me</b><small>Only you can assign or mention this agent.</small></div></div>
+<div class="opt on" aria-checked="true"><span class="r"></span><div><b>Workspace</b><small>Everyone in the workspace can assign or mention this agent.</small></div></div>
+<div class="opt"><span class="r"></span><div><b>Specific people</b><small>Choose who can run this agent.</small></div></div>
+<div class="ban bg"><svg class="i"><use href="#bg"/></svg><div><b>Keep "Workspace" for workspace background jobs.</b> Narrowing access to "Only me" or "Specific people" makes this agent ineligible for the 2 workspace jobs above. Those jobs then run their fallback agent, or the no-agent path if none is set. Personal picks of people who still have access keep working.</div></div></div>
+</div></div>
+<p class="ann">The notice is on Overview, above the fold, below any archived or runtime banner. The jobs list shows the CLI words (<code>workspace</code>, <code>personal</code>) and the job keys, so an agent reading the page and a person reading it see the same thing. Every job the agent holds is listed the same way, with its key: <code>dm_title</code>, <code>quick_actions</code>, <code>compact</code> (Workspace and Personal) and <code>routing</code> (Workspace only). This sample agent holds only two of them. Everyone, admins included, sees only workspace uses and their own personal uses.</p>
+<p class="band">2 · Access narrowed: the note becomes a warning before save</p>
+<div class="pg"><div class="main">
+<div class="sec"><h4>Who can run this agent</h4>
+<div class="opt"><span class="r"></span><div><b>Only me</b><small>Only you can assign or mention this agent.</small></div></div>
+<div class="opt"><span class="r"></span><div><b>Workspace</b><small>Everyone in the workspace can assign or mention this agent.</small></div></div>
+<div class="opt on" aria-checked="true"><span class="r"></span><div><b>Specific people</b><small>Dana Pham, Lee Tran</small></div></div>
+<div class="ban w" role="alert"><svg class="i"><use href="#al"/></svg><div><b>This change affects 2 workspace background jobs.</b> DM title and Quick actions will stop using x99-claude-haiku. Each runs its fallback agent, or the no-agent path if none is set. Jobs run next time, not retroactively.<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><span class="btn p">Save access</span><span class="btn">Cancel</span><span class="btn">Open Workspace → Background agents <svg class="i"><use href="#ar"/></svg></span></div></div></div></div>
+</div></div>
+<p class="ann">Shown only when the agent holds a workspace job and the new access is narrower than "Workspace". Saving is allowed (the agent's owner decides access). The warning names the jobs and what happens, then links to the tab to pick a replacement. Personal picks are not listed here, because the page never shows another member's picks.</p>
+<p class="band">3 · Member view: workspace uses + own personal uses only</p>
+<div class="pg"><div class="main">
+<div class="crumb">Agents · x99-claude-haiku</div>
+<div class="ah"><div class="av">H</div><div><h3>x99-claude-haiku</h3><p class="d">Fast, cheap model for small jobs.</p></div></div>
+<div class="ban bg" role="status"><svg class="i"><use href="#bg"/></svg><div><b>Background agent</b> · This agent does small jobs behind the scenes.
+<ul class="jobs"><li><span>DM title</span><span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span><span class="k">dm_title</span></li><li><span>Quick actions</span><span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span><span class="k">quick_actions</span></li><li><span>Quick actions</span><span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal · yours</span><a href="#">Personal → Background agents</a><span class="k">quick_actions</span></li></ul>
+<p class="m" style="margin-top:8px;font-size:12px;line-height:16px">Workspace jobs are set by owners and admins. You see your own personal picks, not other people's.</p></div></div>
+<div class="sec"><h4>Who can run this agent</h4>
+<div class="opt on ro"><span class="r"></span><div><b>Workspace</b><small>Everyone in the workspace can assign or mention this agent.</small></div></div>
+<div class="ban"><svg class="i"><use href="#lk"/></svg><div>Only the agent's owner or an admin can change access. This agent is a workspace background agent, so narrowing its access would make it ineligible for the workspace jobs above. Those jobs then run their fallback agent, or the no-agent path if none is set.</div></div></div>
+</div></div>
+<p class="ann">Workspace rows have no link for members, because members cannot edit that tab. Their own Personal row keeps its link. A member with no personal pick on this agent sees only the two Workspace rows.</p>
+<p class="band">4 · Banner stack: archived and runtime banners keep their real text</p>
+<div class="pg"><div class="main">
+<div class="ban a" role="status"><svg class="i"><use href="#ac"/></svg><div><b>This agent is archived. It cannot be assigned or mentioned.</b><div style="display:flex;gap:8px;margin-top:8px"><span class="btn">Restore</span></div></div></div>
+<div class="ban w" role="status"><svg class="i"><use href="#rt"/></svg><div><b>This agent kept its configuration and history, but needs a runtime before it can run.</b><div style="display:flex;gap:8px;margin-top:8px"><span class="btn p">Bind runtime</span></div></div></div>
+<div class="ban bg" role="status"><svg class="i"><use href="#bg"/></svg><div><b>Background agent · currently ineligible</b> · Archived or without a runtime, this agent is skipped for its 2 workspace jobs and 1 personal job. Workspace jobs run their fallback agent, or the no-agent path if none is set. Your personal job runs the no-agent path: the workspace agent and your fallback do not take over (same rule as Personal tab, state 2). <a href="#">Workspace → Background agents</a></div></div>
+</div></div>
+<p class="ann">Order: archived, runtime required, background. When an archived or runtime banner is present, the background notice adds "currently ineligible" in text, so the state is clear without colour.</p>
+</div>
+<div>
+<p class="band">Phone · notice + access note</p>
+<div class="pg ph"><div class="crumb">Agents · x99-claude-haiku</div>
+<div class="ah"><div class="av">H</div><div><h3>x99-claude-haiku</h3></div></div>
+<div class="ban bg" role="status"><svg class="i"><use href="#bg"/></svg><div><b>Background agent</b> · Small jobs behind the scenes.
+<ul class="jobs"><li><span>DM title</span><span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></li><li><span>Quick actions</span><span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></li><li><span>Quick actions</span><span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal · yours</span></li></ul>
+<a href="#" style="display:inline-block;margin-top:8px">Open Background agents</a></div></div>
+<div class="sec"><h4>Who can run this agent</h4>
+<div class="opt on"><span class="r"></span><div><b>Workspace</b><small>Everyone can assign or mention.</small></div></div>
+<div class="ban bg"><svg class="i"><use href="#bg"/></svg><div>Narrowing access to "Only me" or "Specific people" makes this agent ineligible for 2 workspace background jobs.</div></div></div></div>
+<p class="band">Phone · access warning</p>
+<div class="pg ph"><div class="ban w" role="alert"><svg class="i"><use href="#al"/></svg><div><b>This change affects 2 workspace background jobs.</b> They run their fallback agent, or the no-agent path.<div style="display:grid;gap:8px;margin-top:8px"><span class="btn p" style="justify-content:center">Save access</span><span class="btn" style="justify-content:center">Cancel</span></div></div></div></div>
+<p class="ann" style="margin-top:12px">Phone: banners stack full width, 40 px buttons, the jobs list wraps per line. The "Open Background agents" link goes to the tab that matches the viewer: Workspace for owners and admins, Personal for members.</p>
+</div></div>
+</body></html>
