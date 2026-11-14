@@ -267,8 +267,14 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
+	runGuard, err := h.weeklyRunGuardBrief(ctx, workspaceID, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		fail(err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_budget_auto":     runBudgetAuto,
+		"run_guard":           runGuard,
 		"enabled":             parsed.Enabled,
 		"stopped":             parsed.Stopped,
 		"review_target_hours": int(agentDecisionReviewTarget / time.Hour),
