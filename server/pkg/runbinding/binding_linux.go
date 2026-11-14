@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,13 +47,18 @@ func New(ctx context.Context, spec Spec) (*Publisher, error) {
 		return nil, err
 	}
 	opened, err := root.Stat(".")
-	if err != nil || !os.SameFile(info, opened) || opened.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-		root.Close()
+	if err != nil || !os.SameFile(info, opened) {
+		_ = root.Close()
+		return nil, errors.New("managed binding registry owner or identity mismatch")
+	}
+	stat, ok := opened.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		_ = root.Close()
 		return nil, errors.New("managed binding registry owner or identity mismatch")
 	}
 	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		root.Close()
+		_ = root.Close()
 		return nil, err
 	}
 	p := &Publisher{ctx: ctx, ID: hex.EncodeToString(nonce[:]), spec: spec, root: root}
@@ -112,7 +118,8 @@ func (p *Publisher) Publish(pid int) error {
 	if err != nil {
 		return err
 	}
-	defer p.root.Remove(temp)
+	// A temporary file is never a usable binding, including after a failed write.
+	defer func() { _ = p.root.Remove(temp) }()
 	_, writeErr := f.Write(data)
 	closeErr := f.Close()
 	if writeErr != nil {
@@ -139,6 +146,9 @@ func (p *Publisher) Close() {
 	if p.stop != nil {
 		p.stop()
 	}
-	p.root.Remove(p.ID + ".json")
-	p.root.Close()
+	if err := p.root.Remove(p.ID + ".json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Process cleanup must continue; broker liveness still fences a dead holder.
+		slog.Error("managed binding revocation failed", "error", err)
+	}
+	_ = p.root.Close()
 }

@@ -4,8 +4,10 @@ package runbinding
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,30 @@ import (
 	"testing"
 	"time"
 )
+
+func TestBindingCloseReportsRevocationFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(context.Background(), Spec{dir, "agent", "task", "CHE-5868"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	// Force the pinned registry handle to fail without changing host permissions.
+	if err := p.root.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+	if !strings.Contains(logs.String(), "managed binding revocation failed") {
+		t.Fatalf("revocation failure was silent: %s", logs.String())
+	}
+}
 
 func TestBindingLifecycle(t *testing.T) {
 	dir := t.TempDir()
