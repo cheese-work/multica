@@ -108,7 +108,7 @@ func (q *Queries) InsertAskRecoveryNotice(ctx context.Context, arg InsertAskReco
 }
 
 const listAskRecoveryEvents = `-- name: ListAskRecoveryEvents :many
-SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason FROM ask_guard_event event
+SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at FROM ask_guard_event event
 JOIN agent_task_queue task ON task.id = event.task_id AND task.status IN ('completed', 'failed', 'cancelled')
 WHERE event.mode = 'block' AND event.cleared_at IS NULL AND event.repair_reason IS NULL
 ORDER BY event.id
@@ -142,6 +142,8 @@ func (q *Queries) ListAskRecoveryEvents(ctx context.Context, batchSize int32) ([
 			&i.SourceText,
 			&i.DeliveredAt,
 			&i.RepairReason,
+			&i.RootID,
+			&i.RepairHandledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -195,7 +197,7 @@ func (q *Queries) ListAskRecoveryNoticesByMessage(ctx context.Context, arg ListA
 }
 
 const lockAskGuardEvent = `-- name: LockAskGuardEvent :one
-SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason FROM ask_guard_event WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at FROM ask_guard_event WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
 
 type LockAskGuardEventParams struct {
@@ -222,6 +224,8 @@ func (q *Queries) LockAskGuardEvent(ctx context.Context, arg LockAskGuardEventPa
 		&i.SourceText,
 		&i.DeliveredAt,
 		&i.RepairReason,
+		&i.RootID,
+		&i.RepairHandledAt,
 	)
 	return i, err
 }

@@ -45,17 +45,25 @@ import { HunksRegion } from "../../../packages/views/chat/components/diff-hunks"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@multica/ui/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { cn } from "@multica/ui/lib/utils";
-import { SettingsCard, SettingsRow, SettingsSection } from "../../../packages/views/settings/components/settings-layout";
 import { PillMenu } from "../../../packages/views/issues/components/wakeup-pickers";
 import {
   Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2, TriangleAlert,
 } from "@multica/ui/icons";
+import {
+  SettingsCard, SettingsReadOnlyNotice, SettingsRow, SettingsSaveState, SettingsSection, SettingsTab,
+} from "../../../packages/views/settings/components/settings-layout";
+// Lazy: the SettingsPage module graph is large; the other views must not pay for it (or hang on it) at init.
+const SettingsPage = lazy(() =>
+  import("../../../packages/views/settings/components/settings-page").then((m) => ({ default: m.SettingsPage })),
+);
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
 import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
 import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
 import { NavigationProvider } from "../../../packages/views/navigation/context";
 import {
   seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
+  WakeupFieldsPage, WakeupPickersPage, WorkspaceWakeupRulesPage, ChatSearchPage, ConfigChangeViewerPage,
+  DecisionArtifactsPage, DecisionRequestCardPage, NeedsYouListPage, QuickAgentBarPage, DelegatedWritesPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -126,6 +134,11 @@ const typeInto = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => 
   Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
   el.dispatchEvent(new Event("input", { bubbles: true }));
 };
+const member = (id: string, name: string, role: string) => ({ id, user_id: id, workspace_id: WS, name, role, email: `${id}@example.com` });
+qc.setQueryData(memberListOptions("ws-managers").queryKey, [
+  member("m1", "Mai Tran", "owner"), member("m2", "Linh Pham", "admin"), member("m3", "Bao Nguyen", "member"),
+]);
+qc.setQueryData(memberListOptions("ws-no-managers").queryKey, [member("m4", "Bao Nguyen", "member")]);
 
 const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="flex items-center gap-4 py-2">
@@ -193,6 +206,38 @@ function IssueMentionChip() {
         <div className="mt-1"><IssueChip issueId="i2" /></div>
       </div>
       <p className="mt-4 text-body">Unresolved issue falls back: <IssueChip issueId="deleted-issue-id" fallbackLabel="CHE-0000" /></p>
+    </div>
+  );
+}
+
+function SettingsPageDemo() {
+  return (
+    <div className="mx-auto max-w-4xl p-6">
+      <SettingsTab title="Preferences" description="How Multica looks and behaves on this device." scope="device">
+        <SettingsSection title="Appearance" description="Theme and language apply on this device only.">
+          <SettingsCard>
+            <SettingsRow label="Theme" description="Follows the system by default." size="select">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">System</div>
+            </SettingsRow>
+            <SettingsRow label="Language" size="select">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">English</div>
+            </SettingsRow>
+          </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title="Workspace profile" scope="workspace">
+          <SettingsCard>
+            <SettingsRow label="Display name" description="Shown to other members of this workspace." size="text">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">Ada Lovelace</div>
+            </SettingsRow>
+            <SettingsRow label="Issue prefix" size="code">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">CHE</div>
+            </SettingsRow>
+            <SettingsRow label="Email digest" description="One summary a day, at 09:00 ICT.">
+              <div className="h-5 w-9 rounded-full bg-primary" />
+            </SettingsRow>
+          </SettingsCard>
+        </SettingsSection>
+      </SettingsTab>
     </div>
   );
 }
@@ -364,6 +409,30 @@ function Buttons() {
   );
 }
 
+const navAdapter = {
+  push() {}, replace() {}, back() {},
+  pathname: "/acme/settings", searchParams: new URLSearchParams(""), hash: "",
+  getShareableUrl: (path: string) => path,
+};
+function SettingsNavigation() {
+  return (
+    <NavigationProvider value={navAdapter}>
+      <div className="flex h-[900px] w-full">
+        <Suspense fallback={null}><SettingsPage /></Suspense>
+      </div>
+    </NavigationProvider>
+  );
+}
+
+function ReadOnlyMemberView() {
+  return (
+    <div className="max-w-2xl space-y-6 p-6">
+      <Row label="owners and admins named"><div className="w-full"><SettingsReadOnlyNotice wsId="ws-managers" /></div></Row>
+      <Row label="no manager found"><div className="w-full"><SettingsReadOnlyNotice wsId="ws-no-managers" /></div></Row>
+    </div>
+  );
+}
+
 function HeaderChipPopoverDemo() {
   const { t } = useT("chat");
   const rows = [
@@ -517,6 +586,18 @@ function LazyDetail() {
         <p className="mb-2 text-caption text-muted-foreground">Loaded</p>
         <Suspense fallback={null}><LazyBody /></Suspense>
       </div>
+    </div>
+  );
+}
+
+function SaveState() {
+  const labels = { savingLabel: "Saving…", savedLabel: "Saved", errorLabel: "Could not save. Try again." };
+  return (
+    <div className="p-6">
+      <Row label="idle (renders nothing)"><SettingsSaveState status="idle" {...labels} /></Row>
+      <Row label="saving"><SettingsSaveState status="saving" {...labels} /></Row>
+      <Row label="saved"><SettingsSaveState status="saved" {...labels} /></Row>
+      <Row label="error"><SettingsSaveState status="error" {...labels} /></Row>
     </div>
   );
 }
@@ -1033,6 +1114,10 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
   "issue-mention-chip": IssueMentionChip,
+  "settings-page": SettingsPageDemo,
+  "settings-navigation": SettingsNavigation,
+  "read-only-member-view": ReadOnlyMemberView,
+  "save-state": SaveState,
   "pause-banner": PauseBanner,
   "run-budget": RunBudget,
   "attachment-card-list": AttachmentCards,
@@ -1048,6 +1133,16 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "hierarchy-dialog": HierarchyDialogPage,
   "wakeup-event-row": WakeupEventRowPage,
   "wakeup-condition-params": ConditionParamsPage,
+  "wakeup-fields": WakeupFieldsPage,
+  "wakeup-pickers": WakeupPickersPage,
+  "workspace-wakeup-rules": WorkspaceWakeupRulesPage,
+  "chat-search": ChatSearchPage,
+  "config-change-viewer": ConfigChangeViewerPage,
+  "decision-artifacts": DecisionArtifactsPage,
+  "decision-request-card": DecisionRequestCardPage,
+  "needs-you-list": NeedsYouListPage,
+  "quick-agent-bar": QuickAgentBarPage,
+  "delegated-writes-section": DelegatedWritesPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,

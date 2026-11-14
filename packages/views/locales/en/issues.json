@@ -23,7 +23,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "Hierarchy canvas, zoomed out",
     "canvas_cards": "Hierarchy canvas, zoomed in",
-    "dialog_description": "Pan and zoom the hierarchy. Open an issue to go to it.",
+    "dialog_description": "Step through the hierarchy one depth at a time. Open an issue to go to it.",
+    "step_in": "Step in",
+    "step_out": "Step out",
+    "depth": "Depth {{depth}} / {{max}}",
+    "depth_announce": "Depth {{depth}} of {{max}}, {{count}} cards, {{withChildren}} with children",
+    "more_cards": "+{{count}} more",
+    "more_cards_pending": "+{{count}}… more loading",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − step depth · arrows move · Enter opens · Space steps in or out · Esc steps out",
+    "canvas_focus": "Hierarchy canvas, depth {{depth}}",
     "zoom_in": "Zoom in",
     "zoom_out": "Zoom out",
     "zoom_level": "Zoom {{percent}}%",
@@ -90,10 +99,17 @@
   "working_filter_error": {
     "title": "Couldn't load issues with working agents"
   },
+  "unread_filter_error": {
+    "title": "Couldn't load your unread issues"
+  },
   "status_catalog_error": {
     "title": "Couldn't load the status list",
     "hint": "Issues can't be shown until statuses load.",
     "retry": "Try again"
+  },
+  "relation_filter_error": {
+    "title": "Couldn't load the \"Relation to me\" filter",
+    "hint": "Issues filtered by \"Subscribed by me\" or \"Assigned to my agents\" can't be shown until your subscriptions and agents load."
   },
   "source_context": {
     "create_action": "Create sub-issue from here",
@@ -233,8 +249,11 @@
     "relation_assigned": "Assigned to me",
     "relation_created": "Created by me",
     "relation_my_agents": "Assigned to my agents",
+    "relation_subscribed": "Subscribed by me",
     "section_agent_status": "Agent status",
     "agent_status_running": "Running",
+    "section_read_state": "Read state",
+    "read_state_unread": "Unread",
     "operator_label": "Match",
     "operator_is": "is",
     "operator_is_not": "is not",
@@ -470,7 +489,10 @@
     "no_history": "No recorded history",
     "before_records": "Before records",
     "collapse": "Collapse",
-    "expand": "Expand"
+    "expand": "Expand",
+    "wakeup_cross": "Wakeup",
+    "wakeup_children_done": "Children done",
+    "target_inside": "Target inside (hidden by collapse)"
   },
   "actor_issues": {
     "scope": {
@@ -900,6 +922,7 @@
   },
   "filtered_empty": {
     "title": "No issues match these filters",
+    "unread_title": "No unread issues",
     "clear_button": "Clear filters"
   },
   "agent_live": {
@@ -1044,6 +1067,7 @@
     "confirm": "Stop run"
   },
   "batch": {
+    "delete_restricted": "You can delete issues you created or that your agents created. Workspace owners and admins can delete any issue.",
     "selected": "{{count}} selected",
     "status": "Status",
     "priority": "Priority",
@@ -1068,7 +1092,6 @@
     "delete_dialog_title_other": "Delete {{count}} issues?",
     "delete_dialog_desc_one": "This action cannot be undone. This will permanently delete the selected issue and all associated data.",
     "delete_dialog_desc_other": "This action cannot be undone. This will permanently delete the selected issues and all associated data.",
-    "delete_dialog_warning": "Any workspace member can delete issues.",
     "cancel": "Cancel"
   },
   "card": {
@@ -2049,7 +2072,8 @@
     "builtin": {
       "my_issues": "My Issues",
       "my_agents": "My agents' work",
-      "all_issues": "All issues"
+      "all_issues": "All issues",
+      "unread": "Unread"
     },
     "untitled": "Untitled view",
     "copy_name": "{{name}} (copy)",

@@ -80,6 +80,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 	issueWorkflowSetType:     executeIssueWorkflowSetAction,
 	issueProjectSetType:      executeIssueProjectSetAction,
+	doopDeployLiftAction:     executeDoopDeployLiftAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -172,7 +173,7 @@ func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCa
 	var target pgtype.UUID
 	var targeted bool
 	switch actionTargetKind(preview) {
-	case decisionaction.TargetIssue, decisionaction.TargetWorkflow, decisionaction.TargetSquad, decisionaction.TargetWorkspace:
+	case decisionaction.TargetIssue, decisionaction.TargetWorkflow, decisionaction.TargetSquad, decisionaction.TargetWorkspace, decisionaction.TargetNone:
 		targeted = true
 	default:
 		target, targeted = decisionActionTarget(preview)
@@ -555,7 +556,9 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
 		}
-		handler.notifyRunBudgetResume(ctx, action.ID)
+		if err := handler.resumeRefusalsAfterBudgetChange(ctx, action); err != nil {
+			return err
+		}
 	}
 	handler.DecisionWorker.Notify()
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})

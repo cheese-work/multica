@@ -18,6 +18,10 @@ const selection = vi.hoisted(() => ({
   selectedIds: new Set<string>(),
   clear: vi.fn(),
 }));
+vi.mock("@multica/core/issues/use-issue-deletion", () => ({
+  useIssueDeletion: () => ({ canDelete: () => true }),
+}));
+
 vi.mock("@multica/core/issues/stores/selection-store", () => ({
   useIssueSelectionStore: (selector: (s: typeof selection) => unknown) => selector(selection),
 }));

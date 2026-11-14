@@ -42,6 +42,13 @@ test("captures a fixture page at 1440 and 390 as non-blank PNGs plus frame HTML"
   assert.doesNotMatch(html, /(src|href)="https?:/, "frame HTML must not fetch from the network");
 });
 
+test("height option makes a taller capture", async () => {
+  const out = join(dir, "tall");
+  await captureFrame({ url: pathToFileURL(fixture).href, outDir: out, notes, height: 1200 });
+  const png = readFileSync(join(out, "inline-retry-1440.png"));
+  assert.equal(png.readUInt32BE(20), 1200, "PNG height from the IHDR chunk");
+});
+
 test("flags a blank capture", async () => {
   const out = join(dir, "blank-out");
   await assert.rejects(
@@ -62,4 +69,22 @@ test("rejects an id that is not a plain pattern id", async () => {
     /id/i,
   );
   assert.equal(existsSync(join(dir, "evil.html")), false);
+});
+
+test("launches Chrome with the keyring bypass flags (a page with an input otherwise hangs headless Chrome)", async () => {
+  const argsFile = join(dir, "chrome-args.txt");
+  const fake = join(dir, "fake-chrome.sh");
+  writeFileSync(fake, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`, { mode: 0o755 });
+  const prev = process.env.CHROME_BIN;
+  process.env.CHROME_BIN = fake;
+  try {
+    // The fake writes no PNG, so the capture itself fails; only the launch flags matter here.
+    await assert.rejects(captureFrame({ url: "file:///x.html", outDir: join(dir, "out-args"), notes, widths: [1440] }));
+  } finally {
+    if (prev === undefined) delete process.env.CHROME_BIN;
+    else process.env.CHROME_BIN = prev;
+  }
+  const args = readFileSync(argsFile, "utf8").split("\n");
+  assert.ok(args.includes("--password-store=basic"), "missing --password-store=basic");
+  assert.ok(args.includes("--use-mock-keychain"), "missing --use-mock-keychain");
 });

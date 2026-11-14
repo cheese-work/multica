@@ -202,10 +202,35 @@ func (h *Handler) SetProtectedPathPolicy(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "patterns must hold 1 to 64 relative paths without '..'")
 		return
 	}
-	row, err := h.Queries.UpsertProtectedPathPolicy(r.Context(), db.UpsertProtectedPathPolicyParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save the policy")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	var before map[string]any
+	if prev, err := qtx.GetProtectedPathPolicy(r.Context(), db.GetProtectedPathPolicyParams{WorkspaceID: member.WorkspaceID, Name: name}); err == nil {
+		before = protectedPathPolicyAuditFields(prev.Name, prev.Patterns)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to save the policy")
+		return
+	}
+	row, err := qtx.UpsertProtectedPathPolicy(r.Context(), db.UpsertProtectedPathPolicyParams{
 		WorkspaceID: member.WorkspaceID, Name: name, Patterns: req.Patterns, UpdatedByMemberID: member.ID,
 	})
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save the policy")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "workspace.protected_path_policy.update", WorkspaceID: member.WorkspaceID, TargetID: member.WorkspaceID,
+		Before: before, After: protectedPathPolicyAuditFields(row.Name, row.Patterns),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "workspace.protected_path_policy.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save the policy")
 		return
 	}

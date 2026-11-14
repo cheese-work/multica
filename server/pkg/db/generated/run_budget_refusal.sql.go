@@ -184,43 +184,6 @@ func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunB
 	return i, err
 }
 
-const getRunBudgetRefusalByAction = `-- name: GetRunBudgetRefusalByAction :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal WHERE action_id = $1
-`
-
-// The refusal a budget approval linked (CHE-2860): the post-commit notify finds it by action.
-func (q *Queries) GetRunBudgetRefusalByAction(ctx context.Context, actionID pgtype.UUID) (RunBudgetRefusal, error) {
-	row := q.db.QueryRow(ctx, getRunBudgetRefusalByAction, actionID)
-	var i RunBudgetRefusal
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.IssueID,
-		&i.WindowID,
-		&i.Status,
-		&i.OccurrenceActivityID,
-		&i.Blocked,
-		&i.AgentID,
-		&i.Trigger,
-		&i.State,
-		&i.StateReason,
-		&i.HookPhase,
-		&i.HookReason,
-		&i.ActionID,
-		&i.ResumeWindowID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HookGeneration,
-		&i.TaintIds,
-		&i.TaskID,
-		&i.ActorUserID,
-		&i.TriggerCommentID,
-		&i.SourceWakeupID,
-		&i.SourceTaskID,
-	)
-	return i, err
-}
-
 const getRunBudgetRefusalByWindow = `-- name: GetRunBudgetRefusalByWindow :one
 SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2
 `
@@ -425,6 +388,31 @@ func (q *Queries) ListResumePendingRunBudgetRefusals(ctx context.Context, before
 	return items, nil
 }
 
+const listRunBudgetRefusalIDsByAction = `-- name: ListRunBudgetRefusalIDsByAction :many
+SELECT id FROM run_budget_refusal WHERE action_id = $1 ORDER BY created_at, id
+`
+
+// The refusals a budget approval linked (CHE-2860, CHE-5508): the post-commit notify finds them by action.
+func (q *Queries) ListRunBudgetRefusalIDsByAction(ctx context.Context, actionID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listRunBudgetRefusalIDsByAction, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleRunBudgetHooks = `-- name: ListStaleRunBudgetHooks :many
 SELECT id FROM run_budget_refusal
 WHERE hook_phase IN ('intent', 'blocked') AND updated_at < $1::timestamptz
@@ -446,6 +434,47 @@ func (q *Queries) ListStaleRunBudgetHooks(ctx context.Context, before pgtype.Tim
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWaitingRunBudgetRefusals = `-- name: ListWaitingRunBudgetRefusals :many
+SELECT id, issue_id FROM run_budget_refusal
+WHERE workspace_id = $1::uuid
+  AND ($2::uuid IS NULL OR issue_id = $2::uuid)
+  AND state IN ('open', 'still_blocked', 'resume_pending')
+ORDER BY created_at, id
+`
+
+type ListWaitingRunBudgetRefusalsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+type ListWaitingRunBudgetRefusalsRow struct {
+	ID      pgtype.UUID `json:"id"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// Refusals still waiting for a budget (CHE-5508): a workflow budget change or a
+// rebinding looks here for the issues it may give runs again. A NULL issue lists
+// the whole workspace.
+func (q *Queries) ListWaitingRunBudgetRefusals(ctx context.Context, arg ListWaitingRunBudgetRefusalsParams) ([]ListWaitingRunBudgetRefusalsRow, error) {
+	rows, err := q.db.Query(ctx, listWaitingRunBudgetRefusals, arg.WorkspaceID, arg.IssueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWaitingRunBudgetRefusalsRow{}
+	for rows.Next() {
+		var i ListWaitingRunBudgetRefusalsRow
+		if err := rows.Scan(&i.ID, &i.IssueID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -100,6 +100,12 @@ Multica refuses an agent's run on an issue when that agent has already started 5
 
 Set `MULTICA_LOOP_BREAKER_MAX_RUNS` (default `6`; `0` turns the breaker off) and `MULTICA_LOOP_BREAKER_WINDOW` (default `30m`) on the server to change the limits.
 
+## Weekly run guard
+
+Multica refuses a derived run on an issue that has already started 30 runs in the last 7 days, whatever its run-budget window says. A member moving the issue's status reopens a budget window but not this guard. A person naming an agent by hand is not refused. The refusal changes no status and writes no comment. It records one incident per issue and ICT day, with the run count and the status of the last 3 runs, and the agent decision brief (`multica decision brief`) lists it in the `run_guard` field.
+
+Set `MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS` (default `30`; `0` turns the guard off) on the server to change the limit.
+
 ## Failure reason reference
 
 The failure reasons shown in the execution log and [Analytics](/analytics#errors-tab) fall into two groups: unprefixed reason codes are recorded by the platform; `agent_error.*` codes are classified from the AI coding tool's own errors.

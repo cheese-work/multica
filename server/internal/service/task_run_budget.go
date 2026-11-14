@@ -356,6 +356,14 @@ func isFinishedStatus(ctx context.Context, q *db.Queries, issue db.Issue) bool {
 	return IsFinishedStatus(ctx, q, issue.WorkspaceID, issue.Status)
 }
 
+type withoutReviewRunKey struct{}
+
+// withoutReviewRun marks an enqueue whose run is not a review, whatever agent
+// it targets: it never takes the review-head exception to a spent budget.
+func withoutReviewRun(ctx context.Context) context.Context {
+	return context.WithValue(ctx, withoutReviewRunKey{}, true)
+}
+
 // reviewHeadOf names the PR head the run reviews and whether that head's first
 // review was already admitted. Only the issue's assignee while the issue is in
 // a review status (IsReviewStatus) is the reviewer, so a leader's, a mention's or an earlier
@@ -364,7 +372,7 @@ func isFinishedStatus(ctx context.Context, q *db.Queries, issue db.Issue) bool {
 // admission together with the task row, so a failed, deduplicated or rolled
 // back enqueue leaves the head unreviewed.
 func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (head string, admitted bool, err error) {
-	if !target.ReviewRun || !IsReviewStatus(issue.Status) || issue.AssigneeType.String != "agent" ||
+	if !target.ReviewRun || ctx.Value(withoutReviewRunKey{}) != nil || !IsReviewStatus(issue.Status) || issue.AssigneeType.String != "agent" ||
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return "", false, nil
 	}

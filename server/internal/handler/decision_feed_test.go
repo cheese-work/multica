@@ -242,6 +242,9 @@ func TestCreatePersonalAccessTokenScopes(test *testing.T) {
 	if response := create(`{"name":"sweep","scopes":["decisions:feed"]}`); response.Code != http.StatusCreated || !bytes.Contains(response.Body.Bytes(), []byte(`"scopes":["decisions:feed"]`)) {
 		test.Fatalf("scoped create: %d %s", response.Code, response.Body.String())
 	}
+	if response := create(`{"name":"sweep","scopes":["decisions:read"]}`); response.Code != http.StatusCreated || !bytes.Contains(response.Body.Bytes(), []byte(`"scopes":["decisions:read"]`)) {
+		test.Fatalf("decisions:read create: %d %s", response.Code, response.Body.String())
+	}
 	if response := create(`{"name":"bad","scopes":["admin"]}`); response.Code != http.StatusBadRequest {
 		test.Fatalf("unknown scope accepted: %d %s", response.Code, response.Body.String())
 	}

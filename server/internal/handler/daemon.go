@@ -1568,7 +1568,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
-	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
+	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1638,7 +1638,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	}
 	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
 	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
-	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
+	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req)
 	return ack, err
 }
 
@@ -3812,6 +3812,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		for _, id := range openAsks {
 			resp.ChatOpenAskIDs = append(resp.ChatOpenAskIDs, uuidToString(id))
 		}
+		resp.ChatNoticeLocale = h.qoderChatNoticeLocale(r.Context(), runtime, *task, cs, resp.ChatChannelType, resp.ChatType)
 		// A web chat can opt into the same durable project context as an
 		// issue-bound task.
 		projectCtx, projectErr := h.resolveClaimProjectContext(r.Context(), cs.ProjectID, cs.WorkspaceID)
@@ -6388,8 +6389,12 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	// Broadcast reach is deliberately unchanged: only issue- and chat-backed
 	// tasks streamed live messages before, and widening that to autopilot /
 	// quick-create tasks is a product decision, not part of this optimization.
+	// A DM-derived background task streams too, to its DM's creator alone: the
+	// owner session below scopes the event. A bg task with no source session
+	// has no private room, and an unscoped event would reach the workspace, so
+	// it publishes nothing.
 	workspaceID := ""
-	if task.IssueID.Valid || task.ChatSessionID.Valid {
+	if task.IssueID.Valid || ownerSession(task).Valid {
 		workspaceID = scope.WorkspaceID
 	}
 
@@ -6511,8 +6516,8 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		// guarantee, and subscribers render these events as they arrive, so the
 		// ordering lives in the query rather than in the clients.
 		chatSessionID := ""
-		if task.ChatSessionID.Valid {
-			chatSessionID = uuidToString(task.ChatSessionID)
+		if session := ownerSession(task); session.Valid {
+			chatSessionID = uuidToString(session)
 		}
 		for _, m := range created {
 			// The ordered CTE makes sqlc name the row type after the query
@@ -7244,9 +7249,10 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	// A chat task's transcript belongs to the chat session's creator alone;
-	// to anyone else it does not exist either.
-	if task.ChatSessionID.Valid && (scope.ChatSessionOwnerID == "" || scope.ChatSessionOwnerID != requestUserID(r)) {
+	// A chat task's transcript belongs to the chat session's creator alone, and
+	// a DM-derived background task's to the DM's creator; to anyone else it
+	// does not exist either.
+	if taskContentHiddenFrom(task, scope, requestUserID(r)) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}

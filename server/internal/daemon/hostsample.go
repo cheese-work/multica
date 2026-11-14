@@ -203,6 +203,11 @@ func (d *Daemon) heartbeatRequest(rid string) protocol.DaemonHeartbeatRequestPay
 			up := time.Since(d.startedAt).Milliseconds()
 			req.DaemonUptimeMs = &up
 		}
+		hostIDs, ok := scanHostTaskIDs()
+		req.HostScanOK = &ok
+		if ok {
+			req.HostTaskIDs = &hostIDs
+		}
 	}
 	if d.hostSampler != nil {
 		req.HostSample = d.hostSampler.Latest()
