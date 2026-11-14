@@ -3604,9 +3604,10 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone          pgtype.Text `json:"timezone"`
-	SessionGeneration int32       `json:"session_generation"`
-	PasskeyState      string      `json:"passkey_state"`
+	Timezone            pgtype.Text `json:"timezone"`
+	SessionGeneration   int32       `json:"session_generation"`
+	PasskeyState        string      `json:"passkey_state"`
+	WhatsNewSeenVersion pgtype.Text `json:"whats_new_seen_version"`
 }
 
 type UserComposioConnection struct {
