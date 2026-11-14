@@ -4,11 +4,15 @@
 //     <list> is the PR's changed files, one per line, read through the API (the job never checks out the PR). Fails a PR that touches CLI commands, the agent brief or the daemon without `Agent-facing:`
 //     (and an `Adoption item:` when the answer is yes).
 //   Daily (autopilot, on X99; needs `gh`, `multica`, tailnet access to C00; no checkout needed):
-//     node scripts/agent-adoption.mjs daily --repo <owner/repo> --project <id> --assignee-id <id> [--dry-run]
+//     node scripts/agent-adoption.mjs daily --repo <owner/repo> --project <id> --assignee-id <id> --initial-sha <sha> [--dry-run]
 //     Reads the revision C00 runs (C00_API_URL /api/config, the same readback as deploy/cd/check-deploy-freshness.py),
-//     collects the merged PRs between the last adoption issue's SHA and that revision, and opens ONE issue listing
-//     the `Agent-facing: yes` ones. No such PR: opens nothing. The anchor only moves when an issue opens, so a PR is
-//     listed once; PRs named in earlier adoption issues are skipped as a second guard.
+//     requires C00 /readyz to answer 200 for that same revision and the revision to descend from the checkpoint,
+//     collects the merged PRs between the checkpoint and that revision, and opens ONE issue listing the
+//     `Agent-facing: yes` ones. No such PR: opens nothing.
+//     Checkpoint = the SHA marker in the newest "Agent adoption: C00 deploy" issue, read by paging `multica issue list --project <id>`
+//     newest first until it is found (never a relevance search). It only moves when an issue opens. No such issue yet:
+//     `--initial-sha` is the explicit first boundary. Any unreadable, truncated or inconsistent input exits non-zero
+//     and opens nothing; the next run retries from the same checkpoint. PRs named in the previous issue are skipped.
 //   Applies no instruction; that stays in `multica-cheese-work-instruction-change`.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -129,25 +133,42 @@ export function buildDaily({ prev, next, prs, seen = new Set() }) {
   return { issue: true, log: `${agentPrs.length} agent-facing PR(s) in ${range}`, title: `Agent adoption: C00 deploy ${short(next)}`, body, prs: agentPrs.map(({ pr }) => pr.number) };
 }
 
-// Newest adoption issue's SHA (the range anchor) and every PR number any adoption issue listed.
-export function lastAdoption(searchJson) {
-  const { issues } = JSON.parse(searchJson);
-  if (!Array.isArray(issues)) throw new Error("issue search output has no issues array");
-  const mine = issues
-    .map((i) => ({ created: i.created_at ?? "", text: i.description ?? "", sha: MARKER.exec(i.description ?? "")?.[1] }))
-    .filter((i) => i.sha);
-  mine.sort((a, b) => b.created.localeCompare(a.created));
-  const prs = new Set(mine.flatMap(({ text }) => [...text.matchAll(/^- #(\d+) /gm)].map((m) => Number(m[1]))));
-  return { sha: mine[0]?.sha ?? null, prs };
+const TITLE = /^Agent adoption: C00 deploy /;
+const MAX_PAGES = 100;
+
+// Newest adoption issue's SHA (the range anchor) and the PR numbers it listed. list(offset) -> one page of
+// `multica issue list --project <id> --sort created_at --direction desc --output json`; newest first, so the first adoption issue
+// is the checkpoint and the walk stops there. Fails closed on a page that does not parse, an empty page that
+// claims more, or a walk past maxPages.
+export function lastAdoption(list, { maxPages = MAX_PAGES } = {}) {
+  let offset = 0;
+  for (let page = 0; page < maxPages; page++) {
+    const { issues, has_more: more } = JSON.parse(list(offset));
+    if (!Array.isArray(issues)) throw new Error("issue list output has no issues array");
+    const found = issues.find((i) => TITLE.test(i.title ?? "") && MARKER.test(i.description ?? ""));
+    if (found) {
+      const text = found.description;
+      return { sha: MARKER.exec(text)[1], prs: new Set([...text.matchAll(/^- #(\d+) /gm)].map((m) => Number(m[1]))) };
+    }
+    if (!more) return { sha: null, prs: new Set() };
+    if (issues.length === 0) throw new Error("issue list returned an empty page but reports more");
+    offset += issues.length;
+  }
+  throw new Error(`issue list walk hit its ${maxPages} page limit before reaching the last adoption issue`);
 }
 
-// deps: liveShort() -> C00's short commit, resolve(short) -> full SHA, search() -> issue search JSON,
-// bootstrap(next) -> anchor when no adoption issue exists yet, collectPrs(prev, next), create({title, body}) -> identifier.
+// deps: liveShort() -> C00's short commit, resolve(short) -> full SHA, list(offset) -> issue list page JSON,
+// initial() -> the explicit first boundary (full SHA) or null, relation(prev, next) -> "ahead" | "behind" | ...,
+// ready(next) -> throws unless C00 is healthy and still runs `next`, collectPrs(prev, next), create({title, body}).
 export function daily(deps) {
   const next = deps.resolve(deps.liveShort());
-  const { sha, prs: seen } = lastAdoption(deps.search());
-  const prev = sha ?? deps.bootstrap(next);
+  const { sha, prs: seen } = lastAdoption(deps.list);
+  const prev = sha ?? deps.initial();
+  if (!prev) throw new Error("no adoption issue exists yet and no --initial-sha was given; pass the first boundary explicitly");
   if (prev === next) return { log: `C00 still runs ${short(next)}; nothing deployed since the last adoption issue`, created: null };
+  const relation = deps.relation(prev, next);
+  if (relation !== "ahead") throw new Error(`C00 runs ${short(next)}, which is ${relation} the checkpoint ${short(prev)}, not a descendant (rollback or unrelated revision); nothing opened`);
+  deps.ready(next);
   const plan = buildDaily({ prev, next, prs: deps.collectPrs(prev, next), seen });
   if (!plan.issue) return { log: plan.log, created: null };
   return { log: plan.log, created: deps.create({ title: plan.title, body: plan.body }) };
@@ -182,8 +203,21 @@ function collectPrs(prev, next, repo) {
   });
 }
 
+const c00Url = (env, path) => `${(env.C00_API_URL || DEFAULT_C00_API_URL).replace(/\/$/, "")}${path}`;
+
+// Health and SHA readback for `next` (the same pair a deploy readback checks): /readyz must answer 200 (curl -f
+// fails on 5xx, so a rolling or failing deploy throws), and the revision on /api/config must be `next` before and after.
+function ready(next, env) {
+  const same = () => {
+    if (!next.startsWith(liveShort(env))) throw new Error(`C00 revision changed during the readback; expected ${short(next)}`);
+  };
+  same();
+  execFileSync("curl", ["-fsS", "--max-time", "15", "-o", "/dev/null", c00Url(env, "/readyz")], { encoding: "utf8" });
+  same();
+}
+
 function liveShort(env) {
-  const url = `${(env.C00_API_URL || DEFAULT_C00_API_URL).replace(/\/$/, "")}/api/config`;
+  const url = c00Url(env, "/api/config");
   const out = execFileSync("curl", ["-fsS", "--max-time", "15", url], { encoding: "utf8" });
   const commit = JSON.parse(out).server_commit;
   if (!/^[0-9a-f]{7,40}$/.test(commit ?? "")) throw new Error(`C00 /api/config has no usable server_commit (got ${JSON.stringify(commit)})`);
@@ -215,12 +249,14 @@ export function main(argv, env) {
   if (mode === "daily") {
     const repo = arg(argv, "repo");
     const dry = argv.includes("--dry-run");
-    const multica = (...args) => execFileSync("multica", args, { encoding: "utf8" });
+    const multica = (...args) => execFileSync("multica", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
     const out = daily({
       liveShort: () => liveShort(env),
       resolve: (shortSha) => gh("api", `repos/${repo}/commits/${shortSha}`, "--jq", ".sha").trim(),
-      search: () => multica("issue", "search", "agent-adoption-daily", "--include-closed", "--limit", "100", "--output", "json"),
-      bootstrap: (next) => gh("api", `repos/${repo}/commits?sha=${next}&until=${new Date(Date.now() - 864e5).toISOString()}&per_page=1`, "--jq", ".[0].sha").trim(),
+      list: (offset) => multica("issue", "list", "--project", arg(argv, "project"), "--sort", "created_at", "--direction", "desc", "--limit", "100", "--offset", String(offset), "--output", "json"),
+      initial: () => gh("api", `repos/${repo}/commits/${arg(argv, "initial-sha")}`, "--jq", ".sha").trim(),
+      relation: (prev, next) => gh("api", `repos/${repo}/compare/${prev}...${next}`, "--jq", ".status").trim(),
+      ready: (next) => ready(next, env),
       collectPrs: (prev, next) => collectPrs(prev, next, repo),
       create: ({ title, body }) => {
         if (dry) return `(dry run) ${title}\n${body}`;
@@ -237,7 +273,7 @@ export function main(argv, env) {
     if (out.created) console.log(`opened ${out.created}`);
     return 0;
   }
-  console.error("usage: agent-adoption.mjs check --event <file> --files <list> | daily --repo <owner/repo> --project <id> --assignee-id <id> [--dry-run]");
+  console.error("usage: agent-adoption.mjs check --event <file> --files <list> | daily --repo <owner/repo> --project <id> --assignee-id <id> --initial-sha <sha> [--dry-run]");
   return 2;
 }
 

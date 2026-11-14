@@ -135,24 +135,44 @@ test("the body is ready: marker, Estimate first line, 3 numbered acceptance crit
   for (const host of ["X99", "MBP", "C00"]) assert.match(body, new RegExp(`\\| ${host} \\|.*multica issue create --help.*--property`));
 });
 
-const issue = (sha, prs, created_at) => ({
+const issue = (sha, prs, created_at, title = `Agent adoption: C00 deploy ${sha.slice(0, 12)}`) => ({
   identifier: `CHE-${prs[0]}`,
+  title,
   created_at,
   description: `<!-- agent-adoption-daily: sha:${sha} -->\n${prs.map((n) => `- #${n} x`).join("\n")}`,
 });
-const search = (issues) => JSON.stringify({ issues });
+const filler = (n) => ({ identifier: `CHE-${n}`, title: `other ${n}`, created_at: "2026-11-01T00:00:00Z", description: "mentions agent-adoption-daily only in prose" });
+// One list page: {issues, has_more}, as `multica issue list --output json` prints it.
+const pageOf = (issues, has_more = false) => JSON.stringify({ issues, has_more });
+const pages = (...all) => (offset) => all[offset] === undefined ? pageOf([]) : all[offset];
 
-test("lastAdoption takes the newest marker's SHA and every PR already listed", () => {
-  const out = lastAdoption(search([
-    issue("1".repeat(40), [3, 4], "2026-11-01T00:00:00Z"),
-    issue("2".repeat(40), [9], "2026-11-05T00:00:00Z"),
-    { identifier: "CHE-1", created_at: "2026-11-09T00:00:00Z", description: "mentions agent-adoption-daily only in prose" },
-  ]));
+test("lastAdoption takes the newest adoption issue's SHA and the PRs it listed, walking pages until it finds it", () => {
+  const seenOffsets = [];
+  const list = (offset) => {
+    seenOffsets.push(offset);
+    return offset === 0 ? pageOf([filler(1), filler(2)], true) : pageOf([filler(3), issue("2".repeat(40), [9], "2026-11-05T00:00:00Z"), issue("1".repeat(40), [3, 4], "2026-11-01T00:00:00Z")]);
+  };
+  const out = lastAdoption(list);
   assert.equal(out.sha, "2".repeat(40));
-  assert.deepEqual([...out.prs].sort(), [3, 4, 9]);
-  assert.equal(lastAdoption(search([])).sha, null);
-  assert.throws(() => lastAdoption("not json"));
-  assert.throws(() => lastAdoption(JSON.stringify({ error: "x" })));
+  assert.deepEqual([...out.prs], [9]);
+  assert.deepEqual(seenOffsets, [0, 2], "pages advance by the number of issues returned");
+});
+
+test("lastAdoption ignores a marker in an issue that is not an adoption issue", () => {
+  const forged = issue("3".repeat(40), [1], "2026-11-09T00:00:00Z", "quotes the marker in prose");
+  assert.equal(lastAdoption(pages(pageOf([forged, issue("2".repeat(40), [9], "2026-11-05T00:00:00Z")]))).sha, "2".repeat(40));
+});
+
+test("lastAdoption returns no SHA when every page is read and none is an adoption issue", () => {
+  assert.equal(lastAdoption(pages(pageOf([filler(1)]))).sha, null);
+  assert.equal(lastAdoption(pages()).sha, null);
+});
+
+test("lastAdoption fails closed on unreadable, malformed or never-ending history", () => {
+  assert.throws(() => lastAdoption(() => "not json"));
+  assert.throws(() => lastAdoption(() => JSON.stringify({ error: "x" })), /issues array/);
+  assert.throws(() => lastAdoption(() => pageOf([filler(1)], true), { maxPages: 3 }), /page limit/);
+  assert.throws(() => lastAdoption(() => pageOf([], true)), /empty page/);
 });
 
 function deps(over = {}) {
@@ -161,8 +181,10 @@ function deps(over = {}) {
     created,
     liveShort: () => "bbbbbbb",
     resolve: () => next,
-    search: () => search([]),
-    bootstrap: () => prev,
+    list: pages(pageOf([issue(prev, [3], "2026-11-01T00:00:00Z")])),
+    initial: () => null,
+    relation: () => "ahead",
+    ready: () => {},
     collectPrs: () => [agentPr, plainPr],
     create: (t) => (created.push(t), "CHE-900"),
     ...over,
@@ -178,7 +200,7 @@ test("daily: an agent-facing PR since the last adoption opens exactly one issue"
 });
 
 test("daily: the next run, with that issue now present, opens nothing", () => {
-  const d = deps({ search: () => search([issue(next, [12], "2026-11-14T00:00:00Z")]) });
+  const d = deps({ list: pages(pageOf([issue(next, [12], "2026-11-14T00:00:00Z")])) });
   const out = daily(d);
   assert.equal(out.created, null);
   assert.equal(d.created.length, 0);
@@ -187,7 +209,7 @@ test("daily: the next run, with that issue now present, opens nothing", () => {
 test("daily: the range starts at the last adoption's SHA and skips PRs it listed", () => {
   const seenCalls = [];
   const d = deps({
-    search: () => search([issue(prev, [12], "2026-11-13T00:00:00Z")]),
+    list: pages(pageOf([issue(prev, [12], "2026-11-13T00:00:00Z")])),
     collectPrs: (p, n) => (seenCalls.push([p, n]), [agentPr, otherAgentPr]),
   });
   daily(d);
@@ -195,6 +217,36 @@ test("daily: the range starts at the last adoption's SHA and skips PRs it listed
   assert.deepEqual(d.created.length, 1);
   assert.doesNotMatch(d.created[0].body, /- #12 /);
   assert.match(d.created[0].body, /- #15 /);
+});
+
+test("daily: a PR merged days ago and deployed today is in range, because the range is by SHA, not by time", () => {
+  const calls = [];
+  const d = deps({ collectPrs: (p, n) => (calls.push([p, n]), [{ ...agentPr, merged_at: "2026-10-01T00:00:00Z" }]) });
+  assert.equal(daily(d).created, "CHE-900");
+  assert.deepEqual(calls, [[prev, next]]);
+});
+
+test("daily: with no adoption issue yet, the explicit initial boundary starts the range", () => {
+  const calls = [];
+  const start = "c".repeat(40);
+  const d = deps({ list: pages(), initial: () => start, collectPrs: (p, n) => (calls.push([p, n]), [agentPr]) });
+  assert.equal(daily(d).created, "CHE-900");
+  assert.deepEqual(calls, [[start, next]]);
+});
+
+test("daily: with no adoption issue and no initial boundary it fails closed and opens nothing", () => {
+  const d = deps({ list: pages() });
+  assert.throws(() => daily(d), /initial/);
+  assert.equal(d.created.length, 0);
+});
+
+test("daily: a truncated or unreadable history fails closed and opens nothing", () => {
+  const d = deps({ list: () => pageOf([filler(1)], true) });
+  assert.throws(() => daily(d), /page limit/);
+  assert.equal(d.created.length, 0);
+  const bad = deps({ list: () => "{" });
+  assert.throws(() => daily(bad));
+  assert.equal(bad.created.length, 0);
 });
 
 test("daily: a no-op day opens nothing and says so", () => {
@@ -206,17 +258,35 @@ test("daily: a no-op day opens nothing and says so", () => {
 
 test("daily: nothing deployed since the last adoption opens nothing and collects nothing", () => {
   let collected = 0;
-  const d = deps({ search: () => search([issue(next, [12], "2026-11-14T00:00:00Z")]), collectPrs: () => (collected++, []) });
+  const d = deps({ list: pages(pageOf([issue(next, [12], "2026-11-14T00:00:00Z")])), collectPrs: () => (collected++, []) });
   assert.equal(daily(d).created, null);
   assert.equal(collected, 0);
 });
 
-test("daily: an unreadable live revision or search fails instead of creating a possible duplicate", () => {
-  assert.throws(() => daily(deps({ liveShort: () => { throw new Error("C00 unreachable"); } })), /C00 unreachable/);
-  assert.throws(() => daily(deps({ search: () => "{" })));
-  const d = deps({ search: () => "{" });
-  assert.throws(() => daily(d));
+test("daily: an unreadable live revision fails instead of creating a possible duplicate", () => {
+  const d = deps({ liveShort: () => { throw new Error("C00 unreachable"); } });
+  assert.throws(() => daily(d), /C00 unreachable/);
   assert.equal(d.created.length, 0);
+});
+
+test("daily: a deploy that fails its health readback opens nothing", () => {
+  const d = deps({ ready: () => { throw new Error("C00 /readyz returned 503"); } });
+  assert.throws(() => daily(d), /503/);
+  assert.equal(d.created.length, 0);
+});
+
+test("daily: a rollback or an unrelated revision opens nothing", () => {
+  for (const relation of ["behind", "diverged"]) {
+    const d = deps({ relation: () => relation });
+    assert.throws(() => daily(d), /not a descendant|rollback/i, relation);
+    assert.equal(d.created.length, 0, relation);
+  }
+});
+
+test("daily: the health readback is for the exact revision the range ends at", () => {
+  const asked = [];
+  daily(deps({ ready: (sha) => asked.push(sha) }));
+  assert.deepEqual(asked, [next]);
 });
 
 test("main usage errors exit 2", () => {
