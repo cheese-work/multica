@@ -284,9 +284,9 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
-  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyBatchOutcomeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -4405,6 +4405,19 @@ export class ApiClient {
     input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; preview_sha256?: string; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  /** Binds a challenge to the items the person chose to approve (`choices`: action id to "approve" | "reject"). Refused when none is approved: nothing to sign. */
+  challengeDecisionBatch(batchId: string, choices: Record<string, string>): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-actions/batches/${encodeURIComponent(batchId)}/challenge`, PasskeyChallengeSchema, { choices });
+  }
+
+  /** One call decides every item. `payload_sha256` and `assertion` cover the approved items only; with none approved both are left out. */
+  approveDecisionBatch(
+    batchId: string,
+    input: { payload_sha256: string; assertion?: PasskeyAssertionEnvelope; choices: Record<string, string> },
+  ): Promise<PasskeyBatchOutcome> {
+    return this.passkeyPost(`/api/decision-actions/batches/${encodeURIComponent(batchId)}/approve`, PasskeyBatchOutcomeSchema, input);
   }
 
   /** Revoke (B v9 S6): its own challenge, bound to the word "revoke" so an approval's assertion cannot revoke. */
