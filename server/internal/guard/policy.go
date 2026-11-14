@@ -45,6 +45,8 @@ const (
 var builtinFlags = map[string][]string{
 	"gh-pr":  {"--draft", "--reviewer", "--add-reviewer", "--title"},
 	"gh-api": {},
+	// ci-wait only refuses.
+	"ci-wait": {},
 	// multica-wakeup only logs.
 	"multica-wakeup": {},
 }
@@ -84,14 +86,32 @@ type Policy struct {
 	Verify  *bool        `json:"verify,omitempty"`
 	Plugins []Plugin     `json:"plugins"`
 	Review  []ReviewRule `json:"review,omitempty"`
+	// Locked freezes every key this workspace layer sets against deeper layers.
+	Locked bool    `json:"locked,omitempty"`
+	Layers []Layer `json:"layers,omitempty"`
+	// Rules are PR rules (title, trailer) that every repository inherits.
+	Rules *Rules `json:"rules,omitempty"`
+
+	lockdown bool // set by lockdownPolicy; never read from JSON
+	// fileReviewers are the reviewers a repository file asks for; set on a
+	// resolved copy only.
+	fileReviewers []string
 }
+
+// Lockdown reports whether the guard refuses every call because the stored
+// policy could not be delivered or verified.
+func (p *Policy) Lockdown() bool { return p != nil && p.lockdown }
 
 func (p *Policy) verify() bool { return p == nil || p.Verify == nil || *p.Verify }
 
-// DefaultPolicy is the compiled policy: plugin 1 (PR tag, draft, reviewers) and
-// the `gh api` write refusal, with no review rules.
+// DefaultPolicy is the compiled policy: plugin 1 (PR tag, draft, reviewers),
+// plugin 2 (CI-wait refusal) and the `gh api` write refusal, with no review rules.
 func DefaultPolicy() *Policy {
 	return &Policy{Version: 1, Plugins: []Plugin{
+		// ci-wait comes first and answers only for a CI wait, so the plugins
+		// after it still see every other call.
+		{Name: "ci-wait", Match: Match{Tool: "gh"}, Action: ActionDeny, Builtin: "ci-wait"},
+		{Name: "ci-wait-sleep", Match: Match{Tool: "sleep"}, Action: ActionDeny, Builtin: "ci-wait"},
 		{Name: "gh-pr", Match: Match{Tool: "gh", Subcommand: []string{"pr"}}, Action: ActionFix, Builtin: "gh-pr"},
 		{Name: "gh-api", Match: Match{Tool: "gh", Subcommand: []string{"api"}}, Action: ActionDeny, Builtin: "gh-api"},
 		{Name: "wakeup-create", Match: Match{Tool: "multica", Subcommand: []string{"issue", "wakeup", "create"}}, Action: ActionShadow, Builtin: "multica-wakeup"},
@@ -135,6 +155,11 @@ func (p *Policy) validate() error {
 			}
 		}
 	}
+	for i := range p.Layers {
+		if err := p.Layers[i].validate(); err != nil {
+			return fmt.Errorf("layer %d: %w", i, err)
+		}
+	}
 	for _, r := range p.Review {
 		if r.Repo == "" {
 			return fmt.Errorf("review rule without repo")
@@ -143,7 +168,22 @@ func (p *Policy) validate() error {
 			return fmt.Errorf("review rule %s: github must be required or skip, not %q", r.Repo, r.GitHub)
 		}
 	}
-	return nil
+	return p.Rules.validate()
+}
+
+// ParsePolicy decodes and validates a policy document. Unknown fields (for
+// example a script) are an error.
+func ParsePolicy(raw []byte) (*Policy, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var p Policy
+	if err := dec.Decode(&p); err != nil {
+		return nil, fmt.Errorf("guard policy: %w", err)
+	}
+	if err := p.validate(); err != nil {
+		return nil, fmt.Errorf("guard policy: %w", err)
+	}
+	return &p, nil
 }
 
 // LoadPolicy reads the policy file and accepts it only when its SHA-256 equals
@@ -162,22 +202,24 @@ func LoadPolicy(file, wantSHA string) (*Policy, error) {
 	if subtle.ConstantTimeCompare([]byte(got), []byte(strings.ToLower(wantSHA))) != 1 {
 		return nil, fmt.Errorf("guard policy digest %s does not match the expected digest", got[:12])
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var p Policy
-	if err := dec.Decode(&p); err != nil {
-		return nil, fmt.Errorf("guard policy: %w", err)
+	p, err := ParsePolicy(raw)
+	if err != nil {
+		return nil, err
 	}
-	if err := p.validate(); err != nil {
-		return nil, fmt.Errorf("guard policy: %w", err)
-	}
-	return &p, nil
+	return p, nil // layers stay: the engine resolves them for each call's target
 }
 
+const lockdownMessage = "the workspace guard policy is unavailable or failed verification; every git and gh call is refused for this run until it is fixed"
+
+// lockdownPolicy stands in for a policy that was set but cannot be loaded or
+// verified. The stored rules are unknown, so any guarded call could be one of
+// them (a fail_closed plugin on git, say); the guard refuses every call.
+func lockdownPolicy() *Policy { return &Policy{Version: 1, lockdown: true} }
+
 // PolicyFromEnv returns the daemon-provided policy. With no policy set it
-// returns the compiled default. A policy that does not verify is ignored: the
-// compiled default is used and warn explains why. Nothing is read from the
-// working tree.
+// returns the compiled default. A policy that is set but does not verify fails
+// closed: every guarded call is refused and warn explains why. Nothing is read from
+// the working tree.
 func PolicyFromEnv(getenv func(string) string) (pol *Policy, warn string) {
 	file := getenv(PolicyEnv)
 	if file == "" {
@@ -185,7 +227,7 @@ func PolicyFromEnv(getenv func(string) string) (pol *Policy, warn string) {
 	}
 	p, err := LoadPolicy(file, getenv(PolicySHAEnv))
 	if err != nil {
-		return DefaultPolicy(), "guard: policy ignored, using built-in defaults: " + err.Error()
+		return lockdownPolicy(), "guard: policy unavailable, refusing every git and gh call: " + err.Error()
 	}
 	return p, ""
 }
@@ -215,10 +257,19 @@ func (p *Policy) reviewFor(repo string) *ReviewRule {
 // githubReviewers lists the logins to request on GitHub for repo.
 func (p *Policy) githubReviewers(repo string) []string {
 	r := p.reviewFor(repo)
-	if r == nil || r.GitHub == "skip" {
+	if r != nil && r.GitHub == "skip" {
 		return nil
 	}
-	return r.Reviewers
+	var out []string
+	if r != nil {
+		out = append(out, r.Reviewers...)
+	}
+	for _, f := range p.fileReviewers {
+		if !hasFold(out, f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func contains(list []string, s string) bool {

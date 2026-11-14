@@ -170,6 +170,19 @@ func OpenRunBudgetWindowID(ctx context.Context, q *db.Queries, issueID pgtype.UU
 	return usage.Max, runBudgetWindowID(usage.Since), nil
 }
 
+// OpenRunBudgetBalance is OpenRunBudgetWindowID that also returns the issue's
+// run balance under the same lock (empty window: the issue has no budget).
+func OpenRunBudgetBalance(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (balance int64, windowID string, err error) {
+	_, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return balance, runBudgetWindowID(usage.Since), nil
+}
+
 // LockRunBudgetWindow is OpenRunBudgetWindow that also returns the id of the
 // window it opened (empty: the issue has no budget), so a caller can compare
 // the window a person approved against the one in force under the lock.

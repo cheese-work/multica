@@ -24,6 +24,7 @@ import (
 )
 
 var ErrWakeupInput = errors.New("invalid wakeup")
+
 // ErrWakeupWatchInput marks a watch_inputs value or placement the API refuses
 // with 422 (CHE-5455).
 var ErrWakeupWatchInput = errors.New("invalid watch_inputs")
@@ -152,6 +153,9 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// AuditDefinition, when set, runs inside the definition write's transaction
+	// just before it commits; an error rolls the write back (CHE-5647).
+	AuditDefinition WakeupDefinitionAuditFn
 	// AskGuard is set when an agent registers the rule (see WakeupAskGuard).
 	AskGuard *WakeupAskGuard
 	// RefuseTimerOpenPR is set when an agent registers the rule: an at, every or
@@ -165,6 +169,11 @@ type IssueWakeupService struct {
 	// MergeFacts supplies the facts a merge_eligibility condition reads; nil
 	// leaves the condition pending with a diagnostic.
 	MergeFacts MergeFactsSource
+	// PauseVars reads the AGENT_MERGE_PAUSED and MAIN_RED_PAUSED repository
+	// variables for RefreshMergePauses; nil leaves pause state unknown.
+	PauseVars PauseVariableReader
+	// PauseRefreshInterval bounds repo-variable reads per repository; zero means one minute.
+	PauseRefreshInterval time.Duration
 	// Now is the clock for fact freshness; nil means time.Now.
 	Now func() time.Time
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
@@ -1304,11 +1313,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// Timeline entries are written with the rule's changes and published only
 	// once they commit.
 	var activities []wakeupActivity
+	var polled []db.AgentTaskQueue // queued merge runs the condition poll withdrew
 	commit := func() error {
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 		s.publishWakeupActivities(activities...)
+		s.publishWithdrawn(ctx, polled)
 		return nil
 	}
 	note := func(action string, details map[string]any) error {
@@ -1360,7 +1371,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// one condition.met input; a rule that ended only drops the hints.
 	if len(w.Condition) > 0 {
 		if w.Enabled && !timedOut {
-			if next, err = s.pollCondition(ctx, tx, q, w, now); err != nil {
+			if next, polled, err = s.pollCondition(ctx, tx, q, w, now); err != nil {
 				return err
 			}
 		} else if _, _, err = consumeConditionHints(ctx, tx, w.ID); err != nil {
@@ -1510,7 +1521,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		enabled = false
 		next = pgtype.Timestamptz{}
 	}
-	heartbeatFP := ""
+	heartbeatFP, declaredFP := "", ""
 	// A firing the agent already knows about starts no run. One that a run of
 	// the agent waiting to start can take along keeps its inputs for that run
 	// (JoinWaitingWakeups).
@@ -1596,6 +1607,40 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 					return err
 				}
 				return commit()
+			}
+		}
+		// CHE-5457: an agent-set time rule whose declared inputs are as they
+		// were when its last completed run started adds nothing. Only a pure
+		// scheduled fire qualifies; a mixed receipt set (a member's wake, an
+		// event, a timeout) runs.
+		if scheduled && custom == nil && !timedOut && !isConflictHeartbeat(w) && len(w.WatchInputs) > 0 &&
+			!w.SystemRule.Valid && !w.DefaultRuleKey.Valid && w.SourceTaskID.Valid {
+			if mode := timeWakeupSkipMode(ctx, q, issue.WorkspaceID); mode != "off" {
+				if declaredFP, err = declaredInputsFingerprint(ctx, tx, issue.ID, w.WatchInputs, int32(w.Revision), w.Instruction); err != nil {
+					return err
+				}
+				lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), declaredFP)
+				if err != nil {
+					return err
+				}
+				if unchanged && mode == "warn" {
+					slog.Info("time wakeup skip (warn): declared inputs unchanged, running", "wakeup_id", util.UUIDToString(w.ID), "issue_id", util.UUIDToString(issue.ID), "last_task_id", util.UUIDToString(lastTask))
+				}
+				if unchanged && mode == "block" {
+					if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+						return err
+					}
+					if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+						return err
+					}
+					details := skippedUnchangedDetails("declared_inputs", lastTask)
+					details["wakeup_id"] = util.UUIDToString(w.ID)
+					details["inputs"] = w.WatchInputs
+					if err := note(wakeupActivitySkipped, details); err != nil {
+						return err
+					}
+					return commit()
+				}
 			}
 		}
 	}
@@ -1761,8 +1806,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if custom != nil {
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
 		}
+		if isMergeEligibilityCondition(w.Condition) {
+			taskContext["wakeup_merge"] = true // the candidate is judged again at claim and start
+		}
 		if heartbeatFP != "" {
 			taskContext[wakeupFingerprintKey] = heartbeatFP
+		} else if declaredFP != "" {
+			taskContext[wakeupFingerprintKey] = declaredFP
 		}
 		contextJSON, _ := json.Marshal(taskContext)
 		// A custom rule's resolved target carries its own squad identity.
@@ -2019,6 +2069,11 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 	if isDefaultDerivedWakeup(w) {
 		return s.checkCustomClaim(ctx, task, w)
 	}
+	if isMergeEligibilityCondition(w.Condition) {
+		if err := s.checkMergeClaim(ctx, task, w); err != nil {
+			return err
+		}
+	}
 	agent, err := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrWakeupForbidden
@@ -2038,12 +2093,13 @@ func (s *IssueWakeupService) CheckStart(ctx context.Context, task db.AgentTaskQu
 	var source struct {
 		System string         `json:"wakeup_system"`
 		Custom bool           `json:"wakeup_custom"`
+		Merge  bool           `json:"wakeup_merge"`
 		Joined []joinedWakeup `json:"wakeup_joined"`
 	}
 	if task.StartedAt.Valid || task.Status == "running" || json.Unmarshal(task.Context, &source) != nil {
 		return nil
 	}
-	if source.System != "" || source.Custom {
+	if source.System != "" || source.Custom || source.Merge {
 		if err := s.CheckClaim(ctx, task); err != nil {
 			return err
 		}

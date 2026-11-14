@@ -34,6 +34,9 @@ type MergeFacts struct {
 	ScopeClassified   *bool     `json:"scope_classified"`
 	GateVetoElapsed   *bool     `json:"gate_veto_elapsed"`
 	GateVetoed        *bool     `json:"gate_vetoed"`
+	// LastPassAt is the newest signed PASS. When set, the veto deadline is
+	// derived from it (persisted by the evaluator) and overrides GateVetoElapsed.
+	LastPassAt *time.Time `json:"last_pass_at"`
 	// Evidence identifies the receipt the facts were read from; ObservedAt is when.
 	Evidence   string    `json:"evidence"`
 	ObservedAt time.Time `json:"observed_at"`
@@ -63,6 +66,8 @@ type MergePolicy struct {
 	Revision string `json:"revision"`
 	// MaxFactAgeSeconds bounds how old facts may be; zero or missing is invalid.
 	MaxFactAgeSeconds int `json:"max_fact_age_seconds"`
+	// GateVetoSeconds is the veto window after the last PASS; zero means 24 h.
+	GateVetoSeconds int `json:"gate_veto_seconds"`
 	// SecurityGates lists the accepted security verdicts, e.g. "success".
 	SecurityGates          []string `json:"security_gates"`
 	EscalationPathPatterns []struct {
@@ -254,21 +259,45 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 		} else if halted {
 			continue
 		}
-		if s.MergeFacts == nil {
+		// A set pause variable, or one that is unknown, holds the PR (CHE-5121).
+		maxAge := time.Duration(policy.MaxFactAgeSeconds) * time.Second
+		if paused, err := mergePaused(ctx, tx, l.owner, l.repo, now, maxAge); err != nil {
+			if !errors.Is(err, errMergePauseUnknown) {
+				return false, "", nil, err
+			}
+			pending = err
+			continue
+		} else if paused {
+			continue
+		}
+		source := s.mergeFactsSource()
+		if source == nil {
 			pending = errMergeFactsUnavailable
 			continue
 		}
-		facts, err := s.MergeFacts.MergeFacts(ctx, MergeCandidate{WorkspaceID: w.WorkspaceID, Owner: l.owner, Repo: l.repo, Number: l.number, HeadSHA: l.head, BaseRef: l.base, MergerAgentID: w.AgentID})
+		facts, err := source.MergeFacts(ctx, MergeCandidate{WorkspaceID: w.WorkspaceID, Owner: l.owner, Repo: l.repo, Number: l.number, HeadSHA: l.head, BaseRef: l.base, MergerAgentID: w.AgentID})
 		if err != nil {
 			pending = errMergeFactsUnavailable
 			continue
 		}
+		// The persisted deadline, not a fact, says whether the veto window ran out.
+		if facts.LastPassAt != nil {
+			window := defaultGateVeto
+			if policy.GateVetoSeconds > 0 {
+				window = time.Duration(policy.GateVetoSeconds) * time.Second
+			}
+			elapsed, err := mergeVetoElapsed(ctx, tx, w.WorkspaceID, l.owner, l.repo, l.number, *facts.LastPassAt, now, window)
+			if err != nil {
+				return false, "", nil, err
+			}
+			facts.GateVetoElapsed = &elapsed
+		}
 		if len(policy.refusals(facts, now)) > 0 {
 			continue
 		}
-		// One key per candidate, comma-free because conditionKeys splits on commas.
-		keys = append(keys, strings.ReplaceAll(fmt.Sprintf("%s/%s#%d@%s>%s|%s|%s", l.owner, l.repo, l.number, l.head, l.base, policy.Revision, facts.Evidence), ",", "%2C"))
-		observed = append(observed, map[string]any{"repo": l.owner + "/" + l.repo, "number": l.number, "head_sha": l.head, "base_ref": l.base, "policy_revision": policy.Revision, "evidence": facts.Evidence})
+		key := mergeCandidateKey(l.owner, l.repo, l.number, l.head, l.base, policy.Revision, facts.Evidence)
+		keys = append(keys, key)
+		observed = append(observed, map[string]any{"candidate": key, "repo": l.owner + "/" + l.repo, "number": l.number, "head_sha": l.head, "base_ref": l.base, "policy_revision": policy.Revision, "evidence": facts.Evidence})
 	}
 	if len(keys) == 0 {
 		return false, "", nil, pending

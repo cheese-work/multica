@@ -185,8 +185,8 @@ func TestPolicyFromEnvIgnoresTamperedCacheAndRepoFiles(t *testing.T) {
 	if len(pol.Review) != 0 {
 		t.Errorf("tampered policy was used: %+v", pol.Review)
 	}
-	if len(pol.Plugins) == 0 {
-		t.Error("fallback must keep the built-in plugins")
+	if !pol.lockdown {
+		t.Error("fallback must be the lockdown policy")
 	}
 
 	// A policy file in the working tree is never read.

@@ -180,8 +180,12 @@ func (h *Handler) RegisterWecomBYO(w http.ResponseWriter, r *http.Request) {
 		BotID:           strings.TrimSpace(body.BotID),
 		Secret:          strings.TrimSpace(body.Secret),
 		BotDisplayName:  strings.TrimSpace(body.BotName),
+		Audit:           h.chatInstallAuditHook(r, "wecom"),
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "wecom.install") {
+			return
+		}
 		writeWecomInstallError(w, err, wsUUID, agentUUID)
 		return
 	}
@@ -297,8 +301,7 @@ func (h *Handler) RevokeWecomInstallation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to load installation")
 		return
 	}
-	if err := svc.Revoke(r.Context(), instUUID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to revoke installation")
+	if !h.revokeChatInstallation(w, r, "wecom", "wecom", wsUUID, instUUID) {
 		return
 	}
 	h.publish(protocol.EventWecomInstallationRevoked, uuidToString(wsUUID), "user", userID, map[string]any{

@@ -539,6 +539,7 @@ func (h *Handler) workflowHandoffBrief(ctx context.Context, issue db.Issue, hand
 	}
 	in := h.workflowBriefInput(ctx, issue, hand.def, hand.project)
 	in.StatusKey = hand.step.StatusKey
+	in.Routing = h.routingStep(ctx, issue.WorkspaceID, hand.project, in.StatusKey)
 	return issueworkflow.Brief(in)
 }
 
@@ -550,6 +551,7 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 		Workflow:        def,
 		ProjectName:     project.Title,
 		StatusKey:       issue.Status,
+		Routing:         h.routingStep(ctx, issue.WorkspaceID, project, issue.Status),
 		IssueIdentifier: h.getIssuePrefix(ctx, issue.WorkspaceID) + "-" + strconv.Itoa(int(issue.Number)),
 		StatusName: func(key string) string {
 			return resolver.Name(ctx, h.Queries, key)
@@ -561,6 +563,17 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 			return h.stepHandlerName(ctx, issue, project, step)
 		},
 	}
+}
+
+// routingStep reports whether the workspace's routing agent handles status for
+// the project's workflow (decision 9's AgentFor test). A read error is not a
+// routing step: the brief then keeps the status commands.
+func (h *Handler) routingStep(ctx context.Context, ws pgtype.UUID, project db.Project, status string) bool {
+	cfg, err := loadRoutingAgent(ctx, h.Queries, ws)
+	if err != nil {
+		return false
+	}
+	return cfg.AgentFor(service.WorkflowScope(ctx, h.Queries, project), status) != ""
 }
 
 // actorDisplayName names an agent, squad or member for a brief. It falls back

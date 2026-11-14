@@ -368,6 +368,38 @@ func (q *Queries) ChatSessionPointerIsCurrent(ctx context.Context, id pgtype.UUI
 	return current, err
 }
 
+const chatSessionTitleMilestone = `-- name: ChatSessionTitleMilestone :one
+SELECT CASE
+    WHEN session.forked_from_session_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM chat_message AS own
+        WHERE own.chat_session_id = session.id AND own.role = 'user' AND own.task_id IS NOT NULL
+    ) THEN 'fork'
+    WHEN EXISTS (
+        SELECT 1 FROM chat_message AS summary
+        WHERE summary.chat_session_id = session.id AND summary.message_kind = 'compaction_summary'
+          AND NOT EXISTS (
+              SELECT 1 FROM chat_message AS later
+              WHERE later.chat_session_id = session.id AND later.role = 'user'
+                AND later.message_kind != 'channel_command' AND later.created_at > summary.created_at
+          )
+    ) THEN 'compaction'
+    ELSE ''
+END::text AS milestone
+FROM chat_session AS session
+WHERE session.id = $1
+`
+
+// Which re-title milestone the next user message of a DM would start (CHE-4107):
+// 'fork' for a fork child that has sent no message of its own (copied history
+// has no task), 'compaction' when the latest compaction summary has no user
+// message after it, else ”. Read before the new message is inserted.
+func (q *Queries) ChatSessionTitleMilestone(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, chatSessionTitleMilestone, id)
+	var milestone string
+	err := row.Scan(&milestone)
+	return milestone, err
+}
+
 const clearChatMessageChannelMediaPending = `-- name: ClearChatMessageChannelMediaPending :exec
 UPDATE chat_message
 SET channel_media_pending_until = NULL
@@ -1092,6 +1124,31 @@ func (q *Queries) CreateMikaOnboardingOpening(ctx context.Context, arg CreateMik
 		&i.ReanchoredAt,
 	)
 	return i, err
+}
+
+const dMTitleJobExists = `-- name: DMTitleJobExists :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE purpose = 'bg:dm_title'
+      AND source_chat_session_id = $1
+      AND context->>'milestone' = $2::text
+      AND context->>'source_message_id' = $3::text
+) AS job_exists
+`
+
+type DMTitleJobExistsParams struct {
+	SessionID       pgtype.UUID `json:"session_id"`
+	Milestone       string      `json:"milestone"`
+	SourceMessageID string      `json:"source_message_id"`
+}
+
+// True when a dm_title job for this (session, milestone, source message) was
+// ever queued: the idempotence key of a milestone trigger (CHE-4107).
+func (q *Queries) DMTitleJobExists(ctx context.Context, arg DMTitleJobExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, dMTitleJobExists, arg.SessionID, arg.Milestone, arg.SourceMessageID)
+	var job_exists bool
+	err := row.Scan(&job_exists)
+	return job_exists, err
 }
 
 const deferChatTaskForSealedPendingMedia = `-- name: DeferChatTaskForSealedPendingMedia :one

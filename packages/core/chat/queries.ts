@@ -129,7 +129,7 @@ export function issueDecisionCardsOptions(wsId: string, issueId: string) {
  * the session's creation time like the server (chat.sql): a new fork carries
  * old copied messages and must still list as new.
  */
-function sessionActivityTime(s: ChatSession): number {
+export function sessionActivityTime(s: ChatSession): number {
   const activity = new Date(s.last_message?.created_at ?? s.created_at).getTime();
   const created = new Date(s.created_at).getTime();
   return Number.isNaN(created) ? activity : Math.max(activity, created);
@@ -158,6 +158,53 @@ export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
     if (ap !== bp) return bp - ap;
     return sessionActivityTime(b) - sessionActivityTime(a);
   });
+}
+
+/** Views behind the DM list filter chips (CHE-5511 slice 1). */
+export type ChatListView =
+  | "all"
+  | "main"
+  | "decisions"
+  | "waiting"
+  | "unseen"
+  | "pinned"
+  | "unpinned"
+  | "archived";
+
+export const DEFAULT_CHAT_LIST_VIEW: ChatListView = "main";
+
+const ATTENTION_LEVELS = new Set(["red", "yellow", "fresh"]);
+
+/**
+ * The rows behind each DM list chip. `all` = main + archived; `main` = every
+ * DM not archived; every other chip narrows the non-archived set, except
+ * `archived`, which is archived only. `decisionSessionIds` are the sessions
+ * with an open decision request (the open-decisions query, not the list cache).
+ */
+export function filterChatSessions(
+  sessions: readonly ChatSession[],
+  view: ChatListView,
+  decisionSessionIds: ReadonlySet<string> = new Set(),
+): ChatSession[] {
+  const live = (s: ChatSession) => s.status !== "archived";
+  switch (view) {
+    case "all":
+      return [...sessions];
+    case "archived":
+      return sessions.filter((s) => !live(s));
+    case "main":
+      return sessions.filter(live);
+    case "decisions":
+      return sessions.filter((s) => live(s) && decisionSessionIds.has(s.id));
+    case "waiting":
+      return sessions.filter((s) => live(s) && ATTENTION_LEVELS.has(s.stale_level ?? ""));
+    case "unseen":
+      return sessions.filter((s) => live(s) && (s.has_unread || (s.unread_count ?? 0) > 0));
+    case "pinned":
+      return sessions.filter((s) => live(s) && !!s.pinned);
+    case "unpinned":
+      return sessions.filter((s) => live(s) && !s.pinned);
+  }
 }
 
 /**
