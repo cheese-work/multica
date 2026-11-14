@@ -76,9 +76,12 @@ describe("minimap", () => {
   it("shows a busy skeleton in the same section while the target loads", () => {
     state.loading = true;
     render(ui());
-    expect(screen.getByTestId("issue-hierarchy")).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("status", { name: "Loading hierarchy…" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Expand hierarchy" })).toBeDisabled();
+    const skeleton = screen.getByRole("status", { name: "Loading hierarchy…" });
+    expect(skeleton.parentElement).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByTestId("issue-hierarchy")).toContainElement(skeleton);
+    // D5 shared states: the mode switch and the expand button stay usable while the card loads.
+    expect(screen.getByRole("button", { name: "Expand hierarchy" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Swimlane 2.0" })).toBeEnabled();
   });
   it("takes focus on the heading when it mounts after a dialog navigation", async () => {
     const { requestHierarchyFocus } = await import("./hierarchy-minimap");

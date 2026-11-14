@@ -391,6 +391,8 @@ export interface IssueViewState {
   collapsedSwimlanes: Record<SwimlaneGrouping, string[]>;
   /** Collapsed issue ids per graph surface (Gantt v2 rows; hierarchy and Swimlane 2.0 reuse the shape). */
   collapsedIssues: Record<GraphSurface, string[]>;
+  /** Sidebar card and dialog mode: a registry id (hierarchy, swimlane2, …). Stored raw; the views registry resolves an unknown id to hierarchy. */
+  sidebarMode: string;
   /** Ordered table columns. Title is mandatory and normalized to the front. */
   tableColumns: TableColumnConfig[];
   tableGrouping: TableGrouping;
@@ -451,6 +453,7 @@ export interface IssueViewState {
   /** Toggle a lane key in the currently active swimlane grouping. */
   toggleSwimlaneCollapsed: (key: string) => void;
   toggleIssueCollapsed: (surface: GraphSurface, issueId: string) => void;
+  setSidebarMode: (mode: string) => void;
   toggleTableColumn: (key: TableColumnKey) => void;
   reorderTableColumn: (active: TableColumnKey, over: TableColumnKey) => void;
   setTableColumnWidth: (key: TableColumnKey, width?: number) => void;
@@ -495,6 +498,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   swimlaneOrders: { parent: [], project: [], assignee: [] },
   collapsedSwimlanes: { parent: [], project: [], assignee: [] },
   collapsedIssues: { gantt: [], swimlane2: [], hierarchy: [] },
+  sidebarMode: "hierarchy",
   tableColumns: DEFAULT_TABLE_COLUMNS.map((column) => ({ ...column })),
   tableGrouping: "none",
   tableCollapsedGroups: [],
@@ -768,6 +772,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         collapsedSwimlanes: { ...state.collapsedSwimlanes, [grouping]: next },
       };
     }),
+  setSidebarMode: (sidebarMode) => set({ sidebarMode }),
   toggleIssueCollapsed: (surface, issueId) =>
     set((state) => {
       const current = state.collapsedIssues[surface];
@@ -863,6 +868,7 @@ export const viewStorePersistOptions = (name: string) => ({
     swimlaneOrders: state.swimlaneOrders,
     collapsedSwimlanes: state.collapsedSwimlanes,
     collapsedIssues: state.collapsedIssues,
+    sidebarMode: state.sidebarMode,
     tableColumns: state.tableColumns,
     tableGrouping: state.tableGrouping,
     tableCollapsedGroups: state.tableCollapsedGroups,
@@ -962,6 +968,7 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
           )
         : {}),
     },
+    sidebarMode: typeof p.sidebarMode === "string" ? p.sidebarMode : current.sidebarMode,
     tableColumns: [
       persistedTitle ?? current.tableColumns[0] ?? { key: "title" },
       ...dedupedTableColumns,
