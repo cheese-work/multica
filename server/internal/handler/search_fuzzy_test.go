@@ -150,7 +150,7 @@ func TestSearchIssues_FuzzyFallbackFindsTypoInComment(t *testing.T) {
 	id := dbfx.Issue(t, "Plain heading")
 	dbfx.Comment(t, id, "the importer crashes on duplicate columns")
 
-	results := searchIssueResults(t, "q="+url.QueryEscape("importr crashs duplcate")) //nolint:misspell // intentional typo
+	results := searchIssueResults(t, "q="+url.QueryEscape("importr crashs duplcate"))
 	for _, r := range results {
 		if r.ID == id {
 			if r.MatchSource != "comment" || r.MatchedCommentSnippet == nil {
@@ -167,7 +167,7 @@ func TestSearchIssues_FuzzyFallbackTitleOutranksCommentMatch(t *testing.T) {
 	dbfx.Comment(t, comment, "zebrafish migration plan")
 	title := dbfx.Issue(t, "zebrafish migration plan extended with many more words in the title")
 
-	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("zebrafsh migraton plam")) //nolint:misspell // intentional typo
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("zebrafsh migraton plam"))
 	titleAt, commentAt := indexOfID(ids, title), indexOfID(ids, comment)
 	if titleAt < 0 || commentAt < 0 || titleAt > commentAt {
 		t.Fatalf("title match must rank above comment match: title at %d, comment at %d, ids %v", titleAt, commentAt, ids)
