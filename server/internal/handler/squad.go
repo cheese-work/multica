@@ -1462,6 +1462,10 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 	leaderOriginator := ""
 	if authorType == "member" {
 		leaderOriginator = authorID
+	} else if originator, ok := h.TaskService.StatusHandoffOriginator(ctx, issue); ok {
+		// A status move by an agent: the human is whoever its acting task serves,
+		// the same principal the enqueue persists (CHE-5485).
+		leaderOriginator = uuidToString(originator)
 	} else {
 		leaderOriginator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
 	}

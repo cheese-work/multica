@@ -7,17 +7,19 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
+import { useSearchStore } from "../search/search-store";
 import { chatKeys } from "@multica/core/chat/queries";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enChat from "../locales/en/chat.json";
+import enSearch from "../locales/en/search.json";
 import {
   NavigationProvider,
   type NavigationAdapter,
 } from "../navigation";
 
-const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
+const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, search: enSearch } };
 const mockSignIn = vi.hoisted(() => vi.fn());
 
 vi.mock("../auth/use-logout", () => ({ useLogout: () => mockSignIn }));
@@ -64,25 +66,15 @@ vi.mock("./components/chat-input", () => ({
 vi.mock("./components/chat-thread-list", () => ({
   ChatThreadList: ({
     onSelectSession,
-    onOpenSearchHit,
   }: {
     onSelectSession: (s: { id: string; agent_id: string }) => void;
-    onOpenSearchHit?: (hit: { session_id: string; message_id: string | null }) => void;
   }) => (
-    <>
-      <button
-        type="button"
-        onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
-      >
-        select-thread
-      </button>
-      <button
-        type="button"
-        onClick={() => onOpenSearchHit?.({ session_id: "session-9", message_id: "msg-4" })}
-      >
-        open-message-hit
-      </button>
-    </>
+    <button
+      type="button"
+      onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
+    >
+      select-thread
+    </button>
   ),
 }));
 vi.mock("./components/chat-session-header", () => ({
@@ -629,6 +621,22 @@ describe("ChatPage ?agent= deep link", () => {
   });
 });
 
+describe("ChatPage mobile search icon (CHE-5593)", () => {
+  it("opens the palette from the list header on a phone", () => {
+    layout.width = FOLD_INNER_PORTRAIT;
+    useSearchStore.getState().setOpen(false);
+    renderPage("");
+    fireEvent.click(screen.getByRole("button", { name: "Search..." }));
+    expect(useSearchStore.getState().open).toBe(true);
+  });
+
+  it("shows no header search icon on desktop, where the sidebar trigger and ⌘K cover it", () => {
+    layout.width = DESKTOP;
+    renderPage("");
+    expect(screen.queryByRole("button", { name: "Search..." })).toBeNull();
+  });
+});
+
 describe("ChatPage responsive layout", () => {
   const SELECT_PROMPT = "Pick a conversation, or start a new one with +";
 
@@ -801,31 +809,6 @@ describe("ChatPage back stack", () => {
     expect(activeSession()).toBeNull();
     back();
     expect(history.url).toBe("/acme/inbox");
-  });
-
-  it("opens a message hit with one pushed entry that targets the message, and Back returns to the list", () => {
-    history = createHistory("/acme/inbox", "/acme/chat");
-    renderWithHistory(history);
-
-    fireEvent.click(screen.getByRole("button", { name: "open-message-hit" }));
-
-    expect(history.writes).toEqual([
-      { kind: "push", url: "/acme/chat?session=session-9&message=msg-4" },
-    ]);
-    expect(activeSession()).toBe("session-9");
-    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-4");
-
-    // Landing drops ?message= by replace, so the entry count stays at one push.
-    fireEvent.click(screen.getByRole("button", { name: "settle-landed" }));
-    expect(history.entries).toEqual([
-      "/acme/inbox",
-      "/acme/chat",
-      "/acme/chat?session=session-9",
-    ]);
-
-    back();
-    expect(history.url).toBe("/acme/chat");
-    expect(activeSession()).toBeNull();
   });
 
   it("pushes a thread selection instead of replacing the list entry", () => {

@@ -30,21 +30,34 @@ func (s *TaskService) beginScheduling(ctx context.Context) (pgx.Tx, *db.Queries,
 	return tx, s.Queries.WithTx(tx), nil
 }
 
+// AgentSchedulingHook runs on the scheduling change's own transaction, after
+// the write and before commit, with the agent as it was and as it is now. An
+// error rolls the change back (the admin audit row, CHE-5646).
+type AgentSchedulingHook func(ctx context.Context, q *db.Queries, prev, updated db.Agent) error
+
 // reason is optional free text kept with the pause; the first pause wins.
 func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, agentID, actorID pgtype.UUID, reason pgtype.Text) (db.Agent, bool, error) {
+	return s.PauseAgentSchedulingInTx(ctx, workspaceID, agentID, actorID, reason, nil)
+}
+
+func (s *TaskService) PauseAgentSchedulingInTx(ctx context.Context, workspaceID, agentID, actorID pgtype.UUID, reason pgtype.Text, inTx AgentSchedulingHook) (db.Agent, bool, error) {
 	return s.setAgentScheduling(ctx, workspaceID, agentID, func(q *db.Queries) (db.Agent, error) {
 		return q.PauseAgentScheduling(ctx, db.PauseAgentSchedulingParams{
 			ID: agentID, WorkspaceID: workspaceID, ActorID: actorID, Reason: reason,
 		})
-	}, true)
+	}, true, inTx)
 }
 
 func (s *TaskService) ResumeAgentScheduling(ctx context.Context, workspaceID, agentID pgtype.UUID) (db.Agent, bool, error) {
+	return s.ResumeAgentSchedulingInTx(ctx, workspaceID, agentID, nil)
+}
+
+func (s *TaskService) ResumeAgentSchedulingInTx(ctx context.Context, workspaceID, agentID pgtype.UUID, inTx AgentSchedulingHook) (db.Agent, bool, error) {
 	agent, changed, err := s.setAgentScheduling(ctx, workspaceID, agentID, func(q *db.Queries) (db.Agent, error) {
 		return q.ResumeAgentScheduling(ctx, db.ResumeAgentSchedulingParams{
 			ID: agentID, WorkspaceID: workspaceID,
 		})
-	}, false)
+	}, false, inTx)
 	if err != nil {
 		return db.Agent{}, false, err
 	}
@@ -54,7 +67,7 @@ func (s *TaskService) ResumeAgentScheduling(ctx context.Context, workspaceID, ag
 
 // setAgentScheduling locks the agent row, runs write, and reports whether the
 // paused flag moved to pause.
-func (s *TaskService) setAgentScheduling(ctx context.Context, workspaceID, agentID pgtype.UUID, write func(*db.Queries) (db.Agent, error), pause bool) (db.Agent, bool, error) {
+func (s *TaskService) setAgentScheduling(ctx context.Context, workspaceID, agentID pgtype.UUID, write func(*db.Queries) (db.Agent, error), pause bool, inTx AgentSchedulingHook) (db.Agent, bool, error) {
 	tx, q, err := s.beginScheduling(ctx)
 	if err != nil {
 		return db.Agent{}, false, err
@@ -70,6 +83,11 @@ func (s *TaskService) setAgentScheduling(ctx context.Context, workspaceID, agent
 	updated, err := write(q)
 	if err != nil {
 		return db.Agent{}, false, err
+	}
+	if inTx != nil {
+		if err := inTx(ctx, q, prev, updated); err != nil {
+			return db.Agent{}, false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.Agent{}, false, fmt.Errorf("commit scheduling change: %w", err)

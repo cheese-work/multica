@@ -223,6 +223,12 @@ func (h *Handler) CreateAgentPreset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create preset")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.preset.create", WorkspaceID: a.WorkspaceID, TargetID: a.ID, After: presetAuditFields(&row),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.preset.create")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create preset")
 		return
@@ -316,6 +322,13 @@ func (h *Handler) UpdateAgentPreset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update preset")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.preset.update", WorkspaceID: a.WorkspaceID, TargetID: a.ID,
+		Before: presetAuditFields(&row), After: presetAuditFields(&updated),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.preset.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update preset")
 		return
@@ -328,13 +341,34 @@ func (h *Handler) DeleteAgentPreset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n, err := h.Queries.DeleteAgentPreset(r.Context(), db.DeleteAgentPresetParams{WorkspaceID: a.WorkspaceID, AgentID: a.ID, Name: chi.URLParam(r, "name")})
+	name := chi.URLParam(r, "name")
+	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete preset")
 		return
 	}
-	if n == 0 {
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	row, err := qtx.GetAgentPresetByName(r.Context(), db.GetAgentPresetByNameParams{WorkspaceID: a.WorkspaceID, AgentID: a.ID, Name: name})
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "preset not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete preset")
+		return
+	}
+	if _, err := qtx.DeleteAgentPreset(r.Context(), db.DeleteAgentPresetParams{WorkspaceID: a.WorkspaceID, AgentID: a.ID, Name: name}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete preset")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.preset.delete", WorkspaceID: a.WorkspaceID, TargetID: a.ID, Before: presetAuditFields(&row),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.preset.delete")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete preset")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -394,7 +428,23 @@ func (h *Handler) SetAgentDefaultPreset(w http.ResponseWriter, r *http.Request) 
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	err = qtx.ClearAgentPresetDefault(r.Context(), db.ClearAgentPresetDefaultParams{WorkspaceID: a.WorkspaceID, AgentID: a.ID})
+	snapshot := func() (map[string]any, error) {
+		rows, err := qtx.ListAgentPresets(r.Context(), db.ListAgentPresetsParams{WorkspaceID: a.WorkspaceID, AgentID: a.ID})
+		if err != nil {
+			return nil, err
+		}
+		current := agentpreset.BaseName
+		for _, row := range rows {
+			if row.IsDefault {
+				current = row.Name
+			}
+		}
+		return map[string]any{"default_preset": current}, nil
+	}
+	before, err := snapshot()
+	if err == nil {
+		err = qtx.ClearAgentPresetDefault(r.Context(), db.ClearAgentPresetDefaultParams{WorkspaceID: a.WorkspaceID, AgentID: a.ID})
+	}
 	if err == nil && req.Name != agentpreset.BaseName {
 		_, err = qtx.UpdateAgentPreset(r.Context(), db.UpdateAgentPresetParams{
 			WorkspaceID: a.WorkspaceID, AgentID: a.ID, Name: target.Name,
@@ -402,10 +452,21 @@ func (h *Handler) SetAgentDefaultPreset(w http.ResponseWriter, r *http.Request) 
 			ContextArgs: target.ContextArgs, IsDefault: true,
 		})
 	}
+	var after map[string]any
 	if err == nil {
-		err = tx.Commit(r.Context())
+		after, err = snapshot()
 	}
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to set default preset")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.preset.default", WorkspaceID: a.WorkspaceID, TargetID: a.ID, Before: before, After: after,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.preset.default")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to set default preset")
 		return
 	}

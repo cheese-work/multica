@@ -133,7 +133,10 @@ export function DescriptionDisclosure({
         // to the editor div below (or its descendants) while collapsed, so
         // this handler must live on a non-inert ancestor. This section is
         // the closest one.
-        if (!collapsed) return;
+        // A touch scroll starts with `pointerdown` (the browser sends
+        // `pointercancel` only after deciding to scroll), so touch expands
+        // only via the Show more button.
+        if (!collapsed || event.pointerType === "touch") return;
         event.preventDefault();
         event.stopPropagation();
         onExpandedChange(true);

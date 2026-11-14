@@ -4828,6 +4828,24 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	suppressRun := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	writeCtx = withBudgetActor(writeCtx, r)
+	// The handoff comment rides to the run as context. A run that will start
+	// refuses a comment that is not a live comment of this issue; a move that
+	// starts no run keeps the lenient drop-and-mark of the status history.
+	dispatchCtx := h.actingTaskContext(r)
+	if req.HandoffCommentID != nil && !suppressRun {
+		ok, err := service.HandoffCommentBelongsTo(r.Context(), h.Queries, prevIssue, *req.HandoffCommentID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check handoff comment")
+			return
+		}
+		switch {
+		case ok:
+			dispatchCtx = service.WithStatusHandoffComment(dispatchCtx, parseUUID(*req.HandoffCommentID))
+		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
+			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
+			return
+		}
+	}
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -5069,7 +5087,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, handoffNote) {
+		if h.dispatchIssueRun(dispatchCtx, issue, trigger, actorType, actorID, handoffNote) {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
 	}

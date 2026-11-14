@@ -652,26 +652,6 @@
       "list_failed": "이 요청이 승인하는 파일을 불러올 수 없습니다."
     }
   },
-  "search": {
-    "label": "채팅 검색",
-    "placeholder": "채팅 검색",
-    "shortcut_hint": "/",
-    "clear": "검색 지우기",
-    "results_label": "검색 결과",
-    "count_other": "결과 {{count}}개",
-    "searching": "검색 중…",
-    "empty": "“{{query}}”와(과) 일치하는 채팅이 없습니다",
-    "failed": "검색에 실패했습니다. 다시 시도해 주세요.",
-    "timed_out": "검색 시간이 너무 오래 걸렸습니다. 더 짧거나 구체적인 검색어를 사용해 보세요.",
-    "disconnected": "오프라인입니다. 검색하려면 연결이 필요합니다.",
-    "retry": "다시 시도",
-    "too_long": "검색은 {{max}}자까지 가능합니다.",
-    "show_more": "더 보기",
-    "loading_more": "불러오는 중…",
-    "archived_badge": "보관됨",
-    "title_match": "제목 일치",
-    "actions_aria": "{{title}} 작업"
-  },
   "wakeup": {
     "node_label": "예약된 깨우기가 실행되었습니다",
     "scheduled_at": "예약 {{time}}",
