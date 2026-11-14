@@ -52,6 +52,23 @@ type DecisionRequestCardAction struct {
 	// ConfigChange is the stored server preview of a pending config change,
 	// the exact text whose digest approve checks. Absent for other actions.
 	ConfigChange *ConfigChangeCard `json:"config_change,omitempty"`
+	// Readback of a decided action (B v9 S9, CHE-5419): what the decision did, when and by
+	// whom, and whether Revoke still applies. Empty while the action is pending.
+	Effect       string `json:"effect,omitempty"`
+	EffectReason string `json:"effect_reason,omitempty"`
+	DecidedAt    string `json:"decided_at,omitempty"`
+	DecidedBy    string `json:"decided_by_name,omitempty"`
+	OnBehalfOf   string `json:"on_behalf_of_name,omitempty"`
+	Revocable    bool   `json:"revocable"`
+	// Revoke is the record of a revoke that happened.
+	Revoke *CardRevoke `json:"revoke,omitempty"`
+}
+
+// CardRevoke is who revoked an applied action, when, and why.
+type CardRevoke struct {
+	At     string `json:"at"`
+	By     string `json:"by_name,omitempty"`
+	Reason string `json:"reason"`
 }
 
 // ConfigChangeCard is a config change's stored preview and its digest.
@@ -102,6 +119,7 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 	}
 	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State, OwnerOnly: actionOwnerOnly(action)}
 	if action.State != "pending" {
+		handler.fillCardReadback(ctx, card, action, requestID)
 		return card
 	}
 	if _, configured := configChanges[action.ActionType]; configured {
@@ -453,4 +471,39 @@ func keysPresent(existing map[string]string, keys []string) string {
 		return "none"
 	}
 	return joinKeys(present)
+}
+
+// fillCardReadback adds what a decided action did, when, by whom and whether Revoke
+// still applies. Names come from the global user table, so a departed member still renders.
+func (handler *Handler) fillCardReadback(ctx context.Context, card *DecisionRequestCardAction, action db.DecisionAction, requestID pgtype.UUID) {
+	var reason *string
+	card.Effect, reason = decisionEffectOf(action)
+	if reason != nil {
+		card.EffectReason = *reason
+	}
+	card.Revocable = handler.revocableNow(ctx, action)
+	decidedAt := action.ApprovedAt
+	switch {
+	case action.State == "expired":
+		decidedAt = action.ExpiresAt
+	case !decidedAt.Valid:
+		decidedAt = action.UpdatedAt
+	}
+	if decidedAt.Valid {
+		card.DecidedAt = timestampToString(decidedAt)
+	}
+	request, _ := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: requestID})
+	names := map[pgtype.UUID]string{}
+	if users, err := handler.Queries.GetUsersByIDs(ctx, distinctUUIDs(action.ApprovedByUserID, action.RevokedByUserID, request.HumanUserID)); err == nil {
+		for _, user := range users {
+			names[user.ID] = user.Name
+		}
+	}
+	if action.State != "expired" {
+		card.DecidedBy = names[action.ApprovedByUserID]
+		card.OnBehalfOf = names[request.HumanUserID]
+	}
+	if action.RevokedAt.Valid {
+		card.Revoke = &CardRevoke{At: timestampToString(action.RevokedAt), By: names[action.RevokedByUserID], Reason: action.RevokeReason.String}
+	}
 }
