@@ -700,11 +700,7 @@ jobs:
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
-        # pipefail: bash -e alone reports `tee`'s status, so a hung or failing
-        # test run still passed the step (CHE-5744).
-        run: |
-          set -o pipefail
-          bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+        run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.
