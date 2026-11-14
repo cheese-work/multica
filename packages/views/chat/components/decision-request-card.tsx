@@ -11,7 +11,7 @@ import {
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
-import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
+import { approvableConfigChange, approvablePreview, isConfigChangeActionType, isRunBudgetActionType } from "@multica/core/issues/decision-action-preview";
 import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
@@ -279,7 +279,7 @@ function ActionPreview({ action, issueId }: { action: CardAction; issueId: strin
     <div className="space-y-2">
       {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
       {configChange && <ConfigChangeViewer change={configChange} />}
-      {pending && action.action_type.startsWith("issue.run_budget.") && <DecisionRecentRuns issueId={issueId} />}
+      {pending && isRunBudgetActionType(action.action_type) && <DecisionRecentRuns issueId={issueId} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (

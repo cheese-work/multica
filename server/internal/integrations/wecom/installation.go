@@ -49,6 +49,11 @@ type InstallationParams struct {
 	// act on a role read earlier (the scan-install worker), where the role may
 	// have been revoked since; callers behind a live admin check leave it off.
 	RequireManagerInstaller bool
+
+	// Audit, when set, runs inside the install transaction after the upsert
+	// and before commit; an error rolls the install back and is returned
+	// unchanged. Nil for callers that audit elsewhere.
+	Audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 // InstallationService creates, refreshes and revokes wecom smart-bot
@@ -343,6 +348,11 @@ func (s *InstallationService) Upsert(ctx context.Context, p InstallationParams) 
 			return Installation{}, s.botOwnerConflictErr(ctx, p.WorkspaceID, p.BotID)
 		}
 		return Installation{}, fmt.Errorf("wecom: upsert installation: %w", err)
+	}
+	if p.Audit != nil {
+		if err := p.Audit(tx, row); err != nil {
+			return Installation{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Installation{}, fmt.Errorf("wecom: commit install tx: %w", err)

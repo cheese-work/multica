@@ -137,7 +137,9 @@ type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, pr
 
 // CreatePropertyGate refuses a create whose properties the workflow's gates
 // cannot accept. properties is the canonical JSONB bag, keyed by property id.
-type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte) error
+// projectID and title are the new issue's, for a gate scoped to a project or a
+// title type.
+type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte, projectID pgtype.UUID, title string) error
 
 // CreateEntryGate refuses a create the landing step's block entry gates stop.
 // It may return a recorder for the new row (warn gates), which Create runs in
@@ -483,7 +485,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	}
 
 	if p.PropertyGate != nil && def != nil {
-		if err := p.PropertyGate(ctx, qtx, def, properties); err != nil {
+		if err := p.PropertyGate(ctx, qtx, def, properties, projectID, p.Title); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}

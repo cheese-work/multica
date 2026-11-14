@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -167,10 +168,26 @@ func (h *Handler) setWorkspaceScheduling(w http.ResponseWriter, r *http.Request,
 		changed bool
 		err     error
 	)
+	kind := "workspace.scheduling.resume"
 	if pause {
-		updated, changed, err = h.TaskService.PauseWorkspaceScheduling(r.Context(), wsUUID, parseUUID(userID))
+		kind = "workspace.scheduling.pause"
+	}
+	var auditErr error
+	audit := func(ctx context.Context, q *db.Queries, prev, next db.Workspace) error {
+		auditErr = h.writeAudit(ctx, q, r, auditInput{
+			Kind: kind, WorkspaceID: wsUUID, TargetID: wsUUID,
+			Before: workspaceSchedulingAuditFields(prev), After: workspaceSchedulingAuditFields(next),
+		})
+		return auditErr
+	}
+	if pause {
+		updated, changed, err = h.TaskService.PauseWorkspaceScheduling(r.Context(), wsUUID, parseUUID(userID), audit)
 	} else {
-		updated, changed, err = h.TaskService.ResumeWorkspaceScheduling(r.Context(), wsUUID)
+		updated, changed, err = h.TaskService.ResumeWorkspaceScheduling(r.Context(), wsUUID, audit)
+	}
+	if auditErr != nil {
+		writeAuditFailure(w, r, auditErr, kind)
+		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "workspace not found")

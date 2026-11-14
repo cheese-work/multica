@@ -84,6 +84,16 @@ Si le responsable précédent est un agent dont l’exécution est encore en cou
 
 Le passage de relais et ses consignes restent dans l’historique de la tâche. Le menu du workflow sur le tableau du projet permet d’afficher le parcours complet.
 
+## Quand une PR est fusionnée [#pr-merged]
+
+Une fusion change un statut grâce à un seul réglage de l'espace de travail : **Paramètres → Code → Après la fusion des PR, passer la tâche à**. Voir [Intégration GitHub](/github-integration). Le tableau du workflow dessine cette règle. Une flèche en pointillés intitulée **PR fusionnée** part d'un repère **Toute étape** et entre dans l'étape que nomme le réglage ; la carte de cette étape indique **Défini dans Paramètres → Code**. La flèche est en lecture seule : dans l'éditeur, vous ne pouvez ni la sélectionner, ni la déplacer, ni la supprimer, et elle n'est jamais enregistrée dans le workflow. Avec **Ne pas changer**, aucune flèche n'est dessinée. Si le réglage nomme un statut que le workflow ne contient pas, l'éditeur affiche une ligne qui dit que les fusions de PR ne changent aucun statut dans ce workflow, et quel statut nomme Paramètres → Code.
+
+Quand cette étape a un responsable, la fusion lui confie la tâche et démarre son exécution, comme pour tout autre déplacement.
+
+### La transition `pr.merged` est obsolète
+
+Un ancien workflow peut enregistrer une transition protégée par `pr.merged`. Tant que le réglage n'est pas **Ne pas changer**, une transition `pr.merged` enregistrée ne déplace plus les tâches elle-même : elle lance la même vérification que le réglage. La liste des conditions de l'éditeur ne propose plus `pr.merged`, un enregistrement qui en ajoute une est refusé avec un message qui renvoie à Paramètres → Code, et une transition enregistrée est marquée comme obsolète. Avec **Ne pas changer**, les transitions enregistrées fonctionnent comme avant. Elles seront supprimées dans une prochaine version.
+
 ## Ajuster un workflow
 
 Plusieurs projets peuvent partager un workflow. Les modifications enregistrées dans **Paramètres → Workflows** s’appliquent à tous les projets qui l’utilisent. Pour changer le parcours d’un seul projet, dupliquez le workflow et choisissez la copie dans ce projet.

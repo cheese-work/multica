@@ -67,3 +67,136 @@ func (q *Queries) InsertWorkspaceAuditEvent(ctx context.Context, arg InsertWorks
 	)
 	return err
 }
+
+const listWorkspaceAuditEvents = `-- name: ListWorkspaceAuditEvents :many
+SELECT id, at, actor_type, actor_id, task_id, kind, target_type, target_id,
+       "before", "after", external_requested
+FROM workspace_audit_event
+WHERE workspace_id = $1
+  AND ($2::text IS NULL OR starts_with(kind, $2::text))
+  AND ($3::uuid IS NULL OR target_id = $3::uuid)
+  AND ($4::uuid IS NULL OR actor_id = $4::uuid)
+  AND ($5::timestamptz IS NULL OR at >= $5::timestamptz)
+  AND ($6::timestamptz IS NULL OR at < $6::timestamptz)
+  AND ($7::timestamptz IS NULL
+       OR (at, id) < ($7::timestamptz, $8::uuid))
+ORDER BY at DESC, id DESC
+LIMIT $9
+`
+
+type ListWorkspaceAuditEventsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	KindPrefix  pgtype.Text        `json:"kind_prefix"`
+	TargetID    pgtype.UUID        `json:"target_id"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
+	CursorAt    pgtype.Timestamptz `json:"cursor_at"`
+	CursorID    pgtype.UUID        `json:"cursor_id"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+type ListWorkspaceAuditEventsRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	At                pgtype.Timestamptz `json:"at"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	Kind              string             `json:"kind"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	Before            []byte             `json:"before"`
+	After             []byte             `json:"after"`
+	ExternalRequested []string           `json:"external_requested"`
+}
+
+// Read side (CHE-5644). Keyset page on (at DESC, id DESC), served by
+// idx_workspace_audit_event_workspace_at. The cursor row is excluded.
+func (q *Queries) ListWorkspaceAuditEvents(ctx context.Context, arg ListWorkspaceAuditEventsParams) ([]ListWorkspaceAuditEventsRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceAuditEvents,
+		arg.WorkspaceID,
+		arg.KindPrefix,
+		arg.TargetID,
+		arg.ActorID,
+		arg.Since,
+		arg.Until,
+		arg.CursorAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceAuditEventsRow{}
+	for rows.Next() {
+		var i ListWorkspaceAuditEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.ActorType,
+			&i.ActorID,
+			&i.TaskID,
+			&i.Kind,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Before,
+			&i.After,
+			&i.ExternalRequested,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const resolveAuditNames = `-- name: ResolveAuditNames :many
+SELECT 'user'::text AS kind, u.id, u.name FROM "user" u WHERE u.id = ANY($1::uuid[])
+UNION ALL SELECT 'agent', a.id, a.name FROM agent a WHERE a.workspace_id = $2 AND a.id = ANY($3::uuid[])
+UNION ALL SELECT 'runtime', r.id, r.name FROM agent_runtime r WHERE r.workspace_id = $2 AND r.id = ANY($3::uuid[])
+UNION ALL SELECT 'squad', s.id, s.name FROM squad s WHERE s.workspace_id = $2 AND s.id = ANY($3::uuid[])
+UNION ALL SELECT 'skill', k.id, k.name FROM skill k WHERE k.workspace_id = $2 AND k.id = ANY($3::uuid[])
+UNION ALL SELECT 'project', p.id, p.title FROM project p WHERE p.workspace_id = $2 AND p.id = ANY($3::uuid[])
+UNION ALL SELECT 'autopilot', ap.id, ap.title FROM autopilot ap WHERE ap.workspace_id = $2 AND ap.id = ANY($3::uuid[])
+UNION ALL SELECT 'workspace', w.id, w.name FROM workspace w WHERE w.id = $2 AND w.id = ANY($3::uuid[])
+UNION ALL SELECT 'member', m.id, u.name FROM member m JOIN "user" u ON u.id = m.user_id WHERE m.workspace_id = $2 AND m.id = ANY($3::uuid[])
+`
+
+type ResolveAuditNamesParams struct {
+	UserIds     []pgtype.UUID `json:"user_ids"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+type ResolveAuditNamesRow struct {
+	Kind string      `json:"kind"`
+	ID   pgtype.UUID `json:"id"`
+	Name string      `json:"name"`
+}
+
+// Display names for the actors and targets of one audit page, in one query.
+// kind 'user' = a member actor (actor_id is the user id); the others are the
+// target types of audit rows. Workspace-scoped tables filter by workspace.
+func (q *Queries) ResolveAuditNames(ctx context.Context, arg ResolveAuditNamesParams) ([]ResolveAuditNamesRow, error) {
+	rows, err := q.db.Query(ctx, resolveAuditNames, arg.UserIds, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ResolveAuditNamesRow{}
+	for rows.Next() {
+		var i ResolveAuditNamesRow
+		if err := rows.Scan(&i.Kind, &i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
