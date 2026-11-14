@@ -222,6 +222,35 @@ func (h *Handler) GetAutopilotDelivery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, deliveryToResponse(delivery, true))
 }
 
+// createAuditedReplay inserts the replay delivery and its audit row in one
+// transaction. An audit insert failure comes back as an auditWriteError.
+func (h *Handler) createAuditedReplay(r *http.Request, ap db.Autopilot, params db.CreateWebhookDeliveryParams) (db.WebhookDelivery, error) {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.WebhookDelivery{}, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	replay, err := qtx.CreateWebhookDelivery(ctx, params)
+	if err != nil {
+		return db.WebhookDelivery{}, err
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind:        "autopilot.delivery.replay",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    ap.ID,
+		After: map[string]any{
+			"delivery_id":               uuidToString(replay.ID),
+			"replayed_from_delivery_id": uuidToString(params.ReplayedFromDeliveryID),
+			"trigger_id":                uuidToString(params.TriggerID),
+		},
+	}); err != nil {
+		return db.WebhookDelivery{}, auditWriteError{err}
+	}
+	return replay, tx.Commit(ctx)
+}
+
 // ReplayAutopilotDelivery creates a NEW queued delivery row from a prior one;
 // the existing durable worker owns dispatch. The new row carries
 // `replayed_from_delivery_id` so the operator can correlate. Replay is
@@ -308,7 +337,7 @@ func (h *Handler) ReplayAutopilotDelivery(w http.ResponseWriter, r *http.Request
 	if original.ContentType.Valid {
 		contentType = original.ContentType.String
 	}
-	replay, err := h.Queries.CreateWebhookDelivery(r.Context(), db.CreateWebhookDeliveryParams{
+	replay, err := h.createAuditedReplay(r, autopilot, db.CreateWebhookDeliveryParams{
 		ID:                     dbid.NewV7(),
 		WorkspaceID:            autopilot.WorkspaceID,
 		AutopilotID:            autopilot.ID,
@@ -323,6 +352,9 @@ func (h *Handler) ReplayAutopilotDelivery(w http.ResponseWriter, r *http.Request
 		ReplayedFromDeliveryID: original.ID,
 		ReplayIdempotencyKey:   keyText,
 	})
+	if failedAudit(w, r, err, "autopilot.delivery.replay") {
+		return
+	}
 	if err != nil {
 		if isUniqueViolation(err) {
 			existing, lookupErr := h.Queries.GetWebhookReplayByIdempotencyKey(r.Context(), db.GetWebhookReplayByIdempotencyKeyParams{
