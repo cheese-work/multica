@@ -14,6 +14,8 @@ import { SpacePanel } from "./space-panel";
 import { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
 import { GlobalShortcuts } from "./global-shortcuts";
 import { MachinePauseBanner } from "./machine-pause-banner";
+import { WorkspacePauseBanner } from "./workspace-pause-banner";
+import { OpenDecisionsChip } from "./open-decisions-chip";
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -60,6 +62,8 @@ export function DashboardLayout({
             <AppShellCard>
               <NavigationProgress />
               <MachinePauseBanner />
+              <WorkspacePauseBanner />
+              <OpenDecisionsChip />
               {children}
               <ModalRegistry />
               <SourceBackfillModal />

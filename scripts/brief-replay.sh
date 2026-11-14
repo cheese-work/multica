@@ -4,6 +4,9 @@
 # Renders the generated brief at both refs for fixed task shapes, then diffs rules
 # against the checklist (scripts/brief-replay-check.mjs). Exit 1 = a checklist rule
 # was lost. Static text check only: it does not prove model behavior.
+# Real-run evidence for the old side (no Go build):
+#   node scripts/brief-replay-check.mjs --real <checklist> /mnt/ssd2/multica_workspaces [recent-count=20]
+# Each checklist phrase must be in at least one of the newest finished run briefs (CLAUDE.md/AGENTS.md).
 set -euo pipefail
 [ $# -eq 3 ] || { echo "usage: $0 <old-ref> <new-ref> <checklist>" >&2; exit 2; }
 repo=$(git rev-parse --show-toplevel)

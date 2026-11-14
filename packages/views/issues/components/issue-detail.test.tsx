@@ -605,14 +605,25 @@ const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
-    { data, itemContent, computeItemKey }: {
+    { data, itemContent, computeItemKey, initialTopMostItemIndex }: {
       data: unknown[];
+      initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
     },
     ref: any,
   ) {
-    const [firstIndex, setFirstIndex] = useState(virtualWindow.initialIndex);
+    const [firstIndex, setFirstIndex] = useState(
+      Number.isFinite(virtualWindow.size) && initialTopMostItemIndex
+        ? initialTopMostItemIndex.index
+        : virtualWindow.initialIndex,
+    );
+    // Real Virtuoso opens AT initialTopMostItemIndex; record it as the placement
+    // so deep-link tests can tell "list opened at the target" from "page scrolled".
+    useEffect(() => {
+      if (initialTopMostItemIndex) scrollToIndexSpy(initialTopMostItemIndex);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
@@ -2385,6 +2396,62 @@ describe("IssueDetail (shared)", () => {
       }
     });
 
+    it("CHE-5437: a real click on Collapse thread collapses a thread with no replies to its one-line header and hides the reply box", async () => {
+      const root = { ...mockTimeline[0]!, id: "lonely-root", content: "Lonely root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Lonely root body");
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      // A real pointer press focuses the button; the focus pin must not
+      // read the collapse control's own focus as "the user is interacting".
+      const button = within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
+      fireEvent.mouseDown(button);
+      act(() => button.focus());
+      fireEvent.click(button);
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
+      // One line: the summary stays in the header, the body block is gone.
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(rootWrapper().querySelector(`#comment-body-${root.id}`)).toBeNull();
+      expect(within(rootWrapper()).getByText("Lonely root body")).toBeInTheDocument();
+    });
+
+    it("CHE-5437: Collapse thread works while the reply box holds unsent text, and the text is still in the draft store", async () => {
+      const root = { ...mockTimeline[0]!, id: "draft-root", content: "Draft root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Draft root body");
+      const draftKey = `reply:issue-1:${root.id}`;
+      act(() => mockDraftStoreState.setDraft(draftKey, { content: "half-typed reply", attachments: [], updatedAt: 1 }));
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      fireEvent.click(within(rootWrapper()).getByRole("button", { name: "Collapse thread" }));
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(mockDraftStoreState.getDrafts()[draftKey]?.content).toBe("half-typed reply");
+    });
+
+    it("CHE-5437: withholds Show less while reply text forces the length open, so the button is never a dead click", async () => {
+      const root = mockTimeline[0]!;
+      const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+        ...mockTimeline[1]!,
+        id: `dead-reply-${i}`,
+        parent_id: root.id,
+        content: `Dead reply ${i}`,
+        created_at: `2026-01-16T00:0${i}:00Z`,
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+      renderIssueDetail();
+      await screen.findByText("Dead reply 3");
+
+      act(() => mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "typing a reply...", attachments: [], updatedAt: 1 }));
+      await screen.findByText("Dead reply 0");
+      expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
+    });
+
     it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
       mockApiObj.getIssue.mockResolvedValue({
         ...mockIssue,
@@ -4038,6 +4105,53 @@ describe("IssueDetail (shared)", () => {
       const reply = document.getElementById("comment-reply-under-root");
       expect(reply).not.toBeNull();
       expect(hasHighlightedCommentBackground(reply)).toBe(false);
+    });
+
+    it("lands on a run that left no comment by its task id", async () => {
+      const taskId = "7c1f3a9e-2b4d-4e8a-9f60-0a1b2c3d4e5f";
+      const task: AgentTask = {
+        id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+        status: "failed", priority: 0, created_at: "2026-01-18T00:00:00Z",
+        started_at: "2026-01-18T00:00:01Z", dispatched_at: "2026-01-18T00:00:01Z",
+        completed_at: "2026-01-18T00:05:00Z", result: null, error: "go test timed out",
+        delivered_comment_ids: [],
+      };
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+
+      renderIssueDetailWithHighlight(taskId);
+
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById(`comment-${taskId}`))).toBe(true);
+      });
+    });
+
+    it.each([
+      ["an open thread", "open"],
+      ["a thread whose root is resolved", "root"],
+      ["a thread a later reply resolved", "reply"],
+    ])("unfolds and lands on a run that left no comment in %s", async (_case, fold) => {
+      const taskId = "7c1f3a9e-2b4d-4e8a-9f60-0a1b2c3d4e5f";
+      const root = { ...mockTimeline[0]!, id: "run-thread-root", parent_id: null,
+        resolved_at: fold === "root" ? "2026-01-19T00:00:00Z" : null };
+      const trigger = { ...mockTimeline[0]!, id: "run-trigger", parent_id: root.id,
+        content: "Please run this check", created_at: "2026-01-18T00:00:00Z" };
+      const resolution = { ...trigger, id: "run-resolution", content: "Resolved",
+        resolved_at: "2026-01-19T00:00:00Z", created_at: "2026-01-19T00:00:00Z" };
+      const task: AgentTask = {
+        id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+        status: "failed", priority: 0, created_at: "2026-01-18T00:00:00Z",
+        started_at: "2026-01-18T00:00:01Z", dispatched_at: "2026-01-18T00:00:01Z",
+        completed_at: "2026-01-18T00:05:00Z", result: null, error: "go test timed out",
+        trigger_comment_id: trigger.id, delivered_comment_ids: [trigger.id],
+      };
+      mockApiObj.listTimeline.mockResolvedValue([root, trigger, ...(fold === "reply" ? [resolution] : [])]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+
+      renderIssueDetailWithHighlight(taskId);
+
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById(`comment-${taskId}`))).toBe(true);
+      });
     });
 
     it("still scrolls when the timeline is ready before the issue (regression for inbox click)", async () => {

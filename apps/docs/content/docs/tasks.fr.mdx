@@ -92,6 +92,18 @@ Le mode **Exécution seule** d'une automatisation ne relance pas automatiquement
 
 Lorsqu'une tâche n'a aucune autre exécution active et aucune nouvelle relance en attente, un échec fait repasser une tâche `in_progress` à `todo`.
 
+## Coupe-circuit de boucle
+
+Multica refuse l'exécution d'un agent sur une tâche lorsque cet agent a déjà démarré 5 exécutions sur cette tâche au cours des 30 dernières minutes. L'exécution refusée est la 6e. La tâche passe à `blocked` avec le motif `loop-breaker: <agent> started N runs in 30 min`, et un commentaire système nomme l'agent et les types de déclencheur de ses dernières exécutions. Multica publie au plus un commentaire de ce type par tâche et par agent et par heure. Les exécutions des autres agents sur la tâche et les tâches de chat sans tâche associée ne sont pas comptées.
+
+Définissez `MULTICA_LOOP_BREAKER_MAX_RUNS` (par défaut `6` ; `0` désactive le coupe-circuit) et `MULTICA_LOOP_BREAKER_WINDOW` (par défaut `30m`) sur le serveur pour modifier ces limites.
+
+## Garde hebdomadaire des runs
+
+Multica refuse un run dérivé sur une issue qui a déjà démarré 30 runs au cours des 7 derniers jours, quelle que soit la fenêtre de budget de runs. Un membre qui change le statut de l'issue rouvre une fenêtre de budget, mais pas cette garde. Une personne qui nomme un agent à la main n'est pas refusée. Le refus ne change aucun statut et n'écrit aucun commentaire. Il enregistre un incident par issue et par jour ICT, avec le nombre de runs et le statut des 3 derniers runs, et le brief de décisions d'agents (`multica decision brief`) le liste dans le champ `run_guard`.
+
+Définissez `MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS` (par défaut `30` ; `0` désactive la garde) sur le serveur pour modifier la limite.
+
 ## Référence des motifs d'échec
 
 Les motifs d'échec affichés dans le journal d'exécution et dans les [Statistiques](/analytics#onglet-erreurs) se répartissent en deux groupes : les codes sans préfixe sont enregistrés par la plateforme ; les codes `agent_error.*` sont classés à partir des erreurs propres à l'outil de codage IA.

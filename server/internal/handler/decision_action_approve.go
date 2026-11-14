@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,9 @@ type decisionActionExecution struct {
 	// Tx is the approval transaction Queries runs in, for a write that needs
 	// the transaction itself.
 	Tx pgx.Tx
+	// ProjectID is the project the approval locked: the one the issue was in
+	// when the plan read it. Set for issue.workflow.set only.
+	ProjectID pgtype.UUID
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -70,8 +74,12 @@ type decisionActionExecutor func(ctx context.Context, execution decisionActionEx
 var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.env.patch":        executeEnvPatchAction,
 	"agent.copy":             executeAgentCopyAction,
+	agentPauseAction:         executeAgentPauseAction,
+	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	issueWorkflowSetType:     executeIssueWorkflowSetAction,
+	issueProjectSetType:      executeIssueProjectSetAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -80,6 +88,10 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
 	if actionType == "agent.env.patch" {
 		return canManageAgentEnv(target, approver)
+	}
+	if isAgentSchedulingAction(actionType) {
+		// The rule of requireSchedulingAdmin: workspace owner or admin only.
+		return roleAllowed(approver.Role, "owner", "admin")
 	}
 	return true
 }
@@ -102,6 +114,7 @@ type approveBody struct {
 	Assertion     json.RawMessage   `json:"assertion"`
 	Secrets       map[string]string `json:"secrets"`
 	PreviewSHA256 string            `json:"preview_sha256"`
+	Note          string            `json:"note"`
 }
 
 // ApproveDecisionAction runs a pending action after its human approves it.
@@ -117,6 +130,10 @@ func (handler *Handler) ApproveDecisionAction(writer http.ResponseWriter, reques
 		writeError(writer, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if caller.note = strings.TrimSpace(body.Note); len(caller.note) > maxDecisionNote {
+		writeDecisionActionError(writer, errNoteTooLong)
+		return
+	}
 	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
 	defer cancel()
 	action, err := handler.approveDecisionAction(ctx, caller, body)
@@ -128,14 +145,28 @@ func (handler *Handler) ApproveDecisionAction(writer http.ResponseWriter, reques
 	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
 }
 
-func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisionActionCaller, body approveBody) (db.DecisionAction, error) {
-	empty := db.DecisionAction{}
+// approvePlan is what an approval reads before its transaction: the executor,
+// the action's target and the keys its locks take.
+type approvePlan struct {
+	executor                         decisionActionExecutor
+	located                          db.DecisionRequest
+	target, runtimeID, boundaryIssue pgtype.UUID
+	queueKey                         string
+	catalogLock                      bool
+	// workflowSet takes the status catalog (shared) and project locks of an
+	// issue workflow move; project is the project the issue was in when read.
+	workflowSet bool
+	project     pgtype.UUID
+}
+
+// planApprove runs the pre-transaction refusals of one action's approval.
+func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCaller, secrets map[string]string) (approvePlan, error) {
 	preview, located, err := handler.locateDecisionAction(ctx, caller)
 	if err != nil {
-		return empty, err
+		return approvePlan{}, err
 	}
 	if handler.ApprovalVerifier == nil {
-		return empty, errApprovalUnavailable
+		return approvePlan{}, errApprovalUnavailable
 	}
 	executor, found := decisionActionExecutors[preview.ActionType]
 	var target pgtype.UUID
@@ -147,28 +178,51 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 		target, targeted = decisionActionTarget(preview)
 	}
 	if !found || !targeted {
-		return empty, errNotExecutable
+		return approvePlan{}, errNotExecutable
 	}
-	if err := checkSecretValues(preview, body.Secrets); err != nil {
-		return empty, err
+	if err := checkSecretValues(preview, secrets); err != nil {
+		return approvePlan{}, err
 	}
-	var queueKey string
+	plan := approvePlan{executor: executor, located: located, target: target, runtimeID: decisionActionRuntime(preview)}
 	change, configured := configChanges[preview.ActionType]
 	if configured && change.QueueField != "" && target.Valid {
-		queueKey = configChangeLockKey(uuidToString(caller.workspaceID), change.QueueField, uuidToString(target))
+		plan.queueKey = configChangeLockKey(uuidToString(caller.workspaceID), change.QueueField, uuidToString(target))
 	}
+	plan.catalogLock = configured && change.CatalogLock
 	// A top-up opens a run-budget window, so it takes its turn behind any move
-	// that holds the issue's boundary, waiting before it holds a connection.
-	var boundaryIssue pgtype.UUID
+	// that holds the issue's boundary.
 	if preview.ActionType == runBudgetTopUpType {
-		boundaryIssue = located.IssueID
-		leave, err := handler.enterRunBudgetBoundary(ctx, boundaryIssue)
+		plan.boundaryIssue = located.IssueID
+	}
+	// A workflow move rebinds the budget, so it queues behind the boundary too,
+	// and locks the project the issue is in now (checked again under the issue lock).
+	if preview.ActionType == issueWorkflowSetType {
+		issue, err := handler.Queries.GetIssue(ctx, located.IssueID)
+		if err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		plan.boundaryIssue, plan.workflowSet, plan.project = located.IssueID, true, issue.ProjectID
+	}
+	return plan, nil
+}
+
+func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisionActionCaller, body approveBody) (db.DecisionAction, error) {
+	empty := db.DecisionAction{}
+	plan, err := handler.planApprove(ctx, caller, body.Secrets)
+	if err != nil {
+		return empty, err
+	}
+	// Waiting for the turn holds no connection.
+	if plan.boundaryIssue.Valid {
+		leave, err := handler.enterRunBudgetBoundary(ctx, plan.boundaryIssue)
 		if err != nil {
 			return empty, errBusyRetry
 		}
 		defer leave()
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock, boundaryIssue)
+	action, err := retryActionTx(ctx, "approve", caller, plan.located.IssueID, func() (db.DecisionAction, error) {
+		return handler.approveDecisionActionTx(ctx, caller, body, plan)
+	})
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -179,75 +233,140 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 
 // approveDecisionActionTx runs the approve lock sequence (plan 3.2, rows 1 to
 // 12) and executes the action inside a savepoint.
-func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string, catalogLock bool, boundaryIssue pgtype.UUID) (db.DecisionAction, error) {
+func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, plan approvePlan) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
 		return empty, err
 	}
 	defer transaction.Rollback(context.WithoutCancel(ctx))
+	locked, err := handler.lockApproveRows(ctx, transaction, caller, plan)
+	if err != nil {
+		return empty, err
+	}
+	targets, err := checkApproveItem(ctx, locked, caller, plan.target, body.PayloadSHA256, body.PreviewSHA256)
+	if err != nil {
+		return empty, err
+	}
+	credential, err := handler.ApprovalVerifier(ctx, locked.queries, ApprovalClaim{
+		WorkspaceID: caller.workspaceID, ActionID: locked.action.ID, UserID: caller.userID,
+		PayloadSHA256: body.PayloadSHA256, Assertion: body.Assertion,
+	})
+	if err != nil {
+		return empty, err
+	}
+	finished, err := handler.executeApproved(ctx, transaction, caller, plan, locked, targets, body.Secrets, credential)
+	if err != nil {
+		return empty, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return empty, uncertainCommit{err}
+	}
+	return finished, nil
+}
+
+// approveLocked is what the lock sequence read: rows 1 to 9.
+type approveLocked struct {
+	queries *db.Queries
+	runtime db.AgentRuntime
+	agents  []db.Agent
+	current db.DecisionRequest
+	action  db.DecisionAction
+}
+
+// approveTargets is the locked, re-read target of the action's kind.
+type approveTargets struct {
+	agent     db.Agent
+	workflow  db.IssueWorkflow
+	squad     db.Squad
+	workspace db.Workspace
+}
+
+// lockApproveRows takes the approve locks, rows 1 to 9, in the plan's order.
+func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx, caller decisionActionCaller, plan approvePlan) (approveLocked, error) {
+	located := plan.located
+	var locked approveLocked
 	// Before any other lock, so the wait cannot sit in a lock cycle; the
 	// config change's own try-lock later in this transaction is re-entrant.
 	// The catalog lock is first of all, the order a workflow save takes.
-	if catalogLock {
+	if plan.catalogLock {
 		if err := handler.Queries.WithTx(transaction).LockIssueStatusCatalog(ctx, caller.workspaceID); err != nil {
-			return empty, err
+			return locked, err
 		}
 	}
-	if queueKey != "" {
-		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, queueKey); err != nil {
-			return empty, err
+	if plan.queueKey != "" {
+		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, plan.queueKey); err != nil {
+			return locked, err
 		}
 	}
 	queries := handler.Queries.WithTx(transaction)
+	locked.queries = queries
 	// The boundary lock comes before every row lock, the order a status move
 	// uses: it holds the boundary across its status write and its activity, so a
 	// top-up that took the issue row first could read the window between them.
-	if boundaryIssue.Valid {
-		if err := queries.LockIssueRunBudgetBoundary(ctx, boundaryIssue); err != nil {
-			return empty, err
+	if plan.boundaryIssue.Valid {
+		if err := queries.LockIssueRunBudgetBoundary(ctx, plan.boundaryIssue); err != nil {
+			return locked, err
+		}
+	}
+	// A workflow move takes the order every issue writer takes: catalog
+	// (shared), project, then the issue row below.
+	if plan.workflowSet {
+		if err := queries.LockIssueStatusCatalogShared(ctx, caller.workspaceID); err != nil {
+			return locked, err
+		}
+		if plan.project.Valid {
+			if _, err := queries.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: plan.project, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return locked, atStep("project", err)
+			}
 		}
 	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
-		return empty, err
+		return locked, atStep("workspace", err)
 	}
-	var runtime db.AgentRuntime
-	if runtimeID.Valid {
-		runtime, err = queries.LockAgentRuntimeNowait(ctx, db.LockAgentRuntimeNowaitParams{ID: runtimeID, WorkspaceID: caller.workspaceID})
+	var err error
+	if plan.runtimeID.Valid {
+		locked.runtime, err = queries.LockAgentRuntimeNowait(ctx, db.LockAgentRuntimeNowaitParams{ID: plan.runtimeID, WorkspaceID: caller.workspaceID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return empty, err
+			return locked, atStep("runtime", err)
 		}
 	}
 	if _, err := queries.LockDecisionSessionNowait(ctx, db.LockDecisionSessionNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ChatSessionID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return locked, atStep("chat_session", err)
 	}
-	agents, err := queries.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{WorkspaceID: caller.workspaceID, Ids: distinctUUIDs(located.AskingAgentID, target)})
-	if err != nil {
-		return empty, err
+	if locked.agents, err = queries.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{WorkspaceID: caller.workspaceID, Ids: distinctUUIDs(located.AskingAgentID, plan.target)}); err != nil {
+		return locked, atStep("agents", err)
 	}
 	if err := lockDecisionThreadAndIssue(ctx, queries, caller.workspaceID, located); err != nil {
-		return empty, err
+		return locked, err
 	}
-	current, err := queries.LockDecisionRequestNowait(ctx, db.LockDecisionRequestNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ID})
-	if err != nil {
-		return empty, err
+	if locked.current, err = queries.LockDecisionRequestNowait(ctx, db.LockDecisionRequestNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ID}); err != nil {
+		return locked, atStep("request", err)
 	}
-	if _, err := queries.LockDecisionLiveAnswerNowait(ctx, db.LockDecisionLiveAnswerNowaitParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err == nil {
-		return empty, errNotPending
+	if _, err := queries.LockDecisionLiveAnswerNowait(ctx, db.LockDecisionLiveAnswerNowaitParams{WorkspaceID: caller.workspaceID, ID: locked.current.ID}); err == nil {
+		return locked, errNotPending
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return locked, atStep("answer", err)
 	}
-	action, err := queries.LockDecisionActionNowait(ctx, db.LockDecisionActionNowaitParams{ID: caller.actionID, WorkspaceID: caller.workspaceID})
-	if err != nil {
-		return empty, err
+	if locked.action, err = queries.LockDecisionActionNowait(ctx, db.LockDecisionActionNowaitParams{ID: caller.actionID, WorkspaceID: caller.workspaceID}); err != nil {
+		return locked, atStep("action", err)
 	}
+	return locked, nil
+}
+
+// checkApproveItem applies, under the locks and before the passkey, every
+// refusal of one action: its human, recovery, owner, state, expiry, target,
+// hashes and preconditions. A drifted target answers errPreconditionDrift.
+func checkApproveItem(ctx context.Context, locked approveLocked, caller decisionActionCaller, target pgtype.UUID, payloadSHA256, previewSHA256 string) (approveTargets, error) {
+	var targets approveTargets
+	queries, current, action := locked.queries, locked.current, locked.action
 	if current.HumanUserID != caller.userID {
-		return empty, errNotTheHuman
+		return targets, errNotTheHuman
 	}
 	// Every action class: recovery revoked the person's keys and nothing
 	// executable is approved until they hold two new ones.
 	if err := refuseWhileRecovering(ctx, queries, caller.userID); err != nil {
-		return empty, err
+		return targets, err
 	}
 	// A server-opened request is addressed to any member (CHE-2318), but an
 	// action on it moves real state: it needs owner authority, not the member
@@ -255,10 +374,10 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if isServerDecision(current) {
 		issue, err := queries.GetIssue(ctx, current.IssueID)
 		if err != nil {
-			return empty, err
+			return targets, err
 		}
 		if err := requireDecisionAuthorityIn(ctx, queries, issue, caller.userID, "spend", pgtype.UUID{}, false, http.StatusForbidden); err != nil {
-			return empty, err
+			return targets, err
 		}
 	}
 	targetKind, ownerOnly := actionTargetKind(action), actionOwnerOnly(action)
@@ -268,153 +387,153 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if ownerOnly {
 		member, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: caller.userID, WorkspaceID: caller.workspaceID})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return empty, errNotTheHuman
+			return targets, errNotTheHuman
 		} else if err != nil {
-			return empty, err
+			return targets, err
 		}
 		if member.Role != "owner" {
-			return empty, errNeedsOwner
+			return targets, errNeedsOwner
 		}
 	}
 	// The lifecycle worker may have recorded the owner cancellation before this
 	// approval; an owner-only action still answers with the owner refusal.
 	if current.Status == "cancelled" && current.CancelReason.String == decisionClassNeedsOwner && ownerOnly {
-		return empty, errNeedsOwner
+		return targets, errNeedsOwner
 	}
 	if current.Status != "open" || action.State != "pending" {
-		return empty, errNotPending
+		return targets, errNotPending
 	}
 	if expired, err := queries.DecisionActionExpired(ctx, db.DecisionActionExpiredParams{ID: action.ID, WorkspaceID: caller.workspaceID}); err != nil {
-		return empty, err
+		return targets, err
 	} else if expired {
-		return empty, errActionExpired
+		return targets, errActionExpired
 	}
 	// A committed issue close or asking-agent archive wins over a stale open
 	// row: the sweeper that records it runs later, so check it under the locks.
 	if reason, err := queries.DecisionLifecycleReason(ctx, db.DecisionLifecycleReasonParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
-		return empty, err
+		return targets, err
 	} else if reason == decisionClassNeedsOwner && ownerOnly {
 		// The sweeper would cancel this request, but an owner-only action answers
 		// a non-owner approver with the owner refusal, not a stale row.
-		return empty, errNeedsOwner
+		return targets, errNeedsOwner
 	} else if reason != "" {
-		return empty, errNotPending
+		return targets, errNotPending
 	}
 	// Row 6 already holds the issue lock to the end of this transaction, so an
 	// issue-target executor runs under it once params.issue_id is that issue. A
 	// workflow, squad or workspace target is resolved in the request's workspace
 	// and locked here (row 9), before the passkey is checked.
-	var targetAgent db.Agent
-	var workflow db.IssueWorkflow
-	var squad db.Squad
-	var workspace db.Workspace
+	var err error
 	switch targetKind {
 	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {
-			return empty, err
+			return targets, err
 		}
 		if err := checkRefusalBinding(ctx, queries, action.Params); err != nil {
-			return empty, err
+			return targets, err
 		}
 	case decisionaction.TargetWorkflow:
-		if workflow, err = loadWorkflowTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
-			return empty, err
+		if targets.workflow, err = loadWorkflowTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return targets, err
 		}
 	case decisionaction.TargetSquad:
-		if squad, err = loadSquadTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
-			return empty, err
+		if targets.squad, err = loadSquadTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return targets, err
 		}
 	case decisionaction.TargetWorkspace:
-		if workspace, err = loadWorkspaceTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
-			return empty, err
+		if targets.workspace, err = loadWorkspaceTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return targets, err
 		}
 	}
-	if err := checkPayloadHash(action, body.PayloadSHA256); err != nil {
-		return empty, err
+	if err := checkPayloadHash(action, payloadSHA256); err != nil {
+		return targets, err
 	}
-	if err := checkPreviewDigest(action, body.PreviewSHA256); err != nil {
-		return empty, err
+	if err := checkPreviewDigest(action, previewSHA256); err != nil {
+		return targets, err
 	}
 	if targetKind == decisionaction.TargetAgent {
 		var ok bool
-		if targetAgent, ok = agentByID(agents, target); !ok {
-			return empty, errActionNotFound
+		if targets.agent, ok = agentByID(locked.agents, target); !ok {
+			return targets, errActionNotFound
 		}
-		if err := checkPreconditions(action, targetAgent); err != nil {
-			return empty, err
+		if err := checkPreconditions(action, targets.agent); err != nil {
+			return targets, err
 		}
 	}
-	credential, err := handler.ApprovalVerifier(ctx, queries, ApprovalClaim{
-		WorkspaceID: caller.workspaceID, ActionID: action.ID, UserID: caller.userID,
-		PayloadSHA256: body.PayloadSHA256, Assertion: body.Assertion,
-	})
-	if err != nil {
-		return empty, err
-	}
+	return targets, nil
+}
+
+// executeApproved runs after the passkey: it re-applies the owner rule under
+// the member lock, executes the action in its savepoint and records the result.
+func (handler *Handler) executeApproved(ctx context.Context, transaction pgx.Tx, caller decisionActionCaller, plan approvePlan, locked approveLocked, targets approveTargets, secrets map[string]string, credential pgtype.UUID) (db.DecisionAction, error) {
+	empty := db.DecisionAction{}
+	queries, current, action := locked.queries, locked.current, locked.action
 	approver, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, errNotTheHuman
 	} else if err != nil {
-		return empty, err
+		return empty, atStep("member", err)
 	}
-	// The passkey check above can outlast a role change that committed after the
+	// The passkey check can outlast a role change that committed after the
 	// pre-lock reads, so the owner rule is applied again to the role read under
 	// the member lock: for an owner-only action and for any server-opened
 	// request.
-	if (ownerOnly || isServerDecision(current)) && approver.Role != "owner" {
+	if (actionOwnerOnly(action) || isServerDecision(current)) && approver.Role != "owner" {
 		return empty, errNeedsOwner
 	}
-	if targetKind == decisionaction.TargetAgent && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
+	if actionTargetKind(action) == decisionaction.TargetAgent && !decisionActionPermitted(action.ActionType, targets.agent, approver) {
 		return empty, errNotPermitted
 	}
-	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
+	finish, err := executeInSavepoint(ctx, transaction, queries, plan.executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
-		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
-		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
+		Action: action, Agent: targets.agent, Runtime: locked.runtime, Secrets: secrets, Workflow: targets.workflow, Squad: targets.squad, Workspace: targets.workspace,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction, ProjectID: plan.project,
 	})
 	if err != nil {
 		return empty, err
 	}
-	finish.ID, finish.WorkspaceID, finish.ApprovedByUserID, finish.WebauthnCredentialID = action.ID, caller.workspaceID, caller.userID, credential
+	return recordApproved(ctx, queries, caller, locked, finish, credential)
+}
+
+// recordApproved ends the action with the finish and answers its card.
+func recordApproved(ctx context.Context, queries *db.Queries, caller decisionActionCaller, locked approveLocked, finish db.FinishDecisionActionRowParams, credential pgtype.UUID) (db.DecisionAction, error) {
+	finish.ID, finish.WorkspaceID, finish.ApprovedByUserID, finish.WebauthnCredentialID = locked.action.ID, caller.workspaceID, caller.userID, credential
 	finished, err := queries.FinishDecisionActionRow(ctx, finish)
 	if err != nil {
-		return empty, err
+		return db.DecisionAction{}, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, current, finished, "approved", "Approved "+finished.ActionType+": "+summary); err != nil {
-		return empty, err
-	}
-	if err := transaction.Commit(ctx); err != nil {
-		return empty, uncertainCommit{err}
+	if err := finishCardDecision(ctx, queries, caller, locked.current, finished, "approved", withDecisionNote(decisionActionSummary(finished), "Note", caller.note)); err != nil {
+		return db.DecisionAction{}, err
 	}
 	return finished, nil
 }
 
 // executeInSavepoint runs the executor so a business failure undoes only the
 // execution. Any other error aborts the whole transaction.
-func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Queries, executor decisionActionExecutor, execution decisionActionExecution) (db.FinishDecisionActionRowParams, string, error) {
+func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Queries, executor decisionActionExecutor, execution decisionActionExecution) (db.FinishDecisionActionRowParams, error) {
 	finish := db.FinishDecisionActionRowParams{}
 	if _, err := transaction.Exec(ctx, "SAVEPOINT action_exec"); err != nil {
-		return finish, "", err
+		return finish, err
 	}
 	result, err := executor(ctx, execution)
 	var failure actionFailure
 	switch {
 	case errors.As(err, &failure):
 		if _, err := transaction.Exec(ctx, "ROLLBACK TO SAVEPOINT action_exec"); err != nil {
-			return finish, "", err
+			return finish, err
 		}
 		finish.State = "failed"
 		finish.ErrorCode = pgtype.Text{String: failure.Code, Valid: true}
 		finish.ErrorMessage = pgtype.Text{String: failure.Message, Valid: true}
-		return finish, "failed (" + failure.Code + ").", nil
+		return finish, nil
 	case err != nil:
-		return finish, "", err
+		return finish, err
 	}
 	if _, err := transaction.Exec(ctx, "RELEASE SAVEPOINT action_exec"); err != nil {
-		return finish, "", err
+		return finish, err
 	}
 	finish.State, finish.Result = "executed", result
-	return finish, "executed.", nil
+	return finish, nil
 }
 
 // finishApprovalAfterCommit runs the post-commit work for a request that just
@@ -434,6 +553,9 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 	}
 	if action.State == "executed" {
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
+			return err
+		}
+		if err := handler.resumeRefusalsAfterBudgetChange(ctx, action); err != nil {
 			return err
 		}
 	}
@@ -469,7 +591,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch", agentInstructionsAction:
+	case "agent.env.patch", agentInstructionsAction, agentSkillsAction, agentPauseAction, agentResumeAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
@@ -554,6 +676,10 @@ func checkPreviewDigest(action db.DecisionAction, claimed string) error {
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
 	if _, ok := configChanges[action.ActionType]; ok {
 		// The config-change core checks its own digests under the row lock.
+		return nil
+	}
+	if isAgentSchedulingAction(action.ActionType) {
+		// Pause and resume are idempotent; there is no state to drift from.
 		return nil
 	}
 	var drifted bool
@@ -664,12 +790,12 @@ func lockDecisionThreadAndIssue(ctx context.Context, queries *db.Queries, worksp
 			if locked, err := queries.TryLockDecisionCommentThread(ctx, root.ID); err != nil {
 				return err
 			} else if !locked {
-				return errBusyRetry
+				return atStep("comment_thread", errBusyRetry)
 			}
 		}
 	}
 	if _, err := queries.LockDecisionIssueNowait(ctx, db.LockDecisionIssueNowaitParams{WorkspaceID: workspaceID, ID: request.IssueID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
+		return atStep("issue", err)
 	}
 	return nil
 }
@@ -683,8 +809,17 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		}
 		return change.Publish(ctx, handler, action)
 	}
+	if action.ActionType == issueProjectSetType {
+		return handler.publishIssueProjectSet(ctx, action)
+	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
+	}
+	if action.ActionType == issueWorkflowSetType {
+		return handler.publishIssueWorkflowSet(ctx, action)
+	}
+	if isAgentSchedulingAction(action.ActionType) {
+		return handler.publishAgentSchedulingChanged(ctx, action)
 	}
 	agentID, ok := decisionActionTarget(action)
 	if !ok {

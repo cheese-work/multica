@@ -61,6 +61,40 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 	return err
 }
 
+const createSystem1Prediction = `-- name: CreateSystem1Prediction :exec
+INSERT INTO system1_prediction (workspace_id, observation_id, scope, predictor_id, predictor_version, predicted_key, predicted_confidence, predicted_precedents)
+SELECT o.workspace_id, o.id, o.inputs->>'topic', $1::text, $2::text, $3::text, $4::real, $5::int
+FROM system1_observation o
+WHERE o.kind = 'decision' AND o.subject_id = $6 AND o.workspace_id = $7
+`
+
+type CreateSystem1PredictionParams struct {
+	PredictorID         string        `json:"predictor_id"`
+	PredictorVersion    string        `json:"predictor_version"`
+	PredictedKey        pgtype.Text   `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4 `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4   `json:"predicted_precedents"`
+	SubjectID           pgtype.UUID   `json:"subject_id"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+}
+
+// One predictor's guess for the decision observation of a request (CHE-4383 B3).
+// Runs in the ask transaction right after CreateSystem1Observation, which holds
+// the workspace FOR KEY SHARE lock; if that insert found no workspace, this finds
+// no observation and inserts nothing. A NULL key is an abstention.
+func (q *Queries) CreateSystem1Prediction(ctx context.Context, arg CreateSystem1PredictionParams) error {
+	_, err := q.db.Exec(ctx, createSystem1Prediction,
+		arg.PredictorID,
+		arg.PredictorVersion,
+		arg.PredictedKey,
+		arg.PredictedConfidence,
+		arg.PredictedPrecedents,
+		arg.SubjectID,
+		arg.WorkspaceID,
+	)
+	return err
+}
+
 const getLatestSystem1RouteObservation = `-- name: GetLatestSystem1RouteObservation :one
 SELECT id FROM system1_observation
 WHERE kind = 'route' AND subject_id = $1
@@ -137,6 +171,35 @@ func (q *Queries) ListSystem1PrecedentKeys(ctx context.Context, arg ListSystem1P
 	return items, nil
 }
 
+const listSystem1WaiverPrecedentKeys = `-- name: ListSystem1WaiverPrecedentKeys :many
+SELECT label::text AS label FROM system1_label
+WHERE workspace_id = $1 AND scope = 'test_first_waiver' AND kind = 'burn_in'
+  AND label IN ('waive', 'refuse') AND superseded_at IS NULL
+ORDER BY created_at DESC
+LIMIT 200
+`
+
+// Earlier mapped waiver labels of record, newest first. `unmapped` and superseded labels are not precedents.
+func (q *Queries) ListSystem1WaiverPrecedentKeys(ctx context.Context, workspaceID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSystem1WaiverPrecedentKeys, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		items = append(items, label)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSystem1RouteOverridden = `-- name: MarkSystem1RouteOverridden :exec
 UPDATE system1_observation SET reversed_at = clock_timestamp()
 WHERE id = (
@@ -166,6 +229,92 @@ WHERE id = (
 func (q *Queries) MarkSystem1RoutingOverridden(ctx context.Context, issueID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markSystem1RoutingOverridden, issueID)
 	return err
+}
+
+const system1QualificationReport = `-- name: System1QualificationReport :many
+WITH latest AS (
+    SELECT DISTINCT ON (s.scope, s.predictor_id, s.predictor_version) s.id, s.workspace_id, s.scope, s.predictor_id, s.predictor_version, s.started_at, s.demoted_at
+    FROM system1_epoch s
+    WHERE s.workspace_id = $1
+      AND ($2::text IS NULL OR s.scope = $2)
+    ORDER BY s.scope, s.predictor_id, s.predictor_version, s.started_at DESC, s.id DESC
+), cases AS (
+    SELECT e.id AS epoch_id, p.predicted_key, o.reversed_at, l.label
+    FROM latest e
+    JOIN system1_prediction p ON p.workspace_id = e.workspace_id AND p.scope = e.scope
+        AND p.predictor_id = e.predictor_id AND p.predictor_version = e.predictor_version
+    JOIN system1_observation o ON o.id = p.observation_id AND o.created_at >= e.started_at
+    JOIN LATERAL (
+        SELECT sl.label FROM system1_label sl
+        WHERE sl.observation_id = o.id AND sl.kind = 'burn_in' AND sl.superseded_at IS NULL
+        ORDER BY sl.created_at DESC, sl.id DESC LIMIT 1
+    ) l ON true
+)
+SELECT e.scope::text AS scope, e.predictor_id::text AS predictor_id, e.predictor_version::text AS predictor_version,
+    e.started_at::timestamptz AS started_at, (e.demoted_at IS NOT NULL)::boolean AS demoted,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NOT NULL)::bigint AS denominator,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key = c.label)::bigint AS agreed,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NULL)::bigint AS abstained,
+    count(c.epoch_id) FILTER (WHERE c.label = 'unmapped')::bigint AS unmapped,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NOT NULL AND c.reversed_at IS NOT NULL)::bigint AS reversed
+FROM latest e
+LEFT JOIN cases c ON c.epoch_id = e.id
+GROUP BY e.id, e.scope, e.predictor_id, e.predictor_version, e.started_at, e.demoted_at
+ORDER BY e.scope, e.predictor_id, e.predictor_version
+`
+
+type System1QualificationReportParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Scope       pgtype.Text `json:"scope"`
+}
+
+type System1QualificationReportRow struct {
+	Scope            string             `json:"scope"`
+	PredictorID      string             `json:"predictor_id"`
+	PredictorVersion string             `json:"predictor_version"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	Demoted          bool               `json:"demoted"`
+	Denominator      int64              `json:"denominator"`
+	Agreed           int64              `json:"agreed"`
+	Abstained        int64              `json:"abstained"`
+	Unmapped         int64              `json:"unmapped"`
+	Reversed         int64              `json:"reversed"`
+}
+
+// Qualification counts per (scope, predictor, version), over the latest epoch of each (CHE-4383 B5).
+// A case is one prediction row whose observation was created at or after the epoch start and has a
+// label of record: the newest label row that is not superseded. `unmapped` and abstentions are
+// counted apart; the denominator is every non-abstaining prediction with a mapped label, so a
+// label of another protocol or `unknown` is a disagreement, never an exclusion.
+func (q *Queries) System1QualificationReport(ctx context.Context, arg System1QualificationReportParams) ([]System1QualificationReportRow, error) {
+	rows, err := q.db.Query(ctx, system1QualificationReport, arg.WorkspaceID, arg.Scope)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []System1QualificationReportRow{}
+	for rows.Next() {
+		var i System1QualificationReportRow
+		if err := rows.Scan(
+			&i.Scope,
+			&i.PredictorID,
+			&i.PredictorVersion,
+			&i.StartedAt,
+			&i.Demoted,
+			&i.Denominator,
+			&i.Agreed,
+			&i.Abstained,
+			&i.Unmapped,
+			&i.Reversed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const system1ReportByClass = `-- name: System1ReportByClass :many

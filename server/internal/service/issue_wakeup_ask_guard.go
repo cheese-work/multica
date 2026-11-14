@@ -61,10 +61,14 @@ func (s *IssueWakeupService) askGuardNeeded(in WakeupInput, binding pgtype.UUID)
 // may be saved.
 func (s *IssueWakeupService) askGuardHit(ctx context.Context, issue db.Issue, in WakeupInput) error {
 	g := s.AskGuard
-	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, askguard.Op{
+	op := askguard.Op{
 		IssueID: issue.ID, TaskID: g.TaskID, Kind: "wakeup",
 		Payload: wakeupOperationPayload(issue, in), WarnOnly: g.WarnOnly,
-	})
+	}
+	if member, err := wakeupUUID(in.FilterActorID); err == nil && in.FilterActorType == "member" {
+		op.MemberID = member
+	}
+	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, op)
 	if err != nil {
 		slog.Warn("ask guard hit failed", "error", err, "kind", "wakeup")
 		return ErrWakeupAskGuardUnavailable
@@ -120,4 +124,26 @@ func auditObserveFire(ctx context.Context, q *db.Queries, w db.IssueWakeup, task
 		IssueID: w.IssueID, TaskID: task.ID, Kind: "wakeup_observe_fire", Payload: keys, WarnOnly: true,
 	})
 	return err
+}
+
+// refuseTimerOpenPR refuses an agent's time wakeup while the issue has a linked
+// open PR and the server can evaluate PR conditions. It reads structure only,
+// never the instruction. A draft or merged PR, an issue with no PR, and a
+// server with no GitHub snapshot client are all outside what a condition can
+// report, so a timer stays allowed there.
+func (s *IssueWakeupService) refuseTimerOpenPR(ctx context.Context, tx pgx.Tx, issueID pgtype.UUID, in WakeupInput) error {
+	if !s.RefuseTimerOpenPR || !s.Tasks.PRSnapshotsEnabled || hasWakeupCondition(in.Condition) {
+		return nil
+	}
+	if in.Kind != "at" && in.Kind != "every" && in.Kind != "cron" {
+		return nil
+	}
+	var open bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_pull_request ip JOIN github_pull_request p ON p.id=ip.pull_request_id WHERE ip.issue_id=$1 AND p.state='open')`, issueID).Scan(&open); err != nil {
+		return err
+	}
+	if open {
+		return ErrWakeupTimerOpenPR
+	}
+	return nil
 }

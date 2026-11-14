@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -31,10 +32,6 @@ import (
 // chatSessionTitleMaxLen caps the rename input. Long enough to fit a
 // meaningful summary, short enough to keep the dropdown row scannable.
 const chatSessionTitleMaxLen = 200
-
-// chatTitleFallbackMaxLen is the runes cut of the deterministic fallback DM
-// title (no agent, or the agent chain failed). Matches the client CHAT_TITLE_MAX.
-const chatTitleFallbackMaxLen = 60
 
 // Chat Sessions
 
@@ -293,8 +290,19 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
 		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
 		sessions[i].AttentionUnclassifiedKeys = a.Unclassified
+		sessions[i].AttentionKeys = a.Keys
+		sessions[i].AttentionAskIDs = askIDsFromKeys(a.AskKeys)
 	}
 	return nil
+}
+
+// askIDsFromKeys turns `item:<uuid>` ask keys into the ids `ask_ids` takes on send.
+func askIDsFromKeys(keys []string) []string {
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, strings.TrimPrefix(k, "item:"))
+	}
+	return ids
 }
 
 func formatAttentionTime(t *time.Time) *string {
@@ -800,6 +808,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lock chat agent")
 		return
 	}
+	// Cancelling the session's runs locks run rows, and the issues the agent
+	// delete reaches must be locked before any run row.
+	if err := service.LockIssuesBeforeSystemAgentDelete(r.Context(), qtx, session.AgentID); err != nil {
+		slog.Warn("lock issues of chat agent delete failed", "session_id", sessionID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to lock chat agent issues")
+		return
+	}
 
 	cancelled, err := qtx.CancelAgentTasksByChatSession(r.Context(), session.ID)
 	if err != nil {
@@ -882,7 +897,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to remove chat session agent label assignments")
 		return
 	}
-	if err := qtx.DeleteSystemAgentByID(r.Context(), session.AgentID); err != nil {
+	if err := deleteSystemAgent(r.Context(), qtx, session.AgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clean up chat session agent")
 		return
 	}
@@ -1033,6 +1048,15 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if existed, err := h.Queries.ChatSessionHasPublicUserMessage(r.Context(), session.ID); err == nil {
 		hadUserMessage = existed
 	}
+	// CHE-4107: re-title milestone of the next message (first one after a
+	// compaction, first one of a fork). A manual rename is never re-titled; an
+	// unreadable milestone is "none" (best-effort, never blocks the send).
+	var milestone dmTitleMilestone
+	if hadUserMessage && !session.TitleManuallySet {
+		if m, err := h.Queries.ChatSessionTitleMilestone(r.Context(), session.ID); err == nil {
+			milestone = dmTitleMilestone(m)
+		}
+	}
 	channelBacked := false
 	channelSourceKnown := true
 	if !hadUserMessage {
@@ -1147,6 +1171,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
 	if shouldGenerateTitle {
 		h.maybeGenerateChatTitleAsync(workspaceID, userID, session.ID, currentTitle, req.Content)
+	} else if milestone != "" {
+		h.enqueueDMTitle(workspaceID, userID, session.ID, milestone, currentTitle, req.Content, msg.ID)
 	}
 
 	writeJSON(w, http.StatusCreated, SendChatMessageResponse{
@@ -1246,7 +1272,7 @@ func (h *Handler) preflightChatSend(w http.ResponseWriter, r *http.Request, sess
 	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
 	// both refusals here, with their own codes. A merely offline runtime is not
 	// checked at all — chat messages queue for it, as they always have.
-	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
+	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && (verdict.Blocked() || verdict.Reason == dispatch.ReasonProviderBreaker) {
 		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
 		return db.Agent{}, "", "", false
 	}
@@ -1444,6 +1470,8 @@ func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
 		return
 	}
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
+	messages = afterSegmentFloor(messages, floorAt, floorID)
 	writeJSON(w, http.StatusOK, h.chatMessageResponses(r.Context(), workspaceID, visibleChatMessages(messages)))
 }
 
@@ -1545,11 +1573,14 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 	// A session can contain one server-authored onboarding kickoff. Fetch one
 	// extra row beyond the normal lookahead so hiding it cannot make a visible
 	// page appear shorter or lose its next cursor.
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
 	messages, err := h.Queries.ListChatMessagesPage(r.Context(), db.ListChatMessagesPageParams{
 		ChatSessionID:   session.ID,
 		Limit:           int32(limit + 2),
 		BeforeCreatedAt: beforeCreatedAt,
 		BeforeID:        beforeID,
+		FloorCreatedAt:  floorAt,
+		FloorID:         floorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
@@ -2196,11 +2227,12 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		queuedOnly = true
 	}
 
-	if task.ChatSessionID.Valid {
+	if session := ownerSession(task); session.Valid {
 		// Chat privacy: only the member who opened the conversation may
-		// cancel its task, even though the workspace is shared.
+		// cancel its task, even though the workspace is shared. A DM-derived
+		// background task answers to the same member.
 		cs, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
-			ID:          task.ChatSessionID,
+			ID:          session,
 			WorkspaceID: wsUUID,
 		})
 		if err != nil {
@@ -2249,6 +2281,15 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	resp := CancelTaskByUserResponse{
 		AgentTaskResponse: taskToResponse(cancelled.Task, workspaceID),
 	}
+	// A bg:* task with no resolvable DM falls through to the agent gate above;
+	// its result and error stay hidden from everyone but an owner.
+	one := []AgentTaskResponse{resp.AgentTaskResponse}
+	if err := h.redactForeignChatTaskContent(r.Context(), userID, []db.AgentTaskQueue{cancelled.Task}, one); err != nil {
+		slog.Warn("redact cancelled task failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load task")
+		return
+	}
+	resp.AgentTaskResponse = one[0]
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.AgentTaskResponse.Attribution})
 	if cancelled.CancelledChatMessage != nil {
 		attachments := make([]AttachmentResponse, 0, len(cancelled.CancelledChatMessage.Attachments))
@@ -2318,8 +2359,13 @@ type ChatSessionResponse struct {
 	// AttentionUnclassifiedKeys: visible untyped-turn subject keys. Listed
 	// collapsed, never coloured or aged, and not counted in stale_level.
 	AttentionUnclassifiedKeys []string `json:"attention_unclassified_keys"`
-	CreatedAt                 string   `json:"created_at"`
-	UpdatedAt                 string   `json:"updated_at"`
+	// AttentionKeys: every displayed subject key. Xong, Để sau and Xong tất cả send these
+	// back as the snapshot (plan r4). AttentionAskIDs: the displayed asks that still need a
+	// reply, the targets of the reply-to-ask control (`ask_ids` on send).
+	AttentionKeys   []string `json:"attention_keys"`
+	AttentionAskIDs []string `json:"attention_ask_ids"`
+	CreatedAt       string   `json:"created_at"`
+	UpdatedAt       string   `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
@@ -2602,4 +2648,12 @@ func normalizeMessageKind(kind string) string {
 	default:
 		return protocol.ChatMessageKindMessage
 	}
+}
+
+// deleteSystemAgent removes a session-owned system agent and, through the FKs,
+// its runs. Nulling parent_task_id on the children of those runs runs the
+// children's taint trigger, so the caller has locked their issues first with
+// service.LockIssuesBeforeSystemAgentDelete, before it held any run row.
+func deleteSystemAgent(ctx context.Context, qtx *db.Queries, agentID pgtype.UUID) error {
+	return qtx.DeleteSystemAgentByID(ctx, agentID)
 }

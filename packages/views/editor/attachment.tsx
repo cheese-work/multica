@@ -40,6 +40,7 @@ import { copyText } from "@multica/ui/lib/clipboard";
 import { api } from "@multica/core/api";
 import { useConfigStore } from "@multica/core/config";
 import type { Attachment as AttachmentRecord } from "@multica/core/types";
+import { attachmentIdFromStorageURL } from "@multica/core/types/attachment-url";
 import { useT } from "../i18n";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { useAttachmentDownloadResolver } from "./attachment-download-context";
@@ -106,6 +107,8 @@ export interface AttachmentProps {
   layout?: "block" | "card";
   /** Card layout only — rendered after the file name, e.g. a version badge. */
   badge?: ReactNode;
+  /** Card layout only — always-visible actions beside the hover ones, e.g. Diff. */
+  actions?: ReactNode;
   className?: string;
 }
 
@@ -278,6 +281,7 @@ export function Attachment({
   onDelete,
   layout = "block",
   badge,
+  actions,
   className,
 }: AttachmentProps) {
   const { resolveAttachment, openByUrl } = useAttachmentDownloadResolver();
@@ -348,8 +352,14 @@ export function Attachment({
   };
 
   const handleDownload = () => {
-    if (state.attachmentId) {
-      download(state.attachmentId);
+    // A CDN storage URL that didn't resolve against this surface's
+    // attachments (e.g. an image quoted from another comment) still names
+    // its attachment id, so re-sign it instead of opening the bare URL,
+    // which a signed CDN rejects outside the app.
+    const attachmentId =
+      state.attachmentId ?? attachmentIdFromStorageURL(shareUrl, cdnDomain);
+    if (attachmentId) {
+      download(attachmentId);
       return;
     }
     if (shareUrl) openByUrl(shareUrl);
@@ -389,6 +399,7 @@ export function Attachment({
           canDownload={!!shareUrl || !!state.attachmentId}
           uploading={state.uploading}
           badge={badge}
+          actions={actions}
           onPreview={openPreview}
           onDownload={handleDownload}
           onDelete={editable ? onDelete : undefined}

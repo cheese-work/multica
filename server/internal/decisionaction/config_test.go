@@ -60,6 +60,8 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"workflow steps", "workflow.steps", nil, false},
 		{"workflow step instructions", "workflow.instructions", nil, false},
 		{"allowed settings keys", "workspace.settings", []string{"compact_prompt", "wakeups_paused", "mermaid_orientation"}, false},
+		{"provider hold deadline", "workspace.settings", []string{"provider_breaker_max_hold_seconds"}, false},
+		{"guard policy", "workspace.settings", []string{"guard_policy"}, false},
 		{"project description is out of scope", "project.description", nil, true},
 		{"members and roles", "member.role", nil, true},
 		{"unknown field", "", nil, true},

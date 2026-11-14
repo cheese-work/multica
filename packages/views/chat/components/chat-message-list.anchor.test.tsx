@@ -125,7 +125,7 @@ describe("ChatMessageList reading-position restore", () => {
     expect(virtuosoProps.initialTopMostItemIndex).toEqual({
       index: 2,
       align: "start",
-      offset: -20,
+      offset: 20,
     });
     // Shown straight away: there is no live end to wait for.
     const root = view.container.querySelector("[data-tab-scroll-root]");

@@ -107,14 +107,23 @@ type IssueCreateParams struct {
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
 	// HandoffResolver, when set, decides the assignee a workflow step hands the
-	// new issue to. Set it only when the caller chose no assignee. The service
-	// calls it under the catalog and project locks, with the step the issue
-	// actually lands on, and its answer replaces any assignee the caller
-	// resolved earlier from an unlocked read.
+	// new issue to. The service calls it under the catalog and project locks,
+	// with the step the issue actually lands on, and its answer replaces any
+	// assignee the caller resolved earlier from an unlocked read, and the
+	// assignee the caller named: entering a step that hands off gives the
+	// issue to its handler. A step with no handler leaves a named assignee.
 	HandoffResolver CreateHandoffResolver
+	// AssigneeNamed marks an assignee the caller chose, as opposed to one the
+	// handler read of an unlocked workflow filled in. Only the latter is
+	// cleared before the locked handoff decision.
+	AssigneeNamed bool
 	// EntryGate, when set, checks the entry gates of the step the issue lands
 	// on, under the same locks. Platform spawns leave it nil and are not gated.
 	EntryGate CreateEntryGate
+	// PropertyGate, when set, checks the validated property bag against the
+	// resolved workflow before the issue row exists (a mandatory property a
+	// workflow gate needs). Platform spawns leave it nil and are not gated.
+	PropertyGate CreatePropertyGate
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
@@ -125,6 +134,12 @@ type IssueCreateParams struct {
 // the workflow step a new issue enters. It returns no assignee when the step
 // resolves to nobody.
 type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
+
+// CreatePropertyGate refuses a create whose properties the workflow's gates
+// cannot accept. properties is the canonical JSONB bag, keyed by property id.
+// projectID and title are the new issue's, for a gate scoped to a project or a
+// title type.
+type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte, projectID pgtype.UUID, title string) error
 
 // CreateEntryGate refuses a create the landing step's block entry gates stop.
 // It may return a recorder for the new row (warn gates), which Create runs in
@@ -297,8 +312,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// path from this service to a row in a foreign workspace. A forged parent or
 	// project ID is rejected before we touch the issue counter.
 	projectID := p.ProjectID
+	var parent db.Issue
 	if p.ParentIssueID.Valid {
-		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		var err error
+		parent, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
 			ID:          p.ParentIssueID,
 			WorkspaceID: p.WorkspaceID,
 		})
@@ -382,21 +399,58 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 	}
 
-	// Project workflow (MUL-7420): an issue created in a project whose named
-	// workflow does not list the requested status starts on todo instead.
+	// Project workflow (MUL-7420, MUL-8250): an issue created in a project
+	// whose named workflow does not list the requested status starts on todo
+	// instead; outside any project the stored Default limits it the same way.
 	// The HTTP create path already rejects an explicit status outside the
 	// workflow; this keeps the other creators (channels, captured comments)
 	// inside it too, and the project switches that commit after that check.
 	// Resolved before the custom-status guard below so that guard checks the
 	// status actually written.
+	// The project's A/B split picks the workflow here, under the project lock
+	// and before the workflow is read, so everything after it (status, handler,
+	// entry gate) runs on the selected workflow. The number is drawn first
+	// because a root's parity decides: project lock, then counter. A refused
+	// create rolls the number back with the transaction. (CHE-5264)
+	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
+	if err != nil {
+		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
+	}
+	var split splitChoice
+	if projectID.Valid {
+		project, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: p.WorkspaceID})
+		if err != nil {
+			return IssueCreateResult{}, err
+		}
+		named := p.AssigneeType
+		namedID := p.AssigneeID
+		if p.HandoffResolver != nil && !p.AssigneeNamed {
+			named, namedID = pgtype.Text{}, pgtype.UUID{}
+		}
+		split = chooseSplit(DecodeWorkflowSplit(project.WorkflowSplit), time.Now(), p.WorkflowID.Valid, named, namedID, p.ParentIssueID.Valid, parent.WorkflowID, issueNumber)
+	}
+	// A split-picked override needs no caller right and may leave the status
+	// the caller asked for out of arm B; only a caller's override is an error.
+	callerOverride := p.WorkflowID.Valid
+	if split.WorkflowID.Valid {
+		p.WorkflowID = split.WorkflowID
+	}
 	def, workflowProject, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, p.WorkflowID, projectID)
 	if err != nil {
 		return IssueCreateResult{}, err
 	}
-	if def != nil && !def.IsDefault && (p.StatusOmitted || !def.Has(p.Status)) {
+	if def == nil && !p.WorkflowID.Valid {
+		// No project and no override: only a stored Default limits the status.
+		if outside, err := issueworkflow.OutsideProject(ctx, qtx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		} else if outside != nil && outside.Limits() && !outside.Has(p.Status) {
+			p.Status = issueworkflow.StartStatus
+		}
+	}
+	if def != nil && def.Limits() && (p.StatusOmitted || !def.Has(p.Status)) {
 		// An override is the caller's explicit choice: a status it does not
 		// list is an error, never a silent restart.
-		if p.WorkflowID.Valid && !p.StatusOmitted {
+		if callerOverride && !p.StatusOmitted {
 			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
 		}
 		p.Status = def.Start()
@@ -405,14 +459,18 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// stands under the locks. An earlier unlocked read can name the former
 	// workflow's handler, or none, after a switch.
 	if p.HandoffResolver != nil {
-		p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		if !p.AssigneeNamed {
+			p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		}
 		if def != nil {
 			if step, ok := def.Step(p.Status); ok && step.HandsOff() {
 				assigneeType, assigneeID, err := p.HandoffResolver(ctx, step, workflowProject)
 				if err != nil {
 					return IssueCreateResult{}, err
 				}
-				p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+				if assigneeID.Valid {
+					p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+				}
 			}
 		}
 	}
@@ -423,6 +481,12 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			if recordEntry, err = p.EntryGate(ctx, qtx, step); err != nil {
 				return IssueCreateResult{}, err
 			}
+		}
+	}
+
+	if p.PropertyGate != nil && def != nil {
+		if err := p.PropertyGate(ctx, qtx, def, properties, projectID, p.Title); err != nil {
+			return IssueCreateResult{}, err
 		}
 	}
 
@@ -451,11 +515,6 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if found {
 		dup := duplicate
 		return IssueCreateResult{DuplicateIssue: &dup}, ErrActiveDuplicate
-	}
-
-	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
-	if err != nil {
-		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
 	}
 
 	// New issues sort to the top of their (workspace, status) column for
@@ -529,6 +588,14 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			return IssueCreateResult{}, ErrIssuePropertiesTooLarge
 		}
 		return IssueCreateResult{}, fmt.Errorf("create issue: %w", err)
+	}
+	if split.Action != "" {
+		details, _ := json.Marshal(map[string]string{"rule": split.Rule})
+		if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
+			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Action: split.Action, Details: details,
+		}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("record workflow split: %w", err)
+		}
 	}
 	if recordEntry != nil {
 		if err := recordEntry(ctx, qtx, issue); err != nil {

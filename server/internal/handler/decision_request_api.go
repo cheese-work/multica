@@ -6,12 +6,16 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -35,6 +39,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
 		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
+		Recovers         string   `json:"recovers"`
 		CoversRequestIDs []string `json:"covers_request_ids"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
@@ -46,6 +51,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
+		return
+	}
+	if input.Action == nil && handler.refuseBudgetQuestion(writer, request, issue) {
 		return
 	}
 	if len(input.Ask) == 0 || string(input.Ask) == "null" {
@@ -90,6 +98,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
+	if input.Action == nil && kind == decisiontx.KindDecision {
+		hints = append(hints, plainCardConfigHints(parsed)...)
+	}
 	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -99,16 +110,35 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	var sessionID, humanID, parentID pgtype.UUID
+	var recovers pgtype.UUID
 	for _, field := range []struct {
 		value string
 		name  string
 		into  *pgtype.UUID
-	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}} {
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}, {input.Recovers, "recovers", &recovers}} {
 		if field.value == "" {
 			continue
 		}
 		if *field.into, ok = parseUUIDOrBadRequest(writer, field.value, field.name); !ok {
 			return
+		}
+	}
+	var dmSession pgtype.UUID
+	if taskID, err := util.ParseUUID(request.Header.Get("X-Task-ID")); err == nil {
+		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeError(writer, http.StatusInternalServerError, "failed to load task")
+			return
+		}
+		if err == nil && task.ChatSessionID.Valid {
+			// A DM agent asks its own member in its own DM, never elsewhere.
+			if input.NewDM || sessionID.Valid || parentID.Valid {
+				writeError(writer, http.StatusBadRequest, "a request from a chat takes no new_dm, session_id or parent_id")
+				return
+			}
+			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For, pgtype.UUID{}); !ok {
+				return
+			}
 		}
 	}
 	covers, ok := parseBatchCovers(writer, input.CoversRequestIDs, input.Action != nil)
@@ -117,23 +147,54 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
-		if draft, err = draftDecisionAction(input.Action); err != nil {
+		if err = withIssueTarget(input.Action, issue.ID); err == nil {
+			draft, err = draftDecisionAction(input.Action)
+		}
+		if err == nil {
+			input.EscalationClass, err = handler.requestClassFor(request.Context(), issue, input.EscalationClass, draft)
+		}
+		if err != nil {
 			writeDecisionError(writer, err, "decision request")
 			return
 		}
-		input.EscalationClass = actionRequestClass(input.EscalationClass, draft.Definition.MinClass)
 	}
 	askJSON, err := json.Marshal(parsed)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
 	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// configChangeWords matches a decision or option that reads like a change to
+// a workflow, agent, squad, workspace or budget in plain words.
+var configChangeWords = regexp.MustCompile(`(?i)\b(?:workflow|squad|agent|workspace)\b.{0,80}\b(?:handler|instructions?|steps?|context|env(?:ironment)?|budget|prompt)\b|\bbudget\b.{0,40}\b(?:raise|top.?up|increase)|\b(?:raise|top.?up|increase)\b.{0,40}\bbudget\b`)
+
+// plainCardConfigHints returns an advisory hint when an option card reads like
+// a change an allowlisted action applies. Approve on an option card only
+// records an answer, so the change would never apply and the person would be
+// sent a second link (CHE-5229). The server cannot read intent, so this never
+// refuses: it scans the decision and the options (not the agent_did detail)
+// for an action type string or plain words naming such a change.
+func plainCardConfigHints(ask decisiontx.Ask) []string {
+	texts := []string{ask.Decision}
+	for _, option := range ask.Options {
+		texts = append(texts, option.Label, option.WhatHappens)
+	}
+	text := strings.Join(texts, "\n")
+	matched := configChangeWords.MatchString(text)
+	for _, actionType := range decisionaction.Types() {
+		matched = matched || strings.Contains(text, actionType)
+	}
+	if !matched {
+		return nil
+	}
+	return []string{"the decision or an option reads like a change to a workflow, agent, squad, workspace or budget; Approve on an option card only records the answer and applies nothing. If one approval should apply the change, send it with `multica decision propose` (or `multica decision request --action-file`)"}
 }
 
 // writeDecisionResult answers a replay with 200, or publishes the events of a
@@ -148,6 +209,18 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints, action})
 		return
 	}
+	handler.publishDecisionResult(request, issue, &result)
+	var action *decisionActionResponse
+	if result.Action != nil {
+		action = newDecisionActionResponse(*result.Action)
+	}
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
+}
+
+// publishDecisionResult announces the rows of a new request. It records a ping
+// that the transaction did not, and refreshes result.Request. A batch request
+// that does not lead its card has no message to announce.
+func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Issue, result *decisionRequestResult) {
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	if result.CreatedSession != nil {
 		session := result.CreatedSession
@@ -188,16 +261,13 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
-		MessageKind:   result.Message.MessageKind,
-		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
-		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
-	})
-	var action *decisionActionResponse
-	if result.Action != nil {
-		action = newDecisionActionResponse(*result.Action)
+	if result.Message.ID.Valid {
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+			MessageKind:   result.Message.MessageKind,
+			ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
+			Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
+		})
 	}
-	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
 }
 
 // decisionRequestResponse adds advisory ask-lint hints to the stored request.
@@ -207,10 +277,80 @@ type decisionRequestResponse struct {
 	Action *decisionActionResponse `json:"action,omitempty"`
 }
 
+// decisionReadResponse is the stored request plus its newest answer, so an
+// agent reads the same state the person saw: who answered, when, with what.
+type decisionReadResponse struct {
+	db.DecisionRequest
+	Answer *decisionAnswerRead `json:"answer,omitempty"`
+	// The outcome of the request's proposed action, once it is terminal (CHE-5411).
+	AppliedAt     *string `json:"applied_at,omitempty"`
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	// The effect readback (B v9 S5, CHE-5415): what the approval did, who decided,
+	// for whom. Revocable is true while a revoke would be accepted (S6, CHE-5416);
+	// Revoke is the record of one that happened.
+	Effect       string              `json:"effect,omitempty"`
+	EffectReason *string             `json:"effect_reason,omitempty"`
+	DecidedBy    *string             `json:"decided_by,omitempty"`
+	OnBehalfOf   *string             `json:"on_behalf_of,omitempty"`
+	Revocable    bool                `json:"revocable"`
+	Revoke       *decisionRevokeRead `json:"revoke,omitempty"`
+}
+
+// decisionRevokeRead is who revoked an applied action, when, and why.
+type decisionRevokeRead struct {
+	At     *string `json:"at"`
+	By     *string `json:"by"`
+	Reason string  `json:"reason"`
+}
+
+type decisionAnswerRead struct {
+	ID                string  `json:"id"`
+	AnsweredByUserID  *string `json:"answered_by_user_id"`
+	AnswerSource      string  `json:"answer_source"`
+	ChosenOptionIndex *int32  `json:"chosen_option_index"`
+	ContentSnapshot   string  `json:"content_snapshot"`
+	CreatedAt         *string `json:"created_at"`
+	DisclaimedAt      *string `json:"disclaimed_at"`
+	DisclaimReason    *string `json:"disclaim_reason"`
+}
+
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
-	if stored, _, ok := handler.loadDecisionForRead(writer, request); ok {
-		writeJSON(writer, http.StatusOK, stored)
+	stored, _, ok := handler.loadDecisionForRead(writer, request)
+	if !ok {
+		return
 	}
+	response := decisionReadResponse{DecisionRequest: stored}
+	switch action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: stored.ID, WorkspaceID: stored.WorkspaceID}); {
+	case err == nil:
+		response.Outcome, response.OutcomeReason = decisionActionOutcomeOf(action)
+		response.AppliedAt = appliedAtOf(action)
+		response.Effect, response.EffectReason = decisionEffectOf(action)
+		response.OnBehalfOf = uuidToPtr(stored.HumanUserID)
+		response.Revocable = handler.revocableNow(request.Context(), action)
+		if action.RevokedAt.Valid {
+			response.Revoke = &decisionRevokeRead{At: timestampToPtr(action.RevokedAt), By: uuidToPtr(action.RevokedByUserID), Reason: action.RevokeReason.String}
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision action")
+		return
+	}
+	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
+	switch {
+	case err == nil:
+		if response.Effect == "applied" || response.Effect == "not_applied" {
+			response.DecidedBy = uuidToPtr(answer.AnsweredByUserID)
+		}
+		response.Answer = &decisionAnswerRead{
+			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
+			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
+			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision answer")
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 // loadDecisionForRead resolves {id} for a workspace member who can read the
@@ -288,6 +428,9 @@ type openDecisionResponse struct {
 	Options          json.RawMessage              `json:"options"`
 	CoversRequestIDs []string                     `json:"covers_request_ids,omitempty"`
 	CoveredCards     []DecisionRequestCoveredCard `json:"covered_cards,omitempty"`
+	// Action is the executable action behind the card, so a page can tell which
+	// card is a run-budget or workflow-budget ask (CHE-5285).
+	Action *DecisionRequestCardAction `json:"action,omitempty"`
 }
 
 func (handler *Handler) openDecisionResponses(ctx context.Context, workspaceUUID pgtype.UUID, rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
@@ -307,6 +450,7 @@ func (handler *Handler) openDecisionResponses(ctx context.Context, workspaceUUID
 			slog.ErrorContext(ctx, "list covered decision cards", "request_id", uuidToString(row.ID), "error", err)
 		}
 		out[i].CoveredCards = covered
+		out[i].Action = handler.decisionCardAction(ctx, workspaceUUID, row.ID)
 	}
 	return out
 }
@@ -402,4 +546,39 @@ func (handler *Handler) actionRequestTerms(writer http.ResponseWriter, kind, exp
 		expiry = parsed
 	}
 	return decisiontx.KindAction, expiry.Seconds(), true
+}
+
+// refuseBudgetQuestion refuses a question about a budget block while the
+// platform's top-up card is open: the card is the only way to reopen the
+// budget, and a second card for the same block makes two requests (CHE-5303).
+func (handler *Handler) refuseBudgetQuestion(writer http.ResponseWriter, request *http.Request, issue db.Issue) bool {
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+		return true
+	}
+	for _, open := range requests {
+		holds, isCard, err := runBudgetCardHolds(request.Context(), handler.Queries, open)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+			return true
+		}
+		if !isCard || !holds {
+			continue
+		}
+		action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: open.ID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read the run budget card")
+			return true
+		}
+		workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read the workspace")
+			return true
+		}
+		url := "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?approve=" + uuidToString(action.ID)
+		writeErrorCode(writer, http.StatusConflict, "budget_card_open", "this issue's run budget top-up card is already open; the person approves it at "+url+" - do not ask a second question")
+		return true
+	}
+	return false
 }

@@ -36,7 +36,8 @@ type settingsPatchParams struct {
 
 func init() {
 	decisionaction.Register(&decisionaction.Definition{
-		Type: settingsPatchAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Type: settingsPatchAction, Version: 1, Passkey: decisionaction.PasskeyRequired, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Template:  decisionaction.Template{Title: "Change workspace settings", Summary: "Sets the proposed workspace setting keys."},
 		Normalize: normalizeSettingsPatch,
 	})
 	registerConfigChange(settingsPatchAction, configChange{
@@ -101,6 +102,10 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 	}
 	var err error
 	switch {
+	case key == "provider_breaker_max_hold_seconds":
+		err = validateProviderHoldSetting(map[string]any{key: value})
+	case key == "guard_policy":
+		err = validateGuardPolicySetting(map[string]any{key: value})
 	case key == "compact_prompt":
 		err = validateCompactPromptConfig(map[string]any{key: value})
 		if _, isString := value.(string); !isString && err == nil {

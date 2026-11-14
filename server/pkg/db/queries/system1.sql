@@ -15,6 +15,24 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND kind = sqlc.arg('kind') AND cl
 ORDER BY created_at DESC
 LIMIT 200;
 
+-- name: CreateSystem1Prediction :exec
+-- One predictor's guess for the decision observation of a request (CHE-4383 B3).
+-- Runs in the ask transaction right after CreateSystem1Observation, which holds
+-- the workspace FOR KEY SHARE lock; if that insert found no workspace, this finds
+-- no observation and inserts nothing. A NULL key is an abstention.
+INSERT INTO system1_prediction (workspace_id, observation_id, scope, predictor_id, predictor_version, predicted_key, predicted_confidence, predicted_precedents)
+SELECT o.workspace_id, o.id, o.inputs->>'topic', sqlc.arg('predictor_id')::text, sqlc.arg('predictor_version')::text, sqlc.narg('predicted_key')::text, sqlc.narg('predicted_confidence')::real, sqlc.narg('predicted_precedents')::int
+FROM system1_observation o
+WHERE o.kind = 'decision' AND o.subject_id = sqlc.arg('subject_id') AND o.workspace_id = sqlc.arg('workspace_id');
+
+-- name: ListSystem1WaiverPrecedentKeys :many
+-- Earlier mapped waiver labels of record, newest first. `unmapped` and superseded labels are not precedents.
+SELECT label::text AS label FROM system1_label
+WHERE workspace_id = sqlc.arg('workspace_id') AND scope = 'test_first_waiver' AND kind = 'burn_in'
+  AND label IN ('waive', 'refuse') AND superseded_at IS NULL
+ORDER BY created_at DESC
+LIMIT 200;
+
 -- name: ListRecentIssueStatusChanges :many
 -- The last few statuses an issue moved to, newest first (route label input).
 SELECT (details->>'to')::text AS to_status FROM activity_log
@@ -101,3 +119,39 @@ SELECT
 SELECT id FROM system1_observation
 WHERE kind = 'route' AND subject_id = sqlc.arg('issue_id')
 ORDER BY created_at DESC, id DESC LIMIT 1;
+
+-- name: System1QualificationReport :many
+-- Qualification counts per (scope, predictor, version), over the latest epoch of each (CHE-4383 B5).
+-- A case is one prediction row whose observation was created at or after the epoch start and has a
+-- label of record: the newest label row that is not superseded. `unmapped` and abstentions are
+-- counted apart; the denominator is every non-abstaining prediction with a mapped label, so a
+-- label of another protocol or `unknown` is a disagreement, never an exclusion.
+WITH latest AS (
+    SELECT DISTINCT ON (s.scope, s.predictor_id, s.predictor_version) s.*
+    FROM system1_epoch s
+    WHERE s.workspace_id = sqlc.arg('workspace_id')
+      AND (sqlc.narg('scope')::text IS NULL OR s.scope = sqlc.narg('scope'))
+    ORDER BY s.scope, s.predictor_id, s.predictor_version, s.started_at DESC, s.id DESC
+), cases AS (
+    SELECT e.id AS epoch_id, p.predicted_key, o.reversed_at, l.label
+    FROM latest e
+    JOIN system1_prediction p ON p.workspace_id = e.workspace_id AND p.scope = e.scope
+        AND p.predictor_id = e.predictor_id AND p.predictor_version = e.predictor_version
+    JOIN system1_observation o ON o.id = p.observation_id AND o.created_at >= e.started_at
+    JOIN LATERAL (
+        SELECT sl.label FROM system1_label sl
+        WHERE sl.observation_id = o.id AND sl.kind = 'burn_in' AND sl.superseded_at IS NULL
+        ORDER BY sl.created_at DESC, sl.id DESC LIMIT 1
+    ) l ON true
+)
+SELECT e.scope::text AS scope, e.predictor_id::text AS predictor_id, e.predictor_version::text AS predictor_version,
+    e.started_at::timestamptz AS started_at, (e.demoted_at IS NOT NULL)::boolean AS demoted,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NOT NULL)::bigint AS denominator,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key = c.label)::bigint AS agreed,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NULL)::bigint AS abstained,
+    count(c.epoch_id) FILTER (WHERE c.label = 'unmapped')::bigint AS unmapped,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NOT NULL AND c.reversed_at IS NOT NULL)::bigint AS reversed
+FROM latest e
+LEFT JOIN cases c ON c.epoch_id = e.id
+GROUP BY e.id, e.scope, e.predictor_id, e.predictor_version, e.started_at, e.demoted_at
+ORDER BY e.scope, e.predictor_id, e.predictor_version;

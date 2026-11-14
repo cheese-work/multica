@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -9,6 +10,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/service"
 )
+
+func validateProviderHoldSetting(value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = service.ProviderHoldSecondsFromSettings(raw)
+	return err
+}
 
 type providerBreakerResponse struct {
 	Provider      string   `json:"provider"`
@@ -85,7 +95,8 @@ func (h *Handler) ResetProviderBreaker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	previous, found, err := service.ResetProviderBreaker(ctx, h.Queries.WithTx(tx), parseUUID(workspaceID), provider, parseUUID(requestUserID(r)))
+	qtx := h.Queries.WithTx(tx)
+	previous, found, err := service.ResetProviderBreaker(ctx, qtx, parseUUID(workspaceID), provider, parseUUID(requestUserID(r)))
 	if err != nil {
 		slog.Error("provider breaker reset failed", "workspace_id", workspaceID, "provider", provider, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to reset provider breaker")
@@ -93,6 +104,16 @@ func (h *Handler) ResetProviderBreaker(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, "provider breaker not found")
+		return
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind:        "workspace.provider_breaker.reset",
+		WorkspaceID: parseUUID(workspaceID),
+		TargetID:    parseUUID(workspaceID),
+		Before:      map[string]any{"state": previous},
+		After:       map[string]any{"provider": provider, "state": "closed"},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "workspace.provider_breaker.reset")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {

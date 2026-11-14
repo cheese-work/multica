@@ -25,6 +25,22 @@ func withStageTaint(ctx context.Context, taint []string) context.Context {
 	return context.WithValue(ctx, stageTaintKey{}, taint)
 }
 
+// WithTaint is withStageTaint for a caller outside the package: a hook that
+// resumes a refusal after a restart restores the taint it recorded.
+func WithTaint(ctx context.Context, taint []string) context.Context {
+	return withStageTaint(ctx, taint)
+}
+
+// CtxTaint is the taint every task inserted under ctx would carry. Never nil.
+// Fail closed: an acting task that cannot be read is an error.
+func CtxTaint(ctx context.Context, q *db.Queries) ([]string, error) {
+	acting, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]string{}, acting...), stageTaint(ctx)...), nil
+}
+
 func stageTaint(ctx context.Context) []string {
 	taint, _ := ctx.Value(stageTaintKey{}).([]string)
 	return taint
@@ -130,7 +146,9 @@ func guardStageQueue(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	}
 	refusal := &stageFullError{
 		issueID: issueID, agentID: target.AgentID,
-		actor: target.ActorUserID, comment: target.TriggerCommentID, taint: taint,
+		actor: target.ActorUserID, comment: target.TriggerCommentID,
+		// Taint carried in the context (e.g. restored from an admission deferral) survives the refusal.
+		taint: append(append([]string(nil), taint...), stageTaint(ctx)...),
 	}
 	if err := markStageWaiting(ctx, q, refusal); err != nil {
 		return err
@@ -236,9 +254,38 @@ func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(ctx con
 // ReleaseStageQueues is the scheduler's tick.
 func (s *TaskService) ReleaseStageQueues(ctx context.Context) error {
 	return releaseStageQueues(ctx, s.Queries, func(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error {
-		_, err := s.enqueueIssueTask(ctx, issue, comment, false, "", actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
-		return err
+		ctx, err := s.stageRecoveryContext(ctx, issue)
+		if err != nil {
+			return err
+		}
+		return s.enqueueStageRelease(ctx, issue, actor, comment)
 	})
+}
+
+// stageRecoveryContext carries an admission deferral that expired while the
+// run waited (CHE-4651), only for the head it was recorded for: a newer head is
+// judged. The lookup is advisory; enqueueStageRelease validates it again.
+func (s *TaskService) stageRecoveryContext(ctx context.Context, issue db.Issue) (context.Context, error) {
+	pr, err := s.Queries.GetIssueAdmissionPR(ctx, issue.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ctx, nil
+		}
+		return ctx, fmt.Errorf("read admission PR: %w", err)
+	}
+	expires, err := s.Queries.GetReviewAdmissionDeferralExpiry(ctx, db.GetReviewAdmissionDeferralExpiryParams{IssueID: issue.ID, AgentID: issue.AssigneeID, HeadSha: pr.HeadSha})
+	switch {
+	case err == nil:
+		return withAdmissionRecovery(ctx, admissionRecovery{IssueID: issue.ID, AgentID: issue.AssigneeID, Head: pr.HeadSha, ExpiresAt: expires.Time}), nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return ctx, fmt.Errorf("read admission deferral: %w", err)
+	}
+	return ctx, nil
+}
+
+func (s *TaskService) enqueueStageRelease(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error {
+	_, err := s.enqueueIssueTask(ctx, issue, comment, false, "", actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return err
 }
 
 // StageQueueSnapshot is where one issue's stage run stands: the stage, the

@@ -1,16 +1,22 @@
-import { Suspense, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, type RefObject, Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
+import { Ban, Check, ChevronDown, Clock, KeyRound, Loader2, MessageSquareQuote, Undo2, X } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
-import { ApiError } from "@multica/core/api";
+import { ApiError, api } from "@multica/core/api";
+import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
-import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
-import { usePersistedDraft } from "@multica/core/drafts";
-import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
+import {
+  type DecisionAnswerDraft as AnswerDraft,
+  EMPTY_DECISION_ANSWER_DRAFT as EMPTY_DRAFT,
+  decisionAnswerDraftKey,
+  useDecisionAnswerDraftStore,
+} from "@multica/core/issues/stores/decision-answer-draft-store";
+import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
+import { approvableConfigChange, approvablePreview, isConfigChangeActionType, isRunBudgetActionType } from "@multica/core/issues/decision-action-preview";
 import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
-import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
+import { formatShortcut, isPlainShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorRef } from "../../editor/content-editor";
@@ -20,7 +26,7 @@ import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
-import { DecisionActionApproval } from "../../common/decision-action-approval";
+import { type ApprovalControls, type ApprovalHandle, DecisionActionApproval } from "../../common/decision-action-approval";
 import { AppLink, useOptionalNavigation } from "../../navigation";
 import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
@@ -28,12 +34,9 @@ import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { ConfigChangeViewer } from "./config-change-viewer";
 import { DecisionArtifacts } from "./decision-artifacts";
+import { DecisionRecentRuns } from "./decision-recent-runs";
+import { DecisionSummary, effectOf, effectText, ictOf } from "./decision-summary";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
-
-interface AnswerDraft {
-  option: string;
-  text: string;
-}
 
 // Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
 const MAX_ANSWER_BYTES = 8 << 10;
@@ -44,13 +47,22 @@ const isConflict = (error: unknown) => error instanceof ApiError && error.status
 // The server prefixes a refusal with its code ("stale_answer: ..."); a 409 with one of these codes leaves the card open.
 const refusalCode = (error: unknown) => (error instanceof ApiError ? error.message.split(":")[0] ?? "" : "");
 const KEEPS_CARD_OPEN = ["stale_answer", "no_passkey", "busy_retry"];
-
-const EMPTY_DRAFT: AnswerDraft = { option: "", text: "" };
 const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim() !== "";
 
 type AnswerMutation = ReturnType<typeof useAnswerDecisionRequest>;
 
-// The parent owns the draft and the send, so a card that turns answered under
+// Direction B v9: a card with an action offers Approve or Reject beside one composer. "" is Discuss more.
+// Never stored: a reload must not bring back an armed Approve. Only the composer text is kept.
+type Choice = "" | "approve" | "reject";
+const CHOICES: readonly Exclude<Choice, "">[] = ["approve", "reject"];
+type Decide = {
+  choice: Choice;
+  onChoice: (choice: Choice) => void;
+  approvalRef: RefObject<ApprovalHandle | null>;
+  controls: ApprovalControls;
+};
+
+// The parent owns the draft (persisted per request, so it outlives an unmount) and the send, so a card that turns answered under
 // the reader (another tab, the DM, our own realtime event arriving before the
 // HTTP 201) does not unmount the form and drop the draft or the send callbacks.
 function DecisionAnswerForm({
@@ -62,6 +74,7 @@ function DecisionAnswerForm({
   inIssue,
   needsPasskey,
   onOpenWeb,
+  decide,
 }: {
   card: RequestCard;
   draft: AnswerDraft;
@@ -73,19 +86,73 @@ function DecisionAnswerForm({
   needsPasskey: boolean;
   /** Desktop cannot run the ceremony; it opens the web page instead. */
   onOpenWeb: () => void;
+  decide?: Decide;
 }) {
   const { t } = useT("chat");
   const online = useOnline();
   const handoff = needsPasskey && isDesktopShell();
-  const sendShortcut = formatShortcut(useShortcut("send"));
+  const sendChord = useShortcut("send");
+  const sendShortcut = formatShortcut(sendChord);
   const { text } = draft;
-  const setText = (next: string) => onDraftChange({ text: next });
+  const mode = decide?.choice ?? "";
+  const label = decide
+    ? t(($) => (mode === "approve" ? $.decision.composer_note : mode === "reject" ? $.decision.composer_reason : $.decision.composer_message))
+    : card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text);
+  const radios = useRef<Partial<Record<Choice, HTMLButtonElement | null>>>({});
+  const draftKey = decisionAnswerDraftKey(card.id);
+  // Bound to the workspace this card mounted in, so cleanup after a workspace switch still files the notice there.
+  const [uploadCancelled, setUploadCancelled] = useUploadCancelledNotice(draftKey);
+  // What this editor last reported. A stored text that differs came from the other surface
+  // showing the same request, and is adopted so a send from here cannot overwrite it.
+  const emitted = useRef(text);
+  // Uploads started here and still running. Leaving the card cancels them (Cheese decision,
+  // CHE-3521): nothing is filed into the draft later, so no late write can outlive the card.
+  const uploads = useRef(new Set<AbortController>());
+  // The editor's unmount flush (the last note edit) is applied. What it reports after that, such as
+  // the placeholder of a cancelled upload going away, is dropped. The flush runs synchronously
+  // in this unmount; the microtask flips `closed` before any async report can arrive.
+  const closed = useRef(false);
+  useEffect(() => {
+    closed.current = false;
+    const running = uploads.current;
+    return () => {
+      queueMicrotask(() => { closed.current = true; });
+      if (running.size === 0) return;
+      running.forEach((controller) => controller.abort());
+      running.clear();
+      // In memory only: a storage write here could bring back a draft another tab just cleared.
+      setUploadCancelled(true);
+    };
+  }, [setUploadCancelled]);
+  const onEditorUpdate = (next: string) => { if (!closed.current) setText(next); };
+  const setText = (next: string) => {
+    emitted.current = next;
+    onDraftChange({ text: next });
+  };
   // A tap selects; a second tap on the selected option clears it. Nothing is sent until Send.
   const toggleOption = (label: string) => onDraftChange({ option: draft.option === label ? "" : label });
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
+  const uploadFile = async (file: File) => {
+    const controller = new AbortController();
+    uploads.current.add(controller);
+    setUploadCancelled(false);
+    try {
+      return await uploadWithToast(file, { issueId: card.issue_id, signal: controller.signal });
+    } finally {
+      uploads.current.delete(controller);
+    }
+  };
+  useEffect(() => {
+    // Read the store, not the render's `text`: a render can lag behind a newer edit.
+    const stored = useDecisionAnswerDraftStore.getState().getDraft(draftKey)?.text ?? "";
+    const editor = editorRef.current;
+    if (stored === emitted.current || !editor || editor.hasActiveUploads()) return;
+    emitted.current = stored;
+    editor.adoptContent(stored);
+  }, [text, draftKey]);
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
   const canSubmit = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong;
   const canSend = canSubmit && (draft.option !== "" || text.trim() !== "");
@@ -98,7 +165,35 @@ function DecisionAnswerForm({
     // Enter can arrive while an upload placeholder is still in the document.
     const sendable = !handoff && online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
       && answerBytes(live) <= MAX_ANSWER_BYTES && (!!option || live.trim() !== "");
-    if (sendable) onSend(live, option);
+    if (!sendable) return;
+    emitted.current = live;
+    onSend(live, option);
+  };
+  // The one button of the card: its label names what Mod+Enter does for the chosen mode.
+  const decideReady = !!decide && decide.controls.ready && (mode === "reject" || (decide.controls.mayApprove && !decide.controls.approveDisabled));
+  const press = (fromEditor = false) => {
+    if (!decide || mode === "") {
+      if (!decide) return send();
+      // Discuss more with nothing written: take the person to the composer instead of sending nothing.
+      if (!(editorRef.current?.getMarkdown() ?? text).trim()) return editorRef.current?.focus();
+      return send();
+    }
+    // A plain-Enter send shortcut would approve while the person only wants a new line.
+    if (fromEditor && isPlainShortcut(sendChord, "Enter")) return;
+    if (uploadGate.uploading || uploadGate.isBlocked()) return;
+    decide.approvalRef.current?.[mode]();
+  };
+  // A person who may not approve is offered Reject only.
+  const approveHidden = !!decide && !decide.controls.mayApprove && mode !== "approve";
+  const moveChoice = (event: KeyboardEvent, from: Exclude<Choice, "">) => {
+    const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+    if (!step || !decide) return;
+    event.preventDefault();
+    if (approveHidden) return;
+    const next = CHOICES[(CHOICES.indexOf(from) + step + CHOICES.length) % CHOICES.length]!;
+    if (next === "approve" && (approveHidden || decide.controls.approveDisabled)) return;
+    decide.onChoice(next);
+    radios.current[next]?.focus();
   };
 
   return (
@@ -107,13 +202,45 @@ function DecisionAnswerForm({
       className="space-y-2"
       onSubmit={(event) => {
         event.preventDefault();
-        send();
+        press();
       }}
     >
-      <p className="text-caption text-muted-foreground">
-        {t(($) => (inIssue ? $.decision.answer_helper_issue : $.decision.answer_helper), { issue: card.issue_identifier || card.issue_id })}
-      </p>
-      {!!card.options?.length && (
+      {!decide && (
+        <p className="text-caption text-muted-foreground">
+          {t(($) => (inIssue ? $.decision.answer_helper_issue : $.decision.answer_helper), { issue: card.issue_identifier || card.issue_id })}
+        </p>
+      )}
+      {decide && (
+        <div role="radiogroup" aria-label={t(($) => $.decision.choice_label)} className="inline-flex overflow-hidden rounded-lg border border-surface-border">
+          {CHOICES.filter((value) => value !== "approve" || !approveHidden).map((value) => {
+            const selected = mode === value;
+            const blocked = value === "approve" && decide.controls.approveDisabled;
+            return (
+              // ui-pattern-ref: allow radio segment (role=radio, roving tabindex); Button has no radio variant, see choice-card
+              <button
+                key={value}
+                ref={(node) => { radios.current[value] = node; }}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                tabIndex={selected || (mode === "" && (value === "approve" || approveHidden)) ? 0 : -1}
+                disabled={blocked}
+                onClick={() => decide.onChoice(selected ? "" : value)}
+                onKeyDown={(event) => moveChoice(event, value)}
+                className={cn(
+                  "flex min-h-9 items-center gap-1.5 px-3 text-label font-medium hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-70 max-sm:min-h-11",
+                  value === "reject" && "border-l border-surface-border",
+                  selected && "bg-primary/10 text-primary hover:bg-primary/10",
+                )}
+              >
+                {selected && <Check className="size-3.5" aria-hidden />}
+                {t(($) => (value === "approve" ? $.decision.choice_approve : $.decision.choice_reject))}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {!!card.options?.length && !decide && (
         <div role="radiogroup" aria-label={t(($) => $.decision.answer_options)} className="space-y-1">
           {card.options.map((item, index) => (
             <button
@@ -147,34 +274,41 @@ function DecisionAnswerForm({
           ))}
         </div>
       )}
-      <span className="block text-label font-medium">
-        {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
-      </span>
+      <span className="block text-label font-medium">{label}</span>
       <div className="rounded-lg border border-surface-border px-2 py-1.5 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
         <Suspense fallback={null}>
           <ContentEditor
+            // The editor reads its aria-label once at mount: a new mode remounts it from the kept draft.
+            key={mode}
             ref={editorRef}
             defaultValue={text}
-            ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
-            ariaDescribedBy={`${textId}-hint`}
-            onUpdate={setText}
-            onSubmit={() => send()}
-            onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
+            ariaLabel={label}
+            ariaDescribedBy={decide ? undefined : `${textId}-hint`}
+            onUpdate={onEditorUpdate}
+            onSubmit={() => press(true)}
+            onUploadFile={uploadFile}
             onUploadingChange={uploadGate.onUploadingChange}
             debounceMs={0}
+            flushPendingOnUnmount
             showBubbleMenu={false}
             className="max-h-60 overflow-y-auto"
           />
         </Suspense>
       </div>
-      <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
-        {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
-      </p>
+      {!decide && (
+        <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
+          {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
+        </p>
+      )}
+      {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70 max-sm:h-11">
+        <Button type="submit" size="sm" disabled={decide ? (mode === "" ? !canSubmit : !decideReady) : !canSend} className="disabled:opacity-70 max-sm:h-11">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
-          {t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
+          {mode === "approve" && <KeyRound className="size-4" aria-hidden />}
+          {decide
+            ? t(($) => (mode === "approve" ? $.decision.send_approve : mode === "reject" ? $.decision.send_reject : $.decision.send_discuss), { shortcut: sendShortcut })
+            : t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
         </Button>
         {draft.option !== "" && (
           <Button type="button" size="sm" variant="ghost" disabled={!canSubmit} className="max-sm:h-11" onClick={() => onDraftChange({ option: "" })}>
@@ -199,24 +333,41 @@ type CardAction = NonNullable<RequestCard["action"]>;
 
 // Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
 // member list yet or any other role the button is absent. The server still refuses a non-owner.
-function OwnerGatedApproval({ action, previewSha256, approveDisabled }: { action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
+type ApprovalWiring = { hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
+
+function OwnerGatedApproval({ action, previewSha256, approveDisabled, ...wiring }: { action: CardAction; previewSha256?: string; approveDisabled: boolean } & ApprovalWiring) {
   const workspace = useCurrentWorkspace();
   return workspace
-    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} approveDisabled={approveDisabled} />
-    : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={false} state={action.state} />;
+    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} approveDisabled={approveDisabled} {...wiring} />
+    : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={false} state={action.state} {...wiring} />;
 }
 
-function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled }: { wsId: string; action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
+function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled, ...wiring }: { wsId: string; action: CardAction; previewSha256?: string; approveDisabled: boolean } & ApprovalWiring) {
   const { role } = useCurrentMember(wsId);
-  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} approveDisabled={approveDisabled} state={action.state} />;
+  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} approveDisabled={approveDisabled} state={action.state} {...wiring} />;
 }
 
 // What the approval would change, shown before Approve exists. No usable preview
 // (missing, empty, malformed, bad digest, unknown action type) means the server
 // could not vouch for the action: say so, keep Approve disabled for who may approve,
 // show it to nobody else, and leave Reject to everyone.
-function ActionPreview({ action }: { action: CardAction }) {
+function ActionPreview({
+  action,
+  issueId,
+  hideControls,
+  handle,
+  onControls,
+}: {
+  action: CardAction;
+  issueId: string;
+  /** The card's own button presses Approve and Reject. */
+  hideControls: boolean;
+  handle: RefObject<ApprovalHandle | null>;
+  onControls: (controls: ApprovalControls) => void;
+}) {
   const { t } = useT("chat");
+  const [showDetails, setShowDetails] = useState(false);
+  const detailsId = useId();
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
   const configAction = isConfigChangeActionType(action.action_type);
@@ -228,7 +379,23 @@ function ActionPreview({ action }: { action: CardAction }) {
   return (
     <div className="space-y-2">
       {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
-      {configChange && <ConfigChangeViewer change={configChange} />}
+      {configChange && (
+        <div className="space-y-2">
+          {/* ui-pattern-ref: allow inline disclosure toggle (aria-expanded) matching the card Details link; Button has no text-disclosure variant */}
+          <button
+            type="button"
+            aria-expanded={showDetails}
+            aria-controls={detailsId}
+            onClick={() => setShowDetails((open) => !open)}
+            className="inline-flex min-h-9 items-center gap-1 text-label text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            <ChevronDown className={cn("size-4 transition-transform duration-200 motion-reduce:transition-none", !showDetails && "-rotate-90")} aria-hidden />
+            <span className="font-medium">{t(($) => $.decision.details)}</span> · {action.action_type}
+          </button>
+          <div id={detailsId} hidden={!showDetails}>{showDetails && <ConfigChangeViewer change={configChange} />}</div>
+        </div>
+      )}
+      {pending && isRunBudgetActionType(action.action_type) && <DecisionRecentRuns issueId={issueId} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -240,8 +407,8 @@ function ActionPreview({ action }: { action: CardAction }) {
         </dl>
       )}
       {ownerOnly
-        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} />
-        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} />}
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ hideControls, handle, onControls }} />
+        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
     </div>
   );
 }
@@ -306,9 +473,14 @@ const PICKUP_GRACE_MS = 2 * 60 * 1000;
 // or Withdrawn / Disclaimed. A disclaimed answer can leave the request open
 // again, so the receipt wins over the request state.
 function displayState(card: RequestCard, now: number) {
+  if (card.action?.revoke) return "revoked";
+  if (card.action?.effect === "expired" || card.action?.state === "expired") return "expired";
   if (card.state === "withdrawn") return "withdrawn";
   if (card.answer?.state === "disclaimed") return "disclaimed";
   if (card.state !== "answered") return "open";
+  // An action decision is the answer: Approved (applied or not) and Rejected are their own states.
+  if (card.action?.state === "executed" || card.action?.state === "failed") return "approved";
+  if (card.action?.state === "rejected") return "rejected";
   const answer = card.answer;
   if (!answer) return "recorded";
   if (answer.state !== "picked_up" && now >= new Date(answer.answered_at).getTime() + PICKUP_GRACE_MS) return "not_picked_up";
@@ -338,6 +510,25 @@ function useNow(card: RequestCard) {
   return now;
 }
 
+// A decision nobody needs to act on any more: the card collapses to a block under one toggle row (direction B v9).
+// Approved and Rejected show their effect line and facts under the row; the rest keep the one-row fold of PR 1271.
+const FOLDS = new Set(["picked_up", "withdrawn", "disclaimed", "approved", "rejected", "expired", "revoked"]);
+const FOLD_ICONS = { picked_up: Check, withdrawn: Undo2, disclaimed: Ban, approved: Check, rejected: X, expired: Clock, revoked: Undo2 } as const;
+// Decisions whose effect block (DecisionSummary) sits under the fold row.
+const SUMMARIZED = new Set(["approved", "rejected", "expired", "revoked"]);
+
+// Animation (B v9 S9): collapse 240 ms, highlight ring 600 ms, expand 200 ms; all 0 ms under reduced motion.
+const COLLAPSE_MS = 240;
+const EXPAND_MS = 200;
+const RING_MS = 600;
+const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// The folded row names the question: the first line of the ask, markdown marks dropped.
+const questionOf = (ask: string, fallback: string) => {
+  const line = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).find(Boolean);
+  return line || fallback;
+};
+
 // `inIssue`: shown on the source issue page, where there is no DM message box.
 export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCard; inIssue?: boolean }) {
   const { t } = useT("chat");
@@ -350,10 +541,46 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
+  const ictText = validDate ? ictOf(timestamp) : "";
+  // Expand state is local and never saved. A card already done at load starts folded, so its
+  // first paint has nothing to animate; a later change of state runs the CSS transition.
+  const [expanded, setExpanded] = useState(false);
+  const folded = FOLDS.has(shown) && !expanded;
+  const reduced = reducedMotion();
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const [ring, setRing] = useState(false);
+  const wasFolded = useRef(FOLDS.has(shown));
+  const workspaceId = useCurrentWorkspace()?.id;
+  const queryClient = useQueryClient();
+  const applied = effectOf(card.action)?.kind === "applied";
+  // The moment the server records a decision the card collapses: focus moves to the block header,
+  // and an applied decision gets one soft ring. A card already decided at load does neither.
+  useEffect(() => {
+    const decided = FOLDS.has(shown);
+    const justDecided = decided && !wasFolded.current;
+    wasFolded.current = decided;
+    if (!justDecided) return;
+    toggleRef.current?.focus();
+    if (!applied || reduced) return;
+    setRing(true);
+    const timer = setTimeout(() => setRing(false), RING_MS);
+    return () => clearTimeout(timer);
+  }, [shown, applied, reduced]);
+  const revoke = async (reason: string) => {
+    const assertion = await signPasskeyChallenge(await api.challengeDecisionRevoke(card.id));
+    await api.revokeDecision(card.id, { reason, assertion });
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+    if (workspaceId) queryClient.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(workspaceId) });
+  };
+  const bodyId = useId();
   const issueHref = paths.issueDetail(card.issue_id);
-  // Persisted per request: the selection and the note survive unmount and reload until sent or discarded.
-  const [draft, patchDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, card.id, EMPTY_DRAFT);
+  const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
+  const [, setUploadCancelled] = useUploadCancelledNotice(decisionAnswerDraftKey(card.id));
   const [refused, setRefused] = useState(false);
+  const [choice, setChoice] = useState<Choice>("");
+  const approvalRef = useRef<ApprovalHandle>(null);
+  const [controls, setControls] = useState<ApprovalControls>({ ready: false, mayApprove: false, approveDisabled: false });
   const [needsPasskey, setNeedsPasskey] = useState(false);
   const navigation = useOptionalNavigation();
   // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
@@ -361,25 +588,26 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const answer = useAnswerDecisionRequest(card.issue_id);
   const sendAnswer = (text: string, option = "") => {
     // Keep what is sent as the draft, so a refused send shows back the same choice and text.
-    patchDraft({ option, text });
-    answer.mutate(
-      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids },
-      {
-        onSuccess: () => {
-          setNeedsPasskey(false);
-          clearDraft();
-          setFormKey((key) => key + 1);
-        },
-        onError: (error) => {
-          const code = refusalCode(error);
-          if (code === "assertion_required") setNeedsPasskey(true);
-          else if (isConflict(error) && !KEEPS_CARD_OPEN.includes(code)) setRefused(true);
-        },
-      },
-    );
+    setDraft({ option, text });
+    // mutateAsync, not mutate's callbacks: those are dropped when the card unmounts mid-send,
+    // which would leave a sent answer in the store.
+    answer
+      .mutateAsync({ requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids })
+      .then(() => {
+        setNeedsPasskey(false);
+        clearDraft();
+        setUploadCancelled(false);
+        setFormKey((key) => key + 1);
+      })
+      .catch((error: unknown) => {
+        const code = refusalCode(error);
+        if (code === "assertion_required") setNeedsPasskey(true);
+        else if (isConflict(error) && !KEEPS_CARD_OPEN.includes(code)) setRefused(true);
+      });
   };
   const discardDraft = () => {
     clearDraft();
+    setUploadCancelled(false);
     setRefused(false);
   };
 
@@ -394,13 +622,59 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     );
   }
 
+  const keptDraft = (refused || card.state !== "open") && hasDraft(draft) && !answer.isPending;
+  const formShown = card.state === "open" && !keptDraft && !coveredCardsMissing;
+  const undecided = !!card.action && (!card.action.state || card.action.state === "pending");
+  const decide: Decide | undefined = formShown && undecided ? { choice, onChoice: setChoice, approvalRef, controls } : undefined;
+  const StateIcon = FOLD_ICONS[shown as keyof typeof FOLD_ICONS] ?? MessageSquareQuote;
   return (
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
       data-testid="decision-request-card"
       data-state={shown}
-      className="min-w-0 rounded-xl border border-surface-border bg-surface text-body"
+      data-ring={ring}
+      className={cn("min-w-0 rounded-xl border border-surface-border bg-surface text-body transition-shadow", ring && "ring-2 ring-success/40")}
+      style={{ transitionDuration: reduced ? "0ms" : `${RING_MS}ms` }}
     >
+      <span aria-live="polite" className="sr-only">
+        {SUMMARIZED.has(shown) ? `${state}. ${effectText(card, t)}` : ""}
+      </span>
+      {FOLDS.has(shown) && (
+        <button
+          type="button"
+          aria-expanded={!folded}
+          aria-controls={bodyId}
+          ref={toggleRef}
+          onClick={() => setExpanded((open) => !open)}
+          data-testid="decision-request-fold-toggle"
+          className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-label focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          <StateIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="shrink-0 font-medium">{state}</span>
+          <span className="min-w-0 flex-1 truncate">{questionOf(facts, card.issue_title || card.issue_identifier || card.issue_id)}</span>
+          {card.answer?.chosen_option_index !== undefined && shown !== "disclaimed" && (
+            <span className="max-w-[40%] shrink-0 truncate rounded-xs border px-1.5 text-micro">
+              {t(($) => $.decision.receipt_option, { number: card.answer.chosen_option_index + 1 })}
+              {card.answer.option_label && <span className="max-sm:hidden"> · {card.answer.option_label}</span>}
+            </span>
+          )}
+          {ictText && <time dateTime={timestamp} className="shrink-0 text-caption text-muted-foreground max-sm:hidden">{ictText}</time>}
+          <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform duration-200 ease-out motion-reduce:transition-none", !folded && "rotate-180")} aria-hidden />
+        </button>
+      )}
+      {SUMMARIZED.has(shown) && <DecisionSummary decision={card} onRevoke={inIssue ? undefined : revoke} />}
+      <div
+        id={bodyId}
+        data-fold-body
+        data-folded={folded}
+        inert={folded}
+        style={{ transitionDuration: reduced ? "0ms" : `${folded ? COLLAPSE_MS : EXPAND_MS}ms` }}
+        className={cn(
+          "grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,opacity] ease-out motion-reduce:transition-none",
+          folded ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100",
+        )}
+      >
+      <div className={cn("min-h-0 min-w-0", FOLDS.has(shown) && "overflow-hidden")}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
         <MessageSquareQuote className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="font-medium">{t(($) => $.decision.request_title)}</span>
@@ -492,14 +766,14 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AnnotatableAnswer>
         </div>
         {note && <AgentNote note={note} />}
-        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} />}
-        {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
+        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} hideControls={!!decide} handle={approvalRef} onControls={setControls} />}
+        {keptDraft ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (coveredCardsMissing ? (
             <p role="alert" className="text-destructive" data-testid="decision-request-covers-unavailable">{t(($) => $.decision.covers_unavailable)}</p>
           ) : (
-            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={patchDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} decide={decide} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
           ))
         )}
         {shown === "picked_up" && card.answer?.run && (
@@ -516,18 +790,10 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </p>
         )}
         {validDate && (
-          <time dateTime={timestamp} className="block text-caption text-muted-foreground">
-            {new Intl.DateTimeFormat("en-GB", {
-              timeZone: "Asia/Bangkok",
-              day: "2-digit",
-              month: "short",
-              year: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-              hourCycle: "h23",
-            }).format(date)} ICT
-          </time>
+          <time dateTime={timestamp} className="block text-caption text-muted-foreground">{ictText}</time>
         )}
+      </div>
+      </div>
       </div>
     </section>
   );

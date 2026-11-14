@@ -35,6 +35,7 @@ Fields:
   workspace.context                            --file <text>
   workflow.steps                <workflow-id>  --file <steps JSON array, as the workflow GET returns it>
   workflow.step.instructions    <workflow-id>  --status-key <key> --file <text>
+  workflow.budget               <workflow-id>  --max-runs N (0 clears) and/or --include-child-prs=true|false
   workspace.settings                           --set key=value | key:=<json> (repeatable)
 
 Any other field, and any settings key off the allow table, is refused before
@@ -49,6 +50,8 @@ func init() {
 	configProposeCmd.Flags().Bool("dry-run", false, "Print both digests and the action; write nothing")
 	configProposeCmd.Flags().String("status-key", "", "Step status key (workflow.step.instructions)")
 	configProposeCmd.Flags().StringArray("set", nil, "Settings key=value (string) or key:=<json>; repeatable (workspace.settings)")
+	configProposeCmd.Flags().Int("max-runs", 0, "Run limit per issue, 0 clears it (workflow.budget)")
+	configProposeCmd.Flags().Bool("include-child-prs", false, "Count child PRs in the run budget (workflow.budget)")
 	configProposeCmd.Flags().Int("expires-in", 0, "Seconds the request stays open (0 = server default)")
 	configCmd.AddCommand(configProposeCmd)
 }
@@ -83,11 +86,23 @@ func runConfigPropose(cmd *cobra.Command, args []string) error {
 	if !dryRun && out == "" {
 		return errors.New("--out is required (or use --dry-run)")
 	}
-	if field == decisionaction.SettingsField {
+	budget := cmd.Flags().Changed("max-runs") || cmd.Flags().Changed("include-child-prs")
+	if budget && field != workflowBudgetField {
+		return errors.New("--max-runs and --include-child-prs apply to workflow.budget only")
+	}
+	switch {
+	case field == workflowBudgetField:
+		if file != "" {
+			return errors.New("workflow.budget takes --max-runs and --include-child-prs, not --file")
+		}
+		if !budget {
+			return errors.New("workflow.budget needs --max-runs or --include-child-prs")
+		}
+	case field == decisionaction.SettingsField:
 		if file != "" {
 			return errors.New("workspace.settings takes --set, not --file")
 		}
-	} else if file == "" {
+	case file == "":
 		return errors.New("--file is required")
 	}
 	if field != "workflow.step.instructions" && statusKey != "" {
@@ -121,10 +136,31 @@ func runConfigPropose(cmd *cobra.Command, args []string) error {
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
-	p, err := buildProposal(ctx, client, field, target, text, statusKey, settings)
+	var p *proposal
+	if field == workflowBudgetField {
+		var maxRuns *int
+		var includeChildPRs *bool
+		if cmd.Flags().Changed("max-runs") {
+			n, _ := cmd.Flags().GetInt("max-runs")
+			maxRuns = &n
+		}
+		if cmd.Flags().Changed("include-child-prs") {
+			b, _ := cmd.Flags().GetBool("include-child-prs")
+			includeChildPRs = &b
+		}
+		p, err = workflowBudgetProposal(ctx, client, target, maxRuns, includeChildPRs)
+	} else {
+		p, err = buildProposal(ctx, client, field, target, text, statusKey, settings)
+	}
 	if err != nil {
 		return err
 	}
+	return emitProposal(p, expires, out, dryRun)
+}
+
+// emitProposal prints both digests and writes the action file `multica decision
+// request --action-file` takes (or prints the action on --dry-run).
+func emitProposal(p *proposal, expires int, out string, dryRun bool) error {
 	action := map[string]any{"type": p.Type, "version": 1, "params": p.Params}
 	if expires > 0 {
 		action["expires_in_seconds"] = expires
@@ -145,12 +181,12 @@ func runConfigPropose(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// checkProposeField refuses before any read. Only the six fields below are
+// checkProposeField refuses before any read. Only the fields below are
 // proposed here; the server gate stays the authority and runs again at approval.
 func checkProposeField(field string, settings map[string]json.RawMessage) error {
 	gateField := field
 	switch field {
-	case "agent.instructions", "squad.instructions", "workspace.context", "workflow.steps", decisionaction.SettingsField:
+	case "agent.instructions", "squad.instructions", "workspace.context", "workflow.steps", workflowBudgetField, decisionaction.SettingsField:
 	case "workflow.step.instructions":
 		gateField = "workflow.instructions"
 	default:
@@ -205,6 +241,51 @@ func buildProposal(ctx context.Context, client *cli.APIClient, field, target, te
 	default:
 		return settingsProposal(ctx, client, settings)
 	}
+}
+
+const workflowBudgetField = "workflow.budget"
+
+// workflowBudgetProposal reads the workflow's live budget and sends only the
+// fields the caller named. The after digest mirrors the server: a cap of 0
+// clears the stored cap, and a field left out keeps its live value.
+func workflowBudgetProposal(ctx context.Context, client *cli.APIClient, workflowID string, maxRuns *int, includeChildPRs *bool) (*proposal, error) {
+	if maxRuns != nil && (*maxRuns < 0 || *maxRuns > issueworkflow.MaxRunsPerIssueLimit) {
+		return nil, fmt.Errorf("--max-runs must be between 0 and %d", issueworkflow.MaxRunsPerIssueLimit)
+	}
+	live, err := getLive(ctx, client, "/api/issue-workflows/"+url.PathEscape(workflowID))
+	if err != nil {
+		return nil, err
+	}
+	var liveCap *int
+	liveChildren := true
+	if raw, ok := live["max_runs_per_issue"]; ok {
+		if err := json.Unmarshal(raw, &liveCap); err != nil {
+			return nil, errors.New("live max_runs_per_issue is not a number")
+		}
+	}
+	if raw, ok := live["include_child_prs"]; ok {
+		if err := json.Unmarshal(raw, &liveChildren); err != nil {
+			return nil, errors.New("live include_child_prs is not a boolean")
+		}
+	}
+	afterCap, afterChildren := liveCap, liveChildren
+	params := map[string]any{"workflow_id": workflowID}
+	if maxRuns != nil {
+		params["max_runs_per_issue"] = *maxRuns
+		afterCap = maxRuns
+		if *maxRuns == 0 {
+			afterCap = nil
+		}
+	}
+	if includeChildPRs != nil {
+		params["include_child_prs"] = *includeChildPRs
+		afterChildren = *includeChildPRs
+	}
+	p := &proposal{Type: decisionaction.WorkflowBudgetSet, Params: params}
+	p.BaseSHA256 = decisionaction.WorkflowBudgetDigest(workflowID, liveCap, liveChildren)
+	p.AfterSHA256 = decisionaction.WorkflowBudgetDigest(workflowID, afterCap, afterChildren)
+	params["base_sha256"] = p.BaseSHA256
+	return p, nil
 }
 
 func getLive(ctx context.Context, client *cli.APIClient, path string) (map[string]json.RawMessage, error) {

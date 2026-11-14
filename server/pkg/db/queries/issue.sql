@@ -526,6 +526,9 @@ cleared_pr_events AS (
 ),
 cleared_review_admissions AS (
     DELETE FROM issue_review_admission WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_unread AS (
+    DELETE FROM issue_unread WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 
@@ -740,6 +743,22 @@ FROM issue
 WHERE workspace_id = $1
   AND parent_issue_id IS NOT NULL
 GROUP BY parent_issue_id;
+
+-- name: ListUrgentOrphanIssues :many
+-- Urgent issues nothing will pick up: not terminal, no live task, no enabled
+-- wakeup. Feeds the pulse so an urgent issue cannot sit unowned.
+SELECT i.id, i.number, i.title, i.status, i.assignee_type, i.assignee_id, i.updated_at
+FROM issue i
+WHERE i.workspace_id = $1
+  AND i.priority = 'urgent'
+  AND i.status <> ALL(sqlc.arg('terminal_status_keys')::text[])
+  AND NOT EXISTS (
+    SELECT 1 FROM agent_task_queue t
+    WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory'))
+  AND NOT EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    WHERE w.issue_id = i.id AND w.enabled AND w.paused_reason IS NULL)
+ORDER BY i.updated_at, i.id;
 
 -- SearchIssues: moved to handler (dynamic SQL for multi-word search support).
 

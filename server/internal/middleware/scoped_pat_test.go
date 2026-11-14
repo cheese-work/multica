@@ -74,6 +74,39 @@ func TestScopedPATReachesOnlyItsRoutes(t *testing.T) {
 	}
 }
 
+// A decisions:ci_request PAT reaches POST /api/decisions/ci and nothing else; a
+// decisions:feed PAT does not reach it.
+func TestCIRequestScopedPATReachesOnlyItsRoute(t *testing.T) {
+	reached := func(scopes []string, method, path string) int {
+		queries, raw := scopedPATFixture(t, scopes)
+		handler := Auth(queries, auth.NewPATCache(nil), nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code
+	}
+	ci, feed := []string{"decisions:ci_request"}, []string{"decisions:feed"}
+	for _, tc := range []struct {
+		scopes       []string
+		method, path string
+		want         int
+	}{
+		{ci, http.MethodPost, "/api/decisions/ci", http.StatusOK},
+		{ci, http.MethodGet, "/api/decisions/ci", http.StatusForbidden},
+		{ci, http.MethodPost, "/api/decisions/ci/x", http.StatusForbidden},
+		{ci, http.MethodPost, "/api/decisions", http.StatusForbidden},
+		{ci, http.MethodPost, "/api/decisions/ask", http.StatusForbidden},
+		{ci, http.MethodGet, "/api/decisions/feed", http.StatusForbidden},
+		{ci, http.MethodGet, "/api/me", http.StatusForbidden},
+		{feed, http.MethodPost, "/api/decisions/ci", http.StatusForbidden},
+	} {
+		if got := reached(tc.scopes, tc.method, tc.path); got != tc.want {
+			t.Errorf("%v %s %s = %d, want %d", tc.scopes, tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestUnscopedPATStillReachesEveryRoute(t *testing.T) {
 	queries, raw := scopedPATFixture(t, nil)
 	handler := Auth(queries, auth.NewPATCache(nil), nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))

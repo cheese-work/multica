@@ -81,7 +81,7 @@ describe("DM decision cards", () => {
     it("drops the preview of an action type this client does not know", () => {
       expect(parse({ ...action, action_type: "future.thing" })?.preview).toBeUndefined();
       expect(parse({ ...action, action_type: undefined })?.preview).toBeUndefined();
-      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "agent.env.patch", "agent.copy"]) {
+      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "issue.workflow.set", "issue.project.set", "agent.env.patch", "agent.copy"]) {
         expect(parse({ ...action, action_type: known })?.preview).toEqual(preview);
       }
     });
@@ -112,7 +112,6 @@ describe("DM decision cards", () => {
       for (const bad of [
         "x",
         { ...config_change, sha256: "abc" },
-        { ...config_change, diff_kind: "other" },
         { ...config_change, diff: "x" },
         { ...config_change, diff: [{ old_start: 1, new_start: 1, lines: [7] }] },
         { ...config_change, field: undefined },
@@ -122,6 +121,12 @@ describe("DM decision cards", () => {
         expect(parsed?.config_change).toBeUndefined();
         expect(parsed?.id).toBe("action");
       }
+    });
+
+    it("keeps a diff_kind a newer server sends; approval fails closed on it elsewhere", () => {
+      const parsed = parse({ ...action, config_change: { ...config_change, diff_kind: "other" } });
+      expect(parsed?.config_change?.diff_kind).toBe("other");
+      expect(parsed?.id).toBe("action");
     });
 
     it("treats a missing or malformed owner flag as unknown", () => {

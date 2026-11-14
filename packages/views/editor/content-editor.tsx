@@ -215,6 +215,8 @@ interface ContentEditorBaseProps {
   enableArchiveCommand?: boolean;
   enablePinCommand?: boolean;
   enableUnseenCommand?: boolean;
+  /** `/later [duration]` snoozes the DM from the owner; pass it only when the surface handles it. */
+  enableLaterCommand?: boolean;
   enableUnarchiveCommand?: boolean;
   /** `/compact` is offered by default; an archived DM turns it off. */
   enableCompactCommand?: boolean;
@@ -414,6 +416,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableArchiveCommand = false,
       enablePinCommand = false,
       enableUnseenCommand = false,
+      enableLaterCommand = false,
       enableUnarchiveCommand = false,
       enableCompactCommand = true,
       slashCommandMode = "skill",
@@ -464,6 +467,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       archive: enableArchiveCommand,
       pin: enablePinCommand,
       unseen: enableUnseenCommand,
+      later: enableLaterCommand,
       unarchive: enableUnarchiveCommand,
     });
     dmCommandsRef.current = {
@@ -471,6 +475,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       archive: enableArchiveCommand,
       pin: enablePinCommand,
       unseen: enableUnseenCommand,
+      later: enableLaterCommand,
       unarchive: enableUnarchiveCommand,
     };
     const enableCompactCommandRef = useRef(enableCompactCommand);
@@ -705,10 +710,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
             quickActionMenuListeners.current.add(refresh);
             return () => { quickActionMenuListeners.current.delete(refresh); };
           },
-          renderQuickAction: (id: string) =>
-            quickActionMenuRef.current?.renderQuickAction?.(id) ?? Promise.resolve(""),
-          onRenderError: (error: unknown) =>
-            quickActionMenuRef.current?.onRenderError?.(error),
+          getQuickActionContent: (id: string) =>
+            quickActionMenuRef.current?.getQuickActionContent?.(id) ?? "",
         },
         resolveIssueIdentifierRef,
       }),

@@ -67,6 +67,11 @@ const (
 // callers log it and drop the trigger.
 var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived from it runs")
 
+// ErrAgentPaused is returned by every enqueue path for an agent whose
+// scheduling is paused (CHE-5066). The pause already stops claims; this stops
+// the run from being queued at all, so a paused agent gains no backlog.
+var ErrAgentPaused = errors.New("agent_paused: this agent is paused; pick another agent by role")
+
 // ErrRerunSourceIsTriage is returned when a manual rerun names a triage run as
 // the task to repeat. Handlers render it as 400: the request is well-formed and
 // the issue may well be runnable — it is the target that is not an execution
@@ -104,6 +109,11 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
 		return ReviewGate{}, err
 	}
+	// A paused agent takes no new run, whoever asks (CHE-5066). Before every
+	// exit below, so a named mention is refused too.
+	if err := guardAgentNotPaused(ctx, q, target.AgentID); err != nil {
+		return ReviewGate{}, err
+	}
 	// Before the OriginNamed exit: a person naming an agent does not start a
 	// second runner next to one that is not proven stopped.
 	if issueID.Valid {
@@ -127,9 +137,11 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 		// mention naming an agent still starts it.
 		// ponytail: wakeups only, a named mention stays unrefused by design.
 		if origin == OriginNamed && (target.Trigger == "wakeup" || target.Trigger == "system wakeup") {
-			if err := guardReviewAdmission(ctx, q, issueID, target); err != nil {
+			decision, err := guardReviewAdmission(ctx, q, issueID, target)
+			if err != nil {
 				return ReviewGate{}, err
 			}
+			return admittedGate(ctx, ReviewGate{}, decision)
 		}
 		return ReviewGate{}, nil
 	}
@@ -143,19 +155,50 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
+	// Before the budget: a skipped run is no task row and takes no stage slot.
+	if err := guardReviewHeadAnswered(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
+	// Before the budget: a loop is refused whatever the budget has left.
+	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
+	// Before the budget: a member's status move reopens a budget window, never
+	// this one (CHE-5720).
+	if err := guardWeeklyRuns(ctx, q, issueID); err != nil {
+		return ReviewGate{}, err
+	}
 	gate, err := guardRunBudget(ctx, q, issueID, target)
 	if err != nil {
 		return ReviewGate{}, err
 	}
 	// After the budget, before the stage queue: a PR head that is not
 	// admissible neither starts nor takes a stage slot (CHE-4650).
-	if err := guardReviewAdmission(ctx, q, issueID, target); err != nil {
+	decision, err := guardReviewAdmission(ctx, q, issueID, target)
+	if err != nil {
 		return ReviewGate{}, err
 	}
 	// After the budget: a run the budget refuses never takes a stage slot.
 	if err := guardStageQueue(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
 	}
+	return admittedGate(ctx, gate, decision)
+}
+
+// admittedGate folds the admission decision into the gate the enqueue applies,
+// so the task row names the head the admission judged and carries the expiry
+// reason only for a validated expiry. The budget and the admission must have
+// read one head: a gate that names another head means the PR moved between
+// the two reads, and the run is refused so the caller judges the new head.
+func admittedGate(ctx context.Context, gate ReviewGate, d admissionDecision) (ReviewGate, error) {
+	if d.Head == "" {
+		return gate, nil
+	}
+	if gate.Head != "" && gate.Head != d.Head {
+		return ReviewGate{}, ErrReviewHeadMoved
+	}
+	gate.Expired = d.Expired
+	gate.Pin = d.Head
 	return gate, nil
 }
 
@@ -180,4 +223,23 @@ func IsTriageTask(t db.AgentTaskQueue) bool {
 		Type string `json:"type"`
 	}
 	return json.Unmarshal(t.Context, &payload) == nil && payload.Type == TriageContextType
+}
+
+// guardAgentNotPaused refuses a run for an agent whose scheduling is paused. A
+// missing agent row is left to the insert that follows.
+func guardAgentNotPaused(ctx context.Context, q *db.Queries, agentID pgtype.UUID) error {
+	if !agentID.Valid {
+		return nil
+	}
+	agent, err := q.GetAgent(ctx, agentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("paused guard: load agent: %w", err)
+	}
+	if agent.SchedulingPausedAt.Valid {
+		return ErrAgentPaused
+	}
+	return nil
 }

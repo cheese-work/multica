@@ -265,7 +265,13 @@ WHERE wait.closed_at IS NULL
              EXISTS (
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
-                   AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND (moved.actor_type = 'member' OR (moved.action = 'run_budget_top_up' AND moved.actor_type = 'system')) AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+                   AND (
+                       moved.action = 'run_budget_top_up'
+                       OR moved.created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+                       OR (moved.details->'trigger'->>'auth_source' = 'interactive_jwt' AND moved.details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+                   )
              ) OR EXISTS (
                  SELECT 1 FROM issue_workflow flow
                  WHERE flow.workspace_id = issue.workspace_id AND flow.run_budget_since > wait.suspended_at
@@ -282,7 +288,8 @@ WHERE wait.closed_at IS NULL
              ) OR EXISTS (
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
-                   AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND (moved.actor_type = 'member' OR (moved.action = 'run_budget_top_up' AND moved.actor_type = 'system')) AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
              )
          )))
   )
@@ -499,7 +506,7 @@ func (q *Queries) ListDecisionWaitAnswers(ctx context.Context, arg ListDecisionW
 }
 
 const listDecisionWaitBoundRequests = `-- name: ListDecisionWaitBoundRequests :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.ping_outcome, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.ping_outcome, request.batch_id, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
 WHERE request.authority = 'human' AND request.workspace_id = $1 AND request.issue_id = $2
   AND (
     (request.status = 'open' AND request.origin = 'asked' AND request.asking_agent_id = $3)
@@ -569,6 +576,7 @@ func (q *Queries) ListDecisionWaitBoundRequests(ctx context.Context, arg ListDec
 			&i.AnswerRevision,
 			&i.WakeSeq,
 			&i.PingOutcome,
+			&i.BatchID,
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 		); err != nil {
@@ -761,7 +769,7 @@ func (q *Queries) ListDecisionWaitPendingRetractions(ctx context.Context, reques
 }
 
 const listDecisionWaitRequests = `-- name: ListDecisionWaitRequests :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, ping_outcome, covers_request_ids, answered_by_batch_request_id FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, ping_outcome, batch_id, covers_request_ids, answered_by_batch_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
 ORDER BY id
 `
@@ -818,6 +826,7 @@ func (q *Queries) ListDecisionWaitRequests(ctx context.Context, arg ListDecision
 			&i.AnswerRevision,
 			&i.WakeSeq,
 			&i.PingOutcome,
+			&i.BatchID,
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 		); err != nil {
