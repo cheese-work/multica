@@ -3410,9 +3410,16 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+	return s.CancelTasksForAgentInTx(ctx, agentID, nil)
+}
+
+// CancelTasksForAgentInTx is CancelTasksForAgent with a hook that runs on the
+// cancel's own transaction, after the tasks are settled and before commit. A
+// hook error rolls the cancel back (the admin audit row, CHE-5646).
+func (s *TaskService) CancelTasksForAgentInTx(ctx context.Context, agentID pgtype.UUID, inTx TerminateHook) ([]db.AgentTaskQueue, error) {
+	cancelled, err := s.terminateTasksWithHook(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.CancelAgentTasksByAgent(ctx, agentID)
-	})
+	}, inTx)
 	if err != nil {
 		return nil, err
 	}
@@ -7980,12 +7987,26 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 // its task row locks), those sessions are locked in id order, and it runs again. Every pass that
 // repeats holds at least one more session, so the loop ends.
 func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksWithHook(ctx, fail, nil)
+}
+
+// TerminateHook runs on a terminate batch's transaction with the settled rows,
+// before commit.
+type TerminateHook func(ctx context.Context, q *db.Queries, tasks []db.AgentTaskQueue) error
+
+func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error), inTx TerminateHook) ([]db.AgentTaskQueue, error) {
 	if s.TxStarter == nil {
 		failed, err := fail(s.Queries)
 		if err != nil {
 			return nil, err
 		}
-		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+		if err := SettleTerminalTaskState(ctx, s.Queries, failed...); err != nil {
+			return failed, err
+		}
+		if inTx != nil {
+			return failed, inTx(ctx, s.Queries, failed)
+		}
+		return failed, nil
 	}
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
@@ -8029,6 +8050,11 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, s.recordStageRefusal(ctx, err)
+	}
+	if inTx != nil {
+		if err := inTx(ctx, qtx, failed); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
