@@ -1903,6 +1903,7 @@ export const ListIssuesResponseSchema = z.lazy(() => z.object({
 export const CreateIssueResponseSchema = z.lazy(() => IssueSchema.unwrap().extend({
   id: z.string().min(1),
   labels: z.array(LabelSchema).optional().catch(undefined),
+  pr_auto_complete_disabled: z.boolean().optional().catch(undefined),
 }).loose());
 
 export const EMPTY_LIST_ISSUES_RESPONSE: ListIssuesResponse = {
