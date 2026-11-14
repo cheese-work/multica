@@ -2618,6 +2618,9 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	updateQueries := h.Queries.WithTx(tx)
+	// Set when queued/deferred rows were re-stamped, so the new runtime's daemon
+	// is woken after commit instead of waiting out its empty-claim cache.
+	var pendingMovedTo pgtype.UUID
 	if req.RuntimeID != nil {
 		member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
 		if !ok {
@@ -2645,6 +2648,31 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
+
+		// Runtime row, then agent row: the order teardown and revocation use.
+		// FOR UPDATE waits out an enqueue holding the agent FOR KEY SHARE, so its
+		// row is committed with the old runtime before the re-stamp below sees it.
+		locked, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to lock agent")
+			return
+		}
+		if locked.RuntimeID != runtime.ID {
+			reassignment, err := updateQueries.ReassignPendingAgentTasksToRuntime(r.Context(), db.ReassignPendingAgentTasksToRuntimeParams{
+				AgentID:      existing.ID,
+				NewRuntimeID: runtime.ID,
+			})
+			if err != nil {
+				slog.Warn("update agent: reassign pending tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+				writeError(w, http.StatusInternalServerError, "failed to move queued tasks to the new runtime")
+				return
+			}
+			if !reassignment.FenceOk {
+				writeError(w, http.StatusConflict, "the agent or runtime was removed while switching runtimes")
+				return
+			}
+			pendingMovedTo = runtime.ID
+		}
 	}
 	// Lock order is workspace, runtime, agent, as in runtime deletion. The
 	// audit row's before-state is the row as locked here, not the pre-
@@ -2745,6 +2773,9 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("update agent: commit failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to commit agent update")
 		return
+	}
+	if pendingMovedTo.Valid {
+		h.TaskService.NotifyRuntimeMayHaveWork(pendingMovedTo, "")
 	}
 
 	resp, ok := h.updatedAgentResponse(w, r, updated)

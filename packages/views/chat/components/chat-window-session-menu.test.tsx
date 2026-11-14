@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { VirtuosoMockContext } from "react-virtuoso";
 import { useChatSearchStore } from "@multica/core/chat/search";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -58,6 +59,7 @@ function setup(sessions: ChatSession[] = [one]) {
   };
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <VirtuosoMockContext.Provider value={{ viewportHeight: 320, itemHeight: 44 }}>
       <I18nProvider locale="en" resources={{ en: { chat: enChat, common: enCommon, issues: enIssues } }}>
         <SessionDropdown
           sessions={sessions}
@@ -67,6 +69,7 @@ function setup(sessions: ChatSession[] = [one]) {
           {...handlers}
         />
       </I18nProvider>
+      </VirtuosoMockContext.Provider>
     </QueryClientProvider>,
   );
   fireEvent.click(screen.getByText(sessions[0]!.title!));

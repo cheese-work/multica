@@ -12,6 +12,7 @@ import type { Project, ProjectStatus, ProjectPriority } from "@multica/core/type
 import { useFeatureEnabled } from "@multica/core/config";
 import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useAuthStore } from "@multica/core/auth";
+import { canDeleteProject } from "@multica/core/projects/deletion-permissions";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { useUpdateProject, useDeleteProject } from "@multica/core/projects/mutations";
 import { pinListOptions } from "@multica/core/pins";
@@ -162,11 +163,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     enabled: !!userId,
   });
   const isPinned = pinnedItems.some((p) => p.item_type === "project" && p.item_id === projectId);
-  const isWorkspaceAdmin = useMemo(() => {
-    if (!userId) return false;
-    const me = members.find((m) => m.user_id === userId);
-    return me?.role === "owner" || me?.role === "admin";
-  }, [members, userId]);
+  const role = members.find((m) => m.user_id === userId)?.role ?? null;
+  const isWorkspaceAdmin = role === "owner" || role === "admin";
+  const canDelete = !!project && canDeleteProject(project, userId ?? null, role, agents);
   const createPin = useCreatePin();
   const deletePinMut = useDeletePin();
   const descEditorRef = useRef<ContentEditorRef>(null);
@@ -561,7 +560,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                             {workflowSubmenu}
                           </>
                         )}
-                        {isWorkspaceAdmin && (
+                        {canDelete && (
                           <>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -629,7 +628,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       </ResizablePanelGroup>
 
       {/* Delete confirmation */}
-      {isWorkspaceAdmin && (
+      {canDelete && (
         <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>

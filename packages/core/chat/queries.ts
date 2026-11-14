@@ -152,12 +152,16 @@ export function sortArchivedChatSessions(sessions: ChatSession[]): ChatSession[]
 }
 
 export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
-  return [...sessions].sort((a, b) => {
-    const ap = a.pinned ? 1 : 0;
-    const bp = b.pinned ? 1 : 0;
-    if (ap !== bp) return bp - ap;
-    return sessionActivityTime(b) - sessionActivityTime(a);
-  });
+  // Parse dates once per session, rather than on each comparison.
+  return sessions
+    .map((session) => ({ session, activity: sessionActivityTime(session) }))
+    .sort((a, b) => {
+      const ap = a.session.pinned ? 1 : 0;
+      const bp = b.session.pinned ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return b.activity - a.activity;
+    })
+    .map(({ session }) => session);
 }
 
 /** Views behind the DM list filter chips (CHE-5511 slice 1). */

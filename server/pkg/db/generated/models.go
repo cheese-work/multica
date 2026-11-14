@@ -2948,6 +2948,8 @@ type Project struct {
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
 	WorkflowSplit     []byte             `json:"workflow_split"`
+	CreatorType       pgtype.Text        `json:"creator_type"`
+	CreatorID         pgtype.UUID        `json:"creator_id"`
 }
 
 type ProjectResource struct {

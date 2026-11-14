@@ -244,17 +244,7 @@ describe("ChatThreadList no_response preview (MUL-4351)", () => {
         message_kind: "no_response",
       },
     });
-    render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatThreadList
-          sessions={[session]}
-          agents={[agent]}
-          activeSessionId={null}
-          onSelectSession={vi.fn()}
-          onArchive={vi.fn()}
-        />
-      </I18nProvider>,
-    );
+    renderList(null, { renderedSessions: [session] });
     expect(screen.getByText(enChat.list.no_response_preview)).toBeInTheDocument();
     // The stored English fallback body must not leak into the preview.
     expect(
