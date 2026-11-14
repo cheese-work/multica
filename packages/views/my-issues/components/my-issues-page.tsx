@@ -1,10 +1,13 @@
 "use client";
 
-import { ListTodo } from "@multica/ui/icons";
+import { CircleUser, ListTodo, Plus } from "@multica/ui/icons";
+import { Button } from "@multica/ui/components/ui/button";
 import { useAuthStore } from "@multica/core/auth";
 import { myIssuesRelationFromScope } from "@multica/core/issues/stores/my-issues-view-store";
+import { CollectionPageState } from "../../layout/collection-page";
 import { PageHeader } from "../../layout/page-header";
 import { IssueSurface } from "../../issues/surface/issue-surface";
+import { MY_ISSUE_MODES } from "../../issues/surface/modes";
 import { IssueViewHeader } from "../../issue-views/view-header";
 import { useT } from "../../i18n";
 import { useMyIssuesScope } from "../use-my-issues-scope";
@@ -13,6 +16,7 @@ const MY_BASE = { kind: "my" } as const;
 
 export function MyIssuesPage() {
   const { t } = useT("my-issues");
+  const { t: tIssues } = useT("issues");
   const user = useAuthStore((s) => s.user);
   const scope = useMyIssuesScope();
 
@@ -25,15 +29,21 @@ export function MyIssuesPage() {
             userId: user.id,
             relation: myIssuesRelationFromScope(scope),
           }}
-          modes={["board", "list", "table", "swimlane"]}
+          modes={MY_ISSUE_MODES}
           batchToolbar="list"
           renderHeader={({ controller }) => <IssueViewHeader controller={controller} base={MY_BASE} />}
-          renderEmpty={() => (
-            <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-2 text-muted-foreground">
-              <ListTodo className="h-10 w-10 text-faint-foreground" />
-              <p className="text-body">{t(($) => $.page.empty_title)}</p>
-              <p className="text-caption">{t(($) => $.page.empty_description)}</p>
-            </div>
+          renderEmpty={({ controller }) => (
+            <CollectionPageState
+              icon={CircleUser}
+              title={t(($) => $.page.empty_title)}
+              description={t(($) => $.page.empty_description)}
+              actions={
+                <Button size="sm" onClick={() => controller.openCreateIssue()}>
+                  <Plus aria-hidden="true" />
+                  {tIssues(($) => $.views.new_issue)}
+                </Button>
+              }
+            />
           )}
         />
       ) : (

@@ -142,8 +142,8 @@
     "reject_error": "拒絕未完成。請重試。",
     "waiting": "正在等待你的通行金鑰…",
     "state": {
-      "executed": "已執行",
-      "failed": "失敗",
+      "executed": "已套用",
+      "failed": "未套用",
       "rejected": "已拒絕",
       "expired": "已過期",
       "cancelled": "已取消"

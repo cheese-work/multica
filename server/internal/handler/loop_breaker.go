@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -70,8 +69,7 @@ func (h *Handler) blockLoopBreakerIssue(ctx context.Context, issue db.Issue, rea
 	if !moved {
 		return
 	}
-	value, _ := json.Marshal(reason)
-	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: value, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+	if _, err := setIssueMetadataValue(ctx, h.Queries, issue.WorkspaceID, issue.ID, "blocked_reason", reason); err != nil {
 		slog.Warn("loop breaker: set blocked_reason failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 }

@@ -134,7 +134,7 @@ func TestWorkspaceSchedulingPauseBlocksEveryAgent(t *testing.T) {
 	ctx := context.Background()
 	f := newPauseFixture(t, 2)
 
-	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil); err != nil {
 		t.Fatalf("pause workspace: %v", err)
 	}
 	for i, a := range f.agents {
@@ -176,7 +176,7 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 
 	t.Run("workspace", func(t *testing.T) {
 		f := newPauseFixture(t, 2)
-		if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+		if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil); err != nil {
 			t.Fatalf("pause: %v", err)
 		}
 		for i, a := range f.agents {
@@ -184,7 +184,7 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 				t.Fatalf("precondition: agent %d has %d claim candidates under a paused workspace", i, candidates)
 			}
 		}
-		ws, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID)
+		ws, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID, nil)
 		if err != nil {
 			t.Fatalf("resume: %v", err)
 		}
@@ -233,7 +233,7 @@ func TestSchedulingResumeBumpsEmptyClaimVersion(t *testing.T) {
 	t.Run("workspace", func(t *testing.T) {
 		f := newPauseFixture(t, 2)
 		check(t, f, func() error {
-			_, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID)
+			_, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID, nil)
 			return err
 		})
 	})
@@ -259,12 +259,12 @@ func (f failingQuery) Query(ctx context.Context, sql string, args ...interface{}
 func TestWorkspaceResumeFailureLeavesWorkspacePaused(t *testing.T) {
 	ctx := context.Background()
 	f := newPauseFixture(t, 1)
-	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
 	f.svc.Queries = db.New(failingQuery{DBTX: f.pool, match: "FROM agent_runtime"})
-	if _, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID); err == nil {
+	if _, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID, nil); err == nil {
 		t.Fatal("resume succeeded although runtime listing failed")
 	}
 
@@ -296,11 +296,11 @@ func TestSecondPauseKeepsFirstActorAndTime(t *testing.T) {
 			first.SchedulingPausedBy, second.SchedulingPausedBy, first.SchedulingPausedAt.Time, second.SchedulingPausedAt.Time)
 	}
 
-	w1, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID)
+	w1, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil)
 	if err != nil {
 		t.Fatalf("first workspace pause: %v", err)
 	}
-	w2, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, otherActor)
+	w2, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, otherActor, nil)
 	if err != nil {
 		t.Fatalf("second workspace pause: %v", err)
 	}

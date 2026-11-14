@@ -243,11 +243,6 @@ type Definition struct {
 	// RunBudgetSince is when the budget starts counting: runs before it are
 	// free, so issues in flight when the budget shipped start fresh.
 	RunBudgetSince time.Time
-	// TokenAllowance (A) and TokenReserve (E) are the weighted tokens credited
-	// per budget window and held per admitted run. Token accounting is active
-	// only when both are stored.
-	TokenAllowance int64
-	TokenReserve   int64
 	// StartStatusKey is the status where new issues of the workflow start
 	// (CHE-3113); empty means StartStatus.
 	StartStatusKey string
@@ -321,9 +316,6 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	}
 	if row.RunBudgetSince.Valid {
 		def.RunBudgetSince = row.RunBudgetSince.Time
-	}
-	if row.RunBudgetTokenAllowance.Valid && row.RunBudgetTokenReserve.Valid {
-		def.TokenAllowance, def.TokenReserve = row.RunBudgetTokenAllowance.Int64, row.RunBudgetTokenReserve.Int64
 	}
 	return def, nil
 }
@@ -903,6 +895,10 @@ type BriefInput struct {
 	// AssigneeName names the issue's assignee in an observer's brief; empty
 	// means unassigned.
 	AssigneeName string
+	// Routing marks a step the workspace's routing agent handles (CHE-4439 S5):
+	// its commands are `multica issue route` lines, which record why, instead
+	// of `multica issue status` lines.
+	Routing bool
 }
 
 // Brief renders what an agent reads about the issue's project workflow: the
@@ -977,15 +973,22 @@ func Brief(in BriefInput) string {
 		return b.String()
 	}
 	b.WriteString("\nHand off by changing the status — moving the issue into a step that hands off reassigns it to that step's handler and starts their run:\n")
+	// move renders one command: a routing step records why through `issue route`.
+	move := func(status string) string {
+		if in.Routing {
+			return fmt.Sprintf("multica issue route %s --status %s --reason \"<why>\" --confidence <0-1>", in.IssueIdentifier, status)
+		}
+		return fmt.Sprintf("multica issue status %s %s", in.IssueIdentifier, status)
+	}
 	if next := in.Workflow.NextStatus(in.StatusKey); next != "" {
-		fmt.Fprintf(&b, "Step done      → multica issue status %s %s\n", in.IssueIdentifier, next)
+		fmt.Fprintf(&b, "Step done      → %s\n", move(next))
 	}
 	if step.BackStatusKey != "" {
-		fmt.Fprintf(&b, "Needs changes  → multica issue status %s %s\n", in.IssueIdentifier, step.BackStatusKey)
+		fmt.Fprintf(&b, "Needs changes  → %s\n", move(step.BackStatusKey))
 	}
 	switch {
 	case in.Workflow.Has(issuestatus.Blocked):
-		fmt.Fprintf(&b, "Can't proceed  → multica issue status %s blocked, then comment why\n", in.IssueIdentifier)
+		fmt.Fprintf(&b, "Can't proceed  → %s, then comment why\n", move(issuestatus.Blocked))
 	case step.BackStatusKey != "":
 		b.WriteString("Can't proceed  → this workflow has no blocked status: comment why, then use the \"Needs changes\" command above\n")
 	default:

@@ -1310,3 +1310,32 @@ func TestMergeRoutingFlagsKeepsUnnamedFields(t *testing.T) {
 		t.Fatal("malformed override accepted")
 	}
 }
+
+// CHE-4116: the --routing-* flags write the routing job through the
+// background-agents body and leave the other jobs as they are.
+func TestRoutingAliasBodyWritesTheRoutingJob(t *testing.T) {
+	current := map[string]bgChain{
+		"dm_title": {"agent_id": "d1"},
+		"routing":  {"agent_id": "a1", "fallback_agent_id": "f1", "statuses": []any{"todo"}},
+	}
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-agent", "a2")
+	body, err := routingAliasBody(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routing, _ := body["routing"].(map[string]any)
+	if routing["agent_id"] != "a2" || routing["fallback_agent_id"] != "f1" || !reflect.DeepEqual(body["dm_title"], bgChain{"agent_id": "d1"}) {
+		t.Fatalf("body = %v", body)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-agent", "none")
+	body, err = routingAliasBody(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["routing"]; ok || body["dm_title"] == nil {
+		t.Fatalf("routing off left body = %v", body)
+	}
+}

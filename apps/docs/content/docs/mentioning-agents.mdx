@@ -64,7 +64,7 @@ While the recipient is running, a label under the comment box says how the messa
 | Stop and start over | Stops the current run now and starts over from this message. |
 | Won't start this time | Posts the comment without triggering this agent. |
 
-After you send, the comment shows "Waiting for … to read it", which changes to "Read by …" once the agent has read it. The step list in the execution log also marks the step where it was read. If delivery fails, you can retry or send it as a new run instead.
+After you send, the comment shows "Waiting for … to read it", which changes to "Read by …" once the agent has read it. The step list in the execution log also marks the step where it was read. If delivery fails, you can retry or send it as a new run instead. If the run ends before the agent reads it, the agent reads it in its next run, and the comment shows "… will read it in the next run". If queueing that run keeps failing, the comment says the retries ran out, and **Send as a new run** queues a new one.
 
 - Only text can join a running run. A message with attachments is handled after the run ends.
 - Steering needs support from the agent's AI coding tool. Without it, **Add to current run** isn't offered.

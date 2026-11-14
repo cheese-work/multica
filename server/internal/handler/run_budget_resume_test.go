@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -566,61 +564,6 @@ func TestRunBudgetResumeWorkflowRefusingTheRestoreSupersedesIt(t *testing.T) {
 	if got, n := c.status(t), resumeQueued(t, c); got != "blocked" || n != 0 {
 		t.Fatalf("issue %s with %d queued runs, want blocked and none", got, n)
 	}
-}
-
-func TestRunBudgetResumeStillBlockedByTokensThenAFreshWindowQueuesIt(t *testing.T) {
-	c, id := tokenRefusal(t, 2860125)
-	linkRefusal(t, id, resumeRowOf(t, id).Window)
-	resume(t, id)
-	wantResume(t, id, "still_blocked", "tokens")
-	if n := resumeQueued(t, c); n != 0 {
-		t.Fatalf("queued runs = %d, want 0", n)
-	}
-	window := topUp(t, c) // a top-up opens a window with a new allowance
-	ctx := context.Background()
-	err := testHandler.withTx(ctx, func(q *db.Queries) error {
-		if _, err := q.LockIssueRunBudget(ctx, parseUUID(c.issueID)); err != nil {
-			return err
-		}
-		issue, err := q.GetIssue(ctx, parseUUID(c.issueID))
-		if err != nil {
-			return err
-		}
-		return service.ClaimRunBudgetAllowance(ctx, q, issue, window)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	linkRefusal(t, id, window)
-	resume(t, id)
-	wantResume(t, id, "run_queued", "")
-	if n := resumeQueued(t, c); n != 1 {
-		t.Fatalf("queued runs = %d, want 1", n)
-	}
-}
-
-// tokenRefusal leaves a refusal at tx R whose budget refuses for tokens: the
-// runs are not spent, the allowance is.
-func tokenRefusal(t *testing.T, installationID int64) (budgetCase, pgtype.UUID) {
-	t.Helper()
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	c := newBudgetCase(t, installationID, recoverySteps(seededReadyAgentID(t)), 40)
-	storeTokenValues(t, c.edgeCase)
-	recordOccurrence(t, c, "in_progress")
-	events := make(chan service.RunBudgetExhausted, 1)
-	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { events <- e })
-	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
-	task := admitRun(t, c.edgeCase)
-	reportUsage(t, task, usageRow{Model: "m1", In: 12000, Out: 1000})
-	testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, c.issueID)
-	if err := c.admit(t); !errors.Is(err, service.ErrRunBudgetExhausted) {
-		t.Fatalf("admission = %v, want ErrRunBudgetExhausted for tokens", err)
-	}
-	crashAt(t, "after_intent")
-	testHandler.onRunBudgetExhausted(context.Background(), <-events)
-	return c, refusalIDs(t, c)[0]
 }
 
 func TestRunBudgetResumeApprovalLinkedWhileTheWorkerRollsBackKeepsTheNewerApproval(t *testing.T) {

@@ -680,8 +680,14 @@ export const RichContent = memo(function RichContent({
   const processed = useMemo(
     () =>
       cached?.processed ??
-      highlightToHtml(preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true })),
-    [cached, content, cdnDomain],
+      highlightToHtml(
+        preprocessMarkdown(content, {
+          cdnDomain,
+          autolinkIssueIdentifiers: true,
+          deferTrailingIssueIdentifier: phase === "streaming",
+        }),
+      ),
+    [cached, content, cdnDomain, phase],
   );
 
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up

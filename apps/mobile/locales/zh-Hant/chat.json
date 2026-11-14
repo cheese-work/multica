@@ -248,5 +248,30 @@
   "archived_send.newer": "較新的私訊延續了這段對話：{{title}}。",
   "archived_send.confirm": "取消封存並傳送",
   "archived_send.cancel": "取消",
-  "archived_send.open_newer": "開啟較新的私訊"
+  "archived_send.open_newer": "開啟較新的私訊",
+  "attention": {
+    "kind": {
+      "ask": "提問",
+      "later": "提醒",
+      "unseen": "未讀",
+      "decision": "決定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黃色",
+      "red": "紅色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分鐘",
+      "hours_other": "{{count}} 小時",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_a11y": "{{kind}}。{{level}}，已等待 {{age}}",
+    "done": "完成",
+    "later": "稍後",
+    "done_a11y": "標為完成:{{title}}",
+    "later_a11y": "稍後提醒:{{title}}",
+    "failed": "更新失敗,請重試。"
+  }
 }

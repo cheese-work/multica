@@ -142,8 +142,8 @@
     "reject_error": "Le refus n'a pas abouti. Réessayez.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
-      "executed": "Exécutée",
-      "failed": "Échec",
+      "executed": "Appliquée",
+      "failed": "Non appliquée",
       "rejected": "Rejetée",
       "expired": "Expirée",
       "cancelled": "Annulée"

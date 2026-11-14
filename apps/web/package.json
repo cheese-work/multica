@@ -1,6 +1,6 @@
 {
   "name": "@multica/web",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@multica/eslint-config": "workspace:*",
+    "@multica/vitest-setup": "workspace:*",
     "@tailwindcss/postcss": "catalog:",
     "postcss": "catalog:",
     "@testing-library/jest-dom": "catalog:",

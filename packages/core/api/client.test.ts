@@ -2314,6 +2314,30 @@ describe("ApiClient", () => {
       expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
     });
 
+    it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
+    });
+
+    it("CHE-4153 attention actions post the exact displayed keys", async () => {
+      const ok = () => Promise.resolve(new Response(JSON.stringify({ attention: [], batch_id: "b1" }), { status: 200 }));
+      const fetchMock = vi.fn().mockImplementation(ok);
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new ApiClient("https://api.example.test");
+      await client.chatAttentionXong("s1", ["item:1"]);
+      await client.chatAttentionLater("s1", ["item:1"], { durationSeconds: 7200, requestId: "r1" });
+      await client.chatAttentionXongAll(["item:1", "turn:2"]);
+      await client.chatAttentionUndoXongAll("b1");
+      const calls = fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method, init?.body ? JSON.parse(init.body as string) : undefined]);
+      expect(calls[0]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/xong", "POST", { subject_keys: ["item:1"] }]);
+      expect(calls[1]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/later", "POST", { subject_keys: ["item:1"], duration_seconds: 7200, request_id: "r1" }]);
+      expect(calls[2]).toEqual(["https://api.example.test/api/chat/attention/xong-all", "POST", { subject_keys: ["item:1", "turn:2"] }]);
+      expect(calls[3]![0]).toBe("https://api.example.test/api/chat/attention/xong-all/b1/undo");
+      expect(calls[3]![1]).toBe("POST");
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {
@@ -2777,6 +2801,66 @@ describe("ApiClient refreshSkill response schema", () => {
       content: "",
       files: [],
     });
+  });
+});
+
+describe("ApiClient skill version response schemas", () => {
+  function stubJSON(body: unknown) {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  const summary = {
+    id: "ver-2",
+    skill_id: "skill-1",
+    version: 2,
+    name: "review-helper",
+    source: "restore",
+    restored_from_version: 1,
+    created_by: "user-1",
+    created_at: "2026-01-02T00:00:00Z",
+  };
+
+  it("parses the version list and maps unknown sources to update", async () => {
+    stubJSON([summary, { ...summary, id: "ver-1", version: 1, source: "future-kind" }]);
+    const result = await new ApiClient("https://api.example.test").listSkillVersions("skill-1");
+    expect(result.map((v) => [v.version, v.source])).toEqual([
+      [2, "restore"],
+      [1, "update"],
+    ]);
+  });
+
+  it("falls back to an empty list when the response is malformed", async () => {
+    stubJSON({ versions: 42 });
+    const result = await new ApiClient("https://api.example.test").listSkillVersions("skill-1");
+    expect(result).toEqual([]);
+  });
+
+  it("parses a version snapshot and defaults omitted fields", async () => {
+    const fetchMock = stubJSON({ ...summary, content: "# v2", files: [{ path: "a.md" }] });
+    const result = await new ApiClient("https://api.example.test").getSkillVersion("skill-1", 2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/skills/skill-1/versions/2");
+    expect(result).toMatchObject({
+      version: 2,
+      description: "",
+      content: "# v2",
+      files: [{ path: "a.md", content: "" }],
+    });
+  });
+
+  it("restores through POST and falls back to the empty skill on a malformed body", async () => {
+    const fetchMock = stubJSON({ skill: 42 });
+    const result = await new ApiClient("https://api.example.test").restoreSkillVersion("skill-1", 1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/api/skills/skill-1/versions/1/restore");
+    expect((init as RequestInit | undefined)?.method).toBe("POST");
+    expect(result).toMatchObject({ id: "", files: [] });
   });
 });
 

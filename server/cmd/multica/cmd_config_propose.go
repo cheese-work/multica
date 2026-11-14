@@ -155,6 +155,12 @@ func runConfigPropose(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	return emitProposal(p, expires, out, dryRun)
+}
+
+// emitProposal prints both digests and writes the action file `multica decision
+// request --action-file` takes (or prints the action on --dry-run).
+func emitProposal(p *proposal, expires int, out string, dryRun bool) error {
 	action := map[string]any{"type": p.Type, "version": 1, "params": p.Params}
 	if expires > 0 {
 		action["expires_in_seconds"] = expires

@@ -142,8 +142,8 @@
     "reject_error": "거부하지 못했습니다. 다시 시도하세요.",
     "waiting": "패스키를 기다리는 중…",
     "state": {
-      "executed": "실행됨",
-      "failed": "실패",
+      "executed": "적용됨",
+      "failed": "적용되지 않음",
       "rejected": "거부됨",
       "expired": "만료됨",
       "cancelled": "취소됨"

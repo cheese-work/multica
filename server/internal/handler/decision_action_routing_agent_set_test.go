@@ -62,27 +62,27 @@ func routingDigest(test *testing.T, raw json.RawMessage) string {
 
 func liveRoutingDigest(test *testing.T) string {
 	test.Helper()
-	return routingDigest(test, storedSettings(test)["routing_agent"])
+	return routingDigest(test, routingJobRaw(storedSettings(test)))
 }
 
 func afterRoutingDigest(test *testing.T, cfg RoutingAgentConfig) string {
 	test.Helper()
-	raw, err := json.Marshal(routingAfter(cfg))
+	job, err := routingJob(routingAfter(cfg))
 	if err != nil {
 		test.Fatal(err)
+	}
+	var raw json.RawMessage
+	if job != nil {
+		if raw, err = json.Marshal(job); err != nil {
+			test.Fatal(err)
+		}
 	}
 	return routingDigest(test, raw)
 }
 
 func storedRouting(test *testing.T) RoutingAgentConfig {
 	test.Helper()
-	var settings map[string]any
-	for key, raw := range storedSettings(test) {
-		if key == "routing_agent" {
-			settings = map[string]any{key: json.RawMessage(raw)}
-		}
-	}
-	return routingAgentFromSettings(settings)
+	return routingAgentFromSettings(map[string]any{backgroundAgentsKey: rawToAny(storedSettings(test)[backgroundAgentsKey])})
 }
 
 func routingParams(test *testing.T, cfg RoutingAgentConfig) map[string]any {
@@ -154,7 +154,7 @@ func TestRoutingAgentSetApplies(test *testing.T) {
 
 func TestRoutingAgentSetClearsTheSetting(test *testing.T) {
 	roster := newRoutingRoster(test)
-	setWorkspaceSettings(test, `{"routing_agent":{"agent_id":"`+roster.a+`","fallback_agent_id":"","statuses":["todo"],"overrides":{}}}`)
+	setWorkspaceSettings(test, `{"background_agents":{"routing":{"agent_id":"`+roster.a+`","fallback_agent_id":"","statuses":["todo"],"overrides":{}}}}`)
 	request, _ := fileRouting(test, newActionFixture(test), http.StatusCreated, routingParams(test, RoutingAgentConfig{}))
 	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
 	if got := storedRouting(test); got.AgentID != "" || len(got.Statuses) != len(defaultRoutingStatuses) {
@@ -226,7 +226,7 @@ func TestRoutingAgentSetRequestRefusals(test *testing.T) {
 			}
 			_, body := fileRouting(test, fixture, tc.status, params)
 			mustContain(test, body, tc.want)
-			if _, set := storedSettings(test)["routing_agent"]; set {
+			if routingJobRaw(storedSettings(test)) != nil {
 				test.Fatal("a refused request changed the routing agent")
 			}
 		})
@@ -238,7 +238,7 @@ func TestRoutingAgentSetProposerMayKeepWhatIsLive(test *testing.T) {
 	fixture := newActionFixture(test)
 	// The proposer is already the routing agent: a change that leaves it named,
 	// here by adding a fallback, is not a new self-grant.
-	setWorkspaceSettings(test, `{"routing_agent":{"agent_id":"`+fixture.agentID+`","fallback_agent_id":"","statuses":["todo"],"overrides":{}}}`)
+	setWorkspaceSettings(test, `{"background_agents":{"routing":{"agent_id":"`+fixture.agentID+`","fallback_agent_id":"","statuses":["todo"],"overrides":{}}}}`)
 	cfg := RoutingAgentConfig{AgentID: fixture.agentID, FallbackAgentID: roster.b, Statuses: []string{"todo"}}
 	request, _ := fileRouting(test, fixture, http.StatusCreated, routingParams(test, cfg))
 	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
@@ -259,7 +259,7 @@ func TestRoutingAgentSetApproveRefusals(test *testing.T) {
 	notApplied := func(test *testing.T, request settingsRequest) {
 		test.Helper()
 		request.action.assertUntouched(test)
-		if _, set := storedSettings(test)["routing_agent"]; set {
+		if routingJobRaw(storedSettings(test)) != nil {
 			test.Fatal("a refused approval wrote the routing agent")
 		}
 		if n := request.action.activityCount(test, "config_change_applied"); n != 0 {
@@ -268,7 +268,7 @@ func TestRoutingAgentSetApproveRefusals(test *testing.T) {
 	}
 	test.Run("the setting changed after the request", func(test *testing.T) {
 		request, _ := file(test)
-		dbfx.Exec(test, `UPDATE workspace SET settings = jsonb_set(settings, '{routing_agent}', $2::jsonb) WHERE id = $1`, testWorkspaceID,
+		dbfx.Exec(test, `UPDATE workspace SET settings = jsonb_build_object('background_agents', jsonb_build_object('routing', $2::jsonb)) WHERE id = $1`, testWorkspaceID,
 			`{"agent_id":"`+roster.b+`","fallback_agent_id":"","statuses":["todo"],"overrides":{}}`)
 		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "precondition_drift")
 		request.action.assertUntouched(test)
@@ -308,7 +308,7 @@ func TestSettingsPatchStillRefusesTheRoutingAgentKey(test *testing.T) {
 	roster := newRoutingRoster(test)
 	_, body := requestSettings(test, http.StatusForbidden, map[string]any{"routing_agent": map[string]any{"agent_id": roster.a}}, nil)
 	mustContain(test, body, "denylisted")
-	if _, set := storedSettings(test)["routing_agent"]; set {
+	if routingJobRaw(storedSettings(test)) != nil {
 		test.Fatal("the generic patch wrote the routing agent")
 	}
 }

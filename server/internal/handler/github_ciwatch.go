@@ -20,13 +20,16 @@ type ciWatcher interface {
 
 // newCIWatcher wires the watcher to this handler's database and flag.
 func (h *Handler) newCIWatcher(gh ciwatch.GitHub, budget ciwatch.Budget) *ciwatch.Watcher {
+	labeler := h.ciWatchLabeler()
 	return &ciwatch.Watcher{
 		FlagOn: func(ctx context.Context) bool { return featureflags.CIWatcherEnabled(ctx, h.FeatureFlags) },
 		Config: h.Queries,
 		Pipeline: ciwatch.Pipeline{
 			Collector: &ciwatch.Collector{GH: gh, Budget: budget, Runs: ciwatch.DBRuns{Q: h.Queries}},
 			Tx:        ciwatch.PgxTx(h.TxStarter),
-			Observer:  ciwatch.Observer{W: h.Queries},
+			Observer: ciwatch.Observer{W: h.Queries, Labels: labeler, Flake: func(ctx context.Context, run ciwatch.Run, sig string) (int, error) {
+				return labeler.FlakeCount7d(ctx, run.WorkspaceID, run.RepoOwner, run.RepoName, sig)
+			}},
 		},
 	}
 }

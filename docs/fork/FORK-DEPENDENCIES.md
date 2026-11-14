@@ -187,7 +187,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | D23 | G09 | hard | server/internal/service/provider_breaker.go:95 resolves the agent model to a provider with ResolveModelProvider (provider_hold.go:83) |
 | B01 | B02 | hard | server/internal/service/run_budget_ledger.go:78 openRunBudget calls loadRunBudgetUsage defined in run_budget_snapshot.go:112 |
 | B01 | C05 | hard | server/internal/handler/issue_run_budget.go:152 calls isMachineCredentialActor defined in actor_guards.go:60 |
-| B02 | B01 | hard | server/internal/service/run_budget_snapshot.go:145 calls openRunBudget (run_budget_ledger.go:67); :177 calls activationEpoch (run_budget_tokens.go:78) |
+| B02 | B01 | hard | server/internal/service/run_budget_snapshot.go:145 calls openRunBudget (run_budget_ledger.go:67) |
 | B03 | B01 | hard | server/internal/handler/issue_wakeup.go:199 uses errRecoveryCaused defined in issue_run_budget.go:411 |
 | B03 | C08 | hard | server/internal/handler/run_budget_decision.go:253 calls h.DecisionWorker.Notify() (decision_worker.go; field at handler.go:249) |
 | B03 | C10 | hard | server/internal/handler/run_budget_decision.go:172 builds decisionRequestInput and :201 calls createDecisionDM (decision_request.go:24,440) |

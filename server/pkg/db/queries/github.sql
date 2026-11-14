@@ -151,13 +151,13 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state, head_repo_same,
-    additions, deletions, changed_files
+    additions, deletions, changed_files, merge_commit_sha
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
     $11, sqlc.narg('mergeable_state'), sqlc.arg('head_repo_same'),
-    $12, $13, $14
+    $12, $13, $14, sqlc.arg('merge_commit_sha')::text
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -248,6 +248,8 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     additions     = EXCLUDED.additions,
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
+    -- Only a merged delivery carries the commit; a later one without it keeps it.
+    merge_commit_sha = COALESCE(NULLIF(EXCLUDED.merge_commit_sha, ''), github_pull_request.merge_commit_sha),
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
 RETURNING *;

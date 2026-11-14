@@ -370,7 +370,7 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 		return nil, err
 	}
 	if !locked {
-		return nil, errBusyRetry
+		return nil, atStep("config_change", errBusyRetry)
 	}
 	// The row lock comes before the first read: an ordinary edit holds the row
 	// until it commits, so it cannot land between this read and Apply.

@@ -185,6 +185,7 @@ func init() {
 	projectUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	projectUpdateCmd.Flags().String("due-date", "", "New due date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	projectUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+	addProjectSplitFlags(projectUpdateCmd)
 
 	// project delete
 	projectDeleteCmd.Flags().String("output", "json", "Output format: table or json")
@@ -438,13 +439,31 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		body["due_date"] = v
 	}
 
-	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --start-date, --due-date")
+	split, clearSplit, err := projectSplitRequest(cmd)
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 && split == nil && !clearSplit {
+		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --start-date, --due-date, --split-arm-b, --clear-split")
 	}
 
 	var result map[string]any
-	if err := client.PutJSON(ctx, "/api/projects/"+projectRef.ID, body, &result); err != nil {
-		return fmt.Errorf("update project: %w", err)
+	if len(body) > 0 {
+		if err := client.PutJSON(ctx, "/api/projects/"+projectRef.ID, body, &result); err != nil {
+			return fmt.Errorf("update project: %w", err)
+		}
+	}
+	// The split has its own endpoint (project workflow permission) and answers
+	// with the project, so it supplies the result when it is the only change.
+	switch {
+	case clearSplit:
+		if err := client.DeleteJSONResponse(ctx, "/api/projects/"+projectRef.ID+"/workflow-split", &result); err != nil {
+			return fmt.Errorf("clear workflow split: %w", err)
+		}
+	case split != nil:
+		if err := client.PutJSON(ctx, "/api/projects/"+projectRef.ID+"/workflow-split", split, &result); err != nil {
+			return fmt.Errorf("set workflow split: %w", err)
+		}
 	}
 
 	output, _ := cmd.Flags().GetString("output")

@@ -25,6 +25,13 @@ const (
 	// from immutable historical source context.
 	DaemonCapabilitySourceContextQuickCreateV1 = "source_context_quick_create_v1"
 
+	// DaemonCapabilityBackgroundOutputOnlyV1 advertises that the daemon can run an
+	// output_only background task (CHE-4100): a prompt built from the task's
+	// bounded context input, returning text in the task output. The server hands
+	// such a task only to a runtime that lists this; a daemon without it never
+	// sees one (chat_compaction tasks are unaffected).
+	DaemonCapabilityBackgroundOutputOnlyV1 = "background_output_only_v1"
+
 	// DaemonCapabilityRPCV1 advertises that the daemon can carry
 	// request/response RPCs over the WebSocket control connection (MUL-4257).
 	// Gated so only daemons+servers that both support it route claim over WS;
@@ -330,6 +337,9 @@ const (
 	ChatMessageKindDecisionReference    = "decision_reference"
 	ChatMessageKindDecisionRequest      = "decision_request"
 	ChatMessageKindDecisionCancelNotice = "decision_cancel_notice"
+	// ChatMessageKindAskRecovery is the automatic notice that an ask never
+	// reached this person. It is not a decision request and carries no action.
+	ChatMessageKindAskRecovery = "ask_recovery"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this
@@ -478,6 +488,13 @@ type DaemonHeartbeatRequestPayload struct {
 	// of a run it did not start can still be alive, so the server attests only
 	// runs dispatched since the process booted. Nil attests nothing.
 	DaemonUptimeMs *int64 `json:"daemon_uptime_ms,omitempty"`
+	// HostTaskIDs is the MULTICA_TASK_ID of every live same-uid process on the
+	// host (Linux /proc/*/environ), the proof that a runner outside this
+	// daemon's live set is gone. Meaningful only when HostScanOK is true.
+	HostTaskIDs *[]string `json:"host_task_ids,omitempty"`
+	// HostScanOK is true only when the host scan read every process it must.
+	// Nil or false (error, non-Linux host) leaves the uptime rule in force.
+	HostScanOK *bool `json:"host_scan_ok,omitempty"`
 	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
 	// not per runtime), repeated on every runtime heartbeat until the next
 	// sample. Nil from a daemon that does not sample (older, macOS, Windows).

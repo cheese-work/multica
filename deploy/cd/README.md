@@ -716,6 +716,10 @@ workspace owner with the `decisions:ci_request` scope. The server keeps one open
 card per SHA, withdraws the older open card when a newer candidate arrives and
 refuses a stale one with 409 (the job treats 200 and 409 as delivered). The job
 runs in the `c00-approval-notice` concurrency group so notices do not overlap.
+A lift decision (`doop.deploy_lift` v1, params `marker_value` and `repo`) is read
+back with `GET /api/decisions/{id}/state` using a PAT that holds only the
+`decisions:read` scope (CHE-5553). The `doop-lift` environment secret that holds
+that token is provisioned only after Cheese decides on it (CHE-5474).
 With no route configured or delivered the job fails
 (CHE-4879). The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
