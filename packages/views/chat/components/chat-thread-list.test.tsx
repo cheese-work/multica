@@ -69,6 +69,7 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useMarkChatSessionRead: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useUpdateChatSession: () => ({ mutate: updateMutate, isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: archiveMutate, isPending: false }),
+  useBatchChatSessions: () => ({ mutateAsync: vi.fn().mockResolvedValue({ failed: [] }), isPending: false }),
 }));
 
 vi.mock("@multica/core/chat/attention-mutations", () => {
@@ -549,12 +550,12 @@ describe("ChatThreadList row shortcuts and context menu", () => {
     expect(onEnterSelectMode.mock.calls[0]![0]).toMatchObject({ id: "s2" });
   });
 
-  it("offers no select item until the host wires select mode", async () => {
+  it("always offers the select item and enters select mode from it", async () => {
     renderList(null);
     fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[0]!);
 
-    await screen.findByRole("menuitem", { name: new RegExp(`^${enChat.list.rename}`) });
-    expect(screen.queryByRole("menuitem", { name: new RegExp(`^${enChat.list.select}`) })).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${enChat.list.select}`) }));
+    expect(screen.getAllByRole("checkbox").length).toBeGreaterThan(0);
   });
 
   it("does not fire while typing in an input or with a modifier held", () => {

@@ -6,18 +6,23 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
+  CheckIcon,
   Clock,
   Eye,
   EyeOff,
   ListChecks,
   Loader2,
+  MinusIcon,
   MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Square,
   Trash2,
+  X,
 } from "@multica/ui/icons";
+import { Button } from "@multica/ui/components/ui/button";
+import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
@@ -33,6 +38,7 @@ import {
   sortChatSessions,
 } from "@multica/core/chat/queries";
 import {
+  useBatchChatSessions,
   useDeleteChatSession,
   useMarkChatSessionRead,
   useSetChatSessionPinned,
@@ -59,6 +65,8 @@ import { formatChatClock } from "./format-chat-time";
 import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
 import { NeedsYouList } from "./needs-you-list";
 import { useAttentionRefresh } from "./use-attention-refresh";
+import { ChatBulkBar } from "./chat-bulk-bar";
+import { useChatSelection, type BulkAction, type GroupState } from "./use-chat-selection";
 import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
 import { ListEmpty, ListError, ListLoading, ListOffline } from "./chat-thread-list-states";
 import { useOnline } from "../../settings/components/use-online";
@@ -87,8 +95,8 @@ interface ChatThreadListProps {
   loadState?: "loading" | "error";
   onRetry?: () => void;
   /**
-   * Enters multi-select with this row. Seam for the select UI: while the host
-   * does not pass it, the `X` shortcut and the "Select multiple" item are off.
+   * Called after the list enters multi-select with this row (`X`, the menu
+   * item or a long-press); the list owns the selection itself.
    */
   onEnterSelectMode?: (session: ChatSession) => void;
 }
@@ -174,6 +182,19 @@ export function ChatThreadList({
   const hasUnclassified = rows.some((s) => (s.attention_unclassified_keys?.length ?? 0) > 0);
   useAttentionRefresh(sessions);
   const online = useOnline();
+  const isMobile = useIsMobile();
+  const batch = useBatchChatSessions();
+  const visibleIds = useMemo(() => visibleSessions.map((s) => s.id), [visibleSessions]);
+  const selection = useChatSelection(visibleIds);
+  const selecting = selection.active && listView !== "waiting";
+  const exitSelection = selection.exit;
+  useEffect(() => {
+    if (selection.active && listView === "waiting") exitSelection();
+  }, [selection.active, listView, exitSelection]);
+  const enterSelect = (session: ChatSession) => {
+    selection.enter(session.id);
+    onEnterSelectMode?.(session);
+  };
 
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
@@ -249,6 +270,35 @@ export function ChatThreadList({
       setStoppingTaskId(null);
       setConfirmingStopId(null);
     });
+  };
+
+  const handleBulk = async (action: BulkAction, ids: string[]) => {
+    // Hold auto mark-read first, as the single "unseen" action does.
+    if (action === "unseen" && activeSessionId && ids.includes(activeSessionId)) {
+      useChatStore.getState().suppressAutoRead(activeSessionId);
+    }
+    let failed: string[];
+    try {
+      ({ failed } = await batch.mutateAsync({ action, sessionIds: ids }));
+    } catch {
+      failed = ids;
+    }
+    if (failed.length > 0) toast.error(t(($) => $.list.bulk.failed, { count: failed.length }));
+    const done = ids.filter((id) => !failed.includes(id));
+    if (done.length === 0) return;
+    if (activeSessionId && done.includes(activeSessionId) && (action === "unseen" || action === "archive")) {
+      setActiveSession(null);
+    }
+    if (action === "archive") {
+      toast(t(($) => $.list.bulk.archived_toast, { count: done.length }), {
+        duration: 5000,
+        action: {
+          label: t(($) => $.list.undo),
+          onClick: () => void batch.mutateAsync({ action: "unarchive", sessionIds: done }),
+        },
+      });
+    }
+    selection.exit();
   };
 
   const handleRenameSubmit = (session: ChatSession, raw: string) => {
@@ -340,17 +390,15 @@ export function ChatThreadList({
       shortcut: "R",
       onSelect: () => setRenamingId(session.id),
     };
-    const selectItem: RowActionItem[] = onEnterSelectMode
-      ? [
+    const selectItem: RowActionItem[] = [
           {
             key: "select",
             icon: <ListChecks className="size-3.5" />,
             label: t(($) => $.list.select),
             shortcut: "X",
-            onSelect: () => onEnterSelectMode(session),
+            onSelect: () => enterSelect(session),
           },
-        ]
-      : [];
+        ];
     const rowActions: RowActionItem[] =
       session.status === "archived"
         ? [
@@ -416,6 +464,7 @@ export function ChatThreadList({
     const menuGroups = [rowActions, [renameItem, ...selectItem]];
     const shortcutItems = menuGroups.flat();
     const isRenaming = renamingId === session.id;
+    const isPicked = selecting && selection.selected.has(session.id);
 
     // Swipe left: the row's own pin / archive (or stop, or unarchive) + More.
     // A full swipe archives, never on a running or already-archived DM.
@@ -461,22 +510,26 @@ export function ChatThreadList({
     return (
       <SwipeRow
         key={session.id}
-        leftActions={leftActions}
-        rightAction={rightAction}
+        leftActions={selecting ? [] : leftActions}
+        rightAction={selecting ? undefined : rightAction}
         onFullSwipeLeft={
-          session.status !== "archived" && !isRunning && !isConfirmingAction
+          !selecting && session.status !== "archived" && !isRunning && !isConfirmingAction
             ? () => onArchive(session)
             : undefined
         }
-        onLongPress={onEnterSelectMode ? () => onEnterSelectMode(session) : undefined}
+        onLongPress={selecting ? undefined : () => enterSelect(session)}
       >
       <RowContextMenu
-        groups={isConfirmingAction ? [] : menuGroups}
+        groups={isConfirmingAction || selecting ? [] : menuGroups}
         data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
         onClick={(e) => {
           if (isConfirmingAction || e.defaultPrevented) return;
+          if (selecting) {
+            selection.toggle(session.id);
+            return;
+          }
           // Plain click keeps the master-detail selection. On web, a modifier
           // click opens the session as its own browser tab. Desktop tabs
           // dedupe chat by pathname (a session is view state, not a subject —
@@ -508,6 +561,11 @@ export function ChatThreadList({
         }}
         onKeyDown={(e) => {
           if (isConfirmingAction) return;
+          if (selecting) {
+            if (e.key === "Escape") selection.exit();
+            else handleRowActivationKey(e, () => selection.toggle(session.id));
+            return;
+          }
           handleRowActivationKey(e, () => onSelectSession(session));
           // A portal (the open ⋯ menu) still bubbles React events to the row;
           // only keys pressed inside the row's own DOM are row shortcuts.
@@ -517,10 +575,17 @@ export function ChatThreadList({
           // Fixed height so nothing (hover actions, confirm prompts) can change
           // the row size and make the list jump. Content is vertically centered.
           "group/row relative flex h-14 min-w-0 cursor-default items-center gap-3 rounded-md px-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-          isCurrent ? "bg-accent" : "hover:bg-accent/50",
+          isCurrent || isPicked ? "bg-accent" : "hover:bg-accent/50",
           isConfirmingAction && "bg-destructive/5 hover:bg-destructive/5",
         )}
       >
+        {selecting && (
+          <SelectCheckbox
+            state={isPicked ? "all" : "none"}
+            label={t(($) => $.list.bulk.row_aria, { title: titleText })}
+            onToggle={() => selection.toggle(session.id)}
+          />
+        )}
         {/* Thin ring keeps photo + fallback avatars reading as the same circle
             (the fallback's faint bg otherwise looks smaller). */}
         {agent ? (
@@ -630,7 +695,7 @@ export function ChatThreadList({
 
         {/* One ⋯ menu. Where the pointer can hover it shows on row hover or
             keyboard focus; right-click opens the same menu. */}
-        {!isConfirmingAction && (
+        {!isConfirmingAction && !selecting && (
           <RowActionsMenu
             label={t(($) => $.list.row_actions_aria)}
             groups={menuGroups}
@@ -685,7 +750,16 @@ export function ChatThreadList({
               className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
             >
               {/* Slot for the group checkbox (select mode). */}
-              <span data-slot="group-select" className="empty:hidden" />
+              <span data-slot="group-select" className="empty:hidden">
+                {selecting && (
+                  <SelectCheckbox
+                    className="-my-3 -ml-2.5"
+                    state={selection.groupState(g.sessions.map((s) => s.id))}
+                    label={t(($) => $.list.bulk.group_aria, { label: g.label })}
+                    onToggle={() => selection.toggleGroup(g.sessions.map((s) => s.id))}
+                  />
+                )}
+              </span>
               <span className="min-w-0 flex-1 truncate">{g.label}</span>
               <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
             </div>
@@ -697,10 +771,79 @@ export function ChatThreadList({
 
   return (
     <>
+      {selecting && (
+        <div className="flex items-center gap-1 px-2 py-1.5">
+          <span className="min-w-0 flex-1 truncate text-label font-semibold">
+            {t(($) => $.list.bulk.selected, { count: selection.selected.size })}
+          </span>
+          <Button type="button" variant="ghost" size="sm" onClick={selection.selectAll}>
+            {t(($) => $.list.bulk.select_all)}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t(($) => $.list.bulk.cancel)}
+            onClick={selection.exit}
+          >
+            <X />
+          </Button>
+        </div>
+      )}
       <ChatFilterChips value={listView} counts={counts} onChange={setListView} />
       {!online && <ListOffline />}
       {body}
+      {selecting && (
+        <div className="sticky bottom-0 z-20">
+          <ChatBulkBar
+            sessions={visibleSessions.filter((s) => selection.selected.has(s.id))}
+            compact={isMobile}
+            onAction={handleBulk}
+          />
+        </div>
+      )}
     </>
+  );
+}
+
+/** Round checkbox look at 22 px inside a 44×44 hit area. `mixed` = some of a group. */
+function SelectCheckbox({
+  state,
+  label,
+  onToggle,
+  className,
+}: {
+  state: GroupState;
+  label: string;
+  onToggle: () => void;
+  className?: string;
+}) {
+  return (
+    // ui-pattern-ref: allow tri-state role="checkbox" control with mixed state; Button has no checkbox semantics
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={state === "all" ? true : state === "some" ? "mixed" : false}
+      aria-label={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className={cn(
+        "flex size-11 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        className,
+      )}
+    >
+      <span
+        className={cn(
+          "flex size-5.5 items-center justify-center rounded-xs border border-input text-primary-foreground",
+          state !== "none" && "border-primary bg-primary",
+        )}
+      >
+        {state === "all" && <CheckIcon className="size-3.5" />}
+        {state === "some" && <MinusIcon className="size-3.5" />}
+      </span>
+    </button>
   );
 }
 
