@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -107,6 +108,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateProviderHoldSetting(map[string]any{key: value})
 	case key == "guard_policy":
 		err = validateGuardPolicySetting(map[string]any{key: value})
+	case key == decisiontx.SettingCannotDoMode || key == decisiontx.SettingCannotDo:
+		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == askguard.SettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})

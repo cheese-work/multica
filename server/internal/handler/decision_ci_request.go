@@ -97,6 +97,9 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	if _, ok := checkAgentCannotDo(w, parsed, workspace.Settings); !ok {
+		return
+	}
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask})) > maxCommentContentBytes {
 		writeError(w, http.StatusBadRequest, "ask is too long")

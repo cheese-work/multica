@@ -1,0 +1,152 @@
+package handler
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/testutil"
+)
+
+// setCannotDo stores the CHE-5902 settings; catalog is raw JSON or "" for the built-in entries.
+func setCannotDo(t *testing.T, mode, catalog string) {
+	t.Helper()
+	ctx := context.Background()
+	patch := `{"agent_cannot_do_mode":"` + mode + `"`
+	if catalog != "" {
+		patch += `,"agent_cannot_do":` + catalog
+	}
+	patch += `}`
+	if _, err := testPool.Exec(ctx, `UPDATE workspace SET settings = COALESCE(settings, '{}') || $1::jsonb WHERE id = $2`, patch, testWorkspaceID); err != nil {
+		t.Fatalf("set agent_cannot_do: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET settings = settings - 'agent_cannot_do_mode' - 'agent_cannot_do' WHERE id = $1`, testWorkspaceID)
+	})
+}
+
+// cannotDoAsk is the CHE-4297 card: the first option promises an agent run.
+func cannotDoAsk(fixture requestCoreFixture, first map[string]any) map[string]any {
+	ask := fixture.newShapeAsk()
+	options := ask["options"].([]any)
+	options[0].(map[string]any)["label"] = "Yes, reload"
+	ask["recommended_option"], ask["recommendation"], ask["default_if_no_reply"] = "Yes, reload", "Yes, reload", "Yes, reload"
+	for key, value := range first {
+		options[0].(map[string]any)[key] = value
+	}
+	options[1].(map[string]any)["after_choice"] = "record_only"
+	return ask
+}
+
+func agentRunOption(argv ...string) map[string]any {
+	return map[string]any{"after_choice": "agent_run", "agent_commands": []any{argv}}
+}
+
+func TestDecisionRequestBlocksOptionThatPromisesWhatAnAgentRunCannotDo(t *testing.T) {
+	setCannotDo(t, "block", "")
+	for name, argv := range map[string][]string{
+		"CHE-4297 card":   {"$MULTICA_CLI_PATH", "daemon", "restart"},
+		"plain name":      {"multica", "daemon", "restart"},
+		"quotes kept":     {`"$MULTICA_CLI_PATH"`, "daemon", "restart"},
+		"path and global": {"/home/u/.local/bin/multica", "--profile", "dev", "daemon", "restart"},
+		"exe stop":        {"multica.exe", "daemon", "stop"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRequestCoreFixture(t, false)
+			res := testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, cannotDoAsk(fixture, agentRunOption(argv...)))).Want(http.StatusBadRequest)
+			for _, want := range []string{"Yes, reload", "daemon_", "multica daemon"} {
+				if !strings.Contains(res.Text(), want) {
+					t.Errorf("400 body lacks %q: %s", want, res.Text())
+				}
+			}
+			fixture.assertCounts(t, 0)
+		})
+	}
+}
+
+func TestDecisionRequestBlockAcceptsWhatAnAgentRunCanDo(t *testing.T) {
+	setCannotDo(t, "block", "")
+	for name, option := range map[string]map[string]any{
+		"status":             agentRunOption("$MULTICA_CLI_PATH", "daemon", "status"),
+		"restarts":           agentRunOption("multica", "daemon", "restarts"),
+		"human steps option": {"after_choice": "human_steps"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRequestCoreFixture(t, false)
+			testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, cannotDoAsk(fixture, option))).Want(http.StatusCreated)
+		})
+	}
+}
+
+func TestDecisionRequestBlockRefusesWrapperAndStringCommand(t *testing.T) {
+	setCannotDo(t, "block", "")
+	fixture := newRequestCoreFixture(t, false)
+	res := testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, cannotDoAsk(fixture, agentRunOption("env", "X=1", "multica", "daemon", "restart")))).Want(http.StatusBadRequest)
+	if !strings.Contains(res.Text(), "give the command itself as argv") {
+		t.Errorf("wrapper body = %s", res.Text())
+	}
+	str := cannotDoAsk(fixture, map[string]any{"after_choice": "agent_run", "agent_commands": []any{"multica daemon restart"}})
+	res = testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, str)).Want(http.StatusBadRequest)
+	if !strings.Contains(res.Text(), "ask.options[0].agent_commands[0]") {
+		t.Errorf("string body = %s", res.Text())
+	}
+	fixture.assertCounts(t, 0)
+}
+
+func TestDecisionRequestBlockRefusesMissingAfterChoice(t *testing.T) {
+	setCannotDo(t, "block", "")
+	fixture := newRequestCoreFixture(t, false)
+	res := testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, fixture.newShapeAsk())).Want(http.StatusBadRequest)
+	if !strings.Contains(res.Text(), "ask.options[0].after_choice") {
+		t.Errorf("body = %s", res.Text())
+	}
+	fixture.assertCounts(t, 0)
+}
+
+func TestDecisionRequestWarnCreatesCardWithOneHintAndOffNone(t *testing.T) {
+	for mode, wantHints := range map[string]int{"warn": 1, "off": 0} {
+		t.Run(mode, func(t *testing.T) {
+			setCannotDo(t, mode, "")
+			fixture := newRequestCoreFixture(t, false)
+			var created struct {
+				Hints []string `json:"hints"`
+			}
+			testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, cannotDoAsk(fixture, agentRunOption("multica", "daemon", "restart")))).Want(http.StatusCreated).JSON(&created)
+			got := 0
+			for _, hint := range created.Hints {
+				if strings.Contains(hint, "daemon_restart") {
+					got++
+				}
+			}
+			if got != wantHints {
+				t.Errorf("hints = %q, want %d about daemon_restart", created.Hints, wantHints)
+			}
+		})
+	}
+}
+
+func TestDecisionRequestCannotDoLeavesActionAndWaiverCardsAlone(t *testing.T) {
+	setCannotDo(t, "block", "")
+	enableActionRequests(t, true)
+	fixture := newRequestCoreFixture(t, false)
+	testutil.Call(t, testHandler.RequestDecision, fixture.postAction(fixture.actionBody())).Want(http.StatusCreated)
+	waiver := newRequestCoreFixture(t, false)
+	postRawAsk(t, waiver, waiverAsk(t, waiver, nil)).Want(http.StatusCreated)
+}
+
+func TestWorkspaceSettingsValidateCannotDo(t *testing.T) {
+	good := map[string]any{"agent_cannot_do_mode": "warn", "agent_cannot_do": []any{map[string]any{"key": "k", "tool": "gh", "subcommand": []any{"pr", "merge"}, "human_step": "Merge it."}}}
+	if err := validateAgentCannotDoSetting(good); err != nil {
+		t.Fatalf("good settings refused: %v", err)
+	}
+	for name, bad := range map[string]map[string]any{
+		"mode":    {"agent_cannot_do_mode": "strict"},
+		"null":    {"agent_cannot_do_mode": nil},
+		"catalog": {"agent_cannot_do": []any{map[string]any{"key": "k"}}},
+	} {
+		if err := validateAgentCannotDoSetting(bad); err == nil {
+			t.Errorf("%s settings accepted", name)
+		}
+	}
+}
