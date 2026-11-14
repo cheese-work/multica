@@ -108,3 +108,31 @@ describe("isIssueIdentifier", () => {
     expect(isIssueIdentifier("MUL1")).toBe(false);
   });
 });
+
+describe("preprocessIssueIdentifiers deferTrailing", () => {
+  const defer = { deferTrailing: true };
+
+  it("leaves a key that touches the end of the text plain", () => {
+    expect(preprocessIssueIdentifiers("see CHE-18", defer)).toBe("see CHE-18");
+    expect(preprocessIssueIdentifiers("CHE-1824", defer)).toBe("CHE-1824");
+  });
+
+  it("links a completed key once any boundary follows it", () => {
+    const linked = "[CHE-1824](mention://issue/CHE-1824)";
+    expect(preprocessIssueIdentifiers("see CHE-1824 ", defer)).toBe(`see ${linked} `);
+    expect(preprocessIssueIdentifiers("see CHE-1824\n", defer)).toBe(`see ${linked}\n`);
+    expect(preprocessIssueIdentifiers("see CHE-1824.", defer)).toBe(`see ${linked}.`);
+  });
+
+  it("links earlier keys and defers only the trailing one", () => {
+    expect(preprocessIssueIdentifiers("CHE-1 and CHE-18", defer)).toBe(
+      "[CHE-1](mention://issue/CHE-1) and CHE-18",
+    );
+  });
+
+  it("still links a trailing key when not deferring", () => {
+    expect(preprocessIssueIdentifiers("see CHE-18")).toBe(
+      "see [CHE-18](mention://issue/CHE-18)",
+    );
+  });
+});
