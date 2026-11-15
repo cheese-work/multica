@@ -177,6 +177,8 @@ func TestUpdateOutbox_RestartWaitsForCompletedAtMostBound(t *testing.T) {
 	isBrewInstall = func() bool { return false }
 	t.Cleanup(func() { resolveSelfExecutable, isBrewInstall = originalResolve, originalBrew })
 
+	// Each case is a subtest: its cleanup releases the endpoint and waits for
+	// the outbox sender before the next case rewrites the timing globals.
 	run := func(t *testing.T, block bool) time.Duration {
 		withOutboxTimings(t, 5*time.Second, 5*time.Second, 200*time.Millisecond)
 		release := make(chan struct{})
@@ -191,21 +193,27 @@ func TestUpdateOutbox_RestartWaitsForCompletedAtMostBound(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusOK)
 		})
-		t.Cleanup(func() { close(release) })
+		var once sync.Once
+		t.Cleanup(func() { once.Do(func() { close(release) }); d.updateOutbox.Wait() })
 		d.runUpdateFn = func(string) (string, error) { return "ok", nil }
 		var restarted atomic.Int32
 		d.cancelFunc = func() { restarted.Add(1) }
 		start := time.Now()
 		d.handleUpdate(context.Background(), "rt-1", &PendingUpdate{ID: "upd-1", TargetVersion: "v1"})
+		el := time.Since(start)
 		if restarted.Load() != 1 {
 			t.Fatal("daemon did not restart")
 		}
-		return time.Since(start)
+		return el
 	}
-	if el := run(t, true); el < 190*time.Millisecond || el > 600*time.Millisecond {
-		t.Fatalf("blocked completed: restart after %s, want about 200ms", el)
-	}
-	if el := run(t, false); el > 150*time.Millisecond {
-		t.Fatalf("answered completed: restart after %s, want no added wait", el)
-	}
+	t.Run("blocked completed", func(t *testing.T) {
+		if el := run(t, true); el < 190*time.Millisecond || el > 600*time.Millisecond {
+			t.Fatalf("restart after %s, want about 200ms", el)
+		}
+	})
+	t.Run("answered completed", func(t *testing.T) {
+		if el := run(t, false); el > 150*time.Millisecond {
+			t.Fatalf("restart after %s, want no added wait", el)
+		}
+	})
 }
