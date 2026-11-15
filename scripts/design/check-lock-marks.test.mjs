@@ -34,3 +34,8 @@ test("an annotation that wraps a state root or a control fails bad-marker", () =
 test("a state label without a state root fails uncovered-state", () => {
   assert.deepEqual(reasons(`<div class="lbl" data-annotation>7 · Batch</div>`), ["uncovered-state"]);
 });
+test("a control that carries data-annotation itself fails bad-marker", () => {
+  assert.deepEqual(reasons(`<button data-annotation>Approve</button>`), ["bad-marker"]);
+  assert.deepEqual(reasons(`<input data-annotation>`), ["bad-marker"]);
+  assert.deepEqual(reasons(`<span role="button" data-annotation>Revoke</span>`), ["bad-marker"]);
+});

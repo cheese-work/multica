@@ -56,7 +56,7 @@ export function checkLockMarks(html, profileIds) {
     if (note && stack.some((e) => e.state)) errors.push(`bad-marker: annotation sits inside state root ${stack.find((e) => e.state).state}`);
     if (note && stack.some((e) => e.note)) errors.push("bad-marker: annotation inside annotation");
     if (note && state !== null) errors.push(`bad-marker: ${where} is both state and annotation`);
-    if (isControl && stack.some((e) => e.note) ) errors.push(`bad-marker: annotation contains a control <${tag}>`);
+    if (isControl && (note || stack.some((e) => e.note))) errors.push(`bad-marker: ${note ? "a control carries data-annotation" : "annotation contains a control"} <${tag}>`);
     if (/\bclass="lbl\b/.test(attrs)) labels.push(html.slice(m.index + raw.length).match(/^\s*(\d+[a-z]?)\s*·/)?.[1]);
     if (!VOID.has(tag) && !raw.endsWith("/>")) stack.push({ name: tag, state: state !== null ? state : null, note, mark: state !== null || note });
   }
