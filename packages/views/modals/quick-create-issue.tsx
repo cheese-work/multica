@@ -373,9 +373,15 @@ export function AgentCreatePanel({
     (baseVersionCheck.state !== "ok" ||
       (usesExplicitFields && fieldVersionCheck.state !== "ok"));
 
-  // An opener's prompt (⌘K "Hand to agent") is newer than any unfinished
-  // draft, so it wins, and is written through so a mode switch keeps it.
-  const seedPrompt = typeof data?.prompt === "string" && data.prompt.trim() ? data.prompt : null;
+  // An opener's prompt (⌘K "Hand to agent") seeds an EMPTY draft only. An
+  // unfinished draft is unsent user input and is kept until a send or explicit
+  // discard; the seed is written through so a mode switch keeps it. Decided once
+  // at mount so the write-through does not flip the choice on re-render.
+  const [seedPrompt] = useState(() =>
+    typeof data?.prompt === "string" && data.prompt.trim() && !draft.agent.prompt.trim()
+      ? data.prompt
+      : null,
+  );
   const initialPrompt = seedPrompt ?? (draft.agent.prompt || "");
   useEffect(() => {
     if (seedPrompt) setAgent({ prompt: seedPrompt });
