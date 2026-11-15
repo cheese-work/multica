@@ -136,6 +136,8 @@
     "resend_failed_toast": "無法重新傳送訊息"
   },
   "message_list": {
+    "jump_to_latest": "跳到最新",
+    "new_reply": "新回覆",
     "show_details": "檢視詳情",
     "show_earlier_context": "顯示先前脈絡",
     "replied_in": "{{elapsed}} 內回覆",

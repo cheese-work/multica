@@ -167,6 +167,8 @@
     "quote_message": "Quote",
     "speaker_you": "You",
     "load_older_messages": "Load older messages",
+    "jump_to_latest": "Jump to latest",
+    "new_reply": "New reply",
     "show_details": "Show details",
     "show_earlier_context": "Show earlier context",
     "replied_in": "Replied in {{elapsed}}",

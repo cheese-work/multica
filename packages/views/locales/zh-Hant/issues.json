@@ -621,7 +621,8 @@
   },
   "timeline": {
     "loading": "載入中…",
-    "jump_to_latest": "跳到最新"
+    "jump_to_latest": "跳到最新",
+    "new_comments_other": "{{count}} 則新評論"
   },
   "activity": {
     "created": "建立了這個任務",
@@ -1845,10 +1846,6 @@
       "name_placeholder": "狀態名稱",
       "add": "新增"
     },
-    "menu": {
-      "view_flow": "檢視完整流程",
-      "switch": "切換工作流"
-    },
     "flow": {
       "title": "「{{workflow}}」工作流",
       "scope_own": "只有這個專案使用這個工作流。",
@@ -1876,7 +1873,8 @@
           "bad_on_timeout": "{{from}} 的某個出口需要有效的超時後步驟。",
           "ci_green_source": "{{from}} 不能在 CI 通過時推進。"
         }
-      }
+      },
+      "switch": "切換工作流"
     },
     "templates": {
       "delivery": {

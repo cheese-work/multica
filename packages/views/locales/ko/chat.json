@@ -157,6 +157,8 @@
     "quote_message": "인용",
     "speaker_you": "나",
     "load_older_messages": "이전 메시지 더 보기",
+    "jump_to_latest": "최신으로 이동",
+    "new_reply": "새 답장",
     "show_details": "세부 정보 보기",
     "show_earlier_context": "이전 맥락 보기",
     "replied_in": "{{elapsed}} 만에 답변",

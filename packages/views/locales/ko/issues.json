@@ -664,7 +664,8 @@
   },
   "timeline": {
     "loading": "불러오는 중...",
-    "jump_to_latest": "최신으로 이동"
+    "jump_to_latest": "최신으로 이동",
+    "new_comments_other": "새 댓글 {{count}}개"
   },
   "activity": {
     "created": "이 태스크를 만들었습니다",
@@ -1891,10 +1892,6 @@
       "name_placeholder": "상태 이름",
       "add": "추가"
     },
-    "menu": {
-      "view_flow": "전체 흐름 보기",
-      "switch": "워크플로 전환"
-    },
     "flow": {
       "title": "“{{workflow}}” 워크플로",
       "scope_own": "이 워크플로는 이 프로젝트만 사용합니다.",
@@ -1922,7 +1919,8 @@
           "bad_on_timeout": "{{from}}의 전이에는 올바른 타임아웃 시 단계가 필요합니다.",
           "ci_green_source": "{{from}}은(는) CI 성공으로 진행할 수 없습니다."
         }
-      }
+      },
+      "switch": "워크플로 전환"
     },
     "templates": {
       "delivery": {

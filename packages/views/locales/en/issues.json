@@ -677,7 +677,9 @@
   },
   "timeline": {
     "loading": "Loading...",
-    "jump_to_latest": "Jump to latest"
+    "jump_to_latest": "Jump to latest",
+    "new_comments_one": "{{count}} new comment",
+    "new_comments_other": "{{count}} new comments"
   },
   "activity": {
     "created": "created this issue",
@@ -1970,10 +1972,6 @@
       "name_placeholder": "Status name",
       "add": "Add"
     },
-    "menu": {
-      "view_flow": "View full flow",
-      "switch": "Switch workflow"
-    },
     "flow": {
       "title": "{{workflow}} workflow",
       "scope_own": "Only this project uses this workflow.",
@@ -2002,7 +2000,8 @@
           "bad_on_timeout": "An exit of {{from}} needs a valid On timeout step.",
           "ci_green_source": "{{from}} cannot advance on CI green."
         }
-      }
+      },
+      "switch": "Switch workflow"
     },
     "templates": {
       "delivery": {

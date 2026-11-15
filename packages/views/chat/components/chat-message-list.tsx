@@ -55,6 +55,7 @@ import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-f
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
 import { chatAnchorKey, parseChatAnchor, serializeChatAnchor, type ChatAnchor } from "./chat-anchor";
 import { useRestoredViewState, useViewStateWriter } from "../../platform";
+import { JumpToLiveEndButton, useJumpToLiveEnd } from "./jump-to-live-end";
 import { formatElapsedMs } from "../lib/format";
 import {
   canonicalAnswerText,
@@ -818,7 +819,17 @@ export function ChatMessageList({
 
   const firstItemIndex = useChatFirstItemIndex(renderItems.map((item) => item.key));
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
-  const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
+  const tailItem = renderItems[renderItems.length - 1];
+  const liveEndKey = tailItem?.key ?? null;
+  // Changes when the last row is new or a live reply streamed more output.
+  const tailKey = tailItem
+    ? `${tailItem.key}:${tailItem.kind === "live" ? (liveTaskMessages?.length ?? 0) : "persisted"}`
+    : null;
+  const jumpToLiveEnd = useJumpToLiveEnd(scrollContainerEl, pinToLiveEnd, {
+    enabled: active && hasReachedLiveEnd,
+    tailKey,
+    tailIsReply: tailItem?.kind === "live" || tailItem?.message.role === "assistant",
+  });
   const firstItem = renderItems[0];
   const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
 
@@ -982,6 +993,8 @@ export function ChatMessageList({
   return (
     <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
+    {/* Positioning box for the floating "Jump to latest" button, so it stays
+     *  pinned above the composer instead of scrolling with the rows. */}
     <div className="relative flex min-h-0 flex-1 flex-col">
     <div
       ref={setScrollContainerRef}
@@ -1109,6 +1122,13 @@ export function ChatMessageList({
       onJump={jumpToSelfMention}
       positionClassName="absolute bottom-4 right-6 z-20"
     />
+    {jumpToLiveEnd.visible && (
+      <JumpToLiveEndButton
+        hasNewReply={jumpToLiveEnd.hasNewReply}
+        onClick={jumpToLiveEnd.jump}
+        className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2"
+      />
+    )}
     </div>
     </PreviewSequenceProvider>
     </MediaSourceProvider>

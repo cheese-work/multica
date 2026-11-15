@@ -153,7 +153,7 @@ import {
   useDeliverableDetails,
   type DeliverableOrigin,
 } from "./deliverables/deliverable-details";
-import { collectDeliverableFiles } from "@multica/core/attachments/deliverables";
+import { collectDeliverableFiles, mergeDeliverableSources } from "@multica/core/attachments/deliverables";
 import { AttachmentVersionsProvider } from "./deliverables/attachment-versions";
 import {
   OpenDeliverableOnLoad,
@@ -170,7 +170,7 @@ import { IssueHierarchy } from "./hierarchy/hierarchy-minimap";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions, issueDeliverablesOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -226,6 +226,7 @@ import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useJumpToLatest } from "../hooks/use-jump-to-latest";
 import { useIssueDetailScrollAnchor } from "../hooks/use-issue-detail-scroll-anchor";
+import { useNewCommentsWhileAway } from "../hooks/use-new-comments-while-away";
 import { useInPageFind } from "../hooks/use-in-page-find";
 import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
@@ -618,7 +619,16 @@ function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
   return true;
 }
 
-function JumpToLatestButton({ onClick, label }: { onClick: () => void; label: string }) {
+function JumpToLatestButton({
+  onClick,
+  label,
+  hasNew = false,
+}: {
+  onClick: () => void;
+  label: string;
+  /** New comments arrived while the reader was away; `label` counts them. */
+  hasNew?: boolean;
+}) {
   return (
     <Button
       type="button"
@@ -627,8 +637,18 @@ function JumpToLatestButton({ onClick, label }: { onClick: () => void; label: st
       onClick={onClick}
       className="absolute bottom-full left-1/2 mb-6 -translate-x-1/2 bg-background shadow-md dark:bg-background dark:hover:bg-muted"
     >
-      <ArrowDown />
-      {label}
+      {hasNew ? (
+        <>
+          <span aria-hidden="true" className="size-1.5 rounded-full bg-brand" />
+          {label}
+          <ArrowDown />
+        </>
+      ) : (
+        <>
+          <ArrowDown />
+          {label}
+        </>
+      )}
     </Button>
   );
 }
@@ -1428,13 +1448,28 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, highlightAppRequestId, authoritative, leadingAction, variant = "page", trailingActions, readsInbox = true, openDeliverable, onDeliverableLinkDone }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId: linkedCommentId, highlightRequestToken: linkedRequestToken, highlightAppRequestId, authoritative, leadingAction, variant = "page", trailingActions, readsInbox = true, openDeliverable, onDeliverableLinkDone }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
   const locale = useLocale();
   const timeAgo = useTimeAgo();
   const id = issueId;
+  const [deliverableJump, setDeliverableJump] = useState<{
+    issueId: string;
+    linkedCommentId: string | undefined;
+    linkedRequestToken: number | undefined;
+    commentId: string;
+    token: number;
+  } | null>(null);
+  const activeDeliverableJump = deliverableJump?.issueId === id &&
+    deliverableJump.linkedCommentId === linkedCommentId &&
+    deliverableJump.linkedRequestToken === linkedRequestToken ? deliverableJump : null;
+  const highlightCommentId = activeDeliverableJump?.commentId ?? linkedCommentId;
+  const highlightRequestToken = activeDeliverableJump?.token ?? linkedRequestToken;
+  useEffect(() => {
+    setDeliverableJump(null);
+  }, [id, linkedCommentId, linkedRequestToken]);
   const user = useAuthStore((s) => s.user);
   const paths = useWorkspacePaths();
   const openModal = useModalStore((state) => state.open);
@@ -1579,10 +1614,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // User preference: pin the bottom comment bar to the scroll viewport. Off
   // below `md` regardless of the preference — see the hook.
   const stickyComposer = useStickyComposer();
-  // Mobile only: desktop already reaches the latest entry through the
-  // ThreadMinimap rail, which is not rendered below `md`. Passing null keeps
-  // the hook's scroll and resize listeners off on desktop.
-  const jumpToLatest = useJumpToLatest(isMobile ? scrollContainerEl : null);
+  // Mobile shows it only near the top of the page, where it covers the text
+  // column the least; desktop shows it whenever the latest entry is more than
+  // a screen away.
+  const jumpToLatest = useJumpToLatest(scrollContainerEl, { nearTopOnly: isMobile });
 
   // Per-session: which resolved threads the user has temporarily expanded.
   // Not persisted (matches Linear) — reload collapses everything back to bars.
@@ -1779,7 +1814,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     timeline, loading: timelineLoading, dataUpdatedAt: timelineUpdatedAt,
     submitComment, submitReply,
     editComment, deleteComment, toggleResolveComment, toggleReaction: handleToggleReaction,
-  } = useIssueTimeline(id, user?.id);
+  } = useIssueTimeline(id, user?.id, activeDeliverableJump?.commentId);
+  const newComments = useNewCommentsWhileAway(timeline, {
+    ready: !timelineLoading,
+    away: jumpToLatest.visible,
+    userId: user?.id,
+    resetKey: id,
+  });
 
   const { data: commentTasks } = useQuery(issueTasksOptions(id));
   const enteringRunIds = useNewRunIds(id, commentTasks);
@@ -2870,6 +2911,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const completeAnnotationEdit = useCallback((annotationId: string) => {
     setPendingAnnotationEdit(current => current?.annotationId === annotationId ? null : current);
   }, []);
+  // With comments that arrived while the reader was away, land on the first
+  // of them so they read in order; otherwise go to the very end.
+  const firstNewCommentId = newComments.ids[0];
+  const clearNewComments = newComments.clear;
+  const jumpLatest = jumpToLatest.jump;
+  const onJumpToLatest = useCallback(() => {
+    if (firstNewCommentId) {
+      clearNewComments();
+      jumpToMinimapTarget(firstNewCommentId);
+    } else {
+      jumpLatest();
+    }
+  }, [firstNewCommentId, clearNewComments, jumpToMinimapTarget, jumpLatest]);
+  const jumpToLatestLabel = newComments.ids.length > 0
+    ? t(($) => $.timeline.new_comments, { count: newComments.ids.length })
+    : t(($) => $.timeline.jump_to_latest);
   // Header chip jump to a run's block. A run is either its own top-level row
   // or a slot inside the thread it answers, so find that row, undo whatever
   // folds the thread, scroll the row into place, then let the effect below
@@ -2966,6 +3023,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // `src`/`href` against this list to resolve an attachment id before
   // calling `/api/attachments/{id}`.
   const { data: issueAttachments } = useQuery(issueAttachmentsOptions(id));
+  const { data: deliverableInventory = EMPTY_REPLIES, error: deliverablesError } = useQuery(issueDeliverablesOptions(id));
+  useEffect(() => {
+    if (deliverablesError) toast.error(deliverablesError.message);
+  }, [deliverablesError]);
 
   // Sub-issue queries
   const parentIssueId = issue?.parent_issue_id;
@@ -3094,7 +3155,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // intervening resolve/collapse may have refolded it since). So a
     // consumed memento skips the scroll/highlight/re-write below, but still
     // falls through to the same auto-expand branches a fresh landing uses.
-    const mementoConsumed = consumedHighlightRef.current === highlightCommentId;
+    const mementoConsumed = !activeDeliverableJump && consumedHighlightRef.current === highlightCommentId;
     if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
     const rootId = highlightRootId;
@@ -3207,7 +3268,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [highlightCommentId, highlightRequestToken, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+  }, [highlightCommentId, highlightRequestToken, activeDeliverableJump, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -3322,6 +3383,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // the whole issue's (comment uploads keep `issue_id`) — it only resolves the
   // description's own references, or every comment file would be counted at
   // the description's position.
+  const deliverableSources = useMemo(
+    () => mergeDeliverableSources(deliverableInventory, timeline),
+    [deliverableInventory, timeline],
+  );
   const previewSequence = useMemo(() => {
     const blocks: ImageSequenceBlock[] = [
       {
@@ -3331,32 +3396,24 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         standalone: false,
       },
     ];
-    for (const item of items) {
-      if (item.kind === "activity-group" || !item.entry) continue;
-      blocks.push({
-        id: item.entry.id,
-        content: item.entry.content,
-        attachments: item.entry.attachments,
-      });
-      for (const reply of timelineView.threadReplies.get(item.entry.id) ?? []) {
-        blocks.push({ id: reply.id, content: reply.content, attachments: reply.attachments });
-      }
+    for (const entry of deliverableSources) {
+      blocks.push({ id: entry.id, content: entry.content, attachments: entry.attachments });
     }
     return collectPreviewSequence(blocks);
-  }, [issue?.description, descEditorAttachments, items, timelineView.threadReplies]);
+  }, [issue?.description, descEditorAttachments, deliverableSources]);
 
   // The files this issue has delivered as a whole: the sidebar section, the
   // overview grid, the viewer's info panel and the comments' version badges
   // all read this (MUL-7649).
-  const deliverableFiles = useMemo(() => collectDeliverableFiles(timeline), [timeline]);
+  const deliverableFiles = useMemo(() => collectDeliverableFiles(deliverableSources), [deliverableSources]);
   const commentById = useMemo(
     () =>
       new Map(
-        timeline
+        deliverableSources
           .filter((entry) => entry.type === "comment")
           .map((entry) => [entry.id, entry] as const),
       ),
-    [timeline],
+    [deliverableSources],
   );
 
   // "Show in comments" from the viewer and the overview. A reply goes through
@@ -3373,6 +3430,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         return;
       }
       const { commentId } = origin;
+      if (!timeline.some((entry) => entry.id === commentId)) {
+        // Not in the loaded history: the deep-link path loads the thread first.
+        setDeliverableJump((previous) => ({
+          issueId: id,
+          linkedCommentId,
+          linkedRequestToken,
+          commentId,
+          token: Math.max(previous?.token ?? 0, linkedRequestToken ?? 0) + 1,
+        }));
+        return;
+      }
       if (replyToRoot.has(commentId)) {
         jumpToReply(commentId);
         return;
@@ -3391,7 +3459,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       }
       setLocateRootRequest(commentId);
     },
-    [scrollContainerEl, replyToRoot, jumpToReply, items, id, expandedResolved, timelineView.threadReplies, toggleResolvedExpand],
+    [scrollContainerEl, timeline, id, linkedCommentId, linkedRequestToken, replyToRoot, jumpToReply, items, expandedResolved, timelineView.threadReplies, toggleResolvedExpand],
   );
   useEffect(() => {
     if (!locateRootRequest) return;
@@ -3629,11 +3697,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     restoreKey: `${wsId}:${id}`,
     scrollContainerEl,
     ready: !!issue && !loading && !timelineLoading,
-    // Disabled only while the comment deep link still has a landing to run —
-    // the jump owns the scroll then. Once the landing is consumed (a tab
-    // switch back), this hook's retry loop IS the restore: the one-shot
-    // ref-attach assignment clamps against a container whose async content
-    // (markdown, images) hasn't reached its captured height yet.
+    // Comment landings and semantic reading anchors own their scroll. Pixel
+    // restoration still covers positions outside the discussion (description,
+    // sub-issues) and adapters without a saved timeline anchor.
     // A peek always opens at the top: it is a glance, not a place to return to.
     // The timeline anchor owns the restore when one resolves: a pixel offset
     // lands on a different comment once virtualized row heights are measured.
@@ -4994,13 +5060,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               page background and is invisible), and pb-4 so the card floats
               off the viewport edge — with -mb-4 giving the padding back to
               the column's py-8 so the at-rest layout doesn't shift. */}
-          {/* "Jump to latest" (MUL-8324, mobile only) floats centered just above the
+          {/* "Jump to latest" (MUL-8324, MUL-8951) floats centered just above the
               composer's top edge. With the sticky composer it rides the
               composer itself; without it, a zero-height sticky anchor pins
               it to the viewport bottom until the composer scrolls in. */}
           {!stickyComposer && jumpToLatest.visible && (
             <div className="sticky bottom-0 z-10 h-0">
-              <JumpToLatestButton onClick={jumpToLatest.jump} label={t(($) => $.timeline.jump_to_latest)} />
+              <JumpToLatestButton onClick={onJumpToLatest} label={jumpToLatestLabel} hasNew={!!firstNewCommentId} />
             </div>
           )}
           <IssueAppRequests issueId={id} highlightId={highlightAppRequestId} highlightToken={highlightRequestToken} />
@@ -5018,7 +5084,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 next keystroke would flush it into the new issue's
                 draft key. */}
             {stickyComposer && jumpToLatest.visible && (
-              <JumpToLatestButton onClick={jumpToLatest.jump} label={t(($) => $.timeline.jump_to_latest)} />
+              <JumpToLatestButton onClick={onJumpToLatest} label={jumpToLatestLabel} hasNew={!!firstNewCommentId} />
             )}
             <CommentInput
               key={id}
