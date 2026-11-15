@@ -1,20 +1,15 @@
 "use client";
 
-import { useState, type RefObject } from "react";
+import type { RefObject } from "react";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { Issue } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { AppLink } from "../../../navigation";
 import { useT } from "../../../i18n";
-import { Canvas } from "./hierarchy-canvas";
+import { FocusCanvas } from "./hierarchy-focus-canvas";
 import { CARD_CLASS, CURRENT_CLASS, GroupTotals, IssueCardBody, type Catalog } from "./hierarchy-parts";
 import type { Hierarchy } from "./hierarchy-layout";
-import { useHierarchy, type RelationCount } from "./use-hierarchy";
-
-const chip = "inline-flex h-7 items-center rounded-full border border-surface-border px-2.5 text-caption font-medium aria-pressed:border-info aria-pressed:bg-info/10";
-
-/** "…" while loading, "?" when the request failed, "N+" when the server omitted nodes. */
-const chipCount = (count: RelationCount | null) => (count === null ? "…" : count.value === null ? "?" : count.partial ? `${count.value}+` : `${count.value}`);
+import { useHierarchy } from "./use-hierarchy";
 
 /** Hierarchy mode, sidebar card: the minimap tree plus the wake / mention counts. */
 export function HierarchyCard({ issue, onOpenCanvas }: { issue: Issue; onOpenCanvas: () => void }) {
@@ -42,31 +37,10 @@ export function HierarchyCard({ issue, onOpenCanvas }: { issue: Issue; onOpenCan
   );
 }
 
-/** Hierarchy mode, dialog body: relation chips and the zoomable canvas. */
+/** Hierarchy mode, dialog body: the focus-depth canvas (lock A shows no relation chips). */
 export function HierarchyDialogBody({ issue, viewportRef, onOpen }: { issue: Issue; viewportRef: RefObject<HTMLDivElement | null>; onOpen: (id: string) => void }) {
-  const { t } = useT("issues");
-  const [wakes, setWakes] = useState(false);
-  const [mentions, setMentions] = useState(false);
-  const { hierarchy, catalog, wakeCount, mentionCount, mentionsLoading, error, refetch } = useHierarchy(issue, { wakes, mentions });
-  const total = hierarchy ? (hierarchy.parent ? 1 : 0) + 1 + hierarchy.siblings.total + hierarchy.children.total : 0;
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className={chip}>{t(($) => $.hierarchy.chip_hierarchy, { count: total })}</span>
-        <button type="button" className={chip} aria-pressed={wakes} onClick={() => setWakes((on) => !on)}>{t(($) => $.hierarchy.chip_wakes, { value: chipCount(wakeCount) })}</button>
-        <button type="button" className={chip} aria-pressed={mentions} aria-busy={mentionsLoading} onClick={() => setMentions((on) => !on)}>
-          {mentionCount === null ? t(($) => $.hierarchy.chip_mentions_off) : t(($) => $.hierarchy.chip_mentions, { value: chipCount(mentionCount) })}
-        </button>
-      </div>
-      {error ? (
-        <div role="alert"><p>{t(($) => $.hierarchy.load_failed)}</p><Button variant="outline" onClick={refetch}>{t(($) => $.hierarchy.retry)}</Button></div>
-      ) : hierarchy ? (
-        <Canvas hierarchy={hierarchy} catalog={catalog} viewportRef={viewportRef} onOpen={onOpen} />
-      ) : (
-        <div role="status" aria-label={t(($) => $.hierarchy.loading)} className="min-h-0 flex-1 rounded-xl bg-muted motion-safe:animate-pulse" />
-      )}
-    </>
-  );
+  const { catalog } = useHierarchy(issue, { wakes: false, mentions: false });
+  return <FocusCanvas root={{ id: issue.id, identifier: issue.identifier, title: issue.title, status: issue.status }} catalog={catalog} viewportRef={viewportRef} onOpen={onOpen} />;
 }
 
 function MinimapTree({ hierarchy, catalog, onOpenCanvas }: { hierarchy: Hierarchy; catalog: Catalog; onOpenCanvas: () => void }) {

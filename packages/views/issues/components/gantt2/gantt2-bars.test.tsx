@@ -225,3 +225,62 @@ describe("Gantt2Bars parent/child rows (G3)", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 });
+
+describe("Gantt2Bars wakeup arrows (G4)", () => {
+  type Wakeup = IssueTimelineResponse["wakeup_events"][number];
+  const node = (id: string, parentId: string | null) => ({ ...row(id, {}), parentId, timeline: { ...row(id, {}).timeline, issue_id: id } });
+  // p > c1 > g ; p > c2 ; q > k1 ; r
+  const rows = [node("p", null), node("c1", "p"), node("g", "c1"), node("c2", "p"), node("q", null), node("k1", "q"), node("r", null)];
+  const event = (id: string, cls: Wakeup["class"], source: string | null, target: string, extra: Partial<Wakeup> = {}): Wakeup => ({
+    id, at: ago(5), target_issue_id: target, rule_id: "w", rule_kind: "condition", condition_type: "other_issue",
+    source_issue_id: source, class: cls, run_id: "t", ...extra,
+  });
+  const show = (events: Wakeup[], collapsed: ReadonlySet<string> = new Set()) =>
+    renderWithI18n(<Gantt2Bars rows={rows} window={window} asOf={new Date(AS_OF).toISOString()} wakeupEvents={events} collapsed={collapsed} />);
+  const arrows = () => screen.queryAllByTestId("gantt-arrow").map((a) => `${a.dataset.class}:${a.dataset.source}>${a.dataset.target}`);
+
+  it("cross: draws one arrow from the source row to the target row", () => {
+    show([event("e1", "cross", "r", "g")]);
+    expect(arrows()).toEqual(["cross:r>g"]);
+    expect(screen.queryByTestId("gantt-target-inside")).toBeNull();
+  });
+
+  it("aggregate_children: one arrow from the target's child group, none per child", () => {
+    show([event("e2", "aggregate_children", null, "p", { condition_type: "children_done", stage: 2 })]);
+    expect(arrows()).toEqual(["aggregate_children:c2>p"]);
+  });
+
+  it("both endpoints hidden: the arrow retargets to both visible parents and flags both ends", () => {
+    show([event("e3", "cross", "k1", "g")], new Set(["p", "q"]));
+    expect(arrows()).toEqual(["cross:q>p"]);
+    expect(screen.getAllByTestId("gantt-target-inside")).toHaveLength(2);
+  });
+
+  it("one hidden endpoint: the arrow ends at the visible parent with a 'target inside' indicator", () => {
+    show([event("e4", "cross", "r", "g")], new Set(["p"]));
+    expect(arrows()).toEqual(["cross:r>p"]);
+    const flag = screen.getByTestId("gantt-target-inside");
+    expect(flag.getAttribute("aria-label")).toMatch(/inside/i);
+  });
+
+  it("two firings of one rule draw two separate arrows", () => {
+    show([event("e5", "cross", "r", "g"), event("e6", "cross", "r", "g", { at: ago(2) })]);
+    expect(arrows()).toEqual(["cross:r>g", "cross:r>g"]);
+  });
+
+  it("draws nothing for self, external, unknown_source, an endpoint outside the rows, or a firing outside the window", () => {
+    show([
+      event("a", "self", null, "g"),
+      event("b", "external", null, "g"),
+      event("c", "unknown_source", null, "g"),
+      event("d", "cross", "not-a-row", "g"),
+      event("e", "cross", "r", "g", { at: ago(90) }),
+    ]);
+    expect(arrows()).toEqual([]);
+  });
+
+  it("an aggregate firing whose group is collapsed into its target draws nothing", () => {
+    show([event("e7", "aggregate_children", null, "p", { condition_type: "children_done" })], new Set(["p"]));
+    expect(arrows()).toEqual([]);
+  });
+});

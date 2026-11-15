@@ -1,0 +1,124 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHE-4122 v2 C2</title><style>
+*{margin:0;box-sizing:border-box;font-family:Inter,"Segoe UI",Roboto,"Helvetica Neue",Helvetica,Arial,"Liberation Sans","DejaVu Sans",sans-serif}
+:root{--shell:oklch(0.155 0.005 285.823);--surface:oklch(0.21 0.006 285.885);--raised:oklch(0.235 0.007 285.885);--hover:oklch(0.274 0.006 286.033);--sel:oklch(0.3 0.006 286.033);--bd:oklch(1 0 0 / 10%);--fg:oklch(0.985 0 0);--mut:oklch(0.705 0.015 286.067);--faint:oklch(0.60 0.015 286.067);--inp:oklch(1 0 0 / 15%);--ring:oklch(0.552 0.016 285.938);--ok:oklch(0.65 0.15 145);--warn:oklch(0.70 0.16 85);--err:oklch(0.704 0.191 22.216);--info:oklch(0.72 0.12 250)}
+body{font-size:13px;line-height:18px;color:var(--fg);background:var(--shell);padding:24px}
+h1{font-size:20px;line-height:28px;font-weight:600}.lead{font-size:14px;line-height:20px;color:var(--mut);max-width:1200px;margin:4px 0 8px}
+.cols{display:grid;grid-template-columns:900px 390px;gap:48px;align-items:start}
+.band{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);font-weight:600;margin:22px 0 8px}
+.pg{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:20px;display:grid;gap:14px}.ph{width:390px;padding:16px}
+.card{background:var(--raised);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 220px 220px;gap:16px;padding:14px 16px;align-items:start}
+.t{font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.m{color:var(--mut);font-size:12px;line-height:16px;margin-top:2px}.d{color:var(--mut)}
+.scope{display:inline-flex;gap:5px;align-items:center;height:22px;padding:0 8px;border:1px solid var(--inp);border-radius:99px;font-size:12px;font-weight:600;color:var(--fg);background:oklch(1 0 0 / 6%)}
+.scope.ws{border-color:oklch(0.72 0.12 250 / 55%);color:var(--info)}.scope.me{border-color:oklch(0.70 0.16 85 / 55%);color:var(--warn)}
+.lbl{display:none;font-size:12px;line-height:16px;color:var(--mut);margin-bottom:4px}
+.sel{width:100%;height:32px;border:1px solid var(--inp);border-radius:8px;background:oklch(1 0 0 / 5%);color:var(--fg);padding:0 8px 0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:13px;text-align:left}
+.sel span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sel.wn{border-color:var(--warn)}.sel.u span{color:var(--mut)}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.cal{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border:1px solid var(--bd);border-radius:8px;font-size:12px;line-height:16px;margin:0 16px 14px}
+.cal .i{margin-top:1px}.cal.w{border-color:var(--warn);color:var(--warn);background:oklch(0.70 0.16 85 / 8%)}.cal.w span{color:var(--fg)}.cal.w b{color:var(--warn)}
+.cal.n{background:oklch(1 0 0 / 4%);color:var(--mut)}.cal.e{border-color:var(--err);background:oklch(0.704 0.191 22.216 / 8%);color:var(--err)}.cal.e span{color:var(--fg)}
+details{margin:0 16px 14px;border:1px solid var(--bd);border-radius:8px}summary{display:flex;gap:8px;align-items:center;height:32px;padding:0 12px;font-size:12px;cursor:pointer;color:var(--fg)}
+.dis{padding:4px 12px 12px;font-size:12px;line-height:16px;color:var(--mut)}.dis ul{margin:6px 0 0 16px}.dis li{margin:2px 0}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:oklch(1 0 0 / 8%);padding:1px 5px;border-radius:4px;color:var(--fg)}
+.st{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--bd);border-radius:8px;background:oklch(1 0 0 / 4%);font-size:12px;line-height:16px}
+.st .tg{height:20px;padding:0 8px;border-radius:99px;border:1px solid var(--bd);display:inline-flex;align-items:center;gap:5px;font-size:12px;flex:none}
+.st.ok .tg{color:var(--ok);border-color:var(--ok)}.st.fb .tg{color:var(--warn);border-color:var(--warn)}.st.wt .tg{color:var(--mut)}
+.dm{background:var(--raised);border:1px solid var(--bd);border-radius:10px;padding:12px;display:grid;gap:10px}
+.bub{max-width:70%;padding:8px 12px;border-radius:12px;background:var(--hover)}.bub.me{justify-self:end;background:var(--sel)}
+.sys{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);justify-content:center;height:24px}
+.spin{width:12px;height:12px;border:2px solid var(--inp);border-top-color:var(--fg);border-radius:50%}
+.inp{display:flex;align-items:center;gap:8px;height:36px;border:1px solid var(--inp);border-radius:8px;padding:0 10px;color:var(--fg)}
+.hint{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--raised);font-size:12px;line-height:16px;color:var(--mut)}.hint .i{margin-top:1px}
+.kb{height:44px;border-radius:8px 8px 0 0;background:oklch(0.30 0.008 286);display:flex;gap:16px;align-items:center;justify-content:center;font-size:12px;color:var(--mut)}
+.kb i{display:block;width:20px;height:20px;border-radius:5px;background:oklch(1 0 0 / 12%)}
+.b{height:28px;padding:0 10px;border:1px solid var(--inp);border-radius:8px;background:transparent;color:var(--fg);font-size:12px}
+.ph .row{grid-template-columns:1fr;gap:10px;padding:14px}.ph .lbl{display:block}.ph .sel{height:40px}.ph .b{height:40px}.ph summary{height:40px}.ph .cal,.ph details{margin:0 14px 14px}.ph .bub{max-width:90%}
+.ann{font-size:12px;line-height:16px;color:var(--mut);max-width:900px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="cd" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol><symbol id="in" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v.5M12 11v5"/></symbol><symbol id="ck" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol><symbol id="al" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></symbol><symbol id="cl" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol><symbol id="x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol><symbol id="us" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 4.8a3.5 3.5 0 010 6.4M18 14.4c2 .8 3.5 2.6 3.5 5.6"/></symbol><symbol id="u1" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></symbol><symbol id="of" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></symbol></defs></svg>
+<h1>C2 · Compact row: scope, disclosure, warnings, status</h1>
+<p class="lead">Compact sends the DM transcript to an agent, so the row says so before you pick. v2 changes: (1) the "runs with" line names the scope that wins: Personal, Workspace or Off. (2) The <code>/compact</code> hint sits above the input, clear of the phone keyboard bar. (3) Same row on both tabs; the Personal tab only exists once CHE-4121 ships. Left: 900 px. Right: 390 px phone. Agent names are sample data.</p>
+<div class="cols"><div>
+<p class="band">1 · Workspace tab, Compact row, healthy, disclosure open</p>
+<div class="pg"><div class="card">
+<div class="row"><div><div class="t">Compact <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></div><div class="m">Summarises a long DM so it can keep going.</div></div>
+<div><button class="sel" aria-label="Compact, Agent"><span>x99-claude-haiku</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><button class="sel" aria-label="Compact, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<details open><summary><svg class="i"><use href="#in"/></svg>What this agent can read <svg class="i" style="margin-left:auto"><use href="#cd"/></svg></summary><div class="dis">Compacting sends the whole DM transcript to the agent you pick, including files and tool output shown in it. It runs on a workspace runtime.<ul><li>It can read the transcript of every DM it compacts, for everyone in the workspace who has no personal pick.</li><li>It writes back only the summary.</li><li>Change or clear the agent here at any time.</li></ul></div></details>
+<div class="cal n"><svg class="i"><use href="#in"/></svg><span>Runs with <b style="color:var(--fg)">x99-claude-haiku</b> · Workspace. Members with their own pick use that instead.</span></div>
+<div style="padding:0 16px 14px"><div class="st ok" role="status"><span class="tg"><svg class="i"><use href="#ck"/></svg>Normal</span><span>Last compact: x99-claude-haiku, 5 Nov 2026, 19:41 ICT, 38 s</span></div></div>
+</div></div>
+
+<p class="band">2 · Personal tab, Compact row: three scope outcomes</p>
+<div class="pg"><div class="card">
+<div class="row"><div><div class="t">Compact <span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal</span></div><div class="m">Summarises one of your long DMs so it can keep going.</div></div>
+<div><button class="sel" aria-label="Compact, Agent"><span>My notes bot</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><button class="sel" aria-label="Compact, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="cal n"><svg class="i"><use href="#in"/></svg><span>Runs with <b style="color:var(--fg)">My notes bot</b> · Personal. It reads every DM you compact. Only you can run it.</span></div>
+<div class="row" style="border-top:1px solid var(--bd)"><div><div class="t">Compact <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></div><div class="m">Your pick is unset.</div></div>
+<div><button class="sel u" aria-label="Compact, Agent"><span>Using workspace: x99-claude-haiku</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><button class="sel" disabled style="opacity:.55" aria-label="Compact, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="cal n"><svg class="i"><use href="#in"/></svg><span>Runs with <b style="color:var(--fg)">x99-claude-haiku</b> · Workspace.</span></div>
+<div class="row" style="border-top:1px solid var(--bd)"><div><div class="t">Compact <span class="scope"><svg class="i"><use href="#of"/></svg>Off</span></div><div class="m">You picked No agent.</div></div>
+<div><button class="sel u" aria-label="Compact, Agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><button class="sel" disabled style="opacity:.55" aria-label="Compact, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="cal n"><svg class="i"><use href="#in"/></svg><span>Runs with <b style="color:var(--fg)">the DM's own agent</b> · Off. Background compact is off for you.</span></div>
+</div><p class="ann">The scope word in the line is the same word as the badge and the CLI (<code>personal</code>, <code>workspace</code>). "Off" means the job's no-agent path.</p></div>
+
+<p class="band">3 · Warnings: the picked agent is no longer usable</p>
+<div class="pg"><div class="card">
+<div class="row"><div><div class="t">Compact <span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal</span></div><div class="m">Your pick was archived.</div></div>
+<div><button class="sel wn" aria-label="Compact, Agent, archived agent"><span>old-summariser (archived)</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><button class="sel" aria-label="Compact, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="cal w" role="note"><svg class="i"><use href="#al"/></svg><span><b>old-summariser is archived.</b> Compact now runs with the DM's own agent. The workspace agent does not take over. Pick another agent, or use the workspace pick.</span></div>
+<div class="row" style="border-top:1px solid var(--bd)"><div><div class="t">Compact <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></div><div class="m">Workspace pick with narrowed access.</div></div>
+<div><button class="sel wn" aria-label="Compact, Agent, access narrowed"><span>Dana's notes bot (3 people)</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><button class="sel" aria-label="Compact, Fallback agent"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<div class="cal w" role="note"><svg class="i"><use href="#al"/></svg><span><b>Dana's notes bot is not open to the whole workspace.</b> Only 3 people can run it, so it is not used. It would read every DM it compacts. Pick an agent everyone can run, or open its access.</span></div>
+</div><p class="ann">Warnings sit in the row, as text with an icon. The server enforces the same rule on write and when the job runs.</p></div>
+
+<p class="band">4 · Status row: three states, one failure note</p>
+<div class="pg">
+<div class="st ok" role="status"><span class="tg"><svg class="i"><use href="#ck"/></svg>Normal</span><span>Compacted with <b>x99-claude-haiku</b> (Workspace) in 38 s.</span></div>
+<div class="st fb" role="status"><span class="tg"><svg class="i"><use href="#al"/></svg>Fallback</span><span>Compacted with <b>x99-codex-luna</b>. <b>x99-claude-haiku</b> did not claim the job within 30 s.</span></div>
+<div class="st wt" role="status"><span class="tg"><svg class="i"><use href="#cl"/></svg>Waiting</span><span>No agent has claimed the compact yet. Waiting for a runtime to come online. Waited 41 s so far.</span></div>
+<div class="cal e" role="alert" style="margin:0"><svg class="i"><use href="#x"/></svg><span><b>Compact failed.</b> Both x99-claude-haiku and x99-codex-luna failed. Your DM is unchanged. <button class="b" style="margin-left:8px">Try again</button></span></div>
+</div>
+<p class="band">5 · In the DM: running line and the <code>/compact</code> hint (hint sits above the input)</p>
+<div class="pg"><div class="dm">
+<div class="bub">Here is the migration plan for the three tables. Step 1 is the backfill.</div>
+<div class="bub me">Ok, go ahead with step 1.</div>
+<div class="sys" role="status"><span class="spin"></span>Compacting with x99-claude-haiku…</div>
+<div class="hint"><svg class="i"><use href="#in"/></svg><span><code>/compact</code> runs with <b style="color:var(--fg)">x99-claude-haiku</b> · Workspace. Change it in Settings → Background agents.</span></div>
+<div class="inp"><span style="color:var(--fg)">/compact</span></div>
+</div><p class="ann">v1 put the hint under the input. On a phone that lands behind the keyboard bar, so v2 puts it above. The hint is not hover-only and never covers the input.</p></div>
+</div>
+<div>
+<p class="band">Phone · same row, states stacked</p>
+<div class="pg ph"><div class="card">
+<div class="row"><div><div class="t">Compact <span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal</span></div><div class="m">Summarises one of your long DMs so it can keep going.</div></div>
+<div><div class="lbl">Agent</div><button class="sel" aria-label="Compact, Agent"><span>My notes bot</span><svg class="i"><use href="#cd"/></svg></button></div>
+<div><div class="lbl">Fallback agent</div><button class="sel" aria-label="Compact, Fallback agent"><span>x99-codex-luna</span><svg class="i"><use href="#cd"/></svg></button></div></div>
+<details open><summary><svg class="i"><use href="#in"/></svg>What this agent can read</summary><div class="dis">Compacting sends the whole DM transcript to the agent you pick, including files and tool output shown in it. It writes back only the summary.</div></details>
+<div class="cal n"><svg class="i"><use href="#in"/></svg><span>Runs with <b style="color:var(--fg)">My notes bot</b> · Personal.</span></div>
+<div style="padding:0 14px 14px;display:grid;gap:10px">
+<div class="cal w" style="margin:0"><svg class="i"><use href="#al"/></svg><span><b>old-summariser is archived.</b> Compact runs with the DM's own agent.</span></div>
+<div class="st fb" role="status"><span class="tg"><svg class="i"><use href="#al"/></svg>Fallback</span><span>Compacted with <b>x99-codex-luna</b>. x99-claude-haiku did not claim the job within 30 s.</span></div>
+<div class="st wt" role="status"><span class="tg"><svg class="i"><use href="#cl"/></svg>Waiting</span><span>No agent has claimed the compact yet. Waited 41 s.</span></div>
+<div class="cal e" role="alert" style="margin:0"><svg class="i"><use href="#x"/></svg><div style="flex:1;color:var(--fg)"><b>Compact failed.</b> Your DM is unchanged.<button class="b" style="margin-top:8px;width:100%;display:block">Try again</button></div></div>
+</div></div></div>
+
+<p class="band">Phone DM · hint above the input, keyboard open</p>
+<div class="pg ph" style="padding:0;overflow:hidden;gap:0">
+<div style="padding:12px;display:grid;gap:10px">
+<div class="bub" style="max-width:90%">Here is the migration plan. Step 1 is the backfill.</div>
+<div class="bub me" style="max-width:90%">Ok, go ahead with step 1.</div>
+<div class="sys" role="status"><span class="spin"></span>Compacting with x99-claude-haiku…</div>
+<div class="hint"><svg class="i"><use href="#in"/></svg><span><code>/compact</code> runs with <b style="color:var(--fg)">x99-claude-haiku</b> · Workspace.</span></div>
+<div class="inp" style="height:40px"><span>/compact</span></div></div>
+<div class="kb" aria-label="Phone keyboard bar (sample)"><i></i><i></i><i></i><span>keyboard bar</span><i></i><i></i></div>
+</div>
+<p class="ann" style="margin-top:12px">The hint ends 12 px above the input and never reaches the keyboard bar.</p>
+</div></div>
+</body></html>

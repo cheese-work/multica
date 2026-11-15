@@ -7,3 +7,6 @@ import { cn } from "@multica/ui/lib/utils";
 export function PageHeader({ children, leading, className }: { children: ReactNode; leading?: ReactNode; className?: string }) {
   return <header className={cn("flex h-12 shrink-0 items-center gap-2 border-b", className, "px-4")}>{leading}{children}</header>;
 }
+
+// settings-page renders this next to the title; the sidebar trigger needs the app shell, which the harness has none of.
+export const CollapsedNavTrigger = () => null;
