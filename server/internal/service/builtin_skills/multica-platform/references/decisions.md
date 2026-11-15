@@ -139,47 +139,36 @@ owner as undo owner. `agent-setting` turns the workspace setting on or off; only
 workspace owner can. One excluded-category decision turns it off by itself and
 `brief` shows the stop reason. Existing records stay vetoable.
 
-## Decision-bound writes (agent changes a governed field)
+## Governed fields (agent changes steps or instructions)
 
-An agent may change a workflow's steps or a governed instruction field only
-when a workspace owner approved that exact change. The workspace must allow
-the agent and the field (the delegated governed writes setting); without it the write is
-refused.
+A task token cannot write workflow steps, step instructions, agent or squad
+instructions or workspace context, and a decision card cannot authorize the
+write: the server answers 403 `passkey_action_required`. Do not post an
+`Apply this change to <field>?` card (the server answers 400) and do not pass
+`--decision-id` to `workflow update`, `workflow set-instructions`,
+`workflow handoff set`, `agent update`, `squad update` or `workspace update`
+(the CLI stops before any call). A person approves the exact change with a
+passkey on an action card:
 
-1. Author the change. Run the write command with `--print-hash`: it prints
-   `before_sha256` and `after_sha256` and writes nothing.
-2. Get a PASS from a reviewer of another lab on `after_sha256`.
-3. Post the decision request. `decision` is
-   `Apply this change to <field>?` then the two lines `before_sha256: <hex>` and
-   `after_sha256: <hex>`; `<field>` is `workflow.steps`, `workflow.instructions`,
-   `workspace.context`, `squad.instructions` or `agent.instructions`. `options`
-   must include a card labelled exactly `Approve write`; the owner answers with
-   that label alone (a note makes it conditional and the server refuses it).
-4. After the owner approves, repeat the step 1 command with `--decision-id
-   <decision-id>` instead of `--print-hash`. The decision is single use and
-   expires after 7 days.
-5. Read the value back and compare its hash with `after_sha256`.
+1. Write the change to a file and run the propose command. It reads the live
+   value and writes an action file; it changes nothing.
+2. Post the card with `multica decision request --action-file ./action.json`.
 
 ```bash
-multica workflow set-instructions <id> --status in_progress --file ./step.md --print-hash
-multica workflow update <id> --steps-file ./steps.json --decision-id <decision-id>
-multica agent update <id> --instructions-file ./i.md --expected-before-digest <hex> --decision-id <decision-id>
-multica squad update <id> --instructions-file ./i.md --expected-before-digest <hex> --decision-id <decision-id>
-multica workspace update <id> --context-file ./c.md --expected-before-digest <hex> --decision-id <decision-id>
+multica config propose workflow.step.instructions <workflow-id> --status-key <key> --file ./step.md --out ./action.json
+multica config propose workflow.steps <workflow-id> --file ./steps.json --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./i.md --out ./action.json
+multica config propose squad.instructions <squad-id> --file ./i.md --out ./action.json
+multica config propose workspace.context --file ./c.md --out ./action.json
 ```
 
-- Instruction fields hash the raw UTF-8 bytes; pass the live value's hash as
-  `--expected-before-digest`. The CLI computes `after_sha256` from the file.
-- Workflow commands hash the live workflow read just before the write (steps as
-  canonical JSON wrapped with the workflow id), so no `--expected-before-digest`.
-  `after_sha256` is the hash of the steps as the server stores them: the CLI
-  applies the server's own trim, handler-default and board-order rules (and adds
-  missing `todo`, `done` and `cancelled` steps), so a newline-terminated
-  instruction file or a partial `--steps-file` hashes like the stored result.
-- A bound write carries one field: no other update flag, and for workflows no
-  run-rule flag. `--decision-id` and `--vote-issue` are alternatives.
-- 409 means the live value moved or the decision was used: read it again and
-  ask for a new decision. The CLI never retries.
+Use `workflow.step.instructions` when only one step's instructions change;
+`workflow.steps` for any other step edit. Step 2 of each command is the same.
+
+The decision-bound `--decision-id` write stays valid for the run budget
+(`multica workflow update <id> --max-runs-per-issue N`, proposed with
+`multica config propose workflow.budget`) and for an issue's `--workflow`
+override; see `workflows.md`.
 
 ## Proposing an action (task token)
 

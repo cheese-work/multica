@@ -196,7 +196,8 @@ func TestRuleE_BarrierCompletionQueuesBehindCompactClaimDoesNot(t *testing.T) {
 
 // Order 2: a claim parked mid-transaction (it holds the task and a shared DM
 // lock). A compact that arrives meanwhile waits for the claim to commit, then
-// sees the claimed task and answers 409 with the epoch untouched.
+// proceeds once the claim has lost to the running caller (CHE-2894: one active
+// task per DM), leaving the queued task queued.
 func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	svc := ruleENewService()
 	fx := newRuleEFixture(t)
@@ -236,15 +237,106 @@ func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	}
 
 	release()
+	// One active task per DM (CHE-2894): the caller turned running while the
+	// claim was parked, so the claim's update loses to the one-active index and
+	// the poll is empty. The task stays queued; the compact then runs.
+	if <-claimed {
+		t.Fatal("the parked claim returned the queued task beside a running DM task")
+	}
+	if code := <-compactDone; code != http.StatusOK {
+		t.Fatalf("compact after the empty claim = %d, want 200", code)
+	}
+	if status, stamp, dm := ruleEQueuedState(t, queued); status != "queued" || stamp != -1 || dm != 1 {
+		t.Fatalf("queued task = %q at epoch %d, DM epoch %d, want queued, unstamped, DM epoch 1", status, stamp, dm)
+	}
+}
+
+// Order 2, two agents (CHE-2894 step 8): agent B's claim parks mid-transaction
+// once agent A's task has settled. A compact from A's settled task beside
+// that claim answers 403 or 409 and leaves the epoch untouched. A second
+// active task cannot sit in the DM beside B's (one-active-per-DM index), so
+// the caller stays settled instead of turning running as in Order 2 above.
+func TestRuleE_BarrierCompactBesideOtherAgentsInFlightClaim(t *testing.T) {
+	svc := ruleENewService()
+	fx := newRuleEFixture(t)
+	b := newAdmissionAgent(t, "order2")
+	queued := addAdmissionTask(t, b, fx.sessionID, "", "queued")
+	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	key, release := ruleEPause(t, "UPDATE", "agent_task_queue",
+		fmt.Sprintf(`OLD.status = 'queued' AND NEW.status = 'dispatched' AND NEW.chat_session_id = '%s'`, fx.sessionID))
+	claimed := make(chan bool, 1)
+	go func() { claimed <- ruleEClaimUntil(t, svc, b.runtimeID, queued, 30*time.Second) }()
+	ruleEWaitParked(t, key)
+
+	// The settled caller is refused before the handler takes the DM lock, so
+	// the compact does not wait; it must not change the DM either way.
+	if code, body := postCompact(t, fx.token, "x"); code != http.StatusConflict && code != http.StatusForbidden {
+		t.Fatalf("compact beside a parked claim = %d %s, want 403 or 409", code, body)
+	}
+	release()
 	if !<-claimed {
 		t.Fatal("the parked claim did not return the queued task")
 	}
-	if code := <-compactDone; code != http.StatusConflict {
-		t.Fatalf("compact after the claim = %d, want 409", code)
-	}
 	assertCompactUntouched(t, fx.sessionID)
-	if status, stamp, dm := ruleEQueuedState(t, queued); status != "dispatched" || stamp != 0 || dm != 0 {
-		t.Fatalf("queued task = %q at epoch %d, DM epoch %d, want dispatched at 0/0", status, stamp, dm)
+	if got := taskStatus(t, queued); got != "dispatched" {
+		t.Fatalf("agent B task = %q, want dispatched", got)
+	}
+}
+
+// Order 1, two agents (CHE-2819 case (r), CHE-2894 step 8): agent A's running
+// task holds the DM through a parked compact; agent B has a queued DM task on
+// its own runtime. B's claim never waits on the DM row and returns nothing
+// while the compact is parked. After the compact commits and A's completion
+// finishes, B's task is admitted and stamped with the new epoch.
+func TestRuleE_BarrierCompactFirstSecondAgentClaimWaitsThenStamps(t *testing.T) {
+	svc := ruleENewService()
+	fx := newRuleEFixture(t)
+	b := newAdmissionAgent(t, "order1")
+	queued := addAdmissionTask(t, b, fx.sessionID, "", "queued")
+
+	key, release := ruleEPause(t, "INSERT", "chat_message",
+		fmt.Sprintf(`NEW.chat_session_id = '%s' AND NEW.message_kind = 'compaction_summary'`, fx.sessionID))
+	compactDone := make(chan int, 1)
+	go func() {
+		code, _ := postCompact(t, fx.token, "x")
+		compactDone <- code
+	}()
+	ruleEWaitParked(t, key)
+
+	completeDone := make(chan error, 1)
+	go func() {
+		_, _, err := svc.CompleteTaskWithRunContext(ctx(), ruleEUUID(t, fx.taskID), []byte(`{"output":"done"}`), "", "", "", false, "", "", nil)
+		completeDone <- err
+	}()
+	ruleEWaitOnDM(t)
+	select {
+	case err := <-completeDone:
+		t.Fatalf("completion finished while the compact held the DM lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if ruleEClaimUntil(t, svc, b.runtimeID, queued, 3*time.Second) {
+		t.Fatal("agent B's claim returned its DM task while the compact held the DM")
+	}
+	if status, _, _ := ruleEQueuedState(t, queued); status != "queued" {
+		t.Fatalf("agent B task = %q while the compact held the DM, want queued", status)
+	}
+
+	release()
+	if code := <-compactDone; code != http.StatusOK {
+		t.Fatalf("compact = %d, want 200", code)
+	}
+	if err := <-completeDone; err != nil {
+		t.Fatalf("completion after the compact: %v", err)
+	}
+	if !ruleEClaimUntil(t, svc, b.runtimeID, queued, 3*time.Second) {
+		t.Fatal("agent B's claim after the compact did not return its task")
+	}
+	if status, stamp, dm := ruleEQueuedState(t, queued); status != "dispatched" || dm != 1 || stamp != 1 {
+		t.Fatalf("agent B task = %q at epoch %d, DM epoch %d, want dispatched at 1/1", status, stamp, dm)
 	}
 }
 

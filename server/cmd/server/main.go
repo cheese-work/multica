@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/database"
 	"github.com/multica-ai/multica/server/internal/dbreader"
@@ -721,6 +722,11 @@ func main() {
 	if maintenanceErr != nil {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
+	// CHE-4746: gateway-facing control-plane routes live on this second listener only.
+	internalServer, internalErr := newInternalServer(port)
+	if internalErr != nil {
+		slog.Error("internal listener disabled", "error", internalErr)
+	}
 
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
@@ -733,6 +739,8 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	// A task's Steel browser leases end with the task (CHE-4734).
+	(&browserlease.Revoker{Queries: queries, Bus: bus}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -982,6 +990,15 @@ func main() {
 		}()
 	}
 
+	if internalServer != nil {
+		go func() {
+			slog.Info("internal listener starting", "addr", internalServer.Addr)
+			if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("internal listener disabled", "error", err)
+			}
+		}()
+	}
+
 	go func() {
 		slog.Info("pprof server starting", "addr", profilingServer.Addr)
 		if err := profilingServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -1024,6 +1041,17 @@ func main() {
 			if err := maintenanceServer.Shutdown(ctx); err != nil {
 				slog.Error("maintenance shutdown interrupted", "error", err)
 				_ = maintenanceServer.Close()
+			}
+		},
+		DrainInternal: func() {
+			if internalServer == nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := internalServer.Shutdown(ctx); err != nil {
+				slog.Error("internal listener shutdown interrupted", "error", err)
+				_ = internalServer.Close()
 			}
 		},
 		DrainHTTP: func() {

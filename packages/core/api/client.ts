@@ -294,8 +294,9 @@ import {
   RuntimeProfileSchema,
   AgentDecisionSettingSchema,
   type AgentDecisionSetting,
-  RoutingAgentSettingSchema,
-  type RoutingAgentSetting,
+  BackgroundAgentsSchema,
+  type BackgroundAgents,
+  type BackgroundAgentsRead,
   DelegatedWritesSchema,
   type DelegatedWrites,
   OpenDecisionRequestListSchema,
@@ -623,6 +624,13 @@ export interface ClientUsageRequest {
 export interface LoginResponse {
   token: string;
   user: User;
+}
+
+function parseBackgroundAgentsRead(raw: unknown, etag: string | null, method: "GET" | "PUT"): BackgroundAgentsRead | null {
+  const value = parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+    endpoint: `${method} /api/workspaces/{id}/background-agents`,
+  });
+  return value ? { value, etag } : null;
 }
 
 function parseSearchIndexResponse<T>(raw: unknown, schema: ZodType, endpoint: string): T {
@@ -3468,21 +3476,31 @@ export class ApiClient {
     });
   }
 
-  // CHE-3627: null when the response is malformed, so a guessed value is never
-  // shown or saved back over the real one.
-  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
-    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
-      endpoint: "GET /api/workspaces/{id}/routing-agent",
+  // CHE-4123: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one. `etag` is the version the next save
+  // must present (null from a server that sends none).
+  async getBackgroundAgents(workspaceId: string): Promise<BackgroundAgentsRead | null> {
+    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
+      extraHeaders: { "Content-Type": "application/json" },
     });
+    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "GET");
   }
 
-  // Owner/admin + human-actor only; replaces the whole setting.
-  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
-    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+  // Owner/admin + human-actor only; replaces the whole value. An unset slot is
+  // sent as null. With `etag` the server refuses with 409 `background_agents_conflict`
+  // (body: `current`, `etag`) when someone saved since that read. Null result:
+  // the response was malformed, so re-read.
+  async updateBackgroundAgents(
+    workspaceId: string,
+    value: Record<string, unknown>,
+    etag?: string | null,
+  ): Promise<BackgroundAgentsRead | null> {
+    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
       method: "PUT",
-      body: JSON.stringify(config),
+      body: JSON.stringify(value),
+      extraHeaders: { "Content-Type": "application/json", ...(etag ? { "If-Match": etag } : {}) },
     });
+    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "PUT");
   }
 
   // CHE-4617: null when the response is malformed, so a guessed rule is never
