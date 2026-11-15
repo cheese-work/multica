@@ -370,9 +370,9 @@ Upstream's local-environment migrations ship three prefixes (633, 634, 635) that
 with fork `wakeup_scoped_event` migrations. They are new to this fork, so no database has
 recorded them. They take the next free numbers in the sync range (CHE-5612):
 
-- `633_issue_environment` is now `9999938_issue_environment`
-- `634_issue_environment_task_key_idx` is now `9999939_issue_environment_task_key_idx`
-- `635_issue_environment_issue_idx` is now `9999940_issue_environment_issue_idx`
+- `633_issue_environment` is now `9999964_issue_environment`
+- `634_issue_environment_task_key_idx` is now `9999965_issue_environment_task_key_idx`
+- `635_issue_environment_issue_idx` is now `9999966_issue_environment_issue_idx`
 
 The up and down SQL bytes are unchanged. The runner's concurrent-index name map uses the
 new prefixes for `uq_issue_environment_task_key` and `idx_issue_environment_issue`. A later

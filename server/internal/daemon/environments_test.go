@@ -215,3 +215,30 @@ func TestEnvironmentHandlersRequireATaskCredential(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironmentStartMapsStableCwdToTheTaskWorkDir(t *testing.T) {
+	real, stable := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, ".multica"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "repo"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, ".multica", "environments.toml"), []byte("[environments.web]\nstart = \"exit 0\"\nurl = \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestEnvironmentService(t)
+	d := &Daemon{logger: s.logger, environments: s}
+	d.registerActiveRepoCheckoutTask("tok", activeRepoCheckoutTask{WorkDir: real, StableDir: stable, TaskID: "t", IssueID: "i", WorkspaceID: "w"})
+	start := func(dir string) *httptest.ResponseRecorder {
+		return doEnvironmentRequest(d.environmentStartHandler(), "/environments/start", "tok", `{"name":"web","dir":"`+dir+`"}`)
+	}
+	for name, dir := range map[string]string{"stable root": stable, "stable repo subdirectory": filepath.Join(stable, "repo")} {
+		if rec := start(dir); rec.Code != http.StatusOK {
+			t.Errorf("%s: HTTP %d, want 200; body: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := start(t.TempDir()); rec.Code != http.StatusBadRequest {
+		t.Errorf("unrelated directory: HTTP %d, want 400", rec.Code)
+	}
+}

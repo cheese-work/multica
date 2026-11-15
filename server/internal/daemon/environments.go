@@ -381,27 +381,27 @@ type environmentResponse struct {
 	Environments []localenv.Environment `json:"environments,omitempty"`
 }
 
-func (d *Daemon) environmentTask(w http.ResponseWriter, r *http.Request) (localenv.Task, bool) {
+func (d *Daemon) environmentTask(w http.ResponseWriter, r *http.Request) (localenv.Task, activeRepoCheckoutTask, bool) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return localenv.Task{}, false
+		return localenv.Task{}, activeRepoCheckoutTask{}, false
 	}
 	if d.environments == nil {
 		http.Error(w, "environments are not available on this daemon", http.StatusServiceUnavailable)
-		return localenv.Task{}, false
+		return localenv.Task{}, activeRepoCheckoutTask{}, false
 	}
 	active, result := d.activeRepoCheckoutTask(r)
 	if result != repoCheckoutAuthOK {
 		http.Error(w, "environment commands need the credential of a task running in this daemon; "+
 			"run them from inside the task, while it is running", http.StatusUnauthorized)
-		return localenv.Task{}, false
+		return localenv.Task{}, activeRepoCheckoutTask{}, false
 	}
-	return localenv.Task{TaskID: active.TaskID, IssueID: active.IssueID, WorkspaceID: active.WorkspaceID, RootDir: active.WorkDir}, true
+	return localenv.Task{TaskID: active.TaskID, IssueID: active.IssueID, WorkspaceID: active.WorkspaceID, RootDir: active.WorkDir}, active, true
 }
 
 func (d *Daemon) environmentStartHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		task, ok := d.environmentTask(w, r)
+		task, active, ok := d.environmentTask(w, r)
 		if !ok {
 			return
 		}
@@ -413,7 +413,9 @@ func (d *Daemon) environmentStartHandler() http.HandlerFunc {
 		if req.Dir == "" {
 			req.Dir = task.RootDir
 		}
-		env, err := d.environments.manager.Start(task, req.Dir, strings.TrimSpace(req.Name), req.Path)
+		// A stable-cwd agent sends a path under its stable dir; the daemon sees
+		// only the real workdir (same mapping as repo checkout).
+		env, err := d.environments.manager.Start(task, active.hostPath(req.Dir), strings.TrimSpace(req.Name), req.Path)
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, localenv.ErrUnsupported) {
@@ -435,7 +437,7 @@ func (d *Daemon) environmentStartHandler() http.HandlerFunc {
 
 func (d *Daemon) environmentStopHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		task, ok := d.environmentTask(w, r)
+		task, _, ok := d.environmentTask(w, r)
 		if !ok {
 			return
 		}
@@ -460,7 +462,7 @@ func (d *Daemon) environmentStopHandler() http.HandlerFunc {
 
 func (d *Daemon) environmentListHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		task, ok := d.environmentTask(w, r)
+		task, _, ok := d.environmentTask(w, r)
 		if !ok {
 			return
 		}
