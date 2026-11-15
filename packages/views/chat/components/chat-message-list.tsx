@@ -885,13 +885,13 @@ export function ChatMessageList({
     pending.write(pending.key, pending.value);
   }, []);
   const saveAnchor = useCallback(
-    (anchor: ChatAnchor) => {
+    (anchor: ChatAnchor, write = bindViewStateWriterRef.current()) => {
       lastAnchorRef.current = anchor;
       if (!anchorKey) return;
       pendingAnchorWrite.current = {
         key: anchorKey,
         value: serializeChatAnchor(anchor),
-        write: bindViewStateWriterRef.current(),
+        write,
       };
       const wait = ANCHOR_PERSIST_MS - (Date.now() - lastAnchorWriteAt.current);
       if (wait <= 0) flushAnchor();
@@ -937,13 +937,17 @@ export function ChatMessageList({
     if (!anchorReady || !scrollContainerEl) return;
     // Measure once per frame, not once per scroll event.
     let frame = 0;
+    // Bound when the frame is queued: a frame drained after navigation already
+    // moved the tab's route must still file under the route it was scrolled on.
+    let frameWriter = bindViewStateWriterRef.current();
     const measure = () => {
       frame = 0;
       const last = lastAnchorRef.current;
-      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) });
+      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) }, frameWriter);
     };
     const onScroll = () => {
       if (frame) return;
+      frameWriter = bindViewStateWriterRef.current();
       frame = requestAnimationFrame(measure);
     };
     // A queued frame holds the reader's final offset: run it now rather than drop it.

@@ -347,4 +347,18 @@ describe("ChatMessageList anchor persistence under scroll (CHE-3234)", () => {
 
     expect(writeRoutes).toEqual(["/chat"]);
   });
+  it("files a frame drained at unmount under the route the scroll happened on", () => {
+    const { view, root } = mountScrolling();
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    measureWhileConnected(root, row, () => -900);
+    writeRoutes = [];
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll")); // frame queued on /chat, never run
+    });
+    route = "/issues"; // navigation commits before the frame or the unmount
+    view.unmount();
+
+    expect(writeRoutes).toEqual(["/chat"]);
+  });
 });
