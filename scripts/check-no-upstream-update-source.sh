@@ -23,11 +23,9 @@ allowlist=(
   # GitHub Releases, not a CLI/daemon update source.
   'apps/web/app/(landing)/download/download-client.tsx'
   'apps/web/features/landing/utils/github-release.ts'
-  # Upstream marketing pages (landing download matrix, CLI install page) that
-  # the v0.9.0 sync brought in. They are not the fork's CLI/daemon update
-  # source; the fork's own update path stays /api/daemon/update.
+  # Landing download matrix: upstream desktop installers, as for the two files
+  # above. Not a CLI/daemon update source.
   'apps/web/features/landing/components/download/all-platforms.tsx'
-  'apps/web/features/landing/site/cli-page.tsx'
   # Windows `multica update` (CHE-1012: Windows is out of scope for the
   # server-sourced update; Linux/macOS use update_fork.go).
   'server/internal/cli/update.go'
