@@ -59,7 +59,7 @@
   },
   "relation_filter_error": {
     "title": "「與我的關係」篩選載入失敗",
-    "hint": "載入訂閱和 AI 代理後才能顯示按「我訂閱的」或「分配給我的 AI 代理的」篩選的任務。"
+    "hint": "載入訂閱和 AI 代理後才能顯示按「我訂閱的」或「我的 AI 代理在做」篩選的任務。"
   },
   "source_context": {
     "create_action": "從這條評論建立子任務",
@@ -197,7 +197,7 @@
     "section_relation": "與我的關係",
     "relation_assigned": "分配給我的",
     "relation_created": "我建立的",
-    "relation_my_agents": "分配給我的 AI 代理的",
+    "relation_my_agents": "我的 AI 代理在做",
     "relation_subscribed": "我訂閱的",
     "section_agent_status": "AI 代理狀態",
     "agent_status_running": "執行中",
@@ -1142,7 +1142,7 @@
     "variant_my_any": "任何相關",
     "variant_my_assigned": "分配給我",
     "variant_my_created": "我建立的",
-    "variant_my_involved": "我參與的"
+    "variant_my_involved": "我的 AI 代理在做"
   },
   "plugins": {
     "panels": "Plugins",
@@ -2159,6 +2159,13 @@
     "open": "開啟",
     "copy_url": "複製位址",
     "copied": "已複製位址",
-    "copy_failed": "無法複製位址"
+    "copy_failed": "無法複製位址",
+    "app_desktop_hint": "桌面 App。在執行它的那台機器上，用 Multica Desktop 切到它的視窗。",
+    "app_remote_hint": "在 {{machine}} 上執行。在那台機器上用 Multica Desktop 切到它的視窗。",
+    "focus": "切到視窗",
+    "focus_gone": "{{name}} 已不在執行",
+    "focus_unsupported": "這台機器的 daemon 暫時無法切換 App 視窗。更新 Multica 後再試。",
+    "focus_unavailable": "本機 daemon 沒有執行",
+    "focus_failed": "無法切到 {{name}}"
   }
 }

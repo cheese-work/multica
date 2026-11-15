@@ -460,6 +460,7 @@ func (d *Daemon) healthMux(startedAt time.Time) *http.ServeMux {
 	mux.HandleFunc("/environments/start", d.environmentStartHandler())
 	mux.HandleFunc("/environments/stop", d.environmentStopHandler())
 	mux.HandleFunc("/environments/list", d.environmentListHandler())
+	mux.HandleFunc("/environments/focus", d.environmentFocusHandler())
 	return mux
 }
 

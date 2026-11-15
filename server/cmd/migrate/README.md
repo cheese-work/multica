@@ -385,3 +385,16 @@ new to this fork, so no database has recorded it. It takes the next free number 
 range (CHE-5613): `636_site_counter` is now `9999941_site_counter`. The up and down SQL bytes
 are unchanged. The migration has no concurrent index, so the runner's concurrent-index name map
 has no entry for it. A later sync must not reintroduce the upstream filename under `636`.
+
+## Upstream issue-environment kind migration renumbering
+
+Upstream's `637_issue_environment_kind` adds a column to `issue_environment`. That table is
+created by `9999938_issue_environment` in this fork, and migrations run in file-name order, so
+a fresh install would run `637` before the table exists. It takes the next free number in the
+sync range (CHE-5615):
+
+- `637_issue_environment_kind` is now `9999942_issue_environment_kind`
+
+The up and down SQL bytes are unchanged. The migration builds no index, so the runner's
+concurrent-index name map needs no entry. A later sync must not reintroduce the upstream
+filename under its original prefix.

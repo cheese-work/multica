@@ -475,7 +475,7 @@ test("quality checks run on frontend-build and, when frontend-build is skipped, 
   }
   const action = readFileSync(new URL("../.github/actions/frontend-quality/action.yml", import.meta.url), "utf8");
   assert.match(action, /run: pnpm knip/);
-  assert.match(action, /continue-on-error: true/);
+  assert.doesNotMatch(action, /continue-on-error:/);
   assert.doesNotMatch(action, /pnpm install/);
 });
 
