@@ -99,6 +99,13 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
+		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
+		if !ok {
+			return
+		}
+		hints = append(hints, cannotDoHints...)
+	}
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
 		writeError(writer, http.StatusBadRequest, "ask is too long")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -51,12 +52,18 @@ func lintResponse(row db.IssueWorkflow, findings []workflowlint.Finding) Workflo
 }
 
 // workflowLintEnv loads what the agent, runtime, usage and instruction rules
-// look at, once for every workflow in rows.
-func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow, userID, role string) (workflowlint.Env, map[string][]string, error) {
+// look at, once for every workflow in rows. A nil catalog is loaded from the
+// pool; a save passes the catalog its own transaction already holds, because
+// loading it again through the pool would wait on the transaction's
+// uncommitted status seed and never return.
+func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow, userID, role string, catalog map[string]issueworkflow.CatalogEntry) (workflowlint.Env, map[string][]string, error) {
 	env := workflowlint.Env{Live: true}
-	catalog, err := h.workflowStatusCatalog(ctx, h.Queries, wsUUID)
-	if err != nil {
-		return env, nil, err
+	if catalog == nil {
+		var err error
+		catalog, err = h.workflowStatusCatalog(ctx, h.Queries, wsUUID)
+		if err != nil {
+			return env, nil, err
+		}
 	}
 	env.Statuses = make(map[string]string, len(catalog))
 	for key, entry := range catalog {
@@ -158,7 +165,7 @@ func (h *Handler) lintWorkflows(w http.ResponseWriter, r *http.Request, wsUUID p
 	// Usage and cross-references are judged against every workflow of the
 	// workspace, whichever subset is linted.
 	defs := decodeRows(all)
-	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all, requestUserID(r), member.Role)
+	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all, requestUserID(r), member.Role, nil)
 	if err != nil {
 		slog.Warn("workflow lint env failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
@@ -221,6 +228,71 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workflows": res, "total": len(res)})
+}
+
+// lintProposedSave lints the workflow as a save would leave it. The live
+// runtime check (WF012) is skipped: a save is not the moment to judge which
+// runtimes happen to be online. Statuses come from catalog, which already
+// holds the statuses this save created.
+func (h *Handler) lintProposedSave(ctx context.Context, wsUUID pgtype.UUID, userID, role string, current db.IssueWorkflow, proposed issueworkflow.Definition, catalog map[string]issueworkflow.CatalogEntry, projects []db.Project) ([]workflowlint.Finding, error) {
+	all, err := h.Queries.ListIssueWorkflows(ctx, wsUUID)
+	if err != nil {
+		return nil, err
+	}
+	env, byWorkflow, err := h.workflowLintEnv(ctx, wsUUID, all, userID, role, catalog)
+	if err != nil {
+		return nil, err
+	}
+	env.Live = false
+	id := uuidToString(current.ID)
+	projectIDs := make([]string, len(projects))
+	for i, p := range projects {
+		projectIDs[i] = uuidToString(p.ID)
+	}
+	byWorkflow[id] = projectIDs
+	defs := decodeRows(all)
+	defs[id] = proposed
+	row := current
+	row.Name = proposed.Name
+	return lintRows([]db.IssueWorkflow{row}, defs, env, byWorkflow)[0].Findings, nil
+}
+
+// agentDerivedRules are the rules that judge an agent or its runtime: a
+// finding names a provider, version or state the reader of a stored workflow
+// may not be allowed to see.
+var agentDerivedRules = map[string]bool{"WF004": true, "WF005": true, "WF006": true, "WF012": true}
+
+// storableFindings are the findings kept with a saved workflow and read back by
+// every workspace member. They are judged for the saver's view, so the
+// agent-derived ones stay out; the lint endpoint judges those per reader.
+func storableFindings(findings []workflowlint.Finding) []workflowlint.Finding {
+	out := make([]workflowlint.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !agentDerivedRules[f.Rule] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func unwaivedErrors(findings []workflowlint.Finding) []workflowlint.Finding {
+	var out []workflowlint.Finding
+	for _, f := range findings {
+		if f.Level == workflowlint.LevelError && !f.Waived {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// writeLintRefusal answers a save that has unwaived lint errors and no
+// lint_override: 422 with each error and its fix hint.
+func writeLintRefusal(w http.ResponseWriter, errs []workflowlint.Finding) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error":    fmt.Sprintf("the workflow has %d lint error(s); fix them, or save again with lint_override and a reason", len(errs)),
+		"code":     "workflow_lint_errors",
+		"findings": errs,
+	})
 }
 
 // lintAgentHidden says whether the caller may not see the agent or the runtime

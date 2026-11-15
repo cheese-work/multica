@@ -430,6 +430,10 @@
         "unpin": "Désépingler",
         "archive": "Archiver",
         "unarchive": "Désarchiver"
+      },
+      "short": {
+        "seen": "Vu",
+        "unseen": "Non vu"
       }
     }
   },
