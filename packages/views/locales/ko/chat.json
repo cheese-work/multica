@@ -415,6 +415,10 @@
         "unpin": "고정 해제",
         "archive": "보관",
         "unarchive": "보관 해제"
+      },
+      "short": {
+        "seen": "읽음",
+        "unseen": "읽지 않음"
       }
     }
   },
