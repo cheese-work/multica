@@ -2,7 +2,7 @@ name: pr-guards
 
 # CHE-4385: one run per PR event. GitHub disabled Actions on this repo at about 2,500 created runs a day, and a skipped
 # run still counts as created, so every guard that used to start on its own is a job here: close target, changelog line,
-# fork sync, the security gate and the mechanical-tier receipt (the last two are reusable workflows, which add jobs and
+# fork sync, the tag and review-policy check (CHE-5208), the security gate and the mechanical-tier receipt (the last two are reusable workflows, which add jobs and
 # no runs). A comment starts nothing; after posting a verdict, dispatch the gate once:
 #   gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
 #
@@ -82,6 +82,38 @@ jobs:
       - name: Compute the changelog entry
         run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
 
+  # CHE-5717: a PR that touches CLI commands, the agent brief or the daemon says whether agents need an instruction
+  # update (`Agent-facing: yes | no`, plus `Adoption item:` on yes). The daily adoption issue is built from the answers.
+  # The PR body comes from the event payload and the file list from the read-only token; the script is the trusted
+  # base copy. upstream-sync heads and upstream-main bases carry no field and are skipped. Making this check required
+  # is Cheese's call.
+  agent-facing:
+    name: Agent-facing field
+    if: github.event.pull_request.state != 'closed' && github.base_ref != 'upstream-main' && !startsWith(github.head_ref, 'upstream-sync/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted workflow checker
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: List the changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt"
+      - name: Check the Agent-facing field
+        run: node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
+
   fork-sync-guard:
     name: Fork sync preservation
     runs-on: ubuntu-24.04
@@ -107,6 +139,16 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
       - name: Check fork source and test preservation
         run: node scripts/fork-sync-guard.mjs
+
+  # CHE-5208 (CHE-5194 T5b): the blocking backstop for the merge-method tag and the review policy; see pr-guard-rules.yml.
+  # An edit that invalidates a green result re-runs it from pr-guard-rules-edit.yml. Making this check required is a
+  # branch-protection change, Cheese's call.
+  guard-check:
+    if: github.event.pull_request.state != 'closed'
+    uses: ./.github/workflows/pr-guard-rules.yml
+    permissions:
+      contents: read
+      pull-requests: read
 
   security-gate:
     uses: ./.github/workflows/security-gate.yml

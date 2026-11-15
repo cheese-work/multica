@@ -286,16 +286,17 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
-  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyBatchOutcomeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
   AgentDecisionSettingSchema,
   type AgentDecisionSetting,
-  RoutingAgentSettingSchema,
-  type RoutingAgentSetting,
+  BackgroundAgentsSchema,
+  type BackgroundAgents,
+  type BackgroundAgentsRead,
   DelegatedWritesSchema,
   type DelegatedWrites,
   OpenDecisionRequestListSchema,
@@ -623,6 +624,13 @@ export interface ClientUsageRequest {
 export interface LoginResponse {
   token: string;
   user: User;
+}
+
+function parseBackgroundAgentsRead(raw: unknown, etag: string | null, method: "GET" | "PUT"): BackgroundAgentsRead | null {
+  const value = parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+    endpoint: `${method} /api/workspaces/{id}/background-agents`,
+  });
+  return value ? { value, etag } : null;
 }
 
 function parseSearchIndexResponse<T>(raw: unknown, schema: ZodType, endpoint: string): T {
@@ -3468,21 +3476,31 @@ export class ApiClient {
     });
   }
 
-  // CHE-3627: null when the response is malformed, so a guessed value is never
-  // shown or saved back over the real one.
-  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
-    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
-      endpoint: "GET /api/workspaces/{id}/routing-agent",
+  // CHE-4123: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one. `etag` is the version the next save
+  // must present (null from a server that sends none).
+  async getBackgroundAgents(workspaceId: string): Promise<BackgroundAgentsRead | null> {
+    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
+      extraHeaders: { "Content-Type": "application/json" },
     });
+    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "GET");
   }
 
-  // Owner/admin + human-actor only; replaces the whole setting.
-  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
-    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+  // Owner/admin + human-actor only; replaces the whole value. An unset slot is
+  // sent as null. With `etag` the server refuses with 409 `background_agents_conflict`
+  // (body: `current`, `etag`) when someone saved since that read. Null result:
+  // the response was malformed, so re-read.
+  async updateBackgroundAgents(
+    workspaceId: string,
+    value: Record<string, unknown>,
+    etag?: string | null,
+  ): Promise<BackgroundAgentsRead | null> {
+    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
       method: "PUT",
-      body: JSON.stringify(config),
+      body: JSON.stringify(value),
+      extraHeaders: { "Content-Type": "application/json", ...(etag ? { "If-Match": etag } : {}) },
     });
+    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "PUT");
   }
 
   // CHE-4617: null when the response is malformed, so a guessed rule is never
@@ -4444,6 +4462,19 @@ export class ApiClient {
     input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; preview_sha256?: string; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  /** Binds a challenge to the items the person chose to approve (`choices`: action id to "approve" | "reject"). Refused when none is approved: nothing to sign. */
+  challengeDecisionBatch(batchId: string, choices: Record<string, string>): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-actions/batches/${encodeURIComponent(batchId)}/challenge`, PasskeyChallengeSchema, { choices });
+  }
+
+  /** One call decides every item. `payload_sha256` and `assertion` cover the approved items only; with none approved both are left out. */
+  approveDecisionBatch(
+    batchId: string,
+    input: { payload_sha256: string; assertion?: PasskeyAssertionEnvelope; choices: Record<string, string> },
+  ): Promise<PasskeyBatchOutcome> {
+    return this.passkeyPost(`/api/decision-actions/batches/${encodeURIComponent(batchId)}/approve`, PasskeyBatchOutcomeSchema, input);
   }
 
   /** Revoke (B v9 S6): its own challenge, bound to the word "revoke" so an approval's assertion cannot revoke. */
