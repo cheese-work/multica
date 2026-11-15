@@ -38,6 +38,12 @@ jobs:
     # The App key lives in this environment (branch policy: main only), so a dry run needs the default branch: dispatch with --ref main.
     environment: ci-app-token
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
+
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}

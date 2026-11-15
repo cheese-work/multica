@@ -4,9 +4,12 @@ import { test } from "node:test"
 
 const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8")
 
+// The security-gate workflows deliberately run on `ubuntu-latest` (CHE-3604, asserted in ci-runners.test.mjs).
+const latestAllowed = /^security-gate.*\.yml$/
+
 test("workflow Ubuntu labels are pinned instead of silently migrating", () => {
   for (const name of readdirSync(new URL("../.github/workflows/", import.meta.url))) {
-    if (name.endsWith(".yml")) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
+    if (name.endsWith(".yml") && !latestAllowed.test(name)) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
   }
 })
 
@@ -20,13 +23,13 @@ test("CD uses Node 24 actions and never asks setup-node to infer a package cache
   }
 })
 
-test("qualification stops only its persistent builder without removing cache state, even after build failure", () => {
+test("qualification uses a named Buildx builder that is health-checked, replaced only when broken, and cleaned up by the action", () => {
   const source = workflow("cd-qualification.yml")
   assert.match(source, /id: buildx\n        uses: docker\/setup-buildx-action@v4/)
-  assert.match(source, /if: \$\{\{ always\(\) && steps\.buildx\.outputs\.name != '' \}\}/)
-  assert.match(source, /docker container stop --time 120 "buildx_buildkit_\$\{BUILDER_NAME\}0"/)
-  assert.match(source, /cleanup: false/)
-  assert.doesNotMatch(source, /docker buildx rm/)
+  assert.match(source, /cleanup: true/)
+  assert.match(source, /docker buildx inspect "\$BUILDX_NAME" --bootstrap/)
+  assert.match(source, /docker buildx rm --force "\$BUILDX_NAME"/)
+  assert.match(source, /BUILDX_BUILDER: \$\{\{ steps\.buildx\.outputs\.name \}\}/)
 })
 
 test("the warning gate waits for build, test and lint jobs and has read-only permissions", () => {
