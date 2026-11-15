@@ -1884,6 +1884,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
 					r.Get("/plugins", h.ListPlugins)
+					// The stored guard policy and its digest, the base a passkey edit names (CHE-5207).
+					r.Get("/guard-policy", h.GetGuardPolicy)
 					// One short-lived hosted surface launch. Member-visible
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
@@ -1894,6 +1896,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
 					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
 					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+					// The Guard settings page edits the guard policy with a passkey (CHE-5207).
+					r.With(handler.RequireHumanActor).Post("/guard-policy/challenge", h.ChallengeGuardPolicy)
+					r.With(handler.RequireHumanActor).Put("/guard-policy", h.SetGuardPolicy)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
