@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   mobile:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_MOBILE_VERIFY || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

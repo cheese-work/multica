@@ -65,7 +65,7 @@ func (h *Handler) handlePullRequestReviewEvent(ctx context.Context, body []byte)
 			"installation_id", payload.Installation.ID, "repo_owner", payload.Repository.Owner.Login, "repo_name", payload.Repository.Name, "pr_number", payload.PullRequest.Number)
 		return nil
 	}
-	installations, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, payload.Installation.ID)
+	installations, err := h.allowedGitHubInstallations(ctx, payload.Installation.ID)
 	if err != nil {
 		return err
 	}

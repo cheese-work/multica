@@ -18,7 +18,9 @@ import {
   reconcileWorkspaceDrafts,
 } from "../draft-persistence";
 import { useChatDraftsStore } from "./chat-drafts-store";
+import { useFormDraftsStore } from "./form-drafts-store";
 import { useComposerDraftsStore } from "./composer-drafts-store";
+import { usePendingSendStore } from "./pending-send-store";
 
 export function useDraftLifecycle(
   userId: string | null,
@@ -29,7 +31,9 @@ export function useDraftLifecycle(
     if (userId && workspaceId) {
       const scope = `${userId}:${workspaceId}`;
       void useChatDraftsStore.getState().hydrate(scope);
+      void useFormDraftsStore.getState().hydrate(scope);
       void useComposerDraftsStore.getState().hydrate(scope);
+      void usePendingSendStore.getState().hydrate(scope);
     }
   }, [userId, workspaceId]);
 

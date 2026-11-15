@@ -23,11 +23,13 @@ import (
 // Commit is one pushed commit: its ID and the SHA-256 of its raw message bytes.
 type Commit struct {
 	SHA           string `json:"sha"`
+	RunSHA        string `json:"run_sha,omitempty"`
 	MessageSHA256 string `json:"message_sha256"`
 }
 
 // Receipt records one successful push (plan 3.2 item 7). The read proxy uses
-// it to return the run's own commit messages.
+// it to return the run's own commit messages. Commit.SHA is the commit the
+// remote holds; RunSHA is the SHA the run knew it by before translation.
 type Receipt struct {
 	Task    string    `json:"task"`
 	Repo    string    `json:"repo"`
@@ -168,23 +170,36 @@ func walkStatus(err error) int {
 }
 
 // defaultMaxCommits caps the commits one push may add; maxCommitHeader caps the
-// header block of one commit (everything before its message).
+// header block of one commit (everything before its message); maxCommitBytes
+// caps one whole raw commit object that translate reads into memory.
 const (
 	defaultMaxCommits = 1000
 	maxCommitHeader   = 64 << 10
+	maxCommitBytes    = 1 << 20
 )
 
 var errTooManyCommits = errors.New("push adds too many commits")
 
+// realBase is the commit the pushed history sits on: the real parent for a
+// synthetic-base run, the pinned base otherwise.
+func (b *Broker) realBase() string {
+	if b.pin.Synthetic != nil {
+		return b.pin.Synthetic.Parent
+	}
+	return b.pin.Base
+}
+
 // commitReceipts lists the commits the bundle added on top of the pinned base
 // with the SHA-256 of each raw message. One git process serves all objects and
 // its output is hashed as a stream, so a huge message costs time, not memory.
-func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit, error) {
+// runSHA maps a translated commit to the SHA the run knew it by (nil without
+// translation).
+func (b *Broker) commitReceipts(ctx context.Context, work, sha string, runSHA map[string]string) ([]Commit, error) {
 	limit := b.pin.MaxCommits
 	if limit <= 0 {
 		limit = defaultMaxCommits
 	}
-	list, err := b.git(ctx, work, nil, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.pin.Base)
+	list, err := b.git(ctx, work, nil, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.realBase())
 	if err != nil {
 		return nil, fmt.Errorf("receipt: %s", firstLine(list))
 	}
@@ -214,6 +229,9 @@ func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("receipt: %w", readErr)
+	}
+	for i := range commits {
+		commits[i].RunSHA = runSHA[commits[i].SHA]
 	}
 	return commits, nil
 }

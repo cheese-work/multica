@@ -23,6 +23,19 @@ const encode = (id: string) => encodeURIComponent(id);
 export const AGENT_FOCUS_CONVERSATION_STARTERS = "conversation_starters";
 
 /**
+ * My agents' work is the My issues route with `?scope=agents`. It is URL
+ * vocabulary rather than stored state so every tab and window keeps its own
+ * — a Cmd-click opens it beside My issues, and one tab's switch leaves the
+ * others alone.
+ */
+const MY_AGENTS_SCOPE = "agents";
+
+/** Whether a My issues URL's search params open My agents' work. */
+export function isMyAgentsSearch(searchParams: URLSearchParams): boolean {
+  return searchParams.get("scope") === MY_AGENTS_SCOPE;
+}
+
+/**
  * `?focus=` value that sends a project or issue page to its wakeup rules:
  * the page reveals them and clears the param.
  */
@@ -76,6 +89,8 @@ function workspaceScoped(slug: string) {
     chatSession: (sessionId: string) =>
       `${ws}/chat?session=${encode(sessionId)}`,
     myIssues: () => `${ws}/my-issues`,
+    myAgents: () => `${ws}/my-issues?scope=${MY_AGENTS_SCOPE}`,
+    views: () => `${ws}/views`,
     runtimes: () => `${ws}/runtimes`,
     runtimeDetail: (id: string) => `${ws}/runtimes/${encode(id)}`,
     runtimeSettings: (machineId: string, runtimeId: string) =>

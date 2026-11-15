@@ -6,18 +6,9 @@ import (
 	"testing"
 )
 
-// CHE-2398: with pr_merge_status set to a status, PR auto-complete used to move
-// an issue before the workflow's pr.merged edge ran, skipping the target
-// step's handoff. A step with a pr.merged edge now belongs to the workflow.
-
-var prMergedEdgeSteps = []map[string]any{
-	{"status_key": "backlog"},
-	{"status_key": "todo"},
-	{"status_key": "in_progress"},
-	{"status_key": "in_review", "edges": []map[string]any{{"to": "merged", "guard": "pr.merged", "timeout": "72h", "on_timeout": "blocked"}}},
-	{"status_key": "merged"},
-	{"status_key": "blocked"},
-}
+// CHE-2398, CHE-5245: a step with a pr.merged edge no longer stands the PR
+// merge decision down; the decision hands off to the target step itself, so the
+// edge is only a bridge (pr_merge_bridge_che5245_test.go).
 
 // prMergeIssueInReview is an issue with a linked PR sitting in_review in a
 // project on a workflow whose merged step hands off to an agent.
@@ -36,31 +27,6 @@ func prMergeIssueInReview(t *testing.T, steps []map[string]any, installationID i
 		t.Fatal(err)
 	}
 	return issue.ID, issue.Identifier, agentID
-}
-
-func TestPRAutoCompleteLeavesPRMergedEdgeToWorkflow(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("handler test fixture not initialized (no DB?)")
-	}
-	const installationID int64 = 2398001
-	secret := "che2398-secret"
-	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
-	issueID, identifier, agentID := prMergeIssueInReview(t, prMergedEdgeSteps, installationID)
-	setWorkspacePRMergeStatusForTest(t, "merged")
-
-	firePRWebhook(t, secret, installationID, 1, identifier+": work", "", "feat/che2398", "merged")
-
-	if got := issueStatusForTest(t, issueID); got != "in_review" {
-		t.Fatalf("auto-complete moved the issue to %q before the workflow edge ran", got)
-	}
-	if got := prAutoCompleteStateForTest(t, issueID).State; got != prAutoCompleteWorkflowOwned {
-		t.Fatalf("auto_complete state = %q, want %q", got, prAutoCompleteWorkflowOwned)
-	}
-	tickEdges(t)
-	status, assigneeType, assigneeID := issueStatusAndAssignee(t, issueID)
-	if status != "merged" || assigneeType != "agent" || assigneeID != agentID {
-		t.Fatalf("after the edge: status=%q assignee=%s/%s, want merged and agent %s", status, assigneeType, assigneeID, agentID)
-	}
 }
 
 // A step without a pr.merged edge still auto-completes as before.

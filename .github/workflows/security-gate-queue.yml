@@ -1,0 +1,38 @@
+# Queue-time security gate (CHE-4251), switched OFF by Cheese (CHE-5126; this change: CHE-5148).
+#
+# While the gate is off this workflow posts `security-gate` = `success` on the queue commit and runs no verdict logic.
+# It holds no secret and no environment. It acts only after the repository variable SECURITY_GATE_QUEUE_TRUSTED is
+# `true`; until then security-gate.yml posts the queue status itself. Switch the gate back on by reverting the CHE-5148 PR.
+
+name: security-gate-queue
+
+on:
+  workflow_run:
+    workflows: [security-gate]
+    types: [completed]
+    # CHE-4385: only a merge-queue run can pass the job `if`; without this filter every security-gate run starts a skipped queue run.
+    branches: [gh-readonly-queue/**]
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  security-gate-queue:
+    name: security-gate-queue-eval
+    # Only a merge-queue run of this repository.
+    if: >-
+      vars.SECURITY_GATE_QUEUE_TRUSTED == 'true' && github.event.workflow_run.event == 'merge_group' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    # CHE-3604: GitHub-hosted runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MERGE_GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Post security-gate success on the queue commit (gate off, CHE-5126)
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f state=success -f context=security-gate \
+            -f "description=security gate off (CHE-5126)" \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

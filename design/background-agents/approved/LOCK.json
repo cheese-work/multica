@@ -1,0 +1,72 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:page1",
+  "page_note": "File 'multica', page1. Five v2 frames: A2, B2, C2, D2, E. The v1 frames stay on the canvas as history and are not locked.",
+  "screens": [
+    {
+      "screen": "A2 · Workspace tab (Settings → Workspace → Background agents): rows DM title, Quick actions, Compact, Routing; Agent and Fallback agent selects; scope badge; owner/admin editing; phone 390 px",
+      "frame_id": "9L657IkfjZ",
+      "updatedAt": "2026-11-13T06:10:19.495Z",
+      "htmlBytes": 15567,
+      "content_sha256": "187b6f1d01625b8af4494f23aecfe4d9c00633c4055a287e32acf38f2159a254",
+      "render_png_sha256": "0bfaa14dfd683878be7408981c6593423ce4fcf81d208df78d511cd8e3830bfa",
+      "file": "a2-workspace-tab.html"
+    },
+    {
+      "screen": "B2 · Personal tab (Settings → Personal → Background agents): own picks; 'Using workspace' unset state; archived personal pick with no fall-through; Agent select open; phone 390 px",
+      "frame_id": "XyqcwrCaU8",
+      "updatedAt": "2026-11-13T06:10:21.146Z",
+      "htmlBytes": 15117,
+      "content_sha256": "4a873858b65ec4edd8247590142d4f728101b7a3280568121848484ecfc6421a",
+      "render_png_sha256": "9bde368ef7eb97c38c48a0f2c531ad222982981485ae4a2be69e3053d0dc0839",
+      "file": "b2-personal-tab.html"
+    },
+    {
+      "screen": "C2 · Compact row: transcript disclosure, 'Runs with <agent> · <scope>' line (Personal, Workspace, Off), archived and narrowed-access warnings, status row (Normal, Fallback, Waiting, Failed), /compact hint above the input; phone 390 px",
+      "frame_id": "IZ5zGPF9ZM",
+      "updatedAt": "2026-11-13T06:10:30.086Z",
+      "htmlBytes": 17618,
+      "content_sha256": "e348ef242746e5bab1755e5a3c791671daff0986bfc131c28fe5b2a65350fb5d",
+      "render_png_sha256": "f747e038e767fc0a8ec2860ff58581a6f3410c957b0a96cb02e386d78793d3dc",
+      "file": "c2-compact-row.html"
+    },
+    {
+      "screen": "D2 · States for both tabs: loading, empty (owner/admin and member), load error 503, offline, member read-only, save conflict 409; phone 390 px",
+      "frame_id": "fLyQE0xYpu",
+      "updatedAt": "2026-11-13T06:10:50.374Z",
+      "htmlBytes": 19032,
+      "content_sha256": "6c277ea4c69cf30d4e65d7d3a15266c847d863a07d762f3279f5edb3a2332588",
+      "render_png_sha256": "eeff05e5cdec543447347904ef0e1ff218c22c62c82f8e0d630ce12ca4490416",
+      "file": "d2-states.html"
+    },
+    {
+      "screen": "E · Agent page: 'Background agent' notice with per-job scope badges, links and job keys; 'Who can run this agent' access note and pre-save warning; member view; banner stack (archived, runtime, background); phone 390 px",
+      "frame_id": "ijhJ5xbn0u",
+      "updatedAt": "2026-11-13T06:25:14.888Z",
+      "htmlBytes": 15499,
+      "content_sha256": "255a44e83723805459b051bc83bb690fb8992dbf93aa852786cf244bbe031812",
+      "render_png_sha256": "93a975dcec13086469305081ac80037114e9f5cb39f07496704d9a802b0ebbac",
+      "file": "e-agent-page-notice.html"
+    }
+  ],
+  "updatedAt_note": "Cheese touched A2, B2, C2 and D2 at 13 Nov 2026 13:10 ICT (updatedAt 06:10 UTC). That moved updatedAt but not the render: the PNG hashes equal the set Terra scored. Frame E carries the two P2 fixes by x99-claude-sonnet-design at 13:25 ICT, which Terra re-scored. htmlBytes is the JavaScript character count that doop reports, not the UTF-8 byte count; each file's character count equals it.",
+  "export_sha256": "60c3f9f23398088d228b1af77b3223328a967f93a85f6444c85e86ae56c50fb6",
+  "export_sha256_method": "sha256 of the output of sha256sum for export_files, sorted by file name (one line '<sha256>  <file>' plus newline)",
+  "export_files": {
+    "a2-workspace-tab.html": "187b6f1d01625b8af4494f23aecfe4d9c00633c4055a287e32acf38f2159a254",
+    "b2-personal-tab.html": "4a873858b65ec4edd8247590142d4f728101b7a3280568121848484ecfc6421a",
+    "c2-compact-row.html": "e348ef242746e5bab1755e5a3c791671daff0986bfc131c28fe5b2a65350fb5d",
+    "d2-states.html": "6c277ea4c69cf30d4e65d7d3a15266c847d863a07d762f3279f5edb3a2332588",
+    "e-agent-page-notice.html": "255a44e83723805459b051bc83bb690fb8992dbf93aa852786cf244bbe031812"
+  },
+  "export_transform": "none: each file is the frame HTML as returned by the doop MCP get_frame on 13 Nov 2026 (frame html field, verbatim, trailing newline kept), self-contained (system font stack, inline SVG, no external fetch). Character count of each file equals the frame's htmlBytes.",
+  "exported_at": "2026-11-13 13:43 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-4122",
+  "selection_id": "01a1d38a-7f8b-74fb-87b9-00947319496a",
+  "selection_source": "Cheese's answer on decision card message 01a1d37d-7345-7c9b-b377-d19b8933e68e (13 Nov 2026): 'Approve v2 after the two P2 fixes'. Recorded on CHE-4122 in comment 01a1d38a-7f8b-74fb-87b9-00947319496a. The two P2 fixes are in frame E (updatedAt 2026-11-13T06:25:14.888Z).",
+  "ux_verdict_id": "01a1d39a-0472-701d-9154-24333e55005c",
+  "ux_verdict_note": "x99-codex-terra (cross-lab), 13 Nov 2026 13:30:48 ICT. PASS on the five sha-pinned PNGs. Scores 8/8/8/8/7/8 (Clarity, Hierarchy, States, Consistency, Accessibility, Density). Both P2 notes closed. Render-scoped: frame HTML, accessibility semantics, sloplint, privacy enforcement, interaction and component reuse are NOT-RUN."
+}

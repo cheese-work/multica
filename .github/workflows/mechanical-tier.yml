@@ -10,27 +10,29 @@
 # trust itself unless its bytes equal the base revision's copy, so a PR that edits the classifier or registry is
 # Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
 #
-# Refresh (CHE-3339): a receipt records required-check state at classification time, so one taken while CI is pending
-# stops verifying once CI finishes. `workflow_run` re-classifies when CI or security-gate completes. (A `status` or
-# `issue_comment` trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
-# security-gate also runs on issue_comment and merge_group, where `workflow_run.head_sha` is the default-branch SHA.
-# For those runs the `find` job checks every open pull request (paginated) and names those whose `security-gate`
-# status was written at or after the run was created. The pull request, base SHA and head SHA come from the API (the event payload is not trusted for
-# them), `find` checks nothing out, and each `mechanical-tier` job still checks out only its base. The run records the
-# fresh receipt in its step summary; it attaches no check to the pull request. Merge decisions use the latest receipt
-# for the exact head, re-verified with `verify`.
+# Runs (CHE-4385): never as a run of its own. GitHub disabled Actions at about 2,500 created runs a day, so this is a
+# reusable workflow: pr-guards.yml calls it at push time, and security-gate.yml calls it after a verdict dispatch. A
+# receipt records required-check state at classification time, so the push-time receipt usually reads Tier 1 (CI is
+# pending); the useful receipt is the one a `workflow_dispatch` of security-gate.yml takes once CI and the verdict exist.
+# There is no `workflow_run`, `status` or `issue_comment` trigger.
+# `find` names every open pull request whose head is the dispatched pull request's head SHA (so a
+# sibling PR on the same head is refreshed too). The pull request, base SHA and head SHA come from the API, `find` checks
+# nothing out, and each `mechanical-tier` job still checks out only its base. The dispatch input is matched against a
+# digits-only pattern before use. The run records the fresh receipt in its step summary; it attaches no check to the
+# pull request. Merge decisions use the latest receipt for the exact head, re-verified with `verify`.
 #
 # Runner (CHE-3603): GitHub-hosted. The repo is public, so minutes are free, and 61 queued runs no longer block X99 runners.
+# CHE-3990: no `concurrency` block, on purpose. A cancelled run becomes the latest check for its head and shows red
+# even after an earlier run passed. GitHub keeps one running and one pending job per group, so a third event on a head
+# cancels the pending job even with `cancel-in-progress: false`. Every run is an idempotent receipt: run them all.
+# Do not add a shared group back.
+#
 # The classifier excludes its own check name from the required-check set, so it is never its own evidence.
 
 name: mechanical-tier
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_run:
-    workflows: [CI, security-gate]
-    types: [completed]
+  workflow_call:
 
 permissions:
   contents: read
@@ -49,9 +51,8 @@ jobs:
       EVENT_NAME: ${{ github.event_name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
-      RUN_NAME: ${{ github.event.workflow_run.name }}
-      RUN_CREATED: ${{ github.event.workflow_run.created_at }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      INPUT_PR: ${{ github.event.inputs.pr }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Name the open pull requests to classify
@@ -62,21 +63,12 @@ jobs:
           if [ "$EVENT_NAME" = pull_request_target ]; then
             targets="[{\"pr\":$PR_NUMBER,\"base\":\"$BASE_SHA\",\"head\":\"$HEAD_SHA\"}]"
           else
+            if [ "$EVENT_NAME" = workflow_dispatch ]; then
+              [[ "$INPUT_PR" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
+              HEAD_SHA="$(gh api "$repo/pulls/$INPUT_PR" --jq .head.sha)"
+            fi
             numbers="$(gh api "$repo/commits/$HEAD_SHA/pulls" \
               --jq '.[] | select(.state == "open" and .head.sha == env.HEAD_SHA) | .number')"
-            if [ -z "$numbers" ] && [ "$RUN_NAME" = security-gate ]; then
-              # Comment and merge-queue gate runs report the default-branch SHA. The status they post lands on the PR head.
-              # Check every open PR (paginated); a limit here would leave a receipt stale with no retry.
-              # Capture each API read in an assignment so a failed request or page fails the job (set -e). A pipe or
-              # process substitution would hide the failure and leave a partial list.
-              open_prs="$(gh api "$repo/pulls?state=open&per_page=100" --paginate --jq '.[] | "\(.number) \(.head.sha)"')"
-              while read -r n head; do
-                if [ -z "$n" ]; then continue; fi
-                fresh="$(gh api "$repo/commits/$head/statuses?per_page=100" \
-                  --jq '[.[] | select(.context == "security-gate" and .updated_at >= env.RUN_CREATED)] | length')"
-                if [ "$fresh" -gt 0 ]; then numbers="$numbers $n"; fi
-              done <<< "$open_prs"
-            fi
             # A matrix holds 256 jobs. Fail loudly rather than drop pull requests. The excess is not retried by a
             # re-run of the same event: re-run after fewer PRs are stale, or classify the rest by hand.
             if [ "$(echo $numbers | wc -w)" -gt 256 ]; then
@@ -102,9 +94,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.find.outputs.targets) }}
-    concurrency:
-      group: mechanical-tier-${{ matrix.head }}
-      cancel-in-progress: false
     env:
       PR_NUMBER: ${{ matrix.pr }}
       BASE_SHA: ${{ matrix.base }}

@@ -15,6 +15,11 @@ import {
 } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
 import type { Agent } from "@multica/core/types";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  EMPTY_AGENT_ENV_DRAFT,
+  useAgentEnvDraftStore,
+} from "@multica/core/agents";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
@@ -45,13 +50,22 @@ interface EnvEntry {
   visible: boolean;
 }
 
-function envMapToEntries(env: Record<string, string>): EnvEntry[] {
-  const entries = Object.entries(env).map(([key, value]) => ({
-    id: nextEnvId++,
-    key,
-    value,
-    visible: false,
-  }));
+// `extraKeys` are key names restored from a draft: no value (never persisted).
+function envMapToEntries(
+  env: Record<string, string>,
+  extraKeys: string[] = [],
+): EnvEntry[] {
+  const entries = [
+    ...Object.entries(env).map(([key, value]) => ({
+      id: nextEnvId++,
+      key,
+      value,
+      visible: false,
+    })),
+    ...extraKeys
+      .filter((key) => !Object.hasOwn(env, key))
+      .map((key) => ({ id: nextEnvId++, key, value: "", visible: true })),
+  ];
 
   return entries.length > 0
     ? entries
@@ -103,6 +117,12 @@ export function EnvTab({
   const [revealed, setRevealed] = useState<EnvEntry[] | null>(null);
   const [originalMap, setOriginalMap] = useState<Record<string, string>>({});
   const [revealing, setRevealing] = useState(false);
+  // Key names only: values are secrets and stay out of storage (see the store).
+  const [draft, setDraft, clearDraft] = usePersistedDraft(
+    useAgentEnvDraftStore,
+    agent.id,
+    EMPTY_AGENT_ENV_DRAFT,
+  );
   const [saving, setSaving] = useState(false);
 
   // Bulk mode is a second editor over the same `revealed` state rather than a
@@ -137,7 +157,7 @@ export function EnvTab({
       const resp = await api.getAgentEnv(agent.id);
       const env = resp.custom_env ?? {};
       setOriginalMap(env);
-      setRevealed(envMapToEntries(env));
+      setRevealed(envMapToEntries(env, draft.keys));
     } catch (err) {
       toast.error(
         err instanceof Error && err.message
@@ -147,7 +167,20 @@ export function EnvTab({
     } finally {
       setRevealing(false);
     }
-  }, [agent.id, t]);
+  }, [agent.id, draft.keys, t]);
+
+  // Before the reveal there is nothing to compare against, so leave the draft be.
+  const newKeysJson = JSON.stringify(
+    revealed
+      ?.map((e) => e.key.trim())
+      .filter((key) => key && !Object.hasOwn(originalMap, key)) ?? null,
+  );
+  useEffect(() => {
+    const keys: string[] | null = JSON.parse(newKeysJson);
+    if (keys === null) return;
+    if (keys.length > 0) setDraft({ keys });
+    else clearDraft();
+  }, [newKeysJson, setDraft, clearDraft]);
 
   const addEnvEntry = () => {
     setRevealed((prev) => [

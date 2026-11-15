@@ -23,6 +23,10 @@ import (
 
 const maxDecisionCardTextBytes = 8 << 10
 
+// errCoversAckRequired refuses a batch option answer whose client did not
+// acknowledge the covered decisions. Nothing is written or propagated.
+var errCoversAckRequired = decisionIntentRefusal{http.StatusBadRequest, "covers_ack_required: this card also answers other decisions; reload the card to see and acknowledge them"}
+
 // decisionCardAnswerInput is one card answer: a chosen option label, free text,
 // or both. The label must match one the card offers.
 type decisionCardAnswerInput struct {
@@ -33,6 +37,10 @@ type decisionCardAnswerInput struct {
 	AnswerRevision int32           `json:"answer_revision,omitempty"`
 	PolicyRevision int32           `json:"policy_revision,omitempty"`
 	Assertion      json.RawMessage `json:"assertion,omitempty"`
+	// A batch card's option answer also closes the cards it covers. It carries
+	// the digest of the covered decisions the person saw (batchCoverAck); a
+	// client that never showed them sends none, and the answer is refused.
+	CoversAck string `json:"covers_ack,omitempty"`
 }
 
 // AnswerDecisionRequest records the request's human answering on the card. The
@@ -90,6 +98,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 			ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
 		})
 	}
+	handler.publishCoveredCards(request.Context(), workspaceUUID, workspaceID, actorID, result.Covered)
 	writeJSON(writer, http.StatusCreated, response)
 }
 
@@ -109,6 +118,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	}
 	if located.HumanUserID != userID {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can answer"}
+	}
+	if input.Option != "" && located.AskJson == nil {
+		return empty, decisionIntentRefusal{http.StatusBadRequest, "this request has no options to click; type an answer"}
 	}
 	content, err := cardAnswerContent(located, input)
 	if err != nil {
@@ -176,6 +188,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
+	if len(decision.CoversRequestIds) > 0 && input.Option != "" && input.CoversAck != batchCoverAck(decision, input.Option) {
+		return empty, errCoversAckRequired
+	}
 	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
 		return empty, err
 	}
@@ -221,18 +236,22 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
 		return empty, err
 	}
-	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: workspaceID, ID: decision.ID})
+	decision, err = handler.markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: workspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
+	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content)
+	if err != nil {
+		return empty, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
 	handler.DecisionWorker.Notify()
-	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared}, nil
+	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared, Covered: covered}, nil
 }
 
 // cardAnswerContent joins the chosen option label and the free text into the

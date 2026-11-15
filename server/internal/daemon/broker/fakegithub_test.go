@@ -55,8 +55,9 @@ type fakeGitHub struct {
 	failRevoke int // next N mint / DELETE calls answer 500; -1 means always
 	// revokeSeen, when set, is signalled as a DELETE arrives; the DELETE then
 	// waits for revokeGate to close.
-	revokeSeen chan struct{}
-	revokeGate chan struct{}
+	stallRevoke bool // DELETE hangs until the client gives up
+	revokeSeen  chan struct{}
+	revokeGate  chan struct{}
 	// dropReply makes a comment land and then cut the connection before any
 	// reply; refuse makes it answer 422 without landing.
 	dropReply, refuse bool
@@ -174,6 +175,10 @@ func (f *fakeGitHub) handleMint(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitHub) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	tok := bearer(r)
+	if f.stallRevoke {
+		<-r.Context().Done()
+		return
+	}
 	if f.revokeSeen != nil {
 		f.revokeSeen <- struct{}{}
 		<-f.revokeGate

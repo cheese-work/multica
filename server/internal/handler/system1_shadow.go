@@ -3,8 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
@@ -33,10 +36,19 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if prediction.Key == system1.KeyRecommended && recommended < 0 {
 		prediction.Key = "" // no recommendation to predict the human taking
 	}
-	inputs, _ := json.Marshal(map[string]any{
+	observed := map[string]any{
 		"origin": request.Origin, "issue_status": issue.Status, "project_id": uuidToString(issue.ProjectID),
 		"asking_agent_id": uuidToString(request.AskingAgentID), "option_count": len(ask.Options),
-	})
+	}
+	if ask.Topic != "" {
+		// The waiver contract (CHE-4383 B2a): closed values only, keys in stored order. Never labels or a reason.
+		keys := make([]string, len(ask.Options))
+		for index, option := range ask.Options {
+			keys[index] = option.OptionKey
+		}
+		observed["topic"], observed["waiver"], observed["option_keys"] = ask.Topic, ask.Waiver, keys
+	}
+	inputs, _ := json.Marshal(observed)
 	params := db.CreateSystem1ObservationParams{
 		WorkspaceID: issue.WorkspaceID, Kind: "decision", SubjectID: request.ID, Class: request.EscalationClass,
 		Inputs: inputs, OptionCount: int32(len(ask.Options)),
@@ -49,8 +61,37 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if ask.Confidence != nil {
 		params.AgentConfidence = pgtype.Float4{Float32: float32(*ask.Confidence), Valid: true}
 	}
-	return q.CreateSystem1Observation(ctx, params)
+	if err := q.CreateSystem1Observation(ctx, params); err != nil {
+		return err
+	}
+	if ask.Topic == system1.ScopeTestFirstWaiver {
+		return recordWaiverPredictions(ctx, q, issue.WorkspaceID, request.ID, ask.Waiver)
+	}
+	return nil
 }
+
+// recordWaiverPredictions writes one prediction row per waiver predictor (CHE-4383 B3), in the ask transaction so both precede any answer.
+func recordWaiverPredictions(ctx context.Context, q *db.Queries, workspaceID, requestID pgtype.UUID, waiver *decisiontx.Waiver) error {
+	labels, err := q.ListSystem1WaiverPrecedentKeys(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	precedent := system1.Predict(labels)
+	for _, row := range []db.CreateSystem1PredictionParams{
+		{PredictorID: system1.PredictorWaiverRule, PredictorVersion: system1.WaiverRuleVersion, PredictedKey: textOrNull(system1.WaiverRule(waiver.CrossLabPassOnHead, waiver.WeakerEvidenceKind))},
+		{PredictorID: system1.PredictorPrecedent, PredictorVersion: system1.PrecedentVersion, PredictedKey: textOrNull(precedent.Key),
+			PredictedConfidence: pgtype.Float4{Float32: float32(precedent.Confidence), Valid: precedent.Key != ""}, PredictedPrecedents: pgtype.Int4{Int32: int32(precedent.Precedents), Valid: true}},
+	} {
+		row.WorkspaceID, row.SubjectID = workspaceID, requestID
+		if err := q.CreateSystem1Prediction(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// textOrNull maps an empty key (an abstention) to NULL.
+func textOrNull(key string) pgtype.Text { return pgtype.Text{String: key, Valid: key != ""} }
 
 // recordSystem1Routing notes a workflow handoff (a rule chose the handler) or a
 // person replacing the handler a handoff just chose. It runs after the write and
@@ -107,31 +148,102 @@ func ratio(part, whole int64) float64 {
 	return float64(part) / float64(whole)
 }
 
+func system1Classes(rows []db.System1ReportByClassRow) ([]system1ClassReport, int64) {
+	classes, total := []system1ClassReport{}, int64(0)
+	for _, row := range rows {
+		total += row.Decided
+		classes = append(classes, system1ClassReport{
+			Class: row.Class, Decided: row.Decided, Predicted: row.Predicted, Agreed: row.Agreed,
+			Coverage: ratio(row.Predicted, row.Decided), Precision: ratio(row.Agreed, row.Predicted),
+			OtherDecided: row.OtherDecided, OtherPredicted: row.OtherPredicted, OtherAgreed: row.OtherAgreed,
+			OtherPrecision: ratio(row.OtherAgreed, row.OtherPredicted), Reversed: row.Reversed, MedianAnswerMs: row.MedianAnswerMs,
+		})
+	}
+	return classes, total
+}
+
+// system1ReportWindow reads the optional RFC 3339 since/until. The default is
+// the 24 hours before until, and until defaults to now.
+func system1ReportWindow(r *http.Request, now time.Time) (since, until time.Time, err error) {
+	parse := func(name string) (time.Time, bool, error) {
+		raw := r.URL.Query().Get(name)
+		if raw == "" {
+			return time.Time{}, false, nil
+		}
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("%s must be RFC 3339", name)
+		}
+		return t, true, nil
+	}
+	until, hasUntil, err := parse("until")
+	if err != nil {
+		return since, until, err
+	}
+	if !hasUntil {
+		until = now
+	}
+	since, hasSince, err := parse("since")
+	if err != nil {
+		return since, until, err
+	}
+	if !hasSince {
+		since = until.Add(-24 * time.Hour)
+	}
+	if since.After(until) {
+		return since, until, errors.New("since must not be after until")
+	}
+	return since, until, nil
+}
+
 // GetSystem1Report answers precision and coverage of the shadow predictions by
-// class, for decisions and for routing. ready turns true at 100 decided.
+// class: decision and routing over all time, route over the since/until window
+// (default: the last 24 hours). ready turns true at 100 decided.
 func (h *Handler) GetSystem1Report(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
 		return
 	}
+	since, until, err := system1ReportWindow(r, time.Now())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, workspace := r.Context(), parseUUID(workspaceID)
 	out := map[string]any{}
 	for _, kind := range []string{"decision", "routing"} {
-		rows, err := h.Queries.System1ReportByClass(r.Context(), db.System1ReportByClassParams{WorkspaceID: parseUUID(workspaceID), Kind: kind})
+		rows, err := h.Queries.System1ReportByClass(ctx, db.System1ReportByClassParams{WorkspaceID: workspace, Kind: kind})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to build report")
 			return
 		}
-		classes, total := []system1ClassReport{}, int64(0)
-		for _, row := range rows {
-			total += row.Decided
-			classes = append(classes, system1ClassReport{
-				Class: row.Class, Decided: row.Decided, Predicted: row.Predicted, Agreed: row.Agreed,
-				Coverage: ratio(row.Predicted, row.Decided), Precision: ratio(row.Agreed, row.Predicted),
-				OtherDecided: row.OtherDecided, OtherPredicted: row.OtherPredicted, OtherAgreed: row.OtherAgreed,
-				OtherPrecision: ratio(row.OtherAgreed, row.OtherPredicted), Reversed: row.Reversed, MedianAnswerMs: row.MedianAnswerMs,
-			})
-		}
+		classes, total := system1Classes(rows)
 		out[kind] = map[string]any{"decided": total, "ready": total >= 100, "classes": classes}
+	}
+
+	window := pgtype.Timestamptz{Time: since, Valid: true}
+	windowEnd := pgtype.Timestamptz{Time: until, Valid: true}
+	rows, err := h.Queries.System1ReportByClass(ctx, db.System1ReportByClassParams{WorkspaceID: workspace, Kind: "route", Since: window, Until: windowEnd})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build report")
+		return
+	}
+	events, err := h.Queries.System1RouteWindowReport(ctx, db.System1RouteWindowReportParams{WorkspaceID: workspace, Since: window, Until: windowEnd})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build report")
+		return
+	}
+	classes, total := system1Classes(rows)
+	out["route"] = map[string]any{
+		"window":         map[string]string{"since": since.Format(time.RFC3339Nano), "until": until.Format(time.RFC3339Nano)},
+		"eligible_exits": events.EligibleExits, "matched_labels": events.MatchedLabels,
+		"label_coverage":    ratio(events.MatchedLabels, events.EligibleExits),
+		"via_route_share":   ratio(events.ViaRouteLabels, events.MatchedLabels),
+		"duplicate_labels":  events.DuplicateLabels,
+		"labels_total":      events.LabelsTotal,
+		"owner_only_labels": events.OwnerOnlyLabels, "non_routing_labels": events.NonRoutingLabels,
+		"overridden": events.Overridden, "override_rate": ratio(events.Overridden, events.LabelsTotal),
+		"decided": total, "ready": total >= 100, "classes": classes,
 	}
 	writeJSON(w, http.StatusOK, out)
 }

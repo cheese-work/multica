@@ -237,7 +237,7 @@ func TestIdleStartedGuardStatusOutOfScope(test *testing.T) {
 
 func TestIdleStartedGuardSkipsIssueWithGuardReceipt(test *testing.T) {
 	fixture := newIdleGuardFixture(test, 5)
-	dbfx.Exec(test, `UPDATE issue SET metadata = metadata || '{"idle_guard":{"state":"done"}}'::jsonb WHERE id = $1`, fixture.issue)
+	dbfx.Exec(test, `INSERT INTO issue_idle_guard (issue_id, workspace_id, state) SELECT id, workspace_id, 'done' FROM issue WHERE id = $1`, fixture.issue)
 	if fixture.found(test) {
 		test.Fatal("issue with an idle_guard episode was reported again")
 	}

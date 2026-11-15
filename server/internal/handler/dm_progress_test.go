@@ -325,7 +325,7 @@ func TestDMProgress_OwnerWhoLeftTheWorkspaceGetsNoInheritedFollow(t *testing.T) 
 	dm := w.dm(t, other)
 	parent := dbfx.Issue(t, "parent of a departed owner")
 	dbfx.Exec(t, `INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id) VALUES ($1, $2, $3)`, dm, testWorkspaceID, other)
-	dbfx.Exec(t, `INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, last_rendered_status) VALUES ($1, $2, $3, $4, '{origin}', 'todo')`, testWorkspaceID, parent, dm, other)
+	dbfx.Exec(t, `INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, last_rendered_status, reporting_root_id) VALUES ($1, $2, $3, $4, '{origin}', 'todo', $2)`, testWorkspaceID, parent, dm, other)
 	dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, other)
 
 	child := createDMIssue(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": "child", "parent_issue_id": parent}))

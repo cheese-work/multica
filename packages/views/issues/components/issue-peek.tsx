@@ -12,6 +12,7 @@ import {
 import { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 import { cn } from "@multica/ui/lib/utils";
 import { UI_EASE_OUT, UI_MOTION_DURATION } from "@multica/ui/lib/motion";
+import { useMarkMentionsReadOnOpen } from "@multica/core/inbox";
 import { useModalStore } from "@multica/core/modals";
 import { useWorkspacePaths } from "@multica/core/paths";
 import {
@@ -36,8 +37,10 @@ import {
   type IssuePeekColumns,
 } from "../surface/peek-context";
 
-// The detail carries the rich-text editor and markdown renderer. It loads off
-// the list's critical path: when the browser is idle, or at the first peek.
+// The detail carries the rich-text editor and markdown renderer (~800 KiB). It
+// loads off the list's critical path: warmed on the first pointer or focus on a
+// card, otherwise at the first peek. Not on idle: on a slow link the idle fetch
+// competes with the list's own first paint.
 const loadIssueDetail = () => import("./issue-detail").then((m) => ({ default: m.IssueDetail }));
 const IssueDetail = lazy(loadIssueDetail);
 
@@ -82,12 +85,6 @@ export function IssuePeekHost({ children }: { children: ReactNode }) {
     [],
   );
   const openId = peekId;
-  // Warm the detail chunk once the browser is idle so the first peek opens at once.
-  useEffect(() => {
-    if (typeof window.requestIdleCallback !== "function") return;
-    const id = window.requestIdleCallback(() => void loadIssueDetail(), { timeout: 5000 });
-    return () => window.cancelIdleCallback(id);
-  }, []);
   const position = useMemo(() => locateInColumns(columns, openId), [columns, openId]);
 
   // Tracked from pointer events rather than queried with `:hover`, so the
@@ -117,10 +114,14 @@ export function IssuePeekHost({ children }: { children: ReactNode }) {
           <div
             data-peek-open={openId ? "" : undefined}
             className="group/peek relative flex min-h-0 flex-1 flex-col [--issue-peek-width:520px]"
+            onFocus={(event) => {
+              if ((event.target as Element).closest(`[${PEEK_TARGET_ATTR}]`)) void loadIssueDetail();
+            }}
             onPointerOver={(event) => {
               hoveredCardRef.current =
                 (event.target as Element).closest(`[${PEEK_TARGET_ATTR}]`)?.getAttribute(PEEK_TARGET_ATTR) ||
                 null;
+              if (hoveredCardRef.current) void loadIssueDetail();
             }}
             onPointerLeave={() => {
               hoveredCardRef.current = null;
@@ -145,6 +146,8 @@ export function IssuePeekHost({ children }: { children: ReactNode }) {
 // IssueDetail. What does follow the order lives in IssuePeekFollow.
 const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: string }) {
   const { t } = useT("issues");
+  // The peek reads the thread like the page does, so the list badge clears.
+  useMarkMentionsReadOnOpen(issueId);
   const actions = useIssuePeekActions()!;
   const panelRef = useRef<HTMLElement>(null);
   // False while the exit animation plays: the closing panel no longer takes

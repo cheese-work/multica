@@ -11,9 +11,10 @@ The web and desktop issue sidebar shows a Hierarchy minimap (parent, siblings, c
 | `wakeup` | Watched → waiting | Enabled `issue_wakeup.condition`, `other_issue` |
 | `children_done` | Child → parent to wake | Enabled `issue_wakeup.condition`, `children_done`; honors stage |
 | `mention` | Mentioning → mentioned | `mention://issue/<uuid>` in descriptions and comments |
+| `dependency` | Dependent → depends-on | `issue_dependency` (`issue_id` → `depends_on_issue_id`), any dependency type |
 | `shared_pr` | Bidirectional | Shared `issue_pull_request.pull_request_id` |
 
-The executable `other_issue` and `children_done` conditions are stored on `issue_wakeup`, not `issue_wakeup_definition`. Definitions configure the built-in presets and their inheritance; instances hold the conditions used here. Disabled wakeups do not indicate that an issue will wake another issue and are excluded. No rule is created, modified or executed by opening this graph. `issue_dependency` is not read.
+The executable `other_issue` and `children_done` conditions are stored on `issue_wakeup`, not `issue_wakeup_definition`. Definitions configure the built-in presets and their inheritance; instances hold the conditions used here. Disabled wakeups do not indicate that an issue will wake another issue and are excluded. No rule is created, modified or executed by opening this graph.
 
 The root requires workspace membership. Both endpoints of every edge are restricted to that workspace before traversal and counting. Wakeup edges use the same agent visibility filter as the wakeup listing endpoint. Cross-workspace targets and private wakeups do not contribute to the omission count. The database read has a 10-second request deadline; errors are reported rather than presented as an empty graph.
 

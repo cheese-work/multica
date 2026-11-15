@@ -5,6 +5,7 @@ import type { ChatSession } from "../types/chat";
 import {
   chatSessionUsageOptions,
   countUnreadChatSessions,
+  filterChatSessions,
   isTaskMessageTaskId,
   mergeTaskMessagesBySeq,
   sortChatSessions,
@@ -223,5 +224,45 @@ describe("chatSessionUsageOptions", () => {
     expect(chatSessionUsageOptions("ws-1", "s-1").queryKey).toEqual(["chat", "ws-1", "usage", "s-1"]);
     expect(chatSessionUsageOptions("ws-1", "s-1").enabled).toBe(true);
     expect(chatSessionUsageOptions("ws-1", null).enabled).toBe(false);
+  });
+});
+
+describe("filterChatSessions (DM list chips)", () => {
+  const base = { workspace_id: "w", agent_id: "a", creator_id: "u", title: "t", created_at: "", updated_at: "" };
+  const mk = (id: string, o: Partial<ChatSession> = {}): ChatSession =>
+    ({ ...base, id, status: "active", has_unread: false, pinned: false, ...o }) as ChatSession;
+  const sessions = [
+    mk("active"),
+    mk("archived", { status: "archived", pinned: true, has_unread: true, stale_level: "red" }),
+    mk("pinned", { pinned: true }),
+    mk("unseen", { has_unread: true, unread_count: 2 }),
+    mk("needs-you", { stale_level: "yellow" }),
+    mk("quiet", { stale_level: "none" }),
+    mk("decision"),
+  ];
+  const ids = (view: Parameters<typeof filterChatSessions>[1]) =>
+    filterChatSessions(sessions, view, new Set(["decision", "archived"])).map((s) => s.id);
+
+  it("Hộp chính is every DM that is not archived", () => {
+    expect(ids("main")).toEqual(["active", "pinned", "unseen", "needs-you", "quiet", "decision"]);
+  });
+  it("Tất cả is Hộp chính plus Lưu trữ", () => {
+    expect(ids("all")).toHaveLength(7);
+  });
+  it("Lưu trữ is archived only", () => {
+    expect(ids("archived")).toEqual(["archived"]);
+  });
+  it("Quyết định is non-archived DMs with an open decision", () => {
+    expect(ids("decisions")).toEqual(["decision"]);
+  });
+  it("Chờ bạn is non-archived DMs whose attention level is red, yellow or fresh", () => {
+    expect(ids("waiting")).toEqual(["needs-you"]);
+  });
+  it("Chưa xem is non-archived DMs with unread replies", () => {
+    expect(ids("unseen")).toEqual(["unseen"]);
+  });
+  it("Ghim and không ghim split the non-archived DMs", () => {
+    expect(ids("pinned")).toEqual(["pinned"]);
+    expect(ids("unpinned")).toEqual(["active", "unseen", "needs-you", "quiet", "decision"]);
   });
 });

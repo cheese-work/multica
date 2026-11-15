@@ -384,12 +384,14 @@ func blockCommittedBeforeWrite(t *testing.T, spell func(string) string) {
 		done <- result{resp.StatusCode, string(out)}
 	}()
 
-	// Wait until the write is parked on the target row lock.
+	// Wait until the write is parked on the target row lock. The audit read
+	// (SELECT ... FOR UPDATE) now takes the lock ahead of the compare-and-swap UPDATE.
 	parked := false
 	for i := 0; i < 200 && !parked; i++ {
 		var n int
 		testPool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
-			AND wait_event_type = 'Lock' AND query ILIKE 'UPDATE squad%'`).Scan(&n)
+			AND wait_event_type = 'Lock'
+			AND (query ILIKE 'UPDATE squad%' OR query ILIKE 'SELECT COALESCE(instructions%FROM squad%FOR UPDATE')`).Scan(&n)
 		parked = n > 0
 		if !parked {
 			time.Sleep(50 * time.Millisecond)

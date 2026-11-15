@@ -31,7 +31,7 @@ type humanInChargeResponse struct {
 // member of the issue's workspace who may invoke asking. It returns nil when
 // nobody is eligible, never an agent or squad, and fails closed on any lookup
 // error (CHE-2591 L5 design §4.1).
-func (h *Handler) resolveHumanInCharge(ctx context.Context, issue db.Issue, asking db.Agent) (*humanInCharge, error) {
+func (h *Handler) resolveHumanInCharge(ctx context.Context, q *db.Queries, issue db.Issue, asking db.Agent) (*humanInCharge, error) {
 	candidates := []struct {
 		source string
 		id     func() (pgtype.UUID, error)
@@ -47,7 +47,7 @@ func (h *Handler) resolveHumanInCharge(ctx context.Context, issue db.Issue, aski
 			if !issue.ProjectID.Valid {
 				return pgtype.UUID{}, nil
 			}
-			project, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
+			project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
 			if errors.Is(err, pgx.ErrNoRows) {
 				return pgtype.UUID{}, nil
 			}
@@ -60,7 +60,7 @@ func (h *Handler) resolveHumanInCharge(ctx context.Context, issue db.Issue, aski
 			return project.LeadID, nil
 		}},
 		{"workspace_owner", func() (pgtype.UUID, error) {
-			owner, err := h.Queries.GetWorkspaceOwnerUserID(ctx, issue.WorkspaceID)
+			owner, err := q.GetWorkspaceOwnerUserID(ctx, issue.WorkspaceID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return pgtype.UUID{}, nil
 			}
@@ -75,14 +75,14 @@ func (h *Handler) resolveHumanInCharge(ctx context.Context, issue db.Issue, aski
 		if !id.Valid {
 			continue
 		}
-		eligible, err := h.eligibleHumanInCharge(ctx, issue, asking, id)
+		eligible, err := h.eligibleHumanInCharge(ctx, q, issue, asking, id)
 		if err != nil {
 			return nil, err
 		}
 		if !eligible {
 			continue
 		}
-		user, err := h.Queries.GetUser(ctx, id)
+		user, err := q.GetUser(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -93,15 +93,15 @@ func (h *Handler) resolveHumanInCharge(ctx context.Context, issue db.Issue, aski
 
 // eligibleHumanInCharge runs the checks a decision target passes
 // (checkDecisionTarget), but separates a failed lookup from a refusal.
-func (h *Handler) eligibleHumanInCharge(ctx context.Context, issue db.Issue, asking db.Agent, userID pgtype.UUID) (bool, error) {
-	_, err := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: userID, WorkspaceID: issue.WorkspaceID})
+func (h *Handler) eligibleHumanInCharge(ctx context.Context, q *db.Queries, issue db.Issue, asking db.Agent, userID pgtype.UUID) (bool, error) {
+	_, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: userID, WorkspaceID: issue.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return h.invokeAgentDecision(ctx, asking, "member", uuidToString(userID), "", uuidToString(issue.WorkspaceID))
+	return h.invokeAgentDecisionVia(ctx, q, asking, "member", uuidToString(userID), "", uuidToString(issue.WorkspaceID))
 }
 
 // GetHumanInCharge answers an agent's running task: who it should ask for a
@@ -115,7 +115,7 @@ func (h *Handler) GetHumanInCharge(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	human, err := h.resolveHumanInCharge(r.Context(), issue, asking)
+	human, err := h.resolveHumanInCharge(r.Context(), h.Queries, issue, asking)
 	if err != nil {
 		slog.Error("resolve human in charge", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to resolve the human in charge")

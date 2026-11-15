@@ -99,6 +99,7 @@ func uuidArgLen(args []any, i int) int {
 
 func newSpyHandler(t *testing.T, spy *skillQuerySpy) *Handler {
 	t.Helper()
+	t.Cleanup(giveBackRunBudgetHooks) // New() re-registers the process-wide budget hooks on its own bus.
 	return New(db.New(spy), testPool, testHandler.Hub, testHandler.Bus, testHandler.EmailService,
 		nil, nil, analytics.NoopClient{}, Config{})
 }

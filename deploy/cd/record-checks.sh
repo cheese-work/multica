@@ -14,7 +14,11 @@
 # usage: record-checks.sh <source-sha> <output>
 # env:   GITHUB_REPOSITORY, GH_TOKEN,
 #        CHECKS_WAIT_SECONDS (default 3600), CHECKS_POLL_SECONDS (default 30)
+#        APP_TOKEN, FALLBACK_TOKEN (optional, CHE-4251): the App budget is re-read before every poll
 set -euo pipefail
+
+# shellcheck source=deploy/cd/refresh-api-token.sh
+. deploy/cd/refresh-api-token.sh
 
 source_sha=$1
 output=$2
@@ -33,11 +37,13 @@ trap 'rm -rf "$work_dir"' EXIT
 # admission.mjs re-derives the match; nothing here asserts a check may be
 # skipped. The workflows are parsed with a real YAML parser (see
 # workflow-path-filters.py for why), so run ensure-pyyaml.sh first.
+refresh_api_token
 python3 deploy/cd/github-api-retry.py "$deadline" "repos/${GITHUB_REPOSITORY}/commits/${source_sha}" \
   --jq '{files: [.files[]?.filename], truncated: ((.files | length) >= 300)}' > "$work_dir/commit-files.json"
 python3 deploy/cd/workflow-path-filters.py > "$work_dir/path-filters.json"
 
 while :; do
+  refresh_api_token
   # admission.mjs requires backend, frontend, mobile and cd-qualification to
   # all be "success" for this exact SHA. Take them from the commit's check
   # runs — the same source a human reading the PR would use — rather than

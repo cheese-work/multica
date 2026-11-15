@@ -9,7 +9,7 @@ A current-attempt `deploy` job in `queued`, `pending`, or `waiting` for at least
 30 minutes fails the alarm with the exact job URL. Age starts at job creation
 (or its API `started_at` when creation is absent), never original workflow
 creation. Old attempts and long preparation do not age a newly queued deploy.
-Runs without a deploy job yet, including waits at the `approve-c00` approval
+Runs without a deploy job yet, including waits at the `authorize-c00` actor gate
 and the `cd-deploy-c00` lock before `deploy` is created, are not timed by this
 alarm. Once a `deploy` job exists and stays queued, it does alert.
 Running deployments are not interrupted. All API pages for active runs and

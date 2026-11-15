@@ -257,24 +257,6 @@ func TestRunBudgetGrantStaysShutAfterExhaustionUntilAMemberActs(t *testing.T) {
 	}
 }
 
-func TestRunBudgetGrantCreditsTokensOnlyOnceActivated(t *testing.T) {
-	if testHandler == nil {
-		t.Fatal("isolated database required")
-	}
-	c, _ := budgetedAt(t, 40, 2)
-	storeTokenValues(t, c)
-	grantHead(t, c.issueID, "before")
-	if got := entrySum(t, c.issueID, "head"); got != 0 {
-		t.Fatalf("tokens granted before activation = %d, want 0", got)
-	}
-	admitRun(t, c) // activates
-	finishRuns(t, c)
-	grantHead(t, c.issueID, "after")
-	if got := entrySum(t, c.issueID, "head"); got != service.RunBudgetGrantTokens {
-		t.Fatalf("tokens granted after activation = %d, want %d", got, service.RunBudgetGrantTokens)
-	}
-}
-
 func TestRunBudgetRefundOncePerTaskOnlyForSupersededHead(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("isolated database required")

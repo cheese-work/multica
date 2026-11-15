@@ -279,6 +279,29 @@ func TestCustomPreviewCountsTheIssuesAlreadySatisfied(t *testing.T) {
 	if got == nil || got.Satisfied != 4 || got.Examined != 6 || got.Truncated {
 		t.Fatalf("already satisfied = %+v, want 4 of 6 eligible issues, not truncated", got)
 	}
+	// The preview names the issues, not only how many: the kit's issue and the
+	// three todo ones, never an in_review, backlog or done issue.
+	if got.Satisfied != len(got.Issues) {
+		t.Fatalf("preview lists %d issues, want %d (one per satisfied issue)", len(got.Issues), got.Satisfied)
+	}
+	ids := map[string]string{}
+	for _, m := range got.Issues {
+		ids[m.ID] = m.Title
+	}
+	if _, ok := ids[k.issue]; !ok {
+		t.Fatalf("preview issues %+v do not include the kit's issue %s", got.Issues, k.issue)
+	}
+	for _, m := range got.Issues {
+		if m.Number == 0 || m.Title == "" {
+			t.Fatalf("preview issue %+v lacks a number or title", m)
+		}
+		if m.ID != k.issue && m.Title[:4] != "bulk" {
+			t.Fatalf("unexpected issue in preview: %+v", m)
+		}
+	}
+	if n := k.f.Count(t, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND status<>'todo' AND id::text=ANY($2)`, k.f.WorkspaceID, issueIDs(got.Issues)); n != 0 {
+		t.Fatalf("preview lists %d issues that are not todo", n)
+	}
 	// An event rule has no predicate to count.
 	event, err := k.s.EffectiveWakeupRule(context.Background(), ref, parseTestUUID(t, k.owner), "", &WakeupDefinitionWrite{Patch: patchOf(t, k.eventRule(`["comment.created"]`))})
 	if err != nil || event.AlreadySatisfied != nil {
@@ -311,6 +334,9 @@ func TestCustomPreviewCountIsBounded(t *testing.T) {
 	if got := eff.AlreadySatisfied; got == nil || got.Examined != wakeupPreviewExamineLimit || !got.Truncated || got.Satisfied != wakeupPreviewExamineLimit {
 		t.Fatalf("already satisfied = %+v, want a count over the first %d issues, flagged truncated", got, wakeupPreviewExamineLimit)
 	}
+	if len(eff.AlreadySatisfied.Issues) != wakeupPreviewExamineLimit {
+		t.Fatalf("truncated preview lists %d issues, want the %d examined ones", len(eff.AlreadySatisfied.Issues), wakeupPreviewExamineLimit)
+	}
 }
 
 func TestCustomRootFireCapDefaultsOnlyOnCreationOfARepeatingRule(t *testing.T) {
@@ -333,4 +359,12 @@ func TestCustomRootFireCapDefaultsOnlyOnCreationOfARepeatingRule(t *testing.T) {
 	if override.Patch.MaxFires.Set || override.Patch.AggregateLimit.Set {
 		t.Fatalf("a built-in override gained limits: %+v", override.Patch)
 	}
+}
+
+func issueIDs(issues []WakeupMatchedIssue) []string {
+	ids := make([]string, len(issues))
+	for i, m := range issues {
+		ids[i] = m.ID
+	}
+	return ids
 }

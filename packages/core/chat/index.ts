@@ -1,6 +1,9 @@
+export { deriveChatTitle } from "./title";
 export { createChatStore, CHAT_MIN_W, CHAT_MIN_H, CHAT_DEFAULT_W, CHAT_DEFAULT_H, DRAFT_NEW_SESSION } from "./store";
 export type { ChatStoreOptions, ChatState, ChatTimelineItem, ChatNavIntent } from "./store";
 export { useRecentContextStore, selectRecentContexts } from "./recent-context-store";
+export { usePendingSendStore, classifySendFailure, sendWithPendingId } from "./pending-send";
+export type { PendingSend, SendFailure } from "./pending-send";
 export type { RecentContextEntry, RecentContextType } from "./recent-context-store";
 export {
   CHAT_COMMANDS,

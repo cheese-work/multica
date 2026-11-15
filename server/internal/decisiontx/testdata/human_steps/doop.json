@@ -1,7 +1,7 @@
 {
   "human_steps": [
     {
-      "action": "Merge the 4 doop PRs, then slice 5",
+      "action": "Merge the 4 doop PRs into the default branch, then slice 5",
       "verify_done": "The 4 PRs show Merged on GitHub"
     }
   ],

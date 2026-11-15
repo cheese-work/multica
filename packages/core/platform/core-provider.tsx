@@ -151,6 +151,7 @@ export function CoreProvider({
   resources,
   localeAdapter,
   syncUserLocale = true,
+  onWSClientReady,
 }: CoreProviderProps) {
   // Initialize singletons on first render only: `initCore` is a no-op after the
   // first call, so apiBaseUrl, storage, and callbacks are read once at app boot.
@@ -209,6 +210,7 @@ export function CoreProvider({
           storage={storage}
           cookieAuth={cookieAuth}
           identity={identity}
+          onClientReady={onWSClientReady}
         >
           {children}
         </WSProvider>

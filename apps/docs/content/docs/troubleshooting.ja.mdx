@@ -330,3 +330,15 @@ multica daemon start --foreground
 - [デーモンとランタイム](/daemon-runtimes) — ランタイムの登録とオンライン状態の仕組み。
 - [実行](/tasks) — ステータス、タイムアウト、失敗理由のリファレンス。
 - [環境変数](/environment-variables) — セルフホスト設定の完全なリファレンス。
+
+## プロバイダーのブレーカーによる保留
+
+プロバイダーのブレーカーが新しい作業を保留すると、イシューのタスクは永続的な `provider_hold` マーカー付きで延期されます。タイマーやメディアの準備完了では開始されません。明示的な解除では、マーカーを削除する前にブレーカーの状態を再確認します。チャットとクイック作成は `provider_breaker` で拒否されます。
+
+ワークスペース設定 `provider_breaker_max_hold_seconds` の既定値は **21600 秒（6 時間）**です。新しい保留に適用され、変更しても既存の期限は延長されません。CLI で設定変更を提案し、通常の設定承認手順に進んでください。
+
+```bash
+multica config propose workspace.settings --set provider_breaker_max_hold_seconds:=21600 --out provider-hold.json
+```
+
+期限に達すると、タスクは `provider_breaker_hold_expired` で失敗し、責任を持つワークスペースメンバーの受信箱に対応が必要な通知を 1 件作成します。自動再試行は行われません。イシューを再実行する前にプロバイダーを確認してください。ランタイムの再接続に伴う再試行の動作は変わりません。

@@ -1406,6 +1406,14 @@ func TestWebhook_TitleBranchAndKeywordLinksAllMove(t *testing.T) {
 // merge / edited after merge).
 func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) {
 	t.Helper()
+	if code, resp := postPRWebhook(t, testHandler, secret, installationID, prNumber, title, body, branch, lifecycle); code != http.StatusAccepted {
+		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, code, resp)
+	}
+}
+
+// postPRWebhook delivers one PR webhook to h and returns the status and body.
+func postPRWebhook(t *testing.T, h *Handler, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) (int, string) {
+	t.Helper()
 	var action, state string
 	var merged bool
 	var mergedAt, closedAt any
@@ -1428,22 +1436,28 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	default:
 		t.Fatalf("firePRWebhook: unknown lifecycle %q", lifecycle)
 	}
+	// GitHub sends the merge commit only for a merged PR.
+	var mergeSHA any
+	if merged {
+		mergeSHA = fmt.Sprintf("merge%d", prNumber)
+	}
 	payload := map[string]any{
 		"action": action,
 		"pull_request": map[string]any{
-			"number":     prNumber,
-			"html_url":   fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
-			"title":      title,
-			"body":       body,
-			"state":      state,
-			"draft":      false,
-			"merged":     merged,
-			"merged_at":  mergedAt,
-			"closed_at":  closedAt,
-			"created_at": "2026-04-28T00:00:00Z",
-			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
-			"user":       map[string]any{"login": "octocat"},
+			"number":           prNumber,
+			"html_url":         fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
+			"title":            title,
+			"body":             body,
+			"state":            state,
+			"draft":            false,
+			"merged":           merged,
+			"merged_at":        mergedAt,
+			"closed_at":        closedAt,
+			"merge_commit_sha": mergeSHA,
+			"created_at":       "2026-04-28T00:00:00Z",
+			"updated_at":       "2026-04-29T00:00:00Z",
+			"head":             map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
+			"user":             map[string]any{"login": "octocat"},
 		},
 		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
@@ -1456,10 +1470,8 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	req := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
 	req.Header.Set("X-GitHub-Event", "pull_request")
 	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := testutil.Call(t, testHandler.HandleGitHubWebhook, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, h.HandleGitHubWebhook, req)
+	return rec.Code, rec.Body.String()
 }
 
 // TestWebhook_IdentifierRemovedBeforeMergeUnlinks: automatic links follow the
@@ -3070,14 +3082,13 @@ func TestWebhook_InstallationCreatedRefreshesUnknownLogin(t *testing.T) {
 	}
 }
 
-// TestSetupCallback_ConsumesPendingInstallationCreated covers the inverse
-// race to TestWebhook_InstallationCreatedRefreshesUnknownLogin: GitHub can
-// deliver installation.created before the setup callback has created the local
-// workspace binding. The webhook cannot broadcast yet, but it must not be lost;
-// after the callback independently verifies the installation and authorizing
-// organization admin, it clears the pending snapshot without letting stale
-// webhook metadata override the authoritative App lookup.
-func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
+// TestSetupCallback_UnboundInstallationCreatedStoresNothing covers the race
+// where GitHub delivers installation.created before the setup callback has
+// created the local workspace binding. The webhook must not store a pending
+// snapshot for an unbound installation (CHE-3414); the callback independently
+// verifies the installation and authorizing organization admin through the
+// App API and binds from that authoritative lookup alone.
+func TestSetupCallback_UnboundInstallationCreatedStoresNothing(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
@@ -3148,13 +3159,13 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		t.Fatalf("webhook: expected 202, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	var pendingLogin string
+	var pendingBefore int
 	dbfx.QueryRow(t,
-		`SELECT account_login FROM github_pending_installation WHERE installation_id = $1`,
+		`SELECT count(*) FROM github_pending_installation WHERE installation_id = $1`,
 		installationID,
-	).Scan(&pendingLogin)
-	if pendingLogin != "pending-octocat" {
-		t.Fatalf("pending account_login = %q, want pending-octocat", pendingLogin)
+	).Scan(&pendingBefore)
+	if pendingBefore != 0 {
+		t.Fatalf("unbound installation.created stored %d pending rows, want 0", pendingBefore)
 	}
 
 	state, err := signState(testWorkspaceID)
@@ -3198,7 +3209,7 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		installationID,
 	).Scan(&pendingCount)
 	if pendingCount != 0 {
-		t.Fatalf("pending installation row should be consumed, got count %d", pendingCount)
+		t.Fatalf("setup callback left %d pending rows, want 0", pendingCount)
 	}
 }
 

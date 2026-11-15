@@ -12,3 +12,18 @@ export function createRequestId(): string {
   const ts = Date.now().toString(36).slice(-4);
   return `${rand}${ts}`;
 }
+
+/**
+ * Idempotency key (`client_message_id`, attention `request_id`): the server
+ * dedupes on it and rejects a `request_id` that is not a UUID. Uses
+ * `crypto.randomUUID` when the runtime has it (Hermes/Expo may not), else an
+ * RFC 4122 v4 UUID built from `Math.random`.
+ */
+export function createIdempotencyKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid;
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}

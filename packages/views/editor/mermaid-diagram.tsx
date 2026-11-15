@@ -55,6 +55,8 @@ import { MermaidViewer, MermaidViewerStandalone } from "./mermaid-viewer";
 import { useStandaloneMedia } from "../media/media-context";
 import { orientChart, pickOrientation, type Orientation } from "./utils/mermaid-orientation";
 import {
+  MERMAID_FONT_PX,
+  MERMAID_MIN_TEXT_PX,
   MERMAID_SEQUENCE_CONFIG,
   buildMermaidThemeCss,
   buildMermaidThemeVariables,
@@ -271,7 +273,8 @@ const DIAGRAM_PADDING_Y_PX = 32;
  * Tallest the inline preview draws a fitted diagram: the frame's collapse
  * threshold less the diagram's padding, so a fitted diagram is always whole
  * and never folds behind "Show all". Zooming in past it scrolls inside the
- * same box rather than growing the page.
+ * same box rather than growing the page. A diagram too tall for it to fit at
+ * readable text stays at MERMAID_MIN_TEXT_PX and scrolls in the same way.
  */
 export const MERMAID_PREVIEW_MAX_HEIGHT_PX =
   DYNAMIC_BLOCK_COLLAPSE_AT_PX - DIAGRAM_PADDING_Y_PX;
@@ -663,6 +666,7 @@ export function MermaidDiagram({
   const zoom = useInlineZoom({
     content: rendered?.layout ?? null,
     maxHeight: MERMAID_PREVIEW_MAX_HEIGHT_PX,
+    minFitScale: MERMAID_MIN_TEXT_PX / MERMAID_FONT_PX,
     scrollRef,
   });
 

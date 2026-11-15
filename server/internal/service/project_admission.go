@@ -116,7 +116,7 @@ func requireActiveTaskProject(ctx context.Context, queries *db.Queries, task db.
 	return nil
 }
 
-func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateProjectParams, agentWrite bool) (db.Project, error) {
+func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateProjectParams, agentWrite bool, audit func(ctx context.Context, queries *db.Queries, previous, updated db.Project) error) (db.Project, error) {
 	tx, err := service.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.Project{}, err
@@ -167,6 +167,12 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 			return db.Project{}, err
 		}
 		if err := SettleTerminalTaskState(ctx, queries, cancelled...); err != nil {
+			return db.Project{}, err
+		}
+	}
+	// The audit row shares the update's transaction; a failed insert rolls it back.
+	if audit != nil {
+		if err := audit(ctx, queries, previous, project); err != nil {
 			return db.Project{}, err
 		}
 	}

@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -83,10 +85,85 @@ func TestPRWatchdogSkipsWhenPRStateUnchangedSinceLastRun(t *testing.T) {
 	if got := e.skipped(t); got != 1 {
 		t.Fatalf("skip activities = %d, want 1", got)
 	}
+	var details []byte
+	e.f.QueryRow(t, `SELECT details FROM activity_log WHERE issue_id=$1 AND action='wakeup_skipped' ORDER BY created_at DESC LIMIT 1`, e.issue).Scan(&details)
+	var audit struct {
+		PullRequests []struct {
+			HeadSHA      string `json:"head_sha"`
+			ChecksRollup string `json:"checks_rollup_state"`
+			ReviewState  string `json:"review_state"`
+		} `json:"pull_requests"`
+	}
+	if err := json.Unmarshal(details, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.PullRequests) != 1 || audit.PullRequests[0].HeadSHA != "h1" || audit.PullRequests[0].ChecksRollup != "FAILURE" {
+		t.Fatalf("skip audit PR state = %+v, want head h1 and FAILURE rollup", audit.PullRequests)
+	}
 	var pending int
 	e.f.QueryRow(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND r.processed_at IS NULL`, e.issue).Scan(&pending)
 	if pending != 0 {
 		t.Fatalf("pending receipts after a skip = %d, want 0", pending)
+	}
+}
+
+func TestPRWatchdogIgnoresItsOwnFinalCommentWhenComparingInputs(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.checksFailed(t, "e1")
+	var taskID pgtype.UUID
+	e.f.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, e.issue, SystemRulePRChecksFailed).Scan(&taskID)
+	e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id)
+		VALUES ($1, $2, 'agent', $3, 'I checked the PR and found no action to take.', $4)`, e.f.WorkspaceID, e.issue, parseTestUUID(t, e.agent), taskID)
+	e.finishRuns(t, "completed")
+	e.checksFailed(t, "e2")
+	if got := e.systemRuns(t, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("runs after unchanged PR and its own final comment = %d, want 1", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities after the run's own final comment = %d, want 1", got)
+	}
+}
+
+func TestPRWatchdogSkipsAfterTwoRunsWithTheirOwnFinalComments(t *testing.T) {
+	e := newSkipEnv(t, true)
+	postFinalComment := func() {
+		t.Helper()
+		var taskID pgtype.UUID
+		e.f.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2 ORDER BY created_at DESC LIMIT 1`, e.issue, SystemRulePRChecksFailed).Scan(&taskID)
+		e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id)
+			VALUES ($1, $2, 'agent', $3, 'I checked the PR and found no action to take.', $4)`, e.f.WorkspaceID, e.issue, parseTestUUID(t, e.agent), taskID)
+		e.finishRuns(t, "completed")
+	}
+	e.checksFailed(t, "e1")
+	postFinalComment()
+	e.f.Exec(t, `UPDATE github_pull_request SET head_sha='h2' WHERE id=$1`, e.prID)
+	e.checksFailed(t, "e2")
+	postFinalComment()
+	e.checksFailed(t, "e3")
+	if got := e.systemRuns(t, SystemRulePRChecksFailed); got != 2 {
+		t.Fatalf("runs after two unchanged PR runs and their final comments = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities after two unchanged PR runs and their final comments = %d, want 1", got)
+	}
+}
+
+func TestPRWatchdogStillRunsWhenItsOwnFinalCommentIsEdited(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.checksFailed(t, "e1")
+	var taskID, commentID string
+	e.f.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, e.issue, SystemRulePRChecksFailed).Scan(&taskID)
+	e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id)
+		VALUES ($1, $2, 'agent', $3, 'I checked the PR and found no action to take.', $4)`, e.f.WorkspaceID, e.issue, parseTestUUID(t, e.agent), taskID)
+	e.f.QueryRow(t, `SELECT id FROM comment WHERE source_task_id=$1`, taskID).Scan(&commentID)
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `UPDATE comment SET content='The PR now needs attention', revision=revision+1, updated_at=clock_timestamp() WHERE id=$1`, commentID)
+	e.checksFailed(t, "e2")
+	if got := e.systemRuns(t, SystemRulePRChecksFailed); got != 2 {
+		t.Fatalf("runs after the run's final comment was edited = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities after the run's final comment was edited = %d, want 0", got)
 	}
 }
 
@@ -174,6 +251,17 @@ func TestPRWatchdogStillRunsWhenSomethingChanged(t *testing.T) {
 		{"check rollup changed", func(t *testing.T, e skipEnv) {
 			e.f.Exec(t, `UPDATE github_pull_request SET checks_rollup_state='PENDING' WHERE id=$1`, e.prID)
 		}, true},
+		{"review state changed", func(t *testing.T, e skipEnv) {
+			e.f.Exec(t, `UPDATE github_pull_request SET review_state='changes_requested', review_head_sha='h1', review_id=42, review_at=clock_timestamp() WHERE id=$1`, e.prID)
+		}, true},
+		{"comment added", func(t *testing.T, e skipEnv) {
+			e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1, $2, 'member', gen_random_uuid(), 'Please check the PR')`, e.f.WorkspaceID, e.issue)
+		}, true},
+		{"comment edited", func(t *testing.T, e skipEnv) {
+			var commentID string
+			e.f.QueryRow(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1, $2, 'member', gen_random_uuid(), 'Please check the PR') RETURNING id`, e.f.WorkspaceID, e.issue).Scan(&commentID)
+			e.f.Exec(t, `UPDATE comment SET content='The PR is ready now', revision=revision+1 WHERE id=$1`, commentID)
+		}, true},
 		{"merge state changed", func(t *testing.T, e skipEnv) {
 			e.f.Exec(t, `UPDATE github_pull_request SET api_merge_state_status='DIRTY' WHERE id=$1`, e.prID)
 		}, true},
@@ -255,5 +343,52 @@ func TestPersonWakeNowIsNeverSkipped(t *testing.T) {
 	}
 	if got := wakeRuns(t, e.f, id); got != 2 {
 		t.Fatalf("heartbeat runs after wake now = %d, want 2", got)
+	}
+}
+
+// CHE-4984 (CHE-2795): the cron conflict heartbeat reads only PR mergeability,
+// so the platform can tell nothing changed.
+const conflictHeartbeatText = "Read mergeable and mergeStateStatus of the PR. On CONFLICTING or DIRTY, merge the base and push."
+
+func (e skipEnv) conflictHeartbeat(t *testing.T) pgtype.UUID {
+	t.Helper()
+	w := wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "cron", CronExpression: "0 */4 * * *", Instruction: conflictHeartbeatText})
+	e.f.Exec(t, `UPDATE issue_wakeup SET source_task_id=$2 WHERE id=$1`, w.ID, dbid.NewV7())
+	return w.ID
+}
+
+func TestConflictHeartbeatSkipsWhenPRStateUnchangedAndShowsInRuns(t *testing.T) {
+	e := newSkipEnv(t, true)
+	id := e.conflictHeartbeat(t)
+	wakeTick(t, e.f, e.s, id)
+	e.finishRuns(t, "completed")
+	wakeTick(t, e.f, e.s, id)
+	if got := wakeRuns(t, e.f, id); got != 1 {
+		t.Fatalf("heartbeat runs after an unchanged PR = %d, want 1", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities = %d, want 1", got)
+	}
+	rows, err := e.f.q.ListWakeupRuns(context.Background(), db.ListWakeupRunsParams{WakeupID: util.UUIDToString(id), IssueID: e.issue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Status != "skipped" || rows[0].CheckinNote != wakeupOutcomeUnchanged {
+		t.Fatalf("runs list = %+v, want the skip first, then the run", rows)
+	}
+}
+
+func TestConflictHeartbeatRunsAgainWhenHeadChanged(t *testing.T) {
+	e := newSkipEnv(t, true)
+	id := e.conflictHeartbeat(t)
+	wakeTick(t, e.f, e.s, id)
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `UPDATE github_pull_request SET head_sha='h2' WHERE id=$1`, e.prID)
+	wakeTick(t, e.f, e.s, id)
+	if got := wakeRuns(t, e.f, id); got != 2 {
+		t.Fatalf("heartbeat runs after a new head = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities = %d, want 0", got)
 	}
 }

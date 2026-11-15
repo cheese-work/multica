@@ -1,0 +1,53 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:page1",
+  "screens": [
+    {
+      "screen": "Gantt v2, Direction B (wakeup lane + focus); frame also holds Direction A",
+      "frame_id": "huve-k7jLE",
+      "updatedAt": "2026-11-06T13:50:07.153Z",
+      "content_sha256": "c73036074c4a67ca28c4af32ab8fce47166bec0742c017631ccba25b9a6c0969",
+      "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
+      "ux_verdict_id": "01a1b42c-a6b8-7385-b8c7-c0af079c76d3"
+    },
+    {
+      "screen": "Swimlane 2.0, Direction A (causal columns); frame also holds Direction B",
+      "frame_id": "20EKgO9pKX",
+      "updatedAt": "2026-11-06T14:03:42.763Z",
+      "content_sha256": "acfb702a2d9e73c79d4df8203b7ac806b9e54b1c376316b53999e8ae1f327d9f",
+      "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
+      "ux_verdict_id": "01a1b42c-a6b8-7385-b8c7-c0af079c76d3"
+    },
+    {
+      "screen": "Hierarchy infinite zoom, Direction A (fan + breadcrumb); frame also holds Direction B",
+      "frame_id": "mzbsoFU2MX",
+      "updatedAt": "2026-11-07T06:25:43.109Z",
+      "content_sha256": "50be5b8939928cb51c50059dba00baa4c589382c8614c15a83aea80fc4b15106",
+      "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
+      "ux_verdict_id": "01a1b4c7-12ab-78c2-b188-639996083873"
+    },
+    {
+      "screen": "Sidebar card + mode switch, Direction A (mini preview); frame also holds Direction B",
+      "frame_id": "aTIpEERfej",
+      "updatedAt": "2026-11-06T14:00:23.849Z",
+      "content_sha256": "3bc1f2bee4743a90e79a1d31f3f9b823828c9bd18f5c0dd4c70d5bf570c817fd",
+      "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
+      "ux_verdict_id": "01a1b42c-a6b8-7385-b8c7-c0af079c76d3"
+    }
+  ],
+  "export_sha256": {
+    "gantt-b-wakeup-lane.html": "c73036074c4a67ca28c4af32ab8fce47166bec0742c017631ccba25b9a6c0969",
+    "swimlane-a-causal-columns.html": "acfb702a2d9e73c79d4df8203b7ac806b9e54b1c376316b53999e8ae1f327d9f",
+    "hierarchy-a-fan-breadcrumb.html": "50be5b8939928cb51c50059dba00baa4c589382c8614c15a83aea80fc4b15106",
+    "sidebar-a-mini-preview.html": "3bc1f2bee4743a90e79a1d31f3f9b823828c9bd18f5c0dd4c70d5bf570c817fd"
+  },
+  "export_transform": "none: each frame HTML is self-contained (system font stack, no external fetch); written as read from doop, without a trailing newline",
+  "exported_at": "2026-11-07 13:45 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-4313",
+  "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
+  "ux_verdict_id": "01a1b42c-a6b8-7385-b8c7-c0af079c76d3",
+  "notes": "Decision request af1dc36e-fabc-49e3-8f5f-10e8691b3638 (answered): Gantt B, Swimlane A, Hierarchy A, Sidebar A. Each frame holds both of its directions; the picked one is named in README.md. Hierarchy frame mzbsoFU2MX moved to updatedAt 2026-11-07T06:25:43.109Z after verdict 01a1b42c (which covers the 2026-11-06T13:58:58Z version). x99-agy-gemini-ux re-scored the new version and found the HTML byte-identical to the scored one (PASS, verdict 01a1b4c7-12ab-78c2-b188-639996083873); that verdict and the lock-match review of PR 1163 are in the same comment. ux_verdict_id on the Hierarchy screen is that confirmation of the exact version listed here."
+}

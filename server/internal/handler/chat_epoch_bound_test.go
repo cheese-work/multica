@@ -262,7 +262,7 @@ func TestEpochBound_AutoCompactAdmissionRejectsStaleEpochRun(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	oldRun := dm.sendRunning(t, "long turn")
 	dbfx.Exec(t, `UPDATE agent_task_queue SET chat_compaction_epoch = 0 WHERE id = $1`, oldRun)
 	dbfx.Exec(t, `UPDATE chat_session SET compaction_epoch = 1 WHERE id = $1`, dm.sessionID)

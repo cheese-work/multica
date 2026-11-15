@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
+import { isSchemaValidationError } from "../api/schema";
 import {
   issueDetailOptions,
   issueFetchRetryDelay,
@@ -54,6 +55,8 @@ export interface CanonicalIssue {
   notFound: boolean;
   /** Terminal, but not a 404: the lookup failed and `retry` may succeed. */
   loadError: boolean;
+  /** The lookup returned 2xx but the body failed schema validation. */
+  dataError: boolean;
   retry: () => void;
 }
 
@@ -138,6 +141,7 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
       resolve.dataUpdatedAt >= mountedAt,
     notFound,
     loadError: failed && !notFound,
+    dataError: failed && isSchemaValidationError(resolve.error),
     retry: () => void resolve.refetch(),
   };
 }

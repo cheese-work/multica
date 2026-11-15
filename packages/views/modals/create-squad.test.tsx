@@ -191,6 +191,7 @@ vi.mock("sonner", () => ({
   },
 }));
 
+import { useCreateSquadDraftStore } from "@multica/core/squads/stores";
 import { CreateSquadModal } from "./create-squad";
 
 function makeAgent(overrides: Partial<Agent> & { id: string; name: string; owner_id: string | null }): Agent {
@@ -275,12 +276,16 @@ function lastMatch(label: string): HTMLElement {
 
 function renderModal() {
   const onClose = vi.fn();
-  render(
+  return renderModalWith(onClose);
+}
+
+function renderModalWith(onClose: () => void) {
+  const view = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <CreateSquadModal onClose={onClose} />
     </I18nProvider>,
   );
-  return { onClose };
+  return { onClose, ...view };
 }
 
 const myAgent = makeAgent({ id: "agent-mine-1", name: "MineAgentOne", owner_id: ME });
@@ -291,6 +296,7 @@ const wsMember = makeMember(OTHER, "Workspace Pal");
 describe("CreateSquadModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useCreateSquadDraftStore.setState({ drafts: {} });
     mocks.agents = [otherAgent, myAgent, myAgent2];
     mocks.members = [wsMember];
   });
@@ -475,5 +481,64 @@ describe("CreateSquadModal", () => {
     // not "Creating...").
     const button = getSubmitButton();
     expect(button.disabled).toBe(false);
+  });
+  it("restores name, description, avatar, leader and members after an unmount and remount", async () => {
+    const first = renderModal();
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. Frontend Team/i), {
+      target: { value: "Platform" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/describe/i), {
+      target: { value: "Runs the platform" },
+    });
+    fireEvent.click(screen.getByTestId("avatar-picker"));
+    fireEvent.click(firstMatch("MineAgentOne"));
+    fireEvent.click(lastMatch("MineAgentTwo"));
+    first.unmount();
+
+    renderModal();
+    expect(screen.getByPlaceholderText(/e\.g\. Frontend Team/i)).toHaveValue("Platform");
+    expect(screen.getByPlaceholderText(/describe/i)).toHaveValue("Runs the platform");
+    expect(screen.getByTestId("avatar-picker").dataset.value).toBe(
+      "https://example.com/avatar.png",
+    );
+    expect(getSubmitButton().disabled).toBe(false);
+  });
+
+  it("keeps the draft when creation fails and clears it after a successful create", async () => {
+    mocks.createSquad.mockRejectedValueOnce(new Error("boom"));
+    const first = renderModal();
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. Frontend Team/i), {
+      target: { value: "Platform" },
+    });
+    fireEvent.click(firstMatch("MineAgentOne"));
+    fireEvent.click(getSubmitButton());
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    first.unmount();
+
+    mocks.createSquad.mockResolvedValueOnce(makeSquad());
+    const second = renderModal();
+    expect(screen.getByPlaceholderText(/e\.g\. Frontend Team/i)).toHaveValue("Platform");
+    fireEvent.click(getSubmitButton());
+    await waitFor(() => expect(mocks.navigationPush).toHaveBeenCalled());
+    second.unmount();
+
+    renderModal();
+    expect(screen.getByPlaceholderText(/e\.g\. Frontend Team/i)).toHaveValue("");
+  });
+
+  it("a late avatar upload after a successful create does not bring the draft back", async () => {
+    mocks.createSquad.mockResolvedValueOnce(makeSquad());
+    renderModal();
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. Frontend Team/i), {
+      target: { value: "Platform" },
+    });
+    fireEvent.click(firstMatch("MineAgentOne"));
+    fireEvent.click(getSubmitButton());
+    await waitFor(() => expect(mocks.navigationPush).toHaveBeenCalled());
+    expect(useCreateSquadDraftStore.getState().getDraft("create")).toBeUndefined();
+
+    fireEvent.click(screen.getByTestId("avatar-picker"));
+
+    expect(useCreateSquadDraftStore.getState().getDraft("create")).toBeUndefined();
   });
 });

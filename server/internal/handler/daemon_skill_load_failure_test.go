@@ -49,6 +49,7 @@ func (f skillFileBatchFailDBTX) QueryRow(ctx context.Context, sql string, args .
 // path behaves normally.
 func newSkillFileReadFailureHandler(t *testing.T) *Handler {
 	t.Helper()
+	t.Cleanup(giveBackRunBudgetHooks) // New() re-registers the process-wide budget hooks on its own bus.
 	return New(
 		db.New(skillFileBatchFailDBTX{inner: testPool}),
 		testPool,

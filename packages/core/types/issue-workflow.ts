@@ -17,7 +17,8 @@ export type IssueWorkflowHandlerType =
   | "member"
   | "project_lead"
   | "creator"
-  | "human_by_role";
+  | "human_by_role"
+  | "human_in_charge";
 
 export interface IssueWorkflowHandler {
   type: IssueWorkflowHandlerType;
@@ -36,6 +37,12 @@ export interface IssueWorkflowStep {
   back_status_key?: string;
   /** Move an issue on this step to its next status when a linked PR's checks pass. */
   advance_on_ci_green?: boolean;
+  /**
+   * Entering the step leaves an assignee chosen on purpose in place. TEMPORARY:
+   * CHE-5024 (per-issue workflows) replaces it. Set through the API/CLI; the
+   * editor only preserves it.
+   */
+  keep_other_assignee?: boolean;
   /** Guarded exits; the first whose guard holds is taken. */
   edges?: IssueWorkflowEdge[];
   /** Conditions a status write must meet to put an issue into this step (CHE-2531). */
@@ -196,5 +203,7 @@ export interface SetWorkflowHandoffRequest {
   next_status_key?: string;
   back_status_key?: string;
   advance_on_ci_green?: boolean;
+  /** TEMPORARY, CHE-5024: see IssueWorkflowStep. */
+  keep_other_assignee?: boolean;
   edges?: IssueWorkflowEdge[];
 }

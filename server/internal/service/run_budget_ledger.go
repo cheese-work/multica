@@ -34,6 +34,10 @@ const (
 	runBudgetKindRun    = "run"
 	runBudgetKindRaise  = "raise"
 	runBudgetKindCap    = "cap"
+	// forgive zeroes the debt an old window ran up, when a person's top-up
+	// opens the next one (CHE-5331): a top-up buys a fresh window, so the
+	// issue is not left "over" with runs unused.
+	runBudgetKindForgive = "forgive"
 )
 
 type readOnlyRunBudgetKey struct{}
@@ -92,9 +96,6 @@ func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtyp
 	}
 	if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindWindow, runBudgetKindWindow+":"+windowID, usage.Max-int(counted), usage.Max); err != nil {
 		return issue, nil, 0, fmt.Errorf("run budget: open window: %w", err)
-	}
-	if err := claimRunBudgetAllowance(ctx, q, issue, usage, windowID); err != nil {
-		return issue, nil, 0, err
 	}
 	// A cap edited since the ledger last saw it moves the balance by the same
 	// amount; the lock makes the read-and-write one step.
@@ -169,6 +170,51 @@ func OpenRunBudgetWindowID(ctx context.Context, q *db.Queries, issueID pgtype.UU
 	return usage.Max, runBudgetWindowID(usage.Since), nil
 }
 
+// OpenRunBudgetBalance is OpenRunBudgetWindowID that also returns the issue's
+// run balance under the same lock (empty window: the issue has no budget).
+func OpenRunBudgetBalance(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (balance int64, windowID string, err error) {
+	_, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return balance, runBudgetWindowID(usage.Since), nil
+}
+
+// LockRunBudgetWindow is OpenRunBudgetWindow that also returns the id of the
+// window it opened (empty: the issue has no budget), so a caller can compare
+// the window a person approved against the one in force under the lock.
+func LockRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
+	_, usage, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return runBudgetWindowID(usage.Since), nil
+}
+
+// ForgiveRunBudgetDebt writes off a negative balance. The caller is a top-up
+// that already brought the old window's ledger up to date under the issue lock.
+func ForgiveRunBudgetDebt(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil || usage == nil {
+		return err
+	}
+	balance, err := runBudgetBalance(ctx, q, issueID)
+	if err != nil || balance >= 0 {
+		return err
+	}
+	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindForgive, runBudgetKindForgive+":"+util.UUIDToString(dbid.NewV7()), int(-balance), 0)
+}
+
 // RecordRunBudgetRaise credits the runs a person added to the issue's cap. The
 // caller opened the window first (OpenRunBudgetWindow), so the raise is the
 // only difference between the ledger's cap and the issue's.
@@ -201,41 +247,5 @@ func debitRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID) e
 		return err
 	}
 	windowID := runBudgetWindowID(usage.Since)
-	if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindRun, runBudgetKindRun+":"+util.UUIDToString(taskID), -1, 0); err != nil {
-		return err
-	}
-	return reserveRunTokens(ctx, q, issue, usage, windowID, taskID)
-}
-
-// tokenBalanceSpent reports whether the issue's token balance refuses a new
-// run: activated, and at or below zero. Under the issue lock the first
-// admission attempt activates the issue; the read-only guard before the
-// admission transaction only reads an activation that already exists.
-func tokenBalanceSpent(ctx context.Context, q *db.Queries, issue db.Issue, usage *runBudgetUsage) (int64, bool, error) {
-	if !usage.tokensStored() {
-		return 0, false, nil
-	}
-	readOnly, _ := ctx.Value(readOnlyRunBudgetKey{}).(bool)
-	if readOnly {
-		if _, found, err := activationEpoch(ctx, q, issue.ID); err != nil || !found {
-			return 0, false, err
-		}
-	} else if _, ok, err := activateRunBudgetTokens(ctx, q, issue, usage); err != nil || !ok {
-		return 0, false, err
-	}
-	balance, err := q.SumIssueRunBudgetTokens(ctx, issue.ID)
-	if err != nil {
-		return 0, false, fmt.Errorf("token balance: %w", err)
-	}
-	if readOnly {
-		// The admission transaction credits the window's allowance when it opens
-		// the window; the guard before it counts that credit as already there.
-		windowID := runBudgetWindowID(usage.Since)
-		if _, err := q.GetIssueRunBudgetEntry(ctx, db.GetIssueRunBudgetEntryParams{IssueID: issue.ID, Kind: runBudgetKindAllowance, EventKey: runBudgetKindAllowance + ":" + windowID}); errors.Is(err, pgx.ErrNoRows) {
-			balance += usage.TokenAllowance
-		} else if err != nil {
-			return 0, false, fmt.Errorf("token balance: %w", err)
-		}
-	}
-	return balance, balance <= 0, nil
+	return recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindRun, runBudgetKindRun+":"+util.UUIDToString(taskID), -1, 0)
 }

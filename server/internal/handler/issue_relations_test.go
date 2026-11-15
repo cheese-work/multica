@@ -202,20 +202,43 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 	neighbor := dbfx.Issue(t, "bounded relations neighbor", testutil.Cols{"description": "[root](mention://issue/" + root + ")"})
 	dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, root, "[neighbor](mention://issue/"+neighbor+")")
 	dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": neighbor, "author_type": "member", "author_id": testUserID, "content": "[root](mention://issue/" + root + ")"})
-	dbfx.Exec(t, `INSERT INTO issue(workspace_id,title,creator_type,creator_id,number,description)
+	// The background rows only need to exist and be indexed: the per-row
+	// triggers (search side tables, wakeups, taint) cost ~2 ms each and none of
+	// them feeds the mention query, so the bulk seed bypasses them. The GIN
+	// indexes on issue and comment are table indexes and still get built.
+	seed := func(sql string, args ...any) {
+		t.Helper()
+		conn, err := testPool.Acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Release()
+		if _, err := conn.Exec(context.Background(), "SET session_replication_role = replica"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _, _ = conn.Exec(context.Background(), "RESET session_replication_role") }()
+		if _, err := conn.Exec(context.Background(), sql, args...); err != nil {
+			t.Fatalf("seed: %v\nSQL: %s", err, sql)
+		}
+	}
+	seed(`INSERT INTO issue(workspace_id,title,creator_type,creator_id,number,description)
 		SELECT $1,'bounded relations background','member',$2,
 		 (SELECT coalesce(max(number),0) FROM issue WHERE workspace_id=$1)+counter,repeat('unrelated text ',64)
-		FROM generate_series(1,2000) counter`, testWorkspaceID, testUserID)
-	dbfx.Cleanup(t, `DELETE FROM issue WHERE workspace_id=$1 AND title='bounded relations background'`, testWorkspaceID)
-	dbfx.Exec(t, `INSERT INTO comment(workspace_id,issue_id,author_type,author_id,content)
+		FROM generate_series(1,5000) counter`, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		seed(`DELETE FROM issue WHERE workspace_id=$1 AND title='bounded relations background'`, testWorkspaceID)
+	})
+	seed(`INSERT INTO comment(workspace_id,issue_id,author_type,author_id,content)
 		SELECT $1,background.id,'member',$2,repeat('unrelated text ',64)
-		FROM issue background CROSS JOIN generate_series(1,20)
+		FROM issue background CROSS JOIN generate_series(1,2)
 		WHERE background.workspace_id=$1 AND background.title='bounded relations background'`, testWorkspaceID, testUserID)
-	dbfx.Cleanup(t, `DELETE FROM comment WHERE workspace_id=$1 AND issue_id IN
+	t.Cleanup(func() {
+		seed(`DELETE FROM comment WHERE workspace_id=$1 AND issue_id IN
 		(SELECT id FROM issue WHERE workspace_id=$1 AND title='bounded relations background')`, testWorkspaceID)
+	})
 	dbfx.Exec(t, "ANALYZE issue")
 	dbfx.Exec(t, "ANALYZE comment")
-	t.Log("baseline: 2000 unrelated issues and 40000 unrelated comments; default planner settings")
+	t.Log("baseline: 5000 unrelated issues and 10000 unrelated comments; default planner settings")
 	type mentionWork struct {
 		Regex              int
 		DescriptionIndexes int
@@ -269,12 +292,22 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 		return work
 	}
 	before := []mentionWork{measure(1), measure(2)}
-	for index := 0; index < 80; index++ {
-		unrelated := dbfx.Issue(t, fmt.Sprintf("unrelated relations %d", index))
-		content := "[self](mention://issue/" + unrelated + ")"
-		dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, unrelated, content)
-		dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": unrelated, "author_type": "member", "author_id": testUserID, "content": content})
-	}
+	seed(`WITH unrelated AS (SELECT gen_random_uuid() id, n FROM generate_series(1,80) n),
+		issues AS (
+			INSERT INTO issue(id,workspace_id,title,creator_type,creator_id,number,description)
+			SELECT id,$1,'unrelated relations '||n,'member',$2,
+			 (SELECT coalesce(max(number),0) FROM issue WHERE workspace_id=$1)+n,'[self](mention://issue/'||id||')'
+			FROM unrelated)
+		INSERT INTO comment(workspace_id,issue_id,author_type,author_id,content)
+		SELECT $1,id,'member',$2,'[self](mention://issue/'||id||')' FROM unrelated`, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		seed(`DELETE FROM issue WHERE workspace_id=$1 AND title LIKE 'unrelated relations %'`, testWorkspaceID)
+	})
+	// Cleanups run LIFO: registered last, so comments are removed before their issues.
+	t.Cleanup(func() {
+		seed(`DELETE FROM comment WHERE workspace_id=$1 AND issue_id IN
+		(SELECT id FROM issue WHERE workspace_id=$1 AND title LIKE 'unrelated relations %')`, testWorkspaceID)
+	})
 	for depth := 1; depth <= 2; depth++ {
 		after := measure(depth)
 		t.Logf("depth %d: mention work before=%+v after=%+v with 80 unrelated issues/comments", depth, before[depth-1], after)
@@ -304,6 +337,24 @@ func TestIssueRelationsKeepsBoundaryEdgesAndMixedCaseMentions(t *testing.T) {
 		}
 		if !mentions[first+"/"+second] || !mentions[second+"/"+first] {
 			t.Fatalf("root %s: missing edges between boundary nodes or mixed-case reverse mentions: %+v", rootID, graph)
+		}
+	}
+}
+
+func TestIssueRelationsDependencyEdges(t *testing.T) {
+	blocked := dbfx.Issue(t, "dependency blocked")
+	blocker := dbfx.Issue(t, "dependency blocker")
+	dbfx.Insert(t, "issue_dependency", testutil.Cols{"issue_id": blocked, "depends_on_issue_id": blocker, "type": "blocked_by"})
+	// Cross-workspace dependency must be omitted like every other edge (N6).
+	foreign := dbfx.Issue(t, "dependency foreign", testutil.Cols{"workspace_id": dbfx.Workspace(t, "dependency foreign", "dependency-foreign")})
+	dbfx.Insert(t, "issue_dependency", testutil.Cols{"issue_id": blocked, "depends_on_issue_id": foreign, "type": "blocks"})
+	for _, root := range []string{blocked, blocker} {
+		graph := readRelations(t, root, "")
+		if len(graph.Nodes) != 2 || len(graph.Edges) != 1 {
+			t.Fatalf("root %s: want 2 nodes and 1 edge, got %+v", root, graph)
+		}
+		if edge := graph.Edges[0]; edge.Type != "dependency" || edge.Source != blocked || edge.Target != blocker {
+			t.Fatalf("root %s: dependency edge: %+v", root, edge)
 		}
 	}
 }

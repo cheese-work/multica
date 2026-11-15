@@ -1,0 +1,41 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:che-5511",
+  "page_note": "File 'multica', page 'CHE-5511 · dm-list'. Direction A only (Cheese's pick of 13 Nov 2026 17:18 ICT). The source canvas CyYJVz2cBk (v1, v2 previs) stays as history and is not locked.",
+  "screens": [
+    {
+      "screen": "DM list main v3 (desktop list, chips, menu; chip 'Chờ bạn' with no tag; mobile two-way swipe with the Hoàn tác toast; mobile select mode with icon-only split bar; group select with split buttons; ⌘K chips and result rules)",
+      "frame_id": "HWWDBRkKMd",
+      "updatedAt": "2026-11-13T15:14:48.149Z",
+      "content_sha256": "20275d62bf12039f75b38d4f67f9cf09481ed8ec4b521a3e7b790249d6c06add"
+    },
+    {
+      "screen": "states desktop + ⌘K (loading, empty, error, offline for the list; ⌘K searching, no results, error, offline; 2px focus ring on Thử lại)",
+      "frame_id": "efRMEvOLwO",
+      "updatedAt": "2026-11-13T15:15:08.636Z",
+      "content_sha256": "ca92b0d99708f4cebb4af6dc5638d0cd3c63705fbf3547aafb95d5eb4cfee154"
+    },
+    {
+      "screen": "states mobile 390 (list loading, empty, error, offline; phone ⌘K searching, no results, error, offline)",
+      "frame_id": "vudJBbhks4",
+      "updatedAt": "2026-11-13T15:14:47.254Z",
+      "content_sha256": "408511f758ea2f7e4e9a7f036a80b749ac288621e13c04964c081166b79b643a"
+    }
+  ],
+  "export_sha256": "427354d085fa1bcaa3c024b6c1cea3fd725c3b9efa42237953f269d73ab075d3",
+  "export_sha256_method": "sha256 of the output of sha256sum for export_files, sorted by file name (one line '<sha256>  <file>' plus newline)",
+  "export_files": {
+    "dm-list-main.html": "20275d62bf12039f75b38d4f67f9cf09481ed8ec4b521a3e7b790249d6c06add",
+    "states-desktop.html": "ca92b0d99708f4cebb4af6dc5638d0cd3c63705fbf3547aafb95d5eb4cfee154",
+    "states-mobile.html": "408511f758ea2f7e4e9a7f036a80b749ac288621e13c04964c081166b79b643a"
+  },
+  "export_transform": "none: HTML written by hand from the frame HTML read back with get_frame (doop has no export API for these frames); each file's character count equals the read-back htmlBytes plus one trailing newline. Self-contained (system font stack, inline SVG, no external fetch). The same three files were attached to CHE-5511 comment 01a1d580-4da6-7837-b84e-89285aabde6b and Terra's attachment SHA-256 check matched (verdict 01a1d583-7640-7010-96a4-464cbdb8ee9c).",
+  "exported_at": "2026-11-13 22:32 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-5511",
+  "selection_id": "01a1d561-edca-7776-8345-ad9e615cdc8f",
+  "selection_source": "Cheese's answer 'Fix the 5 notes first' on decision card 83c4b2f4-5ecc-4bfe-aa82-ac1d41278fbf (answer ed27252e-ba15-4246-a4ad-b2d9ffd35075, 13 Nov 2026 21:48 ICT), recorded on CHE-5511 in comment 01a1d561-edca-7776-8345-ad9e615cdc8f. The direction pick (A) is Cheese's DM of 13 Nov 2026 17:18 ICT, recorded in the CHE-5511 description and in decision-card comment 01a1d4a0-bfd6-71c1-99ee-8a8a515a7e19. The five notes are the P2 notes of the v2 PASS 01a1d497-dee2-7431-aa6d-f0a667b26bb6; v3 fixes all five.",
+  "ux_verdict_id": "01a1d583-7640-7010-96a4-464cbdb8ee9c"
+}

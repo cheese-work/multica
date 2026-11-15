@@ -1,0 +1,15 @@
+{
+  "providers": {
+    "claude": "Anthropic",
+    "codex": "OpenAI",
+    "antigravity": "Google"
+  },
+  "model_prefixes": {
+    "claude": "Anthropic",
+    "gpt": "OpenAI",
+    "o1": "OpenAI",
+    "o3": "OpenAI",
+    "o4": "OpenAI",
+    "gemini": "Google"
+  }
+}

@@ -141,7 +141,7 @@
     "group_users": "使用者",
     "group_issues": "任務",
     "all_members": "所有成員",
-    "agent_badge": "智慧體",
+    "agent_badge": "AI 代理",
     "squad_badge": "小隊",
     "searching": "搜尋中...",
     "no_results": "無結果",
@@ -161,6 +161,7 @@
       "preset": "選擇此私訊使用的預設",
       "archive": "封存目前私訊，不啟動智慧代理執行",
       "pin": "置頂或取消置頂目前私訊",
+      "unseen": "將此 DM 標記為未讀並離開",
       "statistic": "顯示目前私訊的用量與費用",
       "unarchive": "取消封存目前私訊，不會向智慧代理傳送任何內容"
     },
