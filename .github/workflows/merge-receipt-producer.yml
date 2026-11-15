@@ -1,0 +1,105 @@
+# Merge-receipt producer (CHE-5594, slice D of CHE-5046). Cheese chose the GitHub Actions OIDC identity (14 Nov 2026).
+#
+# Every 10 minutes, and on demand, it classifies each open PR with the BASE classifier and records the facts for the PR's
+# exact head at PUT /api/github/merge-receipts/ci. The server accepts the call only for this workflow file on refs/heads/main
+# in this repository (CI broker policy entry; audience multica-merge-receipt). No secret is stored.
+#
+# The call never asserts a cross-lab PASS or its time: the server derives both from signed verdict comments. The receipt
+# only carries what GitHub and the classifier prove (tier, trust, coverage, PR binding, labels, paths, security-gate).
+#
+# SECURITY — a schedule always runs the default branch's copy of this file. There is no pull_request, push or
+# issue_comment trigger. Per PR, the job checks out the BASE commit and only FETCHES the head objects; nothing from a head
+# is checked out or executed, and `build_facts.py` runs from the default branch. Do not add a head checkout.
+#
+# The route stays off (404) until the server has MULTICA_MERGE_RECEIPT_OIDC_POLICY and MULTICA_MERGE_RECEIPT_WORKSPACE_ID;
+# until the repository variable MULTICA_MERGE_RECEIPT_URL is set the job notices that and exits green. Both are owner
+# config. The policy's max_fact_age_seconds must cover this interval, with room for a late run.
+
+name: merge-receipt-producer
+
+on:
+  schedule:
+    - cron: "4,14,24,34,44,54 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+  id-token: write
+
+jobs:
+  produce:
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/main'
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RECEIPT_URL: ${{ vars.MULTICA_MERGE_RECEIPT_URL }}
+    steps:
+      - name: Stop when the receipt URL is not configured
+        id: gate
+        run: |
+          if [ -z "$RECEIPT_URL" ]; then
+            echo "::notice::MULTICA_MERGE_RECEIPT_URL is unset; no receipt is recorded"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Discard a reused workspace
+        if: steps.gate.outputs.go == 'true'
+        run: find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the default branch (trusted scripts)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v6
+        with:
+          path: trusted
+          persist-credentials: false
+      - name: Check out a work tree with full history
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v6
+        with:
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record a receipt for each open PR head
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          set -uo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          prs="$(gh api --paginate "$repo/pulls?state=open&per_page=100" \
+            --jq '.[] | {pr: .number, base_ref: .base.ref, base: .base.sha, head: .head.sha, labels: [.labels[].name]} | @base64')" || exit 1
+          failed=0
+          for row in $prs; do
+            item="$(echo "$row" | base64 -d)"
+            pr="$(jq -r .pr <<<"$item")"; base_ref="$(jq -r .base_ref <<<"$item")"
+            base="$(jq -r .base <<<"$item")"; head="$(jq -r .head <<<"$item")"; labels="$(jq -c .labels <<<"$item")"
+            [[ "$pr" =~ ^[0-9]+$ && "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "PR $pr: unexpected shape" >&2; failed=1; continue; }
+            (
+              set -euo pipefail
+              cd work
+              git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin "$base" "+refs/pull/${pr}/head:refs/remotes/pull/head"
+              test "$(git rev-parse refs/remotes/pull/head)" = "$head"
+              git checkout --quiet --detach "$base"
+              python3 scripts/mechanical-tier/mechanical_tier.py classify --repo . --base "$base" --head "$head" \
+                --github "$GITHUB_REPOSITORY" --pr "$pr" --out "../receipt-$pr.json" >/dev/null
+            ) || { echo "PR $pr: classification failed" >&2; failed=1; continue; }
+            gate="$(gh api "$repo/commits/$head/status" --jq '[.statuses[] | select(.context == "security-gate")][0].state // ""')" || { failed=1; continue; }
+            python3 -I trusted/scripts/merge-receipt/build_facts.py "receipt-$pr.json" --pr "$pr" --head "$head" --base-ref "$base_ref" \
+              --security-gate "$gate" --labels "$labels" --run-url "$run_url" > "facts-$pr.json" || { echo "PR $pr: facts failed" >&2; failed=1; continue; }
+            # One token per call: the server refuses a replayed token.
+            token="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=multica-merge-receipt" | jq -r .value)" || { failed=1; continue; }
+            code="$(curl -sS -o response.txt -w '%{http_code}' -X PUT "$RECEIPT_URL/api/github/merge-receipts/ci" \
+              -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data @"facts-$pr.json")" || { failed=1; continue; }
+            case "$code" in
+              204) echo "PR $pr $head: receipt recorded" ;;
+              # 404: the route is off. 409: the server has not synced this head yet, or a veto stands. Both are expected, not faults.
+              404|409) echo "::notice::PR $pr $head: not recorded ($code): $(head -c 200 response.txt)" ;;
+              *) echo "::error::PR $pr $head: HTTP $code: $(head -c 200 response.txt)"; failed=1 ;;
+            esac
+          done
+          exit "$failed"

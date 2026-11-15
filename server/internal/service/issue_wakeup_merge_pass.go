@@ -65,6 +65,10 @@ func agentLab(ctx context.Context, tx pgx.Tx, workspaceID, agentID pgtype.UUID) 
 	return labOf(model, provider), nil
 }
 
+// A verdict takes effect when it was written or last edited, whichever is
+// later (comment_content_edit), so editing an old comment cannot reorder it
+// behind a newer one or backdate the veto window.
+//
 // storedCrossLabPass derives the two PASS facts from Multica: the newest signed
 // PASS from an agent of another lab than the PR author, on the exact head, in a
 // comment on the wakeup's issue. The signer is the comment's author, so the
@@ -79,9 +83,10 @@ func storedCrossLabPass(ctx context.Context, tx pgx.Tx, c MergeCandidate, author
 	if err != nil || authorLab == "" {
 		return nil, nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT author_id, content, created_at FROM comment
-		WHERE workspace_id=$1 AND issue_id=$2 AND author_type='agent' AND type='comment' AND deleted_at IS NULL AND position($3 in content) > 0
-		ORDER BY created_at, id`, c.WorkspaceID, c.IssueID, c.HeadSHA)
+	rows, err := tx.Query(ctx, `SELECT c.author_id, c.content, COALESCE(e.edited_at, c.created_at) AS effective_at FROM comment c
+		LEFT JOIN comment_content_edit e ON e.comment_id = c.id
+		WHERE c.workspace_id=$1 AND c.issue_id=$2 AND c.author_type='agent' AND c.type='comment' AND c.deleted_at IS NULL AND position($3 in c.content) > 0
+		ORDER BY effective_at, c.id`, c.WorkspaceID, c.IssueID, c.HeadSHA)
 	if err != nil {
 		return nil, nil, err
 	}

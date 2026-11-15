@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -156,5 +158,48 @@ func TestDerivedPassCountsOnlyTheWakeupIssue(t *testing.T) {
 	m.tick(t)
 	if n := m.runs(t); n != 0 {
 		t.Fatalf("%d runs for a PASS on an unrelated issue, want 0", n)
+	}
+}
+
+// An edit changes what a verdict says now, so the edit time, not the creation
+// time, orders it against the signer's other verdicts and starts the veto
+// window. Edits go through a plain UPDATE of the content, as the comment
+// update path does.
+func (m *mergeFix) edit(t *testing.T, id, content string) {
+	t.Helper()
+	m.f.Exec(t, "UPDATE comment SET content=$2, updated_at=now() WHERE id=$1", id, content)
+}
+
+func TestDerivedPassEditedOlderVerdictWithdrawsANewerCreatedPass(t *testing.T) {
+	m := passFixture(t)
+	terra := m.signer(t, "terra", "gpt-6.1-terra")
+	old := m.say(t, "agent", terra, verdictLine("PASS", "a"), m.clock.Add(-3*time.Hour))
+	m.say(t, "agent", terra, verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
+	m.tick(t)
+	if n := m.live(t); n != 1 {
+		t.Fatalf("%d live runs before the edit, want 1", n)
+	}
+	task := m.lastTask(t)
+	m.edit(t, old, verdictLine("CHANGES", "a"))
+	if err := m.s.CheckClaim(context.Background(), task); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("CheckClaim after an older verdict was edited to CHANGES = %v, want ErrWakeupForbidden", err)
+	}
+	m.tick(t)
+	m.finishRuns(t)
+	m.tick(t)
+	if n := m.runs(t); n != 1 {
+		t.Fatalf("%d runs in total after the edit, want the 1 from before", n)
+	}
+}
+
+func TestDerivedPassEditedIntoPassCannotBackdateTheVetoWindow(t *testing.T) {
+	m := passFixture(t)
+	m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'] WHERE workspace_id=$1", m.f.WorkspaceID)
+	id := m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictLine("CHANGES", "a"), m.clock.Add(-30*time.Hour))
+	m.edit(t, id, verdictLine("PASS", "a"))
+	m.tick(t)
+	m.tick(t)
+	if n := m.runs(t); n != 0 {
+		t.Fatalf("%d runs for a gate path whose verdict became PASS by an edit just now, want 0", n)
 	}
 }

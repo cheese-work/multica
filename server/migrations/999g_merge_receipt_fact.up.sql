@@ -64,3 +64,24 @@ CREATE TABLE merge_veto (
     created_at timestamptz NOT NULL,
     PRIMARY KEY (workspace_id, repo_owner, repo_name, pr_number)
 );
+
+-- When a comment's text last changed. updated_at also moves on a resolve or an
+-- unresolve, so it cannot order verdicts. The merge PASS derivation reads this
+-- time (else created_at) as the moment a verdict took effect. No foreign key:
+-- a row for a comment that no longer exists is never read.
+CREATE TABLE comment_content_edit (
+    comment_id uuid PRIMARY KEY,
+    edited_at timestamptz NOT NULL
+);
+
+CREATE FUNCTION comment_content_edit_record() RETURNS trigger AS $$
+BEGIN
+    INSERT INTO comment_content_edit(comment_id, edited_at) VALUES (NEW.id, now())
+    ON CONFLICT (comment_id) DO UPDATE SET edited_at = EXCLUDED.edited_at;
+    RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER comment_content_edit_record AFTER UPDATE OF content ON comment
+ FOR EACH ROW WHEN (OLD.content IS DISTINCT FROM NEW.content)
+ EXECUTE FUNCTION comment_content_edit_record();

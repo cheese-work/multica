@@ -1071,6 +1071,9 @@ jobs:
       - name: Test mechanical-tier classifier paths (CHE-3339)
         run: python3 -m unittest tests.test_che3339_mechanical_tier
 
+      - name: Test the merge-receipt producer (CHE-5594)
+        run: python3 -m unittest tests.test_che5594_merge_receipt_facts
+
       - name: Test workflow run budget and cascade triggers (CHE-4250, CHE-4385)
         run: python3 -m unittest tests.test_che4385_run_budget
 
