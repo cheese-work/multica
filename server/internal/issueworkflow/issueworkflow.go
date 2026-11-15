@@ -772,6 +772,23 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 	return "", pgtype.UUID{}, false
 }
 
+// StepAssignee is one concrete assignee of a move: an agent, squad or member.
+type StepAssignee struct {
+	Type string
+	ID   pgtype.UUID
+}
+
+// ResolveStepAssignee is the single writer of who a handoff move assigns. A
+// move that names its own assignee overrides the step's handler; naming the
+// handler itself is no override. stepHandler is returned either way, so the
+// status history can show what the step would have done.
+func ResolveStepAssignee(stepHandler StepAssignee, override *StepAssignee) (assignee StepAssignee, overridden bool) {
+	if override == nil || *override == stepHandler {
+		return stepHandler, false
+	}
+	return *override, true
+}
+
 // MoveTarget picks the status an issue keeps when it moves into a project
 // using def: its current status when the workflow lists it, otherwise the
 // first step of the same lifecycle category, otherwise the start status.
