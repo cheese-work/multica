@@ -109,7 +109,7 @@ func ParseKeyring(spec string) (*Keyring, error) {
 			return nil, fmt.Errorf("browserlease: signing key %q: seed must be %d bytes of standard base64", kid, ed25519.SeedSize)
 		}
 		priv := ed25519.NewKeyFromSeed(seed)
-		pub := string(priv.Public().(ed25519.PublicKey))
+		pub := string(priv[ed25519.SeedSize:])
 		if kids[kid] || pubs[pub] {
 			return nil, fmt.Errorf("browserlease: signing key %q duplicates another entry", kid)
 		}
@@ -135,7 +135,7 @@ func (kr *Keyring) buildJWKS() []byte {
 		Keys []jwkEntry `json:"keys"`
 	}{Keys: make([]jwkEntry, 0, len(kr.keys))}
 	for _, k := range kr.keys {
-		pub := k.priv.Public().(ed25519.PublicKey)
+		pub := k.priv[ed25519.SeedSize:] // public half of the expanded key
 		set.Keys = append(set.Keys, jwkEntry{
 			Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(pub),
 			Kid: k.kid, Use: "sig", Alg: "EdDSA",
