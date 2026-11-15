@@ -114,6 +114,7 @@
     "./chat/title": "./chat/title.ts",
     "./chat/usage": "./chat/usage.ts",
     "./chat/search": "./chat/search.ts",
+    "./chat/session-list": "./chat/session-list.ts",
     "./chat/message-cache": "./chat/message-cache.ts",
     "./chat/use-quick-actions-pending-timeout": "./chat/use-quick-actions-pending-timeout.ts",
     "./chat/unread": "./chat/unread.ts",

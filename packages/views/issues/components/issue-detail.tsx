@@ -1749,6 +1749,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     });
   }, []);
   const didHighlightRef = useRef<string | null>(null);
+  // Highlight whose landing was cancelled after its anchor mounted but before
+  // it finished aligning; the landing effect resumes it.
+  const interruptedLandingRef = useRef<string | null>(null);
   // Last seen highlightRequestToken; a bump re-arms didHighlightRef so the
   // landing effect below replays on an already-mounted detail.
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
@@ -2796,10 +2799,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Flash the landed comment the same way inbox deep-links do, so the eye has
   // an anchor after the instant jump. (Folded resolved bars don't take the
   // highlight prop — the scroll itself is the feedback there.)
-  const flashJumpTarget = useCallback((commentId: string) => {
+  const flashJumpTarget = useCallback((commentId: string, duration = 2000) => {
     setHighlightedId(commentId);
     if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
-    jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2000);
+    jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), duration);
   }, []);
   // Jump to a mounted comment: any row in flat mode, or a reply inside a
   // rendered thread. Drive the container's scrollTop directly — never native
@@ -3166,7 +3169,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       // A replay asks a mounted, measured list to scroll: the page drives it.
       listOpenedAtRef.current = { listKey: `${wsId}:${id}`, commentId: null };
     }
-    if (didHighlightRef.current === highlightCommentId) return;
+    // A landing this effect's cleanup cut short resumes (see the cleanup).
+    const resuming = interruptedLandingRef.current === highlightCommentId;
+    if (!resuming && didHighlightRef.current === highlightCommentId) return;
     // The deep link already landed before this mount (memento entry — a tab
     // switch back or an in-tab return). The restored scroll offset is the
     // state the user left, and the jump must not fight it — but 01-DESIGN is
@@ -3177,7 +3182,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // intervening resolve/collapse may have refolded it since). So a
     // consumed memento skips the scroll/highlight/re-write below, but still
     // falls through to the same auto-expand branches a fresh landing uses.
-    const mementoConsumed = !activeDeliverableJump && consumedHighlightRef.current === highlightCommentId;
+    const mementoConsumed = !resuming && !activeDeliverableJump && consumedHighlightRef.current === highlightCommentId;
     if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
     const rootId = highlightRootId;
@@ -3252,14 +3257,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // keeps it contained; re-centering across frames lands the comment
     // precisely once async heights (markdown, code highlight, streamed replies)
     // settle, instead of leaning on the ancestor scroll the way native did.
+    interruptedLandingRef.current = null;
     let rafId = 0;
     let frames = 0;
     let last = -1;
     let landed = false;
+    let completed = false;
     const center = () => {
       const el = document.getElementById(`comment-${landingId}`);
       if (!el) {
         if (!landed && ++frames < 120) rafId = requestAnimationFrame(center);
+        else completed = true;
         return;
       }
       if (!landed) {
@@ -3270,7 +3278,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
         jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2500);
       }
-      if (listOwnsScroll) return;
+      if (listOwnsScroll) {
+        completed = true;
+        return;
+      }
       const c = container.getBoundingClientRect();
       const e = el.getBoundingClientRect();
       const target = Math.max(
@@ -3283,12 +3294,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       if (Math.abs(target - last) > 1 && ++frames < 30) {
         last = target;
         rafId = requestAnimationFrame(center);
+      } else {
+        completed = true;
       }
     };
     rafId = requestAnimationFrame(center);
 
     return () => {
       cancelAnimationFrame(rafId);
+      // A commit while the landing is still aligning (a realtime comment, a
+      // run refresh, the refetch of a cached timeline) re-runs this effect and
+      // cancels the loop here. Once the anchor has mounted, the guards above
+      // count the landing as done, so mark it for the re-run to resume;
+      // otherwise the viewport stays wherever the loop stopped, often the top
+      // of the issue (MUL-9068).
+      if (!completed && didHighlightRef.current === highlightCommentId) {
+        interruptedLandingRef.current = highlightCommentId;
+      }
     };
   }, [highlightCommentId, highlightRequestToken, activeDeliverableJump, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 

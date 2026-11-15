@@ -153,8 +153,9 @@ type GitHubPullRequestResponse struct {
 }
 
 type GitHubConnectResponse struct {
-	URL        string `json:"url"`
-	Configured bool   `json:"configured"`
+	ConnectionID string `json:"connection_id,omitempty"`
+	URL          string `json:"url"`
+	Configured   bool   `json:"configured"`
 }
 
 type GitHubRepositoryResponse struct {
@@ -169,9 +170,10 @@ type GitHubRepositoryResponse struct {
 }
 
 type GitHubRepositoriesResponse struct {
-	Repositories []GitHubRepositoryResponse `json:"repositories"`
-	TotalCount   int64                      `json:"total_count"`
-	NextPage     *int                       `json:"next_page"`
+	RepositorySelection string                     `json:"repository_selection,omitempty"`
+	Repositories        []GitHubRepositoryResponse `json:"repositories"`
+	TotalCount          int64                      `json:"total_count"`
+	NextPage            *int                       `json:"next_page"`
 }
 
 func githubInstallationToResponse(i db.GithubInstallation) GitHubInstallationResponse {
@@ -419,32 +421,46 @@ func signState(workspaceID string) (string, error) {
 }
 
 func signStateForReturn(workspaceID, returnTo, origin string) (string, error) {
-	return signStateForReturnAt(workspaceID, returnTo, origin, time.Now())
+	return signStateForClientAt(workspaceID, returnTo, origin, false, time.Now())
 }
 
 func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (string, error) {
+	return signStateForClientAt(workspaceID, returnTo, origin, false, now)
+}
+
+// signGitHubState signs a default-return state for a web or desktop client.
+func signGitHubState(workspaceID string, desktop bool) (string, error) {
+	return signStateForClientAt(workspaceID, githubReturnToGitHub, "", desktop, time.Now())
+}
+
+func signStateForClientAt(workspaceID, returnTo, origin string, desktop bool, now time.Time) (string, error) {
 	secret := githubWebhookSecret()
 	if secret == "" {
 		return "", errors.New("github integration is not configured")
-	}
-	if !isAllowedGitHubReturnTo(returnTo) {
-		return "", errors.New("invalid github return target")
 	}
 	nonceBytes := make([]byte, 12)
 	if _, err := rand.Read(nonceBytes); err != nil {
 		return "", err
 	}
+	if !isAllowedGitHubReturnTo(returnTo) {
+		return "", errors.New("invalid github return target")
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	// The desktop marker lives in the signed nonce, so a client cannot flip it.
+	if desktop {
+		nonce = "desktop-" + nonce
+	}
 	payload := strings.Join([]string{
 		workspaceID,
 		returnTo,
 		strconv.FormatInt(now.Unix(), 10),
-		hex.EncodeToString(nonceBytes),
+		nonce,
 		base64.RawURLEncoding.EncodeToString([]byte(origin)),
 	}, ".")
-	return payload + "." + signGitHubState(secret, payload), nil
+	return payload + "." + signGitHubStatePayload(secret, payload), nil
 }
 
-func signGitHubState(secret, payload string) string {
+func signGitHubStatePayload(secret, payload string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(payload))
 	return hex.EncodeToString(mac.Sum(nil))
@@ -453,6 +469,25 @@ func signGitHubState(secret, payload string) string {
 func verifyState(token string) (string, bool) {
 	workspaceID, _, _, ok := verifyStateWithReturn(token)
 	return workspaceID, ok
+}
+
+// verifyGitHubState returns the workspace and the connection id (the signed
+// nonce) of a valid state token.
+func verifyGitHubState(token string) (workspaceID, connectionID string, ok bool) {
+	workspaceID, _, _, ok = verifyStateWithReturn(token)
+	if !ok {
+		return "", "", false
+	}
+	return workspaceID, githubStateConnectionID(token), true
+}
+
+// githubStateConnectionID is the nonce of a verified 6-part state token.
+func githubStateConnectionID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 6 {
+		return ""
+	}
+	return parts[3]
 }
 
 func verifyStateWithReturn(token string) (workspaceID, returnTo, origin string, ok bool) {
@@ -473,7 +508,7 @@ func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo
 		return "", "", "", false
 	}
 	payload := strings.Join(parts[:5], ".")
-	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[5])) {
+	if !hmac.Equal([]byte(signGitHubStatePayload(secret, payload)), []byte(parts[5])) {
 		return "", "", "", false
 	}
 	issuedAt, err := strconv.ParseInt(parts[2], 10, 64)
@@ -495,11 +530,10 @@ func isAllowedGitHubReturnTo(returnTo string) bool {
 	return returnTo == githubReturnToGitHub || returnTo == githubReturnToRepositories
 }
 
-func githubSettingsURL(frontend, returnTo string) string {
-	if !isAllowedGitHubReturnTo(returnTo) {
-		returnTo = githubReturnToGitHub
-	}
-	return strings.TrimRight(frontend, "/") + "/settings?tab=" + url.QueryEscape(returnTo)
+// githubSettingsURL is the unified Code settings page; both return targets
+// land there.
+func githubSettingsURL(frontend string) string {
+	return strings.TrimRight(frontend, "/") + "/settings?tab=code"
 }
 
 // GitHubConnect (GET /api/workspaces/{id}/github/connect) returns the URL the
@@ -514,6 +548,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, GitHubConnectResponse{Configured: false})
 		return
 	}
+	slug := githubAppSlug()
 	returnTo := strings.TrimSpace(r.URL.Query().Get("return_to"))
 	if returnTo == "" {
 		returnTo = githubReturnToGitHub
@@ -522,8 +557,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid return target")
 		return
 	}
-	slug := githubAppSlug()
-	state, err := signStateForReturn(workspaceID, returnTo, util.RequestOrigin(r))
+	state, err := signStateForClientAt(workspaceID, returnTo, util.RequestOrigin(r), r.URL.Query().Get("desktop") == "1", time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign state")
 		return
@@ -533,7 +567,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		url.PathEscape(slug),
 		url.QueryEscape(state),
 	)
-	writeJSON(w, http.StatusOK, GitHubConnectResponse{URL: installURL, Configured: true})
+	writeJSON(w, http.StatusOK, GitHubConnectResponse{URL: installURL, Configured: true, ConnectionID: githubStateConnectionID(state)})
 }
 
 // GitHubSetupCallback (GET /api/github/setup) handles the redirect GitHub
@@ -548,18 +582,20 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 	if frontend == "" {
 		frontend = "http://localhost:3000"
 	}
-	settingsURL := githubSettingsURL(frontend, githubReturnToGitHub)
+	settingsURL := githubSettingsURL(frontend)
 
 	if state == "" {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
 	}
-	workspaceID, returnTo, origin, ok := verifyStateWithReturn(state)
+	workspaceID, _, origin, ok := verifyStateWithReturn(state)
 	if !ok {
 		http.Redirect(w, r, settingsURL+"&github_error=invalid_state", http.StatusFound)
 		return
 	}
-	settingsURL = githubSettingsURL(util.ReturnOrigin(origin, frontend), returnTo)
+	base := util.ReturnOrigin(origin, frontend)
+	settingsURL = githubSettingsURL(base)
+	connectionID := githubStateConnectionID(state)
 	if installationIDStr == "" {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
@@ -574,6 +610,12 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, settingsURL+"&github_error=bad_workspace", http.StatusFound)
 		return
 	}
+	workspace, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		http.Redirect(w, r, settingsURL+"&github_error=bad_workspace", http.StatusFound)
+		return
+	}
+	settingsURL = strings.TrimRight(base, "/") + "/" + url.PathEscape(workspace.Slug) + "/settings?tab=code"
 	existing, alreadyBound := h.workspaceGitHubInstallation(r.Context(), wsUUID, installationID)
 	code := strings.TrimSpace(q.Get("code"))
 	var verified githubUserInstallation
@@ -650,13 +692,15 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("github: failed to clear pending installation metadata", "err", err, "installation_id", installationID)
 	}
 	h.publish(protocol.EventGitHubInstallationCreated, workspaceID, "system", "", map[string]any{
-		"installation": githubInstallationToBroadcast(inst),
+		"installation":  githubInstallationToBroadcast(inst),
+		"connection_id": connectionID,
 	})
-	redirectURL := settingsURL + "&github_connected=1"
-	if returnTo == githubReturnToRepositories {
-		redirectURL += "&github_installation=" + url.QueryEscape(uuidToString(inst.ID))
+	if strings.HasPrefix(connectionID, "desktop-") {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><html lang="en"><meta charset="utf-8"><title>GitHub connected</title><body><h1>GitHub connected</h1><p>Return to Multica to confirm your repositories. You can close this tab.</p></body></html>`)
+		return
 	}
-	http.Redirect(w, r, redirectURL, http.StatusFound)
+	http.Redirect(w, r, settingsURL+"&github_connected=1&github_installation="+url.QueryEscape(uuidToString(inst.ID)), http.StatusFound)
 }
 
 // ── Install authority proof ────────────────────────────────────────────────
@@ -1213,7 +1257,8 @@ func fetchGitHubInstallationRepositories(
 		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
 	}
 	var tokenBody struct {
-		Token string `json:"token"`
+		Token               string `json:"token"`
+		RepositorySelection string `json:"repository_selection"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResp.Body, githubAPIResponseLimit)).Decode(&tokenBody); err != nil {
 		return GitHubRepositoriesResponse{}, fmt.Errorf("decode installation token: %w", err)
@@ -1260,8 +1305,9 @@ func fetchGitHubInstallationRepositories(
 		return GitHubRepositoriesResponse{}, fmt.Errorf("decode installation repositories: %w", err)
 	}
 	out := GitHubRepositoriesResponse{
-		Repositories: make([]GitHubRepositoryResponse, 0, len(body.Repositories)),
-		TotalCount:   body.TotalCount,
+		RepositorySelection: tokenBody.RepositorySelection,
+		Repositories:        make([]GitHubRepositoryResponse, 0, len(body.Repositories)),
+		TotalCount:          body.TotalCount,
 	}
 	for _, repository := range body.Repositories {
 		out.Repositories = append(out.Repositories, GitHubRepositoryResponse(repository))

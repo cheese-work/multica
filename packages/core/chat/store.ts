@@ -388,6 +388,8 @@ export interface ChatState {
   selectedProjectId: string | null;
   /** Settings preference: the agent Ask Multica starts a new chat with. */
   quickChatAgentId: string | null;
+  /** Bumped by `startNewChat`; the window focuses its composer on each bump. */
+  newChatRequest: number;
   /** Chats kept as chips in the bottom bar, newest first. */
   chatBarKept: string[];
   /** Chips closed from the bar: sessionId → the chat's activity at that moment. */
@@ -420,6 +422,8 @@ export interface ChatState {
   setSelectedAgentId: (id: string) => void;
   setSelectedProjectId: (id: string | null) => void;
   setQuickChatAgentId: (id: string | null) => void;
+  /** Ask Multica: open the window on a new chat with the quick-chat agent and no project. */
+  startNewChat: () => void;
   /** Give a chat a chip in the bottom bar. No-op when it already has one. */
   keepChatInBar: (sessionId: string) => void;
   /** Close a chat's chip until the chat moves past `activity`. */
@@ -502,6 +506,7 @@ export function createChatStore(options: ChatStoreOptions) {
     selectedAgentId: initialAgentId,
     selectedProjectId: storage.getItem(wsKey(PROJECT_STORAGE_KEY)),
     quickChatAgentId: storage.getItem(wsKey(QUICK_CHAT_AGENT_KEY)),
+    newChatRequest: 0,
     chatBarKept: initialChatBar.kept,
     chatBarDismissed: initialChatBar.dismissed,
     inputDrafts: initialDraftSlots.inputDrafts,
@@ -575,6 +580,15 @@ export function createChatStore(options: ChatStoreOptions) {
       if (id) storage.setItem(wsKey(QUICK_CHAT_AGENT_KEY), id);
       else storage.removeItem(wsKey(QUICK_CHAT_AGENT_KEY));
       set({ quickChatAgentId: id });
+    },
+    startNewChat: () => {
+      const { quickChatAgentId, setSelectedAgentId, setSelectedProjectId, setActiveSession, setOpen } =
+        get();
+      if (quickChatAgentId) setSelectedAgentId(quickChatAgentId);
+      setSelectedProjectId(null);
+      setActiveSession(null);
+      setOpen(true);
+      set((state) => ({ newChatRequest: state.newChatRequest + 1 }));
     },
     keepChatInBar: (sessionId) => {
       const { chatBarKept, chatBarDismissed } = get();
