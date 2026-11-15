@@ -295,6 +295,7 @@ vi.mock("../../editor", async () => ({
       onReady,
       selectionAction,
       onUploadFile,
+      ariaLabel,
     }: any,
     ref: any,
   ) {
@@ -359,6 +360,7 @@ vi.mock("../../editor", async () => ({
           onUpdate?.(e.target.value, baseRef.current);
         }}
         placeholder={placeholder}
+        aria-label={ariaLabel}
         data-testid="rich-text-editor"
         data-flush-on-unmount={flushPendingOnUnmount ? "true" : undefined}
       />
@@ -3817,7 +3819,7 @@ describe("IssueDetail (shared)", () => {
       expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: sourceKind === "root" ? 0 : 1 }));
       expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(1);
       expect(document.getElementById(`comment-${replies[39]!.id}`)).toBeNull();
-      expect(screen.getAllByTestId("annotation-note")).toHaveLength(1);
+      expect(document.querySelectorAll("[data-reply-annotation-overlay] textarea[aria-label=\"Comment\"]")).toHaveLength(1);
       fireEvent.change(editor, { target: { value: "Saved offscreen note" } });
       fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
       expect(mockDraftStoreState.getDrafts()[draftKey]?.annotations?.[0]?.note).toBe("Saved offscreen note");

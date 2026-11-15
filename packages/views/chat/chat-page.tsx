@@ -49,7 +49,7 @@ import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
 import { useQuoteRequest } from "./components/use-quote-request";
 import { useRegisterCommandBarContext } from "../search/register-context";
-import { useSearchStore } from "../search/search-store";
+import { useSearchStore } from "@multica/core/command-bar";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,

@@ -240,7 +240,7 @@ func runBenchSearch(ctx context.Context, wsUUID pgtype.UUID, q string) ([]string
 			return rows.Err()
 		})
 	}
-	sql, args := buildSearchQuery(q, terms, queryNum, hasNum, false, terminal)
+	sql, args := buildSearchQuery(q, terms, queryNum, hasNum, false, terminal, pgtype.UUID{})
 	args[3] = wsUUID
 	args[len(args)-2], args[len(args)-1] = 20, 0
 	if err := run(sql, args); err != nil {
@@ -367,7 +367,7 @@ func TestSearchBenchExplain(t *testing.T) {
 		t.Fatalf("benchmark workspace missing; run TestSearchBench first: %v", err)
 	}
 	for _, bq := range benchQueries {
-		sql, args := buildSearchQuery(bq.query, splitSearchTerms(bq.query), 0, false, false, []string{"done", "cancelled"})
+		sql, args := buildSearchQuery(bq.query, splitSearchTerms(bq.query), 0, false, false, []string{"done", "cancelled"}, pgtype.UUID{})
 		args[3] = util.MustParseUUID(wsID)
 		args[len(args)-2], args[len(args)-1] = 20, 0
 		var plan []string

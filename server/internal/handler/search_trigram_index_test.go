@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -16,7 +17,7 @@ import (
 func explainSearchPlan(t *testing.T, wsID, phrase string) string {
 	t.Helper()
 	ctx := context.Background()
-	query, args := buildSearchQuery(phrase, splitSearchTerms(phrase), 0, false, false, []string{"done", "cancelled"})
+	query, args := buildSearchQuery(phrase, splitSearchTerms(phrase), 0, false, false, []string{"done", "cancelled"}, pgtype.UUID{})
 	args[3] = util.MustParseUUID(wsID)
 	args[len(args)-2], args[len(args)-1] = 20, 0
 

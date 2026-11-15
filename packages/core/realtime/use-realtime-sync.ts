@@ -67,6 +67,7 @@ import {
   type SystemNotificationPayload,
 } from "../platform/system-notification";
 import type { Workspace } from "../types/workspace";
+import type { AgentTask } from "../types/agent";
 import {
   chatKeys,
   isTaskMessageTimelineHeld,
@@ -1246,6 +1247,17 @@ export function useRealtimeSync(
       const payload = p as IssueUpdatedPayload;
       const { issue } = payload;
       if (!issue?.id) return;
+      const subtreeFilter = {
+        queryKey: issueKeys.tasksAll(),
+        predicate: (q: { queryKey: readonly unknown[] }) => q.queryKey[3] === "subtree",
+      };
+      if (payload.parent_changed) {
+        qc.invalidateQueries(subtreeFilter);
+      } else if (payload.title_changed) {
+        qc.setQueriesData<AgentTask[]>(subtreeFilter, (tasks) => tasks?.map((task) =>
+          task.issue_id === issue.id ? { ...task, issue_title: issue.title } : task,
+        ));
+      }
       refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
@@ -1278,6 +1290,7 @@ export function useRealtimeSync(
     const unsubIssueDeleted = ws.on("issue:deleted", (p) => {
       const { issue_id } = p as IssueDeletedPayload;
       if (!issue_id) return;
+      qc.invalidateQueries({ queryKey: issueKeys.tasksAll(), predicate: (q) => q.queryKey[3] === "subtree" });
       refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {

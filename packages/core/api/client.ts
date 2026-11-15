@@ -537,6 +537,7 @@ import {
   AgentPresetListSchema,
   PresetCompletionsSchema,
   SkillSummaryListSchema,
+  SkillSummaryStrictListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillVersionSchema,
   EMPTY_SKILL_VERSION,
@@ -3180,8 +3181,10 @@ export class ApiClient {
     });
   }
 
-  async listTasksByIssue(issueId: string): Promise<AgentTask[]> {
-    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/task-runs`);
+  async listTasksByIssue(issueId: string, includeDescendants = false): Promise<AgentTask[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/task-runs${includeDescendants ? "?scope=subtree" : ""}`,
+    );
     return parseWithFallback<AgentTask[]>(raw, AgentTaskListSchema, [], {
       endpoint: "GET /api/issues/:id/task-runs",
     });
@@ -4015,11 +4018,22 @@ export class ApiClient {
   }
 
   // Skills
-  async listSkills(): Promise<SkillSummary[]> {
-    const raw = await this.fetch<unknown>("/api/skills");
-    return parseWithFallback(raw, SkillSummaryListSchema, EMPTY_SKILL_SUMMARY_LIST, {
-      endpoint: "GET /api/skills",
+  async listSkills(options?: {
+    requireValidResponse?: boolean;
+    workspaceSlug?: string;
+  }): Promise<SkillSummary[]> {
+    const raw = await this.fetch<unknown>("/api/skills", {
+      headers: options?.workspaceSlug ? { "X-Workspace-Slug": options.workspaceSlug } : undefined,
     });
+    // Rendering can degrade to an empty list; absence checks must fail closed.
+    const skills = parseWithFallback<SkillSummary[] | null>(
+      raw,
+      options?.requireValidResponse ? SkillSummaryStrictListSchema : SkillSummaryListSchema,
+      options?.requireValidResponse ? null : EMPTY_SKILL_SUMMARY_LIST,
+      { endpoint: "GET /api/skills" },
+    );
+    if (skills === null) throw new Error("Invalid skill list response");
+    return skills;
   }
 
   async getSkill(id: string): Promise<Skill> {
@@ -4062,6 +4076,7 @@ export class ApiClient {
   async importSkillArchive(
     file: File,
     onConflict?: "fail" | "overwrite" | "rename" | "skip",
+    options?: { workspaceSlug: string },
   ): Promise<Skill> {
     const formData = new FormData();
     formData.append("file", file, file.name || "skill.zip");
@@ -4072,6 +4087,8 @@ export class ApiClient {
       res = await this.fetchRaw("/api/skills/import", {
         method: "POST",
         body: formData,
+        // Pin retries to the workspace that owns this import queue.
+        headers: options ? { "X-Workspace-Slug": options.workspaceSlug } : undefined,
       });
     } catch (err) {
       throw remapSkillImportError(err);
