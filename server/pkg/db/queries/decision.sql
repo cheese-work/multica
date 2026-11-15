@@ -75,13 +75,23 @@ SELECT answer.* FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id');
 
+-- name: FindOpenActionRequestByAsk :one
+-- The open kind=action request that this ask comment opened for this human. It
+-- does not look at expires_at: a late answer is refused by MarkDecisionRequestAnswered.
+SELECT * FROM decision_request
+WHERE authority = 'human' AND kind = 'action' AND status = 'open' AND origin = 'asked'
+  AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND issue_comment_id = sqlc.arg('issue_comment_id') AND human_user_id = sqlc.arg('human_user_id')
+LIMIT 1;
+
 -- name: MarkDecisionRequestAnswered :one
 UPDATE decision_request SET status = 'answered'
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+  AND (kind <> 'action' OR clock_timestamp() < expires_at)
 RETURNING *;
 
 -- name: DecisionRecordEffectiveAt :one
-SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
+SELECT (clock_timestamp() + CASE WHEN kind = 'action' OR escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
 FROM decision_request WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: WithdrawDecisionAnswer :one
