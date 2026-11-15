@@ -385,3 +385,14 @@ describe("api.getIssue schema failure", () => {
     expect(String(warn.mock.calls[0]?.[0])).toContain("number");
   });
 });
+
+describe("api.listIssues requester compatibility", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([false, true])("checks server support before returning Created rows (supported=%s)", async (supported) => {
+    const fetchMock = vi.fn(async (_url: string) => Response.json({ issues: [], total: 0, ...(supported ? { created_by_user_id: "me" } : {}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.listIssues({ created_by_user_id: "me" });
+    expect(fetchMock).toHaveBeenCalledTimes(supported ? 1 : 2);
+    if (!supported) expect(String(fetchMock.mock.calls[1]?.[0])).toContain("creator_id=me");
+  });
+});

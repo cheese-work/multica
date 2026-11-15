@@ -417,3 +417,20 @@ three of those numbers. They take the next free numbers in the sync range (CHE-5
 The up and down SQL bytes are unchanged. The four index migrations build concurrently, so the
 runner's concurrent-index name map has an entry for each under its new name. A later sync must
 not reintroduce the upstream filenames under their original prefixes.
+
+## Issue requester migration renumbering
+
+Upstream's `643` to `645` add `issue.requester_user_id` and two partial indexes (MUL-3806). The
+fork already uses `643`, `644` and `645` for wakeup migrations, and the sync range is
+already past `9999947`. They take the next free numbers (CHE-5618):
+
+- `643_issue_requester` is now `9999948_issue_requester`
+- `644_issue_requester_index` is now `9999949_issue_requester_index`
+- `645_issue_member_creator_index` is now `9999950_issue_member_creator_index`
+
+The up and down SQL bytes are unchanged. The two index migrations build concurrently, so the
+runner's concurrent-index name map has an entry for each under its new name. The fork column
+`issue.requested_by_id` (`689_issue_requested_by`, CHE-2068) stays. It is a different column:
+upstream's `requester_user_id` is set at create time from the quick-create or agent-create
+origin and drives the "Created" filter. A later sync must not reintroduce the upstream
+filenames under their original prefixes.

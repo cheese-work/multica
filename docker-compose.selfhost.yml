@@ -259,6 +259,9 @@ services:
       # /api/config advertises the path and in-app docs links stay on the
       # origin the visitor reached.
       DOCS_URL: ${DOCS_URL:-}
+      # Tool steps shown in the streamed reply: auto (default; details in
+      # private chats, kind of work in groups), off, summary or detail.
+      MULTICA_TELEGRAM_TOOL_PROGRESS: ${MULTICA_TELEGRAM_TOOL_PROGRESS:-}
     restart: unless-stopped
 
   frontend:

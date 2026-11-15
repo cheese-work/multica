@@ -48,7 +48,7 @@ func scanSearchIssue(rows pgx.Rows) (searchResult, error) {
 	err := rows.Scan(
 		&result.issue.ID, &result.issue.WorkspaceID, &result.issue.Title, &result.issue.Description,
 		&result.issue.Status, &result.issue.Priority, &result.issue.AssigneeType, &result.issue.AssigneeID,
-		&result.issue.CreatorType, &result.issue.CreatorID, &result.issue.ParentIssueID,
+		&result.issue.CreatorType, &result.issue.CreatorID, &result.issue.RequesterUserID, &result.issue.ParentIssueID,
 		&result.issue.AcceptanceCriteria, &result.issue.ContextRefs, &result.issue.Position,
 		&result.issue.StartDate, &result.issue.DueDate, &result.issue.CreatedAt, &result.issue.UpdatedAt,
 		&result.issue.LastActivityAt, &result.issue.Number, &result.issue.ProjectID, &result.issue.Revision,

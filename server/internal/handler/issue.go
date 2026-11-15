@@ -81,6 +81,9 @@ type IssueResponse struct {
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// RequesterID is upstream's persisted requester (MUL-3806): set when a quick-create
+	// or agent-create run made the issue for a member. It drives the Created filter.
+	RequesterID   *string `json:"requester_id"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -687,6 +690,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		RequesterID:        uuidToPtr(i.RequesterUserID),
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -727,6 +731,7 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		RequesterID:        uuidToPtr(i.RequesterUserID),
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -799,6 +804,7 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		RequesterID:        uuidToPtr(i.RequesterUserID),
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -825,7 +831,8 @@ type IssueAssigneeGroupResponse struct {
 }
 
 type GroupedIssuesResponse struct {
-	Groups []IssueAssigneeGroupResponse `json:"groups"`
+	CreatedByUserID string                       `json:"created_by_user_id,omitempty"`
+	Groups          []IssueAssigneeGroupResponse `json:"groups"`
 }
 
 type groupedIssueRow struct {
@@ -1446,7 +1453,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	%s,
 	%s
 	SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
-		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.requester_user_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
 		i.revision, i.duplicate_of_issue_id, i.description_external_read,
@@ -1656,7 +1663,7 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 
 // listIssueColumns is the full ListIssues select list.
 const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
-       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.requester_user_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
        i.revision, i.duplicate_of_issue_id, i.description_external_read`
 
@@ -1681,7 +1688,7 @@ func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
 		var row db.ListIssuesRow
 		if err := rows.Scan(
 			&row.ID, &row.WorkspaceID, &row.Title, &row.Description, &row.Status, &row.Priority,
-			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
+			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID, &row.RequesterUserID,
 			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
 			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
 			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
@@ -1764,6 +1771,14 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var createdByUserFilter pgtype.UUID
+	if raw := r.URL.Query().Get("created_by_user_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "created_by_user_id")
+		if !ok {
+			return
+		}
+		createdByUserFilter = id
+	}
 	var creatorFilter pgtype.UUID
 	if c := r.URL.Query().Get("creator_id"); c != "" {
 		id, ok := parseUUIDOrBadRequest(w, c, "creator_id")
@@ -1836,6 +1851,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			AssigneeID:         assigneeFilter,
 			AssigneeIds:        assigneeIdsFilter,
 			CreatorID:          creatorFilter,
+			CreatedByUserID:    createdByUserFilter,
 			ProjectID:          projectFilter,
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
@@ -1870,8 +1886,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"issues": resp,
-			"total":  len(resp),
+			"created_by_user_id": r.URL.Query().Get("created_by_user_id"),
+			"issues":             resp,
+			"total":              len(resp),
 		})
 		return
 	}
@@ -2041,6 +2058,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(assigneeTypesFilter) > 0 {
 		where = append(where, fmt.Sprintf("i.assignee_type = ANY(%s::text[])", addArg(assigneeTypesFilter)))
+	}
+	if createdByUserFilter.Valid {
+		where = append(where, issueCreatedByUserPredicate(addArg(createdByUserFilter)))
 	}
 	if creatorFilter.Valid {
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
@@ -2223,7 +2243,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	limitRef := addArg(fetchLimit)
 
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
-       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.requester_user_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
 	   i.revision, i.duplicate_of_issue_id, i.description_external_read
 FROM issue i
@@ -2326,8 +2346,9 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	h.fillStatusCategories(ctx, wsUUID, resp)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issues": resp,
-		"total":  total,
+		"created_by_user_id": r.URL.Query().Get("created_by_user_id"),
+		"issues":             resp,
+		"total":              total,
 	})
 }
 
@@ -2598,6 +2619,13 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 			where = append(where, fmt.Sprintf("i.assignee_id = ANY(%s::uuid[])", addArg(ids)))
 		}
 	}
+	if raw := r.URL.Query().Get("created_by_user_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "created_by_user_id")
+		if !ok {
+			return
+		}
+		where = append(where, issueCreatedByUserPredicate(addArg(id)))
+	}
 	if raw := r.URL.Query().Get("creator_id"); raw != "" {
 		id, ok := parseUUIDOrBadRequest(w, raw, "creator_id")
 		if !ok {
@@ -2847,7 +2875,7 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 WITH ranked AS (
 	SELECT
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
-		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.requester_user_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
 		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
@@ -2860,7 +2888,7 @@ WITH ranked AS (
 )
 SELECT
 	id, workspace_id, title, description, status, priority,
-	assignee_type, assignee_id, creator_type, creator_id,
+	assignee_type, assignee_id, creator_type, creator_id, requester_user_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
 	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, description_external_read, group_total
 FROM ranked
@@ -2898,6 +2926,7 @@ ORDER BY
 			&row.AssigneeID,
 			&row.CreatorType,
 			&row.CreatorID,
+			&row.RequesterUserID,
 			&row.ParentIssueID,
 			&row.Position,
 			&row.StartDate,
@@ -2968,7 +2997,7 @@ ORDER BY
 		groups[idx].Issues = append(groups[idx].Issues, issue)
 	}
 
-	writeJSON(w, http.StatusOK, GroupedIssuesResponse{Groups: groups})
+	writeJSON(w, http.StatusOK, GroupedIssuesResponse{Groups: groups, CreatedByUserID: r.URL.Query().Get("created_by_user_id")})
 }
 
 func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {

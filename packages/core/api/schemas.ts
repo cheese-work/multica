@@ -1966,6 +1966,7 @@ export const IssueSchema = z.lazy(() => z.object({
   creator_id: z.string(),
   // Additive: older backends do not send it, and nothing breaks without it.
   requested_by_id: z.string().nullable().optional().catch(undefined),
+  requester_id: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
   // status_name above, and older backends do not send it at all.
