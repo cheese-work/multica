@@ -355,6 +355,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `--lead`에는 멤버나 에이전트의 이름을 씁니다. `--default-branch-hint`는 저장소의 기본 브랜치를 에이전트에게 알려 줄 뿐 브랜치를 바꾸지는 않습니다.
 - 워크스페이스의 `--context`는 워크스페이스의 모든 에이전트에게 제공됩니다. `--slug`는 만든 뒤 바꿀 수 없습니다. `--issue-prefix`는 대문자로 바뀌며, 변경하면 기존 태스크 번호가 모두 다시 매겨져 외부에서 참조하던 예전 번호는 더 이상 연결되지 않습니다.
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]`는 라우팅만 하는 워크플로 단계(기본값 `todo`, `blocked`, `merged`, `need_decision`; `--routing-statuses`로 변경하고, `--routing-overrides todo=<agent-id>`로 특정 상태를 다른 에이전트에 보냅니다)를 맡을 에이전트를 지정합니다. 이 에이전트가 보관 처리되거나 실행이 공급자 오류로 실패하면 대체 에이전트가 이어받습니다. 재정의 키를 `<workflow-id>:<status>`로 쓰면 해당 재정의는 한 워크플로로 한정됩니다. `none`은 해당 항목을 끕니다. 사람 소유자나 관리자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다. 설정은 `background_agents`의 `routing` 작업으로 저장됩니다. 이 플래그는 `multica workspace background-agents set routing`의 별칭이며, 기존 `/routing-agent` API 경로도 한 릴리스 동안 별칭으로 남습니다.
+- `multica workspace update --time-wakeup-skip-mode off|warn|block`은 워크스페이스의 시간 웨이크업 건너뛰기 모드(`settings.time_wakeup_skip.mode`)를 설정합니다. 이 키만 변경하고 다른 설정은 바꾸지 않으며, 다른 업데이트 플래그와 함께 쓸 수 없습니다. 소유자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다. `off`는 확인을 끄고, `warn`과 `block`은 켭니다.
 - `--issue-title-template`은 `{{date}}`(UTC, `YYYY-MM-DD`)만 치환하며 다른 `{{...}}`는 거부합니다. 일정 트리거의 `--timezone` 기본값은 UTC입니다.
 - `--mode script --script <name> [--arg <value>]...`은 모델 세션 없이 에이전트의 작업 토큰으로 허용 목록의 스크립트 하나를 실행합니다. `--script`와 `--arg`에는 `--mode script`가 필요하고, `--mode script`에는 `--script`가 필요합니다. `--description`은 실행되지 않습니다. 데몬에 허용 목록이 없으면 모든 스크립트 작업이 안전하게 실패합니다. `--output json`은 스크립트 이름과 인자를 `script_config`로 보여 줍니다. `autopilot update --mode <다른 모드>`는 스크립트를 지웁니다. 작업이 끝나면 서버는 최선을 다해 작업 토큰을 삭제합니다. 삭제에 실패하면 토큰은 만료될 때까지 유효하며, 더 일찍 폐기하는 수단은 없습니다. 실행 결과의 `script` 아래에 스크립트 이름, 인수 목록의 SHA-256, 종료 코드, 소요 시간이 기록되고, 삭제에 실패하면 `token_revoke_failed`가 설정됩니다.
 
@@ -378,6 +379,8 @@ multica config propose workflow.budget <workflow-id> --max-runs 40 --include-chi
 multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```
+
+`decision` 카드의 각 선택지는 선택된 뒤에 누가 움직이는지 밝힐 수 있습니다. `after_choice` 를 `agent_run`, `human_steps`, `record_only` 중 하나로 설정합니다. `agent_run` 선택지는 `agent_commands` 를 나열합니다. 하나 이상의 argv 배열이며, 예는 `["$MULTICA_CLI_PATH", "daemon", "restart"]` 입니다. 하나의 문자열로 준 명령은 서버가 셸 텍스트를 해석하지 않으므로 필드 이름과 함께 거부됩니다. 콘솔 전용 화면을 쓰는 선택지는 대신 `agent_surface` 에 카탈로그 키를 설정합니다. 이 검사는 타입이 있는 필드만 읽고 `what_happens` 는 읽지 않습니다. 각 명령을 도구와 앞쪽 단어로 줄인 뒤(경로, `.exe`, 전역 플래그 `--profile`, `--server-url`, `--workspace-id`, `--debug` 는 제거) 워크스페이스 설정 `agent_cannot_do` 와 비교합니다. 이것은 에이전트 실행이 할 수 없는 일의 `{key, tool, subcommand, human_step}` 목록입니다. 이 설정이 없으면 항목은 `multica` 의 `daemon restart` 와 `daemon stop` 입니다. `env`, `sudo`, `nohup`, `timeout`, `xargs`, `bash`, `sh`, `zsh` 같은 래퍼는 실제 명령을 가리므로 명령 자체를 argv 로 주세요. 워크스페이스 설정 `agent_cannot_do_mode`(`off`, `warn`, `block`; 기본값 `off`)가 결과를 정합니다. `warn` 에서는 카드를 만들고 응답에 힌트를 담습니다. `block` 에서는 서버가 `400` 을 반환하며 선택지 라벨, 카탈로그 키, `human_steps` 에 넣을 사람의 단계를 알려 주고 카드를 만들지 않습니다. `warn` 과 `block` 에서 `after_choice` 가 없는 선택지는 힌트가 하나 붙거나 필드 이름과 함께 거부됩니다. 액션 카드와 면제 주제 카드는 검사하지 않습니다.
 
 ## 명령 개요
 
@@ -518,6 +521,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `runs <id>` | 실행 기록 확인 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | 일정 및 webhook 트리거 관리 | `trigger-add`: `--kind`(`schedule` 또는 `webhook`), `--cron`, `--timezone`(기본값 UTC), `--label` |
 | `workflow` | `lint [<id>]` | 워크플로의 단계, 엣지, 핸들러, 지침을 검사. 표로 출력하며 `--output json`이면 JSON으로 출력. 면제되지 않은 오류가 있으면 0이 아닌 종료 코드를 반환 | `--all`(워크스페이스의 모든 워크플로, ID와 둘 중 하나만 지정), `--output`(`table` 또는 `json`) |
+| `workflow` | `update <id>` | 워크플로의 단계 또는 실행 규칙을 교체. 저장 전에 검사하며, 면제되지 않은 오류가 있으면 저장을 거부하고 각 오류와 수정 힌트를 나열. 경고와 정보는 저장을 막지 않음 | `--steps-file`, `--max-runs-per-issue`, `--include-child-prs`, `--lint-override "<사유>"`(오류가 있어도 저장; 사유는 워크플로에 기록됨) |
 | `workspace` | `list/get/create/update/switch` | 워크스페이스 관리. `switch`는 현재 profile의 기본 워크스페이스 설정 | `create`: `--name`, `--slug`(모두 필수), `--issue-prefix`, `--description`, `--context` / `--context-stdin`. `update`는 slug를 제외한 같은 항목 변경 |
 | | `mcp list/add/update/remove` | 워크스페이스의 MCP 서버 라이브러리를 관리 | 쓰기는 owner/admin 전용. 여기에 추가한 서버는 어떤 에이전트에도 할당되지 않으며 `multica agent mcp add`로 할당합니다. `list`는 이름과 transport만 표시하고, 저장된 항목은 쓰기 전용이라 어떤 역할에도 반환되지 않습니다. `--server-config-file` / `--server-config-stdin`은 토큰이 셸 기록에 남지 않게 합니다 |
 | | `member list/invite <email>` | 멤버 확인 및 초대 전송 | `invite`: `--role`(member 또는 admin, 기본 member) |

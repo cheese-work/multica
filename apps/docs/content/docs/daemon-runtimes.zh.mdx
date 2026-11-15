@@ -335,3 +335,11 @@ multica runtime breaker reset <provider>
 - [安装 AI 编程工具](/install-agent-runtime) — 安装并验证一款受支持的 AI 编程工具。
 - [AI 编程工具对照](/providers) — 比较模型、会话恢复、MCP 和 skill 支持。
 - [运行](/tasks) — 了解排队、停止和重试。
+
+## 托管运行的本地绑定
+
+`MULTICA_RUN_BINDINGS_DIR` 默认关闭。Linux 主机所有者可选择任务写入范围之外、已存在且权限为 0700 的目录。Codex 启动后发布权限为 0600 的 `<binding_id>.json`，只向 shell 工具提供 `MULTICA_RUN_BINDING_ID`。每次重试使用新 ID；进程退出、取消或启动失败均会撤销绑定。
+
+版本 1 包含 `binding_id`、`agent_id`、`principal`（智能体 ID）、`task_id`、`issue_id`、主机 `pid`、`process_start`、`boot_id` 和 `pid_namespace`。代理必须与启动器共享 PID 命名空间，核对关联身份并独立验证进程存活。exec 包装器保留 PID，等待型包装器仅在自身存活时有效；分离的子进程不能延长绑定。
+
+这是同 UID 进程间的协作契约，不是针对主机所有者的身份认证。凭据隔离拒绝此本地路径；R1 的准入和启用仍需单独审批。该配置不授予设备权限，配置与部署须另行处理。

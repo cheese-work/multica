@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 )
 
@@ -39,6 +40,18 @@ func checkDecisionID(cmd *cobra.Command) error {
 		return fmt.Errorf("--decision-id must be a decision request UUID")
 	}
 	return nil
+}
+
+// refusePasskeyOnlyDecisionID stops a --decision-id write to a field that only
+// a passkey-approved action can write (CHE-3482): the server refuses every
+// machine write to it, so a card cannot authorize it. One line, the working
+// command, no API call (CHE-5843). target and statusKey fill the command.
+func refusePasskeyOnlyDecisionID(cmd *cobra.Command, field, target, statusKey string) error {
+	if !cmd.Flags().Changed("decision-id") {
+		return nil
+	}
+	command, _ := decisiontx.PasskeyOnlyCommand(field, target, statusKey)
+	return fmt.Errorf("--decision-id cannot authorize this write: %s needs a passkey-approved action; run `%s`, then `multica decision request --action-file <out>`", field, command)
 }
 
 // printHashOnly prints the hashes of a digest-mode body and reports true when

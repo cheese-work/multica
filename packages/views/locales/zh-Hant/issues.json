@@ -613,7 +613,11 @@
     "description_show_less": "收起",
     "description_more_lines_other": "還有 {{count}} 行",
     "status_summary_label": "狀態摘要",
-    "prop_requested_by": "請求人"
+    "prop_requested_by": "請求人",
+    "prop_created_via": "建立方式",
+    "created_via_dialog": "建立對話框",
+    "created_via_agent": "智慧體",
+    "created_via_cli": "CLI"
   },
   "timeline": {
     "loading": "載入中…",

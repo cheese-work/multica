@@ -31,6 +31,17 @@ func writePasskeyActionRequired(w http.ResponseWriter, actionType string) {
 	})
 }
 
+// writePasskeyActionRequiredWithCommand is writePasskeyActionRequired with the
+// command that proposes the action, so the agent's next call is the one that
+// works (CHE-5843).
+func writePasskeyActionRequiredWithCommand(w http.ResponseWriter, actionType, command string) {
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error":       errPasskeyRequiredPrefix + actionType + "; run `" + command + "`",
+		"code":        codePasskeyActionRequired,
+		"action_type": actionType,
+	})
+}
+
 // refuseMachineCoveredWrite answers 403 passkey_action_required when a machine
 // identity writes the covered field. It runs before every older exception
 // (Hermes, vote receipt, decision binding, PASS receipt).
