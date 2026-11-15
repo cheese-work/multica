@@ -1,6 +1,9 @@
 package issueworkflow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const (
 	designWF = "8394690d-632a-4b15-a333-c9f0247b0985"
@@ -63,5 +66,22 @@ func TestWorkflowForTitleDuplicateKeysAreDeterministic(t *testing.T) {
 		if got, _ := WorkflowForTitle(settings, "design: x"); got != first {
 			t.Fatalf("run %d picked %v, first pick %v", i, got, first)
 		}
+	}
+}
+
+func TestQuickCreateSettings(t *testing.T) {
+	for settings, want := range map[string]bool{
+		``: true, `{}`: true, `{"quick_create_fill":"on"}`: true, `{"quick_create_fill":"off"}`: false, `not json`: true,
+	} {
+		if got := QuickCreateFill([]byte(settings)); got != want {
+			t.Errorf("QuickCreateFill(%q) = %v, want %v", settings, got, want)
+		}
+	}
+	got := WorkflowTypeKeys([]byte(`{"workflow_by_type":{"Plan":"x","fix":"y","design":"z"}}`))
+	if strings.Join(got, ",") != "design,fix,plan" {
+		t.Errorf("WorkflowTypeKeys = %v", got)
+	}
+	if len(WorkflowTypeKeys([]byte(`{}`))) != 0 {
+		t.Error("expected no keys")
 	}
 }

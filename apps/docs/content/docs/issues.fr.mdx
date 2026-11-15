@@ -37,9 +37,9 @@ Décrivez le travail, choisissez un agent ou un squad dans **Créé par** et cli
 
 <IssueDraftDemo />
 
-- L'agent reprend fidèlement votre demande et n'ajoute ni exigence ni critère d'acceptation que vous n'avez pas formulés.
+- L'agent garde votre demande mot pour mot et ajoute ses propres critères d'acceptation et une estimation, chacun signé du nom de l'agent. Il remplit aussi chaque champ laissé vide dans la fenêtre : projet (le plus proche de la demande), priorité (moyenne si le texte ne donne aucun signal), date de début (aujourd'hui), date d'échéance (début plus l'estimation) et les propriétés que les instructions de l'agent exigent à la création. Un `owner` ou un `admin` peut le désactiver avec le paramètre d'espace de travail `quick_create_fill` à `off` ; l'agent n'ajoute alors rien que vous n'ayez donné.
 - Si la demande nomme un assigné (« confie-la à Lei Li »), l'agent l'assigne. Sinon, l'assigné est ce que vous avez choisi dans **Créé par** : l'agent lui-même, ou le squad. Les nouvelles tâches démarrent en `todo` ; quand l'assigné est un agent, il commence donc à la traiter dès qu'elle existe.
-- Le projet, la priorité et la date d'échéance choisis dans la fenêtre sont repris tels quels ; l'agent n'en déduit pas d'autres du texte. Le projet est visible par défaut, la priorité et l'échéance sont dans le menu **⋯**. Les champs toujours affichés se règlent dans **Paramètres → Préférences → Champs affichés à la création de tâches**.
+- Le projet, la priorité et la date d'échéance choisis dans la fenêtre sont repris tels quels ; l'agent n'en déduit pas d'autres du texte. Le projet est visible par défaut, la priorité et l'échéance sont dans le menu **⋯**. Les champs toujours affichés se règlent dans **Paramètres → Préférences → Champs affichés à la création de tâches**. Une valeur que vous choisissez l'emporte toujours sur le remplissage.
 - Avec **En créer un autre** activé, la fenêtre reste ouverte après chaque envoi pour enchaîner la demande suivante.
 - **Créé par** ne liste que les agents et squads que vous avez le droit d'assigner. Si la CLI multica du runtime de l'agent est trop ancienne, la fenêtre propose de mettre à jour le daemon ou de passer en création manuelle.
 

@@ -462,21 +462,41 @@ func buildQuickCreatePrompt(task Task) string {
 		fmt.Fprintf(&b, "User input:\n> %s\n\n", task.QuickCreatePrompt)
 	}
 
+	fill := task.QuickCreateFill // CHE-6090: workspace setting quick_create_fill
 	b.WriteString("Field rules:\n\n")
+	if fill {
+		b.WriteString("Fill every field the quick-create modal left empty, so the new issue passes the workspace's ready check on the first try. A value the modal picked always wins and is never re-inferred. Read-only lookups before the create (`multica project list`, `multica property list`, member/agent/squad list) are allowed; still run exactly one `issue create`, no retry.\n\n")
+	}
 
 	// title
 	b.WriteString("- **title**: required. A concise but semantically rich summary. If the input references external resources (PRs, issues, URLs), use your judgment on whether fetching the resource would produce a meaningfully better title — e.g. \"review PR #123\" → \"Review PR #123: Refactor auth module to OAuth2\". Strip filler words but preserve key semantic information.\n\n")
+
+	if fill && len(task.QuickCreateTitleTypes) > 0 {
+		types := make([]string, len(task.QuickCreateTitleTypes))
+		for i, t := range task.QuickCreateTitleTypes {
+			types[i] = "`" + t + "`"
+		}
+		fmt.Fprintf(&b, "- **title type**: this workspace routes by Conventional-Commit type. Start the title with one of %s as `<type>(<scope>): <summary>`, choosing the type that fits the request.\n\n", strings.Join(types, ", "))
+	}
 
 	// description — the core optimization
 	b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
 	b.WriteString("  1. **User request** — Faithfully restate what the user wants in their own words. Preserve specific names, identifiers, file paths, code snippets, and technical terms verbatim. Strip non-spec material before writing it (this is removal, not paraphrasing): verbal routing wrappers about creating the issue or routing it (e.g. \"create an issue\", \"分配给 X\", \"让 @X 处理\") and pure conversational fillers (e.g. \"对吧？\"). When in doubt, keep it.\n\n")
 	b.WriteString("     CC exception: `multica issue create` has no `--subscriber` flag, and the platform auto-subscribes members whose `[@Name](mention://member/<uuid>)` link appears in the description. When the user wrote \"cc @Y\", strip the verbal \"cc\" wrapper from the User request body and append a final `CC: <mention link(s)>` line to the description so the cc routing still fires.\n\n")
 	b.WriteString("  2. **Context** — include ONLY when the input cited external resources AND you successfully fetched them AND they produced verifiable facts worth recording. Summarize facts only (e.g. \"PR #45 changes auth to JWT\"), not interpretation or unsolicited reference implementations. If you have nothing factual to add, omit the section entirely — never use it as an apology log for resources you could not fetch.\n\n")
-	b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	if fill {
+		b.WriteString("  3. **Acceptance criteria** — checkable items derived from the request. Label the section \"derived by <your agent name>\" so a reader can tell the user's words from yours.\n\n")
+		b.WriteString("  4. **Estimate** — one line `Estimate: <hours>`, labelled \"derived by <your agent name>\". It sets the due date below.\n\n")
+		b.WriteString("  Hard rules: keep the User request section verbatim; never invent implementation details; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	} else {
+		b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	}
 
 	// priority
 	if task.QuickCreatePriority != "" {
 		fmt.Fprintf(&b, "- **priority**: required for this run. Pass `--priority %s`; the quick-create selection is authoritative.\n\n", task.QuickCreatePriority)
+	} else if fill {
+		b.WriteString("- **priority**: infer from the request: P0/P1, \"asap\", \"blocks\", \"broken\" → `urgent` or `high`. With no signal, pass `--priority medium`. Never omit it.\n\n")
 	} else {
 		b.WriteString("- **priority**: one of `urgent`, `high`, `medium`, `low`, or omit. Map P0/P1 → urgent/high; \"asap\" → urgent. If unspecified, omit.\n\n")
 	}
@@ -492,6 +512,12 @@ func buildQuickCreatePrompt(task Task) string {
 
 	if task.QuickCreateDueDate != "" {
 		fmt.Fprintf(&b, "- **due-date**: required for this run. Pass `--due-date %s`; the quick-create selection is authoritative.\n\n", task.QuickCreateDueDate)
+	} else if fill {
+		b.WriteString("- **due-date**: pass `--due-date YYYY-MM-DD` = the start date plus your estimate rounded up to whole days, at least 1 day.\n\n")
+	}
+	if fill {
+		b.WriteString("- **start-date**: pass `--start-date YYYY-MM-DD` = today's calendar date in ICT (UTC+7).\n\n")
+		b.WriteString("- **properties**: run `multica property list --output json`. Set each property your own instructions require at creation (for example `Readiness`) with `--property \"Name=Value\"`, one flag per property. Use only option values that exist in that list.\n\n")
 	}
 
 	// project — pinned by the modal when the user picked one, otherwise
@@ -504,6 +530,8 @@ func buildQuickCreatePrompt(task Task) string {
 		} else {
 			fmt.Fprintf(&b, "- **project**: required for this run. Pass `--project %q` so the new issue lands in the project the user picked in the quick-create modal. Do not infer a different project from the prompt text — the modal selection is authoritative.\n", task.ProjectID)
 		}
+	} else if fill {
+		b.WriteString("- **project**: run `multica project list --output json` and pass `--project <id>` for the project whose description matches the request. With no clear match, omit it.\n")
 	} else {
 		b.WriteString("- **project**: omit. The platform will route the issue to the workspace default.\n")
 	}

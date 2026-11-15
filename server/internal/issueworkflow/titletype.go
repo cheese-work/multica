@@ -60,3 +60,33 @@ func TitleType(title string) (string, bool) {
 	}
 	return typ, true
 }
+
+// SettingsKeyQuickCreateFill is the workspace settings key (CHE-6090) that
+// turns the quick-create fill rules on or off: "on" (default) | "off".
+const SettingsKeyQuickCreateFill = "quick_create_fill"
+
+// QuickCreateFill reports whether quick-create agents fill the fields the
+// modal left empty. Only an explicit "off" turns it off.
+func QuickCreateFill(settings []byte) bool {
+	var parsed struct {
+		Fill string `json:"quick_create_fill"`
+	}
+	_ = json.Unmarshal(settings, &parsed)
+	return strings.ToLower(strings.TrimSpace(parsed.Fill)) != "off"
+}
+
+// WorkflowTypeKeys returns the lowercased, sorted type keys of workflow_by_type.
+func WorkflowTypeKeys(settings []byte) []string {
+	var parsed struct {
+		ByType map[string]string `json:"workflow_by_type"`
+	}
+	_ = json.Unmarshal(settings, &parsed)
+	keys := make([]string, 0, len(parsed.ByType))
+	for key := range parsed.ByType {
+		if k := strings.ToLower(strings.TrimSpace(key)); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
