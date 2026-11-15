@@ -50,6 +50,10 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 
 Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
 
+When the run that raised a `block` event has ended, the server sends the one person the ask names an automatic recovery notice: a DM message, an issue comment and an inbox item, written in one transaction. The notice quotes the stored ask, links the issue, and has no options, recommendation or approval, so it is never a decision request. It is sent only if the stored source has the ask text, names exactly one member, and that member is still in the workspace; otherwise the event waits for repair. Replying in the notice's comment thread marks it `answered`. A member who left the workspace can no longer read or answer it.
+
+An event that cannot be sent as a notice goes to the agent whose run produced it instead: one repair run per recovery root, started through the normal run gates (project stops, run budget, role and approval gates). The first `block` event is the root, and an event raised by a repair run inherits it, so a repair never starts a second repair. The run message holds the exact `multica decision request ... --recovers <event-id>` command and no source text. A refused run, an unavailable agent, a repair run that ends without a matching request, or a new ask raised by the repair run fails the root. The agent is its owner: one system comment on the issue names the agent and mentions no member, and `multica decision brief` lists the failure with an excerpt of the ask. Runs in a chat lane only raise `warn` events, so they are never repaired.
+
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
 
 ### Delegated governed writes

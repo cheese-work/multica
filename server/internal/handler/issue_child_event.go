@@ -14,6 +14,9 @@ import (
 // is retried by the scheduler sweep.
 func (h *Handler) processChildEvents(ctx context.Context, parentIDs ...pgtype.UUID) {
 	_ = (&service.IssueWakeupService{Tasks: h.TaskService}).ProcessChildEvents(ctx, parentIDs...)
+	// A child reaching done or cancelled can complete the parent's PR merge rule
+	// with no PR event (CHE-5242).
+	h.rerunPRMergeForParents(ctx, parentIDs...)
 }
 
 func (h *Handler) childDoneSystemRuleEnabled(ctx context.Context, parentID pgtype.UUID) bool {

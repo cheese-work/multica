@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
@@ -32,7 +33,12 @@ func executeAgentPauseAction(ctx context.Context, execution decisionActionExecut
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"agent_id": uuidToString(updated.ID), "scheduling_paused": true})
+	// changed and paused_at let a revoke prove the pause is still this approval's
+	// own: only a pause that moved the agent from running to paused is undone.
+	return json.Marshal(map[string]any{
+		"agent_id": uuidToString(updated.ID), "scheduling_paused": true,
+		"changed": !execution.Agent.SchedulingPausedAt.Valid, "paused_at": updated.SchedulingPausedAt.Time.UTC().Format(time.RFC3339Nano),
+	})
 }
 
 func executeAgentResumeAction(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error) {

@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -94,6 +97,24 @@ func skippedUnchangedDetails(rule string, lastTask pgtype.UUID) map[string]any {
 	return map[string]any{"rule": rule, "reason": wakeupOutcomeUnchanged, "last_task_id": util.UUIDToString(lastTask)}
 }
 
+// timeWakeupSkipMode reads workspace settings.time_wakeup_skip.mode (CHE-5457).
+// Missing or invalid is "off", so a bad value never skips a run.
+func timeWakeupSkipMode(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) string {
+	workspace, err := q.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return "off"
+	}
+	var settings struct {
+		Skip struct {
+			Mode string `json:"mode"`
+		} `json:"time_wakeup_skip"`
+	}
+	if json.Unmarshal(workspace.Settings, &settings) != nil || (settings.Skip.Mode != "warn" && settings.Skip.Mode != "block") {
+		return "off"
+	}
+	return settings.Skip.Mode
+}
+
 var (
 	heartbeatReadsMergeability = regexp.MustCompile(`mergeable|mergeStateStatus`)
 	heartbeatActsOnConflict    = regexp.MustCompile(`CONFLICTING|DIRTY`)
@@ -108,4 +129,60 @@ func isConflictHeartbeat(w db.IssueWakeup) bool {
 	return (w.Kind == "every" || w.Kind == "cron") && w.Mode == "continuous" && !w.SystemRule.Valid &&
 		!w.DefaultRuleKey.Valid && w.SourceTaskID.Valid &&
 		heartbeatReadsMergeability.MatchString(w.Instruction) && heartbeatActsOnConflict.MatchString(w.Instruction)
+}
+
+// declaredInputsFingerprint hashes the inputs a wakeup declares it watches.
+// Fail open: "" when the list is empty, holds a value it does not know, or an
+// input cannot be read completely, so unchangedSinceLastRun runs the wakeup.
+func declaredInputsFingerprint(ctx context.Context, db rowQuerier, issueID pgtype.UUID, inputs []string, revision int32, instruction string) (string, error) {
+	if len(inputs) == 0 {
+		return "", nil
+	}
+	h := md5.New()
+	for _, input := range inputs {
+		value, err := declaredInputValue(ctx, db, issueID, input)
+		if err != nil || value == nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "%s=%s;", input, *value)
+	}
+	// An edited rule is not what the last run answered (same suffix as CHE-4984).
+	return fmt.Sprintf("%x|%d|%s", h.Sum(nil), revision, instruction), nil
+}
+
+// declaredInputValue reads one declared input as text. It returns nil when the
+// input is unknown or not readable completely.
+func declaredInputValue(ctx context.Context, db rowQuerier, issueID pgtype.UUID, input string) (*string, error) {
+	var query string
+	args := []any{issueID}
+	switch {
+	case input == "issue":
+		query = `SELECT jsonb_build_array(status, revision, assignee_type, assignee_id)::text FROM issue WHERE id = $1`
+	case input == "pr":
+		query = `SELECT string_agg(jsonb_build_array(p.id, p.state, p.head_sha, p.mergeable_state, p.api_mergeable, p.api_merge_state_status, p.checks_rollup_state, p.review_state, p.review_head_sha, p.review_id, p.review_at)::text, ';' ORDER BY p.id)
+			FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id WHERE ip.issue_id = $1`
+	case input == "children":
+		query = `SELECT COALESCE(string_agg(jsonb_build_array(id, status, revision)::text, ';' ORDER BY id), '') FROM issue WHERE parent_issue_id = $1`
+	case strings.HasPrefix(input, "thread:"):
+		root, err := util.ParseUUID(strings.TrimPrefix(input, "thread:"))
+		if err != nil {
+			return nil, nil
+		}
+		args = append(args, root)
+		query = `WITH RECURSIVE thread AS (
+				SELECT c.id, c.revision, c.content, c.deleted_at, c.resolved_at FROM comment c WHERE c.id = $2 AND c.issue_id = $1
+				UNION ALL
+				SELECT c.id, c.revision, c.content, c.deleted_at, c.resolved_at FROM comment c JOIN thread t ON c.parent_id = t.id WHERE c.issue_id = $1
+			) SELECT string_agg(jsonb_build_array(id, revision, md5(content), deleted_at, resolved_at)::text, ';' ORDER BY id) FROM thread`
+	default:
+		return nil, nil
+	}
+	var value *string
+	if err := db.QueryRow(ctx, query, args...).Scan(&value); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return value, nil
 }

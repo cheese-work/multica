@@ -132,8 +132,12 @@ func (h *Handler) RegisterTelegramBot(w http.ResponseWriter, r *http.Request) {
 		AgentID:     agentUUID,
 		InitiatorID: initiatorUUID,
 		BotToken:    body.BotToken,
+		Audit:       h.chatInstallAuditHook(r, "telegram"),
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "telegram.install") {
+			return
+		}
 		switch {
 		case errors.Is(err, telegram.ErrInvalidBotToken):
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -193,8 +197,7 @@ func (h *Handler) RevokeTelegramInstallation(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to load installation")
 		return
 	}
-	if err := h.TelegramInstall.Revoke(r.Context(), instUUID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to revoke installation")
+	if !h.revokeChatInstallation(w, r, "telegram", "telegram", wsUUID, instUUID) {
 		return
 	}
 	h.publish(protocol.EventTelegramInstallationRevoked, uuidToString(wsUUID), "user", userID, map[string]any{

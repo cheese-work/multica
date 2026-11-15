@@ -36,6 +36,7 @@ const (
 	GuardIssueStatus      = "issue_status"
 	GuardWebhook          = "webhook"
 	GuardAdoptionLinked   = "adoption_linked"
+	GuardUpstreamChecked  = "upstream_checked"
 )
 
 // Edge is one exit of a step. Timeout and OnTimeout are required for guards
@@ -56,7 +57,7 @@ type Guard struct {
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
-	GuardWebhook: 1, GuardAdoptionLinked: 0,
+	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
 }
 
 // webhookNameRe is the endpoint name a webhook guard may reference.
@@ -160,8 +161,8 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if g.Kind == GuardAdoptionLinked {
-			return invalid("%s is an entry gate, not an edge guard", GuardAdoptionLinked)
+		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked {
+			return invalid("%s is an entry gate, not an edge guard", g.Kind)
 		}
 		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
 			return invalid("issues in %q cannot advance on CI green", s.StatusKey)

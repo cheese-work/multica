@@ -714,3 +714,60 @@ func TestAdmissionReleaseDoesNotKeepAnExpiredRecordOnAnUnknownRefusal(t *testing
 	}
 	f.wantRecord(t, false, "unknown refusal after expiry")
 }
+
+// CHE-5432: a head with green live checks and an empty stored snapshot is
+// deferred, asks for a refresh, and the refreshed snapshot starts exactly one
+// run, draft or ready.
+func TestAdmissionRefreshedSnapshotStartsExactlyOneRun(t *testing.T) {
+	for _, state := range []string{"draft", "open"} {
+		t.Run(state, func(t *testing.T) {
+			f := newAdmissionFixture(t, "CLEAN")
+			svc := f.service(t)
+			f.Exec(t, `UPDATE github_pull_request SET state = $2 WHERE id = $1`, f.pr, state)
+			prev := admissionRefreshPR
+			t.Cleanup(func() { admissionRefreshPR = prev })
+			asked := 0
+			admissionRefreshPR = func(pr db.GithubPullRequest) {
+				asked++
+				// The refresh fetches the live checks of the exact head.
+				f.check(t, "ci", "completed", "success")
+				f.setSnapshot(t, pr.HeadSha, 0)
+			}
+			f.wantDeferred(t, "ci: missing")
+			if asked != 1 {
+				t.Fatalf("refresh asked %d times, want 1", asked)
+			}
+			f.wantTasks(t, 0, "before the refreshed snapshot is released")
+
+			f.release(t, svc)
+			f.release(t, svc)
+			f.wantTasks(t, 1, "refreshed snapshot, released twice")
+			f.wantRecord(t, false, "after the start")
+			if asked != 1 {
+				t.Fatalf("refresh asked %d times after the release, want still 1", asked)
+			}
+		})
+	}
+}
+
+// A refreshed snapshot that still shows a red check keeps the refusal and does
+// not ask again inside the window.
+func TestAdmissionRefreshedRedSnapshotStaysDeferred(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	prev := admissionRefreshPR
+	t.Cleanup(func() { admissionRefreshPR = prev })
+	asked := 0
+	admissionRefreshPR = func(pr db.GithubPullRequest) {
+		asked++
+		f.check(t, "ci", "completed", "failure")
+		f.setSnapshot(t, pr.HeadSha, 0)
+	}
+	f.wantDeferred(t, "ci: missing")
+	f.release(t, svc)
+	f.wantTasks(t, 0, "refreshed snapshot is red")
+	f.wantRecord(t, true, "refreshed snapshot is red")
+	if asked != 1 {
+		t.Fatalf("refresh asked %d times, want 1", asked)
+	}
+}

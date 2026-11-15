@@ -141,11 +141,44 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
   await api.send("POST", `/repos/${repo}/statuses/${headSha}`, status);
 }
 
-const gh = (args, input) => {
-  const r = spawnSync("gh", args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
-  if (r.status !== 0) throw new Error(`gh ${args.join(" ")} failed: ${r.stderr}`);
-  return r.stdout;
+export const ATTEMPTS = 3;
+export const MAX_WAIT_MS = 10 * 60 * 1000;
+const FALLBACK_WAIT_MS = 60 * 1000;
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const isRateLimit = (stderr) => /rate limit/i.test(stderr) && /HTTP (403|429)/.test(stderr);
+
+export class RateLimitError extends Error {}
+
+// Wait until the limit resets (cap 10 min); a missing or unreadable reset time waits a fixed minute.
+export const waitMs = (resetEpoch, now = Date.now()) => {
+  const reset = Number(resetEpoch);
+  return resetEpoch.trim() && Number.isFinite(reset) ? Math.min(Math.max(reset * 1000 - now, 0), MAX_WAIT_MS) : FALLBACK_WAIT_MS;
 };
+export const callName = (args) => args.find((a) => a === "graphql" || a.startsWith("/")) ?? args.join(" ");
+
+// One wait allowance (MAX_WAIT_MS) for the whole run, shared by every API call, so the job always ends inside its timeout.
+// GraphQL has its own limit bucket; every REST call shares `core`. Once the allowance is spent, a rate-limited call fails fast.
+export const makeGh = ({ spawn = spawnSync, sleep: nap = sleep } = {}) => {
+  let left = MAX_WAIT_MS;
+  const waitForReset = (call) => {
+    const resource = call === "graphql" ? "graphql" : "core";
+    const r = spawn("gh", ["api", "rate_limit", "-q", `.resources.${resource}.reset`], { encoding: "utf8" });
+    const ms = Math.min(waitMs(r.status === 0 ? r.stdout : ""), left);
+    left -= ms;
+    nap(ms);
+  };
+  return (args, input) => {
+    for (let attempt = 1; ; attempt++) {
+      const r = spawn("gh", args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
+      if (r.status === 0) return r.stdout;
+      const message = `gh ${args.join(" ")} failed: ${r.stderr}`;
+      if (!isRateLimit(r.stderr)) throw new Error(message);
+      if (attempt === ATTEMPTS || left <= 0) throw Object.assign(new RateLimitError(message), { call: callName(args) });
+      waitForReset(callName(args));
+    }
+  };
+};
+const gh = makeGh();
 
 // Newer gh (runner) refuses output with terminal escape sequences; job logs carry ANSI colour, clean() strips it.
 export const logArgs = (path) => ["api", "--allow-escape-sequences", path];
@@ -161,5 +194,12 @@ export const ghApi = {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const arg = (k) => (process.argv.includes(k) ? process.argv[process.argv.indexOf(k) + 1] : undefined);
-  await report({ api: ghApi, repo: arg("--repo"), pr: Number(arg("--pr")), dryRun: process.argv.includes("--dry-run"), eventHeadSha: arg("--head-sha"), eventIndex: Number(arg("--event") ?? -1) });
+  const pr = Number(arg("--pr"));
+  try {
+    await report({ api: ghApi, repo: arg("--repo"), pr, dryRun: process.argv.includes("--dry-run"), eventHeadSha: arg("--head-sha"), eventIndex: Number(arg("--event") ?? -1) });
+  } catch (e) {
+    // Advisory report: a GitHub rate limit is infrastructure, not a PR fault, so it must not paint the PR red.
+    if (!(e instanceof RateLimitError)) throw e;
+    console.log(`::warning::merge-queue dequeue report skipped for PR #${pr}: GitHub rate limit persisted after ${ATTEMPTS} attempts on gh api ${e.call}`);
+  }
 }

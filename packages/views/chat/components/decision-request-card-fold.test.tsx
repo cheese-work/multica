@@ -131,11 +131,11 @@ describe("DecisionRequestCard fold", () => {
     expect(body()).toHaveAttribute("inert");
   });
 
-  it("animates height and opacity over 200 ms ease-out, off under reduced motion", () => {
+  it("animates height and opacity ease-out (240 ms collapse, 200 ms expand, set inline), off under reduced motion", () => {
     vi.useFakeTimers({ now: new Date("2026-11-07T07:03:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
     view(answered("picked_up"));
     const cls = body().className;
-    expect(cls).toContain("duration-200");
+    expect((body() as HTMLElement).style.transitionDuration).toBe("240ms");
     expect(cls).toContain("ease-out");
     expect(cls).toContain("transition-[grid-template-rows,opacity]");
     expect(cls).toContain("motion-reduce:transition-none");

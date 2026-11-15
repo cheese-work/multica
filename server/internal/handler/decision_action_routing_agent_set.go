@@ -35,7 +35,8 @@ type routingAgentSetParams struct {
 
 func init() {
 	decisionaction.Register(&decisionaction.Definition{
-		Type: routingAgentSetAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Type: routingAgentSetAction, Version: 1, Passkey: decisionaction.PasskeyRequired, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Template:  decisionaction.Template{Title: "Change the workspace routing agent", Summary: "Changes the workspace routing-agent setting to the proposed value."},
 		Normalize: normalizeRoutingAgentSet,
 	})
 	registerConfigChange(routingAgentSetAction, configChange{
@@ -118,15 +119,23 @@ func readRoutingAgentSet(ctx context.Context, queries *db.Queries, workspaceID p
 	if err != nil {
 		return configChangeRead{}, err
 	}
-	nextJSON, err := json.Marshal(next)
+	// The digest covers the bytes the write stores: the routing job's canonical form.
+	job, err := routingJob(next)
 	if err != nil {
 		return configChangeRead{}, err
 	}
-	read := configChangeRead{Field: routingAgentField, TargetID: uuidToString(workspaceID), HumanBlocksIntact: true, After: next}
-	if live := stored[routingAgentKey]; len(live) > 0 {
-		read.Before = live
+	var nextJSON json.RawMessage
+	if job != nil {
+		if nextJSON, err = json.Marshal(job); err != nil {
+			return configChangeRead{}, err
+		}
 	}
-	if read.LiveSHA256, err = decisionaction.SettingsDigest(read.TargetID, map[string]json.RawMessage{routingAgentKey: stored[routingAgentKey]}); err != nil {
+	read := configChangeRead{Field: routingAgentField, TargetID: uuidToString(workspaceID), HumanBlocksIntact: true, After: next}
+	liveRaw := routingJobRaw(stored)
+	if len(liveRaw) > 0 {
+		read.Before = liveRaw
+	}
+	if read.LiveSHA256, err = decisionaction.SettingsDigest(read.TargetID, map[string]json.RawMessage{routingAgentKey: liveRaw}); err != nil {
 		return read, err
 	}
 	read.AfterSHA256, err = decisionaction.SettingsDigest(read.TargetID, map[string]json.RawMessage{routingAgentKey: nextJSON})
@@ -184,8 +193,8 @@ func applyRoutingAgentSet(ctx context.Context, execution decisionActionExecution
 	if err != nil {
 		return err
 	}
-	prev := routingAgentFromSettings(map[string]any{routingAgentKey: stored[routingAgentKey]})
-	if stored[routingAgentKey], err = json.Marshal(next); err != nil {
+	prev := routingAgentFromSettings(map[string]any{backgroundAgentsKey: rawToAny(stored[backgroundAgentsKey])})
+	if err := setRoutingJobRaw(stored, next); err != nil {
 		return err
 	}
 	settings, err := json.Marshal(stored)

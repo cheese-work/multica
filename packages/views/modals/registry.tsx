@@ -27,6 +27,9 @@ const MarkDuplicateIssueModal = lazy(() =>
 const AddChildIssueModal = lazy(() =>
   import("./add-child-issue").then((m) => ({ default: m.AddChildIssueModal })),
 );
+const AddProjectIssueModal = lazy(() =>
+  import("./add-project-issue").then((m) => ({ default: m.AddProjectIssueModal })),
+);
 const RenameIssueModal = lazy(() =>
   import("./rename-issue").then((m) => ({ default: m.RenameIssueModal })),
 );
@@ -84,6 +87,9 @@ export function ModalRegistry() {
       break;
     case "issue-add-child":
       activeModal = <AddChildIssueModal onClose={close} data={data} />;
+      break;
+    case "project-add-issue":
+      activeModal = <AddProjectIssueModal onClose={close} data={data} />;
       break;
     case "issue-rename":
       activeModal = <RenameIssueModal onClose={close} data={data} />;

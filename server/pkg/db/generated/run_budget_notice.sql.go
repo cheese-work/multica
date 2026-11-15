@@ -42,6 +42,39 @@ func (q *Queries) ClaimRunBudgetNotice(ctx context.Context, arg ClaimRunBudgetNo
 	return id, err
 }
 
+const findOpenRunBudgetCard = `-- name: FindOpenRunBudgetCard :one
+SELECT r.id AS request_id, a.id AS action_id, a.action_type
+FROM decision_request r
+JOIN decision_action a ON a.decision_request_id = r.id AND a.workspace_id = r.workspace_id
+WHERE r.workspace_id = $1 AND r.issue_id = $2 AND r.status = 'open'
+  AND a.state = 'pending' AND a.action_type IN ('issue.run_budget.raise', 'issue.run_budget.top_up')
+  AND a.params->>'window_id' = $3::text
+ORDER BY r.created_at ASC, r.id ASC
+LIMIT 1
+`
+
+type FindOpenRunBudgetCardParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WindowID    string      `json:"window_id"`
+}
+
+type FindOpenRunBudgetCardRow struct {
+	RequestID  pgtype.UUID `json:"request_id"`
+	ActionID   pgtype.UUID `json:"action_id"`
+	ActionType string      `json:"action_type"`
+}
+
+// The open raise or top-up card of one issue's budget window, whoever opened it
+// (CHE-5503): a refusal's server card, a member's request or an agent's
+// proposal. Oldest first, so every reader names the same card.
+func (q *Queries) FindOpenRunBudgetCard(ctx context.Context, arg FindOpenRunBudgetCardParams) (FindOpenRunBudgetCardRow, error) {
+	row := q.db.QueryRow(ctx, findOpenRunBudgetCard, arg.WorkspaceID, arg.IssueID, arg.WindowID)
+	var i FindOpenRunBudgetCardRow
+	err := row.Scan(&i.RequestID, &i.ActionID, &i.ActionType)
+	return i, err
+}
+
 const listRunBudgetBlockedIssueIDs = `-- name: ListRunBudgetBlockedIssueIDs :many
 SELECT issue_id FROM run_budget_notice
 WHERE workspace_id = $1 AND kind = 'blocked'

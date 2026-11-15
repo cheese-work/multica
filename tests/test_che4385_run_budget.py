@@ -44,7 +44,9 @@ class OneWorkflowPerPrPush(unittest.TestCase):
         # CI (needs the PR merge commit) stays. Others start only on a path-filtered `pull_request` or a rare `dequeued`.
         for name in starters - {"ci.yml", "pr-guards.yml"}:
             on = load(name)["on"]
-            self.assertTrue("paths" in on.get("pull_request", {}) or on.get("pull_request_target", {}).get("types") == ["dequeued"], name)
+            types = on.get("pull_request_target", {}).get("types")
+            # pr-guard-rules-edit (CHE-5208) starts only on a title/body/base edit or a removed reviewer, never on a push.
+            self.assertTrue("paths" in on.get("pull_request", {}) or types in (["dequeued"], ["edited", "review_request_removed"]), name)
         self.assertIn("pr-guards.yml", starters)
         self.assertEqual(starters & set(MERGED_AWAY), set())
 

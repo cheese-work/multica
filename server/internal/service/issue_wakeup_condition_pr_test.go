@@ -245,7 +245,7 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 	} {
 		tx.prs = step.prs
 		w.LastError = tx.lastError
-		next, err := s.pollCondition(ctx, tx, q, w, now)
+		next, _, err := s.pollCondition(ctx, tx, q, w, now)
 		if err != nil || !next.Valid || !next.Time.Equal(now.Add(conditionPollInterval)) {
 			t.Fatalf("poll must remain scheduled: next=%+v err=%v", next, err)
 		}
@@ -259,7 +259,7 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 	}
 	// Real query failures still propagate; they are never treated as unmet facts.
 	tx.queryErr = errors.New("database offline")
-	if _, err := s.pollCondition(ctx, tx, q, w, now); !errors.Is(err, tx.queryErr) {
+	if _, _, err := s.pollCondition(ctx, tx, q, w, now); !errors.Is(err, tx.queryErr) {
 		t.Fatalf("database error swallowed: %v", err)
 	}
 }

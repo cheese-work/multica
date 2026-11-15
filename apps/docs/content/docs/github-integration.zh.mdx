@@ -113,6 +113,22 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 
 状态变化会以系统操作写入时间线并列出相关 PR，订阅该任务的成员会收到通知。
 
+### 在工作流中
+
+任务的工作流包含目标状态，并且该步骤设有交接时，合并引起的移动就是一次交接：任务交给该步骤的处理人；处理人是智能体时，会像进入该步骤的其他移动一样启动一次运行。没有处理人的步骤只改状态，不启动运行。工作流不包含目标状态时，任务不会移动。同一次合并的"PR 合并"唤醒会并入这次运行，所以一次合并只启动一次运行。如果这次运行在启动前就结束了，唤醒会代替它启动一次运行。参见[唤醒](/issue-wakeups#pr-merged)。
+
+### 包含子任务的 PR
+
+工作流的**包含子 Issue 的 PR** 开关打开时（见[工作流](/workflows)），检查会读取任务自身及其直接子任务的 PR。这些 PR 中至少有一个是 `Merged`，并且没有 `Open` 或 `Draft` 的，任务就会移动。关闭但未合并的 PR 不会阻止移动，也不检查子任务的状态。子任务上的 PR 事件会让其父任务重新检查。
+
+开关关闭时，只计入任务自身的 PR；已有 PR 合并的父任务要等所有子任务都是 `done` 或 `cancelled`。最后一个子任务进入其中一个状态时会重新检查，所以父任务在那时移动，不需要新的 PR 事件。
+
+### 检查无法完成时
+
+如果检查无法完成，例如移动被拒绝，或服务器在 PR 事件刚发生后停止，Multica 会为该任务保留一次重试。第一次尝试在事件发生 2 分钟后。尝试失败后，等待时间从 30 秒开始，每次翻倍，最长 1 小时。你不需要重新投递 Webhook，也不需要重新关联 PR。检查完成后，重试就会被删除。自托管 Git 服务的 PR 事件同样适用。
+
+工作流里保存的 `PR merged` 转换已弃用，上面的设置会取代它。参见[工作流](/workflows#pr-merged)。
+
 ## 多个工作区
 
 同一个 GitHub App installation 可以连接到多个 Multica 工作区。GitHub 事件会分别进入每个工作区，再按照各自的任务前缀匹配。
@@ -199,6 +215,8 @@ Repository permissions：
 | Actions | Read-only；`--until-gh-run` 唤醒所需 |
 | Checks | Read-only；用于显示 CI 状态 |
 | Commit statuses | Read-only；用于汇总 legacy status 形式的 CI |
+| Variables | Read-only；合并暂停检查需要读取仓库变量 `AGENT_MERGE_PAUSED` 和 `MAIN_RED_PAUSED` |
+| Actions | 可选，Read-only；同一提交上，被同一工作流的新运行取代的已取消运行不再计入 CI 状态 |
 
 Organization permissions：
 
@@ -213,7 +231,7 @@ Organization permissions：
 - **Workflow run** 和 **Workflow job**，`--until-gh-run` 唤醒所需；
 - **Check suite**、**Check run** 和 **Status**，用于触发 CI 与可合并性刷新。
 
-PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。
+PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。授予可选的 Actions 权限后，还会读取该提交的工作流运行记录；未授予时，即使同一工作流的新运行已通过，被取消的旧运行仍按失败计算。
 
 <Callout type="warning">
 这里需要的是 **Webhook secret**，不是 OAuth Client secret。两边填写的 Webhook secret 不一致时，GitHub delivery 会返回 `401 invalid signature`。

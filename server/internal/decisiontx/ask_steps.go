@@ -223,6 +223,10 @@ func lintHumanSteps(ask Ask) []string {
 	return hints
 }
 
+// FenceFor is the code fence that safely wraps text: longer than any backtick
+// run in it, so quoted text cannot close the fence.
+func FenceFor(text string) string { return fenceFor(text) }
+
 func fenceFor(text string) string {
 	longest, run := 0, 0
 	for _, r := range text {

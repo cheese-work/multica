@@ -290,8 +290,19 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
 		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
 		sessions[i].AttentionUnclassifiedKeys = a.Unclassified
+		sessions[i].AttentionKeys = a.Keys
+		sessions[i].AttentionAskIDs = askIDsFromKeys(a.AskKeys)
 	}
 	return nil
+}
+
+// askIDsFromKeys turns `item:<uuid>` ask keys into the ids `ask_ids` takes on send.
+func askIDsFromKeys(keys []string) []string {
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, strings.TrimPrefix(k, "item:"))
+	}
+	return ids
 }
 
 func formatAttentionTime(t *time.Time) *string {
@@ -1037,6 +1048,15 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if existed, err := h.Queries.ChatSessionHasPublicUserMessage(r.Context(), session.ID); err == nil {
 		hadUserMessage = existed
 	}
+	// CHE-4107: re-title milestone of the next message (first one after a
+	// compaction, first one of a fork). A manual rename is never re-titled; an
+	// unreadable milestone is "none" (best-effort, never blocks the send).
+	var milestone dmTitleMilestone
+	if hadUserMessage && !session.TitleManuallySet {
+		if m, err := h.Queries.ChatSessionTitleMilestone(r.Context(), session.ID); err == nil {
+			milestone = dmTitleMilestone(m)
+		}
+	}
 	channelBacked := false
 	channelSourceKnown := true
 	if !hadUserMessage {
@@ -1151,6 +1171,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
 	if shouldGenerateTitle {
 		h.maybeGenerateChatTitleAsync(workspaceID, userID, session.ID, currentTitle, req.Content)
+	} else if milestone != "" {
+		h.enqueueDMTitle(workspaceID, userID, session.ID, milestone, currentTitle, req.Content, msg.ID)
 	}
 
 	writeJSON(w, http.StatusCreated, SendChatMessageResponse{
@@ -2205,11 +2227,12 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		queuedOnly = true
 	}
 
-	if task.ChatSessionID.Valid {
+	if session := ownerSession(task); session.Valid {
 		// Chat privacy: only the member who opened the conversation may
-		// cancel its task, even though the workspace is shared.
+		// cancel its task, even though the workspace is shared. A DM-derived
+		// background task answers to the same member.
 		cs, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
-			ID:          task.ChatSessionID,
+			ID:          session,
 			WorkspaceID: wsUUID,
 		})
 		if err != nil {
@@ -2258,6 +2281,15 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	resp := CancelTaskByUserResponse{
 		AgentTaskResponse: taskToResponse(cancelled.Task, workspaceID),
 	}
+	// A bg:* task with no resolvable DM falls through to the agent gate above;
+	// its result and error stay hidden from everyone but an owner.
+	one := []AgentTaskResponse{resp.AgentTaskResponse}
+	if err := h.redactForeignChatTaskContent(r.Context(), userID, []db.AgentTaskQueue{cancelled.Task}, one); err != nil {
+		slog.Warn("redact cancelled task failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load task")
+		return
+	}
+	resp.AgentTaskResponse = one[0]
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.AgentTaskResponse.Attribution})
 	if cancelled.CancelledChatMessage != nil {
 		attachments := make([]AttachmentResponse, 0, len(cancelled.CancelledChatMessage.Attachments))
@@ -2327,8 +2359,13 @@ type ChatSessionResponse struct {
 	// AttentionUnclassifiedKeys: visible untyped-turn subject keys. Listed
 	// collapsed, never coloured or aged, and not counted in stale_level.
 	AttentionUnclassifiedKeys []string `json:"attention_unclassified_keys"`
-	CreatedAt                 string   `json:"created_at"`
-	UpdatedAt                 string   `json:"updated_at"`
+	// AttentionKeys: every displayed subject key. Xong, Để sau and Xong tất cả send these
+	// back as the snapshot (plan r4). AttentionAskIDs: the displayed asks that still need a
+	// reply, the targets of the reply-to-ask control (`ask_ids` on send).
+	AttentionKeys   []string `json:"attention_keys"`
+	AttentionAskIDs []string `json:"attention_ask_ids"`
+	CreatedAt       string   `json:"created_at"`
+	UpdatedAt       string   `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {

@@ -90,6 +90,8 @@ type Client struct {
 type cachedToken struct {
 	token  string
 	expiry time.Time
+	// permissions is what GitHub granted this token, e.g. {"checks": "read"}.
+	permissions map[string]string
 }
 
 // NewClientFromEnv builds a Client from GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY.
@@ -204,8 +206,9 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 		return "", fmt.Errorf("github installation token: unexpected status %d", resp.StatusCode)
 	}
 	var parsed struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expires_at"`
+		Token       string            `json:"token"`
+		ExpiresAt   string            `json:"expires_at"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", errors.New("github installation token: malformed response")
@@ -220,9 +223,22 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 		}
 	}
 	client.mu.Lock()
-	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
+	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry, permissions: parsed.Permissions}
 	client.mu.Unlock()
 	return parsed.Token, nil
+}
+
+// tokenCanRead reports whether the installation's cached token was granted at
+// least read access to permission. It answers false until a request on this
+// installation has minted a token, so callers ask after their first request.
+func (client *Client) tokenCanRead(installationID int64, permission string) bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	switch client.tokens[installationID].permissions[permission] {
+	case "read", "write", "admin":
+		return true
+	}
+	return false
 }
 
 // StatusError is a non-200 REST answer. Callers branch on Status (a missing

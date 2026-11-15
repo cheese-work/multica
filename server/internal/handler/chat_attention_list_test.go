@@ -102,6 +102,35 @@ func TestListChatSessionsAttention(t *testing.T) {
 		}
 	})
 
+	t.Run("CHE-4153 list carries the displayed keys and the ask ids for the web actions", func(t *testing.T) {
+		id := newSession(t)
+		addItem(t, id, "ask", time.Hour, nil)
+		addItem(t, id, "unseen", time.Hour, nil)
+		var askID string
+		if err := testPool.QueryRow(ctx, `SELECT id FROM chat_attention_item WHERE chain_root_session_id = $1 AND kind = 'ask'`, id).Scan(&askID); err != nil {
+			t.Fatal(err)
+		}
+		got := list(t, id)
+		if len(got.AttentionKeys) != 2 {
+			t.Fatalf("attention_keys = %v, want both displayed items", got.AttentionKeys)
+		}
+		hasAsk := false
+		for _, k := range got.AttentionKeys {
+			if k == "item:"+askID {
+				hasAsk = true
+			}
+		}
+		if !hasAsk {
+			t.Fatalf("attention_keys = %v, missing item:%s", got.AttentionKeys, askID)
+		}
+		if len(got.AttentionAskIDs) != 1 || got.AttentionAskIDs[0] != askID {
+			t.Fatalf("attention_ask_ids = %v, want [%s]", got.AttentionAskIDs, askID)
+		}
+		if empty := list(t, newSession(t)); empty.AttentionKeys == nil || len(empty.AttentionKeys) != 0 || empty.AttentionAskIDs == nil {
+			t.Fatalf("empty DM keys = %#v ask ids = %#v, want empty non-null arrays", empty.AttentionKeys, empty.AttentionAskIDs)
+		}
+	})
+
 	t.Run("no obligation is none with null source and since", func(t *testing.T) {
 		got := list(t, newSession(t))
 		if got.StaleLevel != "none" || got.AttentionSource != nil || got.AttentionSince != nil || got.NextChangeAt != nil {

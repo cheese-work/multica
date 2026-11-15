@@ -143,13 +143,13 @@ func requirePinnedIsolatedRepoContext(ctx context.Context, path, repoURL string)
 func requirePinnedLinkedRepoContext(ctx context.Context, path, barePath string) error {
 	out, err := runGitOutputContext(ctx, "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	common := strings.TrimSpace(string(out))
-	if err != nil || common == "" || !samePath(common, barePath) {
+	if err != nil || common == "" || !samePinnedPath(common, barePath) {
 		return fmt.Errorf("checkout at %s belongs to another repository than the cache at %s; refusing to reuse it", path, barePath)
 	}
 	return nil
 }
 
-func samePath(a, b string) bool {
+func samePinnedPath(a, b string) bool {
 	resolve := func(p string) string {
 		if r, err := filepath.EvalSymlinks(p); err == nil {
 			p = r

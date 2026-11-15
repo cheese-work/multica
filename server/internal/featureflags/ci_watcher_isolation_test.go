@@ -22,8 +22,11 @@ func ciWatcherStorageAllowed(rel string) bool {
 	case strings.HasSuffix(rel, "_test.go"),
 		strings.HasPrefix(rel, "migrations/"),
 		strings.HasPrefix(rel, "pkg/db/generated/"),
-		rel == "cmd/migrate/main.go", // index registry: names, not access
+		strings.HasPrefix(rel, "internal/ciwatch/"),  // the watcher's own package (S2+)
+		strings.HasPrefix(rel, "internal/ghbudget/"), // GitHub rate budget store (S4)
+		rel == "cmd/migrate/main.go",                 // index registry: names, not access
 		rel == "pkg/db/queries/ci_watch.sql",
+		rel == "pkg/db/queries/run_budget_auto.sql", // ci_unknown check set (CHE-5404)
 		rel == "pkg/db/queries/workspace_delete.sql",
 		// The installation budget ledger (S3); it is only reached through the
 		// watcher, whose entry point checks CIWatcherEnabled.

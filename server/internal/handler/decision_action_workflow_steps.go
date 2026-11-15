@@ -33,6 +33,9 @@ var workflowSteps = &Handler{}
 func init() {
 	registerConfigChange(decisionaction.WorkflowStepsSet, configChange{
 		Fields: []string{workflowStepsField, workflowInstructionsField},
+		// The write sets the whole row, the cap included, so it follows the
+		// order every cap writer takes: catalog first, then the workflow row.
+		CatalogLock: true,
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusConflict, false)
 			if err != nil {
@@ -157,6 +160,11 @@ func workflowStepsAfter(ctx context.Context, queries *db.Queries, workflow db.Is
 	}
 	if err := issueworkflow.Validate(name, description, steps, workflow.IsDefault, catalog); err != nil {
 		return nil, invalidWorkflowSteps("invalid_workflow", err.Error())
+	}
+	if message, err := workflowSteps.refuseNewPRMergedEdge(ctx, queries, workflow.WorkspaceID, live, steps); err != nil {
+		return nil, err
+	} else if message != "" {
+		return nil, invalidWorkflowSteps("invalid_workflow", message)
 	}
 	kept := make([]string, len(steps))
 	for i, step := range steps {

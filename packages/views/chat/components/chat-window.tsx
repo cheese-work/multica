@@ -56,8 +56,6 @@ import {
   PropertyPicker,
 } from "../../issues/components/pickers/property-picker";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
-import { ChatSearch } from "./chat-search";
-import { useOpenChatMessageHit } from "./use-open-chat-message-hit";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import { ArchivedAgentBanner } from "./archived-agent-banner";
@@ -76,7 +74,7 @@ import {
   useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
-import { deriveChatTitle, useChatStore } from "@multica/core/chat";
+import { DRAFT_NEW_SESSION, classifySendFailure, deriveChatTitle, sendWithPendingId, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
@@ -439,6 +437,7 @@ export function ChatWindow() {
       commitInput?: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
       draftAttachments: Attachment[] = [],
       decisionRequestId?: string,
+      askIds?: string[],
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -517,9 +516,22 @@ export function ChatWindow() {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, ...(decisionRequestId ? [decisionRequestId] as const : []));
+        result = await sendWithPendingId(sessionId, finalContent, { attachmentIds, decisionRequestId, askIds });
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
+        // Unknown delivery (timeout, network, 5xx): the message may be stored.
+        // Keep the draft, keep the session, and say so; the retry reuses the
+        // same client_message_id, so the server stores one message (A22).
+        if (classifySendFailure(err) === "unknown") {
+          if (isNewSession) {
+            // The draft follows the session: a retry from the empty new-chat
+            // slot would create a second DM and store the message twice.
+            useChatStore.getState().moveInputDraft(DRAFT_NEW_SESSION, sessionId);
+            setActiveSession(sessionId);
+          }
+          toast.error(t(($) => $.input.send_unconfirmed_toast));
+          return false;
+        }
         const reason = dispatchReasonCode(err);
         toast.error(
           reason === "invocation_not_allowed"
@@ -723,8 +735,6 @@ export function ChatWindow() {
     },
     [activeAgent, setSelectedAgentId, setActiveSession],
   );
-  // A message search hit opens the full page at the message, as a pushed history entry.
-  const openMessageHit = useOpenChatMessageHit();
   const { handleFork } = useChatFork(currentSession, handleSelectSession);
   // Statistics, the DM commands and the archived-send confirmation, shared with
   // the Chat page. Archiving the open chat advances to the next one (fall back
@@ -932,8 +942,6 @@ export function ChatWindow() {
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
             onArchiveSession={dm.archive}
-            onUnarchiveSession={dm.unarchive}
-            onOpenMessageHit={(session, messageId) => openMessageHit(session.id, messageId)}
             onTogglePin={dm.togglePin}
             onMarkUnseen={dm.markUnseen}
             onOpenStatistics={(session) => dm.openStatistics(session.id)}
@@ -1275,8 +1283,6 @@ export function SessionDropdown({
   activeSessionId,
   onSelectSession,
   onArchiveSession,
-  onUnarchiveSession,
-  onOpenMessageHit,
   onTogglePin,
   onMarkUnseen,
   onOpenStatistics,
@@ -1288,9 +1294,6 @@ export function SessionDropdown({
   onSelectSession: (session: ChatSession) => void;
   /** Archives through the shared guarded door; the owner advances the selection. */
   onArchiveSession: (session: ChatSession) => unknown;
-  onUnarchiveSession: (session: ChatSession) => unknown;
-  /** Open a chat at a matching message; the owner pushes the history entry that scrolls there. */
-  onOpenMessageHit: (session: ChatSession, messageId: string) => void;
   onTogglePin: (session: ChatSession) => unknown;
   onMarkUnseen: (session: ChatSession) => unknown;
   onOpenStatistics: (session: ChatSession) => void;
@@ -1761,38 +1764,18 @@ export function SessionDropdown({
           className="max-h-96 w-auto min-w-[max(16rem,var(--anchor-width,16rem))] max-w-96 gap-0 overflow-y-auto p-1"
           onClick={(e) => e.stopPropagation()}
         >
-          <ChatSearch
-            scope="popover"
-            sessions={sessions}
-            agents={agents}
-            activeSessionId={activeSessionId}
-            onOpenHit={(hit) => {
-              const session = sessions.find((s) => s.id === hit.session_id);
-              if (!session) return;
-              if (hit.message_id) {
-                onOpenMessageHit(session, hit.message_id);
-                setIsHistoryOpen(false);
-              } else {
-                handleSelectSession(session);
-              }
-            }}
-            onUnarchive={(session) => void onUnarchiveSession(session)}
-            onTogglePin={(session) => void onTogglePin(session)}
-            onArchive={(session) => void onArchiveSession(session)}
-          >
-            {historySessions.length === 0 ? (
-              <div className="px-2 py-1.5 text-caption text-muted-foreground">
-                {t(($) => $.window.no_previous)}
+          {historySessions.length === 0 ? (
+            <div className="px-2 py-1.5 text-caption text-muted-foreground">
+              {t(($) => $.window.no_previous)}
+            </div>
+          ) : (
+            <div role="group" aria-label={t(($) => $.window.history_group)}>
+              <div className="px-1.5 py-1 text-caption font-medium text-muted-foreground">
+                {t(($) => $.window.history_group)}
               </div>
-            ) : (
-              <div role="group" aria-label={t(($) => $.window.history_group)}>
-                <div className="px-1.5 py-1 text-caption font-medium text-muted-foreground">
-                  {t(($) => $.window.history_group)}
-                </div>
-                {historySessions.map(renderRow)}
-              </div>
-            )}
-          </ChatSearch>
+              {historySessions.map(renderRow)}
+            </div>
+          )}
         </PopoverContent>
       </Popover>
     </>

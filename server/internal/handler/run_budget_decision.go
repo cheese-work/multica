@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -123,6 +124,39 @@ func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 		plan.lanes = append(plan.lanes, runBudgetLane{human: human, session: session, reuse: reuse})
 	}
 	return plan, nil
+}
+
+// openRunBudgetAsk opens ask for every planned recipient under one fingerprint.
+func (h *Handler) openRunBudgetAsk(ctx context.Context, q *db.Queries, issue db.Issue, ask decisiontx.Ask, fingerprint string, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
+	if len(plan.lanes) == 0 {
+		return nil, nil
+	}
+	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ask.Validate(); err != nil {
+		return nil, fmt.Errorf("budget ask: %w", err)
+	}
+	askJSON, err := json.Marshal(ask)
+	if err != nil {
+		return nil, err
+	}
+	ask.AskedBy = plan.asker.Name
+	input := decisionRequestInput{
+		Ask: ask.Content(workspace.Slug), Options: ask.Options, AskJSON: askJSON, EscalationClass: "reversible",
+		Fingerprint: fingerprint,
+	}
+	var results []decisionRequestResult
+	for _, lane := range plan.lanes {
+		input.HumanUserID = lane.human
+		result, err := h.openRunBudgetDecision(ctx, q, issue, plan, lane, input)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 // openRunBudgetDecision is createSingleCallDecisionTx's body minus the running
