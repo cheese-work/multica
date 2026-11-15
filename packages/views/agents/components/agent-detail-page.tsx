@@ -92,6 +92,7 @@ import { AgentInstructionsSection } from "./agent-instructions-section";
 import { AgentPropertiesPanel } from "./agent-properties-panel";
 import { describeCancelImpact } from "./agent-row-actions";
 import { AgentPauseNote, AgentPausedBadge, AgentSchedulingDialog, canScheduleAgent } from "./agent-scheduling";
+import { AgentChannelLinks, AgentChannelsSection } from "./agent-channels-section";
 import { AgentSkillsSection } from "./agent-skills-section";
 import { AgentWorkDialog } from "./agent-work-dialog";
 import { AgentWorkSections } from "./tabs/activity-tab";
@@ -177,7 +178,15 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
   const [confirmCancelRuns, setConfirmCancelRuns] = useState(false);
   const [schedulingAction, setSchedulingAction] = useState<"pause" | "resume" | null>(null);
 
-  const urlView = viewFromParams(navigation.searchParams);
+  const requestedView = viewFromParams(navigation.searchParams);
+  const urlView = requestedView === "integrations" ? "channels" : requestedView;
+  useEffect(() => {
+    if (requestedView !== "integrations" || !agent) return;
+    const params = new URLSearchParams(navigation.searchParams);
+    params.delete("tab");
+    params.set("view", "channels");
+    navigation.replace(`${navigation.pathname}?${params}`);
+  }, [requestedView, navigation, agent]);
   const [advancedSection, setAdvancedSection] = useState<AdvancedSection | null>(
     () => (isAdvancedSection(urlView) ? urlView : null),
   );
@@ -695,6 +704,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
               }
             />
             <AgentPauseNote agent={agent} members={members} />
+            <AgentChannelLinks agent={agent} />
             {notices.length > 0 && <div className="space-y-2">{notices}</div>}
           </div>
 
@@ -704,6 +714,8 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
             scrollParent={scrollParent}
             onViewAll={() => openWork(true)}
           />
+
+          <AgentChannelsSection agent={agent} />
 
           <AgentInstructionsSection
             agent={agent}

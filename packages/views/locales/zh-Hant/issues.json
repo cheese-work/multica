@@ -814,7 +814,10 @@
     "supersession": {
       "superseded_by": "已被 rev-{{revision}} 取代",
       "supersedes": "取代 rev-{{revision}}"
-    }
+    },
+    "reply_action": "回覆",
+    "actions_label": "評論操作",
+    "create_issue_from_selection": "用選取內容建立子任務"
   },
   "reply": {
     "recipients_changed": "回覆目標已變更。請重新確認收件者後再傳送。",
@@ -1020,7 +1023,10 @@
     "delete_dialog_desc_other": "此操作無法撤銷，所選任務及其全部關聯資料都會被永久刪除。",
     "cancel": "取消",
     "update_partial_named_other": "已更新 {{updated}}/{{count}} 個任務。未更新：{{issues}}",
-    "retry_not_updated": "重試"
+    "retry_not_updated": "重試",
+    "copy_links": "複製連結",
+    "links_copied_other": "已複製 {{count}} 個連結",
+    "delete_count_other": "刪除 {{count}} 個任務"
   },
   "card": {
     "update_failed": "更新任務失敗",
@@ -1057,12 +1063,14 @@
     "stop_agent_run": "停止 {{name}} 的執行",
     "relations": "關係",
     "create_sub_issue": "建立子任務",
+    "quick_actions": "快捷操作",
     "set_parent_issue": "設定父任務...",
     "remove_parent_issue": "移除父任務",
     "remove_parent_issue_success": "已移除父任務",
     "add_sub_issue": "新增子任務...",
     "delete_issue": "刪除任務",
-    "mark_duplicate": "標記為重複..."
+    "mark_duplicate": "標記為重複...",
+    "open_in_new_window": "在新視窗中開啟"
   },
   "pickers": {
     "custom_property": {

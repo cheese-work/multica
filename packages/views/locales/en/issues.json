@@ -888,7 +888,10 @@
     "supersession": {
       "superseded_by": "Superseded by rev-{{revision}}",
       "supersedes": "Supersedes rev-{{revision}}"
-    }
+    },
+    "reply_action": "Reply",
+    "actions_label": "Comment actions",
+    "create_issue_from_selection": "Create sub-issue from selection"
   },
   "reply": {
     "recipients_changed": "Reply target changed. Review the recipients before sending again.",
@@ -1119,7 +1122,12 @@
     "delete_dialog_title_other": "Delete {{count}} issues?",
     "delete_dialog_desc_one": "This action cannot be undone. This will permanently delete the selected issue and all associated data.",
     "delete_dialog_desc_other": "This action cannot be undone. This will permanently delete the selected issues and all associated data.",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "copy_links": "Copy links",
+    "links_copied_one": "Copied {{count}} link",
+    "links_copied_other": "Copied {{count}} links",
+    "delete_count_one": "Delete {{count}} issue",
+    "delete_count_other": "Delete {{count}} issues"
   },
   "card": {
     "update_failed": "Failed to update issue",
@@ -1156,12 +1164,14 @@
     "stop_agent_run": "Stop {{name}}’s run",
     "relations": "Relations",
     "create_sub_issue": "Create sub-issue",
+    "quick_actions": "Quick actions",
     "set_parent_issue": "Set parent issue...",
     "remove_parent_issue": "Remove parent issue",
     "remove_parent_issue_success": "Removed parent issue",
     "add_sub_issue": "Add sub-issue...",
     "delete_issue": "Delete issue",
-    "mark_duplicate": "Mark as duplicate..."
+    "mark_duplicate": "Mark as duplicate...",
+    "open_in_new_window": "Open in new window"
   },
   "pickers": {
     "custom_property": {

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"io"
 	"log/slog"
 	"net/http"
@@ -3104,7 +3105,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
-	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
+	h.fillStatusCategory(ctx, updated.WorkspaceID, projectaccess.Hidden{}, &resp)
 	h.publishSystemStatusChange(workspaceID, recorded, map[string]any{
 		"issue":          resp,
 		"status_changed": true,

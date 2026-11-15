@@ -727,6 +727,10 @@ type AgentTaskResponse struct {
 	IntakeRun    bool   `json:"intake_run,omitempty"`
 	PinnedBranch string `json:"pinned_branch,omitempty"`
 	PinnedRepo   string `json:"pinned_repo,omitempty"`
+
+	// ChatFeishuSource is the Feishu ids of the message this task answers,
+	// from its frozen delivery. Absent for other surfaces.
+	ChatFeishuSource *protocol.FeishuSource `json:"chat_feishu_source,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance

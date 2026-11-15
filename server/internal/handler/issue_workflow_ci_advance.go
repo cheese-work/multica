@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -219,6 +220,6 @@ func edgeMoveCause(source string) string {
 // issueResponseWithCategory is the issue as clients receive it on an update.
 func (h *Handler) issueResponseWithCategory(ctx context.Context, issue db.Issue) IssueResponse {
 	resp := issueToResponse(issue, h.getIssuePrefix(ctx, issue.WorkspaceID))
-	h.fillStatusCategory(ctx, issue.WorkspaceID, &resp)
+	h.fillStatusCategory(ctx, issue.WorkspaceID, projectaccess.Hidden{}, &resp)
 	return resp
 }

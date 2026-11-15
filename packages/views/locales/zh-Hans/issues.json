@@ -857,7 +857,10 @@
     "supersession": {
       "superseded_by": "已被 rev-{{revision}} 取代",
       "supersedes": "取代 rev-{{revision}}"
-    }
+    },
+    "reply_action": "回复",
+    "actions_label": "评论操作",
+    "create_issue_from_selection": "用选中内容创建子任务"
   },
   "reply": {
     "recipients_changed": "回复目标已变化。请重新确认接收者后再发送。",
@@ -1063,7 +1066,10 @@
     "delete_failed": "删除任务失败",
     "delete_dialog_title_other": "删除 {{count}} 个任务？",
     "delete_dialog_desc_other": "此操作无法撤销，所选任务及其全部关联数据都会被永久删除。",
-    "cancel": "取消"
+    "cancel": "取消",
+    "copy_links": "复制链接",
+    "links_copied_other": "已复制 {{count}} 个链接",
+    "delete_count_other": "删除 {{count}} 个任务"
   },
   "card": {
     "update_failed": "更新任务失败",
@@ -1100,12 +1106,14 @@
     "stop_agent_run": "停止 {{name}} 的运行",
     "relations": "关系",
     "create_sub_issue": "创建子任务",
+    "quick_actions": "快捷操作",
     "set_parent_issue": "设置父任务...",
     "remove_parent_issue": "移除父任务",
     "remove_parent_issue_success": "已移除父任务",
     "add_sub_issue": "添加子任务...",
     "delete_issue": "删除任务",
-    "mark_duplicate": "标记为重复..."
+    "mark_duplicate": "标记为重复...",
+    "open_in_new_window": "在新窗口中打开"
   },
   "pickers": {
     "custom_property": {
