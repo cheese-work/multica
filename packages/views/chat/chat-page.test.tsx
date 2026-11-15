@@ -117,6 +117,7 @@ const layout = vi.hoisted(() => ({ width: 1440 }));
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => layout.width < 768,
   useIsCompact: () => layout.width < 768,
+  useIsBelowDock: () => layout.width < 1280,
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",

@@ -7,6 +7,10 @@ const MOBILE_BREAKPOINT = 768
 // screen or a tablet enough reading width for both panes.
 const COMPACT_BREAKPOINT = 768
 
+// The docked attention panel needs a conversation column of reading width
+// beside it; below this the panel folds into a drawer (CHE-4144 design lock).
+const DOCK_BREAKPOINT = 1280
+
 function useIsBelow(breakpoint: number) {
   const [isBelow, setIsBelow] = React.useState<boolean | undefined>(undefined)
 
@@ -29,4 +33,8 @@ export function useIsMobile() {
 
 export function useIsCompact() {
   return useIsBelow(COMPACT_BREAKPOINT)
+}
+
+export function useIsBelowDock() {
+  return useIsBelow(DOCK_BREAKPOINT)
 }
