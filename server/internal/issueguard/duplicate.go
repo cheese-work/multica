@@ -135,6 +135,24 @@ func LockAndFindRecentAutopilotDuplicate(
 	return duplicate, true, nil
 }
 
+// LockAndFindSameTitleIssue finds any issue in the workspace, open or closed,
+// with the same normalized title. An autopilot whose title template carries
+// {{date}} uses it so two autopilots cannot render one dated title (CHE-5757).
+func LockAndFindSameTitleIssue(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, title string) (db.Issue, bool, error) {
+	normalizedTitle := NormalizeTitle(title)
+	if normalizedTitle == "" {
+		return db.Issue{}, false, nil
+	}
+	if err := q.LockIssueDuplicateKey(ctx, strings.Join([]string{"issue-same-title", util.UUIDToString(workspaceID), normalizedTitle}, "|")); err != nil {
+		return db.Issue{}, false, err
+	}
+	issue, err := q.FindIssueByNormalizedTitle(ctx, db.FindIssueByNormalizedTitleParams{WorkspaceID: workspaceID, NormalizedTitle: normalizedTitle})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Issue{}, false, nil
+	}
+	return issue, err == nil, err
+}
+
 func lockKey(workspaceID, projectID, parentIssueID pgtype.UUID, normalizedTitle string) string {
 	return strings.Join([]string{
 		"issue-active-duplicate",
