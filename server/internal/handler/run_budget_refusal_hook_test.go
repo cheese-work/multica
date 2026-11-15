@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -1059,9 +1060,19 @@ func TestNoticeInsertThenTaintedCallbackAndClaimedRunAuthorizationDoNotDeadlock(
 	if _, err := notice.Exec(ctx, `INSERT INTO agent_task_queue SELECT * FROM che2856_run_copy`); err != nil {
 		t.Fatal(err)
 	}
+	// The probe has its own connection: the gate, the callback and the
+	// authorization each hold one pooled connection, so a probe on the pool
+	// blocks forever once the pool is as small as a 4-CPU runner's default.
+	probe, err := pgx.ConnectConfig(ctx, testPool.Config().ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close(ctx)
 	waiting := func(query string) bool {
 		var n int
-		dbfx.QueryRow(t, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%' || $1 || '%'`, query).Scan(&n)
+		if err := probe.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%' || $1 || '%'`, query).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
 		return n > 0
 	}
 	until := func(what string, ok func() bool) {

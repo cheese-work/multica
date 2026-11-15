@@ -388,11 +388,17 @@ func extractToken(r *http.Request) (token string, fromCookie bool) {
 
 // scopedPATMayCall reports whether a scoped PAT may call this route. Each scope
 // opens only its own routes: decisions:feed the answer feed and its ack,
-// decisions:ci_request the CI decision-card create. Nothing else.
+// decisions:ci_request the CI decision-card create, decisions:read the state
+// read of one decision. Nothing else.
 func scopedPATMayCall(r *http.Request, scopes []string) bool {
 	path := r.URL.Path
 	switch r.Method {
 	case http.MethodGet:
+		if rest, found := strings.CutPrefix(path, "/api/decisions/"); found {
+			if id, state := strings.CutSuffix(rest, "/state"); state && id != "" && !strings.Contains(id, "/") && id != "feed" {
+				return slices.Contains(scopes, "decisions:read")
+			}
+		}
 		return path == "/api/decisions/feed" && slices.Contains(scopes, "decisions:feed")
 	case http.MethodPost:
 		if path == "/api/decisions/ci" {

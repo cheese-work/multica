@@ -393,3 +393,62 @@ func TestHandoffSaveKeepsEdgesAndValidatesThem(t *testing.T) {
 	})
 	testutil.Call(t, testHandler.CreateIssueWorkflow, createBad).Want(http.StatusBadRequest)
 }
+
+// The default workflow keeps a parent in in_progress while a sub-issue is open
+// (step 5), so a green PR on the parent must not advance it until every child
+// is done or closed. No children advances as before.
+func TestCIGreenAdvanceWaitsForOpenChildren(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	cases := []struct {
+		name     string
+		children []string
+		want     string
+	}{
+		{"open child", []string{"in_progress"}, "in_progress"},
+		{"one open of two", []string{"done", "todo"}, "in_progress"},
+		{"all done or cancelled", []string{"done", "cancelled"}, "in_review"},
+		{"no children", nil, "in_review"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installationID := int64(1966010 + i)
+			prNumber := int32(196610 + i)
+			fx := newPRMergeWebhookFixture(t, installationID)
+			wf := createTestWorkflowSteps(t, "CI children "+workflowTestSuffix(), []map[string]any{
+				{"status_key": "backlog"},
+				{"status_key": "in_progress", "edges": []map[string]any{
+					{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+				}},
+				{"status_key": "in_review"},
+				{"status_key": "blocked"},
+			})
+			projectID := createWorkflowTestProject(t, "CI children project")
+			setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID); err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range tc.children {
+				var childID string
+				if err := testPool.QueryRow(context.Background(), `
+					INSERT INTO issue (workspace_id, creator_type, creator_id, title, status, priority, number, position, parent_issue_id)
+					VALUES ($1, 'member', $2, 'CHE-5701 sub-issue', $4, 'none',
+					        (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1), 0, $3)
+					RETURNING id
+				`, testWorkspaceID, testUserID, fx.child.ID, status).Scan(&childID); err != nil {
+					t.Fatalf("create %s sub-issue: %v", status, err)
+				}
+				t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, childID) })
+			}
+			linkedPRForWakeup(t, fx, installationID, prNumber, "green-kids-a")
+			setWorkspacePRWakeSetting(t, "github_enabled", true)
+			refresh := startSnapshotRefresh(t, installationID, prNumber, newGreenSnapshot("green-kids-a").get)
+			refresh()
+			if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != tc.want {
+				t.Fatalf("green head with sub-issues %v left the issue at %s, want %s", tc.children, got, tc.want)
+			}
+		})
+	}
+}
