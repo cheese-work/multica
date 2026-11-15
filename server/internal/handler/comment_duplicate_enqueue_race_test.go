@@ -296,7 +296,10 @@ func TestCommentEnqueueRaceDifferentHeadNotCoalesced(t *testing.T) {
 	headBcommentID := insertDupRaceComment(t, issueID, "please review head B", "1 minute")
 
 	trigger := commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent}
+	logs := captureWarnings(t)
 	results := testHandler.enqueueCommentAgentTriggers(ctx, issue, util.MustParseUUID(headBcommentID), []commentAgentTrigger{trigger})
+	// CHE-4012: the non-convergence internal_error names its branch and ids.
+	assertAdmissionWarning(t, logs.String(), issueID, headBcommentID, agentID, "not_converged", "did not converge")
 
 	// Not coalesced into the head-A run, and NOT a fabricated deferred either — a
 	// snapshot cannot durably promise the head-A task's reconcile will still cover

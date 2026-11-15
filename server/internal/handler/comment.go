@@ -2486,6 +2486,16 @@ func (h *Handler) collapseIntoQueuedSibling(ctx context.Context, issue db.Issue,
 // genuine non-convergence it returns a truthful internal_error, never a fabricated
 // deferred that would silently drop the comment.
 func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, triggerCommentID pgtype.UUID) (DispatchStatus, DispatchReasonCode) {
+	// internalError is the only way out of this function with internal_error:
+	// the reason code carries no cause, so the warning is where it is read.
+	internalError := func(branch string, err error) (DispatchStatus, DispatchReasonCode) {
+		targetType, targetID := "agent", uuidToString(trigger.Agent.ID)
+		if trigger.Squad != nil {
+			targetType, targetID = "squad", uuidToString(trigger.Squad.ID)
+		}
+		logCommentAdmissionInternalError(branch, issue.ID, commentTriggerComputeOptions{ExcludeTriggerCommentID: triggerCommentID}, targetType, targetID, err)
+		return DispatchBlocked, ReasonInternalError
+	}
 	pending := trigger.AlreadyPending
 	lostRace := false
 	// Resolve the reviewed HEAD lazily and at most once — the common
@@ -2520,9 +2530,11 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 			// (TEN-356) — the merge misses and this falls through. The merge
 			// reports HOW it resolved: coalesced on success; blocked on a
 			// fail-closed / failed merge — never mislabeled as success (MUL-4525 §2).
-			if status, reason, terminal := commentMergeTerminalOutcome(
-				h.mergeCommentIntoPendingTask(ctx, issue, trigger, triggerCommentID, getHeadSha()),
-			); terminal {
+			merge := h.mergeCommentIntoPendingTask(ctx, issue, trigger, triggerCommentID, getHeadSha())
+			if merge == commentMergeError {
+				return internalError("merge_failed", errCommentMergeFailed)
+			}
+			if status, reason, terminal := commentMergeTerminalOutcome(merge); terminal {
 				return status, reason
 			}
 			// No same-head QUEUED row to fold into (merge missed). The two paths
@@ -2534,6 +2546,9 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				// the active task, or enqueue fresh if it has since finished.
 				active, activeErr := h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, trigger.Agent.ID, triggerCommentID)
 				if status, reason, enqueueFresh := decidePostMergeMiss(active, activeErr); !enqueueFresh {
+					if reason == ReasonInternalError {
+						return internalError("active_task_check", activeErr)
+					}
 					return status, reason
 				}
 				// enqueueFresh → fall through to the enqueue below.
@@ -2551,7 +2566,7 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				if err != nil {
 					slog.Warn("register planned comment failed",
 						"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.Agent.ID), "error", err)
-					return DispatchBlocked, ReasonInternalError
+					return internalError("register_planned_failed", err)
 				}
 				if registered {
 					return DispatchDeferred, ReasonDeferred
@@ -2588,7 +2603,10 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				lostRace = true
 				continue
 			}
-			return DispatchBlocked, commentEnqueueFailureReason(err)
+			if reason := commentEnqueueFailureReason(err); reason != ReasonInternalError {
+				return DispatchBlocked, reason
+			}
+			return internalError("enqueue_failed", err)
 		}
 		if h.collapseIntoQueuedSibling(ctx, issue, task) {
 			return DispatchCoalesced, ReasonCoalesced
@@ -2602,8 +2620,15 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 	// round 3). The comment row persists; a later trigger/edit can still cover it.
 	slog.Warn("comment trigger enqueue did not converge; reporting non-success",
 		"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.Agent.ID))
-	return DispatchBlocked, ReasonInternalError
+	return internalError("not_converged", errCommentEnqueueNotConverged)
 }
+
+var (
+	// errCommentMergeFailed stands in for a merge error that mergeCommentIntoPendingTask
+	// already logged with its cause.
+	errCommentMergeFailed         = errors.New("comment merge into the pending task failed; cause is in the preceding warning")
+	errCommentEnqueueNotConverged = errors.New("comment enqueue did not converge after bounded retries")
+)
 
 // commentTriggerOutcomes maps each target to its final outcome: a target that
 // resolved to an executing agent takes that agent's
