@@ -7,6 +7,8 @@ import { ArrowRight, ListChecks, Pencil } from "@multica/ui/icons";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useUpdateWorkspaceSystemWakeup, workspaceSystemWakeupsOptions } from "@multica/core/issues";
+import { EMPTY_TEXT_EDIT, useSystemWakeupDefaultDraftStore } from "@multica/core/issues/stores";
+import { usePersistedDraft } from "@multica/core/drafts";
 import type { WorkspaceSystemWakeup } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
@@ -111,7 +113,9 @@ function InstructionDialog({ rule, canManage }: { rule: WorkspaceSystemWakeup; c
   const update = useUpdateWorkspaceSystemWakeup(wsId);
   const id = useId();
   const [open, setOpen] = useState(false);
-  const [instruction, setInstruction] = useState(rule.instruction);
+  // Unsaved text outlives dismissal, unmount and reload; only a save or Cancel drops it.
+  const [draft, setDraft, clearDraft] = usePersistedDraft(useSystemWakeupDefaultDraftStore, rule.rule, EMPTY_TEXT_EDIT);
+  const instruction = draft.value ?? rule.instruction;
   const [error, setError] = useState("");
   const dirty = instruction.trim() !== rule.instruction;
   const label = canManage
@@ -122,10 +126,7 @@ function InstructionDialog({ rule, canManage }: { rule: WorkspaceSystemWakeup; c
       open={open}
       onOpenChange={(next) => {
         if (update.isPending) return;
-        if (next) {
-          setInstruction(rule.instruction);
-          setError("");
-        }
+        if (next) setError("");
         setOpen(next);
       }}
     >
@@ -145,6 +146,7 @@ function InstructionDialog({ rule, canManage }: { rule: WorkspaceSystemWakeup; c
             }
             try {
               await update.mutateAsync({ rule: rule.rule, instruction: next });
+              clearDraft();
               setOpen(false);
             } catch {
               setError(t(($) => $.wakeups.defaults.save_error));
@@ -169,7 +171,7 @@ function InstructionDialog({ rule, canManage }: { rule: WorkspaceSystemWakeup; c
             aria-invalid={!!error}
             className="resize-y text-base md:text-body"
             onChange={(event) => {
-              setInstruction(event.target.value);
+              setDraft({ value: event.target.value, base: rule.instruction });
               setError("");
             }}
             onKeyDown={(event) => {
@@ -194,7 +196,7 @@ function InstructionDialog({ rule, canManage }: { rule: WorkspaceSystemWakeup; c
           )}
           {canManage && (
             <DialogFooter>
-              <Button type="button" variant="outline" disabled={update.isPending} onClick={() => setOpen(false)}>
+              <Button type="button" variant="outline" disabled={update.isPending} onClick={() => { clearDraft(); setOpen(false); }}>
                 {t(($) => $.wakeups.cancel)}
               </Button>
               <Button type="submit" disabled={!dirty || update.isPending} aria-busy={update.isPending || undefined}>

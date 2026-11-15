@@ -26,6 +26,9 @@ export const useIssueTitleDraftStore = textEditStore("multica_issue_title_edit_d
 /** Key: wakeup id. Edit-prompt dialog. */
 export const useWakeupInstructionDraftStore = textEditStore("multica_wakeup_instruction_drafts");
 
+/** Key: system wakeup rule. Workspace default-instruction dialog. */
+export const useSystemWakeupDefaultDraftStore = textEditStore("multica_system_wakeup_default_drafts");
+
 /** Key: annotation note identity (draft key + quote anchor). Note popover. */
 export const useAnnotationNoteDraftStore = textEditStore("multica_annotation_note_drafts");
 

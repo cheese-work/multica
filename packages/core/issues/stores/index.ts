@@ -88,6 +88,7 @@ export {
 export {
   useIssueTitleDraftStore,
   useWakeupInstructionDraftStore,
+  useSystemWakeupDefaultDraftStore,
   useAnnotationNoteDraftStore,
   useWakeupFormDraftStore,
   EMPTY_TEXT_EDIT,

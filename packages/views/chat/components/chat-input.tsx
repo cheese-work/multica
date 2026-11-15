@@ -26,7 +26,8 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
 import { keyboardComposerMaxHeight } from "./keyboard-composer-cap";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
-import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
+import { EMPTY_PAGE_CONTEXT, usePageContextDraftStore } from "@multica/core/chat/page-context-draft";
+import { attachmentToDraftUpload, usePersistedDraft, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
 import { useShortcut, type ShortcutChord } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
@@ -352,18 +353,19 @@ export function ChatInput({
   const appliedConversationStarterIdRef = useRef<number | null>(null);
   const editorKey = editorKeyOverride ?? CHAT_COMPOSER_EDITOR_KEY;
 
-  // Leaving the page drops what was attached to it, so coming back later
-  // starts without it.
-  const pageContextKey = pageContext ? `${pageContext.type}:${pageContext.id}` : null;
-  const [attachedPageKey, setAttachedPageKey] = useState<string | null>(null);
-  const [shownPageKey, setShownPageKey] = useState(pageContextKey);
-  if (shownPageKey !== pageContextKey) {
-    setShownPageKey(pageContextKey);
-    setAttachedPageKey(null);
-  }
-  const attachedPage = pageContext && attachedPageKey === pageContextKey ? pageContext : null;
-  const togglePageContext = () =>
-    setAttachedPageKey((current) => (current === pageContextKey ? null : pageContextKey));
+  // The attached page is a snapshot kept with its draft: it survives navigation,
+  // unmount and reload, and goes only on send or an explicit remove.
+  const [pageDraft, setPageDraft, clearPageDraft] = usePersistedDraft(usePageContextDraftStore, draftKey, EMPTY_PAGE_CONTEXT);
+  const attachedPage = pageDraft.page;
+  const attachedIsCurrent =
+    !!pageContext && attachedPage?.type === pageContext.type && attachedPage.id === pageContext.id;
+  const togglePageContext = () => {
+    if (attachedIsCurrent) clearPageDraft();
+    else if (pageContext) {
+      const { id, label, type, description } = pageContext;
+      setPageDraft({ page: { id, label, type, description } });
+    }
+  };
 
   // The draft whose document the editor instance is currently HOLDING.
   //
@@ -795,7 +797,7 @@ export function ChatInput({
       if (accepted === false) return false;
       if (!committed) commitInput();
       // Context is for the message it went with; the next one starts without.
-      if (attachedPage) setAttachedPageKey(null);
+      if (attachedPage) usePageContextDraftStore.getState().clearDraft(keyAtSend);
       return true;
     },
   });
@@ -975,7 +977,7 @@ export function ChatInput({
               )}
               <button
                 type="button"
-                onClick={() => setAttachedPageKey(null)}
+                onClick={clearPageDraft}
                 aria-label={t(($) => $.input.page_context_remove)}
                 className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-surface-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
               >
@@ -1082,7 +1084,7 @@ export function ChatInput({
           {pageContext && (
             <IconButton
               type="button"
-              aria-pressed={!!attachedPage}
+              aria-pressed={attachedIsCurrent}
               onClick={togglePageContext}
               label={t(($) => $.input.page_context_add)}
               shortcut={<ShortcutKeycaps shortcut={PAGE_CONTEXT_SHORTCUT} decorative />}

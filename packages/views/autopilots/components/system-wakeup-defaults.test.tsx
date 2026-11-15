@@ -6,6 +6,8 @@ import { api } from "@multica/core/api";
 import { useUpdateIssueSystemWakeup } from "@multica/core/issues";
 import { renderWithI18n } from "../../test/i18n";
 import { SystemWakeupDefaults } from "./system-wakeup-defaults";
+import { setCurrentWorkspace } from "@multica/core/platform";
+import { useSystemWakeupDefaultDraftStore } from "@multica/core/issues/stores";
 
 vi.mock("@multica/core/api", () => ({
   api: { listWorkspaceSystemWakeups: vi.fn(), updateWorkspaceSystemWakeup: vi.fn(), updateIssueSystemWakeup: vi.fn() },
@@ -28,19 +30,24 @@ function IssueRuleSwitch() {
   );
 }
 
+let mounted: { unmount: () => void } | undefined;
 function mount(onShowCustomized = vi.fn(), extra?: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  renderWithI18n(
+  const view = renderWithI18n(
     <QueryClientProvider client={client}>
       <SystemWakeupDefaults onShowCustomized={onShowCustomized} />
       {extra}
     </QueryClientProvider>,
   );
+  mounted = view;
   return onShowCustomized;
 }
 
 beforeEach(() => {
   role = "admin";
+  setCurrentWorkspace("ws", "ws");
+  useSystemWakeupDefaultDraftStore.getState().clearDraft("child_done");
+  localStorage.clear();
   list.mockReset().mockResolvedValue([
     { rule: "child_done", enabled: true, instruction: "", builtin_instruction: "Advance the next stage.", customized: 2 },
   ]);
@@ -105,4 +112,41 @@ it("shows the default read-only to members who cannot change it", async () => {
   expect(await screen.findByText("Only owners and admins can change these defaults.")).toBeVisible();
   expect(screen.getByRole("textbox", { name: "Default instruction" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+});
+
+async function openEditor() {
+  fireEvent.click(await screen.findByRole("button", { name: "Edit default instruction" }));
+  return screen.findByRole("textbox", { name: "Default instruction" });
+}
+
+it("keeps an unsaved instruction after Escape and reopening", async () => {
+  mount();
+  fireEvent.change(await openEditor(), { target: { value: "Unsaved work" } });
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(await openEditor()).toHaveValue("Unsaved work");
+});
+
+it("keeps an unsaved instruction across unmount and a reload", async () => {
+  mount();
+  fireEvent.change(await openEditor(), { target: { value: "Unsaved work" } });
+  mounted?.unmount();
+  // A reload: storage is the only thing that survives it.
+  setCurrentWorkspace(null, null);
+  setCurrentWorkspace("ws", "ws");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  mount();
+  expect(await openEditor()).toHaveValue("Unsaved work");
+});
+
+it("drops the unsaved instruction on Cancel and after a successful save", async () => {
+  mount();
+  fireEvent.change(await openEditor(), { target: { value: "Throwaway" } });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(await openEditor()).toHaveValue("");
+  fireEvent.change(screen.getByRole("textbox", { name: "Default instruction" }), { target: { value: "Saved" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(useSystemWakeupDefaultDraftStore.getState().hasDraft("child_done")).toBe(false);
 });

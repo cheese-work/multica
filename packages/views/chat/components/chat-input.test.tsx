@@ -10,6 +10,8 @@ import enEditor from "../../locales/en/editor.json";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import type { ChatMessage } from "@multica/core/types";
+import { setCurrentWorkspace } from "@multica/core/platform";
+import { usePageContextDraftStore } from "@multica/core/chat/page-context-draft";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { useChatAnnotations } from "./use-chat-annotations";
@@ -794,6 +796,8 @@ describe("ChatInput page context", () => {
 
   beforeEach(() => {
     (useChatStore.getState() as unknown as { activeSessionId: string | null }).activeSessionId = "session-1";
+    setCurrentWorkspace("ws", "ws");
+    for (const key of ["session-1", "session-2"]) usePageContextDraftStore.getState().clearDraft(key);
   });
 
   it("offers nothing off an issue or project page", () => {
@@ -831,7 +835,7 @@ describe("ChatInput page context", () => {
     expect(pageChip()).toBeNull();
   });
 
-  it("toggles from the button and drops the page when the page changes", () => {
+  it("toggles from the button and keeps the page when the page changes", () => {
     const { rerender } = renderInput({ pageContext: page });
 
     fireEvent.click(screen.getByRole("button", { name: "Add this page as context" }));
@@ -841,27 +845,67 @@ describe("ChatInput page context", () => {
 
     fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
     rerender(element({ pageContext: { ...page, id: "issue-2", label: "MUL-2" } }));
-    expect(pageChip()).toBeNull();
+    expect(pageChip()).toHaveTextContent("MUL-1");
   });
 
   it.each([
     ["another page", { ...page, id: "issue-2", label: "MUL-2" }],
     ["a page with no context", null],
-  ])("does not send the page after leaving it for %s and coming back", async (_, away) => {
+  ])("keeps the attached page, not the new one, after leaving it for %s and coming back", async (_, away) => {
     const onSend = vi.fn<ChatInputOnSend>(() => true);
     const { rerender } = renderInput({ onSend, pageContext: page });
     fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
     expect(pageChip()).not.toBeNull();
 
     rerender(element({ onSend, pageContext: away }));
+    expect(pageChip()).toHaveTextContent("MUL-1");
     rerender(element({ onSend, pageContext: page }));
-    expect(pageChip()).toBeNull();
-    expect(screen.getByRole("button", { name: "Add this page as context" })).toHaveAttribute("aria-pressed", "false");
+    expect(pageChip()).toHaveTextContent("MUL-1");
+    expect(screen.getByRole("button", { name: "Add this page as context" })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.change(screen.getByTestId("editor"), { target: { value: "A new question" } });
     fireEvent.click(sendButton());
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
-    expect(onSend.mock.calls[0]![0]).toBe("A new question");
+    expect(onSend.mock.calls[0]![0]).toBe("[MUL-1](mention://issue/issue-1)\n\nA new question");
+  });
+
+  it("keeps the original page on another page and replaces it only when asked", () => {
+    const other = { ...page, id: "issue-2", label: "MUL-2", description: "Other" };
+    const { rerender } = renderInput({ pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    rerender(element({ pageContext: other }));
+    expect(pageChip()).toHaveTextContent("MUL-1");
+    expect(screen.getByRole("button", { name: "Add this page as context" })).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add this page as context" }));
+    expect(pageChip()).toHaveTextContent("MUL-2");
+    expect(pageChip()).not.toHaveTextContent("MUL-1");
+  });
+
+  it("keeps the attached page across unmount and a reload, only for its own draft", async () => {
+    const first = renderInput({ pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    first.unmount();
+    // A reload: storage is the only thing that survives it.
+  setCurrentWorkspace(null, null);
+  setCurrentWorkspace("ws", "ws");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const second = renderInput({ pageContext: null });
+    expect(pageChip()).toHaveTextContent("MUL-1");
+    second.unmount();
+
+    (useChatStore.getState() as unknown as { activeSessionId: string | null }).activeSessionId = "session-2";
+    renderInput({ pageContext: page });
+    expect(pageChip()).toBeNull();
+  });
+
+  it("drops the attached page only on explicit removal", () => {
+    renderInput({ pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove page context" }));
+    expect(pageChip()).toBeNull();
+    expect(usePageContextDraftStore.getState().hasDraft("session-1")).toBe(false);
   });
 });
 
