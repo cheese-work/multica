@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -89,4 +90,29 @@ func WorkflowTypeKeys(settings []byte) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ValidateWorkflowByType checks a workflow_by_type value before it is stored
+// (CHE-5946): a non-empty object whose keys are lowercase title types without
+// whitespace and whose values are workflow UUIDs. The reader skips a bad entry
+// silently, so a typo here would quietly route a type to the project workflow.
+func ValidateWorkflowByType(raw []byte) error {
+	var byType map[string]any
+	if err := json.Unmarshal(raw, &byType); err != nil || byType == nil {
+		return fmt.Errorf("workflow_by_type must be an object of title type to workflow id")
+	}
+	if len(byType) == 0 {
+		return fmt.Errorf("workflow_by_type must name at least one title type; use null to remove it")
+	}
+	for key, value := range byType {
+		if key == "" || key != strings.ToLower(key) || strings.ContainsAny(key, " \t\r\n") {
+			return fmt.Errorf("workflow_by_type key %q must be a lowercase title type without spaces", key)
+		}
+		text, isString := value.(string)
+		var id pgtype.UUID
+		if !isString || id.Scan(text) != nil || !id.Valid {
+			return fmt.Errorf("workflow_by_type.%s must be a workflow id (UUID)", key)
+		}
+	}
+	return nil
 }

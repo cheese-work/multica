@@ -772,6 +772,17 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return &errDispatchSkipped{reason: "recent duplicate autopilot issue: " + util.UUIDToString(duplicate.ID), code: dispatch.ReasonAlreadyActive}
 	}
 
+	// A title with {{date}} names one day's issue: refuse when any issue, open or
+	// closed, already has it (CHE-5757). A provider-failure recovery re-creates
+	// the issue on purpose, so it is exempt.
+	if hasDateToken(ap) && (len(recoveryAttempts) == 0 || recoveryAttempts[0] == nil) {
+		if existing, found, err := issueguard.LockAndFindSameTitleIssue(ctx, qtx, ap.WorkspaceID, title); err != nil {
+			return fmt.Errorf("same-title guard: %w", err)
+		} else if found {
+			return &errDispatchSkipped{reason: "issue with the same dated title exists: " + util.UUIDToString(existing.ID), code: dispatch.ReasonAlreadyActive}
+		}
+	}
+
 	issueNumber, err := AllocateIssueNumber(ctx, qtx, ap.WorkspaceID, issueCountPolicy)
 	if err != nil {
 		var limitErr *IssueLimitReachedError
@@ -2340,6 +2351,20 @@ func (s *AutopilotService) interpolateTemplate(ap db.Autopilot, run db.Autopilot
 			return match
 		}
 	})
+}
+
+// hasDateToken reports whether the autopilot's title template renders {{date}}.
+func hasDateToken(ap db.Autopilot) bool {
+	tmpl := ap.Title
+	if ap.IssueTitleTemplate.Valid && ap.IssueTitleTemplate.String != "" {
+		tmpl = ap.IssueTitleTemplate.String
+	}
+	for _, m := range issueTitleTemplateTokenRE.FindAllStringSubmatch(tmpl, -1) {
+		if m[1] == "date" {
+			return true
+		}
+	}
+	return false
 }
 
 // SupportedIssueTitleTemplateVariables enumerates the placeholders that
