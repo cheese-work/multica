@@ -440,7 +440,7 @@ jobs:
           fetch-depth: 0
 
       - name: Merge the newest main
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
         run: |
           git fetch origin main
           git -c user.name=ci -c user.email=ci@invalid merge --no-edit origin/main

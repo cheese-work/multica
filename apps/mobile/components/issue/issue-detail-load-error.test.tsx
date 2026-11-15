@@ -42,6 +42,8 @@ vi.mock("@/data/queries/issues", () => ({
   issueTimelineOptions: () => ({ queryKey: ["timeline"] }),
   issueKeys: { timeline: () => ["timeline"] },
 }));
+// The real module throws at load without EXPO_PUBLIC_API_URL; the screen only needs the class.
+vi.mock("@/data/api", () => ({ ApiError: class ApiError extends Error { status = 0; } }));
 vi.mock("@/data/queries/inbox", () => ({ inboxListOptions: () => ({ queryKey: ["inbox"] }) }));
 vi.mock("@/data/mutations/inbox", () => ({ useMarkInboxRead: () => ({ mutate: vi.fn() }) }));
 vi.mock("@/data/queries/pins", () => ({ pinListOptions: () => ({ queryKey: ["pins"] }) }));

@@ -7,6 +7,7 @@ import Inbox from "@/app/(app)/[workspace]/(tabs)/inbox";
 const state = vi.hoisted(() => ({ rows: [] as InboxItem[], markRead: vi.fn() }));
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
+  useState: (initial: unknown) => [initial, vi.fn()],
   useMemo: (create: () => unknown) => create(),
   useCallback: (callback: unknown) => callback,
 }));

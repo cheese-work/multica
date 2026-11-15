@@ -537,7 +537,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         )}
         <AppLink
           href={issueHref}
-          className="inline-flex min-h-9 max-w-full items-center break-all rounded-full border border-surface-border px-2 font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+          className="inline-flex min-h-9 max-w-full items-center break-all rounded-lg border border-surface-border px-2 font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
           data-testid="decision-request-source-issue"
         >
           {card.issue_identifier || card.issue_id}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { MessageSquarePlus, Trash2 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
@@ -11,8 +11,11 @@ import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotatio
 import { useT } from "../../i18n";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
 import { CommentSelectionBubble } from "./comment-selection-bubble";
-import { AnnotationComposer, type AnnotationSendControls } from "./annotation-composer";
+import type { AnnotationSendControls } from "./annotation-composer";
 import type { ContentEditorRef } from "../../editor/content-editor";
+
+// The composer pulls in the Tiptap engine; /chat reaches this hook, so load it on demand (CHE-3018).
+const AnnotationComposer = lazy(() => import("./annotation-composer").then((m) => ({ default: m.AnnotationComposer })));
 
 /** Text overrides for a surface that is not an issue thread (the DM). */
 export interface AnnotationLabels {
@@ -441,7 +444,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   const renderComposer = (controls?: AnnotationSendControls) => {
     return enabled && selection ? <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing && composed ? <AnnotationComposer key={editing.id} issueId={issueId!} owner={draftKey}
+          {editing && composed ? <Suspense fallback={null}><AnnotationComposer key={editing.id} issueId={issueId!} owner={draftKey}
             annotation={editing} existing={editingExisting}
             number={annotations.findIndex((a) => a.id === editing.id) + 1}
             editorRef={inputRef} controls={controls}
@@ -457,7 +460,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
             onRemove={editingExisting ? () => {
               useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
               close(true);
-            } : undefined} /> : editing ? <AnnotationNoteEditor key={editing.id} inputRef={noteInputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
+            } : undefined} /></Suspense> : editing ? <AnnotationNoteEditor key={editing.id} inputRef={noteInputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
               label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
               confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
               onEdit={(note) => { useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}

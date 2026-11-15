@@ -10,7 +10,8 @@ const job = ci.match(/^  locale-parity:\n([\s\S]*?)(?=^  \S)/m)?.[1] ?? "";
 test("locale-parity job merges the newest main before running the parity test", () => {
   assert.ok(job, "locale-parity job exists");
   assert.match(job, /needs\.changes\.outputs\.frontend == 'true'/);
-  assert.match(job, /if: github\.event_name == 'pull_request'/);
+  // A stacked PR (base is not main) skips the merge: main conflicts with the stack's upper layers, and the bottom PR still merges main.
+  assert.match(job, /if: github\.event_name == 'pull_request' && github\.base_ref == 'main'/);
   const merge = job.search(/git .*merge --no-edit origin\/main/);
   assert.ok(merge > -1, "merges main");
   assert.ok(job.indexOf("parity.test.ts") > merge, "tests after the merge");
