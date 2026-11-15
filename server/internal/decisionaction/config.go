@@ -71,6 +71,7 @@ var settingsKeys = []string{
 	"pr_event_capture", "system_wakeup_child_done", "system_wakeup_child_done_instruction",
 	"agent_comment_wake_policy_enabled", "mermaid_orientation",
 	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode",
+	"workflow_by_type",
 }
 
 // SettingsKeys lists the allow table keys.
