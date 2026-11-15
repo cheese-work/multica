@@ -157,37 +157,46 @@ func (d *Daemon) autoUpdateLoop(ctx context.Context) {
 	if err := sleepWithContext(ctx, autoUpdateInitialDelay); err != nil {
 		return
 	}
+	// The reload half runs on its own goroutine. tryAutoUpdate does a network
+	// lookup; sharing one loop would let a stalled lookup hold the kick past the
+	// idle instant (CHE-5881). The two halves stay safe together: both take
+	// update ownership with the same CAS on d.updating, and both restart only
+	// through the strict claim barrier.
+	if reloadEnabled {
+		reloadDone := make(chan struct{})
+		go func() { defer close(reloadDone); d.selfReloadLoop(ctx) }()
+		defer func() { <-reloadDone }() // return only once both halves have stopped
+	}
 	if pullEnabled {
 		d.tryAutoUpdate(ctx)
-	}
-	if reloadEnabled {
-		d.trySelfReload(ctx)
-	}
-
-	// Tickers start only now, after the first check. Starting them before the
-	// delay would let an interval shorter than autoUpdateInitialDelay buffer a
-	// tick and fire a second check immediately after the first.
-	//
-	// A disabled half leaves its channel nil, which never fires in a select.
-	var pullTick, reloadTick <-chan time.Time
-	if pullEnabled {
 		ticker := time.NewTicker(pullInterval)
 		defer ticker.Stop()
-		pullTick = ticker.C
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				d.tryAutoUpdate(ctx)
+			}
+		}
 	}
-	if reloadEnabled {
-		ticker := time.NewTicker(selfReloadCheckInterval)
-		defer ticker.Stop()
-		reloadTick = ticker.C
-	}
+	<-ctx.Done()
+}
 
+// selfReloadLoop checks the on-disk binary at startup, every
+// selfReloadCheckInterval, and whenever a pending reload finds the daemon idle
+// (reloadKick). The ticker starts after the first check, so an interval shorter
+// than autoUpdateInitialDelay cannot buffer a tick and fire a second check
+// immediately after the first.
+func (d *Daemon) selfReloadLoop(ctx context.Context) {
+	d.trySelfReload(ctx)
+	ticker := time.NewTicker(selfReloadCheckInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-pullTick:
-			d.tryAutoUpdate(ctx)
-		case <-reloadTick:
+		case <-ticker.C:
 			d.trySelfReload(ctx)
 		case <-d.reloadKick: // reload pending and just went idle: reload now, not at the next tick
 			d.trySelfReload(ctx)

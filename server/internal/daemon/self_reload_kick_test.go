@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 // CHE-5881: a pending reload never pauses claims. It restarts at the first
@@ -116,5 +118,39 @@ func TestTaskDone_KickedReloadReleasesBarrierWhenRestartCannotBeScheduled(t *tes
 	}
 	if claimsPaused(t, d) {
 		t.Fatal("claim barrier left set after the restart could not be scheduled")
+	}
+}
+
+// A stalled update lookup (tryAutoUpdate, network) must not hold the kick: the
+// reload runs independently of the pull half, so the last task ending restarts
+// the daemon within 1 s even while the lookup is still blocked.
+func TestAutoUpdateLoop_KickReloadsWhileUpdateLookupIsStalled(t *testing.T) {
+	d, restartCalls := newSelfReloadTestDaemon(t, "0.3.7")
+	d.cfg.AutoUpdateEnabled = true
+	stubSelfVersion(t, "0.3.8", nil)
+	stubFork(t, nil, nil)
+	stalled := make(chan struct{})
+	resolveForkUpdate = func(ctx context.Context, _, _, _, _, _ string) (*cli.ForkUpdate, error) {
+		close(stalled)
+		<-ctx.Done() // the lookup never answers
+		return nil, ctx.Err()
+	}
+	d.reloadKick = make(chan struct{}, 1)
+	d.activeTasks.Store(1)
+	origDelay, origInterval := autoUpdateInitialDelay, selfReloadCheckInterval
+	t.Cleanup(func() { autoUpdateInitialDelay, selfReloadCheckInterval = origDelay, origInterval })
+	autoUpdateInitialDelay, selfReloadCheckInterval = time.Millisecond, time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.autoUpdateLoop(ctx)
+	<-stalled
+	waitFor(t, func() bool { return d.reloadPending() != "" }, "reload never became pending while the lookup stalled")
+
+	d.taskDone()
+	start := time.Now()
+	waitFor(t, func() bool { return restartCalls.Load() == 1 }, "kick did not reload while the update lookup was stalled")
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("restart took %v after the last task ended, want under 1s", took)
 	}
 }
