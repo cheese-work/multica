@@ -36,6 +36,15 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [{ id: 7 }] }).decision_requests).toBeUndefined();
   });
 
+  it("keeps a batch's items and drops a malformed list so no per-item choice is offered", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open", batch_id: "batch" };
+    const items = [{ action_id: "a1", issue_id: "i1", issue_identifier: "CHE-1", state: "pending" }];
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, batch_items: items } }).decision_request?.batch_items).toEqual(items);
+    const bad = ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, batch_items: [{ issue_id: "i1" }] } }).decision_request;
+    expect(bad?.batch_id).toBe("batch");
+    expect(bad?.batch_items).toBeUndefined();
+  });
+
   it("keeps the record comment of an answered request and drops a malformed one", () => {
     const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: "record" } }).decision_request?.record_comment_id).toBe("record");
