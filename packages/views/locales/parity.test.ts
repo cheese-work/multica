@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RESOURCES } from "./index";
+import ruAllowList from "./ru-parity-allowlist.json";
 
 // Schema-level guard: every key in the EN bundle must have a counterpart
 // in every non-English bundle and vice-versa. Catches retrofit drift where a
@@ -48,6 +49,10 @@ function keySet(bundle: Record<string, unknown>): Set<string> {
   return new Set(flattenKeys(bundle).map(normalizePlural));
 }
 
+// Temporary, dated `ru`-only waiver (CHE-6103). Other locales stay strict.
+// Entries must still be real gaps, so the list shrinks as `ru` is translated.
+const RU_WAIVER: Record<"missing" | "extra", Record<string, string[]>> = ruAllowList;
+
 const en = RESOURCES.en;
 const translatedLocales = Object.keys(RESOURCES).filter(
   (locale) => locale !== "en",
@@ -73,15 +78,19 @@ describe("locale bundle parity", () => {
       it(`${ns}: ${locale} covers every EN key`, () => {
         const enKeys = keySet(en[ns] ?? {});
         const translatedKeys = keySet(bundle[ns] ?? {});
+        const waived = new Set(locale === "ru" ? RU_WAIVER.missing[ns] : []);
         const missing = [...enKeys].filter((k) => !translatedKeys.has(k));
-        expect(missing).toEqual([]);
+        expect(missing.filter((k) => !waived.has(k))).toEqual([]);
+        expect([...waived].filter((k) => !missing.includes(k))).toEqual([]);
       });
 
       it(`${ns}: EN covers every ${locale} key`, () => {
         const enKeys = keySet(en[ns] ?? {});
         const translatedKeys = keySet(bundle[ns] ?? {});
+        const waived = new Set(locale === "ru" ? RU_WAIVER.extra[ns] : []);
         const extra = [...translatedKeys].filter((k) => !enKeys.has(k));
-        expect(extra).toEqual([]);
+        expect(extra.filter((k) => !waived.has(k))).toEqual([]);
+        expect([...waived].filter((k) => !extra.includes(k))).toEqual([]);
       });
     }
   }
