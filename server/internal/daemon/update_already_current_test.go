@@ -30,6 +30,7 @@ func TestHandleUpdateAlreadyOnServerBuildCompletesWithoutRestart(t *testing.T) {
 	}
 
 	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: "0.7.1"})
+	d.updateOutbox.Wait()
 
 	last := payloads[len(payloads)-1]
 	if last["status"] != "completed" {

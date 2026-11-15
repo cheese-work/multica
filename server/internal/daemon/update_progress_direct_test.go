@@ -88,6 +88,7 @@ func TestHandleUpdate_DirectDownloadReportsProgressAndKeepsBinaryOnFailure(t *te
 	d.cancelFunc = func() {}
 
 	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: directTestTag})
+	d.updateOutbox.Wait()
 
 	reports := srv.progressReports()
 	if len(reports) != 2 { // the fake download takes well under 1s: first report + flushed final one
