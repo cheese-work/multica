@@ -99,6 +99,11 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	heldHints, ok := checkHeldSettingsAsk(writer, parsed, workspace.Settings)
+	if !ok {
+		return
+	}
+	hints = append(hints, heldHints...)
 	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
 		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
 		if !ok {
