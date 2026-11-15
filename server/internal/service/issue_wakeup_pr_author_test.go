@@ -15,6 +15,7 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 	for _, scenario := range []struct {
 		name       string
 		rule       string
+		status     string
 		assignee   string
 		author     bool
 		configured bool
@@ -43,6 +44,8 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 		{name: "behind wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, mergeState: "BEHIND", wantRun: true},
 		{name: "returned to draft wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, reason: PRAttentionDraft, wantRun: true},
 		{name: "author takes precedence over agent assignee", rule: SystemRulePRAttention, assignee: "agent", author: true, wantRun: true},
+		// CHE-6111: the reviewer holds the issue in agent_review; the conflict wake still goes to the PR author.
+		{name: "agent_review conflict wakes author not reviewer", rule: SystemRulePRAttention, status: "agent_review", assignee: "agent", author: true, wantRun: true},
 		{name: "squad fallback without author", rule: SystemRulePRChecksFailed, assignee: "squad", wantRun: true},
 		{name: "workspace author binding", rule: SystemRulePRChecksFailed, assignee: "member", author: true, binding: true, wantRun: true},
 		{name: "unavailable author falls back to member FYI", rule: SystemRulePRAttention, assignee: "member", author: true, archived: true, wantFYI: true},
@@ -60,7 +63,15 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 			} else if scenario.assignee == "squad" {
 				assigneeID = fixture.Squad(t, "resolver squad", env.agent)
 			}
-			fixture.Exec(t, `UPDATE issue SET status='in_review',assignee_type=$2,assignee_id=$3 WHERE id=$1`, env.issue, scenario.assignee, assigneeID)
+			status := scenario.status
+			if status == "" {
+				status = "in_review"
+			} else {
+				fixture.Insert(t, "issue_status", testutil.Cols{
+					"workspace_id": fixture.WorkspaceID, "key": status, "name": "Agent Review", "category": "started", "color": "#6366f1", "position": 9,
+				})
+			}
+			fixture.Exec(t, `UPDATE issue SET status=$4,assignee_type=$2,assignee_id=$3 WHERE id=$1`, env.issue, scenario.assignee, assigneeID, status)
 			fixture.Cleanup(t, "DELETE FROM inbox_item WHERE issue_id=$1", env.issue)
 			if scenario.configured {
 				env.define(t, WakeupScopeWorkspace, scenario.rule, `"enabled":true`)
