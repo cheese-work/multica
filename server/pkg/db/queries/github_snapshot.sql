@@ -188,8 +188,8 @@ ORDER BY installation_rank, last_touched_at;
 -- built-in pr_needs_attention wake needs a fresh snapshot, so no per-issue
 -- "wake on merge conflict" rule is required). A decided snapshot leaves the undecided sweep,
 -- but a base-branch move can turn it conflicting without any event for this
--- PR, so watched PRs are re-fetched on the TTL regardless. The candidate set
--- comes from the enabled rules, whose count is capped. Like the undecided
+-- PR, so watched PRs are re-fetched on the TTL regardless. The batch is
+-- bounded by max_rows. Like the undecided
 -- sweep, an address cursor rotates the bounded batch, so addresses whose
 -- fetches keep failing (their snapshot never gets newer) cannot pin it.
 WITH candidates AS (
