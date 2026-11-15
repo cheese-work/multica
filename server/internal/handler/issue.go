@@ -1735,6 +1735,14 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		creatorFilter = id
 	}
+	var requestedByFilter pgtype.UUID
+	if c := r.URL.Query().Get("requested_by_id"); c != "" {
+		id, ok := parseUUIDOrBadRequest(w, c, "requested_by_id")
+		if !ok {
+			return
+		}
+		requestedByFilter = id
+	}
 	var projectFilter pgtype.UUID
 	if p := r.URL.Query().Get("project_id"); p != "" {
 		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
@@ -1795,6 +1803,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			AssigneeID:         assigneeFilter,
 			AssigneeIds:        assigneeIdsFilter,
 			CreatorID:          creatorFilter,
+			RequestedByID:      requestedByFilter,
 			ProjectID:          projectFilter,
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
@@ -1995,6 +2004,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if creatorFilter.Valid {
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
+	}
+	if requestedByFilter.Valid {
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(requestedByFilter)))
 	}
 	if projectFilter.Valid {
 		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
@@ -2548,6 +2560,13 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(id)))
+	}
+	if raw := r.URL.Query().Get("requested_by_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "requested_by_id")
+		if !ok {
+			return
+		}
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(id)))
 	}
 	if raw := r.URL.Query().Get("project_id"); raw != "" {
 		id, ok := parseUUIDOrBadRequest(w, raw, "project_id")

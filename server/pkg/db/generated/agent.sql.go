@@ -9958,6 +9958,10 @@ WHERE a.workspace_id = $1
             AND i.creator_id = $4::uuid
           )
           OR (
+            $3::text IN ('requested', 'any')
+            AND i.requested_by_id = $4::uuid
+          )
+          OR (
             $3::text IN ('involved', 'any')
             AND (
               (

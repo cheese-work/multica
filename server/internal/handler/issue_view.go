@@ -30,7 +30,7 @@ const issueViewsPerOwnerMax = 100
 
 var (
 	validIssueViewScopeTypes        = []string{"workspace", "my", "project"}
-	validIssueViewMyVariants        = []string{"assigned", "created", "involved", "any"}
+	validIssueViewMyVariants        = []string{"assigned", "created", "requested", "involved", "any"}
 	validIssueViewWorkspaceVariants = []string{"members", "agents"}
 	validIssueViewVisibilities      = []string{"private", "workspace"}
 )
