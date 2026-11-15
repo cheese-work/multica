@@ -10,7 +10,8 @@
  *   missing-render (rule 9)  a render fails or times out
  * Size and colour are not compared (D1). Rules 1, 2, 4 and 7 to 12 are later steps.
  *
- * Every failure is one instance: rule x block x case. Writes <out>/result.json and, per case,
+ * A case may list `steps` (click / type) that bring the real component to the state the lock draws; result.json
+ * `renders` records the steps and a hash of the code render per case. Every failure is one instance: rule x block x case. Writes <out>/result.json and, per case,
  * <out>/side-by-side-<state>-<profile>.png. Exit 1 on any instance.
  *
  * Run on X99 (headless Chromium, vite build):
@@ -29,6 +30,7 @@ const DEVICES = "design/devices.yml";
 const RENDER_TIMEOUT_MS = 20_000;
 
 export const normalizeText = (s) => String(s).replace(/\s+/g, " ").trim();
+const STEP_TIMEOUT_MS = 3_000;
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
 const instance = (c, rule, block, side, reason, extra = {}) => ({
@@ -44,14 +46,17 @@ export function renderFailure(c, side, err) {
  * Compare what the lock and the code render for one case.
  * A side is { order: [block id in document order], blocks: { id: { text } } }.
  */
-export function compareBlocks(c, lock, code) {
+export function compareBlocks(c, lock, code, mapped = [...new Set([...Object.keys(lock.blocks), ...Object.keys(code.blocks)])]) {
   const out = [];
-  const common = Object.keys(lock.blocks).filter((id) => id in code.blocks);
-  for (const id of Object.keys(lock.blocks)) {
-    if (!(id in code.blocks)) out.push(instance(c, "missing-block", id, "code", `the lock draws ${id}; the code render has no element with data-testid="${id}"`));
-  }
-  for (const id of Object.keys(code.blocks)) {
-    if (!(id in lock.blocks)) out.push(instance(c, "missing-block", id, "lock", `the code renders ${id}; the lock state draws no block that matches its selector`));
+  const common = mapped.filter((id) => id in lock.blocks && id in code.blocks);
+  // Every mapped id is judged, so a block absent on both sides still fails (rule 3).
+  for (const id of mapped) {
+    const inLock = id in lock.blocks;
+    const inCode = id in code.blocks;
+    if (inLock && inCode) continue;
+    if (!inLock && !inCode) out.push(instance(c, "missing-block", id, "both", `${id} is mapped, but the lock state draws no block that matches its selector and the code render has no element with data-testid="${id}"`));
+    else if (!inCode) out.push(instance(c, "missing-block", id, "code", `the lock draws ${id}; the code render has no element with data-testid="${id}"`));
+    else out.push(instance(c, "missing-block", id, "lock", `the code renders ${id}; the lock state draws no block that matches its selector`));
   }
   // Order is compared over the blocks both sides have, so one missing block does not shift the others.
   const lockSeq = lock.order.filter((id) => common.includes(id));
@@ -109,6 +114,21 @@ function readSide({ mode, state, blocks }) {
   return { order, blocks: Object.fromEntries(Object.entries(out).map(([id, v]) => [id, { text: v.text }])) };
 }
 
+/** A case's interaction state: steps run on the code render, in order. { click: sel } or { type: sel, text }. */
+const stepLabel = (st) => (st.click ? `click ${st.click}` : `type ${st.type}`);
+async function runSteps(page, steps = []) {
+  for (const st of steps) {
+    try {
+      const target = page.locator(st.click ?? st.type).first();
+      await target.click({ timeout: STEP_TIMEOUT_MS });
+      if (st.type) await page.keyboard.type(st.text);
+    } catch (err) {
+      throw new Error(`step ${stepLabel(st)} failed: ${String(err?.message ?? err).split("\n")[0]}`);
+    }
+  }
+  if (steps.length > 0) await page.waitForTimeout(200);
+}
+
 function buildHarness(out) {
   const build = resolve(out, "harness-build");
   const r = spawnSync(resolve(ROOT, "node_modules/.bin/vite"), ["build", "--config", "scripts/design/pattern-harness/fidelity.vite.config.mjs"], {
@@ -140,6 +160,7 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
   const harnessPage = harness ?? buildHarness(out);
   const browser = await chromium.launch();
   const violations = [];
+  const renders = [];
   try {
     for (const c of cases) {
       const profile = devices.get(c.profile);
@@ -147,6 +168,7 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
       const open = () => browser.newPage({ viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.dpr });
       const shots = { lock: null, code: null };
       const sides = {};
+      let rootHash;
       for (const side of ["lock", "code"]) {
         const page = await open();
         try {
@@ -158,6 +180,10 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
             await page.waitForSelector("[data-fidelity-root], [data-fidelity-error]", { timeout: RENDER_TIMEOUT_MS });
             if (await page.$("[data-fidelity-error]")) throw new Error(`fixture not found: ${c.fixture}`);
             await page.waitForTimeout(300); // lazy content (markdown, editor) settles
+          }
+          if (side === "code") {
+            await runSteps(page, c.steps);
+            rootHash = sha256(await page.evaluate(() => document.querySelector("[data-fidelity-root]").outerHTML));
           }
           const read = await page.evaluate(readSide, { mode: side, state: c.state, blocks });
           if (read.error) throw new Error(read.error);
@@ -171,13 +197,14 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
           await page.close();
         }
       }
-      if (sides.lock && sides.code) violations.push(...compareBlocks(c, sides.lock, sides.code));
+      renders.push({ state: c.state, profile: c.profile, fixture: c.fixture, steps: (c.steps ?? []).map(stepLabel), code_root_sha256: rootHash });
+      if (sides.lock && sides.code) violations.push(...compareBlocks(c, sides.lock, sides.code, blocks.map((b) => b.id)));
       await sideBySide(browser, shots.lock, shots.code, resolve(out, `side-by-side-${c.state}-${c.profile}.png`));
     }
   } finally {
     await browser.close();
   }
-  const result = { topic: map.topic, cases: cases.map((c) => `${c.state}@${c.profile}`), ok: violations.length === 0, violations };
+  const result = { topic: map.topic, cases: cases.map((c) => `${c.state}@${c.profile}`), ok: violations.length === 0, renders, violations };
   writeFileSync(resolve(out, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
   return result;
 }

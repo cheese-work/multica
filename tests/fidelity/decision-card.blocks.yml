@@ -2,7 +2,8 @@
 # One case per state the lock draws (its numbered label): lock file, state id, profile id, fixture.
 # State id s<N> is the lock label number N. Block ids are data-testid values the code carries today;
 # blocks the lock draws that the code does not yet tag (options, composer, buttons) join in step 5.
-# Fixtures are named by the action each card shows; the harness supplies them (step 2).
+# A case names the fixture that draws its data. `steps` (click / type, run in order) bring the real component to the
+# lock's interaction state. A case whose fixture the harness lacks fails `missing-render`; it is never drawn as another state.
 topic: decision-card
 cases:
   - lock_file: design/decision-card/approved/direction-b.html
@@ -13,18 +14,27 @@ cases:
     state: s1b
     profile: card-540
     fixture: run-budget-top-up
+    steps:
+      - click: "text=Details"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s2
     profile: card-540
     fixture: run-budget-top-up
+    steps:
+      - type: "[role=textbox]"
+        text: "Is CI on main green yet?"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s3
     profile: card-540
-    fixture: run-budget-top-up
+    fixture: run-budget-top-up-answered
   - lock_file: design/decision-card/approved/direction-b.html
     state: s4
     profile: card-540
     fixture: run-budget-top-up
+    steps:
+      - click: "role=radio[name='Approve']"
+      - type: "[role=textbox]"
+        text: "ok, go ahead"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s5
     profile: card-540
@@ -33,6 +43,10 @@ cases:
     state: s6
     profile: card-540
     fixture: run-budget-top-up
+    steps:
+      - click: "role=radio[name='Reject']"
+      - type: "[role=textbox]"
+        text: "Not until CI on main is green."
   - lock_file: design/decision-card/approved/direction-b.html
     state: s7
     profile: card-540
@@ -44,15 +58,17 @@ cases:
   - lock_file: design/decision-card/approved/direction-b.html
     state: s8
     profile: card-540
-    fixture: run-budget-top-up
+    fixture: run-budget-approved
   - lock_file: design/decision-card/approved/direction-b.html
     state: s9
     profile: card-540
-    fixture: run-budget-top-up
+    fixture: run-budget-rejected
   - lock_file: design/decision-card/approved/direction-b.html
     state: s10
     profile: phone-358
     fixture: run-budget-top-up
+    steps:
+      - click: "role=radio[name='Approve']"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s11
     profile: card-540
@@ -92,23 +108,23 @@ cases:
   - lock_file: design/decision-card/approved/direction-b.html
     state: s20
     profile: card-540
-    fixture: run-budget-top-up
+    fixture: run-budget-approved-expanded
   - lock_file: design/decision-card/approved/direction-b.html
     state: s21
     profile: phone-358
-    fixture: run-budget-top-up
+    fixture: run-budget-approved
   - lock_file: design/decision-card/approved/direction-b.html
     state: s23
     profile: dm-card-520
-    fixture: run-budget-top-up
+    fixture: run-budget-top-up-dm
   - lock_file: design/decision-card/approved/direction-b.html
     state: s24
     profile: dm-card-520
-    fixture: run-budget-top-up
+    fixture: run-budget-top-up-issue-block
   - lock_file: design/decision-card/approved/direction-b.html
     state: s25
     profile: dm-card-520
-    fixture: run-budget-top-up
+    fixture: run-budget-approved-dm
   - lock_file: design/decision-card/approved/direction-b.html
     state: s26
     profile: dm-card-520

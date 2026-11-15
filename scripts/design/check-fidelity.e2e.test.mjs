@@ -43,3 +43,18 @@ test("a case whose fixture the harness does not have fails missing-render, namin
   assert.equal(v.length, 1);
   assert.match(v[0].reason, /batch-run-budget/);
 });
+
+test("cases render their own state: s1, s2 and s4 give three different code renders", () => {
+  const { result } = run("--case", "s1", "--case", "s2", "--case", "s4");
+  const hash = (state) => result.renders.find((x) => x.state === state)?.code_root_sha256;
+  for (const s of ["s1", "s2", "s4"]) assert.match(hash(s), /^[0-9a-f]{64}$/, `${s} has a code render hash`);
+  assert.equal(new Set(["s1", "s2", "s4"].map(hash)).size, 3, "typed message and chosen Approve change the render");
+  assert.deepEqual(result.renders.find((x) => x.state === "s2").steps, ["type [role=textbox]"]);
+});
+
+test("a state the harness cannot draw fails missing-render and is not drawn as another state", () => {
+  const { result } = run("--case", "s3", "--case", "s1b");
+  const reasons = (state) => result.violations.filter((x) => x.rule === "missing-render" && x.state === state).map((x) => x.reason);
+  assert.match(reasons("s3").join("\n"), /run-budget-top-up-answered/, "s3 names its own fixture");
+  assert.match(reasons("s1b").join("\n"), /step .*Details/, "s1b names the step the code cannot do");
+});

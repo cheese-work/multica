@@ -67,3 +67,9 @@ test("every instance names its rule, case and a reason", () => {
     assert.ok(x.rule && x.reason && x.state && x.profile, JSON.stringify(x));
   }
 });
+
+test("missing-block: a mapped block absent on both sides is one instance, side both", () => {
+  const v = compareBlocks(CASE, side([]), side([]), ["a", "b"]);
+  assert.deepEqual(ids(v), ["missing-block:a", "missing-block:b"]);
+  assert.ok(v.every((x) => x.side === "both"));
+});
