@@ -127,6 +127,9 @@ func TestUpdateOutbox_PerSendTimeout(t *testing.T) {
 	if el := time.Since(start); el > time.Second {
 		t.Fatalf("delivered after %s, want well under 1s", el)
 	}
+	if got := atomic.LoadInt32(&n); got != 2 {
+		t.Fatalf("requests = %d, want 2 (one timed out, one retried)", got)
+	}
 }
 
 // 4. A blocked endpoint never holds the claim barrier.
