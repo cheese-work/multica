@@ -102,7 +102,7 @@ func TestAgentDecisionBriefMarkdownIsEmptyWhenOffAndNothingToShow(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf strings.Builder
-			if err := writeAgentDecisionMarkdown(&buf, tc.feed); err != nil {
+			if err := writeAgentDecisionMarkdown(&buf, tc.feed, nil); err != nil {
 				t.Fatal(err)
 			}
 			if got := buf.Len() == 0; got != tc.wantEmpty {
@@ -120,7 +120,7 @@ func TestAgentDecisionBriefMarkdownLabelsJevAndWaiver(t *testing.T) {
 			"review_target_at": "2026-10-31T10:00:00Z", "link": "https://app/x/issues/CHE-6#comment-c4", "veto_line": "Veto: decision:i4 sha member:u1"},
 	}}
 	var b strings.Builder
-	if err := writeAgentDecisionMarkdown(&b, feed); err != nil {
+	if err := writeAgentDecisionMarkdown(&b, feed, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
@@ -131,5 +131,21 @@ func TestAgentDecisionBriefMarkdownLabelsJevAndWaiver(t *testing.T) {
 	}
 	if strings.Contains(out, "CHE-6 · screenshot_evidence · effective ·") || strings.Count(out, "Decided by") != 1 {
 		t.Errorf("an existing-gate record must print unchanged:\n%s", out)
+	}
+}
+
+func TestAgentDecisionBriefMarkdownListsAskFailures(t *testing.T) {
+	feed := map[string]any{"enabled": false, "ask_failures": []any{
+		map[string]any{"identifier": "CHE-9", "agent": "x99-codex", "reason": "no_matching_request", "failed_at": "2026-11-03T10:00:00Z", "excerpt": "please pick the plan"},
+	}}
+	var b strings.Builder
+	if err := writeAgentDecisionMarkdown(&b, feed, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"Asks that never reached a person", "CHE-9", "owner x99-codex", "no_matching_request", "please pick the plan"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, out)
+		}
 	}
 }

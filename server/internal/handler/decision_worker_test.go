@@ -43,6 +43,7 @@ func decisionRunnerFor(test *testing.T, handler *Handler) decisionRunner {
 func newDecisionRunnerFixture(test *testing.T) (*Handler, decisionRunner) {
 	test.Helper()
 	handler := New(testHandler.Queries, testPool, nil, events.New(), nil, nil, nil, nil, Config{})
+	test.Cleanup(giveBackRunBudgetHooks)
 	return handler, decisionRunnerFor(test, handler)
 }
 

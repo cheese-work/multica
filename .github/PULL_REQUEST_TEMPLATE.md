@@ -33,6 +33,9 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
        Changelog: Refactor X store
        Changelog: CHE-123 add Y
      In a stack, only the PR that lands on `main` carries the line, for the whole stack.
+     `Changelog: none` is only for internal-only changes (CI, scripts, docs, tests). A
+     feat, fix or perf PR that changes user-facing code fails the check with `none`:
+     write the sentence, or use a non-user-facing type (ci, test, chore).
      Upstream-sync PRs use `Changelog: none`. -->
 
 Changelog: <one user-facing sentence, or none>
@@ -59,6 +62,48 @@ Changelog: <one user-facing sentence, or none>
 1.
 2.
 3.
+
+## Patterns
+
+<!-- Required when the PR changes web, desktop, ui or views code (CHE-5420; check `ui-pattern-ref`). Add one line outside
+     this comment, as its own line, with an id from design/patterns.yml:
+       pattern: <id>
+       new-pattern: <id> — <reason>
+       deviation: <id> — <reason>
+     Not a UI change: leave the section empty. -->
+
+## Cost delta
+
+<!-- Required (CHE-4396). One line each; numbers or a measured range, `unknown` only with how it will be measured. -->
+
+- C1 Cost delta: <vs today, per day or per run: tokens (which model), agent runs, Actions runs/minutes, API calls, USD>
+- C2 Optimality check: <cheaper or simpler alternative considered, why rejected>
+- C3 Watch: <how observed after rollout (daily usage report, CHE-4324); rollback threshold>
+
+## Upstream merge waiver
+
+<!-- Only for a PR whose sole change is `git merge` of a `multica-ai/multica` tag or `main` into
+     `cheese-work/multica`, plus its conflict resolution (standing test-first waiver, CHE-5574 D2 = A).
+     Any other PR: leave the section empty. Fill all three lines with full 40-character SHAs
+     (stacked layers: P is the previous layer head). -->
+
+P: <fork parent, full SHA>
+U: <upstream parent, full SHA>
+M: <merge result, full SHA>
+
+<!-- The review pack runs these; the reviewer reads the output.
+     - Parents: M has exactly the parents P and U.
+     - Provenance of U: fetch into a scratch clone, never trust `ls-remote` (it lists ref tips only).
+       `git fetch https://github.com/multica-ai/multica.git <tag-or-main>`, then U equals the fetched tag
+       commit, or for fetched `main` `git merge-base --is-ancestor U FETCH_HEAD` holds.
+     - Baseline: B = `git merge-tree --write-tree --name-only P U` (deterministic).
+     - Resolution edits: the reviewer inspects every edit in `git diff B M` and affirms in the verdict
+       that each one resolves the merge. An edit that does not, or that the reviewer cannot classify,
+       fails the waiver closed. `git diff B M` touching only files that conflicted in B is a
+       necessary check, not proof (fork code can sit inside a conflicted file).
+     - Fork code beyond conflict resolution loses the waiver: the PR then needs observed red -> green.
+     - Preservation: conflict-resolution code is still verified (migration renumber and migration tests;
+       the fork's existing tests for each resolved file). -->
 
 ## Checklist
 

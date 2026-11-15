@@ -2,7 +2,12 @@ import { useEffect } from "react";
 import type { ComponentProps } from "react";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { workspaceListOptions } from "@/data/queries/workspaces";
+import {
+  validatedWorkspaces,
+  workspaceListCheckedOptions,
+  workspaceListOptions,
+} from "@/data/queries/workspaces";
+import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
 import { useInboxRealtime } from "@/data/realtime/use-inbox-realtime";
@@ -14,12 +19,14 @@ import { useIssueWorkflowsRealtime } from "@/data/realtime/use-issue-workflows-r
 import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
+import { useWorkspaceDraftsRealtime } from "@/data/realtime/use-workspace-drafts-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
 import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionActionsResetOnWorkspaceChange } from "@/data/stores/chat-session-actions-store";
+import { useDraftLifecycle } from "@/data/stores/use-draft-lifecycle";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -85,6 +92,7 @@ function RealtimeSubscriptions() {
   useIssueWorkflowsRealtime();
   usePinsRealtime();
   useCommentPreviewRealtime();
+  useWorkspaceDraftsRealtime();
   // Presence: warm the three queries up front so avatars don't flash a
   // dotless first render, and listen for daemon/agent/task events to keep
   // the runtime + snapshot caches fresh. See use-presence-realtime.ts for
@@ -109,7 +117,9 @@ export default function WorkspaceLayout() {
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
   const { t } = useT("navigation");
   const { data: workspaces, isLoading } = useQuery(workspaceListOptions());
+  const checkedList = useQuery(workspaceListCheckedOptions());
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
+  const userId = useAuthStore((s) => s.user?.id ?? null);
 
   const matched = workspaces?.find((w) => w.slug === slug);
 
@@ -126,6 +136,11 @@ export default function WorkspaceLayout() {
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionActionsResetOnWorkspaceChange(matched?.id ?? null);
+  useDraftLifecycle(
+    userId,
+    matched?.id ?? null,
+    validatedWorkspaces(checkedList),
+  );
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.

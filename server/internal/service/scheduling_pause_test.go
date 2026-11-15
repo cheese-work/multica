@@ -105,7 +105,7 @@ func TestAgentSchedulingPauseBlocksClaimNotEnqueue(t *testing.T) {
 		"runtime_id": util.UUIDToString(a.runtimeID), "issue_id": issue3, "status": "running",
 	})
 
-	if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID); err != nil {
+	if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID, pgtype.Text{}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestWorkspaceSchedulingPauseBlocksEveryAgent(t *testing.T) {
 	ctx := context.Background()
 	f := newPauseFixture(t, 2)
 
-	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil); err != nil {
 		t.Fatalf("pause workspace: %v", err)
 	}
 	for i, a := range f.agents {
@@ -156,7 +156,7 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 	t.Run("agent", func(t *testing.T) {
 		f := newPauseFixture(t, 1)
 		a := f.agents[0]
-		if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID); err != nil {
+		if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID, pgtype.Text{}); err != nil {
 			t.Fatalf("pause: %v", err)
 		}
 		if candidates := f.candidates(t, a); candidates != 0 {
@@ -176,7 +176,7 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 
 	t.Run("workspace", func(t *testing.T) {
 		f := newPauseFixture(t, 2)
-		if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+		if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil); err != nil {
 			t.Fatalf("pause: %v", err)
 		}
 		for i, a := range f.agents {
@@ -184,7 +184,7 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 				t.Fatalf("precondition: agent %d has %d claim candidates under a paused workspace", i, candidates)
 			}
 		}
-		ws, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID)
+		ws, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID, nil)
 		if err != nil {
 			t.Fatalf("resume: %v", err)
 		}
@@ -233,7 +233,7 @@ func TestSchedulingResumeBumpsEmptyClaimVersion(t *testing.T) {
 	t.Run("workspace", func(t *testing.T) {
 		f := newPauseFixture(t, 2)
 		check(t, f, func() error {
-			_, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID)
+			_, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID, nil)
 			return err
 		})
 	})
@@ -259,12 +259,12 @@ func (f failingQuery) Query(ctx context.Context, sql string, args ...interface{}
 func TestWorkspaceResumeFailureLeavesWorkspacePaused(t *testing.T) {
 	ctx := context.Background()
 	f := newPauseFixture(t, 1)
-	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+	if _, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
 	f.svc.Queries = db.New(failingQuery{DBTX: f.pool, match: "FROM agent_runtime"})
-	if _, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID); err == nil {
+	if _, _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID, nil); err == nil {
 		t.Fatal("resume succeeded although runtime listing failed")
 	}
 
@@ -283,11 +283,11 @@ func TestSecondPauseKeepsFirstActorAndTime(t *testing.T) {
 	a := f.agents[0]
 	otherActor := util.MustParseUUID(f.fx.User(t, fmt.Sprintf("second-%d", time.Now().UnixNano()), fmt.Sprintf("second-%d@example.com", time.Now().UnixNano())))
 
-	first, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID)
+	first, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID, pgtype.Text{})
 	if err != nil {
 		t.Fatalf("first pause: %v", err)
 	}
-	second, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, otherActor)
+	second, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, otherActor, pgtype.Text{})
 	if err != nil {
 		t.Fatalf("second pause: %v", err)
 	}
@@ -296,11 +296,11 @@ func TestSecondPauseKeepsFirstActorAndTime(t *testing.T) {
 			first.SchedulingPausedBy, second.SchedulingPausedBy, first.SchedulingPausedAt.Time, second.SchedulingPausedAt.Time)
 	}
 
-	w1, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID)
+	w1, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID, nil)
 	if err != nil {
 		t.Fatalf("first workspace pause: %v", err)
 	}
-	w2, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, otherActor)
+	w2, _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, otherActor, nil)
 	if err != nil {
 		t.Fatalf("second workspace pause: %v", err)
 	}

@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// A transient gateway failure the platform will retry must not wake the
-// coordinator with an LLM run; a failure with no retry pending still does.
+// A gateway-class failure (retry pending or terminal, CHE-4575) must not wake
+// the coordinator with an LLM run; a non-gateway failure still does.
 func TestFinalDelegatedFailureCoordinatorWakeByRetryState(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -17,8 +17,8 @@ func TestFinalDelegatedFailureCoordinatorWakeByRetryState(t *testing.T) {
 		wantWakeup  bool
 	}{
 		{"retry pending", "agent_error.provider_network", "API Error: Connection closed mid-response", 1, 3, false},
-		{"retry exhausted", "agent_error.provider_network", "API Error: Connection closed mid-response", 3, 3, true},
-		{"not retried 503", "agent_error.provider_server_error", "API Error: 503 service unavailable", 1, 2, true},
+		{"retry exhausted", "agent_error.provider_network", "API Error: Connection closed mid-response", 3, 3, false},
+		{"not retried 503", "agent_error.provider_server_error", "API Error: 503 service unavailable", 1, 2, false},
 		{"process failure", "agent_error.process_failure", "exit status 1", 1, 2, true},
 	}
 	for _, tc := range cases {

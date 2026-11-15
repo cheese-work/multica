@@ -308,5 +308,102 @@ foreach ($case in $cases) {
     Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+
+# ---------------------------------------------------------------------------
+# 4. Download progress (Write-Progress) and phase lines
+# ---------------------------------------------------------------------------
+$MB = 1MB
+$script:progressCalls = @()
+
+# Fake clock: each call advances by $script:clockStep ms so throttling is
+# deterministic and independent of host speed.
+$script:clockNow = 0
+$script:clockStep = 1000
+$fakeClock = { $script:clockNow += $script:clockStep; return $script:clockNow }
+
+function Invoke-ProgressCopy {
+    param([int]$Bytes, [long]$Total, [int]$StepMs)
+    $script:progressCalls = @()
+    $script:clockNow = 0
+    $script:clockStep = $StepMs
+    $source = New-Object System.IO.MemoryStream (, (New-Object byte[] $Bytes))
+    $dest = New-Object System.IO.MemoryStream
+    & {
+        Invoke-Expression $definitions
+        function Write-Progress {
+            param([string]$Activity, [string]$Status, [int]$PercentComplete = -1, [switch]$Completed)
+            $script:progressCalls += [pscustomobject]@{
+                Status = $Status; Percent = $PercentComplete; Completed = [bool]$Completed
+            }
+        }
+        Copy-StreamWithProgress -Source $source -Destination $dest -Total $Total -Activity "Downloading" -ElapsedMs $fakeClock
+    }
+    return $dest.Length
+}
+
+# 4a. Known size: percent and "done / total MB" in -Status, bytes copied intact.
+$copied = Invoke-ProgressCopy -Bytes $MB -Total $MB -StepMs 1000
+if ($copied -ne $MB) { Fail-Test "Copy-StreamWithProgress copied $copied bytes, expected $MB" }
+$updates = @($script:progressCalls | Where-Object { -not $_.Completed })
+if ($updates.Count -eq 0) { Fail-Test "known size: Write-Progress was never called" }
+if ($updates[0].Status -ne "0.1 / 1.0 MB" -or $updates[0].Percent -ne 7) {
+    Fail-Test "known size first update: expected '0.1 / 1.0 MB' at 7%, got '$($updates[0].Status)' at $($updates[0].Percent)%"
+}
+if ($updates[-1].Status -ne "1.0 / 1.0 MB" -or $updates[-1].Percent -ne 100) {
+    Fail-Test "known size last update: expected '1.0 / 1.0 MB' at 100%, got '$($updates[-1].Status)' at $($updates[-1].Percent)%"
+}
+if (-not $script:progressCalls[-1].Completed) { Fail-Test "known size: the progress bar was not completed at the end" }
+
+# 4b. Unknown size (-1): MB done and rate, no percent.
+$copied = Invoke-ProgressCopy -Bytes $MB -Total -1 -StepMs 1000
+$updates = @($script:progressCalls | Where-Object { -not $_.Completed })
+if ($updates.Count -eq 0) { Fail-Test "unknown size: Write-Progress was never called" }
+if ($updates[0].Status -ne "0.1 MB  0.1 MB/s" -or $updates[0].Percent -ne -1) {
+    Fail-Test "unknown size first update: expected '0.1 MB  0.1 MB/s' without percent, got '$($updates[0].Status)' at $($updates[0].Percent)"
+}
+if ($updates[-1].Status -ne "1.0 MB  0.1 MB/s") {
+    Fail-Test "unknown size last update: expected '1.0 MB  0.1 MB/s', got '$($updates[-1].Status)'"
+}
+
+# 4c. At most 5 updates per second of (fake) elapsed time.
+$null = Invoke-ProgressCopy -Bytes (8 * $MB) -Total (8 * $MB) -StepMs 50
+$updates = @($script:progressCalls | Where-Object { -not $_.Completed })
+$bound = 5 * ($script:clockNow / 1000) + 1
+if ($updates.Count -lt 2 -or $updates.Count -gt $bound) {
+    Fail-Test "throttle: $($updates.Count) updates over $($script:clockNow) ms, expected 2..$bound"
+}
+
+# 4d. Non-interactive path: Invoke-WebRequest as before, no progress.
+$script:iwrCalls = @()
+$script:progressCalls = @()
+& {
+    Invoke-Expression $definitions
+    function Test-ProgressEnabled { $false }
+    function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing) $script:iwrCalls += "$Uri|$OutFile|$UseBasicParsing" }
+    function Write-Progress { $script:progressCalls += "called" }
+    Get-CliArchive -Url "https://example.invalid/a.zip" -OutFile "out.zip"
+}
+if (@($script:iwrCalls).Count -ne 1 -or $script:iwrCalls[0] -ne "https://example.invalid/a.zip|out.zip|True") {
+    Fail-Test "non-interactive download must call Invoke-WebRequest -UseBasicParsing once, got: $($script:iwrCalls -join '; ')"
+}
+if (@($script:progressCalls).Count -ne 0) { Fail-Test "non-interactive download must not call Write-Progress" }
+
+# 4e. Phase lines only when interactive.
+foreach ($enabled in @($true, $false)) {
+    $phaseOut = & {
+        Invoke-Expression $definitions
+        $gate = $enabled
+        function Test-ProgressEnabled { $gate }
+        Write-Phase "Installing" 6>&1 | Out-String
+    }
+    $has = $phaseOut -match "Installing"
+    if ($has -ne $enabled) { Fail-Test "Write-Phase with interactive=$enabled printed: '$phaseOut'" }
+}
+foreach ($phase in @("Verifying SHA256", "Installing", "Installed")) {
+    if ($installerSource -notmatch ('Write-Phase "' + [regex]::Escape($phase) + '"')) {
+        Fail-Test "Install-CliBinary is missing the '$phase' phase line"
+    }
+}
+
 Remove-Item $runnerScript -Force -ErrorAction SilentlyContinue
 Write-Host "install.ps1 tests passed" -ForegroundColor Green

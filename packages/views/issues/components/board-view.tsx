@@ -34,6 +34,7 @@ import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-co
 import { BoardWorkflowContext, type BoardWorkflowContextValue } from "./board-workflow-context";
 import {
   resolveIssueWorkflow,
+  issueStatusWorkflow,
   resolveProjectWorkflow,
   stepHandsOff,
   useIssueWorkflows,
@@ -505,8 +506,15 @@ function BoardViewImpl({
     [workflows, workflowsLoaded, workspaceProjects],
   );
   const workflowOfIssue = useCallback((issue: Issue | null | undefined) => resolveIssue(issue).workflow, [resolveIssue]);
+  // Which statuses a card may move to: its project's workflow, or Default
+  // outside a project, where nothing hands off. (MUL-8250)
+  const statusWorkflowOfIssue = useCallback(
+    (issue: Issue | null | undefined) => (issue ? issueStatusWorkflow(workflows, workspaceProjects, issue) : null),
+    [workflows, workspaceProjects],
+  );
   const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
   const activeWorkflow = workflowOfIssue(activeIssue);
+  const activeStatusWorkflow = statusWorkflowOfIssue(activeIssue);
   const activeProject = activeIssue?.project_id
     ? workspaceProjects?.find((p) => p.id === activeIssue.project_id) ?? null
     : null;
@@ -516,8 +524,8 @@ function BoardViewImpl({
       scopeWorkflow: resolveProjectWorkflow(workflows, scopeProject),
       scopeProject,
       dropBlockedReason: (status) =>
-        activeWorkflow && activeIssue?.status !== status && !workflowAllowsStatus(activeWorkflow, status)
-          ? t(($) => $.workflows.not_in_workflow, { name: activeWorkflow.name })
+        activeStatusWorkflow && activeIssue?.status !== status && !workflowAllowsStatus(activeStatusWorkflow, status)
+          ? t(($) => $.workflows.not_in_workflow, { name: activeStatusWorkflow.name })
           : null,
       dropHint: (status) => {
         if (!activeWorkflow || activeIssue?.status === status) return null;
@@ -528,7 +536,7 @@ function BoardViewImpl({
         return { name, actor, run: actor ? actor.type !== "member" : step.handler.type === "creator" };
       },
     }),
-    [activeHandlerLabel, activeIssue?.status, activeProject, activeWorkflow, scopeProject, t, workflows],
+    [activeHandlerLabel, activeIssue?.status, activeProject, activeStatusWorkflow, activeWorkflow, scopeProject, t, workflows],
   );
   // Shared drag/settle primitive: owns the local column mirror, the
   // dragging/settling locks, the post-move animation-frame throttle, and the
@@ -614,7 +622,7 @@ function BoardViewImpl({
         if (
           targetStatus &&
           draggedIssue?.status !== targetStatus &&
-          !workflowAllowsStatus(workflowOfIssue(draggedIssue), targetStatus)
+          !workflowAllowsStatus(statusWorkflowOfIssue(draggedIssue), targetStatus)
         ) {
           return prev;
         }
@@ -630,7 +638,7 @@ function BoardViewImpl({
         return { ...prev, [activeCol]: oldIds, [overCol]: newIds };
       });
     },
-    [groupIds, groups, catalog, sortBy, recentlyMovedRef, setColumns, workflowOfIssue],
+    [groupIds, groups, catalog, sortBy, recentlyMovedRef, setColumns, statusWorkflowOfIssue],
   );
 
   const handleDragEnd = useCallback(
@@ -736,17 +744,18 @@ function BoardViewImpl({
         return;
       }
       const movingWorkflow = workflowOfIssue(map.get(activeId));
+      const movingStatusWorkflow = statusWorkflowOfIssue(map.get(activeId));
       if (
         finalGroup.status &&
-        movingWorkflow &&
+        movingStatusWorkflow &&
         map.get(activeId)?.status !== finalGroup.status &&
-        !workflowAllowsStatus(movingWorkflow, finalGroup.status)
+        !workflowAllowsStatus(movingStatusWorkflow, finalGroup.status)
       ) {
         resetColumns();
         toast.info(
           t(($) => $.workflows.drop_blocked, {
             status: labelOf(finalGroup.status),
-            name: movingWorkflow.name,
+            name: movingStatusWorkflow.name,
           }),
         );
         return;
@@ -855,7 +864,7 @@ function BoardViewImpl({
       );
       applyPropertyGroupValue(finalGroup, activeId);
     },
-    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, resolveIssue, notifyCatalogUnresolved, retryWorkflows, refetchProjects],
+    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, statusWorkflowOfIssue, resolveIssue, notifyCatalogUnresolved, retryWorkflows, refetchProjects],
   );
 
   // An aborted drag (pointercancel, window resize, tab hide, Escape) fires

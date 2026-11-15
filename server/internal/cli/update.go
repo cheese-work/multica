@@ -372,7 +372,8 @@ func updateDownloadTimeoutOrDefault(timeout time.Duration) time.Duration {
 // body in full. Used for the checksum manifest (tiny) and the release
 // archive (single-digit MB). The checksum verification path requires buffered
 // bytes so streaming would just push the buffer into the caller anyway.
-func fetchURLBytes(url string, timeout time.Duration) ([]byte, error) {
+// progress may be nil; it counts the bytes read (ContentLength -1 = unknown).
+func fetchURLBytes(url string, timeout time.Duration, progress *Progress) ([]byte, error) {
 	client := &http.Client{Timeout: updateDownloadTimeoutOrDefault(timeout)}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -382,7 +383,8 @@ func fetchURLBytes(url string, timeout time.Duration) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
-	return io.ReadAll(resp.Body)
+	defer progress.Finish()
+	return io.ReadAll(progress.Wrap(resp.Body, resp.ContentLength))
 }
 
 // UpdateViaDownload downloads the latest release binary from GitHub and replaces
@@ -393,6 +395,20 @@ func UpdateViaDownload(targetVersion string) (string, error) {
 
 // UpdateViaDownloadWithTimeout downloads the latest release binary with a caller-selected timeout.
 func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Duration) (string, error) {
+	return UpdateViaDownloadWithOptions(targetVersion, DownloadOptions{Timeout: downloadTimeout})
+}
+
+// DownloadOptions tunes UpdateViaDownloadWithOptions. The zero value is the
+// quiet form the daemon uses.
+type DownloadOptions struct {
+	Timeout  time.Duration
+	Progress *Progress // optional; nil is silent
+}
+
+// UpdateViaDownloadWithOptions is UpdateViaDownloadWithTimeout plus progress
+// reporting for the archive download.
+func UpdateViaDownloadWithOptions(targetVersion string, opts DownloadOptions) (string, error) {
+	downloadTimeout := opts.Timeout
 	// Determine current binary path.
 	exePath, err := selfexec.Resolve()
 	if err != nil {
@@ -424,7 +440,7 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	// archive's bandwidth.
 	timeout := updateDownloadTimeoutOrDefault(downloadTimeout)
 	manifestURL := releaseAssetDownloadURL(manifestAsset.Name, tag, manifestAsset.BrowserDownloadURL)
-	manifestData, err := fetchURLBytes(manifestURL, timeout)
+	manifestData, err := fetchURLBytes(manifestURL, timeout, nil)
 	if err != nil {
 		return "", fmt.Errorf("download checksum manifest: %w", err)
 	}
@@ -439,11 +455,12 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	// requirement), so this is not a new memory cost on Windows. For tar.gz
 	// it adds a single in-RAM copy, which is preferable to running the
 	// untrusted bytes through gzip+tar extraction before the SHA-256 check.
-	archiveData, err := fetchURLBytes(downloadURL, timeout)
+	archiveData, err := fetchURLBytes(downloadURL, timeout, opts.Progress)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 
+	opts.Progress.Phase("Verifying sha256")
 	if err := verifyAssetSHA256(archiveData, expectedSum, assetName); err != nil {
 		// Do NOT extract or replace; the next poll tick will retry. A
 		// corrupted asset is rare enough that retrying through the same
@@ -453,6 +470,7 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	}
 
 	// Extract the binary from the archive.
+	opts.Progress.Phase("Extracting")
 	binaryName := "multica"
 	if runtime.GOOS == "windows" {
 		binaryName = "multica.exe"
@@ -467,9 +485,11 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 		return "", fmt.Errorf("extract binary: %w", err)
 	}
 
+	opts.Progress.Phase("Installing")
 	if err := installBinary(exePath, binaryData); err != nil {
 		return "", err
 	}
+	opts.Progress.Phase("Installed")
 
 	return fmt.Sprintf("Downloaded %s and replaced %s", assetName, exePath), nil
 }

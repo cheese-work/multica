@@ -5,13 +5,15 @@ export type ChatCommandId =
   | "unarchive"
   | "compact"
   | "rename"
-  | "fork";
+  | "fork"
+  | "unseen"
+  | "later";
 
 export type ChatCommandKind = "client" | "prompt";
 
 export type ChatCommandArgsPolicy = "none" | "optional_text" | "required_text";
 
-export type ChatCommandHintKey = "focus_hint" | "title_hint" | "message_hint";
+export type ChatCommandHintKey = "focus_hint" | "title_hint" | "message_hint" | "duration_hint";
 
 export interface ChatCommandContext {
   archived?: boolean;
@@ -23,6 +25,8 @@ export interface ChatCommandContext {
   hasCompact?: boolean;
   hasRename?: boolean;
   hasFork?: boolean;
+  hasUnseen?: boolean;
+  hasLater?: boolean;
 }
 
 export interface ChatCommandDefinition {
@@ -50,7 +54,7 @@ export type ParsedChatCommandResult =
       rawArgs: string;
     };
 
-export type ChatSessionMenuItemId = "statistic" | "pin" | "rename" | "archive" | "unarchive" | "delete";
+export type ChatSessionMenuItemId = "statistic" | "pin" | "unseen" | "rename" | "archive" | "unarchive" | "delete";
 
 export interface ChatSessionMenuItemDescriptor {
   id: ChatSessionMenuItemId;
@@ -140,6 +144,28 @@ export const CHAT_COMMANDS: readonly ChatCommandDefinition[] = [
     searchTerms: ["fork"],
     isAvailable: (ctx = {}) => !ctx.archived && (ctx.hasFork ?? true),
   },
+  {
+    id: "unseen",
+    i18nKey: "unseen",
+    descriptionKey: "unseen",
+    kind: "client",
+    args: "none",
+    argumentHint: null,
+    argumentHintKey: null,
+    searchTerms: ["unseen", "unread"],
+    isAvailable: (ctx = {}) => !ctx.archived && (ctx.hasUnseen ?? true),
+  },
+  {
+    id: "later",
+    i18nKey: "later",
+    descriptionKey: "later",
+    kind: "client",
+    args: "optional_text",
+    argumentHint: "[2h]",
+    argumentHintKey: "duration_hint",
+    searchTerms: ["later", "snooze"],
+    isAvailable: (ctx = {}) => !ctx.archived && (ctx.hasLater ?? true),
+  },
 ];
 
 export const CHAT_COMMANDS_BY_ID: Record<ChatCommandId, ChatCommandDefinition> = {
@@ -150,11 +176,14 @@ export const CHAT_COMMANDS_BY_ID: Record<ChatCommandId, ChatCommandDefinition> =
   compact: CHAT_COMMANDS[4]!,
   rename: CHAT_COMMANDS[5]!,
   fork: CHAT_COMMANDS[6]!,
+  unseen: CHAT_COMMANDS[7]!,
+  later: CHAT_COMMANDS[8]!,
 };
 
 export const CHAT_SESSION_MENU_ITEMS: readonly ChatSessionMenuItemDescriptor[] = [
   { id: "statistic", section: "main", commandId: "statistic" },
   { id: "pin", section: "main", commandId: "pin" },
+  { id: "unseen", section: "main", commandId: "unseen" },
   { id: "rename", section: "main", commandId: "rename" },
   { id: "archive", section: "trailing", commandId: "archive" },
   { id: "unarchive", section: "trailing", commandId: "unarchive" },
@@ -198,7 +227,7 @@ export function parseChatCommandInput(
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
 
-  const noArgMatch = /^\/(statistic|archive|pin|unarchive)(?:\s+([\s\S]+))?$/i.exec(trimmed);
+  const noArgMatch = /^\/(statistic|archive|pin|unarchive|unseen)(?:\s+([\s\S]+))?$/i.exec(trimmed);
   if (noArgMatch) {
     const commandId = noArgMatch[1]!.toLowerCase() as ChatCommandId;
     const command = CHAT_COMMANDS_BY_ID[commandId];
@@ -212,7 +241,7 @@ export function parseChatCommandInput(
     return { status: "ok", command, args: "" };
   }
 
-  const otherMatch = /^\/(compact|rename|fork)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  const otherMatch = /^\/(compact|rename|fork|later)(?:\s+([\s\S]*))?$/.exec(trimmed);
   if (!otherMatch) return null;
 
   const commandId = otherMatch[1]! as ChatCommandId;

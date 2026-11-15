@@ -1,3 +1,4 @@
+import { defaultStorage } from "../platform/storage";
 import type { StorageAdapter } from "../types/storage";
 import { abortAll as abortAllUploads } from "./upload-coordinator";
 
@@ -35,9 +36,78 @@ export interface DraftCleanupEntry {
    * client-side navigation (no full page reload clears module singletons).
    */
   resetInMemory: () => void;
+  /**
+   * Set by stores whose persisted keys carry the session token
+   * (`<key>#<token>`): the backing storage to sweep for dead-token keys.
+   */
+  sessioned?: StorageAdapter;
 }
 
 const entries = new Map<string, DraftCleanupEntry>();
+
+/**
+ * Draft sessions. A keyed store persists under `<key>#<session token>`, so a
+ * store reads only keys of the current session. Logout and workspace delete
+ * first end the session (a fresh random id in shared storage), then remove the
+ * stored drafts. Between those two steps, and for a write already in flight,
+ * old data may sit under an old-token key: no reader accepts it, it cannot
+ * overwrite the new session's key, and `sweepDeadDrafts` removes it.
+ *
+ * Delayed writes (editor flush on unmount, upload settling) carry the token
+ * they were created under and are dropped once it is stale. A plain workspace
+ * switch ends nothing. Cleanup never removes the id keys.
+ */
+export const DRAFT_SESSION_KEY = "multica_draft_session";
+const workspaceKey = (slug: string) => `${DRAFT_SESSION_KEY}:${slug}`;
+
+/** Key suffix for a token: none before any session ended (the plain, older key). */
+export const sessionKeySuffix = (token: string): string => (token === NO_DRAFT_SESSION ? "" : `#${token}`);
+
+/** Token before any session ended on this profile; also what unstamped (older) payloads count as. */
+export const NO_DRAFT_SESSION = "|";
+
+// Fallback when storage is unavailable: the ids this tab minted still guard this tab.
+const memoryIds = new Map<string, string>();
+const readId = (key: string): string => {
+  try {
+    const stored = defaultStorage.getItem(key);
+    if (stored) return stored;
+  } catch {
+    // see memoryIds
+  }
+  return memoryIds.get(key) ?? "";
+};
+const endSession = (key: string) => {
+  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  memoryIds.set(key, id);
+  try {
+    defaultStorage.setItem(key, id);
+  } catch {
+    // see memoryIds
+  }
+};
+
+/** Where a draft write belongs: its workspace and the session token then. */
+export interface DraftOrigin {
+  slug: string | null;
+  session: string;
+}
+
+/** Changes whenever logout or a delete of `slug` ends the session of its drafts, in this tab or another. */
+export function draftSessionToken(slug: string | null): string {
+  return `${readId(DRAFT_SESSION_KEY)}|${slug ? readId(workspaceKey(slug)) : ""}`;
+}
+
+let sessionGeneration = 0;
+const workspaceGenerations = new Map<string, number>();
+
+/** The part of the session that only this tab's own cleanup moves; tells a mounted hook to rebind. */
+export function localDraftGeneration(slug: string | null): number {
+  return sessionGeneration + (slug ? (workspaceGenerations.get(slug) ?? 0) : 0);
+}
+export function currentDraftOrigin(slug: string | null): DraftOrigin {
+  return { slug, session: draftSessionToken(slug) };
+}
 
 /** Register a draft store for workspace/logout cleanup. Idempotent per key. */
 export function registerDraftCleanup(entry: DraftCleanupEntry): void {
@@ -54,20 +124,52 @@ export function clearRegisteredWorkspaceDrafts(
   adapter: StorageAdapter,
   slug: string,
 ): void {
+  workspaceGenerations.set(slug, (workspaceGenerations.get(slug) ?? 0) + 1);
+  endSession(workspaceKey(slug)); // before the removals: see "Draft sessions"
+  const stored = adapter.keys?.() ?? [];
   for (const entry of entries.values()) {
-    if (entry.workspaceScoped) {
-      adapter.removeItem(`${entry.storageKey}:${slug}`);
-    } else {
-      adapter.removeItem(entry.storageKey);
+    const name = entry.workspaceScoped ? `${entry.storageKey}:${slug}` : entry.storageKey;
+    adapter.removeItem(name);
+    // Session-keyed copies (`<name>#<token>`), whatever token they carry.
+    for (const key of stored) if (key.startsWith(`${name}#`)) adapter.removeItem(key);
+  }
+  sweepDeadDrafts();
+}
+
+/**
+ * Remove every session-keyed draft key whose token is not the current one.
+ * A write that was already in flight when a session ended lands under the old
+ * token, so it can neither replace the new session's draft nor be read; this
+ * removes it from storage. Runs at logout, workspace delete, store creation
+ * and on every `storage` event (another tab wrote a key).
+ */
+export function sweepDeadDrafts(): void {
+  for (const entry of entries.values()) {
+    const adapter = entry.sessioned;
+    if (!adapter?.keys) continue;
+    const base = entry.workspaceScoped ? `${entry.storageKey}:` : entry.storageKey;
+    for (const key of adapter.keys()) {
+      if (!key.startsWith(base)) continue;
+      const rest = key.slice(base.length);
+      const hash = rest.indexOf("#");
+      // Unscoped: `base` or `base#<token>`; a longer key belongs to another store.
+      if (!entry.workspaceScoped && rest !== "" && hash !== 0) continue;
+      const slug = entry.workspaceScoped ? (hash < 0 ? rest : rest.slice(0, hash)) : null;
+      const name = entry.workspaceScoped ? `${base}${slug}` : base;
+      if (key !== name + sessionKeySuffix(draftSessionToken(slug))) adapter.removeItem(key);
     }
   }
 }
+
+if (typeof window !== "undefined") window.addEventListener("storage", sweepDeadDrafts);
 
 /**
  * Reset all registered draft stores' in-memory state. Called on logout before
  * auth is cleared, so no draft survives into the next login on the same tab.
  */
 export function resetAllRegisteredDrafts(): void {
+  sessionGeneration += 1;
+  endSession(DRAFT_SESSION_KEY);
   // Abort in-flight uploads BEFORE clearing drafts: an upload that settles
   // after the draft is wiped must not resurrect a placeholder, and its bytes
   // must never bind an attachment under the next session (MUL-5181).
@@ -75,6 +177,7 @@ export function resetAllRegisteredDrafts(): void {
   for (const entry of entries.values()) {
     entry.resetInMemory();
   }
+  sweepDeadDrafts();
 }
 
 /**

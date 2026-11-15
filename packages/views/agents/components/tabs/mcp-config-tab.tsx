@@ -524,6 +524,7 @@ export function McpConfigTab({
           server={editingServer}
           existingNames={managedNames}
           hideNameWhenEditing
+          draftKey={`${agent.id}:${editingServer?.name ?? "new"}`}
           onOpenChange={setEditorOpen}
           onSave={handleSaveServer}
         />

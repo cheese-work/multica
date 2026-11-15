@@ -29,8 +29,12 @@
  *     fallback, which is the real "enum drift downgrades, not crashes"
  *     behavior — earlier whitelist (member/agent only) silently dropped
  *     squad assignees instead.
+ *   - Unread-mention badge after the title, from the same inbox `mentioned`
+ *     items web reads (`unreadMentionOptions`).
  */
 import { Pressable, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -38,7 +42,10 @@ import { PriorityIcon } from "@/components/ui/priority-icon";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { CustomStatusChip } from "@/components/issue/custom-status-chip";
 import { issueColumnCategory } from "@/lib/issue-status";
+import { unreadMentionOptions } from "@/data/queries/inbox";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
+import { useT } from "@/lib/i18n";
 
 interface Props {
   issue: Issue;
@@ -51,6 +58,9 @@ export function IssueRow({ issue, onPress, showStatus = false }: Props) {
   // One catalog read for both the icon's colour and the chip — see the
   // divergence note in `custom-status-chip.tsx`.
   const catalog = useIssueStatuses();
+  const { t } = useT("issues");
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { data: hasUnreadMention } = useQuery(unreadMentionOptions(wsId, issue.id));
   return (
     <Pressable onPress={onPress} className="active:bg-secondary px-4 py-3">
       <View className="flex-row items-center gap-3">
@@ -74,6 +84,16 @@ export function IssueRow({ issue, onPress, showStatus = false }: Props) {
             {issue.title}
           </Text>
           <CustomStatusChip status={issue.status} catalog={catalog} />
+          {hasUnreadMention ? (
+            <View
+              accessible
+              accessibilityRole="image"
+              accessibilityLabel={t("list.unread_mention")}
+              className="size-4 items-center justify-center rounded-full bg-primary"
+            >
+              <Ionicons name="at" size={10} className="text-primary-foreground" />
+            </View>
+          ) : null}
         </View>
         {issue.assignee_type && issue.assignee_id ? (
           <ActorAvatar

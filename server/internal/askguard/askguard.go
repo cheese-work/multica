@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -65,10 +66,21 @@ func ModeFromSettings(raw []byte) (Mode, error) {
 // the kind and the SHA256 of the request payload, so a retry of the same
 // operation in the same task finds the same event while the same text in a
 // later task is a new event.
+//
+// WarnOnly records the event as warn even when the workspace is in block mode,
+// for operations that must never be refused or recovered (a chat-lane task, or
+// an agent call with no task).
+//
+// MemberID is the one member the operation asks, when it names exactly one. A
+// request created with --recovers clears the event only for that member.
 type Op struct {
-	IssueID, TaskID pgtype.UUID
-	Kind            string
-	Payload         []byte
+	IssueID, TaskID, MemberID pgtype.UUID
+	Kind                      string
+	Payload                   []byte
+	WarnOnly                  bool
+	// Source is the text a recovery notice quotes verbatim. Empty when the
+	// operation has no ask text (a wakeup), which sends the event to repair.
+	Source string
 }
 
 // Guard writes events through Queries. Queries must not be bound to the
@@ -102,6 +114,9 @@ func (g Guard) Hit(ctx context.Context, workspaceID pgtype.UUID, op Op) (Verdict
 	if mode == ModeOff {
 		return Verdict{}, nil
 	}
+	if op.WarnOnly {
+		mode = ModeWarn
+	}
 	ev, result, err := g.record(ctx, workspaceID, mode, op)
 	g.Metrics.RecordAskGuardEvent(string(mode), result)
 	if err != nil {
@@ -115,7 +130,8 @@ func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, o
 	digest := hex.EncodeToString(sum[:])
 	ev, err := g.Queries.InsertAskGuardEvent(ctx, db.InsertAskGuardEventParams{
 		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: op.IssueID, TaskID: op.TaskID,
-		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode),
+		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode), MemberID: op.MemberID,
+		SourceText: pgtype.Text{String: op.Source, Valid: op.Source != ""},
 	})
 	if err == nil {
 		return ev, "created", nil
@@ -130,4 +146,21 @@ func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, o
 		return ev, "error", fmt.Errorf("read guard event: %w", err)
 	}
 	return ev, "retry", nil
+}
+
+// MentionedMembers returns the member IDs that content mentions with a
+// structural link. It uses the parser that drives notification dispatch, so a
+// link inside a code span or fence counts exactly as it notifies today, and an
+// ID that is not a UUID (which dispatch skips) does not count.
+func MentionedMembers(content string) []string {
+	var ids []string
+	for _, m := range util.ParseMentions(content) {
+		if m.Type != "member" {
+			continue
+		}
+		if _, err := util.ParseUUID(m.ID); err == nil {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids
 }

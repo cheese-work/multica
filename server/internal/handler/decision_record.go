@@ -44,6 +44,8 @@ type decisionRecordResult struct {
 	AnswerMessage   db.ChatMessage
 	ClearedComments []db.Comment
 	Replayed        bool
+	// Covered holds the per-issue cards a batch answer closed (CHE-4453).
+	Covered []coveredCardAnswer
 }
 
 func (handler *Handler) createAskedDecisionRecord(request *http.Request, issue db.Issue, input decisionRecordInput) (decisionRecordResult, error) {
@@ -377,8 +379,19 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return empty, err
 		}
-		if err != nil || message.ChatSessionID != sourceSessionID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) || !message.CreatedAt.Time.Before(task.StartedAt.Time) {
+		if err != nil || message.ChatSessionID != sourceSessionID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || message.ReanchoredAt.Valid || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
+		}
+		// A message sent after the turn started is a source only when the
+		// provider confirmed it holds that text for this same turn.
+		if !message.CreatedAt.Time.Before(task.StartedAt.Time) {
+			_, err := queries.GetDeliveredChatTaskSupplement(ctx, db.GetDeliveredChatTaskSupplementParams{ChatSessionID: sourceSessionID, MessageID: messageID, TaskID: taskID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
+			}
+			if err != nil {
+				return empty, err
+			}
 		}
 		bound, err := loadDecisionAnswerBinding(ctx, queries, issue.WorkspaceID, message.DecisionAnswerID)
 		if err != nil {
@@ -502,7 +515,7 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if err := queries.TouchChatSession(ctx, source.SessionID); err != nil {
 		return empty, err
 	}
-	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
+	decision, err = handler.markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}

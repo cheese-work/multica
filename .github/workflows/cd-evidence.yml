@@ -1,0 +1,194 @@
+name: CD release-candidate evidence (no deploy)
+run-name: CD evidence · ${{ inputs.candidate_sha }}
+
+# CHE-4664: issues the `cd-release-candidate-<sha>` evidence set for an
+# already-qualified main commit and stops. It has no admission and no deploy
+# job, never runs cutover.sh, never builds and never writes to C00; its one
+# C00 access is the read-only baseline capture the deploy workflow already
+# makes. The steps are the same as cd-deploy.yml's prepare-release-candidate
+# (test-evidence-fault.py fails if they diverge), so the artifact is the one
+# a real deploy dispatch would issue. Only the owner can dispatch it, and the
+# c00-runtime environment is limited to `main`, so dispatch with `--ref main`.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Full SHA of a qualified main commit to issue release-candidate evidence for"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  authorize-c00:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Only the owner may deploy to C00
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "congvc-dev" ]; then
+            echo "::error::dispatch by '$ACTOR' refused; only congvc-dev may deploy to C00"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Dispatch with candidate_sha only. Turns D1's build-evidence into a deployable
+  # release-candidate by binding it to C00's CURRENT baseline tuple.
+  #
+  # This job runs directly on the C00 self-hosted runner
+  # ([self-hosted, linux, x64, cheese-c00-deploy]) under the
+  # c00-runtime environment to read that baseline locally. The dispatch
+  # was authorized at authorize-c00. It reads and writes nothing on C00
+  # beyond a temp file it removes: capture-tuple.sh inspects containers
+  # and runs one SELECT.
+  # ---------------------------------------------------------------------------
+  prepare-release-candidate:
+    needs: authorize-c00
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    concurrency:
+      group: cd-deploy-c00
+      queue: max
+    # Up to 60 minutes waiting for CI's required checks plus the original
+    # 15-minute budget for the baseline read and evidence issue.
+    timeout-minutes: 80
+    environment: c00-runtime
+    outputs:
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      # The dispatcher names the commit; the qualification run for it is looked
+      # up, never taken from input. Only a successful `main` push run counts.
+      - name: Resolve the qualification run for the candidate
+        id: q
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate_sha must be a full 40-hex commit SHA" >&2; exit 1; }
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "CD qualification build" \
+            --commit "$CANDIDATE_SHA" --branch main --event push --status success \
+            --json databaseId --jq '.[0].databaseId // empty')"
+          [ -n "$run_id" ] || { echo "::error::no successful main qualification run for $CANDIDATE_SHA" >&2; exit 1; }
+          { echo "sha=$CANDIDATE_SHA"; echo "run_id=$run_id"; echo "event=push"; echo "branch=main"; } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the qualified commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.q.outputs.sha }}
+          # Full history, not a shallow clone: the baseline step resolves the
+          # short image tag C00 is currently running into a full commit SHA
+          # with `git rev-parse`, and a depth-1 checkout contains only the
+          # qualified commit itself — every older deployed tag would fail to
+          # resolve.
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      # Before anything reads C00: CI's required checks finish well after
+      # this workflow is triggered, and the baseline read below should be as
+      # fresh as possible when the evidence set is issued.
+      - name: Install the YAML parser the path-filter reader needs
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
+      - name: Record the required-check results for this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.q.outputs.sha }}
+          CHECKS_WAIT_SECONDS: "3600"
+        # Waits for pending required checks, then snapshots them; see the
+        # script header. Admission still decides; this only records.
+        run: bash deploy/cd/record-checks.sh "$SOURCE_SHA" cd-checks.json
+
+      - name: Download D1 build evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: cd-build-evidence-${{ steps.q.outputs.sha }}
+          path: d1-evidence
+          run-id: ${{ steps.q.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read C00's current baseline tuple
+        env:
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
+        shell: bash
+        run: bash deploy/cd/capture-remote-baseline.sh baseline-tuple.json
+
+      - name: Issue the release-candidate manifest
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${{ steps.q.outputs.sha }}"
+
+          # The release-candidate carries D1's own digests unchanged — this
+          # stage re-binds evidence, it never re-qualifies an image. Reading
+          # them back out of D1's manifest (rather than accepting them as
+          # inputs) is what keeps "the exact pair D1 qualified" true by
+          # construction for acceptance item 2.
+          read_field() {
+            node -e 'const m=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(process.argv[2].split(".").reduce((a,k)=>a?.[k],m)))' \
+              d1-evidence/cd-build-evidence.json "$1"
+          }
+          d1_source_sha="$(read_field source_sha)"
+          if [ "$d1_source_sha" != "$source_sha" ]; then
+            echo "::error::D1 evidence is for $d1_source_sha but this run qualified $source_sha"
+            exit 1
+          fi
+
+          node deploy/cd/release-manifest.mjs create \
+            --kind release-candidate \
+            --repository "$(read_field repository)" \
+            --source-sha "$source_sha" \
+            --architecture "$(read_field architecture)" \
+            --configuration-sha256 "$(read_field configuration_sha256)" \
+            --migration-inventory-sha256 "$(read_field migration_inventory_sha256)" \
+            --backend-image "$(read_field images.backend)" \
+            --web-image "$(read_field images.web)" \
+            --baseline-tuple-sha256 "$(node deploy/cd/tuple-snapshot.mjs digest --snapshot baseline-tuple.json)" \
+            --output cd-release-candidate.json
+
+          # admission.mjs checks the qualifying event and the required check
+          # contexts. Record both from the API rather than asserting them:
+          # the event comes from the qualification run looked up above, the checks from the commit's own check runs.
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync("cd-event.json", `${JSON.stringify({
+              event_name: process.env.RUN_EVENT,
+              ref: `refs/heads/${process.env.RUN_BRANCH}`,
+              repository: process.env.GITHUB_REPOSITORY,
+              sha: process.env.SOURCE_SHA,
+            }, null, 2)}\n`);
+          '
+          cp d1-evidence/cd-image-provenance.json cd-provenance.json
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+        env:
+          RUN_EVENT: ${{ steps.q.outputs.event }}
+          RUN_BRANCH: ${{ steps.q.outputs.branch }}
+          SOURCE_SHA: ${{ steps.q.outputs.sha }}
+
+      - name: Upload the release-candidate evidence set
+        uses: actions/upload-artifact@v7
+        with:
+          name: cd-release-candidate-${{ steps.q.outputs.sha }}
+          path: |
+            cd-release-candidate.json
+            baseline-tuple.json
+            cd-event.json
+            cd-checks.json
+            cd-provenance.json
+          retention-days: 30
+          if-no-files-found: error

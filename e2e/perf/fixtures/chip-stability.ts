@@ -110,6 +110,27 @@ function commonResponse(pathname: string): unknown | undefined {
   }
 }
 
+/** Requests of the issue-detail page for `issue`, with `timeline` as its comments. */
+export function issuePageRoute(pathname: string, issue: { id: string; identifier: string }, timeline: unknown[]) {
+  const base = `/api/issues/${issue.id}`;
+  switch (pathname) {
+    case `/api/issues/${issue.identifier}`:
+    case base: return issue;
+    case `${base}/timeline`: return timeline;
+    case `${base}/task-runs`: case `${base}/subscribers`: case `${base}/wakeups`:
+    case `${base}/attachments`: case `${base}/system-wakeups`: return [];
+    case `${base}/comments/trigger-preview`: return { agents: [], blocked: [] };
+    case `${base}/labels`: return { labels: [] };
+    case `${base}/children`: return { issues: [] };
+    case `${base}/pull-requests`: return { pull_requests: [] };
+    case `${base}/duplicates`: return { duplicate_of: null, duplicates: [] };
+    // Side panels that do not touch chips; an empty object lets their parsers fall back.
+    case `${base}/relations`: case "/api/inbox/archived/page": return {};
+    case "/api/issues/child-progress": return { progress: [] };
+    default: return undefined;
+  }
+}
+
 export interface Harness {
   /** `GET /api/issues/PERF-n` counts, keyed by the key. */
   keyLookups: Map<string, number>;

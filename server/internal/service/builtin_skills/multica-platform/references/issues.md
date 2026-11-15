@@ -110,6 +110,24 @@ the issue object is unchanged; a sibling `status_read` object is added —
 marking it a client-side projection, not a server-sent `eta`. Do not read
 `due_date` as if it were an ETA.
 
+### Saved views
+
+When a request names a saved view ("the Bugs view", a view link), read it
+with `view issues` instead of rebuilding its filters from `issue list` flags:
+the server applies every condition the view saves — "is not", the advanced
+condition tree, relative due dates, project status — which `issue list`
+cannot express.
+
+```bash
+multica view list --output json
+multica view issues "Bugs" --output json --fields identifier,title,status
+```
+
+`<view>` is an ID, ID prefix, or exact name. Pages hold at most 100 issues;
+while `has_more` is true, pass `next_cursor` to `--cursor`. Views and their
+"me" conditions resolve against the runtime owner, so a member's private view
+is only visible when that member owns the runtime.
+
 ## Custom properties: typed workflow state
 
 Workspaces may define custom issue properties (Severity, Environment, QA
@@ -478,6 +496,18 @@ multica issue subscriber remove <issue-id> [--user <name> | --user-id <uuid>]
   unless `--include-closed`.
 - **Subscribers** default to the caller. `--user` is a fuzzy name match;
   prefer `--user-id`, which cannot match the wrong person.
+
+## DM progress follows
+
+A follow makes a DM show an issue's progress cards. Members pass
+`--chat <chat-session-id>` for a DM they created. Agents pass no `--chat`: the
+lane comes from the DM that started the task, and a task with no DM is refused.
+
+- `multica issue follow <issue-id>` starts following.
+- `multica issue unfollow <issue-id>` stops following.
+- `multica issue mute-follow <issue-id>` mutes the cards, keeping the follow.
+- `multica issue unmute-follow <issue-id>` turns the cards back on.
+- `multica issue follows --chat <chat-session-id>` lists the follows in a DM.
 
 ## Issue wakeups
 

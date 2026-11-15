@@ -2,7 +2,11 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+
+// These tests spawn real git/node subprocesses; on a loaded host (X99 load >50)
+// they exceed the global 15s testTimeout. CHE-4425.
+vi.setConfig({ testTimeout: 120_000 });
 
 const roots = [];
 

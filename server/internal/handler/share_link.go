@@ -157,6 +157,14 @@ func (h *Handler) CreateShareLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "share_link.create", WorkspaceID: link.WorkspaceID, TargetID: link.ID,
+		After: shareLinkAuditFields(link),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "share_link.create")
+		return
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit share link failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to create share link")
@@ -209,10 +217,47 @@ func (h *Handler) RevokeShareLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Queries.RevokeShareLink(r.Context(), db.RevokeShareLinkParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to revoke share link")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// Lock the active link so the audit row records what was revoked. A link
+	// that is missing or already inactive changes nothing and writes no row.
+	var link db.WorkspaceShareLink
+	err = tx.QueryRow(r.Context(), `
+		SELECT id, workspace_id, code, created_by, role, expires_at, max_uses, use_count, is_active, created_at
+		FROM workspace_share_link WHERE id = $1 AND workspace_id = $2 AND is_active FOR UPDATE`,
+		linkUUID, workspaceUUID,
+	).Scan(&link.ID, &link.WorkspaceID, &link.Code, &link.CreatedBy, &link.Role, &link.ExpiresAt, &link.MaxUses, &link.UseCount, &link.IsActive, &link.CreatedAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "failed to revoke share link")
+		return
+	}
+	if err := qtx.RevokeShareLink(r.Context(), db.RevokeShareLinkParams{
 		ID:          linkUUID,
 		WorkspaceID: workspaceUUID,
 	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to revoke share link")
+		return
+	}
+	revoked := link
+	revoked.IsActive = false
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "share_link.revoke", WorkspaceID: workspaceUUID, TargetID: linkUUID,
+		Before: shareLinkAuditFields(link), After: shareLinkAuditFields(revoked),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "share_link.revoke")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to revoke share link")
 		return
 	}

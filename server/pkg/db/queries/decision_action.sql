@@ -14,12 +14,45 @@ SELECT * FROM decision_action WHERE id = $1 AND workspace_id = $2;
 -- name: GetDecisionActionByRequest :one
 SELECT * FROM decision_action WHERE decision_request_id = $1 AND workspace_id = $2;
 
+-- A batch's actions in id order; the first is the batch's lead, the action its
+-- passkey challenge names.
+-- name: ListDecisionBatchActions :many
+SELECT action.* FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.batch_id = sqlc.arg('batch_id')
+ORDER BY action.id;
+
+-- A batch card's read: one row per item, in id order (the order the card lists
+-- and the choices are keyed by).
+-- name: ListDecisionBatchItems :many
+SELECT action.id AS action_id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix,
+    issue.number AS issue_number, issue.title AS issue_title, action.state, action.result,
+    COALESCE(action.error_code, '')::text AS error_code
+FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.batch_id = sqlc.arg('batch_id')
+ORDER BY action.id;
+
 -- The approve and reject transaction takes every row lock NOWAIT (plan 3.2):
 -- it is never a waiter in a lock cycle. Each row is locked once, at the
 -- strongest mode a later statement needs.
 
 -- name: LockWorkspaceKeyShareNowait :one
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE NOWAIT;
+
+-- A config change serialises per field and target on a try-lock: a second
+-- approval of the same field gets false and retries, never waits.
+-- name: TryLockConfigChange :one
+SELECT pg_try_advisory_xact_lock(hashtextextended(sqlc.arg('key')::text, 0))::boolean;
+
+-- The row a config change reads and writes is locked the same way, so an
+-- ordinary edit cannot commit between the approval's read and its write.
+-- name: LockWorkflowTargetNowait :one
+SELECT id FROM issue_workflow
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+FOR UPDATE NOWAIT;
 
 -- name: LockDecisionSessionNowait :one
 SELECT id FROM chat_session
@@ -63,6 +96,22 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid
 ORDER BY id
 FOR UPDATE NOWAIT;
 
+-- name: LockDecisionSquadNowait :one
+-- The squad a squad-target action changes, locked in its workspace.
+SELECT * FROM squad
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+FOR UPDATE NOWAIT;
+
+-- name: LockDecisionWorkflowNowaitCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+FOR UPDATE NOWAIT;
+
+-- name: LockDecisionWorkspaceNowait :one
+-- A workspace-target action rewrites a column of the row row 1 holds FOR KEY
+-- SHARE; take the stronger mode the update needs, once.
+SELECT * FROM workspace WHERE id = $1 FOR NO KEY UPDATE NOWAIT;
+
 -- name: LockDecisionIssueNowait :one
 SELECT id FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
@@ -81,6 +130,17 @@ UPDATE decision_action SET
     error_code = sqlc.narg('error_code'), error_message = sqlc.narg('error_message'), updated_at = now()
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND state = 'pending'
   AND sqlc.arg('state') IN ('executed', 'failed')
+RETURNING *;
+
+-- name: RevokeDecisionActionRow :one
+-- The revoke record commits with the inverse; state stays 'executed'. Only an
+-- executed, not yet revoked row matches.
+UPDATE decision_action SET
+    revoked_at = clock_timestamp(), revoked_by_user_id = sqlc.arg('revoked_by_user_id'),
+    revoke_reason = sqlc.arg('revoke_reason'),
+    revoke_webauthn_credential_id = sqlc.narg('revoke_webauthn_credential_id'), updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+  AND state = 'executed' AND revoked_at IS NULL
 RETURNING *;
 
 -- name: MarkDecisionActionPostCommitDone :exec
@@ -116,4 +176,30 @@ FOR UPDATE;
 UPDATE decision_action SET state = sqlc.arg('state'), updated_at = now()
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND state = 'pending'
   AND sqlc.arg('state') IN ('expired', 'cancelled')
+RETURNING *;
+
+-- name: ListRecentRejectedProposalParams :many
+-- Params of the actions this person rejected within the cooldown, for one
+-- agent, issue and action. The caller matches the params hash, which is
+-- lane-independent: a rejection in any lane counts.
+SELECT a.params, a.updated_at
+FROM decision_action a
+JOIN decision_request r ON r.id = a.decision_request_id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = sqlc.arg('workspace_id')
+  AND a.state = 'rejected'
+  AND a.requested_by_agent_id = sqlc.arg('agent_id')
+  AND r.human_user_id = sqlc.arg('recipient_user_id')
+  AND r.issue_id = sqlc.arg('issue_id')
+  AND a.action_type = sqlc.arg('action_type')
+  AND a.action_version = sqlc.arg('action_version')
+  AND a.updated_at > now() - sqlc.arg('cooldown')::interval;
+
+-- name: SetIssueProjectFromDecision :one
+-- Moves an issue to the project an approved issue.project.set action names,
+-- only while the issue is still in the project the card was asked from. The
+-- status is the one the target workflow lists (the issue's own when it does).
+UPDATE issue SET project_id = sqlc.arg('project_id')::uuid, status = sqlc.arg('status')::text,
+  revision = revision + 1, updated_at = now()
+WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id IS NOT DISTINCT FROM sqlc.narg('from_project_id')::uuid
 RETURNING *;

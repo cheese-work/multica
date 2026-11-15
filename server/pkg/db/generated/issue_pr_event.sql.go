@@ -192,7 +192,7 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
        ), '')::text AS check_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
-WHERE e.kind NOT IN ('draft', 'ready')
+WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
        OR (e.status = 'accepted'
@@ -266,6 +266,8 @@ type ListNextTurnPREventsRow struct {
 // take now must not hold every later batch back.
 // Action-required kinds of a merged or closed PR are never selected: the
 // lifecycle stop already ran, and a reopen raises its own events.
+// Lifecycle kinds draft, ready and merged are never selected: they report
+// state only, and the pr_merged rule already wakes the issue (CHE-4972). closed has no rule, so it stays.
 func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
 	rows, err := q.db.Query(ctx, listNextTurnPREvents,
 		arg.WorkspaceIds,
@@ -306,17 +308,18 @@ func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREv
 
 const lockGitHubPRForEvent = `-- name: LockGitHubPRForEvent :one
 
-SELECT id, workspace_id, head_sha, state
+SELECT id, workspace_id, head_sha, state, head_repo_same
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE
 `
 
 type LockGitHubPRForEventRow struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	HeadSha     string      `json:"head_sha"`
-	State       string      `json:"state"`
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	HeadSha      string      `json:"head_sha"`
+	State        string      `json:"state"`
+	HeadRepoSame bool        `json:"head_repo_same"`
 }
 
 // PR event store (CHE-2298 a1).
@@ -329,6 +332,7 @@ func (q *Queries) LockGitHubPRForEvent(ctx context.Context, id pgtype.UUID) (Loc
 		&i.WorkspaceID,
 		&i.HeadSha,
 		&i.State,
+		&i.HeadRepoSame,
 	)
 	return i, err
 }

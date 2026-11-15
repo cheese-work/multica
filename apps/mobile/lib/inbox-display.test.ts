@@ -5,6 +5,7 @@ import {
   getAutopilotQuotaBody,
   getInboxDisplayTitle,
   getInboxNavigationTarget,
+  isViewerMention,
 } from "./inbox-display";
 
 function item(overrides: Partial<InboxItem>): InboxItem {
@@ -149,5 +150,28 @@ describe("getAutopilotQuotaBody", () => {
         }),
       ),
     ).toBe("Readable server fallback");
+  });
+});
+
+describe("mentions me", () => {
+  const mention = (source?: string) =>
+    item({ type: "mentioned", details: source ? { mention_source: source } : null });
+
+  it("matches direct and @all mentions but not squad-only or provenance-less ones", () => {
+    expect(isViewerMention(mention("direct"))).toBe(true);
+    expect(isViewerMention(mention("all"))).toBe(true);
+    expect(isViewerMention(mention())).toBe(false);
+    expect(isViewerMention(mention("squad"))).toBe(false);
+    expect(isViewerMention(item({ type: "new_comment" }))).toBe(false);
+  });
+
+  it("keeps a mention matchable after a later comment on the same issue", () => {
+    const [row] = deduplicateInboxItems([
+      item({ id: "mention", type: "mentioned", created_at: "2026-06-15T08:00:00Z", details: { mention_source: "all" } }),
+      item({ id: "later", type: "new_comment", created_at: "2026-06-15T08:05:00Z" }),
+    ]);
+
+    expect(row).toMatchObject({ id: "later" });
+    expect(isViewerMention(row!)).toBe(true);
   });
 });

@@ -121,15 +121,29 @@ export function upsertChatMessageToCaches(
   message: ChatMessage,
   { seedIfMissing = false }: UpsertChatMessageOptions = {},
 ): void {
-  qc.setQueryData<ChatMessage[] | undefined>(chatKeys.messages(sessionId), (old) => {
-    if (!old) return seedIfMissing ? [message] : old;
-    return upsertIntoList(old, message);
-  });
-  qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
-    chatKeys.messagesPage(sessionId),
-    (old) => {
+  const keys = [chatKeys.messages(sessionId), chatKeys.messagesPage(sessionId)] as const;
+  const recoveringKeys = keys.filter((queryKey) =>
+    qc.getQueryState?.(queryKey)?.fetchStatus === "fetching",
+  );
+  const writeMessage = () => {
+    qc.setQueryData<ChatMessage[] | undefined>(keys[0], (old) => {
+      if (!old) return seedIfMissing ? [message] : old;
+      return upsertIntoList(old, message);
+    });
+    qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(keys[1], (old) => {
       if (!old?.pages.length) return seedIfMissing ? seedPage(message) : old;
       return upsertIntoPages(old, message);
-    },
-  );
+    });
+    return Promise.all(
+      recoveringKeys.map((queryKey) =>
+        qc.invalidateQueries({ queryKey, refetchType: "active" }),
+      ),
+    );
+  };
+  if (recoveringKeys.length) {
+    void Promise.all(recoveringKeys.map((queryKey) => qc.cancelQueries({ queryKey })))
+      .then(writeMessage);
+  } else {
+    void writeMessage();
+  }
 }

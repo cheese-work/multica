@@ -39,7 +39,7 @@ const (
 )
 
 // writeScopeReadOnlyPOSTs are fixed /api/issues/* POST routes that only read.
-var writeScopeReadOnlyPOSTs = []string{"query", "table", "preview-trigger"}
+var writeScopeReadOnlyPOSTs = []string{"query", "table", "preview-trigger", "relations"}
 
 // TaskTokenWriteScope returns the middleware for one enforcement mode: "on"
 // refuses, "audit" logs what it would refuse and passes, anything else is off.

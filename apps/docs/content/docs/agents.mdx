@@ -19,6 +19,7 @@ An agent doesn't keep running in the background. It stores a reusable identity a
 | **Conversation starters** | Give people up to three agent-specific examples, shown when they open a new chat with the agent. Selecting one fills the composer without sending. |
 | **Skills** | Provide reusable methods, reference material, and supporting files. |
 | **Runtime, model, and thinking level** | Decide which runtime, AI coding tool, and model it runs on; some tools (such as Codex) also offer a service tier. |
+| **Runtime profile** | `Personal` (default) runs the AI coding tool with the config of the machine's user. `Managed` has the daemon build a minimal config home per task: credentials, provider config, and only the skills and MCP servers assigned to the agent. Set a workspace default in **Settings**, then override it per agent. Supported for Claude and Codex. Other tools fail under `Managed`, including a workspace default: give those agents an explicit `Personal` override. Set it back to `Personal` to roll back. |
 | **Access** | Decides which members can run it. |
 | **Execution settings** | Include the concurrency limit, environment variables, CLI arguments, MCP, and external integrations. |
 

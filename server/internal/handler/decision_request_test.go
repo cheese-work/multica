@@ -640,3 +640,119 @@ func TestDecisionRequestMatchingAskKeepsEachTargetsAskComment(test *testing.T) {
 		}
 	}
 }
+
+func enableActionRequests(test *testing.T, enabled bool) {
+	test.Helper()
+	previous := testHandler.ActionRequestsEnabled
+	testHandler.ActionRequestsEnabled = enabled
+	test.Cleanup(func() { testHandler.ActionRequestsEnabled = previous })
+}
+
+func (fixture requestCoreFixture) actionBody() map[string]any {
+	return map[string]any{
+		"issue_id": fixture.issueID, "session_id": fixture.sessionID, "escalation_class": "reversible", "kind": "action",
+		"ask": map[string]any{
+			"context_eli10": "A property is missing. Only the workspace owner can create it.", "agent_did": "Checked that the property is missing.",
+			"why_human": "Owner-only: property create needs the workspace owner.", "steps": []string{"Run `multica property create --name Readiness`."},
+			"done_when": "The Readiness property is listed.", "default_if_no_reply": "Continue without the property.",
+			"source_issue_id": fixture.issueID, "source_comment_id": fixture.tagID,
+		},
+	}
+}
+
+func (fixture requestCoreFixture) postAction(body map[string]any) *http.Request {
+	request := newRequest(http.MethodPost, "/api/decisions", body)
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	return request
+}
+
+func TestDecisionRequestActionKindIsStored(test *testing.T) {
+	enableActionRequests(test, true)
+	fixture := newRequestCoreFixture(test, false)
+	body := fixture.actionBody()
+	body["expires_in"] = "48h"
+	var created map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(body)).Want(http.StatusCreated).JSON(&created)
+	var kind string
+	var hours float64
+	var options string
+	dbfx.QueryRow(test, `SELECT kind, extract(epoch FROM expires_at - created_at) / 3600, options::text FROM decision_request WHERE id = $1`, created["id"]).Scan(&kind, &hours, &options)
+	if kind != "action" || hours < 47.99 || hours > 48.01 || options != "[]" {
+		test.Fatalf("stored kind=%q expiry=%.2fh options=%s", kind, hours, options)
+	}
+	if ask, _ := created["ask"].(string); !strings.Contains(ask, "Run `multica property create --name Readiness`.") {
+		test.Fatalf("action ask not rendered: %v", created["ask"])
+	}
+}
+
+func TestDecisionRequestActionDefaultExpiryIs72Hours(test *testing.T) {
+	enableActionRequests(test, true)
+	fixture := newRequestCoreFixture(test, false)
+	var created map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(fixture.actionBody())).Want(http.StatusCreated).JSON(&created)
+	var hours float64
+	dbfx.QueryRow(test, `SELECT extract(epoch FROM expires_at - created_at) / 3600 FROM decision_request WHERE id = $1`, created["id"]).Scan(&hours)
+	if hours < 71.99 || hours > 72.01 {
+		test.Fatalf("default expiry = %.2fh, want 72h", hours)
+	}
+}
+
+func TestDecisionRequestDecisionKindKeepsNoExpiry(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	var created map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.apiRequest()).Want(http.StatusCreated).JSON(&created)
+	var kind string
+	var expires *time.Time
+	dbfx.QueryRow(test, `SELECT kind, expires_at FROM decision_request WHERE id = $1`, created["id"]).Scan(&kind, &expires)
+	if kind != "decision" || expires != nil {
+		test.Fatalf("decision request stored kind=%q expires_at=%v", kind, expires)
+	}
+}
+
+func TestDecisionRequestActionRefusals(test *testing.T) {
+	enableActionRequests(test, true)
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"action envelope", func(body map[string]any) { body["action"] = map[string]any{"type": "noop", "version": 1} }},
+		{"expires_in zero", func(body map[string]any) { body["expires_in"] = "0" }},
+		{"expires_in negative", func(body map[string]any) { body["expires_in"] = "-1h" }},
+		{"expires_in malformed", func(body map[string]any) { body["expires_in"] = "soon" }},
+		{"expires_in 169h", func(body map[string]any) { body["expires_in"] = "169h" }},
+		{"options in action ask", func(body map[string]any) { body["ask"].(map[string]any)["options"] = []any{} }},
+		{"no steps", func(body map[string]any) { delete(body["ask"].(map[string]any), "steps") }},
+		{"unknown kind", func(body map[string]any) { body["kind"] = "bogus" }},
+		{"expires_in on a decision", func(body map[string]any) { body["kind"] = "decision"; body["expires_in"] = "24h" }},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			body := fixture.actionBody()
+			tc.mutate(body)
+			testutil.Call(test, testHandler.RequestDecision, fixture.postAction(body)).Want(http.StatusBadRequest)
+			fixture.assertCounts(test, 0)
+		})
+	}
+}
+
+func TestDecisionRequestExpires168HoursIsAccepted(test *testing.T) {
+	enableActionRequests(test, true)
+	fixture := newRequestCoreFixture(test, false)
+	body := fixture.actionBody()
+	body["expires_in"] = "168h"
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(body)).Want(http.StatusCreated)
+}
+
+func TestDecisionRequestActionGate(test *testing.T) {
+	enableActionRequests(test, false)
+	fixture := newRequestCoreFixture(test, false)
+	var refused map[string]string
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(fixture.actionBody())).Want(http.StatusBadRequest).JSON(&refused)
+	if refused["code"] != "action_requests_unavailable" {
+		test.Fatalf("gate response = %+v", refused)
+	}
+	fixture.assertCounts(test, 0)
+}

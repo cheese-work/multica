@@ -249,6 +249,7 @@ func TestRuntimeBlockedNeedsNotice(t *testing.T) {
 		{"runtime unusable: MUL-6164's original case", dispatch.ReasonRuntimeUnusable, true},
 		{"runtime profile missing: MUL-6164's second case", dispatch.ReasonRuntimeProfileMissing, true},
 		{"provider hold: CHE-588's case, the gap this test closes", dispatch.ReasonProviderHold, true},
+		{"provider breaker: CHE-1735's case", dispatch.ReasonProviderBreaker, true},
 		{"runtime offline: the sleeping-laptop wait needs no notice", dispatch.ReasonRuntimeOffline, false},
 		{"target unavailable: not a runtime-repair or policy-hold cause", dispatch.ReasonTargetUnavailable, false},
 	}

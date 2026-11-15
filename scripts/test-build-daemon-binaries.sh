@@ -15,4 +15,6 @@ grep -q '"version":"9.9.9-test"' "$out/manifest.json" || { echo "FAIL: manifest 
 sum="$(sha256sum "$out/multica-$key" | cut -d' ' -f1)"
 grep -q "\"$key\":{\"sha256\":\"$sum\"" "$out/manifest.json" || { echo "FAIL: manifest sha256"; exit 1; }
 "$out/multica-$key" version 2>&1 | grep -q "$commit" || { echo "FAIL: binary not stamped with commit"; "$out/multica-$key" version; exit 1; }
+# The daemon registers cli_commit from main.buildCommit (cmd_daemon.go), not main.commit.
+go version -m "$out/multica-$key" | grep -q "main.buildCommit=$commit" || { echo "FAIL: binary not stamped with buildCommit"; exit 1; }
 echo "PASS: $key"

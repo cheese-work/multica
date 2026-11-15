@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, ApiError } from "@multica/core/api";
 import type { WakeupDefinition } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
+import { NavigationProvider } from "../../navigation";
 import { ProjectWakeupsSection } from "./project-wakeups-section";
 
 vi.mock("@multica/core/api", async (importOriginal) => ({
@@ -208,4 +209,21 @@ it("is read-only for members who cannot manage the project", async () => {
   expect(screen.queryByRole("button", { name: "Create rule" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Edit Watch PRs" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Delete Watch PRs" })).toBeNull();
+});
+
+it("opens the collapsed rules when the page is reached by the wakeups deep link, and drops the param", async () => {
+  const replace = vi.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderWithI18n(
+    <QueryClientProvider client={client}>
+      <NavigationProvider
+        value={{ push: vi.fn(), replace, back: vi.fn(), pathname: "/acme/projects/proj-1", searchParams: new URLSearchParams("focus=wakeups"), hash: "", getShareableUrl: (path: string) => path }}
+      >
+        <ProjectWakeupsSection projectId="proj-1" canManage />
+      </NavigationProvider>
+    </QueryClientProvider>,
+  );
+  const toggle = await screen.findByRole("button", { name: "Wakeups" });
+  await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+  expect(replace).toHaveBeenCalledWith("/acme/projects/proj-1");
 });

@@ -1,3 +1,4 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -59,6 +60,7 @@ vi.mock("@multica/core/issues/queries", () => ({
 vi.mock("@multica/core/workspace/mutations", () => ({
   useLeaveWorkspace: () => ({ mutateAsync: vi.fn() }),
   useDeleteWorkspace: () => ({ mutateAsync: vi.fn() }),
+  useSetWorkspaceScheduling: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -79,6 +81,22 @@ vi.mock("@multica/core/auth", () => {
 
 vi.mock("../../navigation", () => ({
   useNavigation: () => ({ push: vi.fn() }),
+}));
+
+vi.mock("./agent-decisions-row", () => ({
+  AgentDecisionsRow: () => <div data-testid="agent-decisions-row" />,
+}));
+
+vi.mock("./routing-agent-rows", () => ({
+  RoutingAgentRows: ({ canEdit }: { canEdit: boolean }) => (
+    <div data-testid="routing-agent-rows" data-can-edit={String(canEdit)} />
+  ),
+}));
+
+vi.mock("./delegated-writes-section", () => ({
+  DelegatedWritesSection: ({ canEdit }: { canEdit: boolean }) => (
+    <div data-testid="delegated-writes-section" data-can-edit={String(canEdit)} />
+  ),
 }));
 
 vi.mock("./delete-workspace-dialog", () => ({
@@ -292,6 +310,39 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.getByText("Source: workspace")).toBeInTheDocument();
   });
 
+  it.each([
+    ["owner", true],
+    ["admin", false],
+    ["member", false],
+  ] as const)("shows the agent decisions row to a %s: %s", (role, shown) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
+  });
+
+  it.each([
+    ["owner", "true"],
+    ["admin", "true"],
+    ["member", "false"],
+  ] as const)("lets a %s edit delegated governed writes: %s", (role, canEdit) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByTestId("delegated-writes-section")).toHaveAttribute("data-can-edit", canEdit);
+  });
+
+  it.each([
+    ["owner", "true"],
+    ["admin", "true"],
+    ["member", "false"],
+  ] as const)("lets a %s edit the routing agent: %s", (role, canEdit) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByTestId("routing-agent-rows")).toHaveAttribute("data-can-edit", canEdit);
+  });
+
   // CHE-1806: settings.auto_compact saves through its own request field.
   it("shows the auto-compact defaults when nothing is saved", () => {
     render(<WorkspaceTab />, { wrapper: I18nWrapper });
@@ -374,6 +425,47 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.getByText("Enter a whole number from 50 to 90.")).toBeInTheDocument();
   });
 
+  // CHE-4331: per-window token thresholds, saved through the same field.
+  it("shows the per-window token defaults when nothing is saved", () => {
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("spinbutton", { name: "Threshold, 200k models (tokens)" })).toHaveValue(190000);
+    expect(screen.getByRole("spinbutton", { name: "Threshold, 1M models (tokens)" })).toHaveValue(200000);
+  });
+
+  it("saves only the 1M token threshold after the field loses focus", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "Threshold, 1M models (tokens)" });
+
+    await user.clear(input);
+    await user.type(input, "300000");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+        auto_compact: { threshold_tokens_1m: 300000 },
+      });
+    });
+  });
+
+  it("never sends a 1M token threshold above 400000", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "Threshold, 1M models (tokens)" });
+
+    await user.clear(input);
+    await user.type(input, "500000");
+    await user.tab();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Enter a whole number from 100000 to 400000.")).toBeInTheDocument();
+  });
+
   it("shows regular members the auto-compact setting read-only", () => {
     membersRef.current = [
       { user_id: "user-1", role: "member" },
@@ -388,6 +480,60 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByRole("switch", { name: "Auto-compact" })).toBeNull();
     expect(screen.queryByRole("spinbutton", { name: "Threshold (%)" })).toBeNull();
     expect(screen.getByText("On, at 70%")).toBeInTheDocument();
+  });
+
+  // CHE-3706: settings.harness_profile (UI "Runtime profile") saves through its
+  // own request field.
+  it("shows the personal runtime profile when nothing is saved", () => {
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Runtime profile" })).toHaveTextContent("Personal");
+  });
+
+  it("shows a saved managed runtime profile", () => {
+    workspaceRef.current = { ...workspaceRef.current, settings: { harness_profile: "managed" } };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Runtime profile" })).toHaveTextContent("Managed");
+  });
+
+  it("falls back to personal for a malformed saved runtime profile", () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { harness_profile: "managed_sandbox" },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Runtime profile" })).toHaveTextContent("Personal");
+  });
+
+  it("saves only the chosen runtime profile", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByRole("combobox", { name: "Runtime profile" }));
+    await user.click(await screen.findByRole("option", { name: "Managed" }));
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        harness_profile: "managed",
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["harness_profile"]);
+    }
+  });
+
+  it("shows regular members the runtime profile read-only", () => {
+    membersRef.current = [
+      { user_id: "user-1", role: "member" },
+      { user_id: "user-2", role: "owner", name: "Grace Hopper" },
+    ];
+    workspaceRef.current = { ...workspaceRef.current, settings: { harness_profile: "managed" } };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByRole("combobox", { name: "Runtime profile" })).toBeNull();
+    expect(screen.getByText("Managed")).toBeInTheDocument();
   });
 
   // CHE-3296: settings.idle_started_guard saves through its own request field,
@@ -554,4 +700,22 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByRole("spinbutton", { name: "After (hours)" })).toBeNull();
     expect(screen.getByText("Shadow, after 6 h")).toBeInTheDocument();
   });
+  it("restores name, description, context and compact prompt after unmount", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const first = render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const nameInput = screen.getByDisplayValue("Test Workspace");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Unsent name");
+    // Leave before the auto-save debounce fires.
+    first.unmount();
+
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByDisplayValue("Unsent name")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
 });
+
+
+beforeEach(() => resetAllRegisteredDrafts());

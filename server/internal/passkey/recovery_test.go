@@ -138,3 +138,50 @@ func TestUserRecoveringReadsTheStateUnderAShareLock(test *testing.T) {
 		test.Fatal("a writer got past the share lock")
 	}
 }
+
+func TestRecoveryEndsEveryWebPushSubscriptionOfTheUserOnly(test *testing.T) {
+	f := newRecoveryFixture(test)
+	ctx := context.Background()
+	stranger := f.pool.QueryRow(ctx, `SELECT gen_random_uuid()::text`)
+	var strangerID string
+	if err := stranger.Scan(&strangerID); err != nil {
+		test.Fatal(err)
+	}
+	insertSub := func(owner any, endpoint string) string {
+		var id string
+		err := f.pool.QueryRow(ctx, `INSERT INTO push_subscription (user_id, endpoint, p256dh, auth, session_id, session_valid_until)
+			VALUES ($1, $2, 'k', 'a', 's', now() + interval '1 day') RETURNING id::text`, owner, endpoint).Scan(&id)
+		if err != nil {
+			test.Fatal(err)
+		}
+		if _, err := f.pool.Exec(ctx, `INSERT INTO push_delivery (record_id, subscription_id, next_attempt_at) VALUES (gen_random_uuid(), $1, now())`, id); err != nil {
+			test.Fatal(err)
+		}
+		test.Cleanup(func() {
+			f.pool.Exec(ctx, `DELETE FROM push_delivery WHERE subscription_id = $1`, id)
+			f.pool.Exec(ctx, `DELETE FROM push_subscription WHERE id = $1`, id)
+		})
+		return id
+	}
+	tag := fmt.Sprintf("https://push.example.test/%d", time.Now().UnixNano())
+	mine := []string{insertSub(f.user, tag+"/a"), insertSub(f.user, tag+"/b")}
+	theirs := insertSub(strangerID, tag+"/other")
+
+	f.recover()
+
+	count := func(table, column string, ids []string) (n int) {
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE `+column+` = ANY($1::uuid[])`, ids).Scan(&n); err != nil {
+			test.Fatal(err)
+		}
+		return n
+	}
+	if n := count("push_subscription", "id", mine); n != 0 {
+		test.Fatalf("recovered user keeps %d push subscriptions, want 0", n)
+	}
+	if n := count("push_delivery", "subscription_id", mine); n != 0 {
+		test.Fatalf("recovered user keeps %d queued push deliveries, want 0", n)
+	}
+	if n := count("push_subscription", "id", []string{theirs}); n != 1 {
+		test.Fatalf("another user's subscriptions = %d, want 1", n)
+	}
+}

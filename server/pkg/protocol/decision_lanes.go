@@ -9,6 +9,9 @@ type DecisionLane struct {
 	// DMs accept a decision request for it. ReferencedAt is the newest time it did.
 	Eligible     bool   `json:"eligible"`
 	ReferencedAt string `json:"referenced_at,omitempty"`
+	// Unseen is true when the DM has at least one unread assistant reply
+	// (chat_session.last_read_at is older than it).
+	Unseen bool `json:"unseen"`
 }
 
 type DecisionIssueMention struct {

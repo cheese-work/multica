@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -71,6 +72,7 @@ func TestHTTPErrorKind(t *testing.T) {
 		{409, KindConflict},
 		{400, KindValidation},
 		{422, KindValidation},
+		{413, KindTooLarge},
 		{429, KindRateLimited},
 		{500, KindServerError},
 		{502, KindServerError},
@@ -94,7 +96,7 @@ func TestFormatErrorAllKinds(t *testing.T) {
 	allKinds := []ErrorKind{
 		KindNetworkTimeout, KindNetworkDNS, KindNetworkRefused, KindNetworkTLS, KindNetworkOffline, KindNetworkTLSHandshakeTimeout,
 		KindAuthRequired, KindTaskTokenRejected, KindForbidden, KindNotFound, KindConflict,
-		KindValidation, KindRateLimited, KindServerError, KindUnknown,
+		KindValidation, KindTooLarge, KindRateLimited, KindServerError, KindUnknown,
 	}
 	for _, lang := range []Language{LangEN, LangZH} {
 		for _, k := range allKinds {
@@ -222,6 +224,66 @@ func TestFormatErrorConflictFallsBackToGenericTemplate(t *testing.T) {
 	}
 }
 
+// TestFormatErrorTooLargeUsesServerMessage pins GH #9812: a URL skill import
+// over the file-count cap answers 413 with the count and the limit, and the CLI
+// printed "An unexpected error occurred." because 413 had no kind. The same
+// bundle as a ZIP (rejected with 400) already printed the limit.
+func TestFormatErrorTooLargeUsesServerMessage(t *testing.T) {
+	const serverMsg = "import cap exceeded: import bundle would contain 600 files, exceeding the 512 file limit"
+	httpErr := &HTTPError{
+		Method:     "POST",
+		Path:       "/api/skills/import",
+		StatusCode: 413,
+		Body:       `{"error":"` + serverMsg + `"}`,
+	}
+	wrapped := fmt.Errorf("import skill: %w", httpErr)
+
+	withLang(t, "en_US.UTF-8")
+	if got, want := FormatError(wrapped, false), "Request too large: "+serverMsg; got != want {
+		t.Errorf("EN: got %q, want %q", got, want)
+	}
+	withLang(t, "zh_CN.UTF-8")
+	if got, want := FormatError(wrapped, false), "请求过大："+serverMsg; got != want {
+		t.Errorf("ZH: got %q, want %q", got, want)
+	}
+}
+
+// A 413 a proxy writes itself (nginx's client_max_body_size page) has no JSON
+// message, so it gets the generic size copy, never the raw page.
+func TestFormatErrorTooLargeFallsBackToGenericTemplate(t *testing.T) {
+	withLang(t, "en_US.UTF-8")
+	for _, body := range []string{
+		`<html><body><h1>413 Request Entity Too Large</h1></body></html>`,
+		``,
+	} {
+		got := FormatError(&HTTPError{StatusCode: 413, Body: body}, false)
+		if got != messageFor(KindTooLarge, LangEN) {
+			t.Errorf("body %q: expected generic too-large template, got %q", body, got)
+		}
+	}
+}
+
+func TestServerMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"json error", fmt.Errorf("refresh skill: %w", &HTTPError{StatusCode: 503, Body: `{"error":"import source temporarily unavailable"}`}), "import source temporarily unavailable"},
+		{"html page", &HTTPError{StatusCode: 502, Body: `<html>502 Bad Gateway</html>`}, ""},
+		{"empty body", &HTTPError{StatusCode: 504}, ""},
+		{"not http", errors.New("boom"), ""},
+		{"nil", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServerMessage(tc.err); got != tc.want {
+				t.Errorf("ServerMessage() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestExtractServerMessagePrefersProseOverMachineCode covers the endpoints that
 // put a stable code in "error" and the sentence in "message" (issue-table
 // cursor responses). The sentence is what helps a person.
@@ -307,6 +369,7 @@ func TestExitCodeFor(t *testing.T) {
 		{"validation 400", &HTTPError{StatusCode: 400}, ExitValidation},
 		{"validation 422", &HTTPError{StatusCode: 422}, ExitValidation},
 		{"conflict 409", &HTTPError{StatusCode: 409}, ExitGeneric},
+		{"too large 413", &HTTPError{StatusCode: 413}, ExitGeneric},
 		{"rate limited 429", &HTTPError{StatusCode: 429}, ExitGeneric},
 		{"server 500", &HTTPError{StatusCode: 500}, ExitGeneric},
 		{"plain", errors.New("boom"), ExitGeneric},
@@ -418,6 +481,7 @@ func TestErrorKindString(t *testing.T) {
 		KindNotFound:                   "not_found",
 		KindConflict:                   "conflict",
 		KindValidation:                 "validation",
+		KindTooLarge:                   "too_large",
 		KindRateLimited:                "rate_limited",
 		KindServerError:                "server_error",
 		KindUnknown:                    "unknown",
@@ -525,6 +589,7 @@ func TestFormatErrorActionableHints(t *testing.T) {
 		{409, []string{"conflict", "again"}, []string{"冲突", "重新获取"}},
 		{400, []string{"--help", "expected format"}, []string{"--help", "格式", "参数"}},
 		{422, []string{"--help", "expected format"}, []string{"--help", "格式", "参数"}},
+		{413, []string{"larger than the server accepts", "--debug"}, []string{"超出", "--debug"}},
 		{429, []string{"Too many requests"}, []string{"过于频繁"}},
 		{500, []string{"temporarily unavailable", "--debug"}, []string{"暂时不可用", "--debug"}},
 	}
@@ -723,4 +788,30 @@ func TestWithUserMessageUnlessNetwork(t *testing.T) {
 			t.Errorf("WithUserMessageUnlessNetwork(_, nil) should be nil")
 		}
 	})
+}
+
+// CHE-2909 (DX-4): the chat task authority refusals carry a stable code and a
+// server-authored message that reaches the user and exits non-zero.
+func TestChatTaskAuthorityRefusalReachesUser(t *testing.T) {
+	for _, tc := range []struct{ code, msg string }{
+		{"chat_task_not_active", "This task is no longer running, so it cannot use this chat session."},
+		{"chat_task_session_mismatch", "This task does not belong to this chat session."},
+		{"chat_task_agent_mismatch", "This task's agent does not own this chat session."},
+		{"compaction_agent_not_current", "This agent is no longer the workspace's compaction agent."},
+		{"compaction_continue_refused", "A compaction task finishes in place with `multica chat compact` or `multica chat continue` without --fork; it cannot fork or archive the DM."},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"error": tc.msg, "code": tc.code})
+			err := fmt.Errorf("continue chat: %w", &HTTPError{Method: "POST", Path: "/api/chat/continue", StatusCode: 403, Body: string(body)})
+			if got := ServerErrorCode(err); got != tc.code {
+				t.Fatalf("ServerErrorCode = %q, want %q", got, tc.code)
+			}
+			if got := FormatError(err, false); !strings.Contains(got, tc.msg) {
+				t.Fatalf("FormatError = %q, want it to contain %q", got, tc.msg)
+			}
+			if ExitCodeFor(err) == 0 {
+				t.Fatal("exit code is 0 for a refusal")
+			}
+		})
+	}
 }

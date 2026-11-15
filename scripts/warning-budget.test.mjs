@@ -238,3 +238,15 @@ test("malformed JSON whose message contains an HTTP 5xx marker still fails loudl
   const malformed = () => { try { JSON.parse("(HTTP 502)") } catch (error) { return error } }
   assert.throws(() => scan(() => { throw malformed() }), SyntaxError)
 })
+
+test("shard jobs inherit the legacy backend-tests baseline until main has run the matrix", () => {
+  const pending = new Set(["backend-test-shards (handler-0)", "backend-test-shards (rest)", "frontend-build"])
+  const jobBaselines = Object.fromEntries([...pending].map((name) => [name, null]))
+  const baselineJobs = []
+  const runs = [{ id: 2, html_url: "run-2", head_sha: "b" }]
+  const listJobs = () => [{ name: "backend-tests", status: "completed", conclusion: "success" }, { name: "frontend-build", status: "completed", conclusion: "success" }]
+  scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect: (job) => ({ log: job.name }), log: () => {} })
+  assert.equal(pending.size, 0)
+  assert.deepEqual(baselineJobs.map((job) => job.name).sort(), ["backend-test-shards (handler-0)", "backend-test-shards (rest)", "frontend-build"])
+  assert.deepEqual(jobBaselines["backend-test-shards (rest)"], { run: "run-2", sha: "b", job: "backend-tests" })
+})

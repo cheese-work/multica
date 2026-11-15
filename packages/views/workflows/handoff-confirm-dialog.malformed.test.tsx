@@ -43,10 +43,12 @@ function stubFetch() {
   return fetchMock;
 }
 
+let qc: QueryClient;
+
 function renderDialog() {
   realApi.current = new ApiClient("https://api.example.test");
   const onConfirm = vi.fn();
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   renderWithI18n(
     <QueryClientProvider client={qc}>
       <WorkflowHandoffConfirmDialog
@@ -73,8 +75,13 @@ const handoff = {
   brief: "Review the PR.",
 };
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  qc.clear();
+  // TanStack Query flushes subscriber notifications on a 0 ms timer. Let it fire
+  // while jsdom is alive: after the last test the environment is torn down, and
+  // the flush throws "window is not defined" as an unhandled error.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   responses.length = 0;
   vi.unstubAllGlobals();
 });

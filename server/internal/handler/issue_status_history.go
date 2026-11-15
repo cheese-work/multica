@@ -24,6 +24,10 @@ type statusRecord struct {
 	// the writer adds who the issue went to from the row it writes.
 	handoffWorkflow string
 	activity        *db.ActivityLog
+	// eventID is the pre-assigned id of the status_changed row (CHE-4439); the
+	// route label shares it. routingExit marks the row as a routing agent leaving its step.
+	eventID     pgtype.UUID
+	routingExit bool
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {

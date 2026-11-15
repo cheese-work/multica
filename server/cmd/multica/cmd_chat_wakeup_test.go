@@ -18,6 +18,9 @@ func chatWakeupTestCommand(after, at, instruction string) *cobra.Command {
 	command.Flags().String("instruction", instruction, "")
 	command.Flags().String("title", "", "")
 	command.Flags().String("output", "json", "")
+	for _, name := range []string{"issue", "event", "filter-actor-type", "filter-actor-id", "until-status", "expires-in", "on-timeout"} {
+		command.Flags().String(name, "", "")
+	}
 	return command
 }
 
@@ -120,5 +123,55 @@ func TestChatWakeupCancelDeletesByID(t *testing.T) {
 	command := &cobra.Command{Use: "cancel"}
 	if err := runChatWakeupCancel(command, []string{"w1"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChatWakeupCreateIssueWatchBody(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"id":"w1"}`))
+	}))
+	t.Cleanup(server.Close)
+	setCLITestServerEnv(t, server.URL)
+	for _, name := range []string{"issue", "event", "filter-actor-type", "filter-actor-id", "until-status", "expires-in", "on-timeout"} {
+		if chatWakeupCreateCmd.Flags().Lookup(name) == nil {
+			t.Fatalf("create command must register --%s", name)
+		}
+	}
+
+	command := chatWakeupTestCommand("", "", "relay the reply")
+	for name, value := range map[string]string{"issue": "CHE-1", "event": "comment.created", "filter-actor-type": "agent", "filter-actor-id": "a1", "expires-in": "2h", "on-timeout": "wake"} {
+		_ = command.Flags().Set(name, value)
+	}
+	command.SetOut(&bytes.Buffer{})
+	if err := runChatWakeupCreate(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"issue": "CHE-1", "event": "comment.created", "filter_actor_type": "agent", "filter_actor_id": "a1", "expires_in_seconds": float64(7200), "on_timeout": "wake", "instruction": "relay the reply"}
+	for key, value := range want {
+		if body[key] != value {
+			t.Fatalf("body[%s] = %v, want %v (body %v)", key, body[key], value, body)
+		}
+	}
+	if _, has := body["after_seconds"]; has {
+		t.Fatalf("watch body = %v, want no after_seconds", body)
+	}
+
+	for name, set := range map[string]map[string]string{
+		"watch plus --after":  {"issue": "CHE-1", "event": "comment.created", "after": "5m"},
+		"issue alone":         {"issue": "CHE-1"},
+		"event without issue": {"event": "comment.created"},
+	} {
+		bad := chatWakeupTestCommand("", "", "x")
+		for k, v := range set {
+			_ = bad.Flags().Set(k, v)
+		}
+		if err := runChatWakeupCreate(bad, nil); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
 	}
 }

@@ -15,18 +15,29 @@ SELECT * FROM github_installation
 WHERE installation_id = $1
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListGitHubInstallationsByInstallationIDForShare :many
+-- Same rows as ListGitHubInstallationsByInstallationID, share-locked until the
+-- transaction ends: a concurrent delete or account change of a binding waits, so
+-- a policy check made inside the transaction still holds when it commits.
+SELECT * FROM github_installation
+WHERE installation_id = $1
+ORDER BY created_at ASC, id ASC
+FOR SHARE;
+
 -- name: GetGitHubInstallationByID :one
 SELECT * FROM github_installation
 WHERE id = $1;
 
 -- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
-    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
+    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, account_id
 ) VALUES (
-    $1, $2, $3, $4, sqlc.narg('account_avatar_url'), sqlc.narg('connected_by_id')
+    $1, $2, $3, $4, sqlc.narg('account_avatar_url'), sqlc.narg('connected_by_id'), sqlc.narg('account_id')
 )
 ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_login = EXCLUDED.account_login,
+    -- A code-less refresh carries no trusted id; keep the stored one.
+    account_id = COALESCE(EXCLUDED.account_id, github_installation.account_id),
     account_type = EXCLUDED.account_type,
     account_avatar_url = EXCLUDED.account_avatar_url,
     connected_by_id = EXCLUDED.connected_by_id,
@@ -44,16 +55,32 @@ DELETE FROM github_installation WHERE installation_id = $1
 RETURNING id, workspace_id;
 
 -- name: UpdateGitHubInstallationAccountByInstallationID :many
--- Refresh the GitHub account display metadata across every workspace binding of
--- an installation (fired by installation.created/new_permissions_accepted/
--- unsuspend). Leaves workspace_id and connected_by_id untouched.
+-- Refresh the GitHub account display metadata on the given workspace bindings
+-- of an installation (fired by installation.created/new_permissions_accepted/
+-- unsuspend). Callers pass only the bindings the allowlist permits. Leaves
+-- workspace_id and connected_by_id untouched.
 UPDATE github_installation
 SET account_login = $2,
     account_type = $3,
     account_avatar_url = sqlc.narg('account_avatar_url'),
+    account_id = COALESCE(sqlc.narg('account_id'), account_id),
     updated_at = now()
 WHERE installation_id = $1
+  AND workspace_id = ANY(sqlc.arg('workspace_ids')::uuid[])
 RETURNING *;
+
+-- name: ListGitHubInstallationsMissingAccountID :many
+-- Startup backfill input: rows bound before the trusted account_id existed.
+SELECT * FROM github_installation
+WHERE account_id IS NULL
+ORDER BY created_at ASC, id ASC;
+
+-- name: SetGitHubInstallationAccountIDByInstallationID :execrows
+-- Fill only a null id, so a backfill can never overwrite one captured from a
+-- verified bind or a signed lifecycle event.
+UPDATE github_installation
+SET account_id = $2
+WHERE installation_id = $1 AND account_id IS NULL;
 
 -- name: UpsertPendingGitHubInstallation :one
 INSERT INTO github_pending_installation (
@@ -124,13 +151,13 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state, head_repo_same,
-    additions, deletions, changed_files
+    additions, deletions, changed_files, merge_commit_sha
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
     $11, sqlc.narg('mergeable_state'), sqlc.arg('head_repo_same'),
-    $12, $13, $14
+    $12, $13, $14, sqlc.arg('merge_commit_sha')::text
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -221,6 +248,8 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     additions     = EXCLUDED.additions,
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
+    -- Only a merged delivery carries the commit; a later one without it keeps it.
+    merge_commit_sha = COALESCE(NULLIF(EXCLUDED.merge_commit_sha, ''), github_pull_request.merge_commit_sha),
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
 RETURNING *;
@@ -447,3 +476,35 @@ FROM github_pull_request
 WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
 GROUP BY installation_id, repo_owner, repo_name, pr_number
 ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number;
+
+-- name: ListIssueOpenPullRequestHeads :many
+-- Head SHAs of the issue's linked PRs that are still open or draft, GitHub and
+-- self-hosted alike. The review-head guard (CHE-4649) acts only on exactly one.
+SELECT head_sha FROM (
+    SELECT pr.head_sha AS head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+    UNION ALL
+    SELECT pr.head_sha AS head_sha
+    FROM vcs_pull_request pr
+    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+) open_prs;
+
+-- name: HasAgentVerdictForHead :one
+-- Whether the agent already commented its verdict on the issue for this PR
+-- head: a line that opens with "Verdict:" and PASS, FAIL or CHANGES REQUESTED
+-- (or a line that opens with BLOCKED or NOT-RUN), plus a "Candidate:" or
+-- "Head:" line that names the head by its first seven characters at least.
+-- Anchoring on line starts keeps a status report ("CI PASS on <head>") and a
+-- verdict for another head from counting. The markers are upper case on
+-- purpose, so prose such as "this may fail" is not a verdict. A comment in
+-- another shape does not match, and the run starts as before.
+SELECT EXISTS (
+    SELECT 1 FROM comment
+    WHERE issue_id = sqlc.arg('issue_id') AND author_type = 'agent' AND author_id = sqlc.arg('agent_id')
+      AND deleted_at IS NULL
+      AND content ~ '(?n)^[*_ ]*(Verdict[*_]*:[*_ \t]*(PASS|FAIL|CHANGES REQUESTED|BLOCKED|NOT-RUN)|(BLOCKED|NOT-RUN))\M'
+      AND content ~* ('(?n)^[*_ ]*(Candidate|Head)\M[^\n]*' || left(sqlc.arg('head_sha')::text, 7))
+);

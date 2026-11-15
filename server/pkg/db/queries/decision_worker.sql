@@ -68,7 +68,7 @@ WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('i
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = intent.issue_id AND issue.workspace_id = intent.workspace_id));
 
 -- name: LockDecisionOrphanRequests :many
-SELECT request.id FROM decision_request request
+SELECT request.* FROM decision_request request
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.issue_id = sqlc.arg('issue_id')
   AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id))
@@ -108,3 +108,20 @@ WHERE settlement.instance_id = sqlc.arg('id') AND settlement.workspace_id = sqlc
 DELETE FROM decision_agent_undo undo
 WHERE undo.instance_id = sqlc.arg('id') AND undo.workspace_id = sqlc.arg('workspace_id')
   AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = undo.issue_id AND issue.workspace_id = undo.workspace_id);
+
+-- name: DeleteDecisionOrphanWakeReceipts :exec
+-- No foreign keys: removes the request's wake receipts under the same orphan
+-- condition, before DeleteDecisionOrphanWakeEvents and DeleteDecisionOrphanRequest.
+DELETE FROM decision_wake_receipt receipt
+USING decision_wake_event event, decision_request request
+WHERE event.id = receipt.event_id AND request.id = event.request_id
+  AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+  AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
+    OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id));
+
+-- name: DeleteDecisionOrphanWakeEvents :exec
+DELETE FROM decision_wake_event event
+USING decision_request request
+WHERE request.id = event.request_id AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+  AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
+    OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id));

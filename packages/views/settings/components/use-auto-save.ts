@@ -8,6 +8,8 @@ interface UseAutoSaveOptions<T> {
   savedValue: T;
   onSave: (value: T) => Promise<void>;
   onSuccess?: (value: T) => void;
+  /** Value equals what is saved and no request is running. */
+  onIdle?: (value: T) => void;
   onError?: (error: unknown) => void;
   enabled?: boolean;
   delay?: number;
@@ -30,6 +32,7 @@ export function useAutoSave<T>({
   savedValue,
   onSave,
   onSuccess,
+  onIdle,
   onError,
   enabled = true,
   delay = 650,
@@ -46,6 +49,7 @@ export function useAutoSave<T>({
   const enabledRef = useRef(enabled);
   const onSaveRef = useRef(onSave);
   const onSuccessRef = useRef(onSuccess);
+  const onIdleRef = useRef(onIdle);
   const onErrorRef = useRef(onError);
   const isEqualRef = useRef(isEqual);
 
@@ -53,6 +57,7 @@ export function useAutoSave<T>({
   enabledRef.current = enabled;
   onSaveRef.current = onSave;
   onSuccessRef.current = onSuccess;
+  onIdleRef.current = onIdle;
   onErrorRef.current = onError;
   isEqualRef.current = isEqual;
 
@@ -84,8 +89,17 @@ export function useAutoSave<T>({
       savingRef.current = false;
       const queued = queuedRef.current;
       queuedRef.current = null;
+      const latest = latestValueRef.current;
       if (queued && !isEqualRef.current(queued, persistedRef.current)) {
         void runSave(queued);
+      } else if (
+        succeeded &&
+        !timerRef.current &&
+        !isEqualRef.current(latest, persistedRef.current)
+      ) {
+        // An edit made during the request matched the old saved value, so no
+        // debounce was armed for it; send it now that the request is done.
+        void runSave(latest);
       } else if (succeeded && mountedRef.current) {
         setStatus("saved");
         onSuccessRef.current?.(next);
@@ -114,6 +128,7 @@ export function useAutoSave<T>({
     if (!enabled || isEqual(value, persistedRef.current)) {
       timerRef.current = null;
       if (!enabled) setStatus("idle");
+      else if (!savingRef.current) onIdleRef.current?.(value);
       return;
     }
 

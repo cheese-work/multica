@@ -89,6 +89,19 @@ func (q *Queries) DeletePushSubscriptionByEndpoint(ctx context.Context, arg Dele
 	return err
 }
 
+const deletePushSubscriptionsByUser = `-- name: DeletePushSubscriptionsByUser :exec
+WITH gone AS (
+    DELETE FROM push_subscription WHERE user_id = $1 RETURNING id
+)
+DELETE FROM push_delivery WHERE subscription_id IN (SELECT id FROM gone)
+`
+
+// Passkey recovery: the person's devices stop receiving pushes with their sessions.
+func (q *Queries) DeletePushSubscriptionsByUser(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deletePushSubscriptionsByUser, userID)
+	return err
+}
+
 const deleteSentPushDeliveries = `-- name: DeleteSentPushDeliveries :exec
 DELETE FROM push_delivery WHERE sent_at < now() - make_interval(secs => $1::float8)
 `

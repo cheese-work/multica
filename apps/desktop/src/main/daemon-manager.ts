@@ -91,8 +91,11 @@ interface ActiveProfile {
 
 let statusPollTimer: ReturnType<typeof setInterval> | null = null;
 let logTailWatcher: { path: string; listener: StatsListener } | null = null;
+let logTailOwner: Electron.WebContents | null = null;
 let currentState: DaemonStatus["state"] = "installing_cli";
+let cliDownload: DaemonStatus["cliDownload"];
 let getMainWindow: () => BrowserWindow | null = () => null;
+let getStatusWindows: () => readonly BrowserWindow[] = () => [];
 let statusPollInProgress = false;
 let cachedCliBinary: string | null | undefined = undefined;
 let cliResolvePromise: Promise<string | null> | null = null;
@@ -181,8 +184,10 @@ function urlsMatch(a: string, b: string): boolean {
 }
 
 function sendStatus(status: DaemonStatus): void {
-  const win = getMainWindow();
-  win?.webContents.send("daemon:status", status);
+  // One daemon serves every main window, and each shows its status.
+  for (const win of getStatusWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("daemon:status", status);
+  }
 }
 
 interface HealthPayload {
@@ -349,7 +354,9 @@ async function fetchHealth(): Promise<DaemonStatus> {
   // polling — there's nothing to probe yet and /health calls would just return
   // "stopped", which would overwrite the correct setup state in the UI.
   if (currentState === "installing_cli" || currentState === "cli_not_found") {
-    return { state: currentState };
+    return currentState === "installing_cli" && cliDownload
+      ? { state: currentState, cliDownload }
+      : { state: currentState };
   }
 
   const active = await ensureActiveProfile();
@@ -592,7 +599,14 @@ async function resolveCliBinary(): Promise<string | null> {
         forceInstall: existsSync(managed),
         serverUrl: prereqs.serverUrl,
         token: prereqs.token,
+        onProgress: (progress) => {
+          // A retry after cli_not_found reaches here still in that state.
+          currentState = "installing_cli";
+          cliDownload = progress;
+          sendStatus({ state: "installing_cli", cliDownload });
+        },
       });
+      cliDownload = undefined;
       const version = await probeCliBinary(installed, "managed");
       if (version) {
         cachedCliBinary = installed;
@@ -603,6 +617,7 @@ async function resolveCliBinary(): Promise<string | null> {
         `[daemon] managed CLI at ${installed} failed validation after install`,
       );
     } catch (err) {
+      cliDownload = undefined;
       console.warn("[daemon] CLI auto-install failed, falling back to PATH:", err);
     }
 
@@ -1351,6 +1366,7 @@ async function readLogRange(
 }
 
 function sendLines(win: BrowserWindow, text: string): void {
+  if (win.isDestroyed()) return;
   const lines = text.split("\n").filter((line) => line.length > 0);
   for (const line of lines) {
     win.webContents.send("daemon:log-line", line);
@@ -1386,6 +1402,7 @@ function startLogTail(win: BrowserWindow, retryCount = 0): void {
       const startAt = initialStats.size - windowBytes;
       if (windowBytes > 0) {
         const text = await readLogRange(logPath, startAt, windowBytes);
+        if (win.isDestroyed()) return;
         const lines = text
           .split("\n")
           .filter((line) => line.length > 0)
@@ -1401,8 +1418,10 @@ function startLogTail(win: BrowserWindow, retryCount = 0): void {
     }
 
     const listener: StatsListener = (curr) => {
-      const target = getMainWindow();
-      if (!target) return;
+      if (win.isDestroyed()) {
+        stopLogTail();
+        return;
+      }
       // File rotated/truncated — restart from the new beginning.
       if (curr.size < position) position = 0;
       if (curr.size === position) return;
@@ -1410,7 +1429,7 @@ function startLogTail(win: BrowserWindow, retryCount = 0): void {
       const length = curr.size - from;
       position = curr.size;
       readLogRange(logPath, from, length)
-        .then((text) => sendLines(target, text))
+        .then((text) => sendLines(win, text))
         .catch((err) => {
           console.warn("[daemon] log tail read failed:", err);
         });
@@ -1463,10 +1482,19 @@ export function resumeDaemonAfterAbortedUpdateInstall(): void {
   startPolling();
 }
 
+/**
+ * `windowGetter` is the main window that hosts dialogs and progress;
+ * `statusWindowsGetter` lists every main window that shows daemon status.
+ */
 export function setupDaemonManager(
   windowGetter: () => BrowserWindow | null,
+  statusWindowsGetter: () => readonly BrowserWindow[] = () => {
+    const window = windowGetter();
+    return window ? [window] : [];
+  },
 ): void {
   getMainWindow = windowGetter;
+  getStatusWindows = statusWindowsGetter;
 
   ipcMain.handle("daemon:set-target-api-url", async (_e, url: string) => {
     const normalized = url || null;
@@ -1577,12 +1605,18 @@ export function setupDaemonManager(
     });
   });
 
-  ipcMain.on("daemon:start-log-stream", () => {
-    const win = getMainWindow();
-    if (win) startLogTail(win);
+  // One tail at a time, streamed to the window that opened the log view
+  // last; a window closing its view does not stop another window's stream.
+  ipcMain.on("daemon:start-log-stream", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    logTailOwner = event.sender;
+    startLogTail(win);
   });
 
-  ipcMain.on("daemon:stop-log-stream", () => {
+  ipcMain.on("daemon:stop-log-stream", (event) => {
+    if (logTailOwner && logTailOwner !== event.sender) return;
+    logTailOwner = null;
     stopLogTail();
   });
 

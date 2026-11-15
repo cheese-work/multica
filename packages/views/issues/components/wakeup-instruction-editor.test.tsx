@@ -1,7 +1,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
+import { useWakeupInstructionDraftStore } from "@multica/core/issues/stores";
 import type { IssueWakeup } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { WakeupInstructionEditor } from "./wakeup-instruction-editor";
@@ -17,6 +18,7 @@ const list = vi.mocked(api.listIssueWakeups);
 const edit = vi.mocked(api.editIssueWakeupInstruction);
 let rule: IssueWakeup;
 beforeEach(() => {
+  useWakeupInstructionDraftStore.setState({ drafts: {} });
   rule = { id: "wake", issue_id: "issue", agent_id: "agent", agent_name: "Emacs", instruction: "Check CI", revision: 2, kind: "event", mode: "continuous", event_types: ["comment.created"], filter_agent_id: null, filter_task_id: null, interval_seconds: null, cron_expression: null, timezone: "UTC", next_fire_at: null, enabled: false, disabled_at: null, last_task_id: null, last_error: null };
   list.mockReset().mockImplementation(async () => [rule]);
   edit.mockReset().mockResolvedValue(undefined);
@@ -46,6 +48,26 @@ it("cancels a draft without saving", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(edit).not.toHaveBeenCalled();
   expect(await open()).toHaveValue("Check CI");
+});
+it("restores an unsaved prompt after the editor unmounts and remounts", async () => {
+  mount();
+  fireEvent.change(await open(), { target: { value: "half-typed prompt" } });
+  cleanup();
+  mount();
+  expect(await open()).toHaveValue("half-typed prompt");
+});
+it("shows an unsent prompt even when the saved prompt changed, and saving it conflicts instead of overwriting", async () => {
+  mount();
+  fireEvent.change(await open(), { target: { value: "my draft" } });
+  cleanup();
+  rule = { ...rule, instruction: "someone else's edit", revision: 3 };
+  edit.mockRejectedValue({ status: 409 });
+  mount();
+  const input = await open();
+  expect(input).toHaveValue("my draft");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(edit).toHaveBeenCalledWith("issue", "wake", { instruction: "my draft", expected_instruction: "Check CI", revision: 3 }));
+  expect(screen.getByRole("textbox", { name: "What to do when woken" })).toHaveValue("my draft");
 });
 it("keeps the draft after a conflict and never silently uses the refreshed revision", async () => {
   const client = mount();

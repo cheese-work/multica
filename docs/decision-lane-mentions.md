@@ -90,6 +90,7 @@ membership, authorization and one-ping-per-person checks still apply.
     }
   ],
   "recommendation": "DEPLOY TOMORROW after the maintenance window opens.",
+  "recommended_option": "DEPLOY TOMORROW",
   "default_if_no_reply": "Do not deploy. Keep the current version running.",
   "source_issue_id": "11111111-1111-4111-8111-111111111111",
   "source_comment_id": "22222222-2222-4222-8222-222222222222"

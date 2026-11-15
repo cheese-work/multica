@@ -12,7 +12,11 @@ import {
   pruneIssueSurfaceViewStates,
 } from "@multica/core/issues/stores/surface-view-store";
 import { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
-import type { IssueStatusEntry, IssueTableGroupsRequest, IssueTableRowsRequest } from "@multica/core/types";
+import type {
+  IssueStatusEntry,
+  IssueTableGroupsRequest,
+  IssueTableRowsRequest,
+} from "@multica/core/types";
 import { useIssueSurfaceController } from "./use-issue-surface-controller";
 
 /**
@@ -26,6 +30,10 @@ import { useIssueSurfaceController } from "./use-issue-surface-controller";
  */
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: (selector: (state: { user: { id: string } }) => unknown) =>
+    selector({ user: { id: "user-1" } }),
+}));
 
 const QA_ENTRY: IssueStatusEntry = {
   id: "s-qa",
@@ -58,6 +66,7 @@ let rowRequests: IssueTableRowsRequest[] = [];
 function installApi(
   listIssueStatuses: () => Promise<unknown>,
   listProjects: () => Promise<unknown> = async () => ({ projects: [], total: 0 }),
+  listIssues: () => Promise<unknown> = async () => ({ issues: [], total: 0 }),
 ) {
   groupRequests = [];
   rowRequests = [];
@@ -81,7 +90,7 @@ function installApi(
       };
     },
     listIssueTableFacets: async () => ({ query_fingerprint: "test", total: 0, facets: [] }),
-    listIssues: async () => ({ issues: [], total: 0 }),
+    listIssues,
     getWorkspaceWorkingAgents: async () => [],
     getChildIssueProgress: async () => ({ progress: [] }),
     getAgentTaskSnapshot: async () => ({ tasks: [] }),
@@ -149,8 +158,11 @@ describe("useIssueSurfaceController — custom status filter vs a late catalog",
   });
 
   it("surfaces a retryable error instead of a silent empty board when the catalog fails", async () => {
-    const catalog = deferred<never>();
-    installApi(() => catalog.promise);
+    const listIssueStatuses = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("catalog unavailable"))
+      .mockResolvedValue({ statuses: [QA_ENTRY], categories: [], total: 1 });
+    installApi(listIssueStatuses);
     const { store, Wrapper } = makeWrapper(qc, "workspace:catalog-failed");
     act(() => store.getState().toggleStatusFilter("qa"));
 
@@ -163,14 +175,18 @@ describe("useIssueSurfaceController — custom status filter vs a late catalog",
       { wrapper: Wrapper },
     );
 
-    await act(async () => {
-      catalog.reject(new Error("catalog unavailable"));
-      await catalog.promise.catch(() => {});
-    });
-
-    await waitFor(() => expect(result.current.isStatusCatalogError).toBe(true));
+    await waitFor(() => expect(result.current.filterDependencyError?.kind).toBe("status"));
     // Not "no issues" — the surface cannot answer the question that was asked.
     expect(result.current.isEmpty).toBe(false);
+    expect(rowRequests).toEqual([]);
+
+    act(() => result.current.filterDependencyError!.retry());
+    await waitFor(() => expect(result.current.filterDependencyError).toBeNull());
+    await waitFor(() => expect(result.current.visibleStatuses).toEqual(["qa"]));
+    await waitFor(() => expect(rowRequests.length).toBeGreaterThan(0));
+    for (const request of rowRequests) {
+      expect(request.query.filters.statuses).toEqual(["qa"]);
+    }
   });
 });
 
@@ -219,9 +235,12 @@ describe("useIssueSurfaceController — project-status filter vs a late catalog"
       await projects.promise.catch(() => {});
     });
 
-    await waitFor(() => expect(result.current.isStatusCatalogError).toBe(true));
+    await waitFor(() => expect(result.current.filterDependencyError?.kind).toBe("status"));
     expect(result.current.isEmpty).toBe(false);
   });
+
+  // The upstream project-Gantt tests (retry, stale refetch) drive the legacy client-side Gantt query.
+  // Fork Gantt v2 (CHE-4312 G5) disables that query (`usesGantt = false`), so they have no subject here.
 
   it("does not hold the surface when no project-status filter is active", async () => {
     const projects = deferred<{ projects: never[]; total: number }>();
@@ -242,7 +261,7 @@ describe("useIssueSurfaceController — project-status filter vs a late catalog"
     );
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.isStatusCatalogError).toBe(false);
+    expect(result.current.filterDependencyError).toBeNull();
   });
 });
 

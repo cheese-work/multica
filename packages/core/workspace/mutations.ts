@@ -41,6 +41,23 @@ export function useCreateWorkspace() {
   });
 }
 
+/** Owner/admin pause or resume of claims for the whole workspace (CHE-2954). */
+export function useSetWorkspaceScheduling() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, pause }: { id: string; pause: boolean }) =>
+      pause ? api.pauseWorkspace(id) : api.resumeWorkspace(id),
+    onSuccess: (updated) => {
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+    },
+  });
+}
+
 export function useLeaveWorkspace() {
   const qc = useQueryClient();
   return useMutation({

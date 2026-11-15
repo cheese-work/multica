@@ -1,4 +1,5 @@
 import { configStore } from "@multica/core/config";
+import { instanceOrigin } from "@multica/core/config/instance-origin";
 import { docsLocalePrefix } from "./docs-locale";
 
 const UPSTREAM_DOCS = "https://multica.ai/docs";
@@ -10,11 +11,8 @@ function instanceDocsBase(): string | undefined {
   const { docsBaseUrl, daemonAppUrl } = configStore.getState();
   if (!docsBaseUrl) return undefined;
   if (!docsBaseUrl.startsWith("/")) return docsBaseUrl;
-  const origin =
-    typeof location !== "undefined" && /^https?:$/.test(location.protocol)
-      ? location.origin
-      : daemonAppUrl;
-  return origin ? origin.replace(/\/+$/, "") + docsBaseUrl : undefined;
+  const origin = instanceOrigin(daemonAppUrl);
+  return origin ? origin + docsBaseUrl : undefined;
 }
 
 // Docs link for `path` ("/agents"). Uses the instance's own docs when the

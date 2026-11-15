@@ -8,3 +8,5 @@ Run the design loop for a Hierarchy minimap at the top of the issue's right side
 - Status: selected direction A (Tree) with the semantic-zoom dialog, approved when the lock PR merges
 
 Selection: Cheese chose A on decision request `c3cf1f8d-f695-473b-a122-058b5accfd11` (31 Oct 2026 22:12 ICT, comment `01a19285-0f08-7cbb-8cd6-8c5d8330ad16`) and accepted the dialog frames D5 and D6 on decision request `73b93d4e-0816-499f-9656-cf3d104e0d13` (receipt `01a19293-4843-7853-8c95-9828c2a9c610`). Implementation is a separate issue.
+
+Superseded in part (CHE-4313, 7 Nov 2026 ICT): the dialog zoom behaviour (groups split at 70%) is replaced by the infinite-zoom Hierarchy in `design/timeline-views/approved/hierarchy-a-fan-breadcrumb.html`. The sidebar Hierarchy minimap states and the navigate-collapse motion in this lock stay until the timeline-views sidebar card replaces them.

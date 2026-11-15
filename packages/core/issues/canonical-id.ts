@@ -1,9 +1,26 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
-import { issueDetailOptions, issueKeys } from "./queries";
+import { isSchemaValidationError } from "../api/schema";
+import {
+  issueDetailOptions,
+  issueFetchRetryDelay,
+  issueKeys,
+  retryIssueFetch,
+} from "./queries";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True only for a 404 from the API. A 403, 5xx or network failure says nothing
+ * about whether the issue exists, so callers must not present it as deleted.
+ * Duck-typed on `status` so it holds across module boundaries and test mocks.
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && (error as { status?: unknown }).status === 404
+  );
+}
 
 /** True for a canonical issue UUID; false for an identifier like `MUL-123`. */
 export function isIssueUuid(value: string): boolean {
@@ -36,6 +53,11 @@ export interface CanonicalIssue {
    * that never settles on "not found".
    */
   notFound: boolean;
+  /** Terminal, but not a 404: the lookup failed and `retry` may succeed. */
+  loadError: boolean;
+  /** The lookup returned 2xx but the body failed schema validation. */
+  dataError: boolean;
+  retry: () => void;
 }
 
 /**
@@ -66,6 +88,8 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
 
   const resolve = useQuery({
     ...issueDetailOptions(wsId, routeId),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
     enabled: resolveEnabled,
   });
 
@@ -104,6 +128,7 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
   // still-resolving, or the caller flips back to a loading frame and the
   // remount loop described on `notFound` starts.
   const failed = resolveEnabled && resolve.isError;
+  const notFound = failed && isNotFoundError(resolve.error);
 
   return {
     canonicalId,
@@ -114,6 +139,9 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
       detail.data !== undefined &&
       detail.data === resolve.data &&
       resolve.dataUpdatedAt >= mountedAt,
-    notFound: failed,
+    notFound,
+    loadError: failed && !notFound,
+    dataError: failed && isSchemaValidationError(resolve.error),
+    retry: () => void resolve.refetch(),
   };
 }

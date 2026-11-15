@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +70,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			// X-Session-ID is the signed `sid` claim of a JWT login, set
+			// below; a passkey assertion binds a card answer to it.
+			r.Header.Del("X-Session-ID")
 			r.Header.Del(auth.SessionGenerationHeader)
 			r.Header.Del("X-Task-Token-Purpose")
 			r.Header.Del("X-Governance-Case-ID")
@@ -267,7 +271,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// A scoped PAT is a restricted credential: it reaches only the
 				// routes its scope names and is never cached, so a cache hit
 				// can never widen it to the owner's full access.
-				if len(pat.Scopes) > 0 && !scopedPATMayCall(r) {
+				if len(pat.Scopes) > 0 && !scopedPATMayCall(r, pat.Scopes) {
 					writeError(w, http.StatusForbidden, "this token is restricted to its scope")
 					return
 				}
@@ -337,6 +341,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			if method, ok := claims["amr"].(string); ok && method == "interactive" {
 				r.Header.Set("X-Actor-Source", "interactive_jwt")
 			}
+			if sid, ok := claims["sid"].(string); ok {
+				r.Header.Set("X-Session-ID", sid)
+			}
 			if email != "" {
 				r.Header.Set("X-User-Email", email)
 			}
@@ -379,17 +386,27 @@ func extractToken(r *http.Request) (token string, fromCookie bool) {
 	return "", false
 }
 
-// scopedPATMayCall reports whether a scoped PAT may call this route. The only
-// scope today, decisions:feed, opens the answer feed and its ack and nothing else.
-func scopedPATMayCall(r *http.Request) bool {
+// scopedPATMayCall reports whether a scoped PAT may call this route. Each scope
+// opens only its own routes: decisions:feed the answer feed and its ack,
+// decisions:ci_request the CI decision-card create, decisions:read the state
+// read of one decision. Nothing else.
+func scopedPATMayCall(r *http.Request, scopes []string) bool {
 	path := r.URL.Path
 	switch r.Method {
 	case http.MethodGet:
-		return path == "/api/decisions/feed"
+		if rest, found := strings.CutPrefix(path, "/api/decisions/"); found {
+			if id, state := strings.CutSuffix(rest, "/state"); state && id != "" && !strings.Contains(id, "/") && id != "feed" {
+				return slices.Contains(scopes, "decisions:read")
+			}
+		}
+		return path == "/api/decisions/feed" && slices.Contains(scopes, "decisions:feed")
 	case http.MethodPost:
+		if path == "/api/decisions/ci" {
+			return slices.Contains(scopes, "decisions:ci_request")
+		}
 		rest, found := strings.CutPrefix(path, "/api/decisions/feed/")
 		id, ack := strings.CutSuffix(rest, "/ack")
-		return found && ack && id != "" && !strings.Contains(id, "/")
+		return found && ack && id != "" && !strings.Contains(id, "/") && slices.Contains(scopes, "decisions:feed")
 	}
 	return false
 }

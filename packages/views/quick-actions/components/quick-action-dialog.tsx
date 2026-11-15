@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Globe, Info, Lock } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useCreateQuickAction } from "@multica/core/quick-actions";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  useQuickActionDraftStore,
+  type QuickActionDraft,
+} from "@multica/core/quick-actions/draft-store";
 import type { QuickAction, QuickActionAssigneeType, QuickActionVisibility } from "@multica/core/types";
 import { findQuickActionTemplateToken } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
@@ -35,6 +40,8 @@ const EMPTY_FORM: FormState = {
   visibility: "private",
 };
 
+const EMPTY_DRAFT: QuickActionDraft = {};
+
 function toFormState(action: QuickAction): FormState {
   return {
     name: action.name,
@@ -60,13 +67,18 @@ export function QuickActionDialog({
   const { t } = useT("settings");
   const { role } = useCurrentMember(useWorkspaceId());
   const canPublish = role === "owner" || role === "admin";
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  // Unsent edits overlay the base form (blank, or the action being edited) and
+  // survive the dialog unmounting; they clear only after a successful save.
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(
+    useQuickActionDraftStore,
+    action ? `edit:${action.id}` : "create",
+    EMPTY_DRAFT,
+  );
+  const form: FormState = useMemo(
+    () => ({ ...(action ? toFormState(action) : EMPTY_FORM), ...draft }),
+    [action, draft],
+  );
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    setForm(action ? toFormState(action) : EMPTY_FORM);
-  }, [open, action]);
 
   // Mirror the server's rejection inline so the author sees it while typing
   // instead of on submit. The server stays the authority; this is an
@@ -83,6 +95,7 @@ export function QuickActionDialog({
     setSaving(true);
     try {
       await onSubmit(form);
+      clearDraft();
       onOpenChange(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -112,7 +125,7 @@ export function QuickActionDialog({
               value={form.name}
               maxLength={32}
               placeholder={t(($) => $.quick_actions.field_name_placeholder)}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              onChange={(e) => patchDraft({ name: e.target.value })}
             />
           </div>
 
@@ -127,7 +140,7 @@ export function QuickActionDialog({
                   key={option}
                   type="button"
                   aria-pressed={form.visibility === option}
-                  onClick={() => setForm((f) => ({ ...f, visibility: option }))}
+                  onClick={() => patchDraft({ visibility: option })}
                   className={cn(
                     "flex items-start gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
                     form.visibility === option
@@ -164,11 +177,11 @@ export function QuickActionDialog({
             <AgentPicker
               assignee={form.assigneeId ? { type: form.assigneeType, id: form.assigneeId } : null}
               onChange={(next) =>
-                setForm((f) => ({ ...f, assigneeType: next.type, assigneeId: next.id }))
+                patchDraft({ assigneeType: next.type, assigneeId: next.id })
               }
               emptyOption={{
                 label: t(($) => $.quick_actions.no_target),
-                onSelect: () => setForm((f) => ({ ...f, assigneeId: "" })),
+                onSelect: () => patchDraft({ assigneeId: "" }),
               }}
               triggerRender={
                 <Button
@@ -200,7 +213,7 @@ export function QuickActionDialog({
               value={form.prompt}
               rows={5}
               placeholder={t(($) => $.quick_actions.field_prompt_placeholder)}
-              onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
+              onChange={(e) => patchDraft({ prompt: e.target.value })}
             />
             {templateToken !== null ? (
               <p className="text-caption text-destructive">

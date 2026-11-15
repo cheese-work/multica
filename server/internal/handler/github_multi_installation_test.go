@@ -111,7 +111,7 @@ func TestGitHubMultipleInstallationsRemainIndependent(t *testing.T) {
 
 	install := func(installationID int64, code string) db.GithubInstallation {
 		t.Helper()
-		state, err := signStateForReturn(testWorkspaceID, githubReturnToRepositories)
+		state, err := signStateForReturn(testWorkspaceID, githubReturnToRepositories, "")
 		if err != nil {
 			t.Fatalf("sign installation state: %v", err)
 		}

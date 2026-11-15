@@ -8,7 +8,25 @@ import { downloadServerCli, serverCliKey } from "./cli-bootstrap";
 const BIN = Buffer.from("#!/bin/sh\necho multica\n");
 const SHA = createHash("sha256").update(BIN).digest("hex");
 
-function fakeServer(opts: { sha?: string; keys?: string[]; status?: number } = {}) {
+/** A body that arrives in `parts` equal chunks, like a real network stream. */
+function streamedBody(bytes: Buffer, parts: number, contentLength = true): Response {
+  const size = Math.ceil(bytes.length / parts);
+  let offset = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) return controller.close();
+      controller.enqueue(new Uint8Array(bytes.subarray(offset, offset + size)));
+      offset += size;
+    },
+  });
+  return new Response(body, {
+    headers: contentLength ? { "content-length": String(bytes.length) } : {},
+  });
+}
+
+function fakeServer(
+  opts: { sha?: string; keys?: string[]; status?: number; parts?: number; contentLength?: boolean } = {},
+) {
   const calls: { url: string; auth: string | null }[] = [];
   const keys = opts.keys ?? ["linux-amd64", "darwin-arm64"];
   const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -26,7 +44,11 @@ function fakeServer(opts: { sha?: string; keys?: string[]; status?: number } = {
         ),
       });
     }
-    if (u.pathname === "/api/daemon/update/binary") return new Response(new Uint8Array(BIN));
+    if (u.pathname === "/api/daemon/update/binary") {
+      return opts.parts
+        ? streamedBody(BIN, opts.parts, opts.contentLength)
+        : new Response(new Uint8Array(BIN));
+    }
     return new Response("nf", { status: 404 });
   });
   return { fetchImpl: fetchImpl as unknown as typeof fetch, calls };
@@ -63,6 +85,59 @@ describe("downloadServerCli", () => {
   it("refuses a binary whose sha256 differs from the manifest", async () => {
     const { fetchImpl } = fakeServer({ sha: "f".repeat(64) });
     await expect(downloadServerCli({ ...base, fetchImpl })).rejects.toThrow(/sha256|checksum/i);
+  });
+
+  it("reports progress while the body streams in, ending at the full size", async () => {
+    const { fetchImpl } = fakeServer({ parts: 4 });
+    const events: { bytesDone: number; bytesTotal: number }[] = [];
+    const bytes = await downloadServerCli({
+      ...base,
+      fetchImpl,
+      progressIntervalMs: 0,
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(bytes.equals(BIN)).toBe(true);
+    expect(events.length).toBeGreaterThan(1);
+    expect(events.every((e) => e.bytesTotal === BIN.length)).toBe(true);
+    expect(events.map((e) => e.bytesDone)).toEqual(
+      [...events.map((e) => e.bytesDone)].sort((a, b) => a - b),
+    );
+    expect(events.at(-1)?.bytesDone).toBe(BIN.length);
+  });
+
+  it("throttles progress but always reports the final chunk", async () => {
+    const { fetchImpl } = fakeServer({ parts: 4 });
+    const events: { bytesDone: number }[] = [];
+    await downloadServerCli({
+      ...base,
+      fetchImpl,
+      progressIntervalMs: 60_000,
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(events.map((e) => e.bytesDone)).toEqual([BIN.length]);
+  });
+
+  it("takes the total from the manifest when the response has no content-length", async () => {
+    const { fetchImpl } = fakeServer({ parts: 2, contentLength: false });
+    const events: { bytesTotal: number }[] = [];
+    await downloadServerCli({
+      ...base,
+      fetchImpl,
+      progressIntervalMs: 0,
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(events.at(-1)?.bytesTotal).toBe(BIN.length);
+  });
+
+  it("still rejects a streamed body whose sha256 differs from the manifest", async () => {
+    const { fetchImpl } = fakeServer({ parts: 4, sha: "f".repeat(64) });
+    const onProgress = vi.fn();
+    await expect(
+      downloadServerCli({ ...base, fetchImpl, progressIntervalMs: 0, onProgress }),
+    ).rejects.toThrow(/checksum mismatch/);
   });
 
   it("fails when the server has no build for this platform", async () => {

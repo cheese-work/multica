@@ -191,7 +191,7 @@ func (q *Queries) DeleteGitHubPRCheckRuns(ctx context.Context, prID pgtype.UUID)
 }
 
 const getGitHubPullRequestByID = `-- name: GetGitHubPullRequestByID :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request WHERE id = $1
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha FROM github_pull_request WHERE id = $1
 `
 
 func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) (GithubPullRequest, error) {
@@ -233,6 +233,7 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 		&i.ReviewHeadSha,
 		&i.ReviewID,
 		&i.ReviewAt,
+		&i.MergeCommitSha,
 	)
 	return i, err
 }
@@ -281,16 +282,18 @@ FROM workspace w
 WHERE w.id = gpr.workspace_id
   AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
   AND gpr.installation_id = $1
-  AND gpr.repo_owner = $2
-  AND gpr.repo_name = $3
-  AND gpr.pr_number = $4
+  AND gpr.workspace_id = ANY($2::uuid[])
+  AND gpr.repo_owner = $3
+  AND gpr.repo_name = $4
+  AND gpr.pr_number = $5
 `
 
 type InvalidateGitHubPRMergeStateParams struct {
-	InstallationID int64  `json:"installation_id"`
-	RepoOwner      string `json:"repo_owner"`
-	RepoName       string `json:"repo_name"`
-	PrNumber       int32  `json:"pr_number"`
+	InstallationID int64         `json:"installation_id"`
+	WorkspaceIds   []pgtype.UUID `json:"workspace_ids"`
+	RepoOwner      string        `json:"repo_owner"`
+	RepoName       string        `json:"repo_name"`
+	PrNumber       int32         `json:"pr_number"`
 }
 
 // CHE-2796: a base-branch swap (pull_request.edited with changes.base) makes the
@@ -301,6 +304,7 @@ type InvalidateGitHubPRMergeStateParams struct {
 func (q *Queries) InvalidateGitHubPRMergeState(ctx context.Context, arg InvalidateGitHubPRMergeStateParams) error {
 	_, err := q.db.Exec(ctx, invalidateGitHubPRMergeState,
 		arg.InstallationID,
+		arg.WorkspaceIds,
 		arg.RepoOwner,
 		arg.RepoName,
 		arg.PrNumber,
@@ -314,21 +318,23 @@ SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
     updated_at             = now()
 WHERE installation_id = $1
-  AND repo_owner = $2
-  AND repo_name = $3
+  AND workspace_id = ANY($2::uuid[])
+  AND repo_owner = $3
+  AND repo_name = $4
   AND state IN ('open', 'draft')
-  AND pr_number <> $4
-  AND (snapshot_base_ref = $5 OR snapshot_base_ref = $6 OR snapshot_base_ref IS NULL)
+  AND pr_number <> $5
+  AND (snapshot_base_ref = $6 OR snapshot_base_ref = $7 OR snapshot_base_ref IS NULL)
 RETURNING installation_id, repo_owner, repo_name, pr_number
 `
 
 type InvalidateOpenGitHubPRMergeStateOnBaseParams struct {
-	InstallationID int64       `json:"installation_id"`
-	RepoOwner      string      `json:"repo_owner"`
-	RepoName       string      `json:"repo_name"`
-	MergedPrNumber int32       `json:"merged_pr_number"`
-	BaseRef        pgtype.Text `json:"base_ref"`
-	HeadRef        pgtype.Text `json:"head_ref"`
+	InstallationID int64         `json:"installation_id"`
+	WorkspaceIds   []pgtype.UUID `json:"workspace_ids"`
+	RepoOwner      string        `json:"repo_owner"`
+	RepoName       string        `json:"repo_name"`
+	MergedPrNumber int32         `json:"merged_pr_number"`
+	BaseRef        pgtype.Text   `json:"base_ref"`
+	HeadRef        pgtype.Text   `json:"head_ref"`
 }
 
 type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
@@ -340,7 +346,8 @@ type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
 
 // CHE-1417: a merge moves its base branch, which can make other open PRs on
 // that base DIRTY or BEHIND without any pull_request event of their own. Their
-// stored merge state no longer describes the base, so it is cleared: the
+// stored merge state no longer describes the base, so it is cleared (only on the
+// workspaces the caller passes, i.e. the allowlisted bindings): the
 // merge handler refreshes the returned PRs, and one the refresh queue drops is
 // undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
 // not known yet (no snapshot since the column was added) is included.
@@ -349,6 +356,7 @@ type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
 func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, arg InvalidateOpenGitHubPRMergeStateOnBaseParams) ([]InvalidateOpenGitHubPRMergeStateOnBaseRow, error) {
 	rows, err := q.db.Query(ctx, invalidateOpenGitHubPRMergeStateOnBase,
 		arg.InstallationID,
+		arg.WorkspaceIds,
 		arg.RepoOwner,
 		arg.RepoName,
 		arg.MergedPrNumber,
@@ -567,6 +575,110 @@ func (q *Queries) ListGitHubPRRowsByAddress(ctx context.Context, arg ListGitHubP
 			&i.WorkspaceID,
 			&i.HeadSha,
 			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleChecksWatchedGitHubPRs = `-- name: ListStaleChecksWatchedGitHubPRs :many
+WITH candidates AS (
+    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+    FROM github_pull_request AS pr
+    WHERE pr.state IN ('open', 'draft')
+      AND (pr.snapshot_fetched_at IS NULL OR pr.snapshot_fetched_at < $6)
+      AND (
+          pr.snapshot_fetched_at IS NULL
+          OR pr.snapshot_head_sha IS NULL
+          OR pr.snapshot_head_sha = ''
+          OR pr.checks_rollup_state IS NULL
+          OR pr.checks_rollup_state IN ('PENDING', 'EXPECTED')
+          OR EXISTS (
+              SELECT 1
+              FROM github_pull_request_check_run AS cr
+              WHERE cr.pr_id = pr.id AND cr.status <> 'completed'
+          )
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM workspace w
+          WHERE w.id = pr.workspace_id
+            AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+      )
+      AND pr.id IN (
+          SELECT ipr.pull_request_id
+          FROM issue_wakeup AS w
+          JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
+          WHERE w.enabled
+            AND w.condition->>'type' = 'pull_request'
+            AND w.condition->>'event' = 'checks_finished'
+      )
+    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+)
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM candidates
+ORDER BY (
+    ROW(installation_id, repo_owner, repo_name, pr_number) >
+    ROW(
+        $1::BIGINT,
+        $2::TEXT,
+        $3::TEXT,
+        $4::INTEGER
+    )
+) DESC,
+installation_id, repo_owner, repo_name, pr_number
+LIMIT $5
+`
+
+type ListStaleChecksWatchedGitHubPRsParams struct {
+	AfterInstallationID int64              `json:"after_installation_id"`
+	AfterRepoOwner      string             `json:"after_repo_owner"`
+	AfterRepoName       string             `json:"after_repo_name"`
+	AfterPrNumber       int32              `json:"after_pr_number"`
+	MaxRows             int32              `json:"max_rows"`
+	OlderThan           pgtype.Timestamptz `json:"older_than"`
+}
+
+type ListStaleChecksWatchedGitHubPRsRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// Fast sweep source (CHE-5313): open/draft PRs whose checks are still
+// running and that an enabled "wake when checks finish" rule waits on. The
+// check_suite webhook normally refreshes them, and the general undecided sweep
+// only runs every few minutes, so a dropped webhook or a stalled refresh left
+// the rule waiting long after the last check completed. Decided snapshots
+// leave this sweep, so it ends once the rule can evaluate. Same address
+// cursor rotation as the conflict-watch sweep.
+func (q *Queries) ListStaleChecksWatchedGitHubPRs(ctx context.Context, arg ListStaleChecksWatchedGitHubPRsParams) ([]ListStaleChecksWatchedGitHubPRsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleChecksWatchedGitHubPRs,
+		arg.AfterInstallationID,
+		arg.AfterRepoOwner,
+		arg.AfterRepoName,
+		arg.AfterPrNumber,
+		arg.MaxRows,
+		arg.OlderThan,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleChecksWatchedGitHubPRsRow{}
+	for rows.Next() {
+		var i ListStaleChecksWatchedGitHubPRsRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
 		); err != nil {
 			return nil, err
 		}

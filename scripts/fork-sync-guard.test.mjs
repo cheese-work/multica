@@ -189,15 +189,16 @@ test("a sync with no parseable Source paths fails closed", () => {
   assert.throws(() => checkForkSync({ ...fixture, ledger: "" }), /No Source paths/);
 });
 
-test("the workflow uses trusted code on a hosted runner and reruns after body edits", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/fork-sync-guard.yml", import.meta.url), "utf8");
+test("the workflow uses trusted code on a hosted runner and reruns on every push, not on body edits (CHE-4385)", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8");
   assert.match(workflow, /pull_request_target:/);
-  assert.match(workflow, /types: \[opened, edited, synchronize, reopened\]/);
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review\]/);
   assert.match(workflow, /ref: \$\{\{ github.workflow_sha \}\}/);
   assert.match(workflow, /runs-on: ubuntu-24.04/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /test "\$\(git rev-parse FETCH_HEAD\)" = "\$EXPECTED_HEAD"/);
-  assert.doesNotMatch(workflow, /self-hosted|secrets\.|pull_request\.head\.repo/);
+  assert.doesNotMatch(workflow, /self-hosted|pull_request\.head\.repo/);
+  assert.deepEqual(workflow.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only token of the changelog job");
   assert.match(workflow, /node scripts\/fork-sync-guard.mjs/);
 });

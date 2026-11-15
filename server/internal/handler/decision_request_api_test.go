@@ -31,16 +31,26 @@ func (fixture requestCoreFixture) apiRequest() *http.Request {
 }
 
 func structuredDecisionAsk(issueID, commentID, decision string) decisiontx.Ask {
-	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran the scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
+	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran the scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", RecommendedOption: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
 }
 
 func testAskOption(label string) decisiontx.AskOption {
 	return decisiontx.AskOption{Label: label, WhatHappens: label + " happens.", Pros: []string{"A pro"}, Cons: []string{"A con"}, CostOrTime: "No extra time"}
 }
 
-func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
+// unorderedAsk is the ask as an agent sends it: the recommended option is not first.
+func (fixture requestCoreFixture) unorderedAsk() decisiontx.Ask {
 	ask := structuredDecisionAsk(fixture.issueID, fixture.tagID, fixture.input().Ask)
 	ask.AskedBy = fixture.agentName // the stored ask names the asking agent
+	return ask
+}
+
+// structuredAsk is the ask as the server stores it: recommended option first (CHE-3628).
+func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
+	ask, err := fixture.unorderedAsk().RequireRecommendedFirst()
+	if err != nil {
+		panic(err)
+	}
 	return ask
 }
 
@@ -370,4 +380,43 @@ func TestDecisionPingToFormerMemberIsRecordedNotRetried(test *testing.T) {
 			test.Fatal("ping for a former member is still queued for retry")
 		}
 	}
+}
+
+// A plain option card cannot apply a change: Approve only records the answer,
+// so the change never applies (CHE-5229). The server cannot know intent, so it
+// answers 201 with an advisory hint when the decision or an option reads like a
+// workflow, agent, squad, workspace or budget change. Text from the recorded
+// CHE-5175 card (decision 45a5d5cb), which names no action type.
+func TestDecisionRequestAPIHintsAtPlainCardForConfigChange(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	ask := fixture.structuredAsk()
+	ask.Decision = "Restore x99-codex-sol as the Default workflow Agent Review handler?"
+	ask.Options[0].WhatHappens = "The agent_review step hands reviews to x99-codex-sol again and the expired saving-mode text is removed. Reversible: the old steps can be set back."
+	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
+		"issue_id": fixture.issueID, "session_id": fixture.sessionID,
+		"ask": ask, "escalation_class": fixture.input().EscalationClass,
+	})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	response := testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusCreated)
+	if text := response.Text(); !strings.Contains(text, "multica decision propose") {
+		test.Fatalf("no hint names the command that attaches the action: %s", text)
+	}
+}
+
+// A card that only mentions an action type string, with no change to apply
+// (decision df8ee3fa on CHE-5229), is never refused.
+func TestDecisionRequestAPIAllowsPlainCardMentioningActionType(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	ask := fixture.structuredAsk()
+	ask.AgentDid = "Fixed bug 1 and checked that workflow.steps.set cards still read as answered."
+	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
+		"issue_id": fixture.issueID, "session_id": fixture.sessionID,
+		"ask": ask, "escalation_class": fixture.input().EscalationClass,
+	})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusCreated)
 }

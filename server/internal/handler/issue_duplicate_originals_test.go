@@ -77,6 +77,7 @@ func TestDuplicateOriginalsResolveInOneReadPerPage(t *testing.T) {
 	spy := &issueRefSpy{inner: testPool}
 	h := New(db.New(spy), testPool, testHandler.Hub, testHandler.Bus, testHandler.EmailService,
 		nil, nil, analytics.NoopClient{}, Config{})
+	t.Cleanup(giveBackRunBudgetHooks)
 
 	project := dbfx.Project(t, "dup-originals-page")
 	inProject := func(cols testutil.Cols) testutil.Cols {

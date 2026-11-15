@@ -13,6 +13,12 @@ vi.mock("../platform/local-directory", () => ({
   isDesktopShell: vi.fn(() => false),
 }));
 
+// The What's new entry is covered with the real menu in whats-new-launcher.test.tsx.
+vi.mock("../whats-new/whats-new-launcher", () => ({
+  useWhatsNewMenuPanel: () => ({ available: false }),
+  WhatsNewMenuPanel: () => null,
+}));
+
 // The UI language the mocked i18n instance reports; drives locale-aware links.
 const i18nState = vi.hoisted(() => ({ language: "en" }));
 
@@ -140,12 +146,14 @@ describe("HelpLauncher", () => {
     );
   });
 
-  it("links Change log to the instance app URL when configured", () => {
+  // The server's app URL is one canonical origin; the instance can be reached
+  // through several (Cloudflare, Tailscale). The link follows the visitor.
+  it("links Change log to the origin the visitor is on, not the configured app URL", () => {
     configStore.setState({ daemonAppUrl: "https://multica.example.com:19443/" });
     render(<HelpLauncher />);
     expect(screen.getByRole("link", { name: /Change log/ })).toHaveAttribute(
       "href",
-      "https://multica.example.com:19443/changelog",
+      `${window.location.origin}/changelog`,
     );
   });
 

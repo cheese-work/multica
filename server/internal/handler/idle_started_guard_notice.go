@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -68,13 +67,16 @@ func (handler *Handler) admitIdleGuardNotice(ctx context.Context, settings idleG
 	if err != nil {
 		return none, err
 	}
-	receipt, ok := readIdleGuardReceipt(issue)
+	receipt, ok, err := readIdleGuardReceipt(ctx, q, issue.WorkspaceID, issue.ID)
+	if err != nil {
+		return none, err
+	}
 	if !ok || receipt.State != idleGuardMoved || issue.Status != receipt.To {
 		return none, nil
 	}
 	settle := func(state string) (idleGuardNotice, error) {
 		receipt.State = state
-		if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+		if err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
 			return none, err
 		}
 		return none, tx.Commit(ctx)
@@ -128,7 +130,7 @@ func (handler *Handler) admitIdleGuardNotice(ctx context.Context, settings idleG
 			}
 			notice.comment = created.Comment()
 		}
-		if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+		if err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
 			return none, err
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -140,13 +142,12 @@ func (handler *Handler) admitIdleGuardNotice(ctx context.Context, settings idleG
 		return none, err
 	}
 	receipt.State, receipt.AlertID, receipt.Error = idleGuardNotified, util.UUIDToString(task.ID), ""
-	if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+	if err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
 		return none, err
 	}
 	if receipt.To == idleGuardNeedDecision {
 		// The decision wait guard would alert the same leader ten minutes later.
-		raw, _ := json.Marshal(receipt.AlertID)
-		if _, err := q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: workspaceID, ID: issueID, Key: "decision_wait_alert_id", Value: raw}); err != nil {
+		if _, err := setIssueMetadataValue(ctx, q, workspaceID, issueID, "decision_wait_alert_id", receipt.AlertID); err != nil {
 			return none, err
 		}
 	}
@@ -212,11 +213,7 @@ func (handler *Handler) settleIdleGuardEpisodes(ctx context.Context) error {
 			continue
 		}
 		for _, episode := range episodes {
-			var receipt idleGuardReceipt
-			if err := json.Unmarshal(episode.Receipt, &receipt); err != nil {
-				failures = errors.Join(failures, err)
-				continue
-			}
+			receipt := idleGuardReceiptFromRow(episode.IssueIdleGuard)
 			switch {
 			case receipt.State == idleGuardMoved && episode.Status == receipt.To:
 				failures = errors.Join(failures, handler.noticeIdleGuardLeader(ctx, settings, episode.WorkspaceID, episode.ID))
@@ -248,21 +245,18 @@ func (handler *Handler) retryIdleGuardMove(ctx context.Context, settings idleGua
 	return handler.actOnIdleFinding(ctx, settings, idleGuardFinding{WorkspaceID: workspaceID, IssueID: issueID, Status: idle[0].Status, IdleSince: idle[0].IdleSince.Time, settings: settings})
 }
 
+// endIdleGuardEpisode deletes the receipt and clears the watchdog signal in one
+// transaction, so a failed clear leaves the receipt for the next scan to retry.
 func (handler *Handler) endIdleGuardEpisode(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
-	_, err := handler.Queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: workspaceID, ID: issueID, Key: "idle_guard"})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	tx, err := handler.TxStarter.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	return nil
-}
-
-func readIdleGuardReceipt(issue db.Issue) (idleGuardReceipt, bool) {
-	var metadata map[string]json.RawMessage
-	var receipt idleGuardReceipt
-	if json.Unmarshal(issue.Metadata, &metadata) != nil || json.Unmarshal(metadata["idle_guard"], &receipt) != nil {
-		return receipt, false
+	defer tx.Rollback(ctx)
+	if err := deleteIdleGuardReceipt(ctx, handler.Queries.WithTx(tx), workspaceID, issueID); err != nil {
+		return err
 	}
-	return receipt, true
+	return tx.Commit(ctx)
 }
 
 func issueMetadataString(issue db.Issue, key string) string {
@@ -272,12 +266,4 @@ func issueMetadataString(issue db.Issue, key string) string {
 		return ""
 	}
 	return value
-}
-
-func writeIdleGuardReceipt(ctx context.Context, q *db.Queries, issue db.Issue, receipt idleGuardReceipt) (db.SetIssueMetadataKeyRow, error) {
-	raw, err := json.Marshal(receipt)
-	if err != nil {
-		return db.SetIssueMetadataKeyRow{}, err
-	}
-	return q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "idle_guard", Value: raw})
 }

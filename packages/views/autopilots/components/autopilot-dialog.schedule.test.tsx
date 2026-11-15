@@ -108,6 +108,7 @@ vi.mock("./pickers/timezone-picker", () => ({
   TimezonePicker: ({ value }: { value: string }) => <div data-testid="timezone-picker">{value}</div>,
 }));
 
+import { useAutopilotDialogDraftStore } from "@multica/core/autopilots/stores";
 import { AutopilotDialog } from "./autopilot-dialog";
 
 const AUTOPILOT_ID = "ap-1";
@@ -161,6 +162,7 @@ const addScheduleButton = () => screen.getByRole("button", { name: "Add schedule
 
 describe("AutopilotDialog schedule section on an autopilot with no schedule", () => {
   beforeEach(() => {
+    useAutopilotDialogDraftStore.setState({ drafts: {} });
     mockUpdateAutopilot.mockReset().mockResolvedValue({ id: AUTOPILOT_ID });
     mockCreateTrigger.mockReset().mockResolvedValue({ id: "trg-new" });
     mockUpdateTrigger.mockReset().mockResolvedValue({ id: "trg-1" });

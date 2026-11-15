@@ -54,13 +54,17 @@ func runChatSessions(command *cobra.Command, _ []string) error {
 		if lane.Eligible {
 			eligible = "yes"
 		}
+		unseen := "no"
+		if lane.Unseen {
+			unseen = "yes"
+		}
 		if len(lane.IssueMentions) == 0 {
-			rows = append(rows, []string{lane.ID, eligible, lane.Title, lane.UpdatedAt, "", "", "", ""})
+			rows = append(rows, []string{lane.ID, eligible, unseen, lane.Title, lane.UpdatedAt, "", "", "", ""})
 		}
 		for _, mention := range lane.IssueMentions {
-			rows = append(rows, []string{lane.ID, eligible, lane.Title, lane.UpdatedAt, mention.IssueKey, mention.IssueTitle, mention.RelativeTime, mention.Snippet})
+			rows = append(rows, []string{lane.ID, eligible, unseen, lane.Title, lane.UpdatedAt, mention.IssueKey, mention.IssueTitle, mention.RelativeTime, mention.Snippet})
 		}
 	}
-	cli.PrintTable(os.Stdout, []string{"ID", "ELIGIBLE", "TITLE", "UPDATED_AT", "ISSUE", "ISSUE_TITLE", "MENTIONED", "SNIPPET"}, rows)
+	cli.PrintTable(os.Stdout, []string{"ID", "ELIGIBLE", "UNSEEN", "TITLE", "UPDATED_AT", "ISSUE", "ISSUE_TITLE", "MENTIONED", "SNIPPET"}, rows)
 	return nil
 }
