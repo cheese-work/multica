@@ -84,13 +84,15 @@ ${shots}
 
 const chromeBin = () => process.env.CHROME_BIN || "google-chrome";
 
-function shoot(url, width, file) {
+function shoot(url, width, file, height = HEIGHT) {
   const profile = mkdtempSync(join(tmpdir(), "capture-chrome-"));
   try {
     const r = spawnSync(
       chromeBin(),
-      ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", `--user-data-dir=${profile}`,
-        `--window-size=${width},${HEIGHT}`, "--virtual-time-budget=5000", `--screenshot=${file}`, url],
+      ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+        // A page with an input makes Chrome ask the OS keyring; with no keyring on X99 that blocks forever.
+        "--password-store=basic", "--use-mock-keychain", `--user-data-dir=${profile}`,
+        `--window-size=${width},${height}`, "--virtual-time-budget=5000", `--screenshot=${file}`, url],
       { encoding: "utf8", timeout: 60_000 },
     );
     if (r.status !== 0) throw new Error(`chrome failed (${r.status ?? r.signal}): ${r.stderr?.slice(-300)}`);
@@ -99,13 +101,13 @@ function shoot(url, width, file) {
   }
 }
 
-export async function captureFrame({ url, outDir, notes, widths = WIDTHS }) {
+export async function captureFrame({ url, outDir, notes, widths = WIDTHS, height = HEIGHT }) {
   if (!ID_RE.test(notes?.id ?? "")) throw new Error(`invalid pattern id: ${notes?.id}`);
   mkdirSync(outDir, { recursive: true });
   const b64 = {};
   for (const w of widths) {
     const file = join(outDir, `${notes.id}-${w}.png`);
-    shoot(url, w, file);
+    shoot(url, w, file, height);
     const png = readFileSync(file);
     if (isBlankPng(png)) throw new Error(`blank capture at ${w}px: ${url}`);
     b64[w] = png.toString("base64");
@@ -122,6 +124,7 @@ function parseArgs(argv) {
     if (k === "--url") o.url = v;
     else if (k === "--id") o.id = v;
     else if (k === "--out") o.out = v;
+    else if (k === "--height") o.height = Number(v); // taller viewport for a page that outgrows 900px
     else if (k === "--component") o.components.push(v);
     else if (k === "--token") o.tokens.push(v);
     else if (k === "--copy") { const [l, ...key] = v.split("="); o.copy[l] = key.join("="); }
@@ -135,7 +138,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const o = parseArgs(process.argv.slice(2));
     const r = await captureFrame({
-      url: o.url, outDir: o.out,
+      url: o.url, outDir: o.out, ...(o.height > 0 ? { height: o.height } : {}),
       notes: { id: o.id, components: o.components, tokens: o.tokens, copy: o.copy },
     });
     console.log(`wrote ${r.html}`);

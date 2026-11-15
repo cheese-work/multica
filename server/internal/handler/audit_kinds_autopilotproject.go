@@ -50,6 +50,14 @@ func init() {
 	for _, kind := range []string{"project.resource.create", "project.resource.update", "project.resource.delete"} {
 		auditKinds[kind] = resource
 	}
+	// A project member row is a grant of access to a private project (CHE-5611).
+	member := auditKindSpec{
+		TargetType: "project_member",
+		Allow:      []string{"project_id", "user_id"},
+	}
+	for _, kind := range []string{"project.member.add", "project.member.remove"} {
+		auditKinds[kind] = member
+	}
 }
 
 // autopilotAuditFields snapshots the autopilot columns an admin can change.

@@ -17,6 +17,8 @@ func init() {
 		"POST /api/projects/{id}/resources":                 "project.resource.create",
 		"PUT /api/projects/{id}/resources/{resourceId}":     "project.resource.update",
 		"DELETE /api/projects/{id}/resources/{resourceId}":  "project.resource.delete",
+		"POST /api/projects/{id}/members":                   "project.member.add",
+		"DELETE /api/projects/{id}/members/{userId}":        "project.member.remove",
 	} {
 		auditedRoutes[route] = kind
 		delete(auditPendingL5b, route)

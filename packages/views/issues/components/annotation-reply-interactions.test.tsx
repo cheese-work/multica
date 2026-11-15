@@ -1,11 +1,11 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/core";
 import { configureShortcutPlatform, createShortcutChord, useShortcutStore } from "@multica/core/shortcuts";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { composeAnnotatedReply, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { toast } from "sonner";
 import { renderWithI18n } from "../../test/i18n";
@@ -74,8 +74,12 @@ async function type(input: HTMLElement, text: string) {
 }
 function popup(input: HTMLElement) { return within(input.closest("[data-reply-annotation-overlay]")! as HTMLElement); }
 
+// The hook loads the composer on demand; warm the module so the first open is not bound by findBy's 1 s.
+beforeAll(() => import("./annotation-composer"), 30_000);
+
 beforeEach(() => {
   useCommentDraftStore.setState({ drafts: {} });
+  useAnnotationNoteDraftStore.setState({ drafts: {} });
   configureShortcutPlatform("windows");
   preview.mockReset();
   preview.mockResolvedValue({ agents: [], blocked: [] });
@@ -165,6 +169,21 @@ describe("annotation draft submission through the real composer", () => {
     expect(recovered).toHaveTextContent("Keep on failure");
     fireEvent.keyDown(recovered, { key: "Enter", ctrlKey: true });
     await waitFor(() => expect(useCommentDraftStore.getState().drafts[key]).toBeUndefined());
+  });
+
+  // Fork rule (AGENTS.md State Rules): authored input persists until successful send or explicit discard.
+  it.each(["dismiss", "unmount"] as const)("restores an unsent issue-composer note after %s", async (how) => {
+    const first = renderWithI18n(<Fixture />);
+    await open(first.container, "Survives the popup");
+    if (how === "dismiss") {
+      fireEvent.pointerDown(document.body);
+      await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    } else first.unmount();
+
+    const second = how === "dismiss" ? first : renderWithI18n(<Fixture />);
+    selectText(second.container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveTextContent("Survives the popup");
   });
 
   it("keeps a deleted non-target source's quote while the first annotation's target survives", async () => {

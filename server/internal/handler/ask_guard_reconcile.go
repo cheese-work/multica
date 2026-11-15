@@ -47,12 +47,13 @@ func (h *Handler) reconcileAskGuard(ctx context.Context) error {
 // asks. A request for A never clears B's event, and a request without recovers
 // clears nothing. An event that is already cleared stays cleared. A request
 // answers one event: the unique index on the clearing request refuses a retry
-// that names a second one, even when two retries race.
-func clearAskGuardEvent(ctx context.Context, queries *db.Queries, issue db.Issue, eventID, member, requestID pgtype.UUID) error {
+// that names a second one, even when two retries race. An event with no member
+// is recovered only by the repair run its root admitted, named by taskID.
+func clearAskGuardEvent(ctx context.Context, queries *db.Queries, issue db.Issue, eventID, member, requestID, taskID pgtype.UUID) error {
 	if !eventID.Valid {
 		return nil
 	}
-	event, err := queries.GetAskGuardEventForMember(ctx, db.GetAskGuardEventForMemberParams{ID: eventID, WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, MemberID: member})
+	event, err := queries.GetAskGuardEventForMember(ctx, db.GetAskGuardEventForMemberParams{ID: eventID, WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, MemberID: member, TaskID: taskID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return decisionIntentRefusal{http.StatusBadRequest, "recovers names no guard event for this issue and the person this request asks"}
 	}

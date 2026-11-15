@@ -1,0 +1,99 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>u</title><style>
+:root{--app-shell:#0f1012;--page-canvas:#141518;--surface:#17181b;--surface-raised:#1c1d21;--surface-hover:#232428;--surface-selected:#2b2c31;--surface-border:#2d2e33;--primary:#ececee;--muted-foreground:#a3a3ab;--faint-foreground:#8f8f98;--destructive:#f08a82;--success:#6fcf97;--warning:#e7bf4a;--info:#8fb4ff;--brand:#6b8cff;--ok-bg:#14341f;--no-bg:#3b1b1a;--open-bg:#3a3014;--info-bg:#172a4d;--surface-inset:#121316;--app-bg:#0b0c0e;--border-strong:#3a3b42;--destructive-border:#5a2b29;--warning-border:#6b5a1c}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--app-bg);color:var(--primary);font:14px/1.45 Inter,"Helvetica Neue",Arial,"Liberation Sans","Noto Sans","DejaVu Sans",sans-serif;-webkit-font-smoothing:antialiased}
+svg{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}svg.sp0{position:absolute;width:0;height:0}
+button{font:inherit;color:inherit;cursor:pointer}
+.band{padding:18px 28px;border-bottom:1px solid var(--surface-border);display:flex;justify-content:space-between;align-items:baseline;gap:24px}.band h1{font-size:18px;font-weight:650;white-space:nowrap}.band p{color:var(--muted-foreground);font-size:13px;max-width:760px}
+.dir{display:inline-block;padding:2px 10px;border-radius:99px;background:var(--surface-selected);font-size:12px;margin-right:10px;vertical-align:2px}
+.lab{padding:12px 28px 0;color:var(--faint-foreground);font-size:12px}
+.row{display:flex;gap:20px;padding:12px 28px 20px;align-items:flex-start}.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.win{background:var(--page-canvas);border:1px solid var(--surface-border);border-radius:14px;overflow:hidden;flex:1;min-width:0;position:relative;display:flex;flex-direction:column}
+.win>h2{font-size:12px;font-weight:600;color:var(--muted-foreground);padding:8px 12px;border-bottom:1px solid var(--surface-border);background:var(--surface);display:flex;gap:8px;align-items:center}
+.win>h2 b{color:var(--primary);font-weight:650}
+.wb{padding:14px;display:flex;flex-direction:column;gap:12px;flex:1}
+.ph{width:390px;flex:none;background:var(--page-canvas);border:1px solid var(--surface-border);border-radius:28px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+.ph .top{height:52px;padding:0 14px;border-bottom:1px solid var(--surface-border);display:flex;align-items:center;gap:10px}.ph .top h2{font-size:16px;font-weight:650}
+.ph .wb{padding:12px}
+.card{background:var(--surface);border:1px solid var(--surface-border);border-radius:14px;overflow:hidden}
+.hd{padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--surface-border)}
+.tag{padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;display:inline-flex;gap:5px;align-items:center}
+.t-open{background:var(--open-bg);color:var(--warning)}.t-ok{background:var(--ok-bg);color:var(--success)}.t-no{background:var(--no-bg);color:var(--destructive)}.t-info{background:var(--info-bg);color:var(--info)}.t-mute{background:var(--surface-hover);color:var(--muted-foreground)}
+.chip{padding:2px 9px;border-radius:99px;border:1px solid var(--surface-border);font-size:12px;color:var(--muted-foreground)}
+.sp{flex:1}.meta{color:var(--muted-foreground);font-size:12px}.faint{color:var(--faint-foreground);font-size:12px}
+.bd2{padding:14px;display:flex;flex-direction:column;gap:12px}.ask{font-size:17px;font-weight:650;line-height:1.3}.sum{color:var(--muted-foreground);font-size:13px}
+.opt{display:flex;gap:10px;padding:10px 12px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);min-height:44px;align-items:flex-start}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:2px solid var(--faint-foreground);margin-top:2px;flex:none;position:relative}
+.opt.on{border-color:var(--primary);background:var(--surface-hover)}.opt.on .rd{border-color:var(--primary)}.opt.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.opt b{font-weight:600;display:block;font-size:13.5px}.opt span{color:var(--muted-foreground);font-size:12.5px}
+.ta{background:var(--surface-inset);border:1px solid var(--surface-border);border-radius:10px;padding:10px 12px;color:var(--faint-foreground);min-height:48px;font-size:13px}.ta.on{border-color:var(--brand);color:var(--primary)}
+textarea.ta{display:block;width:100%;resize:none;overflow:hidden;font-family:inherit;font-size:13px;line-height:1.45}textarea.ta::placeholder{color:var(--faint-foreground);opacity:1}
+.hint{font-size:12px;color:var(--muted-foreground);display:flex;gap:6px;align-items:center}.hint.w{color:var(--warning)}
+.btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.btn{justify-content:center;padding:0 14px;height:40px;border-radius:10px;border:1px solid var(--surface-border);background:var(--surface-raised);font-weight:600;display:inline-flex;align-items:center;gap:8px;font-size:13.5px}
+.btn.p{background:var(--primary);color:#111214;border-color:var(--primary)}.btn.d{color:var(--destructive);border-color:var(--destructive-border);background:transparent}.btn.g{background:transparent}.btn[disabled]{opacity:.45;cursor:not-allowed}.btn.sm{height:36px;padding:0 12px;font-size:13px}
+.ph .btn{height:44px}.ph .btn.sm{height:44px}
+.ibtn{width:44px;height:44px;border-radius:12px;border:1px solid var(--surface-border);background:var(--surface-raised);display:inline-flex;align-items:center;justify-content:center;flex:none}.ibtn svg{width:20px;height:20px}
+.kbd{font:11px/1 "DejaVu Sans Mono",ui-monospace,monospace;padding:2px 5px;border-radius:5px;border:1px solid var(--surface-border);background:var(--surface-hover);color:var(--muted-foreground)}
+.mention{background:var(--info-bg);color:var(--info);padding:0 4px;border-radius:5px;font-weight:600}
+.av{width:28px;height:28px;border-radius:50%;background:var(--surface-selected);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none}.av.me{background:var(--brand);color:var(--app-bg)}
+.msg{display:flex;gap:10px}.msg b{font-weight:600;font-size:13px}.msg small{color:var(--faint-foreground);font-size:12px;margin-left:6px}.msg p{color:var(--muted-foreground);font-size:13px;margin-top:2px}
+.pub{display:flex;gap:8px;align-items:center;padding:8px 12px;background:var(--open-bg);border:1px solid var(--warning-border);color:var(--warning);font-size:12.5px;font-weight:600;border-radius:10px}
+.fold{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--surface-border);border-radius:10px;color:var(--muted-foreground);font-size:13px;background:var(--surface);min-height:44px}
+.pop{background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:6px;display:flex;flex-direction:column;gap:2px;font-size:13px}
+.pi{display:flex;gap:10px;padding:8px 10px;border-radius:8px;align-items:center;min-height:44px}.pi.on{background:var(--surface-hover)}.pi small{display:block;color:var(--faint-foreground);font-size:12px}
+button.pi{width:100%;border:0;background:none;text-align:left;font:inherit;color:inherit}button.pi[disabled]{cursor:default}
+.notes{display:flex;gap:12px;padding:0 28px 28px;font-size:12.5px;color:var(--muted-foreground)}.notes .n{flex:1;padding:12px 14px;background:var(--surface);border:1px solid var(--surface-border);border-radius:12px}.notes h3{font-size:13px;color:var(--primary);font-weight:650;margin-bottom:2px}.notes ul{margin:4px 0 0 16px}.notes li{margin:2px 0}
+code{font:12px/1.4 "DejaVu Sans Mono",ui-monospace,monospace;color:var(--primary);background:var(--surface-hover);padding:1px 5px;border-radius:5px}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible,[role="tab"]:focus-visible,[role="radio"]:focus-visible,[role="switch"]:focus-visible,[role="checkbox"]:focus-visible,[role="option"]:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.focus-demo{outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body style="width:1440px">
+<svg class="sp0" aria-hidden="true"><defs><symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></symbol><symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol><symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></symbol><symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.7a3.5 3.5 0 0 1 0 6.6M18 14a6 6 0 0 1 3.5 6"/></symbol></defs></svg>
+<header class="band"><h1><span class="dir">u</span>Public debate · one invited agent</h1><p>Another agent joins the debate only when you or the asking agent invite it with a mention. Members show like a group DM. Each invite shows a run cost hint. A reply starts runs only for the agents it mentions, never for the issue assignee or squad leader.</p></header>
+<main>
+<div class="lab">Desktop 1440 · invite, then joined</div>
+<div class="row">
+<div class="win"><h2><b>1 · Invite</b> from the composer</h2><div class="wb">
+<div class="card"><div class="hd"><svg aria-hidden="true" focusable="false"><use href="#i-chat"/></svg><b style="font-size:13px">CHE-2365 debate</b><span class="sp"></span><span class="chip"><svg aria-hidden="true" focusable="false" style="width:12px;height:12px;vertical-align:-2px"><use href="#i-users"/></svg> 2 members</span></div>
+<div class="bd2"><div class="pub"><svg aria-hidden="true" focusable="false"><use href="#i-globe"/></svg>Public · issue thread · everyone on the issue reads it</div>
+<div class="btns"><span class="tag t-mute"><span class="av me" style="width:20px;height:20px;font-size:10px">C</span>You</span><span class="tag t-mute"><span class="av" style="width:20px;height:20px;font-size:10px">P</span>x99-claude-planner · asked</span></div>
+<div class="msg"><div class="av me">C</div><div><b>You</b><small>14:08 ICT</small><p>Is the spend forecast right? <span class="mention">@x99-codex-sol</span> please check the numbers.</p></div></div>
+<textarea class="ta on" rows="1" aria-label="Message to the debate">Type @ to invite an agent…</textarea>
+<div class="pop" role="listbox" aria-label="Invite an agent" style="width:100%"><button type="button" class="pi on" role="option" aria-selected="true"><span class="av">S</span><span style="flex:1"><b style="font-size:13px">x99-codex-sol</b><small>Not in this debate · invite</small></span><span class="tag t-open">≈ 1 run</span></button><button type="button" class="pi" role="option" aria-selected="false"><span class="av">L</span><span style="flex:1"><b style="font-size:13px">x99-claude-luna</b><small>Not in this debate · invite</small></span><span class="tag t-open">≈ 1 run</span></button><button type="button" class="pi" role="option" aria-selected="false" aria-disabled="true" disabled style="opacity:.6"><span class="av">P</span><span style="flex:1"><b style="font-size:13px">x99-claude-planner</b><small>Already a member</small></span></button></div>
+<div class="hint w" role="status"><svg aria-hidden="true" focusable="false"><use href="#i-warn"/></svg>Inviting starts one run for x99-codex-sol. Nobody else wakes.</div></div></div>
+</div></div>
+<div class="win"><h2><b>2 · Joined</b> members like a group DM</h2><div class="wb">
+<div class="card"><div class="hd"><svg aria-hidden="true" focusable="false"><use href="#i-chat"/></svg><b style="font-size:13px">CHE-2365 debate</b><span class="sp"></span><button type="button" class="btn sm g focus-demo" aria-haspopup="dialog" style="height:32px"><svg aria-hidden="true" focusable="false"><use href="#i-users"/></svg>3 members</button></div>
+<div class="bd2"><div class="pub"><svg aria-hidden="true" focusable="false"><use href="#i-globe"/></svg>Public · issue thread</div>
+<div class="btns"><span class="tag t-mute">You</span><span class="tag t-mute">x99-claude-planner · asked</span><span class="tag t-info">x99-codex-sol · invited by you</span></div>
+<div class="msg"><div class="av me">C</div><div><b>You</b><small>14:08 ICT</small><p>Is the spend forecast right? <span class="mention">@x99-codex-sol</span> please check the numbers.</p></div></div>
+<div class="msg"><div class="av">S</div><div><b>x99-codex-sol</b><small>14:11 ICT</small><p>Forecast holds: USD 188 by 30 Nov with the current run rate.</p></div></div>
+<div class="msg"><div class="av">P</div><div><b>x99-claude-planner</b><small>14:12 ICT</small><p>Agreed. USD 200 leaves USD 12 of headroom.</p></div></div>
+<textarea class="ta" rows="1" aria-label="Reply to the debate" placeholder="Reply… (only agents you @ start a run)"></textarea></div></div>
+<div class="hint"><svg aria-hidden="true" focusable="false"><use href="#i-users"/></svg>Members: one tag each, with who invited. Remove member is not in this slice.</div>
+</div></div>
+<div class="win"><h2><b>3 · Members and cost</b> opened from "3 members"</h2><div class="wb">
+<div class="card"><div class="bd2"><h3 style="font-size:14px">Members · 3</h3>
+<div class="pi"><span class="av me">C</span><div style="flex:1"><b style="font-size:13px">You</b><small>Owner of the question</small></div></div>
+<div class="pi"><span class="av">P</span><div style="flex:1"><b style="font-size:13px">x99-claude-planner</b><small>Asked the decision</small></div><span class="tag t-mute">1 run · 14:02</span></div>
+<div class="pi"><span class="av">S</span><div style="flex:1"><b style="font-size:13px">x99-codex-sol</b><small>Invited by you · 14:08 ICT</small></div><span class="tag t-open">1 run · 14:08</span></div>
+<div class="faint">Runs this debate has started: 2. A reply that mentions no one starts none.</div>
+<div class="btns"><button type="button" class="btn sm g">Close</button></div></div></div>
+</div></div>
+</div>
+<div class="lab">Phone 390 · bottom sheet, 44 px rows</div>
+<div class="row">
+<div class="ph" style="min-height:760px"><div class="top"><button type="button" class="ibtn" aria-label="Back" style="border:0;background:none"><svg aria-hidden="true" focusable="false"><use href="#i-back"/></svg></button><h2>CHE-2365 debate</h2><span class="sp"></span><button type="button" class="ibtn focus-demo" aria-label="Members, 3" aria-haspopup="dialog"><svg aria-hidden="true" focusable="false"><use href="#i-users"/></svg></button></div><div class="wb"><div class="pub"><svg aria-hidden="true" focusable="false"><use href="#i-globe"/></svg>Public · issue thread</div>
+<div class="msg"><div class="av me">C</div><div><p>Is the spend forecast right? <span class="mention">@x99-codex-sol</span> please check.</p></div></div><div class="msg"><div class="av">S</div><div><b>x99-codex-sol</b><small>14:11 ICT</small><p>Forecast holds: USD 188 by 30 Nov.</p></div></div><div style="flex:1"></div><textarea class="ta" rows="1" aria-label="Reply to the debate" placeholder="Reply…"></textarea></div></div>
+<div class="ph" style="min-height:760px"><div class="top"><button type="button" class="ibtn" aria-label="Back" style="border:0;background:none"><svg aria-hidden="true" focusable="false"><use href="#i-back"/></svg></button><h2>CHE-2365 debate</h2></div><div class="wb"><textarea class="ta on" rows="1" aria-label="Message to the debate">Is the spend forecast right? @</textarea><div class="pop" role="listbox" aria-label="Invite an agent"><button type="button" class="pi on" role="option" aria-selected="true"><span class="av">S</span><span style="flex:1"><b style="font-size:13px">x99-codex-sol</b><small>Invite</small></span><span class="tag t-open">≈ 1 run</span></button><button type="button" class="pi" role="option" aria-selected="false"><span class="av">L</span><span style="flex:1"><b style="font-size:13px">x99-claude-luna</b><small>Invite</small></span><span class="tag t-open">≈ 1 run</span></button></div><div class="hint w" role="status"><svg aria-hidden="true" focusable="false"><use href="#i-warn"/></svg>Inviting starts one run for the agent you pick.</div></div></div>
+<div class="ph" style="min-height:760px"><div class="top"><h2>Members · 3</h2><span class="sp"></span><button type="button" class="ibtn" aria-label="Close members"><svg aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button></div><div class="wb"><div class="pi"><span class="av me">C</span><div style="flex:1"><b style="font-size:13px">You</b></div></div><div class="pi"><span class="av">P</span><div style="flex:1"><b style="font-size:13px">x99-claude-planner</b><small>Asked</small></div></div><div class="pi"><span class="av">S</span><div style="flex:1"><b style="font-size:13px">x99-codex-sol</b><small>Invited by you</small></div><span class="tag t-open">1 run</span></div><div class="faint">Runs started: 2</div></div></div>
+</div>
+<div class="notes">
+<div class="n"><h3>What you see</h3><ul><li>The public banner stays on top. The member strip shows who is in the debate, like a group DM.</li><li>Typing @ lists agents not yet in the debate, each with a cost hint "≈ 1 run". Already-members are greyed.</li><li>An invited agent gets one tag, "invited by you" or "invited by the asking agent".</li><li>Replies that mention no one start no run.</li></ul></div>
+<div class="n"><h3>Components, tokens, i18n</h3><ul><li><code>packages/views/chat/floating-chat.tsx</code> shell; member popover reuses the mention picker (paths from the issue, not read from a checkout)</li><li>Tokens <code>--open-bg</code> for the cost tag, <code>--info-bg</code> for the invited tag</li><li>i18n <code>decisions.debate.members</code>, <code>.invite_cost</code>, <code>.invited_by</code>, <code>.runs_started</code></li><li>Build default: mentions start runs only for the named agents; the assignee and squad leader do not wake (CHE-5481 comment <code>01a1d606-b74d-7c0a-b37b-e3ef3cd75d5b</code>).</li></ul></div>
+<div class="n"><h3>States and motion</h3><ul><li>Invite pending (agent not yet replied), agent failed to start (banner with Retry), already a member.</li><li>Member tag fades in 150 ms. <code>prefers-reduced-motion</code>: appears at once.</li><li>Focus: 2 px outline, 2 px offset, token --info, on every control; keyboard order follows reading order.</li></ul></div>
+</div>
+</main>
+</body></html>

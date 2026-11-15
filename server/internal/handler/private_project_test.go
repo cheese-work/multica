@@ -321,6 +321,10 @@ func TestPrivateProjectVisibilityAndMembersAPI(t *testing.T) {
 	}
 	add(testUserID, "00000000-0000-0000-0000-00000000beef").Want(http.StatusBadRequest)
 	add(testUserID, f.outsider).Want(http.StatusOK)
+	addRow := apjAssertMemberRow(t, auditRowsFor(t, "project.member.add", project.ID), "project.member.add", "project_member")
+	if addRow.After["user_id"] != f.outsider || len(addRow.Before) != 0 {
+		t.Errorf("add audit diff = %v -> %v; want the added user only", addRow.Before, addRow.After)
+	}
 
 	remove := func(actor, target string) *testutil.Response {
 		req := testutil.WithURLParams(asProjectUser(newRequest(http.MethodDelete, "/api/projects/"+project.ID+"/members/"+target, nil), actor), "id", project.ID, "userId", target)
@@ -334,6 +338,10 @@ func TestPrivateProjectVisibilityAndMembersAPI(t *testing.T) {
 	remove(f.outsider, f.outsider).Want(http.StatusForbidden)
 	members(f.outsider).Want(http.StatusOK)
 	remove(testUserID, f.outsider).Want(http.StatusNoContent)
+	rmRow := apjAssertMemberRow(t, auditRowsFor(t, "project.member.remove", project.ID), "project.member.remove", "project_member")
+	if rmRow.Before["user_id"] != f.outsider || len(rmRow.After) != 0 {
+		t.Errorf("remove audit diff = %v -> %v; want the removed user only", rmRow.Before, rmRow.After)
+	}
 	members(f.outsider).Want(http.StatusNotFound)
 
 	// Only an admin or the lead switches visibility; the owner can.

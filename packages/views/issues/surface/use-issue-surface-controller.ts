@@ -441,7 +441,8 @@ export function useIssueSurfaceController({
     groupingPropertyId && catalogSettled && !activeGroupingProperty
       ? "status"
       : grouping;
-  const usesGantt = effectiveViewMode === "gantt" && !!projectId;
+  // Gantt v2 (CHE-4312 G5) reads the timeline query for every scope, so the upstream project-only gantt query never runs.
+  const usesGantt = false;
   const usesTable = effectiveViewMode === "table";
   const activeSearch = usesTable ? tableSearch : search;
   const debouncedActiveSearch = useDebouncedTableSearch(activeSearch);
@@ -1070,7 +1071,7 @@ export function useIssueSurfaceController({
     projectId,
     createDefaults: resolvedCreateDefaults,
     viewMode: effectiveViewMode,
-    allowGantt: allowedModes.has("gantt") && !!projectId,
+    allowGantt: allowedModes.has("gantt"),
     allowSwimlane2: allowedModes.has("swimlane2"),
     ...surfaceData,
     isLoading: data.isLoading || workingDependency.pending || unreadDependency.pending,

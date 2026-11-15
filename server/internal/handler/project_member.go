@@ -374,6 +374,17 @@ func (h *Handler) AddProjectMembers(w http.ResponseWriter, r *http.Request) {
 	if !h.allProjectMembersExist(w, r, qtx, project, ids, inserted) {
 		return
 	}
+	for _, row := range inserted {
+		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind:        "project.member.add",
+			WorkspaceID: project.WorkspaceID,
+			TargetID:    project.ID,
+			After:       map[string]any{"project_id": uuidToString(project.ID), "user_id": uuidToString(row.UserID)},
+		}); err != nil {
+			writeAuditFailure(w, r, err, "project.member.add")
+			return
+		}
+	}
 	if err := touchProjectSearchIndex(r, qtx, project); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update search index")
 		return
@@ -412,7 +423,14 @@ func (h *Handler) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "change the project lead before removing the current lead")
 		return
 	}
-	removed, err := h.Queries.DeleteProjectMember(r.Context(), db.DeleteProjectMemberParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	removed, err := qtx.DeleteProjectMember(r.Context(), db.DeleteProjectMemberParams{
 		ProjectID:   project.ID,
 		WorkspaceID: project.WorkspaceID,
 		UserID:      target,
@@ -425,8 +443,21 @@ func (h *Handler) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project member not found")
 		return
 	}
-	if err := touchProjectSearchIndex(r, h.Queries, project); err != nil {
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.member.remove",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    project.ID,
+		Before:      map[string]any{"project_id": uuidToString(project.ID), "user_id": uuidToString(target)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.member.remove")
+		return
+	}
+	if err := touchProjectSearchIndex(r, qtx, project); err != nil {
 		slog.Warn("touch project search index failed", append(logger.RequestAttrs(r), "project_id", uuidToString(project.ID), "error", err)...)
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit project member removal")
+		return
 	}
 	h.publishProjectMembersChanged(project, member.UserID)
 	w.WriteHeader(http.StatusNoContent)

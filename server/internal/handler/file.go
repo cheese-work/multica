@@ -109,8 +109,8 @@ type AttachmentResponse struct {
 	SizeBytes  int64   `json:"size_bytes"`
 	CreatedAt  string  `json:"created_at"`
 	// Displayed image dimensions, absent for non-images and older uploads.
-	Width      *int32  `json:"width,omitempty"`
-	Height     *int32  `json:"height,omitempty"`
+	Width  *int32 `json:"width,omitempty"`
+	Height *int32 `json:"height,omitempty"`
 }
 
 // attachmentURLMode selects how DownloadURL is rendered on a response.
@@ -401,7 +401,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	err := parseUploadForm(w, r)
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 	if err != nil {
 		var sizeErr *http.MaxBytesError

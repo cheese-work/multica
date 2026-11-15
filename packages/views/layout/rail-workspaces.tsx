@@ -99,6 +99,7 @@ function PinButton({ pinned, unread, onToggle }: { pinned: boolean; unread: bool
   const label = pinned ? t(($) => $.rail.unpin_workspace) : t(($) => $.rail.pin_workspace);
   return (
     <TooltipHint label={label} side="right">
+      {/* ui-pattern-ref: allow upstream pin toggle, merged unchanged (v0.9.0 sync) */}
       <button type="button" aria-label={label} tabIndex={0}
         className={cn("absolute inset-0 flex items-center justify-center rounded-md opacity-0 group-hover/workspace:opacity-100 group-data-highlighted/workspace:opacity-100 focus-visible:opacity-100 hover:bg-surface-selected", unread ? "text-brand" : "text-muted-foreground")}
         onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggle(); }}

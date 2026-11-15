@@ -1,5 +1,6 @@
 import type { ProjectStatus, ProjectPriority, ProjectVisibility } from "../types";
 import { createDraftStore } from "../drafts/create-draft-store";
+import { createKeyedDraftStore } from "../drafts/create-keyed-draft-store";
 
 interface ProjectDraft {
   title: string;
@@ -34,4 +35,21 @@ export const useProjectDraftStore = createDraftStore<ProjectDraft>({
   storageKey: "multica_project_draft",
   emptyData: EMPTY_DRAFT,
   hasMeaningful: (d) => !!(d.title || d.description),
+});
+
+/**
+ * Unsent name typed into the rename dialog, one entry per project id.
+ * `value: null` means no edit; `base` is the name the edit started from.
+ */
+interface ProjectRenameDraft {
+  value: string | null;
+  base: string | null;
+}
+
+export const EMPTY_PROJECT_RENAME_DRAFT: ProjectRenameDraft = { value: null, base: null };
+
+export const useProjectRenameDraftStore = createKeyedDraftStore<ProjectRenameDraft>({
+  storageKey: "multica_project_rename_drafts",
+  emptyData: EMPTY_PROJECT_RENAME_DRAFT,
+  hasMeaningful: (d) => d.value !== null,
 });
