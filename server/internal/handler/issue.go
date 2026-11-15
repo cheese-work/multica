@@ -81,6 +81,10 @@ type IssueResponse struct {
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// CreatedVia is how the issue was made: dialog, agent or cli. The server
+	// sets it at create; it is empty for issues made before it existed and
+	// for creates from web or desktop forms.
+	CreatedVia    string  `json:"created_via"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -694,6 +698,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		CreatedVia:         i.CreatedVia.String,
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -3872,6 +3877,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+		return
+	}
 	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
 	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
@@ -3947,6 +3955,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				assigneeID = id
 				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
 					writeError(w, status, msg)
+					return
+				}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 					return
 				}
 			}
@@ -4043,6 +4054,19 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// created_via is server-set and has no request field. A quick_create origin
+	// is the "create with agents" dialog: IssueService.Create rejects it unless
+	// the origin task is a quick-create task of the creating agent.
+	var createdVia pgtype.Text
+	switch {
+	case originType.String == "quick_create":
+		createdVia = pgtype.Text{String: "dialog", Valid: true}
+	case creatorType == "agent":
+		createdVia = pgtype.Text{String: "agent", Valid: true}
+	case statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel == "cli":
+		createdVia = pgtype.Text{String: "cli", Valid: true}
 	}
 
 	// Prefix is workspace-level; pre-compute once so both the broadcast
@@ -4151,6 +4175,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		DueDate:         dueDate,
 		OriginType:      originType,
 		OriginID:        originID,
+		CreatedVia:      createdVia,
 		Stage:           ptrToInt4(req.Stage),
 		AttachmentIDs:   attachmentIDs,
 		LabelIDs:        labelIDs,
@@ -4832,6 +4857,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeHandoffAssigneeRefusal(w, handoff, status, msg)
+			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
 			return
 		}
 		if handoff == nil && (touchedType || touchedID) {
@@ -5907,6 +5936,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		if batchTouchedType || batchTouchedID || handoff != nil {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
+				continue
+			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
 				continue
 			}
 			if handoff == nil {

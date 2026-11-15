@@ -393,6 +393,9 @@ type UpdateWorkspaceRequest struct {
 	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
 	// named fields overwrite, absent fields keep their saved value. Owner only.
 	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
+	// TimeWakeupSkip sets settings.time_wakeup_skip alone (CHE-5987): the
+	// object {"mode": off|warn|block}. Owner only.
+	TimeWakeupSkip json.RawMessage `json:"time_wakeup_skip"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -568,7 +571,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAgentCannotDoSetting(req.Settings), ghstack.ValidateSetting(req.Settings), validateCommentWakeSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), ghstack.ValidateSetting(req.Settings), validateCommentWakeSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -635,6 +638,16 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.IdleStartedGuard = req.IdleStartedGuard
+	}
+	if req.TimeWakeupSkip != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateTimeWakeupSkipPatch(req.TimeWakeupSkip); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.TimeWakeupSkip = req.TimeWakeupSkip
 	}
 	for _, mapping := range []struct {
 		field string
