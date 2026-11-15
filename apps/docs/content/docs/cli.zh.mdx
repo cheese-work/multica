@@ -368,6 +368,8 @@ multica config propose workspace.settings --set compact_prompt="..." --set wakeu
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```
 
+`decision` 卡片的每个选项都可以说明被选中后由谁行动。把 `after_choice` 设为 `agent_run`、`human_steps` 或 `record_only`。`agent_run` 选项要列出 `agent_commands`：一个或多个 argv 数组，例如 `["$MULTICA_CLI_PATH", "daemon", "restart"]`。以单个字符串给出的命令会被拒绝并指出字段名，因为服务器不解析 shell 文本。使用仅限控制台界面的选项改为把 `agent_surface` 设为目录中的键。该检查只读取这些带类型的字段，绝不读取 `what_happens`。它把每条命令化简为工具和前导词（去掉路径、`.exe` 以及全局标志 `--profile`、`--server-url`、`--workspace-id`、`--debug`），再与工作区设置 `agent_cannot_do` 比较，该设置是智能体运行无法完成之事的 `{key, tool, subcommand, human_step}` 列表。未设置时，条目为 `multica` 的 `daemon restart` 和 `daemon stop`。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` 等包装器会隐藏真实命令，所以请直接以 argv 给出命令本身。工作区设置 `agent_cannot_do_mode`（`off`、`warn`、`block`；默认 `off`）决定结果。`warn` 时创建卡片，并在响应中附带一条提示。`block` 时服务器返回 `400`，给出选项标签、目录键以及应写入 `human_steps` 的人工步骤，且不创建卡片。在 `warn` 和 `block` 下，没有 `after_choice` 的选项会增加一条提示，或带字段名被拒绝。操作卡片和豁免主题卡片不受检查。
+
 ## 命令概览
 
 | 命令 | 用途 |
