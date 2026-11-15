@@ -746,6 +746,22 @@ func (q *Queries) SetBrowserInstancePhase(ctx context.Context, arg SetBrowserIns
 	return err
 }
 
+const setBrowserLeaseJTI = `-- name: SetBrowserLeaseJTI :exec
+UPDATE browser_lease SET jti_hash = $3
+WHERE id = $1 AND workspace_id = $2 AND state = 'active'
+`
+
+type SetBrowserLeaseJTIParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	JtiHash     pgtype.Text `json:"jti_hash"`
+}
+
+func (q *Queries) SetBrowserLeaseJTI(ctx context.Context, arg SetBrowserLeaseJTIParams) error {
+	_, err := q.db.Exec(ctx, setBrowserLeaseJTI, arg.ID, arg.WorkspaceID, arg.JtiHash)
+	return err
+}
+
 const shortenBrowserLeaseExpiry = `-- name: ShortenBrowserLeaseExpiry :exec
 UPDATE browser_lease SET expires_at = LEAST(expires_at, $3)
 WHERE id = $1 AND workspace_id = $2 AND state = 'active'
@@ -761,21 +777,5 @@ type ShortenBrowserLeaseExpiryParams struct {
 // hard limit set at grant.
 func (q *Queries) ShortenBrowserLeaseExpiry(ctx context.Context, arg ShortenBrowserLeaseExpiryParams) error {
 	_, err := q.db.Exec(ctx, shortenBrowserLeaseExpiry, arg.ID, arg.WorkspaceID, arg.ExpiresAt)
-	return err
-}
-
-const setBrowserLeaseJTI = `-- name: SetBrowserLeaseJTI :exec
-UPDATE browser_lease SET jti_hash = $3
-WHERE id = $1 AND workspace_id = $2 AND state = 'active'
-`
-
-type SetBrowserLeaseJTIParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	JtiHash     pgtype.Text `json:"jti_hash"`
-}
-
-func (q *Queries) SetBrowserLeaseJTI(ctx context.Context, arg SetBrowserLeaseJTIParams) error {
-	_, err := q.db.Exec(ctx, setBrowserLeaseJTI, arg.ID, arg.WorkspaceID, arg.JtiHash)
 	return err
 }
