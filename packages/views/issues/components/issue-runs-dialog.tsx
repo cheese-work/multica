@@ -198,6 +198,7 @@ function IssueRunsDialogContent({
             {t(($) => $.execution_log.loading)}
           </p>
         ) : isError ? (
+          // ui-pattern-ref: allow upstream inline retry link; Button has no text-link variant
           <button type="button" onClick={() => void refetch()} className="mx-6 my-4 self-start text-body text-muted-foreground hover:text-foreground">
             {t(($) => $.execution_log.load_failed_retry)}
           </button>

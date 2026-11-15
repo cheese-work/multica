@@ -217,6 +217,7 @@ export function ExecutionLogSection({
               <Skeleton className="h-6 w-3/4" />
             </div>
           ) : isError ? (
+            // ui-pattern-ref: allow upstream inline retry link; Button has no text-link variant
             <button type="button" onClick={() => void refetch()} className="px-2 py-1 text-caption text-destructive underline">
               {t(($) => $.execution_log.load_failed_retry)}
             </button>
