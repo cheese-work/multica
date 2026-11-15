@@ -17,6 +17,8 @@ export interface App {
   chatListRequests: () => number;
   resetChatListRequests(): void;
   messages: fx.FixtureMessage[];
+  /** Body of `GET /api/chat/sessions`; the DM list. Defaults to the one fixture session. */
+  sessions: unknown[];
   /** Body of `/api/decisions/open`. */
   openDecisions: unknown[];
   /** Body of `GET .../pending-task`: a running reply makes the DM show a live row. */
@@ -31,7 +33,7 @@ export async function boot(page: Page, baseURL: string | undefined): Promise<App
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   const context = page.context();
   const app: App = {
-    socket: new MockSocket(), send: (type, payload) => app.socket.send(type, payload), messages: fx.initialMessages(), openDecisions: [], pendingTask: {}, taskMessages: [], unmocked: [], pageErrors: [],
+    socket: new MockSocket(), send: (type, payload) => app.socket.send(type, payload), messages: fx.initialMessages(), sessions: [fx.session], openDecisions: [], pendingTask: {}, taskMessages: [], unmocked: [], pageErrors: [],
     chatListRequests: () => chatRequests, resetChatListRequests: () => { chatRequests = 0; },
   };
   let chatRequests = 0;
@@ -61,7 +63,7 @@ export async function boot(page: Page, baseURL: string | undefined): Promise<App
       return json(app.messages);
     }
     switch (url.pathname) {
-      case "/api/chat/sessions": return json([fx.session]);
+      case "/api/chat/sessions": return json(app.sessions);
       case chatPrefix: return json(fx.session);
       case `${chatPrefix}/pending-task`: return json(app.pendingTask);
       case `${chatPrefix}/read`: return json({});
