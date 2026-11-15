@@ -130,17 +130,31 @@ function preprocessPlain(input: string): string {
 // `</details>` closes the block, any inner `<details>` tag is stripped.
 const DETAILS_RE = /<details[^>]*>\s*(?:<summary[^>]*>([\s\S]*?)<\/summary>)?([\s\S]*?)<\/details>/gi;
 
+// Regions where a `<details>` tag is not real markup: a fenced code block
+// (closed, or open to the end of input) or a whole HTML comment. The leftmost
+// region wins, so a comment inside a fence (or a fence inside a comment) is
+// part of the outer region.
+const PROTECTED_RE =
+  /^ {0,3}(`{3,}|~{3,})[^\n]*(?:(?:\n[\s\S]*?)?\n {0,3}\1[`~]*[ \t]*$|[\s\S]*$)|<!--[\s\S]*?-->/gm;
+
+/** Same-length copy with protected regions blanked, so indices still line up. */
+function maskProtected(input: string): string {
+  return input.replace(PROTECTED_RE, (region) => region.replace(/[^\n]/g, " "));
+}
+
 /**
  * Details blocks become one marker line (see `encodeDetailsMarker`) so
- * `splitMarkdown` can render them as a collapsible segment. Every other
- * piece, and each body, goes through the plain pipeline; a forged marker in
- * the input is an HTML comment and is stripped there.
+ * `splitMarkdown` can render them as a collapsible segment. Details tags in a
+ * fenced code block or an HTML comment are not blocks: they stay in the plain
+ * pipeline. Every other piece, and each body, goes through the plain
+ * pipeline; a forged marker in the input is an HTML comment and is stripped
+ * there.
  */
 export function preprocessMobileMarkdown(input: string): string {
   if (!input) return "";
   let out = "";
   let last = 0;
-  for (const m of input.matchAll(DETAILS_RE)) {
+  for (const m of maskProtected(input).matchAll(DETAILS_RE)) {
     const summary = stripHtml(m[1] ?? "").trim() || "Details";
     out += preprocessPlain(input.slice(last, m.index));
     out += `\n\n${encodeDetailsMarker(summary, preprocessPlain(m[2] ?? "").trim())}\n\n`;

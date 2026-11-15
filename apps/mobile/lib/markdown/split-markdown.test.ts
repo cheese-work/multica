@@ -62,4 +62,20 @@ describe("splitMarkdown — details block", () => {
     const segs = splitMarkdown(preprocessMobileMarkdown(`before\n\n${forged}\n\nafter`));
     expect(segs.some((s) => s.type === "details")).toBe(false);
   });
+
+  it("does not turn details inside a whole HTML comment into content", () => {
+    const input =
+      "before\n\n<!--\n<details><summary>Hidden</summary>COMMENT_ONLY_BODY</details>\n-->\n\nafter";
+    const segs = splitMarkdown(preprocessMobileMarkdown(input));
+    expect(textOf(segs)).not.toContain("COMMENT_ONLY_BODY");
+    expect(segs.some((s) => s.type === "details")).toBe(false);
+  });
+
+  it("keeps details inside a fenced code example as code, not a marker", () => {
+    const input = "```html\n<details><summary>Example</summary>CODE_BODY</details>\n```";
+    const segs = splitMarkdown(preprocessMobileMarkdown(input));
+    expect(segs).toHaveLength(1);
+    expect(segs[0]?.type).toBe("code");
+    expect(textOf(segs)).not.toContain("multica:details:");
+  });
 });
