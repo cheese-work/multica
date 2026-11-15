@@ -218,7 +218,7 @@ func TestSubWorkflowChildIsLeftUnassigned(t *testing.T) {
 // updateWorkflowSteps saves new steps on a workflow through the API.
 func updateWorkflowSteps(t *testing.T, id string, steps []map[string]any) *testutil.Response {
 	t.Helper()
-	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+id, map[string]any{"steps": steps}), "id", id)
+	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+id, map[string]any{"steps": steps, "lint_override": "test fixture"}), "id", id)
 	return testutil.Call(t, testHandler.UpdateIssueWorkflow, req)
 }
 

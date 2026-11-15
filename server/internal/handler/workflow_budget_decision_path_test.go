@@ -17,7 +17,7 @@ func TestWorkflowBudgetWriteWithoutDecisionPointsAtTheDecisionPath(t *testing.T)
 	}
 	wf := createTestWorkflowSteps(t, "Budget decision path "+workflowTestSuffix(), statusSteps("backlog", "in_progress", "blocked"))
 	put := func(source string, body map[string]any) *testutil.Response {
-		req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, body), "id", wf.ID)
+		req := withURLParam(workflowEditRequest("PUT", "/api/issue-workflows/"+wf.ID, body), "id", wf.ID)
 		req.Header.Set("X-Actor-Source", source)
 		return testutil.Call(t, testHandler.UpdateIssueWorkflow, req)
 	}
