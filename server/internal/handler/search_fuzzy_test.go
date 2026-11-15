@@ -162,16 +162,49 @@ func TestSearchIssues_FuzzyFallbackFindsTypoInComment(t *testing.T) {
 	t.Fatalf("typo in comment did not find the issue; got %v", results)
 }
 
-func TestSearchIssues_FuzzyFallbackTitleOutranksCommentMatch(t *testing.T) {
+// The fixtures below use the query "zebrafsh migraton plam". word_similarity of
+// that query: "zebrafish migration plan" 0.586, "zebrafish migration schedule"
+// 0.5. So the comment scores higher than the title, and a score-only ordering
+// would put the comment first.
+const fuzzyRankQuery = "zebrafsh migraton plam"
+
+func TestSearchIssues_FuzzyFallbackTitleOutranksStrongerCommentMatch(t *testing.T) {
 	comment := dbfx.Issue(t, "Plain heading")
 	dbfx.Comment(t, comment, "zebrafish migration plan")
-	title := dbfx.Issue(t, "zebrafish migration plan extended with many more words in the title")
+	title := dbfx.Issue(t, "zebrafish migration schedule")
 
-	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("zebrafsh migraton plam"))
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape(fuzzyRankQuery))
 	titleAt, commentAt := indexOfID(ids, title), indexOfID(ids, comment)
 	if titleAt < 0 || commentAt < 0 || titleAt > commentAt {
-		t.Fatalf("title match must rank above comment match: title at %d, comment at %d, ids %v", titleAt, commentAt, ids)
+		t.Fatalf("weaker title match must rank above stronger comment match: title at %d, comment at %d, ids %v", titleAt, commentAt, ids)
 	}
+}
+
+func TestSearchIssues_FuzzyFallbackStrongerCommentOutranksWeakerDescription(t *testing.T) {
+	desc := dbfx.Issue(t, "Plain heading", testutil.Cols{"description": "zebrafish migration schedule"})
+	comment := dbfx.Issue(t, "Other heading")
+	dbfx.Comment(t, comment, "zebrafish migration plan")
+
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape(fuzzyRankQuery))
+	descAt, commentAt := indexOfID(ids, desc), indexOfID(ids, comment)
+	if descAt < 0 || commentAt < 0 || commentAt > descAt {
+		t.Fatalf("stronger comment match must rank above weaker description match: comment at %d, description at %d, ids %v", commentAt, descAt, ids)
+	}
+}
+
+func TestSearchIssues_FuzzyFallbackReportsStrongerNonTitleSource(t *testing.T) {
+	id := dbfx.Issue(t, "Plain heading", testutil.Cols{"description": "zebrafish migration schedule"})
+	dbfx.Comment(t, id, "zebrafish migration plan")
+
+	for _, r := range searchIssueResults(t, "q="+url.QueryEscape(fuzzyRankQuery)) {
+		if r.ID == id {
+			if r.MatchSource != "comment" {
+				t.Fatalf("match_source = %q, want comment (higher score than the description)", r.MatchSource)
+			}
+			return
+		}
+	}
+	t.Fatal("issue not found")
 }
 
 func TestSearchIssues_FuzzyFallbackSkippedWhenNormalSearchHits(t *testing.T) {

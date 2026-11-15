@@ -34,9 +34,10 @@ func shouldRunFuzzyFallback(query string, hasNum bool, offset, normalResults int
 
 // buildFuzzySearchQuery matches the folded query against title, description and
 // comment text and returns the same columns as buildSearchQuery, so the caller
-// scans both with scanSearchIssue. Run it with fuzzySearchSetup. Ranking: title
-// match, then description, then comment; inside a class by score, updated_at,
-// id. Args: $1 folded query, $2 workspace_id (filled by the caller), [$3
+// scans both with scanSearchIssue. Run it with fuzzySearchSetup. Ranking: a title
+// match ranks above a description or comment match; inside that split by score,
+// updated_at, id. match_source is the best-scoring field of the issue, kept
+// apart from the ranking. Args: $1 folded query, $2 workspace_id (filled by the caller), [$3
 // terminal status keys], then limit and offset (the last two, filled by the caller).
 func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
 	args := []any{foldedQuery, nil}
@@ -53,28 +54,28 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 	offsetParam := nextArg(nil)
 
 	query := fmt.Sprintf(`WITH hits AS (
-		SELECT i.id, i.updated_at, 0 AS class, word_similarity($1, ist.title_folded) AS score, NULL::uuid AS comment_id
+		SELECT i.id, i.updated_at, 0 AS class, 0 AS src, word_similarity($1, ist.title_folded) AS score, NULL::uuid AS comment_id
 		FROM issue_search_text ist
 		JOIN issue i ON i.id = ist.issue_id AND i.workspace_id = ist.workspace_id
 		WHERE ist.workspace_id = $2 AND $1 <%% ist.title_folded%[1]s
 		UNION ALL
-		SELECT i.id, i.updated_at, 1, word_similarity($1, ist.description_folded), NULL::uuid
+		SELECT i.id, i.updated_at, 1, 1, word_similarity($1, ist.description_folded), NULL::uuid
 		FROM issue_search_text ist
 		JOIN issue i ON i.id = ist.issue_id AND i.workspace_id = ist.workspace_id
 		WHERE ist.workspace_id = $2 AND $1 <%% ist.description_folded%[1]s
 		UNION ALL
-		SELECT i.id, i.updated_at, 2, word_similarity($1, cst.content_folded), cst.comment_id
+		SELECT i.id, i.updated_at, 1, 2, word_similarity($1, cst.content_folded), cst.comment_id
 		FROM comment_search_text cst
 		JOIN issue i ON i.id = cst.issue_id AND i.workspace_id = cst.workspace_id
 		WHERE cst.workspace_id = $2 AND $1 <%% cst.content_folded%[1]s
 	),
 	best AS (
-		SELECT DISTINCT ON (id) id, updated_at, class, score, comment_id
+		SELECT DISTINCT ON (id) id, updated_at, class, src, score, comment_id
 		FROM hits
-		ORDER BY id, class, score DESC, comment_id
+		ORDER BY id, class, score DESC, src, comment_id
 	),
 	page_candidates AS MATERIALIZED (
-		SELECT id, updated_at, class, score, comment_id
+		SELECT id, updated_at, class, src, score, comment_id
 		FROM best
 		ORDER BY class, score DESC, updated_at DESC, id ASC
 		LIMIT %[2]s OFFSET %[3]s
@@ -84,7 +85,7 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
 		i.revision, i.duplicate_of_issue_id, i.description_external_read,
-		(ARRAY['title', 'description', 'comment'])[pc.class + 1] AS match_source,
+		(ARRAY['title', 'description', 'comment'])[pc.src + 1] AS match_source,
 		COALESCE(c.content, '') AS matched_comment_content
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.id AND i.workspace_id = $2
