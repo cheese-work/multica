@@ -64,6 +64,12 @@ func TestCardLintRefusesOneFixturePerCode(test *testing.T) {
 		{"option_leak rec", "reversible", "option_leak", "ask.options[0].label", func(a, _ map[string]any, _ map[string]any) {
 			a["label"] = "NOW (rec)"
 		}},
+		{"option_leak pro en", "reversible", "option_leak", "ask.options[0].pros", func(a, _ map[string]any, _ map[string]any) {
+			a["pros"] = []string{"Recommended by the team"}
+		}},
+		{"option_leak con vi", "reversible", "option_leak", "ask.options[1].cons", func(_, b map[string]any, _ map[string]any) {
+			b["cons"] = []string{"Không được khuyến nghị"}
+		}},
 		{"option_leak bold one", "reversible", "option_leak", "ask.options[1].label", func(_, b map[string]any, _ map[string]any) {
 			b["label"] = "**LATER**"
 		}},
@@ -111,6 +117,12 @@ func TestCardLintAcceptsAGoodCard(test *testing.T) {
 		"real con beside a weak one": {"reversible", func(a, _ map[string]any, _ map[string]any) {
 			a["cons"] = []string{"Takes 1 minute of your time", "Rolls back all CI caches"}
 		}},
+		"mixed cost en": {"reversible", func(a, _ map[string]any, _ map[string]any) {
+			a["cons"] = []string{"Takes 1 minute of your time and permanently deletes the backup"}
+		}},
+		"mixed cost vi": {"reversible", func(_, b map[string]any, _ map[string]any) {
+			b["cons"] = []string{"Mất 1 phút của bạn và xóa vĩnh viễn bản sao lưu"}
+		}},
 		"allowed markup": {"reversible", func(a, _ map[string]any, _ map[string]any) {
 			a["what_happens"] = "**Ships** the *fix* with `Map<String>`.\n- one\n- two\nSee [docs](https://x.test)."
 		}},
@@ -148,5 +160,18 @@ func TestCardLintModeFromSettings(test *testing.T) {
 		if _, err := CardLintModeFromSettings([]byte(raw)); err == nil {
 			test.Errorf("%q: want error", raw)
 		}
+	}
+}
+
+func TestMentionHuman(test *testing.T) {
+	const id = "0194a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	got, added := MentionHuman("Pick one.", "Ada [Dev]", id)
+	want := "Pick one.\n\n[@Ada Dev](mention://member/" + id + ")"
+	if !added || got != want {
+		test.Errorf("got %q added %v, want %q", got, added, want)
+	}
+	have := "Hi [@Ada](mention://member/" + id + ")"
+	if got, added := MentionHuman(have, "Ada", id); added || got != have {
+		test.Errorf("already mentioned: got %q added %v", got, added)
 	}
 }

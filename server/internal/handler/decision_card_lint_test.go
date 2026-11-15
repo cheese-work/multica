@@ -75,3 +75,32 @@ func TestValidateCardLintSetting(t *testing.T) {
 		t.Errorf("absent key must be valid: %v", err)
 	}
 }
+
+func TestDecisionRequestCardLintAddsMissingMention(t *testing.T) {
+	setCannotDo(t, "off", "")
+	askComment := func(t *testing.T, fixture requestCoreFixture) string {
+		t.Helper()
+		var content string
+		if err := testPool.QueryRow(context.Background(), `SELECT content FROM comment WHERE issue_id = $1 AND decision_request_id IS NOT NULL`, fixture.issueID).Scan(&content); err != nil {
+			t.Fatalf("read ask comment: %v", err)
+		}
+		return content
+	}
+	for _, mode := range []string{"warn", "block"} {
+		t.Run(mode+" adds the human mention", func(t *testing.T) {
+			setCardLint(t, mode)
+			fixture := newRequestCoreFixture(t, false)
+			testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, fixture.newShapeAsk())).Want(http.StatusCreated)
+			if got := askComment(t, fixture); !strings.Contains(got, "mention://member/"+fixture.humanID+")") {
+				t.Errorf("ask comment lacks the human mention: %s", got)
+			}
+		})
+	}
+	t.Run("off leaves the comment as written", func(t *testing.T) {
+		fixture := newRequestCoreFixture(t, false)
+		testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, fixture.newShapeAsk())).Want(http.StatusCreated)
+		if got := askComment(t, fixture); strings.Contains(got, "mention://member/"+fixture.humanID+")") {
+			t.Errorf("off must not add a mention: %s", got)
+		}
+	})
+}

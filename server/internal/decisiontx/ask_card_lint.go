@@ -43,8 +43,9 @@ func CardLintModeFromSettings(raw []byte) (string, error) {
 
 // ponytail: patterns match the cost phrasing seen in real cards; add one when a new phrasing slips through.
 var (
-	// A con that cites only the human's time or one more check or review.
-	weakCon = regexp.MustCompile(`(?i)\byour (?:time|attention)\b|\b(?:one|1|an?) (?:more|extra|additional) (?:check|review|step|approval|click)\b|\bmất \d+ ?(?:phút|giây|giờ)|thời gian của bạn|thêm (?:một|1) lần (?:kiểm tra|duyệt|xem lại|review)`)
+	// A con that is only the human's time or one more check: the whole statement,
+	// so a real cost beside the time ("... and deletes the backup") is not refused.
+	weakCon = regexp.MustCompile(`(?i)^(?:(?:it )?(?:takes|costs|needs|requires|mất|tốn) )?(?:(?:about |around |~)?\d+ ?(?:minutes?|mins?|seconds?|hours?|phút|giây|giờ)(?: of)?(?: your (?:time|attention)| của bạn)?|your (?:time|attention)|thời gian của bạn|(?:one|1|an?) (?:more|extra|additional) (?:check|review|step|approval|click)|thêm (?:một|1) lần (?:kiểm tra|duyệt|xem lại|review))$`)
 
 	mdTableRule = regexp.MustCompile(`(?m)^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$`)
 	mdHeading   = regexp.MustCompile(`(?m)^\s{0,3}#{1,6}\s`)
@@ -93,16 +94,15 @@ func (ask Ask) CheckCard(mode, class string) (hints []string, err error) {
 			add(prefix+".cons", "weak_cons", "every con is only your time or one more check; name a real cost of this option")
 		}
 		fields, texts := optionTexts(index, option)
+		markdownFound, leakFound := false, false
 		for at, text := range texts {
-			if kind := markdownKind(text); kind != "" {
+			if kind := markdownKind(text); kind != "" && !markdownFound {
 				add(fields[at], "option_markdown", kind+" is not allowed in option text; use bold, italic, inline code, lists or links")
-				break
+				markdownFound = true
 			}
-		}
-		for _, part := range []struct{ name, text string }{{"label", option.Label}, {"what_happens", option.WhatHappens}} {
-			if leakWord.MatchString(part.text) {
-				add(prefix+"."+part.name, "option_leak", "option text must not mark the recommendation; recommended_option names it")
-				break
+			if leakWord.MatchString(text) && !leakFound {
+				add(fields[at], "option_leak", "option text must not mark the recommendation; recommended_option names it")
+				leakFound = true
 			}
 		}
 		if boldSpan.MatchString(option.Label) {
@@ -140,7 +140,7 @@ func weak(cons []string) bool {
 		if strings.TrimSpace(con) == "" {
 			continue
 		}
-		if !weakCon.MatchString(norm.NFC.String(con)) {
+		if !weakCon.MatchString(strings.TrimRight(norm.NFC.String(strings.TrimSpace(con)), ".! ")) {
 			return false
 		}
 		seen = true
@@ -180,4 +180,15 @@ func (ask Ask) defaultNamesOption() (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// MentionHuman appends a mention of the asked human to a card's issue comment
+// unless it already carries one (plan section 3.2 mention_missing: the server adds
+// the mention, it does not refuse). added reports whether it changed content.
+func MentionHuman(content, name, id string) (string, bool) {
+	if strings.Contains(content, "mention://member/"+id+")") {
+		return content, false
+	}
+	name = strings.NewReplacer("[", "", "]", "").Replace(strings.TrimSpace(name))
+	return content + "\n\n[@" + name + "](mention://member/" + id + ")", true
 }
