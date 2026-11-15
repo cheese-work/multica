@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1276,6 +1276,40 @@ func TestBuildWorkspaceUpdateBodyIdleGuard(t *testing.T) {
 		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
 			t.Errorf("hours %q: expected an error", hours)
 		}
+	}
+}
+
+// CHE-5987: --time-wakeup-skip-mode sends only time_wakeup_skip.mode.
+func TestBuildWorkspaceUpdateBodyTimeWakeupSkip(t *testing.T) {
+	for _, mode := range []string{"off", "warn", "block"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "time-wakeup-skip-mode", mode)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if want := map[string]any{"time_wakeup_skip": map[string]any{"mode": mode}}; !reflect.DeepEqual(body, want) {
+			t.Errorf("%s: body = %#v, want %#v", mode, body, want)
+		}
+	}
+	for _, mode := range []string{"on", "", "WARN"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "time-wakeup-skip-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+}
+
+// The digest-mode update changes exactly one field, so the new flag conflicts
+// with it like --idle-guard-mode does.
+func TestWorkspaceUpdateDigestRejectsTimeWakeupSkip(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "expected-before-digest", strings.Repeat("0", 64))
+	setStringFlag(t, "time-wakeup-skip-mode", "warn")
+	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "--time-wakeup-skip-mode") {
+		t.Fatalf("err = %v, want a conflict naming --time-wakeup-skip-mode", err)
 	}
 }
 
