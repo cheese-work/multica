@@ -226,8 +226,8 @@ func (s *Service) issueToken(ctx context.Context, res Result) (Result, error) {
 	}
 	token, err := s.Signer.Sign(claims)
 	if err != nil {
-		s.endActive(ctx, l, endSignFailed)
-		return res, fmt.Errorf("sign browser token: %w", err)
+		endErr := s.endActive(ctx, l, endSignFailed)
+		return res, errors.Join(fmt.Errorf("sign browser token: %w", err), endErr)
 	}
 	sum := sha256.Sum256([]byte(jti))
 	if err := s.Queries.SetBrowserLeaseJTI(ctx, db.SetBrowserLeaseJTIParams{
