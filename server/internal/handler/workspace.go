@@ -568,7 +568,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), ghstack.ValidateSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAgentCannotDoSetting(req.Settings), ghstack.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -700,6 +700,10 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, errSettingsPasskeyRequired) {
 		writePasskeyActionRequired(w, settingsPatchAction)
+		return
+	}
+	if errors.Is(err, errCannotDoOwnerOnly) {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if errors.As(err, &rejected) {

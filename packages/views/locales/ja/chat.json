@@ -415,6 +415,10 @@
         "unpin": "ピン留め解除",
         "archive": "アーカイブ",
         "unarchive": "アーカイブ解除"
+      },
+      "short": {
+        "seen": "既読",
+        "unseen": "未読"
       }
     }
   },
