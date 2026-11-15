@@ -66,6 +66,7 @@ function AgentStatusSection({
     >
       <PanelList id={listId}>{displayed.map(renderAgent)}</PanelList>
       {agents.length > AGENT_PREVIEW_LIMIT && (
+        // ui-pattern-ref: allow upstream show-more toggle, merged unchanged (v0.9.0 sync)
         <button
           type="button"
           aria-expanded={expanded}
