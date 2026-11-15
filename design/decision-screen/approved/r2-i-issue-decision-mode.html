@@ -1,0 +1,194 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHE-5480 · Round 2 · (i) issue decision mode</title><style>
+:root{--app-shell:#0f1012;--page-canvas:#141518;--surface:#17181b;--surface-raised:#1c1d21;--surface-hover:#232428;--surface-selected:#2b2c31;--surface-border:#2d2e33;
+--primary:#ececee;--muted-foreground:#a3a3ab;--faint-foreground:#8f8f98;--destructive:#f08a82;--success:#6fcf97;--warning:#e7bf4a;--info:#8fb4ff;--brand:#6b8cff;
+--ok-bg:#14341f;--no-bg:#3b1b1a;--open-bg:#3a3014;--info-bg:#172a4d;
+--surface-inset:#121316;--app-bg:#0b0c0e;--border-strong:#3a3b42;--destructive-border:#5a2b29;--warning-border:#6b5a1c}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--app-bg);color:var(--primary);font:14px/1.45 Inter,"Helvetica Neue",Arial,"Liberation Sans","Noto Sans","DejaVu Sans",sans-serif;-webkit-font-smoothing:antialiased}
+svg{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+button{font:inherit;color:inherit;cursor:pointer}
+.band{padding:18px 28px;border-bottom:1px solid var(--surface-border);display:flex;justify-content:space-between;align-items:baseline;gap:24px}
+.band h1{font-size:18px;font-weight:650;white-space:nowrap}.band p{color:var(--muted-foreground);font-size:13px;max-width:760px}
+.dir{display:inline-block;padding:2px 10px;border-radius:99px;background:var(--surface-selected);font-size:12px;margin-right:10px;vertical-align:2px}
+.lab{padding:10px 28px;color:var(--faint-foreground);font-size:12px}
+/* desktop mock */
+.desk{width:1440px;display:flex;background:var(--app-shell);border-top:1px solid var(--surface-border);border-bottom:1px solid var(--surface-border)}
+.rail{width:72px;flex:none;padding:12px 6px;display:flex;flex-direction:column;gap:4px;align-items:center;border-right:1px solid var(--surface-border)}
+.ri{width:60px;padding:8px 0 6px;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted-foreground);position:relative;text-decoration:none}
+.ri.on{background:var(--surface-selected);color:var(--primary)}
+.ri .bd{position:absolute;top:3px;right:8px;min-width:16px;height:16px;padding:0 4px;border-radius:99px;background:var(--brand);color:var(--app-bg);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.ri .bd.q{background:var(--warning)}
+.main{flex:1;background:var(--page-canvas);display:flex;flex-direction:column;min-width:0}
+.top{height:48px;padding:0 20px;border-bottom:1px solid var(--surface-border);display:flex;align-items:center;gap:12px}
+.top h2{font-size:16px;font-weight:650}
+.tabs{display:flex;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--surface-border);border-radius:10px}
+.tab{padding:5px 12px;border-radius:7px;font-size:13px;color:var(--muted-foreground);display:flex;gap:6px;align-items:center;background:none;border:0}
+.tab.on{background:var(--surface-selected);color:var(--primary)}
+.tab i{font-style:normal;font-size:11px;padding:0 6px;border-radius:99px;background:var(--surface-hover);color:var(--primary);min-width:18px;text-align:center}
+.tab.on i{background:var(--brand);color:var(--app-bg)}
+.body{padding:20px;display:flex;gap:20px;min-height:560px}
+.list{width:340px;flex:none;display:flex;flex-direction:column;gap:2px}
+.lr{padding:10px 12px;border-radius:10px;display:flex;flex-direction:column;gap:3px;font-size:13px;border:1px solid transparent}
+.lr.sel{background:var(--surface-selected)}
+.lr b{font-weight:600;font-size:13px;line-height:1.35}
+.lr small{color:var(--muted-foreground);font-size:12px;display:flex;gap:8px;align-items:center}
+.lh{padding:6px 12px;color:var(--faint-foreground);font-size:12px}
+.pane{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
+.pane.c{max-width:760px;margin:0 auto;width:100%}
+/* card (B v9 vocabulary) */
+.card{background:var(--surface);border:1px solid var(--surface-border);border-radius:14px;overflow:hidden}
+.hd{padding:12px 16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--surface-border)}
+.tag{padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;display:inline-flex;gap:5px;align-items:center}
+.t-open{background:var(--open-bg);color:var(--warning)}.t-ok{background:var(--ok-bg);color:var(--success)}.t-no{background:var(--no-bg);color:var(--destructive)}.t-info{background:var(--info-bg);color:var(--info)}.t-mute{background:var(--surface-hover);color:var(--muted-foreground)}
+.chip{padding:2px 9px;border-radius:99px;border:1px solid var(--surface-border);font-size:12px;color:var(--muted-foreground)}
+.sp{flex:1}.meta{color:var(--muted-foreground);font-size:12px}
+.bd2{padding:16px;display:flex;flex-direction:column;gap:14px}
+.ask{font-size:19px;font-weight:650;line-height:1.3}
+.sum{color:var(--muted-foreground)}
+.kv{background:var(--surface-inset);border:1px solid var(--surface-border);border-radius:10px;padding:10px 12px;display:grid;grid-template-columns:128px 1fr;gap:6px 12px;font-size:13px}
+.kv dt{color:var(--muted-foreground)}.kv dd{color:var(--primary)}
+.kvt{font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:-6px}
+.seg{display:flex;flex-direction:column;gap:8px}
+.opt{display:flex;gap:10px;padding:11px 12px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);min-height:44px;align-items:flex-start;cursor:pointer}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:2px solid var(--faint-foreground);margin-top:2px;flex:none;position:relative}
+.opt.on{border-color:var(--primary);background:var(--surface-hover)}.opt.on .rd{border-color:var(--primary)}.opt.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.opt.rec{border-color:var(--success)}
+.opt b{font-weight:600;display:block}.opt span{color:var(--muted-foreground);font-size:13px}
+.opt>.ot{display:block;color:var(--primary);font-size:14px}
+.opt .tg{margin-left:auto;align-self:center}
+.ta{display:block;width:100%;resize:none;font:inherit;font-size:13px;background:var(--surface-inset);border:1px solid var(--surface-border);border-radius:10px;padding:10px 12px;color:var(--primary);min-height:64px}
+.ta::placeholder{color:var(--faint-foreground);opacity:1}
+.hint{font-size:12px;color:var(--muted-foreground);display:flex;gap:6px;align-items:center}
+.hint.w{color:var(--warning)}
+.btns{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{justify-content:center;padding:0 16px;height:40px;border-radius:10px;border:1px solid var(--surface-border);background:var(--surface-raised);font-weight:600;display:inline-flex;align-items:center;gap:8px}
+.btn.p{background:var(--primary);color:#111214;border-color:var(--primary)}
+.btn.d{color:var(--destructive);border-color:var(--destructive-border);background:transparent}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.sm{height:32px;padding:0 12px;font-size:13px}
+.lot{display:flex;gap:14px;align-items:center;padding:12px;border:1px dashed var(--faint-foreground);border-radius:10px}
+.lot .box{width:64px;height:64px;border-radius:50%;background:var(--ok-bg);color:var(--success);display:flex;align-items:center;justify-content:center;flex:none}
+.lot .box svg{width:34px;height:34px;stroke-width:2.4}
+.lot p{font-size:12px;color:var(--muted-foreground)}.lot p b{color:var(--primary);font-weight:600}
+.neu{border:1px solid #2e4170;background:var(--info-bg);border-radius:10px;padding:12px;display:flex;gap:10px;font-size:13px;color:#cfdcff}
+.row{display:grid;grid-template-columns:96px 1fr auto;gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--surface-border)}
+.row:last-child{border-bottom:0}
+.row b{font-weight:600;display:block}.row span{font-size:12px;color:var(--muted-foreground)}
+.empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:64px 20px;text-align:center}
+.empty .ic{width:56px;height:56px;border-radius:50%;background:var(--surface-hover);display:flex;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.empty .ic svg{width:26px;height:26px}
+.empty h3{font-size:18px;font-weight:650}.empty p{color:var(--muted-foreground);max-width:420px}
+.lnk{color:var(--info);text-decoration:underline;text-underline-offset:3px}
+.sk{height:12px;border-radius:6px;background:var(--surface-hover)}
+a{color:var(--info)}
+/* phone */
+.low{display:flex;gap:28px;padding:24px 28px 32px;align-items:flex-start}
+.ph{width:390px;flex:none;background:var(--page-canvas);border:1px solid var(--surface-border);border-radius:28px;overflow:hidden;display:flex;flex-direction:column}
+.ph .top{height:52px;padding:0 14px}
+.ph .body{padding:12px;flex-direction:column;gap:12px;min-height:0}
+.ph .ask{font-size:17px}.ph .kv{grid-template-columns:104px 1fr}
+.ph .btn{height:44px}.ph .btn.sm{height:44px}
+.ph .row{grid-template-columns:1fr;gap:8px}.ph .row>.tag{justify-self:start}
+.ph .tabs{width:100%;overflow:hidden}
+.ph .tab{flex:1;justify-content:center;padding:8px 6px;font-size:12px}
+.ph .bd2{padding:14px}
+.pb{display:flex;justify-content:space-around;padding:8px 4px 14px;border-top:1px solid var(--surface-border);background:var(--app-shell)}
+.pb .ri{width:64px}
+.notes{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px;font-size:12.5px;color:var(--muted-foreground)}
+.notes h3{font-size:13px;color:var(--primary);font-weight:650;margin-bottom:2px}
+.notes code{font:12px/1.4 "DejaVu Sans Mono",ui-monospace,monospace;color:var(--primary);background:var(--surface-hover);padding:1px 5px;border-radius:5px}
+.notes .n{padding:12px 14px;background:var(--surface);border:1px solid var(--surface-border);border-radius:12px}
+.notes ul{margin:4px 0 0 16px}.notes li{margin:2px 0}
+.rm{background:var(--no-bg)!important;border-color:var(--destructive-border)!important}.rm h3{color:var(--destructive)}
+.x{opacity:.75}
+/* accessibility: focus, hidden inputs, button resets */
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible,[role="tab"]:focus-visible,[role="radio"]:focus-visible,[role="switch"]:focus-visible,[role="checkbox"]:focus-visible,[role="option"]:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+label:has(input:focus-visible){outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.focus-demo{outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.bk{background:none;border:0;padding:0;display:inline-flex;align-items:center;flex:none;color:inherit;cursor:pointer}
+.crumb a{display:inline-flex;align-items:center;gap:8px;color:inherit;text-decoration:none}
+button.fold{width:100%;text-align:left}
+@media (prefers-reduced-motion:no-preference){.lot .box{animation:none}}
+
+svg.sprite{position:absolute;width:0;height:0}
+.kbd{font:11px/1 "DejaVu Sans Mono",ui-monospace,monospace;padding:2px 5px;border-radius:5px;border:1px solid var(--surface-border);background:var(--surface-hover);color:var(--muted-foreground)}
+.btn.g{background:transparent}
+.btn .kbd{margin-left:2px}
+.ibtn{width:44px;height:44px;border-radius:12px;border:1px solid var(--surface-border);background:var(--surface-raised);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.ibtn svg{width:20px;height:20px}
+.ibtn.dis{opacity:.4}
+.cnt{font-variant-numeric:tabular-nums;font-weight:650;color:var(--primary);font-size:13px}
+.hi{outline:2px solid var(--brand);outline-offset:2px}
+.mention{background:var(--info-bg);color:var(--info);padding:0 4px;border-radius:5px;font-weight:600}
+.cm{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid var(--surface-border)}
+.cm:last-child{border-bottom:0}
+.av{width:28px;height:28px;border-radius:50%;background:var(--surface-selected);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--primary);flex:none}
+.cm b{font-weight:600}.cm small{color:var(--faint-foreground);font-size:12px;margin-left:6px}
+.cm p{color:var(--muted-foreground);margin-top:2px}
+.fold{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--surface-border);border-radius:10px;color:var(--muted-foreground);font-size:13px;background:var(--surface);min-height:44px}
+.fold .sp{flex:1}
+.side{width:240px;flex:none;border-left:1px solid var(--surface-border);padding:16px;display:flex;flex-direction:column;gap:12px;font-size:13px}
+.side dl{display:grid;grid-template-columns:78px 1fr;gap:8px 8px}.side dt{color:var(--faint-foreground)}
+.side h3{font-size:12px;color:var(--faint-foreground);font-weight:600}
+.iss{flex:1;min-width:0;padding:20px 28px;display:flex;flex-direction:column;gap:14px;position:relative}
+.iss .it{font-size:22px;line-height:1.25;font-weight:650}
+.ss{border-left:3px solid var(--brand);padding:6px 12px;background:var(--surface);border-radius:0 8px 8px 0;color:var(--muted-foreground);font-size:13px}
+.sec{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--faint-foreground)}
+.sec:after{content:"";flex:1;height:1px;background:var(--surface-border)}
+.crumb{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted-foreground)}
+.mode{padding:2px 9px;border-radius:99px;background:var(--info-bg);color:var(--info);font-size:12px;font-weight:600;display:inline-flex;gap:5px;align-items:center}
+.float{position:absolute;left:28px;right:28px;bottom:16px;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.55);padding:12px 14px;display:flex;flex-direction:column;gap:10px;z-index:3}
+.float .q{font-size:14px;font-weight:650;line-height:1.3}
+.float .os{display:flex;gap:8px;flex-wrap:wrap}
+.float .o{flex:1;min-width:150px;padding:8px 10px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);display:flex;gap:8px;align-items:flex-start;font-size:13px;min-height:44px}
+.float .o .rd{width:14px;height:14px;border-radius:50%;border:2px solid var(--faint-foreground);margin-top:2px;flex:none;position:relative}
+.float .o.on{border-color:var(--primary);background:var(--surface-hover)}.float .o.on .rd{border-color:var(--primary)}.float .o.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.float .fa{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ghost{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 10px;border-radius:9px;border:1px solid var(--surface-border);background:transparent;font-size:13px;font-weight:600}
+.ghost svg{width:15px;height:15px}
+.bar{position:absolute;left:0;right:0;bottom:0;background:var(--surface-raised);border-top:1px solid var(--border-strong);box-shadow:0 -8px 24px rgba(0,0,0,.5);padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;z-index:3}
+.bar .q{font-size:13.5px;font-weight:650;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bar .o{padding:8px 10px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);display:flex;gap:8px;align-items:flex-start;font-size:13px;min-height:44px;align-items:center}
+.bar .o .rd{width:14px;height:14px;border-radius:50%;border:2px solid var(--faint-foreground);flex:none;position:relative}
+.bar .o.on{border-color:var(--primary);background:var(--surface-hover)}.bar .o.on .rd{border-color:var(--primary)}.bar .o.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.bar .ba{display:flex;gap:8px}.bar .ba .ibtn{flex:1;width:auto;height:44px;font-size:12px;gap:6px;font-weight:600}
+.edge{position:absolute;left:0;top:0;bottom:0;width:24px;background:repeating-linear-gradient(45deg,rgba(231,191,74,.14) 0 6px,transparent 6px 12px);border-right:1px dashed var(--warning);z-index:2;pointer-events:none}
+.ghostcard{opacity:.55}
+.minis{display:flex;gap:18px;padding:18px 28px}
+.mini{position:relative;background:var(--page-canvas);border:1px solid var(--surface-border);border-radius:14px;overflow:hidden;flex:1;min-width:0}
+.mini .mh{padding:8px 12px;border-bottom:1px solid var(--surface-border);font-size:12px;color:var(--muted-foreground);display:flex;gap:8px;align-items:center}
+.mini .mb{position:relative;height:280px}
+.cap{padding:8px 12px;font-size:12px;color:var(--muted-foreground);border-top:1px solid var(--surface-border);background:var(--surface)}
+.cap b{color:var(--primary)}
+.sk2{height:10px;border-radius:5px;background:var(--surface-hover)}
+.fc{position:absolute;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:10px;display:flex;flex-direction:column;gap:7px}
+.fc .l1{height:10px;border-radius:5px;background:var(--primary);opacity:.85}
+.fc .l2{height:8px;border-radius:4px;background:var(--surface-selected)}
+.ol{height:22px;border-radius:7px;border:1px solid var(--surface-border);background:var(--surface-inset)}
+.fc .ol{height:22px;border-radius:7px;border:1px solid var(--surface-border);background:var(--surface-inset)}
+.chat{position:absolute;right:20px;bottom:16px;width:360px;background:var(--surface);border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 10px 32px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden;z-index:4}
+.chat .ch{padding:10px 12px;border-bottom:1px solid var(--surface-border);display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600}
+.chat .ch .sp{flex:1}
+.chat .cb{padding:12px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+.pill{position:absolute;right:20px;bottom:16px;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:99px;box-shadow:0 6px 20px rgba(0,0,0,.5);padding:8px 14px 8px 10px;display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600;z-index:4;min-height:44px}
+.pill .bd{min-width:18px;height:18px;border-radius:99px;background:var(--warning);color:var(--app-bg);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 5px}
+.pop{position:absolute;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:6px;z-index:5;display:flex;flex-direction:column;gap:2px;font-size:13px}
+.pop .pi{display:flex;gap:10px;padding:8px 10px;border-radius:8px;align-items:center;min-height:44px}
+.pop .pi.on{background:var(--surface-hover)}
+.pop .pi small{display:block;color:var(--faint-foreground);font-size:12px}
+.hl{background:rgba(231,191,74,.22);border-bottom:2px solid var(--warning);border-radius:2px}
+.draftchip{display:inline-flex;gap:6px;align-items:center;padding:4px 10px;border-radius:99px;border:1px solid var(--warning-border);background:var(--open-bg);color:var(--warning);font-size:12px;font-weight:600;min-height:28px}
+.mdopt{font-size:13px;color:var(--muted-foreground)}
+.opt .mdopt b{color:var(--primary);display:inline;font-weight:650}.opt .mdopt i{font-style:italic}.mdopt code,.opt code{font:12px/1.4 "DejaVu Sans Mono",ui-monospace,monospace;background:var(--surface-hover);padding:1px 5px;border-radius:5px;color:var(--primary)}
+.mdopt ul{margin:4px 0 0 16px}
+.stage{position:relative;overflow:hidden}
+.ph.tall{height:800px;position:relative}
+.ph.tall .body{flex:1;overflow:hidden}
+.lab2{padding:10px 28px 0;color:var(--faint-foreground);font-size:12px}
+</style></head><body>
+<header class="band"><h1><span class="dir">D1 sidebar</span>CHE-5480 · Round 2 · (i) issue decision mode</h1><p>Issue decision mode: the decision thread with its 3 newest messages plus the full card on screen. Everything else is collapsed and can be opened. The floating card is hidden here.</p></header>
+<div class="lab">Desktop 1440 px · full card on screen</div><div class="desk"><nav class="rail" aria-label="Primary"><a href="#" class="ri"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/></svg>Inbox<i class="bd">3</i></a><a href="#" class="ri"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M5 7h14M5 7l-2.5 6a3.2 3.2 0 0 0 5 0zM19 7l-2.5 6a3.2 3.2 0 0 0 5 0z"/></svg>Decisions<i class="bd q">7</i></a><a href="#" class="ri on" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12l3 3 5-6"/></svg>Work</a><a href="#" class="ri"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M18 14.8c1.9.6 3 2.3 3 5.2"/></svg>Team</a><a href="#" class="ri"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Chat</a><a href="#" class="ri"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>Autopilots</a><div style="flex:1"></div><a href="#" class="ri"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Settings</a></nav><main class="main"><div class="top"><nav class="crumb" aria-label="Breadcrumb"><a href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg> Work</a> <span aria-hidden="true">›</span> <span aria-current="page">CHE-2365</span></nav><span class="mode"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M5 7h14M5 7l-2.5 6a3.2 3.2 0 0 0 5 0zM19 7l-2.5 6a3.2 3.2 0 0 0 5 0z"/></svg> Decision mode</span><span class="sp"></span><span class="meta">Showing the decision thread. Everything else is collapsed.</span><button type="button" class="btn sm focus-demo"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg> Show all comments</button></div>
+<div style="display:flex;min-height:1180px"><div class="iss"><h2 class="it">Raise the metered model API budget for November</h2><div class="sum">Spend is at 62% of the USD 150 cap on day 13. Two review runs are queued behind the limit. Decision needed from Cheese before 16 Nov 2026.</div><div class="ss"><b style="color:var(--primary)">Status summary:</b> waiting for Cheese on budget option; planner has the review runs parked.</div><div class="sec">Decision thread · 3 newest of 7</div><button type="button" class="fold" aria-expanded="false" style="width:100%;text-align:left"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 15l7-7 7 7"/></svg> Show 4 earlier messages<span class="sp"></span><span class="kbd">E</span></button><div><div class="cm"><div class="av">PL</div><div><b>x99-claude-planner</b><small>13 Nov 2026 15:02 ICT</small><p>Two review runs are queued behind the limit. Option C buys a week.</p></div></div><div class="cm"><div class="av">GS</div><div><b>x99-claude-gstack</b><small>13 Nov 2026 15:40 ICT</small><p>Spend is 62% on day 13. <span class="mention">@Cheese</span> needs to pick before 16 Nov.</p></div></div><div class="cm"><div class="av">CV</div><div><b>Cheese</b><small>13 Nov 2026 16:11 ICT</small><p>Why not B with a queue?</p></div></div></div><div class="card" id="full"><div class="hd"><span class="tag t-open">Open</span><span class="chip">Spend</span><span class="meta">x99-claude-planner · 13 Nov 2026 14:48 ICT</span><span class="sp"></span><span class="meta">Decision 1/3 in this issue</span></div><div class="bd2"><div class="ask">Raise the metered model API budget from USD 150 to USD 200 for November?</div><div class="sum">Spend is at 62% of the cap on day 13; two review runs are queued behind the limit. <span class="mention">@Cheese</span></div><dl class="kv"><dt>Cost</dt><dd>+USD 50 this month, one time</dd><dt>Undo</dt><dd>Revocable until 30 Nov 2026 23:59 ICT</dd><dt>Affects</dt><dd>Jev limit and 4 agents</dd></dl><div class="seg" role="radiogroup" aria-label="Raise the metered model API budget from USD 150 to USD 200 for November?"><label class="opt"><input type="radio" class="sr-only" name="budget-desktop" value="A"><i class="rd" aria-hidden="true"></i><span class="ot"><b>A · Raise to USD 200</b><span class="mdopt">Review runs continue. <b>Cap resets</b> on 1 Dec 2026; see <a href="#">the budget sheet</a>.</span></span></label><label class="opt"><input type="radio" class="sr-only" name="budget-desktop" value="B"><i class="rd" aria-hidden="true"></i><span class="ot"><b>B · Keep USD 150</b><span class="mdopt">Queue non-urgent runs until <code>1 Dec 2026</code>. <i>No spend change.</i></span></span></label><label class="opt"><input type="radio" class="sr-only" name="budget-desktop" value="C"><i class="rd" aria-hidden="true"></i><span class="ot"><b>C · Raise to USD 175</b><span class="mdopt">Smaller step:<ul><li>re-check on <b>22 Nov 2026</b></li><li>alert stays at 80%</li></ul></span></span></label></div><div class="hint"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Our recommendation stays hidden until you lock your pick.</div><textarea class="ta" name="other-desktop" aria-label="Other: write your own answer or a reason" placeholder="Other: write your own answer or a reason (kept until you send or discard)"></textarea><div class="btns"><button type="button" class="btn p" disabled aria-disabled="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Lock my pick</button></div></div></div><div class="sec">Everything else · collapsed</div><div style="display:flex;flex-direction:column;gap:8px"><button type="button" class="fold" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7"/></svg> Other comments<span class="sp"></span><span class="meta">9</span></button><button type="button" class="fold" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7"/></svg> Activity<span class="sp"></span><span class="meta">12 events</span></button><button type="button" class="fold" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7"/></svg> Sub-issues and linked PRs<span class="sp"></span><span class="meta">2 · 1</span></button></div><div style="margin-top:6px;border:1px dashed var(--faint-foreground);border-radius:12px;padding:10px 14px;color:var(--muted-foreground);font-size:12.5px;display:flex;gap:8px;align-items:center"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg> Floating card hidden here: the full card is on screen, so nothing is drawn twice. It returns when the full card scrolls out (frame j).</div></div>
+<aside class="side" aria-label="Issue properties"><h3>Properties</h3><dl><dt>Status</dt><dd><span class="tag t-open">Need decision</span></dd><dt>Assignee</dt><dd>x99-claude-planner</dd><dt>Project</dt><dd>Cheese Work</dd><dt>Priority</dt><dd>High</dd><dt>Due</dt><dd>16 Nov 2026</dd><dt>Blocks</dt><dd>4 issues</dd></dl><h3 style="margin-top:8px">Decisions here</h3><button type="button" class="fold" aria-expanded="false" aria-label="Decisions here: 1/3 open" style="min-height:36px;padding:6px 10px"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M5 7h14M5 7l-2.5 6a3.2 3.2 0 0 0 5 0zM19 7l-2.5 6a3.2 3.2 0 0 0 5 0z"/></svg> 1/3 open</button></aside></div></main></div><div class="lab">Phone 390 px, and frame notes</div><div class="low"><div class="ph tall" style="height:auto"><div class="top"><button type="button" class="bk" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg></button><h2>CHE-2365</h2><span class="mode">Decision mode</span><span class="sp"></span><button type="button" class="ibtn" aria-label="More actions" style="border:0;background:none"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button></div><div class="body" style="gap:12px;overflow:hidden"><h3 style="font-size:19px;line-height:1.25">Raise the metered model API budget for November</h3><div class="ss">Waiting for Cheese on budget option.</div><button type="button" class="fold" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7"/></svg> Properties<span class="sp"></span><span class="meta">Need decision · High · 16 Nov 2026</span></button><div class="sec">Decision thread · 3 newest of 7</div><button type="button" class="fold" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 15l7-7 7 7"/></svg> Show 4 earlier</button><div><div class="cm"><div class="av">GS</div><div><b>x99-claude-gstack</b><small>15:40 ICT</small><p>Spend is 62% on day 13. <span class="mention">@Cheese</span> needs to pick.</p></div></div><div class="cm"><div class="av">CV</div><div><b>Cheese</b><small>16:11 ICT</small><p>Why not B with a queue?</p></div></div></div><div class="card" id="full-phone"><div class="hd"><span class="tag t-open">Open</span><span class="chip">Spend</span><span class="meta">x99-claude-planner · 13 Nov 2026 14:48 ICT</span><span class="sp"></span><span class="meta">Decision 1/3 in this issue</span></div><div class="bd2"><div class="ask">Raise the metered model API budget from USD 150 to USD 200 for November?</div><div class="seg" role="radiogroup" aria-label="Raise the metered model API budget from USD 150 to USD 200 for November?"><label class="opt focus-demo"><input type="radio" class="sr-only" name="budget-phone" value="A"><i class="rd" aria-hidden="true"></i><span class="ot"><b>A · Raise to USD 200</b><span class="mdopt">Review runs continue. <b>Cap resets</b> on 1 Dec 2026; see <a href="#">the budget sheet</a>.</span></span></label><label class="opt"><input type="radio" class="sr-only" name="budget-phone" value="B"><i class="rd" aria-hidden="true"></i><span class="ot"><b>B · Keep USD 150</b><span class="mdopt">Queue non-urgent runs until <code>1 Dec 2026</code>. <i>No spend change.</i></span></span></label><label class="opt"><input type="radio" class="sr-only" name="budget-phone" value="C"><i class="rd" aria-hidden="true"></i><span class="ot"><b>C · Raise to USD 175</b><span class="mdopt">Smaller step:<ul><li>re-check on <b>22 Nov 2026</b></li><li>alert stays at 80%</li></ul></span></span></label></div><div class="hint"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Our recommendation stays hidden until you lock your pick.</div><textarea class="ta" name="other-phone" aria-label="Other: write your own answer or a reason" placeholder="Other: write your own answer or a reason (kept until you send or discard)"></textarea><div class="btns"><button type="button" class="btn p" disabled aria-disabled="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Lock my pick</button></div></div></div><button type="button" class="fold" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7"/></svg> Everything else<span class="sp"></span><span class="meta">21 items</span></button></div></div><div class="notes"><div class="n"><h3>(i) Issue decision mode · what you see</h3><ul><li>Opening any issue with an open decision for the viewer enters this mode. Header chip: <b>Decision mode</b>. One button, <b>Show all comments</b>, leaves it.</li><li>Visible: title, description, status summary, sidebar, the decision thread with its <b>3 newest messages</b> (<b>Show 4 earlier</b> expands), and the full decision card.</li><li>Collapsed, each openable in place: other comments, activity, sub-issues, linked PRs. No content is deleted.</li><li>It is a filter on the current comment list. It does not wait for CHE-5452.</li><li>Floating card hidden while the full card is on screen. Dashed note is annotation, not UI.</li></ul></div><div class="n"><h3>Option text (Markdown)</h3><div>Options render <b>bold</b>, <i>italic</i>, <code>code</code>, lists and links. Tables, charts, Mermaid, HTML, images and headings are not rendered; they show as plain text. Card above: A has bold and a link, B has code and italic, C has a list.</div></div><div class="n"><h3>Components, tokens, i18n</h3><ul><li><code>packages/views/issues/components/issue-detail.tsx</code> gets a <code>decisionMode</code> filter over the existing comment list; card stays <code>decision-request-card.tsx</code>.</li><li>Markdown: the existing <code>Markdown</code> view with a restricted allow-list (<code>decision-answer-content.tsx</code>).</li><li>Tokens: <code>--info-bg</code> (mode chip), <code>--surface-border</code>, <code>--brand</code> (status summary rule).</li><li>Keys: <code>decisions:mode.label</code>, <code>mode.showAll</code>, <code>mode.showEarlier</code> (count), <code>mode.collapsed.*</code>, <code>mode.progress</code> (<code>1/3</code>). 6-locale parity.</li><li>Phone: properties fold into one row; collapsed rows are 44 px tall.</li><li>Focus: 2 px outline, 2 px offset, token <code>--info</code>, on every control; keyboard order follows reading order.</li></ul></div></div></div>
+</body></html>

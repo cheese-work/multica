@@ -52,7 +52,7 @@ type WakeupAskGuard struct {
 
 // WakeupEventTypes is independent of plugin availability. These facts have
 // transactional capture into matching receipts, including non-HTTP writers.
-var WakeupEventTypes = eventcontract.WakeupTypes
+var WakeupEventTypes = slices.Concat(eventcontract.WakeupTypes, eventcontract.SystemTypes)
 
 type WakeupInput struct {
 	AgentID         string     `json:"agent_id"`
@@ -266,6 +266,16 @@ func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Ti
 			}
 			if !slices.Contains(WakeupEventTypes, e) {
 				return bad("unsupported event: " + e)
+			}
+		}
+		// A system event has no actor, run or issue payload to filter on, and
+		// server.deployed needs a match this input cannot carry yet (S3).
+		if slices.ContainsFunc(in.EventTypes, eventcontract.IsSystem) {
+			if in.FilterAgentID != "" || in.FilterTaskID != "" || in.FilterActorType != "" || in.FilterActorID != "" {
+				return bad("system events take no agent, run or actor filter")
+			}
+			if err := validateSystemWakeupEvents(in.EventTypes, WakeupScopeIssue, "assignee", nil); err != nil {
+				return pgtype.Timestamptz{}, err
 			}
 		}
 		if in.FilterTaskID != "" {
