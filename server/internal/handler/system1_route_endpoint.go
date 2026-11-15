@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"log/slog"
 	"net/http"
 	"unicode/utf8"
@@ -364,7 +365,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := issueToResponse(updated, h.getIssuePrefix(r.Context(), updated.WorkspaceID))
-	h.fillStatusCategory(r.Context(), updated.WorkspaceID, &resp)
+	h.fillStatusCategory(r.Context(), updated.WorkspaceID, projectaccess.Hidden{}, &resp)
 	h.newReadFilter(r).stubDescription(h, updated, &resp)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issue":          resp,
