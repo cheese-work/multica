@@ -128,7 +128,7 @@ function preprocessPlain(input: string): string {
 
 // `<details><summary>S</summary>BODY</details>`. Non-nested: the first
 // `</details>` closes the block, any inner `<details>` tag is stripped.
-const DETAILS_RE = /<details[^>]*>\s*(?:<summary[^>]*>([\s\S]*?)<\/summary>)?([\s\S]*?)<\/details>/gi;
+const DETAILS_RE = /<details[^>]*>\s*(?:<summary[^>]*>([\s\S]*?)<\/summary>)?([\s\S]*?)<\/details>/gid;
 
 // Regions where a `<details>` tag is not real markup: a fenced code block
 // (closed, or open to the end of input) or a whole HTML comment. The leftmost
@@ -154,10 +154,15 @@ export function preprocessMobileMarkdown(input: string): string {
   if (!input) return "";
   let out = "";
   let last = 0;
+  // Locate blocks on the masked copy, but read summary and body from the
+  // original, so fenced code inside a real block survives.
   for (const m of maskProtected(input).matchAll(DETAILS_RE)) {
-    const summary = stripHtml(m[1] ?? "").trim() || "Details";
+    const [summary, body] = [1, 2].map((i) => {
+      const span = m.indices?.[i];
+      return span ? input.slice(span[0], span[1]) : "";
+    });
     out += preprocessPlain(input.slice(last, m.index));
-    out += `\n\n${encodeDetailsMarker(summary, preprocessPlain(m[2] ?? "").trim())}\n\n`;
+    out += `\n\n${encodeDetailsMarker(stripHtml(summary!).trim() || "Details", preprocessPlain(body!).trim())}\n\n`;
     last = m.index + m[0].length;
   }
   return out + preprocessPlain(input.slice(last));

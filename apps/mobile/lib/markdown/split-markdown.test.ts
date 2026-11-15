@@ -78,4 +78,12 @@ describe("splitMarkdown — details block", () => {
     expect(segs[0]?.type).toBe("code");
     expect(textOf(segs)).not.toContain("multica:details:");
   });
+
+  it("keeps fenced code inside a real details body", () => {
+    const input = "<details>\n<summary>Details</summary>\n\n```sh\nCODE_EVIDENCE\n```\n\n</details>";
+    const [seg] = splitMarkdown(preprocessMobileMarkdown(input));
+    if (seg?.type !== "details") throw new Error("expected details segment");
+    expect(seg.body.some((s) => s.type === "code")).toBe(true);
+    expect(textOf(seg.body)).toContain("CODE_EVIDENCE");
+  });
 });
