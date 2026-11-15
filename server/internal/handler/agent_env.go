@@ -2,9 +2,8 @@ package handler
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -25,29 +24,52 @@ import (
 // silently destroy real secrets by saving the masked placeholder.
 const envSentinel = "****"
 
-// agentEnvActivityRevealed and agentEnvActivityUpdated are the
-// activity_log `action` constants for the two env-management
-// endpoints. Stored on rows where `issue_id IS NULL` (env access is not
-// tied to any issue). Owners can later query them — a queryable audit
-// UI is out of scope for this PR, but the rows are written now so the
-// data is captured from day one. Workspace activity history will
-// eventually surface them; for now they're forensic-only.
-const (
-	agentEnvActivityRevealed = "agent_env_revealed"
-	agentEnvActivityUpdated  = "agent_env_updated"
-)
+// agentEnvActivityUpdated is the activity_log `action` for env writes. Stored
+// on rows where `issue_id IS NULL` (env access is not tied to any issue). The
+// former `agent_env_revealed` action is retired: no value leaves the server
+// through these endpoints, so there is nothing to record. Existing rows stay.
+const agentEnvActivityUpdated = "agent_env_updated"
 
 // AgentEnvResponse is the wire shape for the dedicated env-management
 // endpoint. Kept distinct from `AgentResponse` so secrets cannot leak
 // back into the generic agent resource by accident — a future
 // refactor that adds a field to AgentResponse cannot accidentally
 // pull env values along.
+//
+// The facade is write-only (design §8.3, A8a): every value is the "****"
+// marker, on every route.
 type AgentEnvResponse struct {
 	AgentID   string            `json:"agent_id"`
 	CustomEnv map[string]string `json:"custom_env"`
-	// Revision identifies the stored map's exact content; see envRevision.
-	// Additive: clients that predate it ignore it.
+	// Keys lists key names with their source. Always "legacy" until a secret
+	// store exists.
+	Keys []AgentEnvKey `json:"keys"`
+	// Revision is the opaque write counter; see envRevision.
 	Revision string `json:"revision"`
+}
+
+// AgentEnvKey is the metadata for one env key.
+type AgentEnvKey struct {
+	Key    string `json:"key"`
+	Source string `json:"source"`
+}
+
+// newAgentEnvResponse builds the masked wire body for env, whose values are
+// never copied into the response.
+func newAgentEnvResponse(agent db.Agent, env map[string]string) AgentEnvResponse {
+	names := sortedKeys(env)
+	masked := make(map[string]string, len(names))
+	keys := make([]AgentEnvKey, 0, len(names))
+	for _, k := range names {
+		masked[k] = envSentinel
+		keys = append(keys, AgentEnvKey{Key: k, Source: "legacy"})
+	}
+	return AgentEnvResponse{
+		AgentID:   uuidToString(agent.ID),
+		CustomEnv: masked,
+		Keys:      keys,
+		Revision:  envRevision(agent.CustomEnvVersion),
+	}
 }
 
 // UpdateAgentEnvRequest is the wire shape for `PUT
@@ -132,53 +154,16 @@ func canManageAgentEnv(agent db.Agent, member db.Member) bool {
 	return ownerID != "" && ownerID == uuidToString(member.UserID)
 }
 
-// GetAgentEnv returns the plaintext custom_env map for a single agent
-// after gating through authorizeAgentEnv. Every successful read writes
-// an `agent_env_revealed` row to activity_log (keys only, never
-// values) so workspace owners have a trail of who saw which keys.
-//
-// Audit semantics are fail-closed: if we cannot persist the audit row
-// we MUST NOT serve the plaintext. A reveal we cannot record is
-// indistinguishable from an unaudited reveal, which would silently
-// break the MUL-2600 promise of "every reveal leaves a queryable
-// trail". Operators who hit a 500 here see the audit-log outage and
-// can fix it; the alternative — quietly handing out secrets — is
-// invisible.
+// GetAgentEnv returns env metadata for a single agent after gating through
+// authorizeAgentEnv: key names, the source of each, and "****" for every
+// value. No plaintext leaves the server, so no reveal row is written.
 func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
-	agent, member, ok := h.authorizeAgentEnv(w, r)
+	agent, _, ok := h.authorizeAgentEnv(w, r)
 	if !ok {
 		return
 	}
-
-	customEnv := unmarshalCustomEnv(agent)
-
-	revealedKeys := sortedKeys(customEnv)
-	details, _ := json.Marshal(map[string]any{
-		"agent_id":      uuidToString(agent.ID),
-		"agent_name":    agent.Name,
-		"revealed_keys": revealedKeys,
-		"key_count":     len(revealedKeys),
-	})
-	if _, err := h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
-		ID:          dbid.NewV7(),
-		WorkspaceID: agent.WorkspaceID,
-		IssueID:     pgtype.UUID{}, // env access is not tied to an issue
-		ActorType:   pgtype.Text{String: "member", Valid: true},
-		ActorID:     parseUUID(uuidToString(member.UserID)),
-		Action:      agentEnvActivityRevealed,
-		Details:     details,
-	}); err != nil {
-		slog.Error("agent_env_revealed audit write failed; refusing to serve plaintext",
-			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
-		writeError(w, http.StatusInternalServerError, "audit log write failed; refusing to serve env without a recorded reveal")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, AgentEnvResponse{
-		AgentID:   uuidToString(agent.ID),
-		CustomEnv: customEnv,
-		Revision:  envRevision(customEnv),
-	})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, newAgentEnvResponse(agent, unmarshalCustomEnv(agent)))
 }
 
 // UpdateAgentEnv replaces an agent's custom_env wholesale. The **** marker is
@@ -295,11 +280,8 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, AgentEnvResponse{
-		AgentID:   uuidToString(updated.ID),
-		CustomEnv: merged,
-		Revision:  envRevision(merged),
-	})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, newAgentEnvResponse(updated, merged))
 }
 
 // broadcastAgentEnvUpdated publishes the redacted agent:status update after an
@@ -419,11 +401,8 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// envRevision is a content hash of an env map (json.Marshal sorts keys), the
-// token a conditional PATCH compares against. It is only ever returned to
-// callers already authorized to read the plaintext.
-func envRevision(m map[string]string) string {
-	b, _ := json.Marshal(m)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+// envRevision is the token a conditional PATCH compares against: the agent's
+// monotonic custom_env_version, never a hash of the values.
+func envRevision(version int64) string {
+	return fmt.Sprintf("v%d", version)
 }

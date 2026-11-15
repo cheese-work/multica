@@ -502,7 +502,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `copy <agent-id>` | 新しいエージェントとして複製。元のエージェントは変更されません | `--name`（デフォルトは元の名前 + ` (copy)`）、`--runtime-id`（別のランタイムへ複製する場合は `--model` の同時指定が必須）、`--no-skills`；`custom_env`、`mcp_config`、`runtime_config` などの機密設定は複製されないため、`create` と同じフラグで再指定してください |
 | | `tasks <id>` | エージェントの実行を表示 | |
 | | `avatar <id>` | アバターをアップロード | |
-| | `env get/set <agent-id>` | カスタム環境変数の読み書き（エージェントの所有者、またはワークスペースの owner/admin。読み取りはすべて記録される） | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
+| | `env get/set <agent-id>` | カスタム環境変数の書き込みとキーの一覧（エージェントの所有者、またはワークスペースの owner/admin）。値は返されません。`get` は各キーとそのソースを表示し、`set`/`patch` のレスポンスはすべての値をマスクします | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
 | | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
 | `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可）, `--script`, `--arg` |
