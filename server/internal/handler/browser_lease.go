@@ -160,7 +160,6 @@ func (h *Handler) RenewBrowserLease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, browserLeaseResponseOf(res))
 }
 
-
 // SteelBrowserPluginKey is the manifest key of the plugin that turns Steel leases on
 // (plugins/steel-browser, CHE-4730). Disabling or uninstalling it revokes every lease.
 const SteelBrowserPluginKey = "work.cheese.steel-browser"
