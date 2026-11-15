@@ -99,6 +99,11 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 		hints = append(hints, cannotDoHints...)
+		lintHints, ok := checkCardLint(writer, parsed, input.EscalationClass, workspace.Settings)
+		if !ok {
+			return
+		}
+		hints = append(hints, lintHints...)
 	}
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {

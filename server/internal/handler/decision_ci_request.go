@@ -101,6 +101,11 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	lintHints, ok := checkCardLint(w, parsed, "deploy", workspace.Settings)
+	if !ok {
+		return
+	}
+	hints = append(hints, lintHints...)
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask})) > maxCommentContentBytes {
 		writeError(w, http.StatusBadRequest, "ask is too long")
