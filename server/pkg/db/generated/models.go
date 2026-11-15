@@ -2142,6 +2142,7 @@ type Issue struct {
 	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
 	MaxRunsOverride         pgtype.Int4        `json:"max_runs_override"`
 	DescriptionExternalRead bool               `json:"description_external_read"`
+	CreatedVia              pgtype.Text        `json:"created_via"`
 }
 
 type IssueCheckpoint struct {
