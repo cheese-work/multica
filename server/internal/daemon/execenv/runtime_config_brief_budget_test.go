@@ -35,7 +35,7 @@ func TestIssueBriefStaysInsideByteBudget(t *testing.T) {
 func TestWorkflowPointsAtMovedProcedure(t *testing.T) {
 	t.Parallel()
 	ctx := TaskContextForEnv{IssueID: "issue-1", AgentID: "a-1", AgentName: "Eve",
-		AgentSkills: []SkillContextForEnv{{Name: platformSkillName}}}
+		AgentSkills: []SkillContextForEnv{platformSkillFixture()}}
 	brief := buildMetaSkillContent("claude", ctx)
 	if !strings.Contains(brief, "references/issue-turn.md") {
 		t.Errorf("workflow lost the pointer to the moved procedure\n---\n%s", brief)
