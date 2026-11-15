@@ -1,0 +1,32 @@
+# Device profiles (CHE-5793 C1). Locks, goldens and Live frames key on the profile id.
+# Fields: id, platform (web | desktop | android | ios), width x height in CSS px, dpr, themes, font_pack.
+# The card-* and phone-* widths are the columns design/decision-card/approved/direction-b.html draws.
+profiles:
+  - id: card-540
+    platform: web
+    width: 540
+    height: 900
+    dpr: 1
+    themes: [dark]
+    font_pack: inter-dejavu-noto
+  - id: dm-card-520
+    platform: web
+    width: 520
+    height: 900
+    dpr: 1
+    themes: [dark]
+    font_pack: inter-dejavu-noto
+  - id: phone-358
+    platform: web
+    width: 358
+    height: 800
+    dpr: 3
+    themes: [dark]
+    font_pack: inter-dejavu-noto
+  - id: web-1440
+    platform: web
+    width: 1440
+    height: 900
+    dpr: 1
+    themes: [light, dark]
+    font_pack: inter-dejavu-noto

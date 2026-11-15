@@ -12,7 +12,7 @@ import { api } from "@/data/api";
  * runs, so a status is never written blind: the server previews the change,
  * the person confirms what it shows when it hands off, and the write carries
  * the binding of what was previewed. The server refuses (409
- * `handoff_preview_stale`) when the issue or its workflow moved since.
+ * `stale_preview`) when the issue or its workflow moved since.
  * Mirrors `previewBinding` and the status picker in packages/views.
  */
 
