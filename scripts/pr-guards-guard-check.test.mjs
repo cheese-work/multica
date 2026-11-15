@@ -104,8 +104,22 @@ function run(env) {
   return { ...res, calls };
 }
 
-test("no review policy: fail closed with exit 2 and never call the CLI", () => {
+// CHE-5934: no stored policy exists, so both variables are unset. The CLI then applies the compiled default policy,
+// the same one the daemon's guard uses when no policy is stored (guard.PolicyFromEnv). The check still judges the PR.
+test("neither variable set: the CLI runs on the compiled default policy, with no policy env, and a notice says so", () => {
   const r = run({ GUARD_POLICY_JSON: "", GUARD_POLICY_SHA256: "" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /::notice::.*compiled default/);
+  assert.match(r.calls, /args=guard check-pr https:\/\/github\.com\/o\/r\/pull\/7 -R o\/r policy= sha= /);
+});
+
+test("neither variable set: a broken rule still fails the check", () => {
+  const r = run({ GUARD_POLICY_JSON: "", GUARD_POLICY_SHA256: "", FAKE_EXIT: "1" });
+  assert.equal(r.status, 1);
+});
+
+test("a digest with no policy: fail closed with exit 2 and never call the CLI", () => {
+  const r = run({ GUARD_POLICY_JSON: "", GUARD_POLICY_SHA256: "abc123" });
   assert.equal(r.status, 2);
   assert.match(r.stdout + r.stderr, /::error::.*GUARD_POLICY_JSON/);
   assert.equal(r.calls, "");
