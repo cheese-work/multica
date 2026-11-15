@@ -280,13 +280,23 @@ func (s *Service) Renew(ctx context.Context, ws, task, lease pgtype.UUID) (Resul
 	if err != nil {
 		return res, err
 	}
-	if _, err := s.check(ctx, subj); err != nil {
+	limit, err := s.check(ctx, subj)
+	if err != nil {
 		if isHookDenial(err) {
 			if endErr := s.endActive(ctx, l, endRevalidation); endErr != nil {
 				return res, endErr
 			}
 		}
 		return res, err
+	}
+	// A decision shortened since the grant caps the lease from now on; the limit never grows.
+	if limit.Before(l.ExpiresAt.Time) {
+		if err := s.Queries.ShortenBrowserLeaseExpiry(ctx, db.ShortenBrowserLeaseExpiryParams{
+			ID: l.ID, WorkspaceID: l.WorkspaceID, ExpiresAt: ts(limit),
+		}); err != nil {
+			return res, err
+		}
+		res.Lease.ExpiresAt = ts(limit)
 	}
 	return s.issueToken(ctx, res)
 }

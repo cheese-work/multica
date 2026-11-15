@@ -278,6 +278,49 @@ func TestLeaseLimitIsTheShorterDecisionExpiry(t *testing.T) {
 	}
 }
 
+func TestRenewPersistsAShortenedDecisionAndNeverExtendsTheHardLimit(t *testing.T) {
+	e := newEnv(t, "c00-1")
+	long := e.now.Add(90 * time.Minute)
+	e.hooks.decisionExp = &long
+	res, _ := e.mint(e.profile(ClassS2))
+	hard := res.Lease.ExpiresAt.Time
+	if !hard.Equal(long) {
+		t.Fatalf("lease limit = %v, want %v", hard, long)
+	}
+	// The decision is shortened to 10 minutes from now; renew must cap and persist it.
+	short := e.now.Add(10 * time.Minute)
+	e.hooks.decisionExp = &short
+	e.now = e.now.Add(5 * time.Minute)
+	got, err := e.svc.Renew(context.Background(), e.ws, res.Lease.TaskID, res.Lease.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TokenExpires.Equal(short) {
+		t.Fatalf("token exp = %v, want capped at shortened decision %v", got.TokenExpires, short)
+	}
+	if l := e.lease(res.Lease.ID); !l.ExpiresAt.Time.Equal(short) {
+		t.Fatalf("stored limit = %v, want persisted %v", l.ExpiresAt.Time, short)
+	}
+	// A later, longer decision must not extend the stored limit.
+	longer := e.now.Add(80 * time.Minute)
+	e.hooks.decisionExp = &longer
+	got, err = e.svc.Renew(context.Background(), e.ws, res.Lease.TaskID, res.Lease.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TokenExpires.Equal(short) {
+		t.Fatalf("token exp = %v, want still %v", got.TokenExpires, short)
+	}
+	if l := e.lease(res.Lease.ID); !l.ExpiresAt.Time.Equal(short) {
+		t.Fatalf("stored limit = %v, want unextended %v", l.ExpiresAt.Time, short)
+	}
+	// Past the shortened deadline the lease ends as expired.
+	e.now = short.Add(time.Second)
+	if _, err := e.svc.Renew(context.Background(), e.ws, res.Lease.TaskID, res.Lease.ID); !errors.Is(err, ErrLeaseEnded) {
+		t.Fatalf("err = %v, want ErrLeaseEnded", err)
+	}
+}
+
 func TestQueueIsFirstInFirstOutAndAdvancesOnlyAfterAck(t *testing.T) {
 	e := newEnv(t, "x99-1")
 	p := e.profile(ClassS0)
