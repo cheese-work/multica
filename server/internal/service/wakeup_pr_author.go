@@ -100,40 +100,55 @@ func prResolverReceipts(ctx context.Context, queries *db.Queries, issue db.Issue
 	return matched, nil
 }
 
-// prNoticeScope is what one member notice settles (CHE-5901): the stored events
-// its receipts carry, which then stop being offered to the bridge, and the key
-// of the one unread row per issue and pull request, taken from the newest
-// receipt like the notice facts. A receipt that names no pull request in the
-// workspace gives no key.
-func prNoticeScope(ctx context.Context, queries *db.Queries, issue db.Issue, receipts []db.IssueWakeupReceipt) (pgtype.Text, []pgtype.UUID, error) {
-	var events []pgtype.UUID
-	var key pgtype.Text
-	for i, receipt := range receipts {
+// prNotice is one member notice (CHE-5901): the receipts of one pull request,
+// the stored events they carry (which stop being offered to the bridge once the
+// notice is written), and the key of the one unread row per issue and pull
+// request. A receipt that names no pull request in the workspace gives no key.
+type prNotice struct {
+	Receipts []db.IssueWakeupReceipt
+	Events   []pgtype.UUID
+	Key      pgtype.Text
+}
+
+// prNotices splits the receipts of one wake into one notice per pull request,
+// in first-seen order, so two pull requests batched in one wake are never
+// settled by one row. Receipts that name no pull request form one notice
+// without a key.
+func prNotices(ctx context.Context, queries *db.Queries, issue db.Issue, receipts []db.IssueWakeupReceipt) ([]prNotice, error) {
+	type pullRef struct {
+		owner, repo string
+		number      int32
+	}
+	var notices []prNotice
+	at := map[pullRef]int{}
+	for _, receipt := range receipts {
 		var payload struct {
 			EventID   pgtype.UUID `json:"event_id"`
 			RepoOwner string      `json:"repo_owner"`
 			RepoName  string      `json:"repo_name"`
 			Number    int32       `json:"pr_number"`
 		}
-		if json.Unmarshal(receipt.Payload, &payload) != nil {
-			continue
+		_ = json.Unmarshal(receipt.Payload, &payload)
+		ref := pullRef{payload.RepoOwner, payload.RepoName, payload.Number}
+		i, seen := at[ref]
+		if !seen {
+			i = len(notices)
+			at[ref] = i
+			notices = append(notices, prNotice{})
+			pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+				WorkspaceID: issue.WorkspaceID, RepoOwner: ref.owner, RepoName: ref.repo, PrNumber: ref.number,
+			})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return nil, err
+			}
+			if err == nil {
+				notices[i].Key = pgtype.Text{String: "pr_fyi:" + util.UUIDToString(issue.ID) + ":" + util.UUIDToString(pull.ID), Valid: true}
+			}
 		}
+		notices[i].Receipts = append(notices[i].Receipts, receipt)
 		if payload.EventID.Valid {
-			events = append(events, payload.EventID)
+			notices[i].Events = append(notices[i].Events, payload.EventID)
 		}
-		if i != len(receipts)-1 {
-			continue
-		}
-		pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
-			WorkspaceID: issue.WorkspaceID, RepoOwner: payload.RepoOwner, RepoName: payload.RepoName, PrNumber: payload.Number,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return key, nil, err
-		}
-		key = pgtype.Text{String: "pr_fyi:" + util.UUIDToString(issue.ID) + ":" + util.UUIDToString(pull.ID), Valid: true}
 	}
-	return key, events, nil
+	return notices, nil
 }

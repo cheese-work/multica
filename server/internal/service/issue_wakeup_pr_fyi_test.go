@@ -110,3 +110,27 @@ func TestNotifiedBackfillKeepsOneNoticePerEvent(t *testing.T) {
 		t.Fatalf("backfill left %d unarchived notices for the event, want 1", inbox)
 	}
 }
+
+func TestTwoPRsBatchedInOneWakeKeepOneNoticeEach(t *testing.T) {
+	e := newPREventEnv(t)
+	e.holdByMember(t)
+	var other string
+	e.f.QueryRow(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha)
+		VALUES ($1, 1, 'acme', 'widget', 904, 'second', 'open', 'https://example.test/pr2', now(), now(), 'other-head') RETURNING id`, e.f.WorkspaceID).Scan(&other)
+	e.f.Cleanup(t, `DELETE FROM github_pull_request WHERE id=$1`, other)
+	e.f.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id=$1`, other)
+	e.f.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, e.issue, other)
+	e.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key)
+		VALUES ($1,$2,$3,'head_changed','other-head','base-1', now() - interval '1 day','head_changed|other-head')`, e.f.WorkspaceID, e.issue, other)
+
+	for range 3 {
+		e.tickAll(t, e.s)
+	}
+
+	if inbox, _ := e.notices(t); inbox != 2 {
+		t.Fatalf("two PRs in one wake left %d unread notices, want 2 (one per PR)", inbox)
+	}
+	if got := e.f.Count(t, `SELECT count(*) FROM issue_pr_event WHERE issue_id=$1 AND status='notified'`, e.issue); got != 2 {
+		t.Fatalf("%d events are notified, want 2", got)
+	}
+}
