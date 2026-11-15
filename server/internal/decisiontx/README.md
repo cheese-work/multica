@@ -454,6 +454,14 @@ defaults, not permission to change a person's notification preferences.
 
 ## Decision-bound writes
 
+A card cannot authorize a write to a passkey-only field (`workflow.steps`,
+`workflow.instructions`, `workspace.context`, `squad.instructions`,
+`agent.instructions`; CHE-3482). `RequestDecision` refuses a plain "Apply this
+change to <field>?" card for them with 400 `bound_write_card_refused`, and the
+CLI refuses `--decision-id` on them; both name the `multica config propose`
+command (`PasskeyOnlyCommand`). The rest of this section covers the fields a
+card still authorizes.
+
 A governed write by an agent is approved by a card whose ask is built with
 `BoundWriteDecision(field, before_sha256, after_sha256)` and whose options
 include one labelled exactly `ApproveWriteLabel` ("Approve write"). The server

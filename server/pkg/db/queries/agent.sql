@@ -970,7 +970,8 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 -- a task is only claimable when no other task for the same issue AND same agent is
 -- already dispatched or running. This allows different agents to work on the same
 -- issue in parallel while preventing a single agent from running duplicate tasks.
--- Chat tasks (issue_id IS NULL) use chat_session_id for serialization instead.
+-- Chat tasks (issue_id IS NULL) serialize per DM (chat_session_id) whatever their
+-- agent: at most one active task per DM (CHE-2894).
 -- Quick-create tasks have no issue / chat / autopilot link, so they serialize on
 -- "any other quick-create-shaped task" (all four FKs NULL) for the same agent —
 -- otherwise a user mashing the create button could fire concurrent quick-creates
@@ -1049,7 +1050,6 @@ WHERE id = (
             AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
             AND (
               (atq.issue_id IS NOT NULL AND active.issue_id = atq.issue_id)
-              OR (atq.chat_session_id IS NOT NULL AND active.chat_session_id = atq.chat_session_id)
               OR (
                 atq.issue_id IS NULL
                 AND atq.chat_session_id IS NULL
@@ -1059,6 +1059,18 @@ WHERE id = (
                 AND active.autopilot_run_id IS NULL
               )
             )
+      )
+      -- One active task per DM whatever its agent (CHE-2894 atomic admission);
+      -- idx_agent_task_queue_one_active_per_chat decides the concurrent case.
+      -- Only this alternative ignores the agent: issue and quick-create tasks
+      -- of different agents still run in parallel.
+      AND (
+          atq.chat_session_id IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM agent_task_queue active
+              WHERE active.chat_session_id = atq.chat_session_id
+                AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
       )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1

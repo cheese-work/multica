@@ -93,7 +93,14 @@ membership, authorization and one-ping-per-person checks still apply.
   "recommended_option": "DEPLOY TOMORROW",
   "default_if_no_reply": "Do not deploy. Keep the current version running.",
   "source_issue_id": "11111111-1111-4111-8111-111111111111",
-  "source_comment_id": "22222222-2222-4222-8222-222222222222"
+  "source_comment_id": "22222222-2222-4222-8222-222222222222",
+  "state_claims": [
+    {
+      "claim": "Release PR 12 is ready and CI is green.",
+      "readback_command": "gh pr view 12 --json isDraft,statusCheckRollup",
+      "observed_at": "2026-11-15T09:30:00+07:00"
+    }
+  ]
 }
 ```
 
@@ -120,6 +127,18 @@ the comment. `GET /api/decisions/{id}/artifacts` returns each artifact with its
 file card and, when it supersedes an earlier text attachment, the changed
 hunks only (`diff.hunks`, lines prefixed ` `, `-` or `+`). `diff.problem` is
 `not_text`, `too_large` or `unavailable` when no hunks can be shown.
+
+`state_claims[]` (CHE-5950) lists each statement about live state (a PR, a
+deploy, an issue status) the ask relies on. Each entry needs a `claim`, the
+`readback_command` that reads it, and `observed_at`, an RFC 3339 time with an
+offset for when the sender ran that command. An ask with no entry, a blank
+field, a time that is not RFC 3339, a time in the future (more than 5 minutes
+ahead of the server) or a time more than 2 hours old is refused, for decision
+and action asks alike. The server checks shape and time only: it cannot tell
+whether the list is complete or the claim true. The card shows the entries
+under Details. Asks the server builds itself (run-budget cards) are exempt.
+Revert: drop `state_claims` from `askFields`, `actionFields` and the two
+`validateStateClaims` calls in `server/internal/decisiontx/ask.go`.
 
 Advisory lint: the CLI prints a `hint:` line on stderr, and the API returns
 `hints[]`, when `context_eli10`, `stakes_if_wrong` or an option's

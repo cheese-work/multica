@@ -52,7 +52,7 @@ func TestEntryGateDoesNotBindWorkflowRemap(t *testing.T) {
 	projectID := createWorkflowTestProject(t, "Remap gate project")
 	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
 	stuck := dbfx.Issue(t, "stuck", testutil.Cols{"project_id": projectID, "status": "blocked"})
-	req := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{
+	req := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{
 		"steps":          statusSteps("backlog", "todo", "in_progress", "in_review"),
 		"status_mapping": map[string]string{"blocked": "in_review"},
 	}), "id", wf.ID)
@@ -76,7 +76,7 @@ func TestEntryGatesSurviveAnOlderClientSave(t *testing.T) {
 	save := func(steps []map[string]any) IssueWorkflowResponse {
 		t.Helper()
 		var out IssueWorkflowResponse
-		req := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{"steps": steps}), "id", wf.ID)
+		req := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{"steps": steps}), "id", wf.ID)
 		testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusOK).JSON(&out)
 		return out
 	}

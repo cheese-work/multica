@@ -41,6 +41,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/awakeclock"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -9044,6 +9045,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
+	// Reserve the trusted name in the exact shell allowlist. The backend assigns
+	// a fresh opaque ID per launch attempt before it starts the process.
+	if provider == "codex" {
+		agentEnv["MULTICA_RUN_BINDING_ID"] = ""
+	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, agent.BaseEnviron(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
@@ -9078,6 +9084,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+	}
+	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
+		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
 	}
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can

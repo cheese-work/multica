@@ -438,6 +438,15 @@ WHERE workspace_id = $1
 ORDER BY created_at ASC
 LIMIT 1;
 
+-- name: FindIssueByNormalizedTitle :one
+-- Any issue, open or closed, whose title matches. Used to refuse a second
+-- dated autopilot issue (CHE-5757).
+SELECT i.* FROM issue i
+WHERE i.workspace_id = $1
+  AND lower(btrim(regexp_replace(i.title, '[[:space:]]+', ' ', 'g'))) = sqlc.arg('normalized_title')
+ORDER BY i.created_at ASC
+LIMIT 1;
+
 -- name: FindRecentAutopilotDuplicateIssue :one
 SELECT i.* FROM issue i
 WHERE i.workspace_id = $1
