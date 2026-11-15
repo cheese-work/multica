@@ -35,3 +35,23 @@ WHERE id = $1 AND workspace_id = $2;
 SELECT * FROM browser_lease
 WHERE instance_id = $1 AND workspace_id = $2
   AND state <> 'queued' AND cleanup_acked_at IS NULL;
+
+-- name: LockBrowserInstance :one
+-- Serializes cleanup-ack, quarantine and grant on one instance (CHE-4736, W3-7).
+SELECT * FROM browser_instance
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
+-- name: SetBrowserInstancePhase :one
+UPDATE browser_instance
+SET phase = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;
+
+-- name: AckBrowserLeaseCleanup :one
+-- Stamps cleanup-ack on the ended lease that still holds the instance, for the given epoch only.
+UPDATE browser_lease
+SET cleanup_acked_at = clock_timestamp()
+WHERE instance_id = $1 AND workspace_id = $2 AND epoch = $3
+  AND state = 'ended' AND cleanup_acked_at IS NULL
+RETURNING *;
