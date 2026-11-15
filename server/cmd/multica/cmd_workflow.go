@@ -22,10 +22,12 @@ import (
 // to the workflow owner and workspace admins, switching a project's workflow
 // to admins and the project lead. The CLI reports the server's error as is.
 //
-// Only step and handoff edits (update --steps-file, set-instructions, handoff
-// set) take --decision-id/--print-hash, the CHE-2448 decision-bound path an
-// agent task token needs. create, delete and project workflow set carry no
-// such flags and the server refuses machine credentials on them.
+// A step or handoff edit (update --steps-file, set-instructions, handoff set)
+// needs a passkey-approved action: --decision-id on them stops with the
+// "config propose" command (CHE-5843). Only the run budget (update
+// --max-runs-per-issue) still takes --decision-id. create, delete and project
+// workflow set carry no such flags and the server refuses machine credentials
+// on them.
 
 var workflowCmd = &cobra.Command{
 	Use:   "workflow",
@@ -219,7 +221,7 @@ func init() {
 	workflowSetInstructionsCmd.Flags().String("file", "", "File holding the new instructions text (required)")
 	workflowSetInstructionsCmd.Flags().String("output", "json", "Output format: table or json")
 	for _, c := range []*cobra.Command{workflowUpdateCmd, workflowSetInstructionsCmd, workflowHandoffSetCmd} {
-		c.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. The CLI sends decision_id, before_sha256 and after_sha256 and takes the steps from the live workflow read. Agent task tokens only.")
+		c.Flags().String("decision-id", "", "Run-budget decision: id of the workflow.budget decision the owner answered for this exact change (update --max-runs-per-issue/--include-child-prs only). Steps and instructions need a passkey action: this flag stops with the \"multica config propose\" command.")
 		c.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing")
 	}
 
@@ -700,6 +702,14 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if len(body) == 0 {
 		return errors.New("nothing to update; provide --name, --description, --steps-file, --max-runs-per-issue, --include-child-prs and/or --start-status")
 	}
+	_, stepsWrite := body["steps"]
+	_, capWrite := body["max_runs_per_issue"]
+	_, childWrite := body["include_child_prs"]
+	if stepsWrite && !capWrite && !childWrite {
+		if err := refusePasskeyOnlyDecisionID(cmd, "workflow.steps", args[0], ""); err != nil {
+			return err
+		}
+	}
 	if cmd.Flags().Changed("lint-override") {
 		reason, _ := cmd.Flags().GetString("lint-override")
 		if strings.TrimSpace(reason) == "" {
@@ -791,6 +801,9 @@ func runWorkflowSetInstructions(cmd *cobra.Command, args []string) error {
 	path, _ := cmd.Flags().GetString("file")
 	if status == "" || path == "" {
 		return errors.New("--status and --file are required")
+	}
+	if err := refusePasskeyOnlyDecisionID(cmd, "workflow.instructions", args[0], status); err != nil {
+		return err
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
@@ -885,6 +898,9 @@ func runWorkflowHandoffSet(cmd *cobra.Command, args []string) error {
 	statusKey := strings.TrimSpace(args[1])
 	if cmd.Flags().Changed("instructions") && cmd.Flags().Changed("instructions-file") {
 		return fmt.Errorf("use either --instructions or --instructions-file, not both")
+	}
+	if err := refusePasskeyOnlyDecisionID(cmd, "workflow.steps", args[0], ""); err != nil {
+		return err
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err

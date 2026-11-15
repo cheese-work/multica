@@ -61,8 +61,9 @@ multica workflow update <workflow-id> --max-runs-per-issue 30 --include-child-pr
 
 Always read the printed readback. A rejected steps array changes nothing.
 
-An agent task token may write steps only through a decision-bound write
-(`--decision-id`, dry run `--print-hash`); see `decisions.md`.
+An agent task token cannot write steps or step instructions. Propose the
+change with `multica config propose workflow.steps` or `workflow.step.instructions`
+and post it with `multica decision request --action-file`; see `decisions.md`.
 
 An instruction edit changes what every future run on every issue in the
 workflow is told, so it is a standing-instruction change: follow the
