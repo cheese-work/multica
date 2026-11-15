@@ -88,6 +88,7 @@ func runProgressUpdate(t *testing.T, srv *progressServer, oldServer bool, progre
 	d.cancelFunc = func() {}
 	downloadingUpdate(t)
 	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: "v9.9.9"})
+	d.updateOutbox.Wait()
 	return d, &logs
 }
 
