@@ -25,8 +25,17 @@ func prResolverTarget(ctx context.Context, queries *db.Queries, issue db.Issue, 
 		return wakeTarget{}, err
 	}
 	target, found, err := prAuthorTarget(ctx, queries, issue, payload.RepoOwner, payload.RepoName, payload.Number)
-	if err != nil || found {
+	if err != nil {
 		return target, err
+	}
+	if found && receipt.EventType == "pr.checks_passed" {
+		// A green the author does not hold goes to the assignee (CHE-6070).
+		if assignee, err := resolveWakeTarget(ctx, queries, issue); err != nil || assignee.Agent.ID.Valid && assignee.Agent.ID != target.Agent.ID {
+			return assignee, err
+		}
+	}
+	if found {
+		return target, nil
 	}
 	return resolveWakeTarget(ctx, queries, issue)
 }
@@ -56,19 +65,39 @@ func prAuthorTarget(ctx context.Context, queries *db.Queries, issue db.Issue, ow
 	return wakeTarget{Type: "agent", ID: author.ID, Agent: author}, true, nil
 }
 
-// prAuthorNotOwner reports whether the PR's author agent differs from the agent
-// that holds the issue (the assignee, or the assignee squad's leader). With no
-// resolvable author the assignee is the target, so the answer is false.
-func prAuthorNotOwner(ctx context.Context, queries *db.Queries, issue db.Issue, owner, repo string, number int32) (bool, error) {
-	author, found, err := prAuthorTarget(ctx, queries, issue, owner, repo, number)
+// prGreenRoute decides who a green head wakes. notOwner is true when the PR's
+// author agent differs from the agent that holds the issue (the assignee, or the
+// assignee squad's leader); with no resolvable author the assignee is the
+// target, so notOwner is false. wakeAssignee is true when the holder is an agent
+// with no active or queued run on the issue and no run since the head was pushed
+// (dispatch then targets the assignee); otherwise a not-owner green is dropped.
+func prGreenRoute(ctx context.Context, tx pgx.Tx, queries *db.Queries, issue db.Issue, in PullRequestWakeupInput) (notOwner, wakeAssignee bool, err error) {
+	author, found, err := prAuthorTarget(ctx, queries, issue, in.RepoOwner, in.RepoName, in.Number)
 	if err != nil || !found {
-		return false, err
+		return false, false, err
 	}
 	assignee, err := resolveWakeTarget(ctx, queries, issue)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	return assignee.Agent.ID != author.Agent.ID, nil
+	if assignee.Agent.ID == author.Agent.ID {
+		return false, false, nil
+	}
+	if !assignee.Agent.ID.Valid {
+		return true, false, nil
+	}
+	// ponytail: the head's push time is not stored; the earliest check-suite
+	// update on the head stands in for it. A reviewer who started between push
+	// and that first suite update still counts as having run after the push.
+	var covered bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_task_queue t
+		WHERE t.issue_id=$1 AND t.agent_id=$2 AND (
+			t.status IN ('queued','dispatched','running','waiting_local_directory')
+			OR t.created_at > COALESCE((SELECT min(cs.updated_at) FROM github_pull_request_check_suite cs
+				JOIN github_pull_request p ON p.id=cs.pr_id
+				WHERE p.workspace_id=$3 AND p.repo_owner=$4 AND p.repo_name=$5 AND p.pr_number=$6 AND cs.head_sha=$7), 'infinity')))`,
+		issue.ID, assignee.Agent.ID, issue.WorkspaceID, in.RepoOwner, in.RepoName, in.Number, in.HeadSHA).Scan(&covered)
+	return true, !covered, err
 }
 
 func prResolverReceipts(ctx context.Context, queries *db.Queries, issue db.Issue, target wakeTarget, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, error) {
