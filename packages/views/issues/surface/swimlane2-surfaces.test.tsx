@@ -100,18 +100,18 @@ async function openPopup(user: ReturnType<typeof userEvent.setup>) {
 }
 
 const surfaces = [
-  { name: "Issues", scope: { type: "workspace", actorKind: "all" } as IssueScope, modes: WORKSPACE_ISSUE_MODES, scopeOnWire: { kind: "workspace" }, gantt: false },
-  { name: "My Issues", scope: { type: "my", userId: "user-1", relation: "assigned" } as IssueScope, modes: MY_ISSUE_MODES, scopeOnWire: { kind: "my", relation: "assigned" }, gantt: false },
-  { name: "Project", scope: { type: "project", projectId: "p1" } as IssueScope, modes: PROJECT_ISSUE_MODES, scopeOnWire: { kind: "project", project_id: "p1" }, gantt: true },
+  { name: "Issues", scope: { type: "workspace", actorKind: "all" } as IssueScope, modes: WORKSPACE_ISSUE_MODES, scopeOnWire: { kind: "workspace" } },
+  { name: "My Issues", scope: { type: "my", userId: "user-1", relation: "assigned" } as IssueScope, modes: MY_ISSUE_MODES, scopeOnWire: { kind: "my", relation: "assigned" } },
+  { name: "Project", scope: { type: "project", projectId: "p1" } as IssueScope, modes: PROJECT_ISSUE_MODES, scopeOnWire: { kind: "project", project_id: "p1" } },
 ];
 
-describe.each(surfaces)("Swimlane 2.0 on $name", ({ scope, modes, scopeOnWire, gantt }) => {
+describe.each(surfaces)("Swimlane 2.0 on $name", ({ scope, modes, scopeOnWire }) => {
   it("lists Swimlane 2.0 first and leaves the upstream modes in place", async () => {
     const user = userEvent.setup();
     renderWithI18n(surface(scope, modes, new QueryClient({ defaultOptions: { queries: { retry: false } } })));
     const group = await openPopup(user);
     const labels = group.getAllByRole("button").map((b) => b.textContent);
-    expect(labels).toEqual(["Swimlane 2.0", "Board", "List", "Table", "Swimlane", ...(gantt ? ["Gantt"] : [])]);
+    expect(labels).toEqual(["Swimlane 2.0", "Board", "List", "Table", "Swimlane", "Gantt"]);
   });
 
   it("selecting it renders the new renderer and sends the page scope in the timeline request", async () => {

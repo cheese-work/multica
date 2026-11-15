@@ -4278,6 +4278,10 @@ type UpdateIssueRequest struct {
 	// HandoffCommentID names the comment that explains a status move. The
 	// status history keeps it only when the comment belongs to the issue.
 	HandoffCommentID *string `json:"handoff_comment_id,omitempty"`
+	// HandoffAssignee hands this one status move to the named assignee instead
+	// of the step's handler. Valid only with a status change into a step that
+	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
+	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -4301,7 +4305,7 @@ type UpdateIssueRequest struct {
 	// (MUL-7420)
 	StopPreviousAssigneeRuns bool `json:"stop_previous_assignee_runs,omitempty"`
 	// HandoffPreview is what the handoff confirmation showed. When the write
-	// hands off, it is refused with 409 handoff_preview_stale unless the issue's
+	// hands off, it is refused with 409 stale_preview unless the issue's
 	// assignee and the resolved handler still match it. A binding with a null
 	// handler records a preview that found no handoff, so a handler that became
 	// resolvable since is refused too. Optional; single updates only. Omitted,
@@ -4799,7 +4803,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		req.EntryGateOverrideReason = &reason
 	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings})
+	handoffAssignee, ok := parseHandoffAssignee(w, req.HandoffAssignee)
+	if !ok {
+		return
+	}
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4822,7 +4830,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
-			writeError(w, status, msg)
+			writeHandoffAssigneeRefusal(w, handoff, status, msg)
 			return
 		}
 	}
@@ -4839,6 +4847,24 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	suppressRun := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	writeCtx = withBudgetActor(writeCtx, r)
+	// The handoff comment rides to the run as context. A run that will start
+	// refuses a comment that is not a live comment of this issue; a move that
+	// starts no run keeps the lenient drop-and-mark of the status history.
+	dispatchCtx := h.actingTaskContext(r)
+	if req.HandoffCommentID != nil && !suppressRun {
+		ok, err := service.HandoffCommentBelongsTo(r.Context(), h.Queries, prevIssue, *req.HandoffCommentID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check handoff comment")
+			return
+		}
+		switch {
+		case ok:
+			dispatchCtx = service.WithStatusHandoffComment(dispatchCtx, parseUUID(*req.HandoffCommentID))
+		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
+			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
+			return
+		}
+	}
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -4869,7 +4895,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		if handoff != nil {
-			statusRec.handoffWorkflow = handoff.def.Name
+			statusRec.enterHandoff(handoff)
 		}
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
@@ -5080,7 +5106,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, handoffNote) {
+		if h.dispatchIssueRun(dispatchCtx, issue, trigger, actorType, actorID, handoffNote) {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
 	}
@@ -5598,6 +5624,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "handoff_preview in a batch update must bind no handoff (null handler)")
 		return
 	}
+	if req.Updates.HandoffAssignee != nil {
+		writeErrorCode(w, http.StatusBadRequest, "handoff_assignee_not_applicable", "handoff_assignee is not accepted in a batch update")
+		return
+	}
 
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
@@ -5871,7 +5901,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
 			if handoff != nil {
-				statusRec.handoffWorkflow = handoff.def.Name
+				statusRec.enterHandoff(handoff)
 			}
 			writeCtx = withStatusRecord(writeCtx, statusRec)
 		}
