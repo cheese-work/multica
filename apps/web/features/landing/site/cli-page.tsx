@@ -58,11 +58,9 @@ function Hero() {
 const INSTALL: { title: string; body: string; code: CodeVariant[] }[] = [
   {
     title: "Install it",
-    body: "One line in a terminal on macOS and Linux, or in PowerShell on Windows. Homebrew works too.",
+    body: "One line in a terminal on macOS and Linux. The script comes from your Multica server and installs its own build.",
     code: [
-      { label: "macOS / Linux", code: "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash" },
-      { label: "Windows", code: "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex" },
-      { label: "Homebrew", code: "brew install multica-ai/tap/multica" },
+      { label: "macOS / Linux", code: "curl -fsSL https://<your-multica-server>/api/daemon/install.sh | bash" },
     ],
   },
   {

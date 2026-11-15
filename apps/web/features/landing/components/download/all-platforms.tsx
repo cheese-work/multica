@@ -8,7 +8,7 @@ import type { DownloadAssets, DownloadKey } from "../../utils/parse-release-asse
 import { DownloadLink } from "./download-link";
 import { OSIcon } from "./os-icons";
 
-export const ALL_RELEASES_URL = "https://github.com/multica-ai/multica/releases";
+export const ALL_RELEASES_URL = "https://github.com/cheese-work/multica/releases";
 
 type FormatLabel = "formatDmg" | "formatZip" | "formatExe" | "formatAppImage" | "formatDeb" | "formatRpm";
 

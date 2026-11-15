@@ -4,6 +4,11 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The screen imports the real `@/data/api`, which throws at import when this is unset.
+vi.hoisted(() => {
+  process.env.EXPO_PUBLIC_API_URL ??= "https://api.example.test";
+});
+
 const state = vi.hoisted(() => ({
   params: { id: "CHE-3680", workspace: "cheese" } as Record<string, string>,
   detail: {} as Record<string, unknown>,
