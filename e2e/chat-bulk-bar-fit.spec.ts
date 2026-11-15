@@ -45,13 +45,22 @@ async function bundle(): Promise<string> {
         import { I18nProvider } from "@multica/core/i18n/react";
         import { ChatBulkBar } from "./chat/components/chat-bulk-bar";
         const s = (id, o = {}) => ({ id, status: "active", has_unread: false, unread_count: 0, pinned: false, ...o });
+        const SEL = {
+          mixed: [s("1", { has_unread: true }), s("2", { pinned: true }), s("3", { status: "archived" })],
+          // primary actions flip to the longer labels: Unseen / Unpin / Unarchive
+          flipped: [s("1", { status: "archived" }), s("2", { status: "archived" }), s("3", { pinned: true })],
+        };
+        let root, host;
+        const render = (key) => root.render(
+          createElement(I18nProvider, { locale: "en", resources: { en: { chat: window.__chat } } },
+            createElement(ChatBulkBar, { sessions: SEL[key], onAction: () => {} })));
         window.mount = (width) => {
-          const host = document.getElementById("root");
+          host = document.getElementById("root");
           host.style.width = width + "px";
-          createRoot(host).render(
-            createElement(I18nProvider, { locale: "en", resources: { en: { chat: window.__chat } } },
-              createElement(ChatBulkBar, { sessions: [s("1", { has_unread: true }), s("2", { pinned: true }), s("3", { status: "archived" })], onAction: () => {} })));
-        };`,
+          root = createRoot(host);
+          render("mixed");
+        };
+        window.select = (key) => render(key);`,
       resolveDir: path.join(root, "packages/views"),
       loader: "tsx",
     },
@@ -76,6 +85,9 @@ async function load(page: Page, width: number) {
   await page.evaluate((w) => (window as unknown as { mount: (w: number) => void }).mount(w), width);
   await page.getByRole("toolbar").waitFor();
 }
+
+const select = (page: Page, key: "mixed" | "flipped") =>
+  page.evaluate((k) => (window as unknown as { select: (k: string) => void }).select(k), key);
 
 const geometry = (page: Page) =>
   page.evaluate(() => {
@@ -117,6 +129,18 @@ for (const width of WIDTHS) {
     expect(seen).not.toContain("");
   });
 }
+
+// Labels change with the selection (Seen/Pin/Archive -> Unseen/Unpin/Unarchive) at a fixed width.
+test("307px column: stays inside the bar after the selection flips to longer labels", async ({ page }) => {
+  await load(page, 307);
+  expect((await geometry(page)).overflows).toBe(false);
+  await select(page, "flipped");
+  await page.getByRole("button", { name: "Mark unseen", exact: true }).waitFor();
+  const g = await geometry(page);
+  expect(g.buttons).toHaveLength(6);
+  expect(g.overflows).toBe(false);
+  for (const b of g.buttons) expect(b.inside, `${b.name} is clipped`).toBe(true);
+});
 
 test("330px and wider: split buttons are 28px high with 12px text, as in the lock", async ({ page }) => {
   await load(page, 330);

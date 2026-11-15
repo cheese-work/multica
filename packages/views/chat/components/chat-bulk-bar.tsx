@@ -29,12 +29,23 @@ const ICON: Record<BulkAction, ReactNode> = {
  * draws icons only, so no button is ever clipped. It remembers the width the
  * labelled bar needed, and goes back to labels once the column is that wide.
  */
-function useOverflowFallback(ref: React.RefObject<HTMLElement | null>) {
+function useOverflowFallback(ref: React.RefObject<HTMLElement | null>, labelsKey: string) {
   const [narrow, setNarrow] = useState(false);
   const needed = useRef(0);
+  const seenKey = useRef(labelsKey);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // The labels changed (selection or locale): the remembered width is stale,
+    // so measure the labelled bar again.
+    if (seenKey.current !== labelsKey) {
+      seenKey.current = labelsKey;
+      needed.current = 0;
+      if (narrow) {
+        setNarrow(false);
+        return;
+      }
+    }
     const check = () => {
       if (narrow) {
         if (el.clientWidth >= needed.current) setNarrow(false);
@@ -47,7 +58,7 @@ function useOverflowFallback(ref: React.RefObject<HTMLElement | null>) {
     const ro = new ResizeObserver(check);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ref, narrow]);
+  }, [ref, narrow, labelsKey]);
   return narrow;
 }
 
@@ -70,7 +81,10 @@ export function ChatBulkBar({
   const { t } = useT("chat");
   const plan = planBulk(sessions);
   const ref = useRef<HTMLDivElement>(null);
-  const narrow = useOverflowFallback(ref);
+  const labelsKey = (["seen", "pin", "archive"] as const)
+    .map((kind) => t(($) => $.list.bulk.action[plan[kind].primary.action]))
+    .join("|");
+  const narrow = useOverflowFallback(ref, labelsKey);
   const iconOnly = compact || narrow;
   const touch = compact ? "size-11" : "";
 
