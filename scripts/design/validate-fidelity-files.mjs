@@ -58,7 +58,15 @@ export function validateBlocksMap(doc, { profileIds, lockLabels }) {
       if (typeof c?.[k] !== "string" || !c[k]) errors.push(`${at}: ${k} is required`);
     }
     for (const k of Object.keys(c ?? {})) {
-      if (!["lock_file", "state", "profile", "fixture"].includes(k)) errors.push(`${at}: ${/annotation/i.test(k) ? "annotation field not allowed" : `unknown field ${k}`}`);
+      if (!["lock_file", "state", "profile", "fixture", "steps"].includes(k)) errors.push(`${at}: ${/annotation/i.test(k) ? "annotation field not allowed" : `unknown field ${k}`}`);
+    }
+    if (c?.steps !== undefined) {
+      if (!Array.isArray(c.steps)) errors.push(`${at}: steps must be a list`);
+      else c.steps.forEach((st, n) => {
+        const sel = st?.click ?? st?.type;
+        const shape = st && typeof sel === "string" && sel && (st.click !== undefined ? Object.keys(st).length === 1 : typeof st.text === "string" && Object.keys(st).length === 2);
+        if (!shape) errors.push(`${at}: steps[${n}] must be { click: <selector> } or { type: <selector>, text: <string> }`);
+      });
     }
     if (typeof c?.state === "string" && (!STATE.test(c.state) || !lockLabels.has(c.state.slice(1)))) {
       errors.push(`${at}: state ${c.state} is not a state the lock draws`);

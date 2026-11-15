@@ -87,3 +87,12 @@ test("blocks: annotation field is not allowed; repeat must be boolean", () => {
   const r = map({ blocks: { "decision-request-ask": { selector: ".ask", repeat: "yes" } } });
   assert.match(validateBlocksMap(r, ctx).errors.join(), /repeat/);
 });
+
+test("a case may carry interaction steps; a malformed step is an error", () => {
+  const ok = [{ click: "text=Details" }, { type: "[role=textbox]", text: "hi" }];
+  assert.deepEqual(validateBlocksMap(map({ cases: [kase({ steps: ok })] }), ctx).errors, []);
+  for (const bad of [{ click: 1 }, { type: "x" }, { drag: "x" }, "click"]) {
+    assert.match(validateBlocksMap(map({ cases: [kase({ steps: [bad] })] }), ctx).errors.join(), /steps\[0\]/, JSON.stringify(bad));
+  }
+  assert.match(validateBlocksMap(map({ cases: [kase({ steps: "x" })] }), ctx).errors.join(), /steps must be a list/);
+});
