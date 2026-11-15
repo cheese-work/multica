@@ -44,9 +44,11 @@ type Ask struct {
 	SourceCommentID  string      `json:"source_comment_id"`
 	HumanSteps       []HumanStep `json:"human_steps"`
 	Probes           []string    `json:"probes"`
-	AfterDone        string      `json:"after_done"`
-	Subject          string      `json:"subject,omitempty"`
-	Artifacts        []Artifact  `json:"artifacts,omitempty"`
+	// StateClaims are required on every agent-sent ask (CHE-5950).
+	StateClaims []StateClaim `json:"state_claims,omitempty"`
+	AfterDone   string       `json:"after_done"`
+	Subject     string       `json:"subject,omitempty"`
+	Artifacts   []Artifact   `json:"artifacts,omitempty"`
 	// WhyHuman, Steps and DoneWhen are the action-kind fields (CHE-2394).
 	WhyHuman string   `json:"why_human,omitempty"`
 	Steps    []string `json:"steps,omitempty"`
@@ -95,10 +97,10 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "state_claims", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
-	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run", "settings_needed"}
+	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run", "state_claims", "settings_needed"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
 
@@ -155,7 +157,13 @@ func decodeActionAsk(raw []byte) (Ask, error) {
 	if err := decodeSettingsNeeded(fields["settings_needed"], &ask.SettingsNeeded); err != nil {
 		return ask, err
 	}
-	return ask, ask.validateAction()
+	if err := decodeStateClaims(fields["state_claims"], &ask.StateClaims); err != nil {
+		return ask, err
+	}
+	if err := ask.validateAction(); err != nil {
+		return ask, err
+	}
+	return ask, ask.validateStateClaims()
 }
 
 func (ask Ask) validateAction() error {
@@ -234,7 +242,13 @@ func DecodeAsk(raw []byte) (Ask, error) {
 	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
 		return ask, err
 	}
-	return ask, ask.Validate()
+	if err := decodeStateClaims(fields["state_claims"], &ask.StateClaims); err != nil {
+		return ask, err
+	}
+	if err := ask.Validate(); err != nil {
+		return ask, err
+	}
+	return ask, ask.validateStateClaims()
 }
 
 func decodeConfidence(raw json.RawMessage, into **float64) error {
@@ -422,8 +436,8 @@ func (ask Ask) Content(workspaceSlug string) string {
 		}
 		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n%s</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.stateClaimsContent(), ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }
 
 func (ask Ask) askedByLine() string {
@@ -460,6 +474,6 @@ func (ask Ask) actionContent(workspaceSlug string) string {
 	for index, step := range ask.Steps {
 		fmt.Fprintf(&steps, "%d. %s\n", index+1, step)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.ContextELI10, ask.WhyHuman, steps.String(), askEvidence{ask.Observed, ask.Files, ask.DryRun}.lines(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.WhyHuman, steps.String(), askEvidence{ask.Observed, ask.Files, ask.DryRun}.lines(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.stateClaimsContent(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }

@@ -181,8 +181,22 @@ test("CLI fails on losses, passes Ported: acknowledgements, and never executes P
 test("missing upstream tag fails closed for syncs but does not affect ordinary PRs", (context) => {
   const { cwd, git, pullRequest } = repositoryFixture(context);
   git("tag", "-d", "v1.0.0");
-  assert.throws(() => collectForkSync(pullRequest, cwd), /refs\/tags\/v1.0.0/);
-  assert.deepEqual(checkForkSync(collectForkSync({ ...pullRequest, title: "refactor: cleanup" }, cwd)), { sync: false, violations: [] });
+  const unreachable = join(cwd, "no-such-upstream");
+  assert.throws(() => collectForkSync(pullRequest, cwd, unreachable), /Could not fetch upstream tag v1\.0\.0/);
+  assert.deepEqual(checkForkSync(collectForkSync({ ...pullRequest, title: "refactor: cleanup" }, cwd, unreachable)), { sync: false, violations: [] });
+});
+
+test("missing upstream tag is fetched from the upstream remote (CHE-6097)", (context) => {
+  const { cwd, git, pullRequest } = repositoryFixture(context);
+  const upstream = mkdtempSync(join(tmpdir(), "fork-sync-upstream-"));
+  context.after(() => rmSync(upstream, { recursive: true, force: true }));
+  git("clone", "--quiet", "--bare", cwd, upstream);
+  git("tag", "-d", "v1.0.0");
+  assert.throws(() => git("rev-parse", "--verify", "refs/tags/v1.0.0^{commit}"));
+  const input = collectForkSync(pullRequest, cwd, upstream);
+  assert.ok(input.forkTests.includes(oldTest));
+  assert.equal(checkForkSync(input).violations.length, 5);
+  assert.equal(git("remote").trim(), "", "the fetch adds no remote");
 });
 
 test("a sync with no parseable Source paths fails closed", () => {
