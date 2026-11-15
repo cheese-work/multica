@@ -229,3 +229,18 @@ test("no read token and not required: unchanged behavior, with a notice that fre
   assert.equal(r.status, 0);
   assert.match(r.stdout, /::notice::.*not checked/);
 });
+
+for (const body of ["null", "{}", '{"settings":null}', '{"settings":[]}', '"x"']) {
+  test(`a workspace response with no settings object (${body}) is not a read: fail closed, the CLI never runs`, () => {
+    const r = run({ ...withToken, GUARD_POLICY_JSON: "", GUARD_POLICY_SHA256: "", FAKE_WS_JSON: body });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stdout + r.stderr, /::error::.*live/);
+    assert.equal(r.calls, "");
+  });
+}
+
+test("a valid empty settings object is a read of no stored policy: the CLI runs", () => {
+  const r = run({ ...withToken, GUARD_POLICY_JSON: "", GUARD_POLICY_SHA256: "", FAKE_WS_JSON: '{"settings":{}}' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.calls, /args=guard check-pr /);
+});

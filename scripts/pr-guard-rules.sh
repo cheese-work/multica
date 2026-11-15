@@ -9,7 +9,7 @@
 # else is unreadable, so the PR was not judged and the check is red.
 # CHE-5752: the variables are a copy of the stored policy (workspace settings.guard_policy). With GUARD_POLICY_READ_TOKEN
 # (a read-only token) the check reads the live stored policy through the CLI and fails closed (exit 2) when the copy
-# differs (key order aside) or the live policy cannot be read. GUARD_POLICY_LIVE_REQUIRED=1 makes a missing token red
+# differs (key order aside) or the live policy cannot be read, including a response with no settings object. GUARD_POLICY_LIVE_REQUIRED=1 makes a missing token red
 # too; without either, the check notes that freshness was not checked. MULTICA_SERVER_URL and MULTICA_WORKSPACE_ID
 # select the workspace.
 # Env: PR_URL or MERGE_GROUP_HEAD_REF, REPO, GUARD_POLICY_JSON, GUARD_POLICY_SHA256, RUNNER_TEMP; MULTICA_BIN (default
@@ -30,7 +30,7 @@ fi
 
 bin="${MULTICA_BIN:-$RUNNER_TEMP/multica}"
 if [ -n "${GUARD_POLICY_READ_TOKEN:-}" ]; then
-  if ! live="$(MULTICA_TOKEN="$GUARD_POLICY_READ_TOKEN" "$bin" workspace get --output json | jq -S -c '.settings.guard_policy // null')"; then
+  if ! live="$(MULTICA_TOKEN="$GUARD_POLICY_READ_TOKEN" "$bin" workspace get --output json | jq -S -c 'if (type == "object") and (.settings | type == "object") then .settings.guard_policy // null else error("no workspace settings object") end')"; then
     echo "::error::PR guard rules: the live stored guard policy cannot be read, so the variable copy cannot be shown fresh."
     exit 2
   fi
