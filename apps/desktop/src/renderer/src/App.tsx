@@ -122,7 +122,7 @@ function IssueWindowContent() {
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <MulticaIcon mode="launch" size={40} />
+        <MulticaIcon mode="think" size={40} />
       </div>
     );
   }
@@ -352,7 +352,7 @@ function AppContent() {
   if (isLoading || bootstrapping) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <MulticaIcon mode="launch" size={40} />
+        <MulticaIcon mode="think" size={40} />
       </div>
     );
   }

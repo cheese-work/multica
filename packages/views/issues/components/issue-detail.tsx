@@ -208,6 +208,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { CollectionPageState } from "../../layout/collection-page";
 import { PAGE_GUTTER } from "../../layout/page-header";
+import { useShowInSidebar } from "../../layout/panels/show-in-sidebar";
 
 import { ProgressRing } from "./progress-ring";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
@@ -614,7 +615,7 @@ function JumpToLatestButton({ onClick, label }: { onClick: () => void; label: st
       variant="outline"
       size="sm"
       onClick={onClick}
-      className="absolute bottom-full left-1/2 mb-6 -translate-x-1/2 rounded-full bg-background shadow-md dark:bg-background dark:hover:bg-muted"
+      className="absolute bottom-full left-1/2 mb-6 -translate-x-1/2 bg-background shadow-md dark:bg-background dark:hover:bg-muted"
     >
       <ArrowDown />
       {label}
@@ -3406,6 +3407,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Called before the `if (!issue)` early return so hook order stays stable.
   const actions = useIssueActions(issue);
   const handleUpdateField = actions.updateField;
+  const showInSidebar = useShowInSidebar(issue);
   // The inbox passes `onDone` and owns archive and restore there.
   const archivedInboxItemId = useArchivedInboxItemId(id, !onDone);
 
@@ -4249,6 +4251,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               // to the list we came from, falling back to all issues.
               onDeletedFallbackPath={onDelete ? undefined : paths.issues()}
               archivedInboxItemId={archivedInboxItemId}
+              onShowInSidebar={isPeek ? undefined : (showInSidebar ?? undefined)}
               trigger={
                 <IconButton
                   label={tCommon(($) => $.more_actions)}

@@ -68,7 +68,7 @@ function IssueWindowRoute({ media = false }: { media?: boolean }) {
     return (
       <IssueWindowFrame>
         <div className="flex min-h-0 flex-1 items-center justify-center">
-          <MulticaIcon mode="launch" size={40} />
+          <MulticaIcon mode="think" size={40} />
         </div>
       </IssueWindowFrame>
     );
