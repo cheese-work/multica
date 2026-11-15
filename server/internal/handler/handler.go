@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
@@ -642,6 +643,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
+	service.SetOnWeeklyRunGuardTripped(h.onWeeklyRunGuardTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
@@ -650,6 +652,9 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		}
 	}
 
+	taskSvc.BackgroundWriters = map[string]service.BackgroundWriter{
+		bgagents.Purpose(bgagents.DMTitle): h.writeDMTitle,
+	}
 	return h
 }
 

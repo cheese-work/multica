@@ -1,4 +1,10 @@
 {
+  "daemon_setup": {
+    "loading": "Cargando los ajustes de conexión...",
+    "error": "No se han podido cargar los ajustes de conexión. Comprueba tu conexión. Se reintentará automáticamente.",
+    "unknown": "Este servidor no ha confirmado sus ajustes de conexión. Pide a tu administrador que actualice el servidor.",
+    "incomplete": "Los ajustes de conexión están incompletos. Pide a tu administrador que configure las URL públicas de este servidor."
+  },
   "avatar_upload": {
     "change": "Cambiar avatar",
     "remove": "Quitar",
@@ -35,6 +41,7 @@
   "cancel": "Cancelar",
   "delete": "Eliminar",
   "confirm": "Confirmar",
+  "more_actions": "Más acciones",
   "loading": "Cargando...",
   "time": {
     "just_now": "ahora mismo",
@@ -129,11 +136,55 @@
   "navigation": {
     "open_in_new_tab": "Abrir en una pestaña nueva"
   },
-  "daemon_setup": {
-    "loading": "Cargando los ajustes de conexión...",
-    "error": "No se han podido cargar los ajustes de conexión. Comprueba tu conexión. Se reintentará automáticamente.",
-    "unknown": "Este servidor no ha confirmado sus ajustes de conexión. Pide a tu administrador que actualice el servidor.",
-    "incomplete": "Los ajustes de conexión están incompletos. Pide a tu administrador que configure las URL públicas de este servidor."
-  },
-  "more_actions": "Más acciones"
+  "decision_action": {
+    "approve": "Aprobar con llave de acceso",
+    "reject": "Rechazar",
+    "reject_error": "No se ha completado el rechazo. Inténtalo de nuevo.",
+    "waiting": "Esperando tu llave de acceso…",
+    "state": {
+      "executed": "Aplicada",
+      "failed": "No aplicada",
+      "rejected": "Rechazada",
+      "expired": "Caducada",
+      "cancelled": "Cancelada"
+    },
+    "failed_code": {
+      "stale_cap": "Ya está en vigor un límite más alto.",
+      "stale_window": "La ventana de presupuesto ha cambiado. Inicia una nueva solicitud.",
+      "not_budgeted": "Esta tarea ya no tiene presupuesto.",
+      "other": "Error: {{code}}",
+      "stale_base": "El destino cambió después de la solicitud. Vuelve a solicitarlo."
+    },
+    "refusal": {
+      "class_needs_owner": "Solo el propietario del espacio de trabajo puede aprobar este cambio.",
+      "payload_mismatch": "El cambio aprobado no es el que se solicitó. Vuelve a solicitarlo.",
+      "preview_required": "Aprueba según la vista previa que se te mostró. Recarga la tarjeta.",
+      "precondition_drift": "El destino ha cambiado desde la solicitud. Vuelve a solicitarlo.",
+      "busy_retry": "Hay otro cambio en curso. Inténtalo de nuevo.",
+      "not_permitted": "No tienes permiso para hacer este cambio.",
+      "action_not_executable": "Este tipo de cambio aún no se puede aprobar.",
+      "approval_proof_unavailable": "Este servidor aún no puede verificar una aprobación con llave de acceso.",
+      "other": "Rechazado: {{code}}"
+    },
+    "owner_only": "Solo el propietario del espacio de trabajo puede aprobar este cambio.",
+    "no_passkey": "Añade una llave de acceso antes de aprobar.",
+    "add_passkey": "Añadir una llave de acceso",
+    "error": "No se ha completado la aprobación con llave de acceso. Inténtalo de nuevo.",
+    "lost": "Se perdió la respuesta. La acción no se aprueba de nuevo. Comprueba el resultado.",
+    "check": "Comprobar resultado",
+    "outcome": {
+      "cap_applied": "Límite aplicado",
+      "run_queued": "Ejecución en cola",
+      "still_blocked": "Sigue bloqueado: {{reason}}"
+    },
+    "panel": {
+      "title": "Solicitud de presupuesto de ejecuciones",
+      "raise_cap": "Subir el límite de ejecuciones de {{issue}} a {{cap}} para esta ventana.",
+      "top_up": "Recargar el presupuesto de ejecuciones de {{issue}} para esta ventana.",
+      "settled": "Esta aprobación ya está {{state}}. Si aún la necesitas, pide al agente que la proponga de nuevo.",
+      "mismatch": "Esta aprobación no es una solicitud de presupuesto de ejecuciones para esta tarea. Abre la tarjeta en tu DM o en tu Bandeja de entrada para decidirla.",
+      "open_card": "Abrir la tarjeta",
+      "unreadable": "Esta aprobación no está disponible para ti o ya no existe. Pide al agente que la proponga de nuevo."
+    }
+  }
 }

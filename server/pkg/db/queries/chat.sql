@@ -2165,6 +2165,41 @@ SELECT EXISTS (
       AND message_kind != 'channel_command'
 ) AS has_public_user_message;
 
+-- name: ChatSessionTitleMilestone :one
+-- Which re-title milestone the next user message of a DM would start (CHE-4107):
+-- 'fork' for a fork child that has sent no message of its own (copied history
+-- has no task), 'compaction' when the latest compaction summary has no user
+-- message after it, else ''. Read before the new message is inserted.
+SELECT CASE
+    WHEN session.forked_from_session_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM chat_message AS own
+        WHERE own.chat_session_id = session.id AND own.role = 'user' AND own.task_id IS NOT NULL
+    ) THEN 'fork'
+    WHEN EXISTS (
+        SELECT 1 FROM chat_message AS summary
+        WHERE summary.chat_session_id = session.id AND summary.message_kind = 'compaction_summary'
+          AND NOT EXISTS (
+              SELECT 1 FROM chat_message AS later
+              WHERE later.chat_session_id = session.id AND later.role = 'user'
+                AND later.message_kind != 'channel_command' AND later.created_at > summary.created_at
+          )
+    ) THEN 'compaction'
+    ELSE ''
+END::text AS milestone
+FROM chat_session AS session
+WHERE session.id = $1;
+
+-- name: DMTitleJobExists :one
+-- True when a dm_title job for this (session, milestone, source message) was
+-- ever queued: the idempotence key of a milestone trigger (CHE-4107).
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE purpose = 'bg:dm_title'
+      AND source_chat_session_id = sqlc.arg(session_id)
+      AND context->>'milestone' = sqlc.arg(milestone)::text
+      AND context->>'source_message_id' = sqlc.arg(source_message_id)::text
+) AS job_exists;
+
 -- name: CreateChatDraftRestore :one
 -- Persists the deferred-cancellation draft restore (#5219) in the same tx
 -- that deletes the triggering user message: the chat:cancel_finalized
