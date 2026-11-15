@@ -698,7 +698,7 @@ func (q *Queries) SetScheduledWakeupNext(ctx context.Context, arg SetScheduledWa
 }
 
 const tryLockWakeupIssue = `-- name: TryLockWakeupIssue :one
-SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read FROM issue WHERE id= $1 FOR NO KEY UPDATE SKIP LOCKED
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via FROM issue WHERE id= $1 FOR NO KEY UPDATE SKIP LOCKED
 `
 
 // The drain's issue lock never waits: a held issue yields no row, and the caller
@@ -741,6 +741,7 @@ func (q *Queries) TryLockWakeupIssue(ctx context.Context, id pgtype.UUID) (Issue
 		&i.RequestedByID,
 		&i.MaxRunsOverride,
 		&i.DescriptionExternalRead,
+		&i.CreatedVia,
 	)
 	return i, err
 }

@@ -81,6 +81,10 @@ type IssueResponse struct {
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// CreatedVia is how the issue was made: dialog, agent or cli. The server
+	// sets it at create; it is empty for issues made before it existed and
+	// for creates from web or desktop forms.
+	CreatedVia    string  `json:"created_via"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -694,6 +698,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		CreatedVia:         i.CreatedVia.String,
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -4051,6 +4056,19 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// created_via is server-set and has no request field. A quick_create origin
+	// is the "create with agents" dialog: IssueService.Create rejects it unless
+	// the origin task is a quick-create task of the creating agent.
+	var createdVia pgtype.Text
+	switch {
+	case originType.String == "quick_create":
+		createdVia = pgtype.Text{String: "dialog", Valid: true}
+	case creatorType == "agent":
+		createdVia = pgtype.Text{String: "agent", Valid: true}
+	case statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel == "cli":
+		createdVia = pgtype.Text{String: "cli", Valid: true}
+	}
+
 	// Prefix is workspace-level; pre-compute once so both the broadcast
 	// payload builder and the HTTP response share the same value.
 	prefix := h.getIssuePrefix(r.Context(), wsUUID)
@@ -4157,6 +4175,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		DueDate:         dueDate,
 		OriginType:      originType,
 		OriginID:        originID,
+		CreatedVia:      createdVia,
 		Stage:           ptrToInt4(req.Stage),
 		AttachmentIDs:   attachmentIDs,
 		LabelIDs:        labelIDs,
