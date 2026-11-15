@@ -192,6 +192,10 @@ func TestCannotDoFromSettings(test *testing.T) {
 		`{"agent_cannot_do":[{"key":"a","human_step":""}]}`,
 		`{"agent_cannot_do":[{"key":"a","human_step":"x"},{"key":"a","human_step":"y"}]}`,
 		`{"agent_cannot_do":[{"key":"a","human_step":"x","extra":1}]}`,
+		`{"agent_cannot_do":[{"key":"a","tool":"multica ","subcommand":["daemon","restart"],"human_step":"x"}]}`,
+		`{"agent_cannot_do":[{"key":"a","tool":"multica","subcommand":["daemon ","restart"],"human_step":"x"}]}`,
+		`{"agent_cannot_do":[{"key":"a","tool":"multica","subcommand":["daemon",""],"human_step":"x"}]}`,
+		`{"agent_cannot_do":[{"key":"a","tool":"multica","subcommand":["--debug","daemon"],"human_step":"x"}]}`,
 	} {
 		if _, _, err := CannotDoFromSettings([]byte(bad)); err == nil {
 			test.Errorf("settings %s accepted", bad)

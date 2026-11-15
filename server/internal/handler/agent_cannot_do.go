@@ -1,12 +1,37 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// errCannotDoOwnerOnly is saveWorkspace's refusal of a catalog change by a
+// caller who is not a workspace owner (CHE-5902 F2).
+var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do")
+
+// requireOwnerForCannotDo refuses an incoming settings blob that adds, drops or
+// changes the agent_cannot_do catalog unless the caller owns the workspace. The
+// route admits admins; the catalog is the owner's.
+func requireOwnerForCannotDo(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, userID string, stored, incoming map[string]any) error {
+	sv, sok := stored[decisiontx.SettingCannotDo]
+	iv, iok := incoming[decisiontx.SettingCannotDo]
+	if sok == iok && reflect.DeepEqual(sv, iv) {
+		return nil
+	}
+	member, err := workspaceMemberVia(ctx, q, userID, uuidToString(workspaceID))
+	if err != nil || member.Role != "owner" {
+		return errCannotDoOwnerOnly
+	}
+	return nil
+}
 
 // checkAgentCannotDo runs the CHE-5902 check on a decision card with the
 // workspace settings. It writes the response and returns false when the card

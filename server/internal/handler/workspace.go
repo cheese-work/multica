@@ -701,6 +701,10 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writePasskeyActionRequired(w, settingsPatchAction)
 		return
 	}
+	if errors.Is(err, errCannotDoOwnerOnly) {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())
 		return

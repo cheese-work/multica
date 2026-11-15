@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -149,4 +151,79 @@ func TestWorkspaceSettingsValidateCannotDo(t *testing.T) {
 			t.Errorf("%s settings accepted", name)
 		}
 	}
+}
+
+// ownerCatalogPatch saves settings as the given member with the route's own handler.
+func ownerCatalogPatch(t *testing.T, userID string, settings map[string]any) *testutil.Response {
+	t.Helper()
+	req := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{"settings": settings}), "id", testWorkspaceID)
+	req.Header.Set("X-User-ID", userID)
+	return testutil.Call(t, testHandler.UpdateWorkspace, req)
+}
+
+func TestWorkspaceCannotDoCatalogIsOwnerOnly(t *testing.T) {
+	var stored []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE workspace SET settings = $1 WHERE id = $2`, stored, testWorkspaceID)
+	})
+	var base map[string]any
+	if err := json.Unmarshal(stored, &base); err != nil || base == nil {
+		base = map[string]any{}
+	}
+	with := func(extra map[string]any) map[string]any {
+		out := map[string]any{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	catalog := []any{map[string]any{"key": "k", "tool": "gh", "subcommand": []any{"pr", "merge"}, "human_step": "Merge it."}}
+
+	adminID := createPlainMember(t, "che5902-admin-"+safeTestName(t)+"@multica.test")
+	dbfx.Exec(t, `UPDATE member SET role = 'admin' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, adminID)
+
+	// An admin cannot add, change or drop the catalog.
+	ownerCatalogPatch(t, adminID, with(map[string]any{"agent_cannot_do": catalog})).Want(http.StatusForbidden)
+	ownerCatalogPatch(t, testUserID, with(map[string]any{"agent_cannot_do": catalog})).Want(http.StatusOK)
+	ownerCatalogPatch(t, adminID, with(map[string]any{"agent_cannot_do": []any{}})).Want(http.StatusForbidden)
+	ownerCatalogPatch(t, adminID, base).Want(http.StatusForbidden) // drops the stored catalog
+
+	// An admin may save the other settings while the catalog stays as stored.
+	ownerCatalogPatch(t, adminID, with(map[string]any{"agent_cannot_do": catalog, "agent_cannot_do_mode": "warn"})).Want(http.StatusOK)
+}
+
+func TestCIDecisionReturnsCannotDoHintsInWarnMode(test *testing.T) {
+	setCannotDo(test, "warn", "")
+	fixture := newSingleCallFixture(test)
+	response := ciCardCall(test, ciCard, fixture, func(body map[string]any) {
+		ask := fixture.details
+		ask.Options = append([]decisiontx.AskOption(nil), ask.Options...)
+		ask.Options[0].AfterChoice = decisiontx.AfterAgentRun
+		ask.Options[0].AgentCommands = [][]string{{"multica", "daemon", "restart"}}
+		for i := 1; i < len(ask.Options); i++ {
+			ask.Options[i].AfterChoice = decisiontx.AfterRecordOnly
+		}
+		body["ask"] = ask
+	})
+	if response.Code != http.StatusCreated {
+		test.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	var created struct {
+		Hints []string `json:"hints"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		test.Fatal(err)
+	}
+	for _, hint := range created.Hints {
+		if strings.Contains(hint, "daemon_restart") {
+			return
+		}
+	}
+	test.Fatalf("hints = %q, want one about daemon_restart", created.Hints)
 }

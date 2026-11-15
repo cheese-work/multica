@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/multica-ai/multica/server/internal/guard"
 )
@@ -40,6 +41,11 @@ type CannotDo struct {
 var builtinCannotDo = []CannotDo{
 	{Key: "daemon_restart", Tool: "multica", Subcommand: []string{"daemon", "restart"}, HumanStep: "Cheese runs `multica daemon restart` on the daemon host; an agent run cannot restart its own daemon."},
 	{Key: "daemon_stop", Tool: "multica", Subcommand: []string{"daemon", "stop"}, HumanStep: "Cheese runs `multica daemon stop` on the daemon host; an agent run cannot stop its own daemon."},
+}
+
+// hasSpace reports a space or control character: a canonical command token has none.
+func hasSpace(token string) bool {
+	return strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0
 }
 
 var catalogKey = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -93,6 +99,13 @@ func ParseCannotDo(raw []byte) ([]CannotDo, error) {
 			return nil, fmt.Errorf("%s.tool must be a lower-case tool name, not a path", field)
 		case entry.Tool == "" && len(entry.Subcommand) > 0:
 			return nil, fmt.Errorf("%s.subcommand needs a tool", field)
+		case hasSpace(entry.Tool):
+			return nil, fmt.Errorf("%s.tool must not contain whitespace", field)
+		}
+		for _, word := range entry.Subcommand {
+			if word == "" || hasSpace(word) || strings.HasPrefix(word, "-") {
+				return nil, fmt.Errorf("%s.subcommand words must be non-empty, without whitespace, and not flags", field)
+			}
 		}
 		seen[entry.Key] = true
 	}
