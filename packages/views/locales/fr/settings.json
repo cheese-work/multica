@@ -494,6 +494,10 @@
         "label": "Afficher ou masquer la fenêtre de discussion",
         "description": "Ouvrir ou fermer la fenêtre de discussion flottante. À l'ouverture, le champ de message reçoit le focus."
       },
+      "newChat": {
+        "label": "Demander à Multica",
+        "description": "Démarrer une nouvelle discussion dans la fenêtre de discussion flottante."
+      },
       "findInIssue": {
         "label": "Rechercher dans la tâche",
         "description": "Rechercher dans la tâche ouverte."
@@ -1565,7 +1569,9 @@
     "github_load_more": "Charger plus",
     "github_selected_count": "{{count}} sélectionnés",
     "github_cancel": "Annuler",
-    "github_import": "Ajouter les dépôts",
+    "github_import": "Ajouter {{count}} dépôts",
+    "github_import_one": "Ajouter {{count}} dépôt",
+    "github_import_other": "Ajouter {{count}} dépôts",
     "save": "Enregistrer",
     "saving": "Enregistrement...",
     "saved_hint": "Toutes les modifications sont enregistrées",

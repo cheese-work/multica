@@ -387,6 +387,7 @@ export const EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE: ListGitHubInstallationsRe
 };
 
 export const GitHubConnectResponseSchema = z.lazy(() => z.object({
+  connection_id: z.string().optional().catch(undefined),
   url: z.string().optional(),
   configured: z.boolean().optional().default(false),
 }).loose());
@@ -407,6 +408,7 @@ export const GitHubRepositorySchema = z.lazy(() => z.object({
 }).loose());
 
 export const ListGitHubRepositoriesResponseSchema = z.lazy(() => z.object({
+  repository_selection: z.enum(["all", "selected", "unknown"]).catch("unknown").optional(),
   repositories: z.array(GitHubRepositorySchema).default([]),
   total_count: z.number().optional().default(0),
   next_page: z.number().nullable().optional().default(null),
@@ -477,7 +479,7 @@ export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: IssuePullRequestsResponse = {
 
 // An action record from a newer server with an unknown action is dropped;
 // an unknown status reads as failed, which offers a retry.
-export const IssueEnvironmentActionSchema = z.object({
+export const IssueEnvironmentActionSchema = z.lazy(() => z.object({
   id: z.string(),
   action: z.enum(["stop", "restart", "start", "logs"]),
   status: z.enum(["pending", "succeeded", "failed", "expired"]).catch("failed"),
@@ -491,13 +493,13 @@ export const IssueEnvironmentActionSchema = z.object({
   actor_id: z.string().nullable().optional().default(null),
   created_at: z.string(),
   completed_at: z.string().nullable().optional().default(null),
-}).loose();
+}).loose());
 
 const OptionalIssueEnvironmentActionSchema = IssueEnvironmentActionSchema.nullable().optional().default(null).catch(null);
 
-export const IssueEnvironmentCommandSchema = IssueEnvironmentActionSchema.extend({
+export const IssueEnvironmentCommandSchema = z.lazy(() => IssueEnvironmentActionSchema.unwrap().extend({
   output: z.string().nullable().optional().default(null),
-}).loose();
+}).loose());
 
 // One malformed environment drops out of the list instead of taking the
 // whole section with it; an unknown state from a newer server reads as
@@ -505,7 +507,7 @@ export const IssueEnvironmentCommandSchema = IssueEnvironmentActionSchema.extend
 // or none from an older server, reads as a server: the row then opens its URL
 // if it has one and offers nothing otherwise. A missing or malformed
 // local_key reads as empty, which leaves an app row without its switch action.
-export const IssueEnvironmentSchema = z.object({
+export const IssueEnvironmentSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   task_id: z.string(),
@@ -532,7 +534,7 @@ export const IssueEnvironmentSchema = z.object({
   pending_action: OptionalIssueEnvironmentActionSchema,
   last_action: OptionalIssueEnvironmentActionSchema,
   origin: OptionalIssueEnvironmentActionSchema,
-}).loose();
+}).loose());
 
 const DeclaredEnvironmentSchema = z.object({
   repo: z.string(),
@@ -562,12 +564,12 @@ function lenientArray<T extends z.ZodType>(schema: T) {
     );
 }
 
-export const IssueEnvironmentsResponseSchema = z.object({
+export const IssueEnvironmentsResponseSchema = z.lazy(() => z.object({
   environments: lenientArray(IssueEnvironmentSchema),
   configs: lenientArray(IssueEnvironmentConfigSchema),
   pending_starts: lenientArray(IssueEnvironmentActionSchema),
   failed_starts: lenientArray(IssueEnvironmentActionSchema),
-}).loose();
+}).loose());
 
 export const EMPTY_ISSUE_ENVIRONMENTS_RESPONSE: IssueEnvironmentsResponse = {
   environments: [],
@@ -1711,12 +1713,12 @@ const StoreThemeSchema = z
   .loose();
 
 /** One malformed entry drops that theme, not the whole list. */
-export const StoreThemeListSchema = z.object({
+export const StoreThemeListSchema = z.lazy(() => z.object({
   themes: z.preprocess(
     (value) => (Array.isArray(value) ? value.filter((item) => StoreThemeSchema.safeParse(item).success) : []),
     z.array(StoreThemeSchema),
   ),
-});
+}));
 
 export const EMPTY_STORE_THEME_LIST: { themes: StoreTheme[] } = { themes: [] };
 
@@ -2177,9 +2179,9 @@ export const ListProjectMembersResponseSchema = z.lazy(() => z.object({
 
 // The viewer's own project subscription (`/api/projects/:id/subscription`).
 // Anything but an explicit `true` reads as not subscribed.
-export const ProjectSubscriptionSchema = z.object({
+export const ProjectSubscriptionSchema = z.lazy(() => z.object({
   subscribed: z.boolean().catch(false),
-}).loose();
+}).loose());
 
 const SearchProjectResultSchema = z.lazy(() => ProjectSchema.unwrap().extend({
   match_source: z.string(),
@@ -3658,13 +3660,13 @@ export const SubscribedIssueIdsSchema = z.lazy(() => z
 // The squads behind the viewer's "my agents" relation (`/api/squads/involved`
 // GET). Same rules as `SubscribedIssueIdsSchema`: an empty set would hide
 // every squad row under the filter, so a body without the list fails.
-export const InvolvedSquadIdsSchema = z
+export const InvolvedSquadIdsSchema = z.lazy(() => z
   .object({
     squad_ids: z
       .array(z.unknown())
       .transform((ids) => ids.filter((id): id is string => typeof id === "string" && id.length > 0)),
   })
-  .loose();
+  .loose());
 
 // Inbox items (`/api/inbox` and `/api/inbox/archived` GET).
 // Lenient per the usual rules: `severity` / `type` / `recipient_type` stay
@@ -5082,14 +5084,14 @@ const AgentAppSchema = z.object({
   level: AppAccessLevelSchema,
 }).loose();
 
-export const AppsOverviewSchema = z.object({
+export const AppsOverviewSchema = z.lazy(() => z.object({
   catalog_mode: AppCatalogModeSchema,
   allowed_toolkits: z.array(z.string()).default([]).catch([]),
   can_manage: z.boolean().default(false).catch(false),
   team: z.array(AppConnectionSchema).default([]),
   personal: z.array(AppConnectionSchema).default([]),
   agent_apps: z.array(AgentAppSchema).default([]),
-}).loose();
+}).loose());
 
 const AppCatalogEntrySchema = z.object({
   slug: z.string(),
@@ -5101,26 +5103,26 @@ const AppCatalogEntrySchema = z.object({
   allowed: z.boolean().optional().catch(undefined),
 }).loose();
 
-export const AppCatalogResponseSchema = z.object({
+export const AppCatalogResponseSchema = z.lazy(() => z.object({
   catalog_mode: AppCatalogModeSchema,
   apps: z.array(AppCatalogEntrySchema).default([]),
-}).loose();
+}).loose());
 
-export const AppSettingsResponseSchema = z.object({
+export const AppSettingsResponseSchema = z.lazy(() => z.object({
   catalog_mode: AppCatalogModeSchema,
   allowed_toolkits: z.array(z.string()).default([]).catch([]),
-}).loose();
+}).loose());
 
-export const AppRulesResponseSchema = z.object({
+export const AppRulesResponseSchema = z.lazy(() => z.object({
   rules: z.array(z.object({
     action_class: AppActionClassSchema,
     policy: AppActionPolicySchema,
     default_policy: AppActionPolicySchema,
     custom: z.boolean().default(false).catch(false),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const AppActivityResponseSchema = z.object({
+export const AppActivityResponseSchema = z.lazy(() => z.object({
   calls: z.array(z.object({
     id: z.string(),
     agent_id: z.string(),
@@ -5133,20 +5135,20 @@ export const AppActivityResponseSchema = z.object({
     error: appNullableString,
     created_at: z.string(),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const TeamAppImpactSchema = z.object({
+export const TeamAppImpactSchema = z.lazy(() => z.object({
   agents: z.array(z.object({ id: z.string(), name: z.string().default("") }).loose()).default([]),
   active_tasks: z.number().default(0).catch(0),
   active_autopilots: z.number().default(0).catch(0),
   pending_requests: z.number().default(0).catch(0),
-}).loose();
+}).loose());
 
-export const AgentAppsResponseSchema = z.object({
+export const AgentAppsResponseSchema = z.lazy(() => z.object({
   apps: z.array(AgentAppSchema).default([]),
-}).loose();
+}).loose());
 
-export const AppRequestSchema = z.object({
+export const AppRequestSchema = z.lazy(() => z.object({
   id: z.string(),
   kind: z.enum(["action", "connect"]).catch("action"),
   status: z.string(),
@@ -5170,14 +5172,14 @@ export const AppRequestSchema = z.object({
   decided_by: appNullableString,
   decided_at: appNullableString,
   created_at: z.string(),
-}).loose();
+}).loose());
 
-export const AppRequestListSchema = z.object({
+export const AppRequestListSchema = z.lazy(() => z.object({
   requests: z.array(AppRequestSchema).default([]),
   next_before: appNullableString,
-}).loose();
+}).loose());
 
-export const AppToolsResponseSchema = z.object({
+export const AppToolsResponseSchema = z.lazy(() => z.object({
   tools: z.array(z.object({
     slug: z.string(),
     name: z.string().default(""),
@@ -5186,9 +5188,9 @@ export const AppToolsResponseSchema = z.object({
     class: AppActionClassSchema,
     overridden: z.boolean().default(false).catch(false),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const IssueAppCallsResponseSchema = z.object({
+export const IssueAppCallsResponseSchema = z.lazy(() => z.object({
   calls: z.array(z.object({
     id: z.string(),
     task_id: appNullableString,
@@ -5203,9 +5205,9 @@ export const IssueAppCallsResponseSchema = z.object({
     error: appNullableString,
     created_at: z.string(),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const AppConnectInitSchema = z.object({ redirect_url: z.string().min(1) }).loose();
+export const AppConnectInitSchema = z.lazy(() => z.object({ redirect_url: z.string().min(1) }).loose());
 
 export const EMPTY_APPS_OVERVIEW: AppsOverview = {
   catalog_mode: "curated",

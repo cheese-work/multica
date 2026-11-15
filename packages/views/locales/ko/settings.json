@@ -486,6 +486,10 @@
         "label": "채팅 창 전환",
         "description": "플로팅 채팅 창을 열거나 닫습니다. 열면 메시지 입력란에 포커스합니다."
       },
+      "newChat": {
+        "label": "Multica에 묻기",
+        "description": "플로팅 채팅 창에서 새 채팅을 시작합니다."
+      },
       "findInIssue": {
         "label": "태스크에서 찾기",
         "description": "열린 태스크 상세 내용에서 검색합니다."
@@ -1296,7 +1300,8 @@
     "github_load_more": "더 불러오기",
     "github_selected_count": "{{count}}개 선택",
     "github_cancel": "취소",
-    "github_import": "저장소 추가",
+    "github_import": "저장소 {{count}}개 추가",
+    "github_import_other": "저장소 {{count}}개 추가",
     "save": "저장",
     "saving": "저장하는 중...",
     "saved_hint": "모든 변경사항 저장됨",

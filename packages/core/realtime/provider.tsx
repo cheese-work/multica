@@ -20,6 +20,7 @@ import {
   subscribeToCurrentSlug,
 } from "../platform/workspace-storage";
 import { useLocalSearchIndexSync } from "../search-index/hooks";
+import { useGitHubConnectionStore } from "../github/connection-store";
 import { createLogger } from "../logger";
 import { useRealtimeSync, type RealtimeSyncStores } from "./use-realtime-sync";
 
@@ -78,6 +79,7 @@ export function WSProvider({
     if (!wsClient) return;
     return onClientReady?.(wsClient);
   }, [wsClient, onClientReady]);
+  useEffect(() => () => useGitHubConnectionStore.getState().reset(), [user?.id]);
 
   // Depend on identity primitives instead of the object reference so a parent
   // re-render that passes a new `{ platform, version, os }` literal does not

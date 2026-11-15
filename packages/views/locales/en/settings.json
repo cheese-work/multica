@@ -494,6 +494,10 @@
         "label": "Toggle chat window",
         "description": "Open or close the floating chat window. Opening it focuses the message input."
       },
+      "newChat": {
+        "label": "Ask Multica",
+        "description": "Start a new chat in the floating chat window."
+      },
       "findInIssue": {
         "label": "Find in issue",
         "description": "Search within the open issue detail."
@@ -1565,7 +1569,9 @@
     "github_load_more": "Load more",
     "github_selected_count": "{{count}} selected",
     "github_cancel": "Cancel",
-    "github_import": "Add repositories",
+    "github_import": "Add {{count}} repositories",
+    "github_import_one": "Add {{count}} repository",
+    "github_import_other": "Add {{count}} repositories",
     "save": "Save",
     "saving": "Saving...",
     "saved_hint": "All changes saved",

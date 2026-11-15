@@ -51,7 +51,7 @@ import {
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
-import { deriveChatTitle } from "@multica/core/chat/title";
+import { refetchChatSessionsAfterCommit } from "@multica/core/chat/session-list";
 import { canAssignAgentToIssue } from "@multica/core/permissions/rules";
 import { api } from "@/data/api";
 import { sendWithPendingId } from "@/data/stores/pending-send-store";
@@ -392,16 +392,17 @@ export default function ChatTab() {
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
 
   const ensureSession = useCallback(
-    async (titleSeed: string): Promise<string | null> => {
+    async (): Promise<string | null> => {
       if (activeSessionId) return activeSessionId;
       if (!currentAgent) return null;
       if (sessionPromiseRef.current) return sessionPromiseRef.current;
 
       const promise = (async () => {
         try {
+          // Untitled on purpose: the server derives the title from the first
+          // message it accepts, the same rule for every client and channel.
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
-            title: deriveChatTitle(titleSeed),
           });
           return session.id;
         } finally {
@@ -439,7 +440,7 @@ export default function ChatTab() {
       const isNewSession = !activeSessionId;
       let sessionId: string | null;
       try {
-        sessionId = await ensureSession(content);
+        sessionId = await ensureSession();
       } catch (err) {
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
         throw err;
@@ -515,6 +516,10 @@ export default function ChatTab() {
         // No draft clear here: the composer already emptied the input on
         // submit and restores it if this send throws. Clearing now would
         // erase whatever the user typed while the request was pending.
+        // This send just committed the new session's server-derived title.
+        if (isNewSession) {
+          void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
+        }
       } catch (err) {
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
@@ -528,6 +533,7 @@ export default function ChatTab() {
       }
     },
     [
+      wsId,
       activeSessionId,
       currentAgent,
       accessRevoked,

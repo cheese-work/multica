@@ -418,6 +418,10 @@
         "label": "Mostrar u ocultar la ventana de chat",
         "description": "Abre o cierra la ventana de chat flotante. Al abrirla, el foco va al campo de mensaje."
       },
+      "newChat": {
+        "label": "Pregunta a Multica",
+        "description": "Inicia un chat nuevo en la ventana de chat flotante."
+      },
       "findInIssue": {
         "label": "Buscar en la tarea",
         "description": "Busca dentro del detalle de la tarea abierta."
@@ -1370,7 +1374,9 @@
     "github_load_more": "Cargar más",
     "github_selected_count": "{{count}} seleccionados",
     "github_cancel": "Cancelar",
-    "github_import": "Añadir repositorios",
+    "github_import": "Añadir {{count}} repositorios",
+    "github_import_one": "Añadir {{count}} repositorio",
+    "github_import_other": "Añadir {{count}} repositorios",
     "save": "Guardar",
     "saving": "Guardando...",
     "saved_hint": "Todos los cambios guardados",
