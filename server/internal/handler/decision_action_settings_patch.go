@@ -113,6 +113,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 	case key == askguard.SettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
+	case key == decisiontx.SettingHeldMode:
+		err = validateHeldSettingModeSetting(map[string]any{key: value})
 	case key == "compact_prompt":
 		err = validateCompactPromptConfig(map[string]any{key: value})
 		if _, isString := value.(string); !isString && err == nil {
