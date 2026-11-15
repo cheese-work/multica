@@ -415,6 +415,10 @@
         "unpin": "取消置顶",
         "archive": "归档",
         "unarchive": "取消归档"
+      },
+      "short": {
+        "seen": "已读",
+        "unseen": "未读"
       }
     }
   },
