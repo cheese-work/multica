@@ -30,7 +30,7 @@ const map = (over = {}) => ({
   blocks: { "decision-request-ask": { selector: ".card .ask" } },
   ...over,
 });
-const ctx = { profileIds: new Set(["phone-358"]), lockLabels: new Set(["1"]), testIds: new Set(["decision-request-ask"]) };
+const ctx = { profileIds: new Set(["phone-358"]), lockLabels: new Set(["1"]) };
 
 test("repo files exist and pass (C1, C2)", () => {
   const r = validateRepoFiles({ read: (p) => readFileSync(p, "utf8") });
@@ -75,9 +75,10 @@ test("blocks: unknown profile, unknown state label, duplicate state x profile", 
   assert.match(validateBlocksMap(map({ cases: [kase({ state: "s99" })] }), ctx).errors.join(), /s99/);
   assert.match(validateBlocksMap(map({ cases: [kase(), kase()] }), ctx).errors.join(), /duplicate/);
 });
-test("blocks: block id must be a data-testid in the code", () => {
+test("blocks: block id is kebab-case; a block the code does not tag yet is allowed (check-fidelity reports it)", () => {
   const m = map({ blocks: { "decision-card.facts": { selector: ".facts" } } });
-  assert.match(validateBlocksMap(m, ctx).errors.join(), /decision-card\.facts.*data-testid/);
+  assert.match(validateBlocksMap(m, ctx).errors.join(), /decision-card\.facts.*kebab-case/);
+  assert.deepEqual(validateBlocksMap(map({ blocks: { "decision-request-title": { selector: ".hd b" } } }), ctx).errors, []);
 });
 test("blocks: annotation field is not allowed; repeat must be boolean", () => {
   assert.match(validateBlocksMap(map({ annotations: [] }), ctx).errors.join(), /annotation/);

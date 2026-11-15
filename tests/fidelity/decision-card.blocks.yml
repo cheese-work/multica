@@ -114,6 +114,12 @@ cases:
     profile: dm-card-520
     fixture: dm-multi-issue
 blocks:
+  decision-request-title:
+    selector: ".card .hd b"
+  decision-request-choice:
+    selector: ".card .seg"
+  decision-request-details:
+    selector: ".card .det"
   decision-request-card:
     selector: ".card"
   decision-request-asker:

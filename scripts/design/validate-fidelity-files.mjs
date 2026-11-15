@@ -6,13 +6,12 @@
  *
  * Run: node scripts/design/validate-fidelity-files.mjs
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
 export const DEVICES_PATH = "design/devices.yml";
 export const BLOCKS_PATH = "tests/fidelity/decision-card.blocks.yml";
-const CODE_DIR = "packages/views/chat/components";
 
 const PLATFORMS = new Set(["web", "desktop", "android", "ios"]);
 const THEMES = new Set(["light", "dark"]);
@@ -44,7 +43,7 @@ export function validateDevices(doc) {
   return { errors };
 }
 
-export function validateBlocksMap(doc, { profileIds, lockLabels, testIds }) {
+export function validateBlocksMap(doc, { profileIds, lockLabels }) {
   const errors = [];
   for (const k of Object.keys(doc ?? {})) {
     if (/annotation/i.test(k)) errors.push(`blocks: ${k}: the blocks map has no annotation field (C2)`);
@@ -75,7 +74,7 @@ export function validateBlocksMap(doc, { profileIds, lockLabels, testIds }) {
     return { errors };
   }
   for (const [id, b] of Object.entries(blocks)) {
-    if (!testIds.has(id)) errors.push(`blocks[${id}]: id is not a data-testid the code carries`);
+    if (!ID.test(id)) errors.push(`blocks[${id}]: id must be a kebab-case string`);
     if (typeof b?.selector !== "string" || !b.selector) errors.push(`blocks[${id}]: selector is required`);
     if (b?.repeat !== undefined && typeof b.repeat !== "boolean") errors.push(`blocks[${id}]: repeat must be a boolean`);
     for (const k of Object.keys(b ?? {})) {
@@ -99,18 +98,14 @@ export function lockLabelWidths(html) {
   return widths;
 }
 
-export function validateRepoFiles({ read, listDir = readdirSync }) {
+export function validateRepoFiles({ read }) {
   const devices = parse(read(DEVICES_PATH));
   const map = parse(read(BLOCKS_PATH));
   const errors = [...validateDevices(devices).errors];
   const profiles = new Map((devices?.profiles ?? []).map((p) => [p.id, p]));
-  const testIds = new Set();
-  for (const f of listDir(CODE_DIR).filter((n) => /^decision-.*\.tsx$/.test(n) && !n.endsWith(".test.tsx"))) {
-    for (const m of read(`${CODE_DIR}/${f}`).matchAll(/data-testid="([^"]+)"/g)) testIds.add(m[1]);
-  }
   const lockFile = map?.cases?.[0]?.lock_file;
   const widths = lockLabelWidths(read(lockFile));
-  errors.push(...validateBlocksMap(map, { profileIds: new Set(profiles.keys()), lockLabels: new Set(widths.keys()), testIds }).errors);
+  errors.push(...validateBlocksMap(map, { profileIds: new Set(profiles.keys()), lockLabels: new Set(widths.keys()) }).errors);
   const covered = new Set((map?.cases ?? []).map((c) => c.state));
   for (const [label, width] of widths) {
     if (!covered.has(`s${label}`)) errors.push(`lock draws state ${label} but no case covers it`);
