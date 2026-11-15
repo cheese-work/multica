@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({ rows: [] as InboxItem[], markRead: vi.fn() }))
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
   useMemo: (create: () => unknown) => create(),
+  useState: (initial: unknown) => [initial, vi.fn()],
   useCallback: (callback: unknown) => callback,
 }));
 vi.mock("react-native", () => ({

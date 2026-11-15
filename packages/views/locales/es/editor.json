@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "Añadido: ",
+    "removed": "Eliminado: ",
+    "revision": "Revisión {{number}}",
+    "readonly": "Solo lectura",
+    "issue": "Tarea de origen",
+    "diff": "Diff",
+    "split": "Dividida",
+    "unify": "Unificada",
+    "compare": "Comparar con",
+    "choose_base": "Elige una revisión base",
+    "change": "Cambio {{current}} / {{total}}",
+    "previous": "Cambio anterior",
+    "next": "Cambio siguiente",
+    "download": "Descargar",
+    "close": "Cerrar",
+    "more": "Más opciones",
+    "base": "Base",
+    "current": "Actual",
+    "loading_revisions": "Cargando revisiones…",
+    "revisions_error": "No se han podido cargar las revisiones",
+    "no_earlier": "No hay revisiones anteriores",
+    "loading": "Cargando documento…",
+    "current_error": "No se ha podido cargar el documento",
+    "loading_diff": "Cargando comparación…",
+    "comparison_error": "No se ha podido cargar la comparación",
+    "too_large": "Esta comparación es demasiado grande. Descarga los archivos para compararlos localmente.",
+    "identical": "No hay cambios entre estas revisiones",
+    "empty": "Este documento está vacío",
+    "unchanged": "{{count}} líneas sin cambios",
+    "retry": "Reintentar"
+  },
+  "media": {
+    "title": "Multimedia",
+    "more": "Más",
+    "open_in_new_window": "Abrir en una ventana nueva",
+    "open_failed": "No se ha podido abrir la página del contenido multimedia",
+    "loading": "Cargando contenido multimedia…",
+    "load_failed": "No se ha podido cargar el contenido multimedia",
+    "offline": "Sin conexión: se muestra la última copia cargada.",
+    "retry": "Reintentar"
+  },
   "bubble_menu": {
     "bold": "Negrita",
     "italic": "Cursiva",
@@ -113,19 +155,46 @@
     "group_cancelled": "Cancelado"
   },
   "slash_command": {
+    "client_command": "Multica",
+    "runs_the_agent": "ejecuta el agente",
+    "focus_hint": "[foco]",
+    "title_hint": "[título]",
+    "message_hint": "[mensaje]",
     "no_skills_configured": "No hay skills configuradas",
     "no_results": "Ninguna skill coincide",
     "commands": {
-      "note": "Añadir una nota: no activará ningún agente"
+      "note": "Añadir una nota: no activará ningún agente",
+      "compact": "Resumir este DM y continuar en uno nuevo",
+      "rename": "Renombrar este DM sin iniciar un turno del agente",
+      "fork": "Copiar este DM en uno nuevo; el mensaje opcional se envía allí",
+      "preset": "Elegir qué preset usa este DM",
+      "statistic": "Mostrar el uso y el coste de este DM",
+      "archive": "Archivar este DM sin iniciar un turno del agente",
+      "pin": "Fijar o desfijar este DM",
+      "unseen": "Marcar este DM como no visto y salir",
+      "unarchive": "Desarchivar este DM. No se envía nada al agente."
     }
   },
   "code_block": {
     "html_preview": "Vista previa HTML",
+    "close_preview": "Cerrar",
     "copy_code": "Copiar código",
     "show_preview": "Mostrar vista previa",
     "show_source": "Mostrar código fuente",
-    "fullscreen": "Pantalla completa",
-    "close_preview": "Cerrar"
+    "fullscreen": "Pantalla completa"
+  },
+  "dynamic_block": {
+    "preview": "Vista previa",
+    "source": "Fuente",
+    "view": "Ver",
+    "copy_source": "Copiar fuente",
+    "show_all": "Mostrar todo",
+    "rendering": "Renderizando...",
+    "error_html": "La vista previa encontró un error de script",
+    "error_mermaid": "No se ha podido dibujar este diagrama",
+    "error_at_line": "{{message}} (línea {{line}})",
+    "view_source": "Ver fuente",
+    "copy_error": "Copiar error"
   },
   "file_card": {
     "uploading": "Subiendo {{filename}}"
@@ -157,19 +226,6 @@
     "export_svg": "Descargar SVG",
     "export_source": "Descargar .mmd"
   },
-  "dynamic_block": {
-    "preview": "Vista previa",
-    "source": "Fuente",
-    "view": "Ver",
-    "copy_source": "Copiar fuente",
-    "show_all": "Mostrar todo",
-    "rendering": "Renderizando...",
-    "error_html": "La vista previa encontró un error de script",
-    "error_mermaid": "No se ha podido dibujar este diagrama",
-    "error_at_line": "{{message}} (línea {{line}})",
-    "view_source": "Ver fuente",
-    "copy_error": "Copiar error"
-  },
   "table": {
     "reset_widths": "Restablecer anchos",
     "expand": "Expandir tabla",
@@ -182,5 +238,8 @@
     "clear_filter": "Borrar filtro",
     "no_matches": "Ninguna fila coincide",
     "close": "Cerrar"
+  },
+  "next_self_mention": {
+    "label": "Mi siguiente mención"
   }
 }

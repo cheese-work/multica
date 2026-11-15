@@ -80,6 +80,7 @@ func TestDownloadFileBodyReadErrors(t *testing.T) {
 			if got, want := errors.As(err, &netErr), tc.wantExit == ExitNetwork; got != want {
 				t.Errorf("NetworkError = %t, want %t", got, want)
 			}
+			//nolint:errorlint // identity check: a non-network error must come back unwrapped
 			if tc.err == readerErr && err != readerErr {
 				t.Errorf("non-network error changed: %v", err)
 			}

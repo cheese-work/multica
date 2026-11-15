@@ -2,61 +2,27 @@
   "title": "Barra de comandos",
   "description": "Busca, ejecuta comandos o encarga trabajo a un agente",
   "placeholder": "Busca o escribe lo que necesitas hacer...",
+  "page_placeholder": "Filtrar...",
+  "breadcrumb_aria": "Menú actual",
   "groups": {
     "pages": "Páginas",
     "commands": "Comandos",
     "members": "Miembros",
+    "agents": "Agentes",
+    "squads": "Squads",
     "projects": "Proyectos",
     "issues": "Tareas",
+    "autopilots": "Automatizaciones",
+    "chats": "Chats",
+    "messages": "Mensajes",
+    "skills": "Skills",
     "cancelled": "Cancelado",
     "recent": "Reciente",
     "workspaces": "Espacios de trabajo",
-    "agents": "Agentes",
-    "squads": "Squads",
-    "autopilots": "Automatizaciones",
-    "chats": "Chats",
-    "skills": "Skills",
     "new": "Nuevo",
     "best_match": "Mejor coincidencia",
     "actions": "Acciones"
   },
-  "commands": {
-    "current_theme_aria": "Tema actual",
-    "new_issue": "Nueva tarea",
-    "new_project": "Nuevo proyecto",
-    "copy_issue_link": "Copiar enlace de la tarea",
-    "copy_identifier": "Copiar identificador ({{identifier}})",
-    "fold_all_comments": "Plegar todos los comentarios",
-    "unfold_all_comments": "Desplegar todos los comentarios",
-    "new_autopilot": "Nueva automatización",
-    "chat_with_agent": "Conversar con un agente",
-    "change_theme": "Cambiar tema...",
-    "send_feedback": "Enviar comentarios"
-  },
-  "toast": {
-    "link_copied": "Enlace copiado",
-    "copied_identifier": "{{identifier}} copiado",
-    "run_retried": "Ejecución reiniciada",
-    "run_cancelled": "Ejecución cancelada",
-    "subscribed": "Suscrito",
-    "unsubscribed": "Suscripción cancelada",
-    "label_added": "Etiqueta {{name}} añadida",
-    "label_removed": "Etiqueta {{name}} quitada",
-    "label_failed": "No se ha podido añadir la etiqueta {{name}} a todas las tareas",
-    "update_failed": "La actualización falló",
-    "assigned": "{{identifier}} asignada a {{name}}"
-  },
-  "empty": {
-    "no_results": "No se encontraron resultados.",
-    "no_labels": "Sin etiquetas",
-    "type_to_find_issue": "Escribe para buscar una tarea",
-    "type_to_find_people": "Escribe para buscar personas y agentes"
-  },
-  "trigger": {
-    "label": "Buscar..."
-  },
-  "page_placeholder": "Filtrar...",
-  "breadcrumb_aria": "Menú actual",
   "context": {
     "current_issue": "Tarea actual",
     "selected_issues_one": "{{count}} tarea seleccionada",
@@ -66,6 +32,19 @@
     "current_autopilot": "Automatización actual",
     "inbox": "Bandeja de entrada",
     "current_chat": "Chat actual"
+  },
+  "commands": {
+    "current_theme_aria": "Tema actual",
+    "new_issue": "Nueva tarea",
+    "new_project": "Nuevo proyecto",
+    "new_autopilot": "Nueva automatización",
+    "chat_with_agent": "Conversar con un agente",
+    "change_theme": "Cambiar tema...",
+    "send_feedback": "Enviar comentarios",
+    "copy_issue_link": "Copiar enlace de la tarea",
+    "copy_identifier": "Copiar identificador ({{identifier}})",
+    "fold_all_comments": "Plegar todos los comentarios",
+    "unfold_all_comments": "Desplegar todos los comentarios"
   },
   "issue": {
     "change_status": "Cambiar estado...",
@@ -138,6 +117,27 @@
     "dark": "Oscuro",
     "system": "Sistema"
   },
+  "toast": {
+    "link_copied": "Enlace copiado",
+    "copied_identifier": "{{identifier}} copiado",
+    "run_retried": "Ejecución reiniciada",
+    "run_cancelled": "Ejecución cancelada",
+    "subscribed": "Suscrito",
+    "unsubscribed": "Suscripción cancelada",
+    "label_added": "Etiqueta {{name}} añadida",
+    "label_removed": "Etiqueta {{name}} quitada",
+    "label_failed": "No se ha podido añadir la etiqueta {{name}} a todas las tareas",
+    "update_failed": "La actualización falló",
+    "assigned": "{{identifier}} asignada a {{name}}"
+  },
+  "empty": {
+    "no_results": "No se encontraron resultados.",
+    "no_labels": "Sin etiquetas",
+    "type_to_find_issue": "Escribe para buscar una tarea",
+    "type_to_find_people": "Escribe para buscar personas y agentes",
+    "no_results_for": "Sin resultados para “{{query}}”",
+    "no_results_hint": "Prueba con otra palabra clave."
+  },
   "delegate": {
     "heading": "Encargar a un agente",
     "create_and_assign": "Nueva tarea y asignar a {{name}}",
@@ -170,6 +170,27 @@
     "back": "Atrás",
     "prefix_commands": "Comandos",
     "prefix_issues": "Tareas",
-    "prefix_people": "Personas y agentes"
+    "prefix_people": "Personas y agentes",
+    "add_filter": "Añadir filtro",
+    "remove_filter": "Quitar filtro"
+  },
+  "trigger": {
+    "label": "Buscar..."
+  },
+  "messages": {
+    "untitled": "Chat sin título",
+    "searching": "Buscando en los mensajes…",
+    "error_title": "No se ha podido buscar en el contenido de los mensajes",
+    "error_failed": "El servidor devolvió un error. Los chats se siguen filtrando por título.",
+    "error_timed_out": "La búsqueda tardó demasiado. Los chats se siguen filtrando por título.",
+    "retry": "Reintentar",
+    "offline_title": "Estás sin conexión",
+    "offline_body_one": "Buscando solo en {{count}} chat guardado por título, no en el contenido de los mensajes.",
+    "offline_body_other": "Buscando solo en {{count}} chats guardados por título, no en el contenido de los mensajes."
+  },
+  "chips": {
+    "agent": "Agente: {{name}}",
+    "active": "Filtros activos: {{names}}",
+    "none": "Sin filtros activos"
   }
 }

@@ -214,6 +214,11 @@ func ResolveStatusTrigger(ctx context.Context, qtx *db.Queries, issue db.Issue, 
 	return trigger, nil
 }
 
+// HandoffCommentBelongsTo reports whether commentID is a live comment of issue.
+func HandoffCommentBelongsTo(ctx context.Context, q *db.Queries, issue db.Issue, commentID string) (bool, error) {
+	return handoffCommentBelongsTo(ctx, q, issue, commentID)
+}
+
 func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issue, commentID string) (bool, error) {
 	id, err := util.ParseUUID(commentID)
 	if err != nil {
@@ -223,5 +228,5 @@ func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issu
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	return err == nil && c.IssueID == issue.ID, err
+	return err == nil && c.IssueID == issue.ID && !c.DeletedAt.Valid, err
 }

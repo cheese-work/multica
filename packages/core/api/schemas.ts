@@ -1117,6 +1117,13 @@ const DecisionActionSchema = z.lazy(() => z.object({
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
   owner_only: z.boolean().optional().catch(undefined),
+  effect: z.string().optional().catch(undefined),
+  effect_reason: z.string().optional().catch(undefined),
+  decided_at: z.string().optional().catch(undefined),
+  decided_by_name: z.string().optional().catch(undefined),
+  on_behalf_of_name: z.string().optional().catch(undefined),
+  revocable: z.boolean().optional().catch(undefined),
+  revoke: z.object({ at: z.string(), by_name: z.string().optional().catch(undefined), reason: z.string().catch("") }).loose().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -1162,6 +1169,17 @@ export const DecisionRequestCardSchema = z.lazy(() => z.object({
     }).loose()).catch([]),
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
+  batch_id: z.string().optional().catch(undefined),
+  // A malformed list degrades to none: the card then offers no per-item choice.
+  batch_items: z.array(z.object({
+    action_id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    state: z.string().default(""),
+    result: z.unknown().optional(),
+    error_code: z.string().optional().catch(undefined),
+  }).loose()).optional().catch(undefined),
 }).loose());
 
 export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));

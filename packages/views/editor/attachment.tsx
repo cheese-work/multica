@@ -571,6 +571,7 @@ function ImageAttachmentView({
             <DeferredTooltip
               content={t(($) => $.image.download)}
               trigger={
+                // ui-pattern-ref: allow upstream image download button, merged unchanged (v0.9.0 sync)
                 <button
                   type="button"
                   onClick={handleDownload}

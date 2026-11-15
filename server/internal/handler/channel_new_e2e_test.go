@@ -706,7 +706,7 @@ func TestSlackNativeClearCommandKeepsChatAndAdvancesContextAtomically(t *testing
 	}
 	var title string
 	dbfx.QueryRow(t, `SELECT title FROM chat_session WHERE id = $1`, sessionID).Scan(&title)
-	if title != "/issue investigate native cle…" {
+	if title != "/issue investigate native clear" {
 		t.Fatalf("native /clear first-turn title = %q, want the literal command body", title)
 	}
 
@@ -747,7 +747,7 @@ func TestSlackNativeClearCommandKeepsChatAndAdvancesContextAtomically(t *testing
 		t.Fatalf("bare native /clear state: session=%s/%s context=%d pending=%t tasks=%d messages=%d routes=%d dedup=%t", currentSessionID, sessionID, currentContextRevision, currentBoundaryPending, currentTaskCount, currentMessageCount, currentRouteCount, bareDedupProcessed)
 	}
 	dbfx.QueryRow(t, `SELECT title FROM chat_session WHERE id = $1`, sessionID).Scan(&title)
-	if title != "/issue investigate native cle…" {
+	if title != "/issue investigate native clear" {
 		t.Fatalf("bare native /clear changed the existing title to %q", title)
 	}
 }

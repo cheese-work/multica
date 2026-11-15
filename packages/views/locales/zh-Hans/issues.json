@@ -19,7 +19,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "层级画布（已缩小）",
     "canvas_cards": "层级画布（已放大）",
-    "dialog_description": "平移和缩放层级。打开事项即可跳转。",
+    "dialog_description": "逐层浏览层级。打开事项即可跳转。",
+    "step_in": "进入下一层",
+    "step_out": "返回上一层",
+    "depth": "第 {{depth}} / {{max}} 层",
+    "depth_announce": "第 {{depth}} 层，共 {{max}} 层，{{count}} 张卡片，其中 {{withChildren}} 张有子项",
+    "more_cards": "另有 {{count}} 个",
+    "more_cards_pending": "另有 {{count}}+ 个，仍在加载",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − 切换层级 · 方向键移动 · 回车打开 · 空格进入或返回 · Esc 返回上一层",
+    "canvas_focus": "层级画布，第 {{depth}} 层",
     "zoom_in": "放大",
     "zoom_out": "缩小",
     "zoom_level": "缩放 {{percent}}%",
@@ -470,7 +479,10 @@
     "no_history": "无历史记录",
     "before_records": "记录之前",
     "collapse": "折叠",
-    "expand": "展开"
+    "expand": "展开",
+    "wakeup_cross": "唤醒",
+    "wakeup_children_done": "子项已完成",
+    "target_inside": "目标在内部（已折叠隐藏）"
   },
   "actor_issues": {
     "scope": {
