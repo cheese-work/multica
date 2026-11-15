@@ -259,6 +259,10 @@ services:
       # /api/config advertises the path and in-app docs links stay on the
       # origin the visitor reached.
       DOCS_URL: ${DOCS_URL:-}
+      # Base URL the provider-failure guard probes (GET <base>/v1/models, HTTP
+      # 401 = healthy) before it lets skipped recurring autopilots run again.
+      # Empty (the default) leaves the probe unconfigured; see .env.example.
+      MULTICA_PROVIDER_RECOVERY_BASE_URL: ${MULTICA_PROVIDER_RECOVERY_BASE_URL:-}
     restart: unless-stopped
 
   frontend:
