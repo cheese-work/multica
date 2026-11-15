@@ -286,6 +286,60 @@ func TestRuleE_BarrierCompactBesideOtherAgentsInFlightClaim(t *testing.T) {
 	}
 }
 
+// Order 1, two agents (CHE-2819 case (r), CHE-2894 step 8): agent A's running
+// task holds the DM through a parked compact; agent B has a queued DM task on
+// its own runtime. B's claim never waits on the DM row and returns nothing
+// while the compact is parked. After the compact commits and A's completion
+// finishes, B's task is admitted and stamped with the new epoch.
+func TestRuleE_BarrierCompactFirstSecondAgentClaimWaitsThenStamps(t *testing.T) {
+	svc := ruleENewService()
+	fx := newRuleEFixture(t)
+	b := newAdmissionAgent(t, "order1")
+	queued := addAdmissionTask(t, b, fx.sessionID, "", "queued")
+
+	key, release := ruleEPause(t, "INSERT", "chat_message",
+		fmt.Sprintf(`NEW.chat_session_id = '%s' AND NEW.message_kind = 'compaction_summary'`, fx.sessionID))
+	compactDone := make(chan int, 1)
+	go func() {
+		code, _ := postCompact(t, fx.token, "x")
+		compactDone <- code
+	}()
+	ruleEWaitParked(t, key)
+
+	completeDone := make(chan error, 1)
+	go func() {
+		_, _, err := svc.CompleteTaskWithRunContext(ctx(), ruleEUUID(t, fx.taskID), []byte(`{"output":"done"}`), "", "", "", false, "", "", nil)
+		completeDone <- err
+	}()
+	ruleEWaitOnDM(t)
+	select {
+	case err := <-completeDone:
+		t.Fatalf("completion finished while the compact held the DM lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if ruleEClaimUntil(t, svc, b.runtimeID, queued, 3*time.Second) {
+		t.Fatal("agent B's claim returned its DM task while the compact held the DM")
+	}
+	if status, _, _ := ruleEQueuedState(t, queued); status != "queued" {
+		t.Fatalf("agent B task = %q while the compact held the DM, want queued", status)
+	}
+
+	release()
+	if code := <-compactDone; code != http.StatusOK {
+		t.Fatalf("compact = %d, want 200", code)
+	}
+	if err := <-completeDone; err != nil {
+		t.Fatalf("completion after the compact: %v", err)
+	}
+	if !ruleEClaimUntil(t, svc, b.runtimeID, queued, 3*time.Second) {
+		t.Fatal("agent B's claim after the compact did not return its task")
+	}
+	if status, stamp, dm := ruleEQueuedState(t, queued); status != "dispatched" || dm != 1 || stamp != 1 {
+		t.Fatalf("agent B task = %q at epoch %d, DM epoch %d, want dispatched at 1/1", status, stamp, dm)
+	}
+}
+
 // Order 3: a DM row lock held by another transaction (a stand-in for a compact
 // with no running caller, which L1a-2 adds) is skipped by the claim within the
 // limit. A wait would run into the deadline and fail the test.

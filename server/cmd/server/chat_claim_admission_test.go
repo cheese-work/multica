@@ -75,6 +75,14 @@ func addAdmissionTask(t *testing.T, a admissionAgent, dm, issue, status string) 
 	return id
 }
 
+// markCompaction turns a queued DM task into a compaction-purpose task.
+func markCompaction(t *testing.T, id string) {
+	t.Helper()
+	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET purpose = 'compaction' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func taskStatus(t *testing.T, id string) string {
 	t.Helper()
 	var s string
@@ -119,9 +127,7 @@ func TestClaimDMTaskOfOtherAgentWaitsWithoutError(t *testing.T) {
 	dm := newAdmissionDM(t, r1)
 	first := addAdmissionTask(t, r1, dm, "", "running")
 	compaction := addAdmissionTask(t, r2, dm, "", "queued")
-	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET purpose = 'compaction' WHERE id = $1`, compaction); err != nil {
-		t.Fatal(err)
-	}
+	markCompaction(t, compaction)
 
 	got, err := claimRuntime(t, svc, r2)
 	if err != nil || got != "" {
@@ -139,31 +145,51 @@ func TestClaimDMTaskOfOtherAgentWaitsWithoutError(t *testing.T) {
 	}
 }
 
-// Two claimers on different runtimes start together: exactly one DM task
-// becomes dispatched, nobody sees an error (the loser hits the unique index),
-// and the loser is claimed after the winner settles.
-func TestClaimBarrierTwoAgentsOneDMExactlyOneActive(t *testing.T) {
+// Two claimers on different runtimes: R1 holds an ordinary DM task, R2 a
+// compaction task, both queued on one DM. Both claim UPDATEs are parked
+// before either commits (BEFORE UPDATE trigger on the advisory lock), then
+// released together, so the loser really hits the unique index. Exactly one
+// task becomes dispatched, nobody sees an error, and the loser is claimed
+// after the winner settles.
+func TestClaimBarrierDMAgentAndCompactionExactlyOneActive(t *testing.T) {
 	svc := admissionService()
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 5; i++ {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			r1, r2 := newAdmissionAgent(t, "r1"), newAdmissionAgent(t, "r2")
 			dm := newAdmissionDM(t, r1)
 			t1 := addAdmissionTask(t, r1, dm, "", "queued")
 			t2 := addAdmissionTask(t, r2, dm, "", "queued")
+			markCompaction(t, t2)
 
+			key, release := ruleEPause(t, "UPDATE", "agent_task_queue",
+				fmt.Sprintf(`OLD.status = 'queued' AND NEW.status = 'dispatched' AND NEW.chat_session_id = '%s'`, dm))
 			var wg sync.WaitGroup
-			start := make(chan struct{})
 			errs := make([]error, 2)
 			got := make([]string, 2)
 			for i, a := range []admissionAgent{r1, r2} {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					<-start
 					got[i], errs[i] = claimRuntime(t, svc, a)
 				}()
 			}
-			close(start)
+			// Both claim statements are parked before either commits.
+			parked := fmt.Sprintf(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = %d::oid`, key)
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				var n int
+				if err := testPool.QueryRow(ctx(), parked).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n == 2 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("claim statements parked = %d, want 2", n)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			release()
 			wg.Wait()
 			for i, err := range errs {
 				if err != nil {
@@ -202,6 +228,7 @@ func TestClaimUniqueViolationMapsToNoTaskAndKeepsCandidateQueued(t *testing.T) {
 	dm := newAdmissionDM(t, r1)
 	addAdmissionTask(t, r1, dm, "", "queued")
 	loser := addAdmissionTask(t, r2, dm, "", "queued")
+	markCompaction(t, loser)
 
 	tx, err := testPool.Begin(ctx())
 	if err != nil {
