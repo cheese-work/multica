@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -216,7 +217,15 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update env")
 		return
 	}
-	merged, audit := mergeAgentEnv(unmarshalCustomEnv(locked), req.CustomEnv)
+	existing := unmarshalCustomEnv(locked)
+	// A masked marker for a key that is not stored is a renamed or mistyped
+	// row. The value was never shown, so it cannot move; merging would drop
+	// the new key and delete the old one. Reject and keep the stored env.
+	if key, found := unknownMaskedKey(existing, req.CustomEnv); found {
+		writeError(w, http.StatusBadRequest, "key "+strconv.Quote(key)+" has no stored value to keep; enter a value for it")
+		return
+	}
+	merged, audit := mergeAgentEnv(existing, req.CustomEnv)
 	if len(merged) > 0 && h.rejectQoderOverrides(w, r, locked, qoderOverrides{customEnv: len(merged)}) {
 		return
 	}
@@ -372,6 +381,22 @@ func mergeAgentEnv(existing, request map[string]string) (map[string]string, envA
 	sort.Strings(audit.changed)
 	sort.Strings(audit.preserved)
 	return merged, audit
+}
+
+// unknownMaskedKey returns the first (sorted) request key whose value is the
+// masked marker but that has no stored value.
+func unknownMaskedKey(existing, request map[string]string) (string, bool) {
+	var unknown []string
+	for k, v := range request {
+		if _, ok := existing[k]; v == envSentinel && !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return "", false
+	}
+	sort.Strings(unknown)
+	return unknown[0], true
 }
 
 // unmarshalCustomEnv decodes an agent's stored custom_env bytea into a

@@ -378,3 +378,32 @@ func TestAgentEnvFacade_ClaimStillCarriesValue(t *testing.T) {
 		t.Fatalf("claim custom_env = %v, want planted value delivered", resp.Task.Agent.CustomEnv)
 	}
 }
+
+// Renaming a masked key in the editor sends {NEW: "****"} and omits OLD. The
+// server cannot move a value it never shows, so it must reject the write
+// instead of silently deleting the stored secret (review P1).
+func TestAgentEnvFacade_RenamedMaskedKeyIsRejectedAndKeepsSecret(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, ownerID := plantedEnvFixture(t, "env-facade-rename")
+	version := storedEnvVersion(t, agentID)
+
+	w := putAgentEnvAs(ownerID, agentID, map[string]any{"custom_env": map[string]string{"RENAMED_KEY": envSentinel}})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("renamed masked key: %d %s", w.Code, w.Body.String())
+	}
+	assertNoPlanted(t, "rename error body", w.Body.String())
+	if got := storedAgentEnv(t, agentID); len(got) != 1 || got["PLANTED_KEY"] != plantedEnvValue {
+		t.Fatalf("rejected rename changed the stored env: %v", got)
+	}
+	if v := storedEnvVersion(t, agentID); v != version {
+		t.Fatalf("rejected rename bumped the revision counter: %d -> %d", version, v)
+	}
+
+	// A rename that supplies a real value is a normal remove + add.
+	w = putAgentEnvAs(ownerID, agentID, map[string]any{"custom_env": map[string]string{"RENAMED_KEY": "new-value"}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("rename with a new value: %d %s", w.Code, w.Body.String())
+	}
+}
