@@ -212,8 +212,6 @@ export const issueKeys = {
    *  click time. */
   attachments: (issueId: string) =>
     [...issueKeys.attachmentsAll(), issueId] as const,
-  deliverables: (issueId: string) =>
-    [...issueKeys.attachments(issueId), "deliverables"] as const,
   /** Prefix for reconnects and task events without an issue scope. */
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
@@ -786,13 +784,21 @@ export function issueSubscribersOptions(issueId: string) {
 }
 
 // Reports arrive over realtime; the interval only re-derives "unreachable"
-// once a daemon goes quiet, which no event announces.
+// once a daemon goes quiet, and a command expiring when its machine never
+// answers, which no event announces.
 export function issueEnvironmentsOptions(wsId: string, issueId: string) {
   return queryOptions({
     queryKey: issueKeys.environments(wsId, issueId),
     queryFn: () => api.listIssueEnvironments(issueId),
     enabled: !!wsId && !!issueId,
-    refetchInterval: 60_000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const pending = !!data && (
+        data.pending_starts.length > 0 ||
+        data.environments.some((env) => env.pending_action?.status === "pending")
+      );
+      return pending ? 5_000 : 60_000;
+    },
   });
 }
 
@@ -814,10 +820,3 @@ export function issueAttachmentsOptions(issueId: string) {
   });
 }
 
-/** Complete attachment inventory; independent of the bounded discussion feed. */
-export function issueDeliverablesOptions(issueId: string) {
-  return queryOptions({
-    queryKey: issueKeys.deliverables(issueId),
-    queryFn: () => api.listIssueDeliverables(issueId),
-  });
-}

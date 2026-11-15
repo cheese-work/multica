@@ -398,3 +398,22 @@ sync range (CHE-5615):
 The up and down SQL bytes are unchanged. The migration builds no index, so the runner's
 concurrent-index name map needs no entry. A later sync must not reintroduce the upstream
 filename under its original prefix.
+
+## Upstream issue-environment control migration renumbering
+
+Upstream's `638` to `642` add the issue-environment control columns, the
+`issue_environment_command` table and its three indexes (MUL-8923). They extend
+`issue_environment`, which `9999938_issue_environment` creates in this fork, and
+migrations run in file-name order, so a fresh install would run them before the table
+exists. Fork migrations `640` to `642` (wakeup sweep and keyset indexes) also already use
+three of those numbers. They take the next free numbers in the sync range (CHE-5617):
+
+- `638_issue_environment_control` is now `9999943_issue_environment_control`
+- `639_issue_environment_command_pending_idx` is now `9999944_issue_environment_command_pending_idx`
+- `640_issue_environment_command_issue_idx` is now `9999945_issue_environment_command_issue_idx`
+- `641_issue_environment_command_logs_idx` is now `9999946_issue_environment_command_logs_idx`
+- `642_issue_environment_config_issue_idx` is now `9999947_issue_environment_config_issue_idx`
+
+The up and down SQL bytes are unchanged. The four index migrations build concurrently, so the
+runner's concurrent-index name map has an entry for each under its new name. A later sync must
+not reintroduce the upstream filenames under their original prefixes.

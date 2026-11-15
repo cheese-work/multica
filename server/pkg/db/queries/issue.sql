@@ -534,6 +534,12 @@ cleared_unread AS (
 ),
 cleared_environments AS (
     DELETE FROM issue_environment WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_environment_commands AS (
+    DELETE FROM issue_environment_command WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_environment_configs AS (
+    DELETE FROM issue_environment_config WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 
@@ -751,6 +757,8 @@ SELECT parent_issue_id,
 FROM issue
 WHERE workspace_id = $1
   AND parent_issue_id IS NOT NULL
+  -- MUL-8472: private projects the caller cannot see.
+  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR project_id IS NULL OR NOT (project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
 GROUP BY parent_issue_id;
 
 -- name: ListUrgentOrphanIssues :many
