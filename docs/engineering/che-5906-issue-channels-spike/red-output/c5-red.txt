@@ -1,34 +1,33 @@
 EmailService: DEV mode — codes printed to stdout (set MULTICA_DEV_VERIFICATION_CODE in .env for a fixed local code)
-2026/11/15 02:57:45 INFO llm retry policy max_retries=2 source=default request_timeout=1m0s enabled=false disable_thinking=false
+2026/11/15 21:25:14 INFO llm retry policy max_retries=2 source=default request_timeout=1m0s enabled=false disable_thinking=false
 === RUN   TestThreadRunCapC5
 === RUN   TestThreadRunCapC5/block_refuses_the_run_over_the_cap_and_saves_the_comment
-2026/11/15 02:57:45 INFO comment created user_id=e188501b-ce5c-4490-b54f-d58177a7ae1f comment_id=01a1dba3-2a6b-77c5-9930-02ca54bfaf0e issue_id=b8cdf36b-b2e0-41fa-a039-5c0676dfafdd
-2026/11/15 02:57:46 INFO mention task enqueued task_id=01a1dba3-2a97-715f-bf3b-159951c52495 issue_id=b8cdf36b-b2e0-41fa-a039-5c0676dfafdd agent_id=5accf597-ec65-4caf-9a42-fe7a99bff990 is_leader_task=false
-    thread_run_cap_c5_red_test.go:89: outcome = {TargetType:agent TargetID:5accf597-ec65-4caf-9a42-fe7a99bff990 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
+2026/11/15 21:25:14 INFO comment created user_id=8dcf03f6-eaaf-4109-96e7-37a2564273f3 comment_id=01a1df99-1607-7b48-86e8-c6726383b9d7 issue_id=68226920-00b6-4163-85cd-b2f290d6e251
+2026/11/15 21:25:14 INFO mention task enqueued task_id=01a1df99-1631-7e4b-a292-de28821ef034 issue_id=68226920-00b6-4163-85cd-b2f290d6e251 agent_id=9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 is_leader_task=false
+    thread_run_cap_c5_red_test.go:89: outcome = {TargetType:agent TargetID:9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
     thread_run_cap_c5_red_test.go:91: tasks = 3, want 2: the refused run must not be enqueued
 === RUN   TestThreadRunCapC5/runs_older_than_24_hours_do_not_count
-2026/11/15 02:57:46 INFO comment created user_id=e188501b-ce5c-4490-b54f-d58177a7ae1f comment_id=01a1dba3-2af2-7dda-807e-d32e5f6da5ff issue_id=c3a2e0ce-33fc-4eb6-8005-96036082fa12
-2026/11/15 02:57:46 INFO mention task enqueued task_id=01a1dba3-2b0d-7501-82e1-9584ac971c19 issue_id=c3a2e0ce-33fc-4eb6-8005-96036082fa12 agent_id=5accf597-ec65-4caf-9a42-fe7a99bff990 is_leader_task=false
-    thread_run_cap_c5_red_test.go:104: outcome = {TargetType:agent TargetID:5accf597-ec65-4caf-9a42-fe7a99bff990 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
+2026/11/15 21:25:14 INFO comment created user_id=8dcf03f6-eaaf-4109-96e7-37a2564273f3 comment_id=01a1df99-1690-7599-a955-de7956099ec0 issue_id=72e428ab-b32d-4602-92f9-25ad8856c188
+2026/11/15 21:25:14 INFO mention task enqueued task_id=01a1df99-16af-7bff-ae8c-68c87488e424 issue_id=72e428ab-b32d-4602-92f9-25ad8856c188 agent_id=9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 is_leader_task=false
 === RUN   TestThreadRunCapC5/count_is_per_thread,_not_per_issue
-2026/11/15 02:57:46 INFO comment created user_id=e188501b-ce5c-4490-b54f-d58177a7ae1f comment_id=01a1dba3-2b4e-713b-ba38-42bece7bc9d3 issue_id=28597440-6da8-484c-8044-4d6ddae4d297
-2026/11/15 02:57:46 INFO mention task enqueued task_id=01a1dba3-2b68-7e1b-a862-0d04edd02556 issue_id=28597440-6da8-484c-8044-4d6ddae4d297 agent_id=5accf597-ec65-4caf-9a42-fe7a99bff990 is_leader_task=false
-    thread_run_cap_c5_red_test.go:115: outcome = {TargetType:agent TargetID:5accf597-ec65-4caf-9a42-fe7a99bff990 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
-2026/11/15 02:57:46 INFO comment created user_id=e188501b-ce5c-4490-b54f-d58177a7ae1f comment_id=01a1dba3-2b80-771e-938a-7b6b649179e1 issue_id=28597440-6da8-484c-8044-4d6ddae4d297
-2026/11/15 02:57:46 INFO folded comment into queued issue task task_id=01a1dba3-2b68-7e1b-a862-0d04edd02556 issue_id=28597440-6da8-484c-8044-4d6ddae4d297 agent_id=5accf597-ec65-4caf-9a42-fe7a99bff990 new_trigger_comment_id=01a1dba3-2b80-771e-938a-7b6b649179e1 coalesced_count=1
+2026/11/15 21:25:14 INFO comment created user_id=8dcf03f6-eaaf-4109-96e7-37a2564273f3 comment_id=01a1df99-16fa-72d4-b6c2-b2fa4b862477 issue_id=c58c532d-a10c-464c-a8d5-8ad3f6c8cb46
+2026/11/15 21:25:14 INFO mention task enqueued task_id=01a1df99-1726-70c8-b692-4b7a12129d3f issue_id=c58c532d-a10c-464c-a8d5-8ad3f6c8cb46 agent_id=9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 is_leader_task=false
+    thread_run_cap_c5_red_test.go:118: outcome = {TargetType:agent TargetID:9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
+2026/11/15 21:25:14 INFO comment created user_id=8dcf03f6-eaaf-4109-96e7-37a2564273f3 comment_id=01a1df99-1744-7b46-bac7-6dd196c92654 issue_id=c58c532d-a10c-464c-a8d5-8ad3f6c8cb46
+2026/11/15 21:25:14 INFO folded comment into queued issue task task_id=01a1df99-1726-70c8-b692-4b7a12129d3f issue_id=c58c532d-a10c-464c-a8d5-8ad3f6c8cb46 agent_id=9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 new_trigger_comment_id=01a1df99-1744-7b46-bac7-6dd196c92654 coalesced_count=1
 === RUN   TestThreadRunCapC5/member_and_agent_triggered_runs_both_count
-2026/11/15 02:57:46 INFO comment created user_id=e188501b-ce5c-4490-b54f-d58177a7ae1f comment_id=01a1dba3-2bab-7cd2-b54e-609cbbd3e5b2 issue_id=d12afee1-c55e-4114-aa79-c2da24e12021
-2026/11/15 02:57:46 INFO mention task enqueued task_id=01a1dba3-2bba-7053-81f6-2ef86e515e2f issue_id=d12afee1-c55e-4114-aa79-c2da24e12021 agent_id=5accf597-ec65-4caf-9a42-fe7a99bff990 is_leader_task=false
-    thread_run_cap_c5_red_test.go:128: outcome = {TargetType:agent TargetID:5accf597-ec65-4caf-9a42-fe7a99bff990 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
+2026/11/15 21:25:14 INFO comment created user_id=8dcf03f6-eaaf-4109-96e7-37a2564273f3 comment_id=01a1df99-179b-7584-b99b-51c531408cfe issue_id=8d190b11-dd95-4100-9002-6ae25130077e
+2026/11/15 21:25:14 INFO mention task enqueued task_id=01a1df99-17af-7999-b498-791adfb6c491 issue_id=8d190b11-dd95-4100-9002-6ae25130077e agent_id=9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 is_leader_task=false
+    thread_run_cap_c5_red_test.go:131: outcome = {TargetType:agent TargetID:9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 Status:queued ReasonCode:queued}, blocked by thread_run_cap = false, want true
 === RUN   TestThreadRunCapC5/warn_logs_only_and_still_starts_the_run
-2026/11/15 02:57:46 INFO comment created user_id=e188501b-ce5c-4490-b54f-d58177a7ae1f comment_id=01a1dba3-2bde-7e7e-9101-2df3db412444 issue_id=a3cfccd5-e8d5-47f1-b314-94a91064d92f
-2026/11/15 02:57:46 INFO mention task enqueued task_id=01a1dba3-2bee-746f-9861-0331db7f58fc issue_id=a3cfccd5-e8d5-47f1-b314-94a91064d92f agent_id=5accf597-ec65-4caf-9a42-fe7a99bff990 is_leader_task=false
---- FAIL: TestThreadRunCapC5 (0.50s)
-    --- FAIL: TestThreadRunCapC5/block_refuses_the_run_over_the_cap_and_saves_the_comment (0.19s)
-    --- FAIL: TestThreadRunCapC5/runs_older_than_24_hours_do_not_count (0.09s)
-    --- FAIL: TestThreadRunCapC5/count_is_per_thread,_not_per_issue (0.11s)
-    --- FAIL: TestThreadRunCapC5/member_and_agent_triggered_runs_both_count (0.05s)
-    --- PASS: TestThreadRunCapC5/warn_logs_only_and_still_starts_the_run (0.05s)
+2026/11/15 21:25:14 INFO comment created user_id=8dcf03f6-eaaf-4109-96e7-37a2564273f3 comment_id=01a1df99-17ea-7529-a673-49f5e0524397 issue_id=46640a01-e514-4373-a31e-9a064efff687
+2026/11/15 21:25:14 INFO mention task enqueued task_id=01a1df99-17ff-742a-92ca-5b575e120997 issue_id=46640a01-e514-4373-a31e-9a064efff687 agent_id=9a0c5826-2d11-45b8-8d0d-90bc47c0ead4 is_leader_task=false
+--- FAIL: TestThreadRunCapC5 (0.61s)
+    --- FAIL: TestThreadRunCapC5/block_refuses_the_run_over_the_cap_and_saves_the_comment (0.15s)
+    --- PASS: TestThreadRunCapC5/runs_older_than_24_hours_do_not_count (0.12s)
+    --- FAIL: TestThreadRunCapC5/count_is_per_thread,_not_per_issue (0.15s)
+    --- FAIL: TestThreadRunCapC5/member_and_agent_triggered_runs_both_count (0.09s)
+    --- PASS: TestThreadRunCapC5/warn_logs_only_and_still_starts_the_run (0.08s)
 FAIL
-FAIL	github.com/multica-ai/multica/server/internal/handler	0.642s
+FAIL	github.com/multica-ai/multica/server/internal/handler	0.706s
 FAIL

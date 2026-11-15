@@ -65,8 +65,8 @@ Threads over M in 24 h: M=3 181, M=4 108, M=5 58, M=6 38, M=8 17, M=10 10, M=15 
 
 ## Failing tests (build tag `issue_channels_red`, so main CI skips them)
 
-- C5: `go test -tags issue_channels_red -run TestThreadRunCapC5 ./internal/handler/` (`server/internal/handler/thread_run_cap_c5_red_test.go`). Output: `red-output/c5-red.txt`. 4 subtests red, 1 (`warn`) green as a guard.
-- C2: `go test -tags issue_channels_red -run TestChannelListC2 ./cmd/server/` (`server/cmd/server/channel_list_c2_red_test.go`). Output: `red-output/c2-red.txt`. Red: `GET /api/channels = 404`. The first assertion aborts the test, so the subtests list the cases C2 must pass once the route exists.
+- C5: `go test -tags issue_channels_red -run TestThreadRunCapC5 ./internal/handler/` (`server/internal/handler/thread_run_cap_c5_red_test.go`). Output: `red-output/c5-red.txt`. 3 subtests red; 2 (`runs older than 24 hours do not count`, `warn`) are green guards today and go red if C5 counts expired runs or refuses under `warn`. Round 1 review (CHE-5904 `01a1df87`) fixed the window test: 2 expired runs + 1 recent at cap 2 must start.
+- C2: `go test -tags issue_channels_red -run TestChannelListC2 ./cmd/server/` (`server/cmd/server/channel_list_c2_red_test.go`). Output: `red-output/c2-red.txt`. Red: `GET /api/channels = 404`. The first assertion aborts the test, so the subtests list the cases C2 must pass once the route exists. The C2 test now uses a second author for the positive cases and a same-tagger negative case (`reply by the tagger alone is not a channel row`).
 - Not in the C2 test: "opened" (no store yet), unreadable issue (read check unnamed), summary rows.
 - Green: none yet. Implementation belongs to C2 and C5.
 

@@ -63,6 +63,8 @@ func TestChannelListC2(t *testing.T) {
 	fx := workspaceFixture(t)
 	runtime := fx.Runtime(t, "c2-runtime")
 	agent := fx.Agent(t, "c2-agent", runtime)
+	// other: a second author. A reply by the tagger itself is not a "joined" signal.
+	other := fx.Agent(t, "c2-other-agent", runtime)
 
 	// agentRoot: agent comment, hours ago. reply: agent child comment, later.
 	agentRoot := func(issue string, ago string) string {
@@ -71,9 +73,9 @@ func TestChannelListC2(t *testing.T) {
 			"created_at": testutil.Raw(fmt.Sprintf("now() - interval '%s'", ago)),
 		})
 	}
-	reply := func(issue, parent string, ago string) string {
+	reply := func(issue, parent, author, ago string) string {
 		return fx.Comment(t, issue, "agent reply", testutil.Cols{
-			"author_type": "agent", "author_id": agent, "parent_id": parent,
+			"author_type": "agent", "author_id": author, "parent_id": parent,
 			"created_at": testutil.Raw(fmt.Sprintf("now() - interval '%s'", ago)),
 		})
 	}
@@ -94,7 +96,12 @@ func TestChannelListC2(t *testing.T) {
 	tagReplied := fx.Issue(t, "c2 tagged, then replied")
 	r := agentRoot(tagReplied, "3 hours")
 	tag(tagReplied, r, false)
-	reply(tagReplied, r, "2 hours")
+	reply(tagReplied, r, other, "2 hours")
+
+	tagSelfReply := fx.Issue(t, "c2 tagged, replied by the tagger only")
+	s := agentRoot(tagSelfReply, "3 hours")
+	tag(tagSelfReply, s, false)
+	reply(tagSelfReply, s, agent, "2 hours")
 
 	wrote := fx.Issue(t, "c2 member wrote")
 	fx.Comment(t, wrote, "my comment") // author = member (testUserID)
@@ -102,12 +109,17 @@ func TestChannelListC2(t *testing.T) {
 	notifyOnly := fx.Issue(t, "c2 notify_only tag, replied")
 	n := agentRoot(notifyOnly, "3 hours")
 	tag(notifyOnly, n, true)
-	reply(notifyOnly, n, "2 hours")
+	reply(notifyOnly, n, other, "2 hours")
 
 	rows := c2List(t)
 
 	t.Run("tag with no reply is not a channel row", func(t *testing.T) {
 		if got := c2Find(rows, tagNoReply); got != nil {
+			t.Fatalf("got row %+v, want none", *got)
+		}
+	})
+	t.Run("reply by the tagger alone is not a channel row", func(t *testing.T) {
+		if got := c2Find(rows, tagSelfReply); got != nil {
 			t.Fatalf("got row %+v, want none", *got)
 		}
 	})

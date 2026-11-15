@@ -95,13 +95,16 @@ func TestThreadRunCapC5(t *testing.T) {
 	t.Run("runs older than 24 hours do not count", func(t *testing.T) {
 		setCap(t, "block", 2)
 		issueID, rootID := newThread(t, "C5 window")
-		seedRuns(t, issueID, rootID, 2, "25 hours") // outside the window
-		seedRuns(t, issueID, rootID, 2, "1 hour")   // inside the window: at the cap
+		seedRuns(t, issueID, rootID, 2, "25 hours") // outside the window: ignored
+		seedRuns(t, issueID, rootID, 1, "1 hour")   // inside the window: below the cap
 		status, outcomes := mention(t, issueID, rootID)
 		if status != http.StatusCreated {
 			t.Fatalf("status = %d, want 201", status)
 		}
-		wantOutcome(t, outcomes, true) // 2 in the window, so the third is refused
+		wantOutcome(t, outcomes, false) // 1 in the window, so the next run starts; counting all 3 would refuse it
+		if n := countIssueTasks(t, issueID); n != 4 {
+			t.Errorf("tasks = %d, want 4: the run must be enqueued", n)
+		}
 	})
 
 	t.Run("count is per thread, not per issue", func(t *testing.T) {
@@ -122,7 +125,7 @@ func TestThreadRunCapC5(t *testing.T) {
 		setCap(t, "block", 2)
 		issueID, rootID := newThread(t, "C5 origins")
 		memberReply := dbfx.Comment(t, issueID, "member reply", testutil.Cols{"author_type": "member", "author_id": testUserID, "parent_id": rootID})
-		seedRuns(t, issueID, rootID, 1, "1 hour")     // triggered by an agent comment
+		seedRuns(t, issueID, rootID, 1, "1 hour")      // triggered by an agent comment
 		seedRuns(t, issueID, memberReply, 1, "1 hour") // triggered by a member comment (OriginNamed skips the loop breaker)
 		_, outcomes := mention(t, issueID, rootID)
 		wantOutcome(t, outcomes, true)
