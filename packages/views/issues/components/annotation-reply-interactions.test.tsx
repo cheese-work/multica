@@ -52,6 +52,19 @@ async function typeNote(value: string) {
   return input;
 }
 
+// Edit and return at once: the 100 ms editor debounce has not fired, so the edit is still pending.
+async function typeNoteNow(value: string) {
+  const input = await screen.findByRole("textbox", { name: "Comment" });
+  await act(async () => { (input as HTMLElement & { editor: Editor }).editor.commands.setContent(value); });
+  return input;
+}
+
+async function reopen(view: { container: HTMLElement }) {
+  selectText(view.container, "child");
+  fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+  return screen.findByRole("textbox", { name: "Comment" });
+}
+
 // The hook loads the composer on demand; warm the module so the first open is not bound by findBy's 1 s.
 beforeAll(() => import("./annotation-composer"), 30_000);
 
@@ -97,6 +110,45 @@ describe("selection replies with the real ContentEditor", () => {
     selectText(second.container, "child");
     fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
     expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveTextContent("Survives the popup");
+  });
+
+  // Sol round 2 finding 1: an edit still inside the 100 ms debounce must survive an immediate dismiss or unmount.
+  it.each(["dismiss", "unmount"] as const)("keeps an edit made just before %s", async (how) => {
+    const first = renderWithI18n(<Fixture />);
+    selectText(first.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    await typeNoteNow("Typed then gone at once");
+    if (how === "dismiss") {
+      fireEvent.pointerDown(document.body);
+      await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    } else first.unmount();
+
+    const second = how === "dismiss" ? first : renderWithI18n(<Fixture />);
+    expect(await reopen(second)).toHaveTextContent("Typed then gone at once");
+  });
+
+  it("does not bring back a pending edit after Escape discards the note", async () => {
+    const view = renderWithI18n(<Fixture />);
+    selectText(view.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    await typeNoteNow("Discard me");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    expect(await reopen(view)).not.toHaveTextContent("Discard me");
+  });
+
+  it("does not bring back a pending edit after a successful send", async () => {
+    const onSubmit = vi.fn(async () => true);
+    const view = renderWithI18n(<Fixture onSubmit={onSubmit} />);
+    selectText(view.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    await typeNote("Sent text");
+    // A newer edit is still inside the debounce when the send lands.
+    await typeNoteNow("Sent text, edited after");
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    expect(await reopen(view)).not.toHaveTextContent("Sent text");
   });
 
   // Retrospective (added after the merge fix, not an original red): a refused mention keeps the composer and its note.

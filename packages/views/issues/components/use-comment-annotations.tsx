@@ -140,6 +140,13 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   ]), [draftKey]);
   // Unconfirmed note text lives in useAnnotationNoteDraftStore (keyed by quote identity), so it outlives the popover and the hook.
   const editingId = editing?.id;
+  // Id of a note the author discarded or sent. The composer flushes a pending edit when it unmounts; that late update must not write the note back.
+  const discardedNoteId = useRef<string | null>(null);
+  useEffect(() => { if (editingId) discardedNoteId.current = null; }, [editingId]);
+  const discardNote = useCallback((annotation: ReplyAnnotation) => {
+    discardedNoteId.current = annotation.id;
+    useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(annotation));
+  }, [noteDraftKey]);
   const [error, setError] = useState(false);
   const [anchors, setAnchors] = useState<SourceAnchor[]>([]);
   const markerRanges = useMemo(() => {
@@ -251,7 +258,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       if (event.target instanceof Element &&
         event.target.closest("[data-editor-overlay-owner]")?.getAttribute("data-editor-overlay-owner") === draftKey &&
         !event.target.closest("[data-reply-annotation-overlay]")) return;
-      if (editingRef.current) useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editingRef.current));
+      if (editingRef.current) discardNote(editingRef.current);
       if (selection.root.isConnected) {
         const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
         target.focus({ preventScroll: true });
@@ -287,7 +294,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener(editorOpenEvent, onEditorOpen);
     };
-  }, [selection, draftKey, editable, editorOpenEvent, highlightName, noteDraftKey]);
+  }, [selection, draftKey, editable, editorOpenEvent, highlightName, discardNote]);
 
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
@@ -406,7 +413,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       setError(true);
       return;
     }
-    useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
+    discardNote(editing);
     if (chat && !editingExisting) { pendingMarkerFocus.current = editing.id; close(false); }
     else close(true);
     if (!editingExisting) onAddedRef.current?.();
@@ -436,7 +443,6 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   const savedNote = editing && editingExisting ? annotations.find((a) => a.id === editing.id)?.note ?? "" : "";
   const composerAnnotation = editing && noteDraft && noteDraft.base === savedNote && noteDraft.value !== null && noteDraft.value !== editing.note
     ? { ...editing, note: noteDraft.value } : editing;
-  const clearNoteDraft = (annotation: ReplyAnnotation) => useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(annotation));
 
   return {
     cardRef,
@@ -500,15 +506,18 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
             isSourceAvailable={() => sourcesRef.current.some((source) => source.id === editing.sourceCommentId) &&
               !!cardRef.current && !!findAnnotationSource(cardRef.current, editing.sourceCommentId)}
             onChange={(note) => {
+              if (discardedNoteId.current === editing.id) return;
               useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: savedNote });
+              // A flush on unmount arrives after the popup closed; keep the draft but do not reopen it.
+              if (editingRef.current?.id !== editing.id) return;
               setEditor({ annotation: { ...editing, note }, existing: editingExisting }); setError(false);
             }}
             onSave={confirmNote} onBusyChange={(busy) => {
               if (editingRef.current?.id === editing.id) submittingRef.current = busy;
             }}
-            onAccepted={() => { clearNoteDraft(editing); if (editingRef.current?.id === editing.id) close(); }}
+            onAccepted={() => { discardNote(editing); if (editingRef.current?.id === editing.id) close(); }}
             onRemove={editingExisting ? () => {
-              clearNoteDraft(editing);
+              discardNote(editing);
               useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
               close(true);
             } : undefined} /></Suspense> : editing ? <AnnotationNoteEditor key={editing.id} inputRef={noteInputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}

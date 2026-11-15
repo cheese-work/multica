@@ -110,6 +110,8 @@ export function AnnotationComposer({
           placeholder={t(($) => $.reply.annotations.note_placeholder)}
           className="min-h-8 max-h-32 overflow-y-auto px-2 py-1.5"
           currentIssueId={issueId} showBubbleMenu={false} debounceMs={100}
+          // Closing keeps what the author last saw; the host drops it on an explicit discard or send.
+          flushPendingOnUnmount
           onUpdate={onChange} onSubmit={direct ? submit : save} />
       </div>
       {sourceMissing && <div className="px-2">
