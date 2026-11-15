@@ -1,13 +1,18 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { api } from "@multica/core/api";
+import { api, ApiError } from "@multica/core/api";
+import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { renderWithI18n } from "../../test/i18n";
 import { GuardTab } from "./guard-tab";
 
-vi.mock("@multica/core/api", () => ({
-  api: { getGuardStats: vi.fn(), listGuardDecisions: vi.fn() },
+vi.mock("@multica/core/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/api")>()),
+  api: { getGuardStats: vi.fn(), listGuardDecisions: vi.fn(), getGuardPolicy: vi.fn(), challengeGuardPolicy: vi.fn(), putGuardPolicy: vi.fn() },
 }));
+vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge: vi.fn() }));
+let role: "owner" | "member" = "owner";
+vi.mock("@multica/core/permissions", () => ({ useCurrentMember: () => ({ role }) }));
 let settings: Record<string, unknown> = {};
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "ws", name: "Cheese", settings }),
@@ -17,6 +22,10 @@ vi.mock("../../common/use-viewing-timezone", () => ({ useViewingTimezone: () => 
 
 const stats = vi.mocked(api.getGuardStats);
 const decisions = vi.mocked(api.listGuardDecisions);
+const getPolicy = vi.mocked(api.getGuardPolicy);
+const challenge = vi.mocked(api.challengeGuardPolicy);
+const put = vi.mocked(api.putGuardPolicy);
+const sign = vi.mocked(signPasskeyChallenge);
 
 const day = (d: string, fixed: number, refused: number) => ({ day: d, fixed, refused, errors: 0 });
 const POLICY = {
@@ -42,7 +51,12 @@ function mount() {
 }
 
 beforeEach(() => {
+  role = "owner";
   settings = { guard_policy: POLICY };
+  getPolicy.mockReset().mockResolvedValue({ policy: POLICY, sha256: "1111aaaa" + "0".repeat(56) });
+  challenge.mockReset().mockResolvedValue({ challenge_id: "c1", options: { publicKey: {} }, expires_at: "2026-11-15T00:00:00Z" });
+  sign.mockReset().mockResolvedValue({ challenge_id: "c1", credential: { id: "cred" } });
+  put.mockReset().mockImplementation(async (_ws, input) => ({ policy: input.policy as Record<string, unknown>, sha256: "2222bbbb" + "0".repeat(56) }));
   stats.mockReset().mockResolvedValue({
     days: 7,
     tz: "Asia/Bangkok",
@@ -113,10 +127,85 @@ it("shows the review policy rows and the CLI footer", async () => {
   expect(screen.getByText("multica guard stats")).toBeVisible();
 });
 
-it("explains how to edit instead of editing in the page", async () => {
+it("points a member at the CLI instead of an editor", async () => {
+  role = "member";
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "Edit with passkey" }));
   expect(screen.getByText(/multica guard plugin set --file/)).toBeVisible();
+  expect(screen.getByText("Only owners edit workspace-level rules here.")).toBeVisible();
+  expect(screen.queryByRole("combobox", { name: "Action" })).toBeNull();
+});
+
+async function openEditor(name = "ci-wait") {
+  mount();
+  fireEvent.click(within(await screen.findByRole("list", { name: "Guard plugins" })).getByText(name));
+  fireEvent.click(screen.getByRole("button", { name: "Edit with passkey" }));
+  return screen.findByRole("combobox", { name: "Action" });
+}
+
+const NEW_POLICY = {
+  ...POLICY,
+  plugins: POLICY.plugins.map((p) => (p.name === "ci-wait" ? { name: p.name, match: p.match, action: "pass", builtin: p.builtin, fail_closed: true } : p)),
+};
+
+it("lets an owner change a rule: challenge names the base, the passkey signs, the write follows", async () => {
+  const action = await openEditor();
+  fireEvent.change(action, { target: { value: "pass" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  expect(await screen.findByText("Saved. Policy 2222bbbb is live.")).toBeVisible();
+  const base = "1111aaaa" + "0".repeat(56);
+  expect(challenge).toHaveBeenCalledWith("ws", { policy: NEW_POLICY, base_sha256: base });
+  expect(sign).toHaveBeenCalledTimes(1);
+  expect(put).toHaveBeenCalledWith("ws", { policy: NEW_POLICY, base_sha256: base, assertion: { challenge_id: "c1", credential: { id: "cred" } } });
+});
+
+it("keeps the edit open with one line when the passkey prompt is cancelled", async () => {
+  sign.mockRejectedValueOnce(new Error("cancelled"));
+  const action = await openEditor();
+  fireEvent.change(action, { target: { value: "pass" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  expect(await screen.findByText("Passkey cancelled or timed out. Nothing was saved.")).toBeVisible();
+  expect(put).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Save with passkey" })).toBeEnabled();
+});
+
+const STALE_SHA = "3333cccc" + "0".repeat(56);
+function conflict() {
+  const current = { ...POLICY, plugins: [...POLICY.plugins, { name: "extra", match: { tool: "x" }, action: "pass" }] };
+  const body = { error: "stale_base: changed", code: "stale_base", current_sha256: STALE_SHA, policy: current };
+  return { current, error: new ApiError("stale_base: changed", 409, "Conflict", body) };
+}
+
+it("shows the Reapply screen on a 409 and re-applies the change on the current policy", async () => {
+  const { current, error } = conflict();
+  challenge.mockRejectedValueOnce(error);
+  const action = await openEditor();
+  fireEvent.change(action, { target: { value: "pass" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Not saved. The guard policy changed while you edited: 1111aaaa → 3333cccc.");
+  expect(screen.getByText("ci-wait: Deny → Pass, workspace scope.")).toBeVisible();
+  expect(put).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Re-apply on 3333cccc with passkey" }));
+  expect(await screen.findByText("Saved. Policy 2222bbbb is live.")).toBeVisible();
+  const reapplied = { ...current, plugins: current.plugins.map((p) => (p.name === "ci-wait" ? NEW_POLICY.plugins[1] : p)) };
+  expect(challenge).toHaveBeenLastCalledWith("ws", { policy: reapplied, base_sha256: STALE_SHA });
+  expect(put).toHaveBeenCalledWith("ws", expect.objectContaining({ policy: reapplied, base_sha256: STALE_SHA }));
+});
+
+it("drops the pending change on Discard and reloads the current values on Reload", async () => {
+  const { error } = conflict();
+  challenge.mockRejectedValue(error);
+  const action = await openEditor();
+  fireEvent.change(action, { target: { value: "pass" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Reload current" }));
+  expect(screen.getByRole("combobox", { name: "Action" })).toHaveValue("deny");
+  expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.change(screen.getByRole("combobox", { name: "Action" }), { target: { value: "pass" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+  expect(screen.queryByRole("combobox", { name: "Action" })).toBeNull();
+  expect(put).not.toHaveBeenCalled();
 });
 
 it("shows an error with retry when the counts cannot load", async () => {

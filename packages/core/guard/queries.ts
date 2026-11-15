@@ -7,6 +7,7 @@ export const GUARD_WINDOW_DAYS = 7;
 export const guardKeys = {
   all: (wsId: string) => ["guard", wsId] as const,
   stats: (wsId: string, days: number) => ["guard", wsId, "stats", days] as const,
+  policy: (wsId: string) => ["guard", wsId, "policy"] as const,
   decisions: (wsId: string, filters: GuardDecisionFilters) => ["guard", wsId, "decisions", filters] as const,
 };
 
@@ -25,5 +26,15 @@ export function guardDecisionsOptions(wsId: string, filters: GuardDecisionFilter
     queryKey: guardKeys.decisions(wsId, filters),
     queryFn: () => api.listGuardDecisions(filters),
     enabled: !!wsId,
+  });
+}
+
+/** The stored policy and its digest: the base a passkey edit signs over. */
+export function guardPolicyOptions(wsId: string) {
+  return queryOptions({
+    queryKey: guardKeys.policy(wsId),
+    queryFn: () => api.getGuardPolicy(wsId),
+    enabled: !!wsId,
+    staleTime: 0,
   });
 }

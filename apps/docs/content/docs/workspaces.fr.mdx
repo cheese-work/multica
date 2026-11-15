@@ -60,7 +60,7 @@ Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut d�
 
 **Paramètres → Guard** liste les plugins de garde des outils de l'espace de travail et ce que chacun a fait ces 7 derniers jours. Chaque plugin affiche le nombre d'appels corrigés, refusés ou en erreur, un graphique des occurrences par jour et ses dernières décisions. Les chiffres viennent des mêmes lignes que `multica guard stats` et `multica guard log`. Les jours suivent votre fuseau horaire d'affichage.
 
-La page est en lecture seule. **Modifier avec une clé d'accès** affiche les étapes en CLI : un agent crée la modification de politique avec `multica guard plugin set`, puis une personne l'approuve avec une passkey sur la carte de décision. Sans politique enregistrée, la page affiche les valeurs par défaut intégrées.
+Un propriétaire de l'espace de travail modifie ici une règle de niveau espace de travail : **Modifier avec une clé d'accès** change son action et son message, et le propriétaire signe cette modification exacte avec une passkey. La signature nomme la version de la politique dont elle part. Si une autre modification est arrivée avant, rien n'est enregistré et la page montre les deux versions avec **Réappliquer** (votre modification sur la nouvelle version, avec une nouvelle passkey), **Recharger l'actuelle** et **Abandonner**. Les membres voient la page en lecture seule. Les règles d'une couche org, dépôt ou chemin se modifient en CLI : un agent crée la modification avec `multica guard plugin set`, puis une personne l'approuve avec une passkey sur la carte de décision. Sans politique enregistrée, la page affiche les valeurs par défaut intégrées.
 
 ### Écritures gouvernées déléguées
 

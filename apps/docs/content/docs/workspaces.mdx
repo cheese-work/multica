@@ -60,7 +60,7 @@ The guard also covers an agent registering a wakeup that a person can trigger. B
 
 **Settings → Guard** lists the tool-guard plugins of the workspace and what each one did in the last 7 days. Each plugin shows how many calls it fixed, refused or failed on, a chart of hits per day, and its latest decisions. The numbers come from the same rows as `multica guard stats` and `multica guard log`. Days follow your viewing time zone.
 
-The page is read-only. **Edit with passkey** shows the CLI steps: an agent creates the policy change with `multica guard plugin set`, and a person approves it on the decision card with a passkey. Without a saved policy, the page shows the built-in defaults.
+A workspace owner edits a workspace-level rule here: **Edit with passkey** changes its action and message, and the owner signs that exact change with a passkey. The signature names the policy version it started from. If another change landed first, nothing is saved and the page shows the two versions with **Re-apply** (put your change on the new version, with a new passkey), **Reload current** and **Discard**. Members see the page read-only. Rules that belong to an org, repo or path layer are edited with the CLI: an agent creates the change with `multica guard plugin set`, and a person approves it on the decision card with a passkey. Without a saved policy, the page shows the built-in defaults.
 
 ### Delegated governed writes
 

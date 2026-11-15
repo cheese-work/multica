@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { GUARD_WINDOW_DAYS, guardDecisionsOptions, guardStatsOptions } from "@multica/core/guard/queries";
 import type { GuardDecision } from "@multica/core/types";
@@ -13,6 +14,7 @@ import { formatInTimeZone } from "../../common/format-in-time-zone";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
 import { type GuardAction, type GuardReviewRule, type GuardRow, type GuardScope, buildGuardRows, parseGuardPolicy } from "./guard-model";
+import { GuardEditor } from "./guard-edit";
 import { SettingsTab } from "./settings-layout";
 
 const DECISION_LIMIT = 20;
@@ -34,13 +36,16 @@ const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visi
 /**
  * Tool-guard plugins with what each one did in the last week. Reads the same
  * server rows as `multica guard log` and `multica guard stats`, so the numbers
- * match. Edits go through a passkey decision, not this page.
+ * match. An owner edits a workspace-level rule here with a passkey; layer rules
+ * and everyone else use the CLI.
  */
 export function GuardTab() {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const workspace = useCurrentWorkspace();
   const policy = parseGuardPolicy(workspace?.settings);
+  const { role } = useCurrentMember(wsId);
+  const isOwner = role === "owner";
   const { data: stats, isError, refetch } = useQuery(guardStatsOptions(wsId));
   const rows = stats ? buildGuardRows(policy, stats) : [];
   const [picked, setPicked] = useState<string | null>(null);
@@ -117,6 +122,7 @@ export function GuardTab() {
               key={selected.key}
               row={selected}
               locked={policy?.locked ?? false}
+              canEdit={isOwner}
               since={stats.since}
               tz={stats.tz}
               open={detailOpen}
@@ -281,6 +287,7 @@ function ReviewPolicy({ rules }: { rules: GuardReviewRule[] }) {
 function PluginDetail({
   row,
   locked,
+  canEdit,
   since,
   tz,
   open,
@@ -289,6 +296,7 @@ function PluginDetail({
 }: {
   row: GuardRow;
   locked: boolean;
+  canEdit: boolean;
   since: string;
   tz: string;
   open: boolean;
@@ -298,6 +306,7 @@ function PluginDetail({
   const { t } = useT("settings");
   const scopeLabel = useScopeLabel();
   const [editing, setEditing] = useState(false);
+  const editable = canEdit && row.inPolicy && row.scope === "workspace" && row.action !== "unknown";
   const actionText = {
     fix: t(($) => $.guard.fix_desc),
     deny: t(($) => $.guard.deny_desc),
@@ -336,9 +345,11 @@ function PluginDetail({
           {t(($) => $.guard.edit)}
         </Button>
       </header>
-      {editing && (
+      {editing && editable && <GuardEditor row={row} onClose={() => setEditing(false)} />}
+      {editing && !editable && (
         <div className="space-y-2 border-b border-surface-border bg-muted/40 p-4 text-label">
           <p className="font-medium">{t(($) => $.guard.edit_title)}</p>
+          <p className="text-muted-foreground">{t(($) => $.guard.edit_cli_only)}</p>
           <p className="text-muted-foreground">{t(($) => $.guard.edit_step1)}</p>
           <Code>{PLUGIN_SET_COMMAND}</Code>
           <p className="text-muted-foreground">{t(($) => $.guard.edit_step2)}</p>

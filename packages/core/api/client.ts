@@ -288,8 +288,8 @@ import { parseOrThrow, parseWithFallback } from "./schema";
 import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyBatchOutcomeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  GuardPolicyVersionSchema, PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type DecisionActionView, type GuardPolicyVersion, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -1509,6 +1509,24 @@ export class ApiClient {
     const parsed = parseWithFallback<GuardStats | null>(raw, GuardStatsSchema, null, { endpoint: "GET /api/guard/stats" });
     if (!parsed) throw new Error("Could not load guard stats");
     return parsed;
+  }
+
+  /** The stored guard policy and its digest. An edit names the digest as its base. */
+  async getGuardPolicy(workspaceId: string): Promise<GuardPolicyVersion> {
+    const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/guard-policy`;
+    return parsePasskeyResponse(await this.fetch<unknown>(path), GuardPolicyVersionSchema, `GET ${path}`);
+  }
+
+  /** Opens the owner's passkey challenge for one edit. A stale `base_sha256` is a 409 `ApiError` whose body carries the current policy. */
+  challengeGuardPolicy(workspaceId: string, input: { policy: unknown; base_sha256: string }): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/workspaces/${encodeURIComponent(workspaceId)}/guard-policy/challenge`, PasskeyChallengeSchema, input);
+  }
+
+  /** Writes the policy the assertion signed. Stale base: 409 with the current policy in `ApiError.body`. */
+  async putGuardPolicy(workspaceId: string, input: { policy: unknown; base_sha256: string; assertion: PasskeyAssertionEnvelope }): Promise<GuardPolicyVersion> {
+    const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/guard-policy`;
+    const raw: unknown = await this.fetch(path, { method: "PUT", body: JSON.stringify(input) });
+    return parsePasskeyResponse(raw, GuardPolicyVersionSchema, `PUT ${path}`);
   }
 
   async listGuardDecisions(filters: GuardDecisionFilters): Promise<GuardDecision[]> {

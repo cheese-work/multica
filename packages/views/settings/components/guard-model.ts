@@ -137,3 +137,22 @@ export function buildGuardRows(policy: GuardPolicyView | null, stats: GuardStats
     }));
   return [...stored, ...extra];
 }
+
+export interface GuardEdit {
+  action: Exclude<GuardAction, "unknown">;
+  message: string;
+}
+
+/**
+ * The stored policy with one workspace-scope plugin's action and message changed.
+ * Everything else is kept as stored, so fields this page does not know survive an edit.
+ * Null when the policy has no workspace plugin of that name (a layer entry is edited with the CLI).
+ */
+export function applyGuardEdit(policy: Record<string, unknown> | null, name: string, edit: GuardEdit): Record<string, unknown> | null {
+  const plugins = Array.isArray(policy?.plugins) ? (policy.plugins as unknown[]) : [];
+  const at = plugins.findIndex((p) => record(p)?.name === name);
+  if (!policy || at < 0) return null;
+  const { message: _old, ...rest } = record(plugins[at])!;
+  const changed = { ...rest, action: edit.action, ...(edit.message.trim() && { message: edit.message.trim() }) };
+  return { ...policy, plugins: plugins.map((p, i) => (i === at ? changed : p)) };
+}

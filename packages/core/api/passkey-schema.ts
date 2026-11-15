@@ -44,6 +44,10 @@ export const PasskeyDecisionOutcomeSchema = z.object({
 export const PasskeyBatchOutcomeSchema = z.object({ batch_id: z.string(), items: z.array(PasskeyDecisionOutcomeSchema) });
 export type PasskeyBatchOutcome = z.infer<typeof PasskeyBatchOutcomeSchema>;
 
+/** The stored guard policy (null when the workspace stores none) and its digest, the base an edit names. */
+export const GuardPolicyVersionSchema = z.object({ policy: z.record(z.string(), z.unknown()).nullable(), sha256: z.string() });
+export type GuardPolicyVersion = z.infer<typeof GuardPolicyVersionSchema>;
+
 /** What the server verifies for revoke and approve: the challenge it answers plus the WebAuthn credential. */
 export type PasskeyAssertionEnvelope = { challenge_id: string; credential: unknown };
 export type PasskeyEnrollStart = z.infer<typeof PasskeyEnrollStartSchema>;

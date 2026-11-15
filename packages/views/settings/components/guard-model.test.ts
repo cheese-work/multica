@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import type { GuardStats } from "@multica/core/types";
-import { buildGuardRows, parseGuardPolicy } from "./guard-model";
+import { applyGuardEdit, buildGuardRows, parseGuardPolicy } from "./guard-model";
 
 const stats: GuardStats = {
   days: 7,
@@ -82,4 +82,33 @@ it("keeps a plugin name that repeats across scopes as separate rows with unique 
   expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
   expect(ghPr.every((r) => r.sharedCounts && r.fixed === 42)).toBe(true);
   expect(rows.find((r) => r.name === "docs-only")!.sharedCounts).toBe(false);
+});
+
+const STORED = {
+  version: 1,
+  plugins: [
+    { name: "ci-wait", match: { tool: "gh" }, action: "deny", builtin: "ci-wait", message: "wait", future_field: { keep: true } },
+    { name: "pr-title-tag", match: { tool: "gh" }, action: "fix", builtin: "gh-pr" },
+  ],
+  layers: [{ scope: "org", org: "acme", plugins: [{ name: "ci-wait", action: "deny" }] }],
+  review: [{ repo: "a/b" }],
+};
+
+it("changes only the named workspace plugin's action and message and keeps every other field", () => {
+  const next = applyGuardEdit(STORED, "ci-wait", { action: "pass", message: "" });
+  expect(next).toEqual({
+    ...STORED,
+    plugins: [
+      { name: "ci-wait", match: { tool: "gh" }, action: "pass", builtin: "ci-wait", future_field: { keep: true } },
+      STORED.plugins[1],
+    ],
+  });
+  expect(STORED.plugins[0]!.action).toBe("deny");
+});
+
+it("sets a non-empty message and returns null when the workspace has no such plugin", () => {
+  const next = applyGuardEdit(STORED, "pr-title-tag", { action: "fix", message: "tag added" }) as typeof STORED;
+  expect(next.plugins[1]).toMatchObject({ message: "tag added" });
+  expect(applyGuardEdit(STORED, "gone", { action: "pass", message: "" })).toBeNull();
+  expect(applyGuardEdit(null, "ci-wait", { action: "pass", message: "" })).toBeNull();
 });
