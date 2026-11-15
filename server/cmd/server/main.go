@@ -927,6 +927,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
+		slog.Error("scheduler: register member-owned issue sweep", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
 	}
