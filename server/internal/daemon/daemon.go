@@ -2121,11 +2121,10 @@ func (d *Daemon) noteWSHeartbeatSent(runtimeID string, seq uint64, at time.Time)
 	if d.wsHBSent == nil {
 		d.wsHBSent = make(map[string][]wsSentBeat)
 	}
-	s := append(d.wsHBSent[runtimeID], wsSentBeat{seq, at})
-	if len(s) > wsMaxUnacked {
-		s = s[1:]
+	d.wsHBSent[runtimeID] = append(d.wsHBSent[runtimeID], wsSentBeat{seq, at})
+	if s := d.wsHBSent[runtimeID]; len(s) > wsMaxUnacked {
+		d.wsHBSent[runtimeID] = s[1:]
 	}
-	d.wsHBSent[runtimeID] = s
 }
 
 // wsHeartbeatAnchor returns the send time of the frame an ack answers: the
