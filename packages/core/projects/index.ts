@@ -1,7 +1,11 @@
 export { canDeleteProject } from "./deletion-permissions";
 export { projectKeys, projectListOptions, projectDetailOptions } from "./queries";
 export { useCreateProject, useUpdateProject, useDeleteProject, ProjectDeletionOfflineError } from "./mutations";
-export { useProjectDraftStore } from "./draft-store";
+export {
+  useProjectDraftStore,
+  useProjectRenameDraftStore,
+  EMPTY_PROJECT_RENAME_DRAFT,
+} from "./draft-store";
 export {
   useProjectViewStore,
   PROJECT_SORT_DEFAULT_DIRECTION,
