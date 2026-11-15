@@ -1001,6 +1001,11 @@ type Comment struct {
 	ExternalRead        bool               `json:"external_read"`
 }
 
+type CommentContentEdit struct {
+	CommentID pgtype.UUID        `json:"comment_id"`
+	EditedAt  pgtype.Timestamptz `json:"edited_at"`
+}
+
 type CommentReaction struct {
 	ID          pgtype.UUID        `json:"id"`
 	CommentID   pgtype.UUID        `json:"comment_id"`
