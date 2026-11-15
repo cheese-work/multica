@@ -717,13 +717,9 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
-	// Reload drain (CHE-5453), also guarded by claimMu. While draining, pollers
-	// claim nothing new so the running tasks can finish; reloadKick then wakes
-	// autoUpdateLoop the moment the daemon goes idle. See startReloadDrain.
-	draining     bool
-	drainRetryAt time.Time // no new drain before this (backoff after a timeout)
-	drainTimer   *time.Timer
-	reloadKick   chan struct{} // cap 1; created in New
+	// reloadKick wakes autoUpdateLoop the moment a pending reload finds the
+	// daemon idle. See kickReloadIfIdle.
+	reloadKick chan struct{} // cap 1; created in New
 
 	// pause is the server-reported machine pause, refreshed by every heartbeat
 	// ack (see pause.go). nil when the machine is not paused.
@@ -5299,7 +5295,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims || d.draining || d.heldPauseNow() != nil {
+	if d.pauseClaims || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++
