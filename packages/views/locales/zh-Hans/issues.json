@@ -664,7 +664,8 @@
   },
   "timeline": {
     "loading": "加载中…",
-    "jump_to_latest": "跳到最新"
+    "jump_to_latest": "跳到最新",
+    "new_comments_other": "{{count}} 条新评论"
   },
   "activity": {
     "created": "创建了这个任务",
@@ -1891,10 +1892,6 @@
       "name_placeholder": "状态名称",
       "add": "添加"
     },
-    "menu": {
-      "view_flow": "查看完整流程",
-      "switch": "切换工作流"
-    },
     "flow": {
       "title": "「{{workflow}}」工作流",
       "scope_own": "只有这个项目使用这个工作流。",
@@ -1922,7 +1919,8 @@
           "bad_on_timeout": "{{from}} 的某个出口需要有效的超时后步骤。",
           "ci_green_source": "{{from}} 不能在 CI 通过时推进。"
         }
-      }
+      },
+      "switch": "切换工作流"
     },
     "templates": {
       "delivery": {

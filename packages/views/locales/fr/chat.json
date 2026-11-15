@@ -167,6 +167,8 @@
     "quote_message": "Citer",
     "speaker_you": "Vous",
     "load_older_messages": "Charger les messages précédents",
+    "jump_to_latest": "Aller au plus récent",
+    "new_reply": "Nouvelle réponse",
     "show_details": "Afficher les détails",
     "show_earlier_context": "Afficher le contexte précédent",
     "replied_in": "Réponse en {{elapsed}}",

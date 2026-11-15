@@ -155,8 +155,8 @@ export function Markdown({
     [wsSlug],
   );
   const split = useMemo(
-    () => splitMarkdown(preprocessMobileMarkdown(content)),
-    [content],
+    () => splitMarkdown(preprocessMobileMarkdown(content, attachments)),
+    [content, attachments],
   );
   const commentIds = useMemo(
     () => findSegmentCommentIds(split, linkCtx),

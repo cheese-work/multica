@@ -664,7 +664,8 @@
   },
   "timeline": {
     "loading": "読み込み中...",
-    "jump_to_latest": "最新に移動"
+    "jump_to_latest": "最新に移動",
+    "new_comments_other": "新しいコメント {{count}} 件"
   },
   "activity": {
     "created": "このタスクを作成しました",
@@ -1891,10 +1892,6 @@
       "name_placeholder": "ステータス名",
       "add": "追加"
     },
-    "menu": {
-      "view_flow": "フロー全体を見る",
-      "switch": "ワークフローを切り替え"
-    },
     "flow": {
       "title": "ワークフロー「{{workflow}}」",
       "scope_own": "このワークフローを使用しているのはこのプロジェクトだけです。",
@@ -1922,7 +1919,8 @@
           "bad_on_timeout": "{{from}} の遷移には有効なタイムアウト時のステップが必要です。",
           "ci_green_source": "{{from}} は CI 成功では進められません。"
         }
-      }
+      },
+      "switch": "ワークフローを切り替え"
     },
     "templates": {
       "delivery": {

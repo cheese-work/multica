@@ -38,7 +38,7 @@ import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectAccessControl } from "./project-access";
 import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
-import { ProjectWorkflowMenuHost } from "../../workflows/project-workflow-menu";
+import { ProjectWorkflowMenuItem, ProjectWorkflowSheet } from "../../workflows/project-workflow-sheet";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { PROJECT_ISSUE_MODES } from "../../issues/surface/modes";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -107,15 +107,14 @@ function PropRow({
   );
 }
 
-// The project's workflow (MUL-7420). Hidden while workflows are off, unless the
-// project already uses one — it can always switch back to Default.
-function ProjectWorkflowPropRow({ project }: { project: Project }) {
+// The project's workflow (MUL-7420).
+function ProjectWorkflowPropRow({ project, onOpen }: { project: Project; onOpen: () => void }) {
   const { t } = useT("issues");
   const enabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
   if (!enabled && !project.workflow_id) return null;
   return (
     <PropRow label={t(($) => $.workflows.project.label)}>
-      <ProjectWorkflowControl project={project} />
+      <ProjectWorkflowControl project={project} onOpen={onOpen} />
     </PropRow>
   );
 }
@@ -209,6 +208,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   } = useAnimatedRightSidebarState(desktopSidebarInitialOpen);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const sidebarOpen = isMobile ? mobileSidebarOpen : desktopSidebarOpen;
+  const [workflowSheetOpen, setWorkflowSheetOpen] = useState(false);
+  // The flow panel is its own modal sheet; it can't stack over the mobile sidebar sheet.
+  const openWorkflowSheet = useCallback(() => {
+    setMobileSidebarOpen(false);
+    setWorkflowSheetOpen(true);
+  }, []);
 
   useEffect(() => {
     if (isMobile) {
@@ -476,7 +481,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           <PropRow label={t(($) => $.detail.prop_due_date)}>
             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
           </PropRow>
-          <ProjectWorkflowPropRow project={project} />
+          <ProjectWorkflowPropRow project={project} onOpen={openWorkflowSheet} />
         </div>}
       </div>
 
@@ -550,84 +555,75 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             scope={issueScope}
             modes={PROJECT_ISSUE_MODES}
             renderHeader={({ controller }) => (
-              <ProjectWorkflowMenuHost project={project}>
-                {(workflowSubmenu) => (
-                  <IssueViewHeader
-                    controller={controller}
-                    base={{ kind: "project", project }}
-                    baseMenu={
+              <IssueViewHeader
+                controller={controller}
+                base={{ kind: "project", project }}
+                baseMenu={
+                  <>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        useModalStore
+                          .getState()
+                          .open("project-rename", { projectId: project.id, title: project.title })
+                      }
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      {t(($) => $.detail.rename_action)}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => {
+                      void copyText(router.getShareableUrl(currentPath(router))).then((ok) => {
+                        if (ok) toast.success(t(($) => $.detail.toast_link_copied));
+                      });
+                    }}>
+                      <Link2 className="h-3.5 w-3.5" />
+                      {t(($) => $.detail.copy_link)}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => {
+                      if (isPinned) {
+                        deletePinMut.mutate({ itemType: "project", itemId: projectId });
+                      } else {
+                        createPin.mutate({ item_type: "project", item_id: projectId });
+                      }
+                    }}>
+                      {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                      {isPinned ? t(($) => $.detail.unpin_tooltip) : t(($) => $.detail.pin_tooltip)}
+                    </DropdownMenuItem>
+                    <ProjectWorkflowMenuItem project={project} onOpen={() => setWorkflowSheetOpen(true)} />
+                    {canDelete && (
                       <>
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem
-                          onClick={() =>
-                            useModalStore
-                              .getState()
-                              .open("project-rename", { projectId: project.id, title: project.title })
-                          }
+                          variant="destructive"
+                          disabled={deleting}
+                          aria-busy={deleting}
+                          onClick={() => setDeleteDialogOpen(true)}
                         >
-                          <Pencil className="h-3.5 w-3.5" />
-                          {t(($) => $.detail.rename_action)}
+                          {deleting ? <Spinner className="size-3.5" aria-hidden="true" /> : <Trash2 className="h-3.5 w-3.5" />}
+                          {t(($) => $.detail.delete_action)}
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => {
-                          void copyText(router.getShareableUrl(currentPath(router))).then((ok) => {
-                            if (ok) toast.success(t(($) => $.detail.toast_link_copied));
-                          });
-                        }}>
-                          <Link2 className="h-3.5 w-3.5" />
-                          {t(($) => $.detail.copy_link)}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => {
-                          if (isPinned) {
-                            deletePinMut.mutate({ itemType: "project", itemId: projectId });
-                          } else {
-                            createPin.mutate({ item_type: "project", item_id: projectId });
-                          }
-                        }}>
-                          {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
-                          {isPinned ? t(($) => $.detail.unpin_tooltip) : t(($) => $.detail.pin_tooltip)}
-                        </DropdownMenuItem>
-                        {workflowSubmenu && (
-                          <>
-                            <DropdownMenuSeparator />
-                            {workflowSubmenu}
-                          </>
-                        )}
-                        {canDelete && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              variant="destructive"
-                              disabled={deleting}
-                              aria-busy={deleting}
-                              onClick={() => setDeleteDialogOpen(true)}
-                            >
-                              {deleting ? <Spinner className="size-3.5" aria-hidden="true" /> : <Trash2 className="h-3.5 w-3.5" />}
-                              {t(($) => $.detail.delete_action)}
-                            </DropdownMenuItem>
-                          </>
-                        )}
                       </>
-                    }
-                    trailing={
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <Button
-                              variant={sidebarOpen ? "secondary" : "ghost"}
-                              size="icon-sm"
-                              className={sidebarOpen ? "" : "text-muted-foreground"}
-                              aria-label={t(($) => $.detail.sidebar_tooltip)}
-                              onClick={handleToggleSidebar}
-                            >
-                              <PanelRight />
-                            </Button>
-                          }
-                        />
-                        <TooltipContent side="bottom">{t(($) => $.detail.sidebar_tooltip)}</TooltipContent>
-                      </Tooltip>
-                    }
-                  />
-                )}
-              </ProjectWorkflowMenuHost>
+                    )}
+                  </>
+                }
+                trailing={
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant={sidebarOpen ? "secondary" : "ghost"}
+                          size="icon-sm"
+                          className={sidebarOpen ? "" : "text-muted-foreground"}
+                          aria-label={t(($) => $.detail.sidebar_tooltip)}
+                          onClick={handleToggleSidebar}
+                        >
+                          <PanelRight />
+                        </Button>
+                      }
+                    />
+                    <TooltipContent side="bottom">{t(($) => $.detail.sidebar_tooltip)}</TooltipContent>
+                  </Tooltip>
+                }
+              />
             )}
           />
           </div>
@@ -659,6 +655,8 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           </Sheet>
         )}
       </ResizablePanelGroup>
+
+      <ProjectWorkflowSheet project={project} open={workflowSheetOpen} onOpenChange={setWorkflowSheetOpen} />
 
       {/* Delete confirmation */}
       {canDelete && (

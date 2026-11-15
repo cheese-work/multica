@@ -677,7 +677,9 @@
   },
   "timeline": {
     "loading": "Chargement...",
-    "jump_to_latest": "Aller au plus récent"
+    "jump_to_latest": "Aller au plus récent",
+    "new_comments_one": "{{count}} nouveau commentaire",
+    "new_comments_other": "{{count}} nouveaux commentaires"
   },
   "activity": {
     "created": "a créé cette tâche",
@@ -1970,10 +1972,6 @@
       "name_placeholder": "Nom de l’état",
       "add": "Ajouter"
     },
-    "menu": {
-      "view_flow": "Voir tout le flux",
-      "switch": "Changer de workflow"
-    },
     "flow": {
       "title": "Workflow {{workflow}}",
       "scope_own": "Seul ce projet utilise ce workflow.",
@@ -2002,7 +2000,8 @@
           "bad_on_timeout": "Une sortie de {{from}} exige une étape valide à l’expiration.",
           "ci_green_source": "{{from}} ne peut pas avancer quand la CI est verte."
         }
-      }
+      },
+      "switch": "Changer de workflow"
     },
     "templates": {
       "delivery": {

@@ -66,6 +66,10 @@ runs:
           PR_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" -q .body 2>/dev/null || printf '%s' "$EVENT_PR_BODY")" \
             node scripts/design/check-ui-pattern-ref.mjs --base FETCH_HEAD
         fi
+    - name: Check the theme validator CLI
+      shell: bash
+      run: |
+        node --test scripts/theme-check.test.mjs
 
     # Keep existing knip findings advisory in either caller.
     - name: Check for dead code and phantom dependencies (knip)
