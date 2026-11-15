@@ -10,10 +10,15 @@ name: pr-guard-rules
 # back and the repository's `.github/agent-rules.yml` from the current tip of the protected base branch. Nothing is
 # edited. The review policy comes from the repository variables GUARD_POLICY_JSON and GUARD_POLICY_SHA256
 # (digest of the JSON; the CLI verifies it). Both unset (no stored policy, CHE-5934): the compiled default policy judges
-# the PR. Only one set: the check is red. Never add a secret to this workflow.
+# the PR. Only one set: the check is red.
+# CHE-5752: the one secret is the read-only GUARD_POLICY_READ_TOKEN; with it the check reads the live stored policy and
+# fails closed on a stale variable copy (scripts/pr-guard-rules.sh). Never add another secret or a write permission.
 
 on:
   workflow_call:
+    secrets:
+      GUARD_POLICY_READ_TOKEN:
+        required: false
 
 permissions: {}
 
@@ -46,4 +51,8 @@ jobs:
           REPO: ${{ github.repository }}
           GUARD_POLICY_JSON: ${{ vars.GUARD_POLICY_JSON }}
           GUARD_POLICY_SHA256: ${{ vars.GUARD_POLICY_SHA256 }}
+          GUARD_POLICY_READ_TOKEN: ${{ secrets.GUARD_POLICY_READ_TOKEN }}
+          GUARD_POLICY_LIVE_REQUIRED: ${{ vars.GUARD_POLICY_LIVE_REQUIRED }}
+          MULTICA_SERVER_URL: ${{ vars.GUARD_POLICY_SERVER_URL }}
+          MULTICA_WORKSPACE_ID: ${{ vars.GUARD_POLICY_WORKSPACE_ID }}
         run: bash scripts/pr-guard-rules.sh
