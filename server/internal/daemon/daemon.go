@@ -5174,13 +5174,23 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	}
 
 	deadline := updateDeadline(update, anchor)
-	switch d.tryBeginServerUpdate(ctx) {
+	// Reports and acquisition share the deadline: a claim stuck in flight cannot
+	// hold the barrier past it (tryBeginServerUpdate releases it on ctx.Done).
+	reportCtx, cancelReports := context.WithDeadline(ctx, deadline)
+	defer cancelReports()
+	switch d.tryBeginServerUpdate(reportCtx) {
 	case serverUpdateAlreadyRunning:
 		d.logger.Warn("update deferred: another update is already in progress", "runtime_id", runtimeID, "update_id", update.ID)
 		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonBusy,
 			"another runtime update is already in progress on this machine"))
 		return
 	case serverUpdateRuntimeBusy:
+		if !time.Now().Before(deadline) {
+			d.logger.Warn("update not started: deadline passed while waiting for claims to drain", "runtime_id", runtimeID, "update_id", update.ID)
+			d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonDeadline,
+				"the update did not finish before its deadline"))
+			return
+		}
 		d.logger.Info("update deferred: task or claim in progress", "runtime_id", runtimeID, "update_id", update.ID)
 		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonBusy,
 			"runtime update deferred because agent work is starting or still active; retry when the machine is idle"))
@@ -5194,6 +5204,14 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 			d.updating.Store(false)
 		}
 	}()
+
+	// Acquisition may have waited for claims to drain: recheck the start cutoff.
+	if update.StartWithinMs != nil && time.Since(anchor) >= time.Duration(*update.StartWithinMs)*time.Millisecond {
+		d.logger.Warn("update not started: start window passed while waiting for claims to drain", "runtime_id", runtimeID, "update_id", update.ID)
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonLateDelivery,
+			"the update could not start within its start window"))
+		return
+	}
 
 	// The watchdog frees claims at the deadline whatever runUpdateFn or the
 	// report endpoint are doing. The deadline result goes through the outbox, on
@@ -5217,10 +5235,8 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	timer := time.AfterFunc(time.Until(deadline), expire)
 	defer timer.Stop()
 
-	// Reports and the install share the deadline. The install context stays
-	// off the heartbeat context, which ends when the runtime set changes.
-	reportCtx, cancelReports := context.WithDeadline(ctx, deadline)
-	defer cancelReports()
+	// The install context stays off the heartbeat context, which ends when
+	// the runtime set changes.
 	installCtx, cancelInstall := context.WithDeadline(context.Background(), deadline)
 	defer cancelInstall()
 

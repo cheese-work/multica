@@ -323,3 +323,54 @@ func TestWSHeartbeatAnchor(t *testing.T) {
 		t.Fatalf("unknown seq must fall back to now, got %v", got)
 	}
 }
+
+// A claim that stays in flight past the deadline must not hold the barrier:
+// acquisition is bounded by the deadline and the deadline result is queued.
+func TestUpdateDeadline_StuckClaimDuringAcquisition(t *testing.T) {
+	d, log, restarts := deadlineDaemon(t, nil)
+	d.runUpdateFn = func(context.Context, string) (string, error) {
+		t.Error("runUpdateFn must not run when acquisition never finished")
+		return "", nil
+	}
+	d.claimMu.Lock()
+	d.claimsInFlight = 1 // never exits
+	d.claimMu.Unlock()
+	done := runUpdateAsync(d, time.Now(), &PendingUpdate{ID: "u1", TargetVersion: "v1", FinishWithinMs: msPtr(100 * time.Millisecond)})
+	time.Sleep(50 * time.Millisecond)
+	if !barrierHeld(d) {
+		t.Fatal("barrier is held while the claim drains")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if barrierHeld(d) {
+		t.Fatal("barrier must be released at the deadline")
+	}
+	log.waitTerminal(t, time.Second, "failed/deadline")
+	waitDone(t, done, time.Second, "handleUpdate")
+	if d.updating.Load() || restarts.Load() != 0 {
+		t.Fatalf("updating=%v restarts=%d, want released and none", d.updating.Load(), restarts.Load())
+	}
+}
+
+// A delayed acquisition that ends after the start cutoff must not install.
+func TestUpdateDeadline_StartCutoffRecheckedAfterAcquisition(t *testing.T) {
+	d, log, _ := deadlineDaemon(t, nil)
+	d.runUpdateFn = func(context.Context, string) (string, error) {
+		t.Error("runUpdateFn must not run after the start cutoff")
+		return "", nil
+	}
+	d.claimMu.Lock()
+	d.claimsInFlight = 1
+	d.claimMu.Unlock()
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		d.claimMu.Lock()
+		d.claimsInFlight = 0
+		d.claimMu.Unlock()
+	}()
+	d.handleUpdate(context.Background(), "rt-1",
+		&PendingUpdate{ID: "u1", TargetVersion: "v1", StartWithinMs: msPtr(80 * time.Millisecond), FinishWithinMs: msPtr(time.Second)}, time.Now())
+	log.waitTerminal(t, time.Second, "failed/late_delivery")
+	if barrierHeld(d) || d.updating.Load() {
+		t.Fatal("a late acquisition must release the barrier")
+	}
+}
