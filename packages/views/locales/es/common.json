@@ -1,0 +1,190 @@
+{
+  "daemon_setup": {
+    "loading": "Cargando los ajustes de conexión...",
+    "error": "No se han podido cargar los ajustes de conexión. Comprueba tu conexión. Se reintentará automáticamente.",
+    "unknown": "Este servidor no ha confirmado sus ajustes de conexión. Pide a tu administrador que actualice el servidor.",
+    "incomplete": "Los ajustes de conexión están incompletos. Pide a tu administrador que configure las URL públicas de este servidor."
+  },
+  "avatar_upload": {
+    "change": "Cambiar avatar",
+    "remove": "Quitar",
+    "select_image": "Elige un archivo de imagen.",
+    "updated": "Avatar actualizado",
+    "failed": "No se ha podido subir el avatar",
+    "upload_image": "Subir imagen",
+    "emoji_label": "Emoji",
+    "more_emojis": "Más emojis…",
+    "emoji_loading": "Cargando…"
+  },
+  "avatar_crop": {
+    "title": "Editar avatar",
+    "zoom": "Zoom",
+    "zoom_in": "Acercar",
+    "zoom_out": "Alejar",
+    "rotate": "Rotar",
+    "reset": "Restablecer",
+    "cancel": "Cancelar",
+    "apply": "Guardar",
+    "uploading": "Subiendo…",
+    "loading": "Cargando…",
+    "load_failed": "No se ha podido cargar la imagen"
+  },
+  "color_picker": {
+    "saturation": "Saturación y brillo",
+    "hue": "Tono",
+    "hex": "Color hexadecimal",
+    "eyedropper": "Elegir un color de la pantalla",
+    "presets": "Preajustes",
+    "random": "Aleatorio"
+  },
+  "save": "Guardar",
+  "cancel": "Cancelar",
+  "delete": "Eliminar",
+  "confirm": "Confirmar",
+  "more_actions": "Más acciones",
+  "loading": "Cargando...",
+  "time": {
+    "just_now": "ahora mismo",
+    "minutes_ago": "hace {{count}} min",
+    "hours_ago": "hace {{count}} h",
+    "days_ago": "hace {{count}} d"
+  },
+  "lark_bind": {
+    "page_title": "Vincula tu cuenta de Lark",
+    "redeeming": "Canjeando el token de vinculación…",
+    "needs_auth_description": "Inicia sesión en Multica para completar la vinculación. El token del enlace vincula tu cuenta de Lark a este usuario de Multica, así que primero debes iniciar sesión.",
+    "sign_in": "Iniciar sesión",
+    "done_title": "Cuenta vinculada.",
+    "done_description": "Tu próximo mensaje al bot en Lark irá directamente al agente. Puedes cerrar esta pestaña.",
+    "error_title": "No se ha podido completar la vinculación",
+    "error_admin_hint": "Si esto sigue ocurriendo, pide al administrador del espacio de trabajo que reenvíe el enlace de vinculación desde Lark.",
+    "error_missing_token": "Al enlace le falta el token de vinculación. Pide al bot que envíe uno nuevo en Lark.",
+    "error_expired": "Este enlace de vinculación no es válido o ha caducado (los enlaces son válidos durante 15 minutos). Pide al bot que envíe uno nuevo.",
+    "error_already_bound": "Esta cuenta de Lark ya está vinculada a otro usuario de Multica. La transferencia de cuentas requiere una desvinculación explícita previa.",
+    "error_not_member": "Has iniciado sesión en una cuenta de Multica que no es miembro de este espacio de trabajo.",
+    "error_unknown": "Algo ha ido mal. Inténtalo de nuevo y, si el problema persiste, contacta con el administrador del espacio de trabajo."
+  },
+  "slack_bind": {
+    "page_title": "Vincula tu cuenta de Slack",
+    "redeeming": "Vinculando tu cuenta…",
+    "needs_auth_description": "Inicia sesión en Multica para completar la vinculación. El token del enlace vincula tu cuenta de Slack a este usuario de Multica, así que primero debes iniciar sesión.",
+    "sign_in": "Iniciar sesión",
+    "done_title": "Cuenta vinculada.",
+    "done_description": "Tu próximo mensaje al bot en Slack irá directamente al agente. Puedes cerrar esta pestaña.",
+    "error_title": "No se ha podido completar la vinculación",
+    "error_admin_hint": "Si esto sigue ocurriendo, envía un mensaje de nuevo al bot en Slack para obtener un enlace nuevo.",
+    "error_missing_token": "Al enlace le falta el token. Envía un mensaje de nuevo al bot en Slack para obtener uno nuevo.",
+    "error_expired": "Este enlace no es válido o ha caducado (los enlaces son válidos durante 15 minutos). Envía un mensaje de nuevo para obtener uno nuevo.",
+    "error_already_bound": "Esta cuenta de Slack ya está vinculada a otro usuario de Multica. La transferencia de cuentas requiere una desvinculación explícita previa.",
+    "error_not_member": "Has iniciado sesión en una cuenta de Multica que no es miembro de este espacio de trabajo.",
+    "error_unknown": "Algo ha ido mal. Inténtalo de nuevo y, si el problema persiste, contacta con el administrador del espacio de trabajo."
+  },
+  "dingtalk_bind": {
+    "page_title": "Vincula tu cuenta de DingTalk",
+    "redeeming": "Vinculando tu cuenta…",
+    "needs_auth_description": "Inicia sesión en Multica para completar la vinculación. El token del enlace vincula tu cuenta de DingTalk a este usuario de Multica, así que primero debes iniciar sesión.",
+    "sign_in": "Iniciar sesión",
+    "done_title": "Cuenta vinculada.",
+    "done_description": "Tu próximo mensaje al bot en DingTalk irá directamente al agente. Puedes cerrar esta pestaña.",
+    "error_title": "No se ha podido completar la vinculación",
+    "error_admin_hint": "Si esto sigue ocurriendo, envía un mensaje de nuevo al bot en DingTalk para obtener un enlace nuevo.",
+    "error_missing_token": "Al enlace le falta el token. Envía un mensaje de nuevo al bot en DingTalk para obtener uno nuevo.",
+    "error_expired": "Este enlace no es válido o ha caducado (los enlaces son válidos durante 15 minutos). Envía un mensaje de nuevo para obtener uno nuevo.",
+    "error_already_bound": "Esta cuenta de DingTalk ya está vinculada a otro usuario de Multica. La transferencia de cuentas requiere una desvinculación explícita previa.",
+    "error_not_member": "Has iniciado sesión en una cuenta de Multica que no es miembro de este espacio de trabajo.",
+    "error_unknown": "Algo ha ido mal. Inténtalo de nuevo y, si el problema persiste, contacta con el administrador del espacio de trabajo."
+  },
+  "telegram_bind": {
+    "page_title": "Vincula tu cuenta de Telegram",
+    "redeeming": "Vinculando tu cuenta…",
+    "needs_auth_description": "Inicia sesión en Multica para completar la vinculación. El token del enlace vincula tu cuenta de Telegram a este usuario de Multica, así que primero debes iniciar sesión.",
+    "sign_in": "Iniciar sesión",
+    "done_title": "Cuenta vinculada.",
+    "done_description": "Tu próximo mensaje al bot en Telegram irá directamente al agente. Puedes cerrar esta pestaña.",
+    "error_title": "No se ha podido completar la vinculación",
+    "error_admin_hint": "Si esto sigue ocurriendo, envía un mensaje de nuevo al bot en Telegram para obtener un enlace nuevo.",
+    "error_missing_token": "Al enlace le falta el token. Envía un mensaje de nuevo al bot en Telegram para obtener uno nuevo.",
+    "error_expired": "Este enlace no es válido o ha caducado (los enlaces son válidos durante 15 minutos). Envía un mensaje de nuevo para obtener uno nuevo.",
+    "error_already_bound": "Esta cuenta de Telegram ya está vinculada a otro usuario de Multica. La transferencia de cuentas requiere una desvinculación explícita previa.",
+    "error_not_member": "Has iniciado sesión en una cuenta de Multica que no es miembro de este espacio de trabajo.",
+    "error_unknown": "Algo ha ido mal. Inténtalo de nuevo y, si el problema persiste, contacta con el administrador del espacio de trabajo."
+  },
+  "expandable_description": {
+    "expand": "Mostrar más",
+    "collapse": "Mostrar menos"
+  },
+  "wecom_bind": {
+    "page_title": "Vincula tu cuenta de Multica",
+    "redeeming": "Vinculando tu cuenta…",
+    "needs_auth_description": "Inicia sesión en Multica para completar la vinculación. El token del enlace vincula tu identidad de WeCom a este usuario de Multica, así que primero debes iniciar sesión.",
+    "sign_in": "Iniciar sesión",
+    "done_title": "Cuenta vinculada.",
+    "done_description": "Tu próximo mensaje al bot inteligente en WeCom irá directamente al agente. Puedes cerrar esta pestaña.",
+    "error_title": "No se ha podido completar la vinculación",
+    "error_admin_hint": "Si esto sigue ocurriendo, envía un mensaje de nuevo al bot en WeCom para obtener un enlace nuevo.",
+    "error_missing_token": "Al enlace le falta el token. Envía un mensaje de nuevo al bot en WeCom para obtener uno nuevo.",
+    "error_expired": "Este enlace no es válido o ha caducado (los enlaces son válidos durante 15 minutos). Envía un mensaje de nuevo para obtener uno nuevo.",
+    "error_already_bound": "Esta identidad de WeCom ya está vinculada a otro usuario de Multica. La transferencia de cuentas requiere una desvinculación explícita previa.",
+    "error_not_member": "Has iniciado sesión en una cuenta de Multica que no es miembro de este espacio de trabajo.",
+    "error_unknown": "Algo ha ido mal. Inténtalo de nuevo y, si el problema persiste, contacta con el administrador del espacio de trabajo."
+  },
+  "not_found": {
+    "title": "Página no encontrada",
+    "description": "La página que buscas no existe o se ha movido.",
+    "back_to_multica": "Volver a Multica"
+  },
+  "navigation": {
+    "open_in_new_tab": "Abrir en una pestaña nueva"
+  },
+  "decision_action": {
+    "approve": "Aprobar con llave de acceso",
+    "reject": "Rechazar",
+    "reject_error": "No se ha completado el rechazo. Inténtalo de nuevo.",
+    "waiting": "Esperando tu llave de acceso…",
+    "state": {
+      "executed": "Aplicada",
+      "failed": "No aplicada",
+      "rejected": "Rechazada",
+      "expired": "Caducada",
+      "cancelled": "Cancelada"
+    },
+    "failed_code": {
+      "stale_cap": "Ya está en vigor un límite más alto.",
+      "stale_window": "La ventana de presupuesto ha cambiado. Inicia una nueva solicitud.",
+      "not_budgeted": "Esta tarea ya no tiene presupuesto.",
+      "other": "Error: {{code}}",
+      "stale_base": "El destino cambió después de la solicitud. Vuelve a solicitarlo."
+    },
+    "refusal": {
+      "class_needs_owner": "Solo el propietario del espacio de trabajo puede aprobar este cambio.",
+      "payload_mismatch": "El cambio aprobado no es el que se solicitó. Vuelve a solicitarlo.",
+      "preview_required": "Aprueba según la vista previa que se te mostró. Recarga la tarjeta.",
+      "precondition_drift": "El destino ha cambiado desde la solicitud. Vuelve a solicitarlo.",
+      "busy_retry": "Hay otro cambio en curso. Inténtalo de nuevo.",
+      "not_permitted": "No tienes permiso para hacer este cambio.",
+      "action_not_executable": "Este tipo de cambio aún no se puede aprobar.",
+      "approval_proof_unavailable": "Este servidor aún no puede verificar una aprobación con llave de acceso.",
+      "other": "Rechazado: {{code}}"
+    },
+    "owner_only": "Solo el propietario del espacio de trabajo puede aprobar este cambio.",
+    "no_passkey": "Añade una llave de acceso antes de aprobar.",
+    "add_passkey": "Añadir una llave de acceso",
+    "error": "No se ha completado la aprobación con llave de acceso. Inténtalo de nuevo.",
+    "lost": "Se perdió la respuesta. La acción no se aprueba de nuevo. Comprueba el resultado.",
+    "check": "Comprobar resultado",
+    "outcome": {
+      "cap_applied": "Límite aplicado",
+      "run_queued": "Ejecución en cola",
+      "still_blocked": "Sigue bloqueado: {{reason}}"
+    },
+    "panel": {
+      "title": "Solicitud de presupuesto de ejecuciones",
+      "raise_cap": "Subir el límite de ejecuciones de {{issue}} a {{cap}} para esta ventana.",
+      "top_up": "Recargar el presupuesto de ejecuciones de {{issue}} para esta ventana.",
+      "settled": "Esta aprobación ya está {{state}}. Si aún la necesitas, pide al agente que la proponga de nuevo.",
+      "mismatch": "Esta aprobación no es una solicitud de presupuesto de ejecuciones para esta tarea. Abre la tarjeta en tu DM o en tu Bandeja de entrada para decidirla.",
+      "open_card": "Abrir la tarjeta",
+      "unreadable": "Esta aprobación no está disponible para ti o ya no existe. Pide al agente que la proponga de nuevo."
+    }
+  }
+}
