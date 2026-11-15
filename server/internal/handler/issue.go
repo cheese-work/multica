@@ -4255,6 +4255,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if writeProjectAdmissionError(w, err) {
 		return
 	}
+	if writeIssueNumberCollision(w, err) {
+		return
+	}
 	if err != nil {
 		slog.Warn("create issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create issue")
