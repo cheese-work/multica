@@ -303,6 +303,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"wecom_install_session":              workspaceDelete,
+	"workspace_composio_connection":      workspaceDelete,
+	"agent_app":                          workspaceDelete,
+	"app_action_rule":                    workspaceDelete,
+	"app_action_request":                 workspaceDelete,
+	"app_tool_call":                      workspaceDelete,
+	"workspace_app_setting":              workspaceDelete,
+	"app_tool_class_override":            workspaceDelete,
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,

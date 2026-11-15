@@ -781,6 +781,9 @@ func main() {
 	go h.RunElevationFenceSweeper(sweepCtx)
 	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go h.RunSteerReplaySweeper(sweepCtx)
+	if h.ConnectedApps != nil {
+		go h.ConnectedApps.RunSweeper(sweepCtx)
+	}
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
