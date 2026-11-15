@@ -55,11 +55,6 @@ function useInstallServerUrl(): string {
   );
 }
 
-/** The install command for the server this page talks to, for surfaces that lay out their own steps. */
-export function useCliInstallCommand(): string {
-  return cliInstallCommand(useInstallServerUrl());
-}
-
 export type CliInstallPlatform = "macosLinux";
 
 /** Tab order. */
@@ -92,7 +87,7 @@ export function CliInstallCommand({
   classNames?: { list?: string; trigger?: string };
   children: (command: string) => ReactNode;
 }) {
-  const command = useCliInstallCommand();
+  const command = cliInstallCommand(useInstallServerUrl());
   return (
     <Tabs defaultValue={PLATFORMS[0]}>
       <TabsList
