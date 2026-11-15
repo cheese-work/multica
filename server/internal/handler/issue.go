@@ -4840,7 +4840,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			writeHandoffAssigneeRefusal(w, handoff, status, msg)
 			return
 		}
-		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, r, workspaceID, params.AssigneeType, params.AssigneeID,
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
 			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
 			return
 		}

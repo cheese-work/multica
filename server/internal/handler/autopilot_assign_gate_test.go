@@ -259,8 +259,18 @@ func autopilotIssueBy(t *testing.T, creatorUserID, title, apID string) string {
 // assigner (an agent), the way the CLI does.
 func assignAsAgent(t *testing.T, batch bool, issueID, assignerAgent, assignerTask, targetAgent string) *httptest.ResponseRecorder {
 	t.Helper()
+	return assignAsAgentWithHandoff(t, batch, issueID, assignerAgent, assignerTask, targetAgent, "")
+}
+
+// assignAsAgentWithHandoff is assignAsAgent for a single update that names a
+// handoff comment: the run it starts is attributed to the moving task's human.
+func assignAsAgentWithHandoff(t *testing.T, batch bool, issueID, assignerAgent, assignerTask, targetAgent, handoffComment string) *httptest.ResponseRecorder {
+	t.Helper()
 	w := httptest.NewRecorder()
 	assignee := map[string]any{"assignee_type": "agent", "assignee_id": targetAgent}
+	if handoffComment != "" {
+		assignee["handoff_comment_id"] = handoffComment
+	}
 	var r *http.Request
 	if batch {
 		r = newRequestAs(testUserID, "POST", "/api/issues/batch-update?workspace_id="+testWorkspaceID,
@@ -315,5 +325,39 @@ func TestAutopilotAssignGate_JudgesTheRunsHumanNotTheAssigner(t *testing.T) {
 		if a := assignee(byOwner); w.Code != http.StatusOK || a == nil || *a != targetAgent {
 			t.Errorf("%s: unauthorized assigner, run acts for the owner: got %d %s, assignee %v, want 200 and assigned", name, w.Code, w.Body.String(), a)
 		}
+	}
+}
+
+// A status handoff that names a comment starts its run for the moving task's
+// human (statusHandoffAttribution), not the issue's. The gate must judge that
+// same human, in both directions.
+func TestAutopilotAssignGate_HandoffJudgesTheMovingTasksHuman(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	apID, memberID, targetAgent := autopilotAssignFixture(t, "che5947-handoff-human@multica.test")
+	mover := createHandlerTestAgent(t, "che5947-mover", nil)
+	ownerTask := callerTask(t, mover, testUserID) // moving task acts for the owner (can_write)
+	memberTask := callerTask(t, mover, memberID)  // moving task acts for a member without write
+	assignee := func(id string) *string {
+		var a *string
+		testPool.QueryRow(context.Background(), `SELECT assignee_id::text FROM issue WHERE id=$1`, id).Scan(&a)
+		return a
+	}
+
+	// The issue came from a member without write, the moving task acts for the
+	// owner: the run acts for the owner, so allow.
+	byMember := autopilotIssueBy(t, memberID, "handoff moving task owner, issue by member", apID)
+	w := assignAsAgentWithHandoff(t, false, byMember, mover, ownerTask, targetAgent, dbfx.Comment(t, byMember, "handoff"))
+	if a := assignee(byMember); w.Code != http.StatusOK || a == nil || *a != targetAgent {
+		t.Errorf("moving task acts for the owner: got %d %s, assignee %v, want 200 and assigned", w.Code, w.Body.String(), a)
+	}
+
+	// The issue came from the owner, the moving task acts for a member without
+	// write: the run acts for that member, so refuse.
+	byOwner := autopilotIssueBy(t, testUserID, "handoff moving task member, issue by owner", apID)
+	w = assignAsAgentWithHandoff(t, false, byOwner, mover, memberTask, targetAgent, dbfx.Comment(t, byOwner, "handoff"))
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "autopilot_assign_no_write") {
+		t.Errorf("moving task acts for a member without write: got %d %s, want 403 autopilot_assign_no_write", w.Code, w.Body.String())
 	}
 }

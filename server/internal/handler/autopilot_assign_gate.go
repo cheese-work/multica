@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -92,8 +93,27 @@ func (h *Handler) runHumanForAssignment(r *http.Request, workspaceID string, iss
 	if h.TaskService == nil {
 		return "", false
 	}
-	userID = uuidToString(h.TaskService.OriginatorForIssueTask(r.Context(), *issue, pgtype.UUID{}))
+	// A status handoff that names a comment is attributed to the moving task's
+	// human (statusHandoffAttribution); any other reassignment to the issue's.
+	if originator, ok := h.TaskService.StatusHandoffOriginator(r.Context(), *issue); ok {
+		userID = uuidToString(originator)
+	} else {
+		userID = uuidToString(h.TaskService.OriginatorForIssueTask(r.Context(), *issue, pgtype.UUID{}))
+	}
 	return userID, userID == ""
+}
+
+// withHandoffRun is r with the context the enqueue of the run will have: the
+// acting task, and the handoff comment when the write names one that the run
+// will carry. The gate then judges the human the enqueue attributes the run to.
+func (h *Handler) withHandoffRun(r *http.Request, issue db.Issue, handoffCommentID *string, suppressRun bool) *http.Request {
+	ctx := h.actingTaskContext(r)
+	if handoffCommentID != nil && !suppressRun {
+		if ok, err := service.HandoffCommentBelongsTo(ctx, h.Queries, issue, *handoffCommentID); err == nil && ok {
+			ctx = service.WithStatusHandoffComment(ctx, parseUUID(*handoffCommentID))
+		}
+	}
+	return r.WithContext(ctx)
 }
 
 // autopilotAssignRefusal returns the refusal message, or "" when the assignment
