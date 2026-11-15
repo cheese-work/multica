@@ -43,7 +43,7 @@ function configuredApiBaseUrl(): string {
  * The server to install from: the operator's configured server URL, else the
  * API client's base URL, else the page origin.
  */
-function useInstallServerUrl(): string {
+export function useInstallServerUrl(): string {
   const configured = useConfigStore((s) => s.daemonServerUrl);
   const [origin, setOrigin] = useState("");
   useEffect(() => setOrigin(window.location.origin), []);

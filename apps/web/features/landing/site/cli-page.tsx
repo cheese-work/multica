@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowUpRight } from "@multica/ui/icons";
+import { cliInstallCommand, useInstallServerUrl } from "@multica/views/common/cli-install-command";
 import { docsHrefForLocale, useLocale } from "../i18n";
 import { ActionLink, Container, Section, SectionHeader } from "./primitives";
 import { AgentSessionVisual, CliScene } from "./demo/cli-visuals";
@@ -55,15 +56,15 @@ function Hero() {
   );
 }
 
-const INSTALL: { title: string; body: string; code: CodeVariant[] }[] = [
+type InstallStep = { title: string; body: string; code: CodeVariant[] };
+
+// The CLI installs from this server (CHE-2641), never from upstream releases.
+function installSteps(serverUrl: string): InstallStep[] {
+  return [
   {
     title: "Install it",
-    body: "One line in a terminal on macOS and Linux, or in PowerShell on Windows. Homebrew works too.",
-    code: [
-      { label: "macOS / Linux", code: "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash" },
-      { label: "Windows", code: "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex" },
-      { label: "Homebrew", code: "brew install multica-ai/tap/multica" },
-    ],
+    body: "One line in a terminal on macOS or Linux.",
+    code: [{ label: "macOS / Linux", code: cliInstallCommand(serverUrl) }],
   },
   {
     title: "Connect the computer",
@@ -81,15 +82,17 @@ const INSTALL: { title: string; body: string; code: CodeVariant[] }[] = [
     body: "See who you’re signed in as and which coding tools the daemon found. Your computer is now a runtime you can assign agents to.",
     code: [{ label: "Terminal", code: "multica auth status\nmultica daemon status" }],
   },
-];
+  ];
+}
 
 function Install() {
+  const steps = installSteps(useInstallServerUrl());
   return (
     <Section id="install" className="scroll-mt-site-header">
       <Container>
         <SectionHeader title="A runtime in three commands" />
         <ol className="mt-site-block flex flex-col">
-          {INSTALL.map((step, index) => (
+          {steps.map((step, index) => (
             <li
               key={step.title}
               className="grid gap-6 border-t border-site-line py-8 last:border-b lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] lg:gap-16 lg:py-10"
