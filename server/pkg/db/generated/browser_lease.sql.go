@@ -166,6 +166,157 @@ func (q *Queries) CreateQueuedBrowserLease(ctx context.Context, arg CreateQueued
 	return i, err
 }
 
+const deleteQueuedBrowserLeases = `-- name: DeleteQueuedBrowserLeases :many
+DELETE FROM browser_lease
+WHERE workspace_id = $1
+  AND state = 'queued'
+  AND ($2::uuid IS NULL OR id = $2)
+  AND ($3::uuid IS NULL OR task_id = $3)
+  AND ($4::uuid IS NULL OR user_id = $4)
+  AND ($5::uuid IS NULL OR agent_id = $5)
+  AND ($6::uuid IS NULL OR profile_id = $6)
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+`
+
+type DeleteQueuedBrowserLeasesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LeaseID     pgtype.UUID `json:"lease_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	ProfileID   pgtype.UUID `json:"profile_id"`
+}
+
+// Revoke and auto-revoke (CHE-4734, W3-5), step 1: drop every queued lease that matches the
+// filters. A queued lease holds nothing (no epoch, no token), and the epoch check forbids an
+// ended row without an epoch, so it is deleted rather than ended. workspace_id is required;
+// every other filter is optional (NULL matches all).
+func (q *Queries) DeleteQueuedBrowserLeases(ctx context.Context, arg DeleteQueuedBrowserLeasesParams) ([]BrowserLease, error) {
+	rows, err := q.db.Query(ctx, deleteQueuedBrowserLeases,
+		arg.WorkspaceID,
+		arg.LeaseID,
+		arg.TaskID,
+		arg.UserID,
+		arg.AgentID,
+		arg.ProfileID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserLease{}
+	for rows.Next() {
+		var i BrowserLease
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstanceID,
+			&i.ProfileID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.IssueID,
+			&i.UserID,
+			&i.DecisionID,
+			&i.Class,
+			&i.State,
+			&i.Epoch,
+			&i.JtiHash,
+			&i.ExpiresAt,
+			&i.GrantedAt,
+			&i.EndedAt,
+			&i.EndReason,
+			&i.CleanupAckedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const endBrowserLeases = `-- name: EndBrowserLeases :many
+UPDATE browser_lease
+SET state = 'ended',
+    ended_at = clock_timestamp(),
+    end_reason = $1::text
+WHERE workspace_id = $2
+  AND state = 'active'
+  AND ($3::uuid IS NULL OR id = $3)
+  AND ($4::uuid IS NULL OR task_id = $4)
+  AND ($5::uuid IS NULL OR user_id = $5)
+  AND ($6::uuid IS NULL OR agent_id = $6)
+  AND ($7::uuid IS NULL OR profile_id = $7)
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+`
+
+type EndBrowserLeasesParams struct {
+	Reason      string      `json:"reason"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LeaseID     pgtype.UUID `json:"lease_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	ProfileID   pgtype.UUID `json:"profile_id"`
+}
+
+// Revoke and auto-revoke, step 2 (run after step 1, so a grant that races step 1 is still
+// caught): end every active lease that matches the filters. One query serves release (lease),
+// task end and cancel (task), permission removed (user, profile, agent), plugin disabled and
+// revoke-all (workspace only). An ended lease is untouched, so a second trigger is a no-op and
+// emits nothing. An ended lease keeps holding its instance until cleanup-ack
+// (GetBrowserInstanceHolder).
+func (q *Queries) EndBrowserLeases(ctx context.Context, arg EndBrowserLeasesParams) ([]BrowserLease, error) {
+	rows, err := q.db.Query(ctx, endBrowserLeases,
+		arg.Reason,
+		arg.WorkspaceID,
+		arg.LeaseID,
+		arg.TaskID,
+		arg.UserID,
+		arg.AgentID,
+		arg.ProfileID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserLease{}
+	for rows.Next() {
+		var i BrowserLease
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstanceID,
+			&i.ProfileID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.IssueID,
+			&i.UserID,
+			&i.DecisionID,
+			&i.Class,
+			&i.State,
+			&i.Epoch,
+			&i.JtiHash,
+			&i.ExpiresAt,
+			&i.GrantedAt,
+			&i.EndedAt,
+			&i.EndReason,
+			&i.CleanupAckedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getBrowserInstance = `-- name: GetBrowserInstance :one
 SELECT id, workspace_id, name, epoch, phase, created_at, updated_at FROM browser_instance
 WHERE id = $1 AND workspace_id = $2

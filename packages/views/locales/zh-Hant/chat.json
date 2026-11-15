@@ -415,6 +415,10 @@
         "unpin": "取消置頂",
         "archive": "封存",
         "unarchive": "取消封存"
+      },
+      "short": {
+        "seen": "已讀",
+        "unseen": "未讀"
       }
     }
   },

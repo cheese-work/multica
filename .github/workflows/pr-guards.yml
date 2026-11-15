@@ -82,6 +82,38 @@ jobs:
       - name: Compute the changelog entry
         run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
 
+  # CHE-5717: a PR that touches CLI commands, the agent brief or the daemon says whether agents need an instruction
+  # update (`Agent-facing: yes | no`, plus `Adoption item:` on yes). The daily adoption issue is built from the answers.
+  # The PR body comes from the event payload and the file list from the read-only token; the script is the trusted
+  # base copy. upstream-sync heads and upstream-main bases carry no field and are skipped. Making this check required
+  # is Cheese's call.
+  agent-facing:
+    name: Agent-facing field
+    if: github.event.pull_request.state != 'closed' && github.base_ref != 'upstream-main' && !startsWith(github.head_ref, 'upstream-sync/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted workflow checker
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: List the changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt"
+      - name: Check the Agent-facing field
+        run: node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
+
   fork-sync-guard:
     name: Fork sync preservation
     runs-on: ubuntu-24.04

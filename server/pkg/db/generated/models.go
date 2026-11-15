@@ -249,6 +249,7 @@ type AgentTaskQueue struct {
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 	TriggerKind               pgtype.Text        `json:"trigger_kind"`
+	HandoffDispatchID         pgtype.UUID        `json:"handoff_dispatch_id"`
 }
 
 type AgentToLabel struct {
@@ -2207,6 +2208,26 @@ type IssueDescriptionRevision struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueHandoffDispatch struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	StatusHistoryID   pgtype.UUID        `json:"status_history_id"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	ContextCommentIds []pgtype.UUID      `json:"context_comment_ids"`
+	HandoffWrite      string             `json:"handoff_write"`
+	State             string             `json:"state"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	SkipReason        pgtype.Text        `json:"skip_reason"`
+	Attempts          int32              `json:"attempts"`
+	NextAttemptAt     pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueIdleGuard struct {
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -2576,6 +2597,19 @@ type IssueWorkflow struct {
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
 	StartStatusKey          pgtype.Text        `json:"start_status_key"`
+	LintOverrideReason      pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt        pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings            []byte             `json:"lint_findings"`
+}
+
+type IssueWorkflowLintOverride struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Version     pgtype.Timestamptz `json:"version"`
+	Reason      string             `json:"reason"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type LarkBindingToken struct {
