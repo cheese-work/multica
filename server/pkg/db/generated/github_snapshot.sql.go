@@ -404,9 +404,9 @@ type ListConflictWatchedGitHubPRNumbersInRepoParams struct {
 	PrNumber       int32  `json:"pr_number"`
 }
 
-// Open/draft PRs in one repository that an enabled "wake on merge conflict"
-// rule watches. A merge into the repository can make them conflicting without
-// an event of their own, so the merge webhook re-fetches them.
+// Open/draft PRs in one repository that are linked to an issue (CHE-6111). A
+// merge into the repository can make them conflicting without an event of
+// their own, so the merge webhook re-fetches them.
 func (q *Queries) ListConflictWatchedGitHubPRNumbersInRepo(ctx context.Context, arg ListConflictWatchedGitHubPRNumbersInRepoParams) ([]int32, error) {
 	rows, err := q.db.Query(ctx, listConflictWatchedGitHubPRNumbersInRepo,
 		arg.InstallationID,
@@ -726,11 +726,12 @@ type ListStaleConflictWatchedGitHubPRsRow struct {
 	PrNumber       int32  `json:"pr_number"`
 }
 
-// Second sweep source: open/draft PRs linked to an issue with an enabled
-// "wake on merge conflict" rule. A decided snapshot leaves the undecided sweep,
+// Second sweep source: open/draft PRs linked to any issue (CHE-6111: the
+// built-in pr_needs_attention wake needs a fresh snapshot, so no per-issue
+// "wake on merge conflict" rule is required). A decided snapshot leaves the undecided sweep,
 // but a base-branch move can turn it conflicting without any event for this
-// PR, so watched PRs are re-fetched on the TTL regardless. The candidate set
-// comes from the enabled rules, whose count is capped. Like the undecided
+// PR, so watched PRs are re-fetched on the TTL regardless. The batch is
+// bounded by max_rows. Like the undecided
 // sweep, an address cursor rotates the bounded batch, so addresses whose
 // fetches keep failing (their snapshot never gets newer) cannot pin it.
 func (q *Queries) ListStaleConflictWatchedGitHubPRs(ctx context.Context, arg ListStaleConflictWatchedGitHubPRsParams) ([]ListStaleConflictWatchedGitHubPRsRow, error) {
