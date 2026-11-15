@@ -144,6 +144,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"942_issue_workflow_lint_override_log_idx":                  "idx_issue_workflow_lint_override_workflow",
+	"9999918_skill_version_index":                               "idx_skill_version_skill_version",
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
 	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
 	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",
@@ -160,6 +162,7 @@ var concurrentIndexCleanups = map[string]string{
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
 	"999c_ci_watch_event_notify_uidx":                           "ci_watch_event_notify_uidx",
+	"9999939_agent_task_handoff_dispatch_idx":                   "agent_task_queue_handoff_dispatch_uidx",
 	"999f_task_supplement_replay_due_idx":                       "task_supplement_replay_due_idx",
 	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
@@ -597,6 +600,13 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		Unique:        true,
 		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "signature_hash", "day"},
 		Predicate:     "kind = 'notify'::text",
+	},
+	"9999939_agent_task_handoff_dispatch_idx": {
+		IndexRegclass: "agent_task_queue_handoff_dispatch_uidx",
+		TableRegclass: "agent_task_queue",
+		Unique:        true,
+		Columns:       []string{"handoff_dispatch_id"},
+		Predicate:     "handoff_dispatch_id IS NOT NULL",
 	},
 	"9992_system1_observation_ci_event_subject_idx": {
 		IndexRegclass: "system1_observation_ci_event_subject",

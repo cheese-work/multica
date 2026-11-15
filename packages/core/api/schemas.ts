@@ -100,6 +100,8 @@ import type {
   Skill,
   SkillImportResult,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
   Squad,
   TimelineEntry,
   User,
@@ -616,6 +618,18 @@ export const IssueWorkflowSchema = z.lazy(() => z.object({
   // Full-precision updated_at; a save names the version it edited. Absent from
   // an older server, which then keeps last-writer-wins.
   version: z.string().default(""),
+  lint_override_reason: z.string().nullable().default(null),
+  lint_overridden_at: z.string().nullable().default(null),
+  // Findings of the last save (warnings, info, waived errors); absent from an older server.
+  lint_findings: z.array(z.object({
+    rule: z.string(),
+    level: z.enum(["error", "warning", "info"]).catch("info"),
+    step: z.string().optional(),
+    message: z.string().default(""),
+    hint: z.string().optional(),
+    waived: z.boolean().optional(),
+    waive_reason: z.string().optional(),
+  }).loose()).default([]),
 }).loose());
 
 export const ListIssueWorkflowsResponseSchema = z.lazy(() => z.object({
@@ -637,6 +651,8 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   created_at: "",
   updated_at: "",
   version: "",
+  lint_override_reason: null,
+  lint_overridden_at: null,
 };
 
 export const IssueWorkflowMappingPlanSchema = z.lazy(() => z.object({
@@ -1104,6 +1120,13 @@ const DecisionActionSchema = z.lazy(() => z.object({
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
   owner_only: z.boolean().optional().catch(undefined),
+  effect: z.string().optional().catch(undefined),
+  effect_reason: z.string().optional().catch(undefined),
+  decided_at: z.string().optional().catch(undefined),
+  decided_by_name: z.string().optional().catch(undefined),
+  on_behalf_of_name: z.string().optional().catch(undefined),
+  revocable: z.boolean().optional().catch(undefined),
+  revoke: z.object({ at: z.string(), by_name: z.string().optional().catch(undefined), reason: z.string().catch("") }).loose().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -1149,6 +1172,17 @@ export const DecisionRequestCardSchema = z.lazy(() => z.object({
     }).loose()).catch([]),
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
+  batch_id: z.string().optional().catch(undefined),
+  // A malformed list degrades to none: the card then offers no per-item choice.
+  batch_items: z.array(z.object({
+    action_id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    state: z.string().default(""),
+    result: z.unknown().optional(),
+    error_code: z.string().optional().catch(undefined),
+  }).loose()).optional().catch(undefined),
 }).loose());
 
 export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
@@ -4307,6 +4341,55 @@ export const EMPTY_SKILL: Skill = {
 
 export const SkillSummaryListSchema = z.lazy(() => z.array(SkillSummarySchema).default([]));
 
+const SKILL_VERSION_SOURCES = [
+  "baseline",
+  "create",
+  "update",
+  "import",
+  "refresh",
+  "restore",
+] as const;
+
+export const SkillVersionSummarySchema = z.lazy(() => z.object({
+  id: z.string(),
+  skill_id: z.string(),
+  version: z.number(),
+  name: z.string().optional().default(""),
+  source: z.enum(SKILL_VERSION_SOURCES).catch("update"),
+  restored_from_version: z.number().nullable().optional().default(null),
+  created_by: z.string().nullable().optional().default(null),
+  created_at: z.string().optional().default(""),
+}).loose());
+
+export const SkillVersionSummaryListSchema = z.lazy(() => z
+  .array(SkillVersionSummarySchema)
+  .default([]));
+
+export const EMPTY_SKILL_VERSION_SUMMARY_LIST: SkillVersionSummary[] = [];
+
+export const SkillVersionSchema = z.lazy(() => SkillVersionSummarySchema.unwrap().extend({
+  description: z.string().optional().default(""),
+  content: z.string().optional().default(""),
+  files: z
+    .array(z.object({ path: z.string(), content: z.string().optional().default("") }).loose())
+    .optional()
+    .default([]),
+}).loose());
+
+export const EMPTY_SKILL_VERSION: SkillVersion = {
+  id: "",
+  skill_id: "",
+  version: 0,
+  name: "",
+  source: "update",
+  restored_from_version: null,
+  created_by: null,
+  created_at: "",
+  description: "",
+  content: "",
+  files: [],
+};
+
 export const EMPTY_SKILL_SUMMARY_LIST: SkillSummary[] = [];
 
 export const SkillImportExistingSkillSchema = z.lazy(() => z.object({
@@ -4686,15 +4769,21 @@ export const AgentDecisionSettingSchema = z.lazy(() => z.object({
 }).loose());
 export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
 
-// CHE-3627: GET/PUT /api/workspaces/{id}/routing-agent. The server sends null
-// for an empty list or map, so both default to empty here.
-export const RoutingAgentSettingSchema = z.lazy(() => z.object({
-  agent_id: z.string().catch(""),
-  fallback_agent_id: z.string().catch(""),
-  statuses: z.array(z.string()).nullish().transform((v) => v ?? []),
-  overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
+// CHE-4123: GET/PUT /api/workspaces/{id}/background-agents. One object keyed
+// by job (dm_title, quick_actions, compact, routing); a job is a two-slot chain.
+// An unset slot is absent or null and reads as "". `routing` also carries
+// statuses and overrides, and an unknown field passes through, so a save that
+// echoes the whole value keeps what this form does not edit.
+export const BackgroundAgentChainSchema = z.lazy(() => z.object({
+  agent_id: z.string().nullish().transform((v) => v ?? ""),
+  fallback_agent_id: z.string().nullish().transform((v) => v ?? ""),
 }).loose());
-export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+export type BackgroundAgentChain = z.infer<typeof BackgroundAgentChainSchema>;
+
+export const BackgroundAgentsSchema = z.lazy(() => z.record(z.string(), BackgroundAgentChainSchema));
+export type BackgroundAgents = z.infer<typeof BackgroundAgentsSchema>;
+// A read plus the ETag a save must present so a concurrent save is refused.
+export type BackgroundAgentsRead = { value: BackgroundAgents; etag: string | null };
 
 // CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
 // empty; a malformed requires_human_decision reads as true, the fail-closed

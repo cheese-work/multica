@@ -488,6 +488,13 @@ type DaemonHeartbeatRequestPayload struct {
 	// of a run it did not start can still be alive, so the server attests only
 	// runs dispatched since the process booted. Nil attests nothing.
 	DaemonUptimeMs *int64 `json:"daemon_uptime_ms,omitempty"`
+	// HostTaskIDs is the MULTICA_TASK_ID of every live same-uid process on the
+	// host (Linux /proc/*/environ), the proof that a runner outside this
+	// daemon's live set is gone. Meaningful only when HostScanOK is true.
+	HostTaskIDs *[]string `json:"host_task_ids,omitempty"`
+	// HostScanOK is true only when the host scan read every process it must.
+	// Nil or false (error, non-Linux host) leaves the uptime rule in force.
+	HostScanOK *bool `json:"host_scan_ok,omitempty"`
 	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
 	// not per runtime), repeated on every runtime heartbeat until the next
 	// sample. Nil from a daemon that does not sample (older, macOS, Windows).

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 )
 
 // Backend is the unified interface for executing prompts via coding agents.
@@ -378,6 +379,7 @@ type Result struct {
 
 // Config configures a Backend instance.
 type Config struct {
+	RunBinding                 *runbinding.Spec
 	RequireCredentialIsolation bool
 	CredentialBoundary         *credentialexec.Boundary
 	ExecutablePath             string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, dim, zeroclaw)

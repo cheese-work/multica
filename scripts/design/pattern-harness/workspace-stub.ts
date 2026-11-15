@@ -1,3 +1,6 @@
+import { createElement } from "react";
+import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
+import type { AvatarSize } from "@multica/ui/lib/avatar-size";
 export function useWorkspaceId(): string {
   return "ws-harness";
 }
@@ -14,7 +17,9 @@ export const memberListOptions = (wsId?: string) => empty("members", wsId);
 export const agentListOptions = (_wsId?: string) => empty("agents");
 export const squadListOptions = (_wsId?: string) => empty("squads");
 export const isAgentRuntimeBound = () => true;
-export const ActorAvatar = () => null;
+// Initials circle from the real ui avatar, so avatar-only views (quick-agent-bar) show their real shape (CHE-5536).
+export const ActorAvatar = ({ actorId = "", actorType, size, className }: { actorId?: string; actorType?: string; size?: AvatarSize; className?: string }) =>
+  createElement(ActorAvatarBase, { name: actorId, initials: actorId.replace(/^(agent|x99)-/, "").slice(0, 2).toUpperCase(), isAgent: actorType === "agent", size, className });
 export const WorkspaceAvatar = () => null;
 // @multica/core/agents is aliased here too (create-shell); settings-page pulls profile cards that import these two.
 export const useAgentPresenceDetail = () => null;

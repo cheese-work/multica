@@ -256,4 +256,59 @@ cap wakeup-condition-params \
   --component packages/views/issues/components/wakeup-condition-params.tsx \
   --token pillClass --token text-muted-foreground
 
+# SS2 (CHE-5535)
+cap wakeup-fields \
+  --component packages/views/issues/components/wakeup-fields.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap wakeup-pickers \
+  --component packages/views/issues/components/wakeup-pickers.tsx \
+  --token pillClass --token text-muted-foreground
+
+cap workspace-wakeup-rules \
+  --component packages/views/settings/components/workspace-wakeup-rules.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap config-change-viewer \
+  --component packages/views/chat/components/config-change-viewer.tsx \
+  --token text-caption --token text-muted-foreground
+
+# SS3 (CHE-5536)
+cap decision-artifacts \
+  --component packages/views/chat/components/decision-artifacts.tsx \
+  --token text-micro --token text-caption --token bg-muted/40
+
+cap decision-request-card \
+  --component packages/views/chat/components/decision-request-card.tsx \
+  --token text-body --token text-label --token text-micro
+
+cap needs-you-list \
+  --component packages/views/chat/components/needs-you-list.tsx \
+  --token text-caption --token text-warning --token text-destructive
+
+cap quick-agent-bar \
+  --component packages/views/chat/components/quick-agent-bar.tsx \
+  --token AVATAR_RING --token MAX_PINNED
+
+cap delegated-writes-section --height 1200 \
+  --component packages/views/settings/components/delegated-writes-section.tsx \
+  --token GOVERNED_FIELDS --token text-caption --token text-muted-foreground
+
+# SS4 (CHE-5537)
+cap dingtalk-tab --height 1500 \
+  --component packages/views/settings/components/dingtalk-tab.tsx \
+  --token text-body --token text-caption --token text-micro
+cap lark-tab --height 1500 \
+  --component packages/views/settings/components/lark-tab.tsx \
+  --token text-body --token text-caption --token text-micro
+cap slack-tab --height 1200 \
+  --component packages/views/settings/components/slack-tab.tsx \
+  --token text-body --token text-caption --token text-micro
+cap telegram-tab --height 1200 \
+  --component packages/views/settings/components/telegram-tab.tsx \
+  --token text-body --token text-caption --token text-micro
+cap wecom-tab --height 1200 \
+  --component packages/views/settings/components/wecom-tab.tsx \
+  --token text-body --token text-caption --token text-micro
+
 rm -rf "$build"

@@ -19,7 +19,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "계층 캔버스, 축소 보기",
     "canvas_cards": "계층 캔버스, 확대 보기",
-    "dialog_description": "계층을 이동하고 확대·축소합니다. 이슈를 열면 해당 이슈로 이동합니다.",
+    "dialog_description": "계층을 한 단계씩 이동합니다. 이슈를 열면 해당 이슈로 이동합니다.",
+    "step_in": "하위로 이동",
+    "step_out": "상위로 이동",
+    "depth": "깊이 {{depth}} / {{max}}",
+    "depth_announce": "깊이 {{depth}}/{{max}}, 카드 {{count}}개, 하위 항목이 있는 카드 {{withChildren}}개",
+    "more_cards": "{{count}}개 더 있음",
+    "more_cards_pending": "{{count}}+개 더 있음 (불러오는 중)",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − 로 깊이 이동 · 방향키로 이동 · Enter로 열기 · Space로 하위/상위 이동 · Esc로 상위 이동",
+    "canvas_focus": "계층 캔버스, 깊이 {{depth}}",
     "zoom_in": "확대",
     "zoom_out": "축소",
     "zoom_level": "확대/축소 {{percent}}%",
@@ -1011,6 +1020,7 @@
     "confirm": "실행 중지"
   },
   "batch": {
+    "delete_restricted": "본인 또는 본인 소유 에이전트가 만든 태스크를 삭제할 수 있습니다. 워크스페이스 owner와 admin은 모든 태스크를 삭제할 수 있습니다.",
     "selected": "{{count}}개 선택됨",
     "status": "상태",
     "priority": "우선순위",
@@ -1028,7 +1038,6 @@
     "delete_failed": "태스크를 삭제하지 못했습니다",
     "delete_dialog_title_other": "태스크 {{count}}개를 삭제할까요?",
     "delete_dialog_desc_other": "이 작업은 되돌릴 수 없습니다. 선택한 태스크와 관련 데이터가 영구 삭제됩니다.",
-    "delete_dialog_warning": "워크스페이스 멤버라면 누구나 태스크를 삭제할 수 있습니다.",
     "cancel": "취소"
   },
   "card": {

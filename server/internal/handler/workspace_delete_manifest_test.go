@@ -208,6 +208,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_search_text":                  workspaceDelete, // CHE-2943 derived; the issue delete trigger removes it, no FK.
 	"issue_status":                       workspaceDelete,
 	"issue_workflow":                     workspaceDelete,
+	"issue_workflow_lint_override":       workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
 	"issue_unread":                       workspaceDelete,
@@ -274,6 +275,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"skill":                              workspaceDelete,
 	"skill_file":                         workspaceDelete,
 	"skill_to_label":                     workspaceDelete,
+	"skill_version":                      workspaceDelete,
 	"squad":                              workspaceDelete,
 	"squad_member":                       workspaceDelete,
 	"stage_completion_wake":              workspaceDelete,

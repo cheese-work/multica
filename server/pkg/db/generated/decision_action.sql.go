@@ -423,6 +423,65 @@ func (q *Queries) ListDecisionBatchActions(ctx context.Context, arg ListDecision
 	return items, nil
 }
 
+const listDecisionBatchItems = `-- name: ListDecisionBatchItems :many
+SELECT action.id AS action_id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix,
+    issue.number AS issue_number, issue.title AS issue_title, action.state, action.result,
+    COALESCE(action.error_code, '')::text AS error_code
+FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.batch_id = $2
+ORDER BY action.id
+`
+
+type ListDecisionBatchItemsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+}
+
+type ListDecisionBatchItemsRow struct {
+	ActionID    pgtype.UUID `json:"action_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	IssuePrefix string      `json:"issue_prefix"`
+	IssueNumber int32       `json:"issue_number"`
+	IssueTitle  string      `json:"issue_title"`
+	State       string      `json:"state"`
+	Result      []byte      `json:"result"`
+	ErrorCode   string      `json:"error_code"`
+}
+
+// A batch card's read: one row per item, in id order (the order the card lists
+// and the choices are keyed by).
+func (q *Queries) ListDecisionBatchItems(ctx context.Context, arg ListDecisionBatchItemsParams) ([]ListDecisionBatchItemsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionBatchItems, arg.WorkspaceID, arg.BatchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionBatchItemsRow{}
+	for rows.Next() {
+		var i ListDecisionBatchItemsRow
+		if err := rows.Scan(
+			&i.ActionID,
+			&i.IssueID,
+			&i.IssuePrefix,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.State,
+			&i.Result,
+			&i.ErrorCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentRejectedProposalParams = `-- name: ListRecentRejectedProposalParams :many
 SELECT a.params, a.updated_at
 FROM decision_action a
@@ -729,7 +788,7 @@ func (q *Queries) LockDecisionLiveAnswerNowait(ctx context.Context, arg LockDeci
 }
 
 const lockDecisionRequestNowait = `-- name: LockDecisionRequestNowait :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, covers_request_ids, answered_by_batch_request_id FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -780,6 +839,7 @@ func (q *Queries) LockDecisionRequestNowait(ctx context.Context, arg LockDecisio
 		&i.AnswerRevision,
 		&i.WakeSeq,
 		&i.BatchID,
+		&i.PingOutcome,
 		&i.CoversRequestIds,
 		&i.AnsweredByBatchRequestID,
 	)
@@ -837,7 +897,7 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 }
 
 const lockDecisionWorkflowNowaitCols = `-- name: LockDecisionWorkflowNowaitCols :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -848,20 +908,23 @@ type LockDecisionWorkflowNowaitColsParams struct {
 }
 
 type LockDecisionWorkflowNowaitColsRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	Name             string             `json:"name"`
-	Description      string             `json:"description"`
-	InitialStatusKey string             `json:"initial_status_key"`
-	Steps            []byte             `json:"steps"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	IsDefault        bool               `json:"is_default"`
-	OwnerID          pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs  bool               `json:"include_child_prs"`
-	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Description        string             `json:"description"`
+	InitialStatusKey   string             `json:"initial_status_key"`
+	Steps              []byte             `json:"steps"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	IsDefault          bool               `json:"is_default"`
+	OwnerID            pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs    bool               `json:"include_child_prs"`
+	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey     pgtype.Text        `json:"start_status_key"`
+	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings       []byte             `json:"lint_findings"`
 }
 
 func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDecisionWorkflowNowaitColsParams) (LockDecisionWorkflowNowaitColsRow, error) {
@@ -882,6 +945,9 @@ func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDe
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
 		&i.StartStatusKey,
+		&i.LintOverrideReason,
+		&i.LintOverriddenAt,
+		&i.LintFindings,
 	)
 	return i, err
 }

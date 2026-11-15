@@ -298,7 +298,7 @@ On the Qoder Cloud Agents page, administrators can edit the connection and repos
 
 Runs beyond the concurrency limit wait in the queue. A follow-up on the same issue continues the agent's previous Qoder session when it is idle. An agent can set a default repository, used when the issue's project has none. The agent is asked to push a branch named after the issue identifier and to prefix the pull request title with it, so the pull request is linked to the issue.
 
-This first version supports issue runs, chat, creating issues with an agent, progress reporting, cancellation, and recovery from a persisted run journal. Configure models, tools, and skills in Qoder. Files and images attached to issues and chat messages reach the session, PDFs and Office documents included, up to 5 MB per file; larger files are not passed on, and the agent is told they exist. Local directories and creating agents in Qoder Cloud Agents from Multica are not supported. The Runtimes page separates remote runtimes from connected computers. In chat, files the agent delivers with DeliverArtifacts, up to 10 MB each, are attached to its reply.
+This first version supports issue runs, chat, squad leaders, creating issues with an agent, progress reporting, cancellation, and recovery from a persisted run journal. Configure models, tools, and skills in Qoder. Files and images attached to issues and chat messages reach the session, PDFs and Office documents included, up to 5 MB per file; larger files are not passed on, and the agent is told they exist. Local directories and creating agents in Qoder Cloud Agents from Multica are not supported. The Runtimes page separates remote runtimes from connected computers. In chat, files the agent delivers with DeliverArtifacts, up to 10 MB each, are attached to its reply.
 
 For standalone bridge setup and operational limitations, see the [Qoder runtime README](https://github.com/multica-ai/multica/blob/main/server/cmd/qoder-runtime/README.md).
 
@@ -334,3 +334,11 @@ If the problem persists, see [Troubleshooting](/troubleshooting).
 - [Install AI coding tools](/install-agent-runtime) — install and verify a supported AI coding tool.
 - [AI coding tools comparison](/providers) — compare models, session resumption, MCP, and skill support.
 - [Runs](/tasks) — queueing, stopping, and retries.
+
+## Managed local run bindings
+
+`MULTICA_RUN_BINDINGS_DIR` is off by default. On Linux, an owner can select an existing 0700, owner-only directory outside task writable roots. Codex launches publish a 0600 `<binding_id>.json` record after start and expose only `MULTICA_RUN_BINDING_ID` to shell tools. Each retry has a fresh ID. Exit, cancellation and startup failure revoke it.
+
+The version 1 record contains `binding_id`, `agent_id`, `principal` (agent ID), `task_id`, `issue_id`, host `pid`, Linux `process_start`, `boot_id` and `pid_namespace`. A broker must share the launcher PID namespace, validate the association, and independently check host liveness. Exec wrappers retain the holder PID; waiting wrappers count only while alive. Detached children cannot extend the binding.
+
+This is a cooperative same-UID contract, not authentication against the host owner. Credential isolation refuses this local route; R1 admission and activation remain separate. It grants no device access. Configure and deploy separately; setting this variable does not activate a broker.

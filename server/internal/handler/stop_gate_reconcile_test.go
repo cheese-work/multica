@@ -24,7 +24,7 @@ func reconcileRuntime(t *testing.T, status string) (agentID, runtimeID string) {
 
 func reconcile(t *testing.T, runtimeID string, live []string) {
 	t.Helper()
-	if _, err := service.ReleaseStopsAttestedByDaemon(context.Background(), testHandler.Queries, parseUUID(runtimeID), live, time.Hour); err != nil {
+	if _, err := service.ReleaseStopsAttestedByDaemon(context.Background(), testHandler.Queries, parseUUID(runtimeID), live, time.Hour, nil, false); err != nil {
 		t.Fatalf("ReleaseStopsAttestedByDaemon: %v", err)
 	}
 }
@@ -183,6 +183,86 @@ func TestStopGateReconcile_LiveSetWithoutUptimeKeepsGateClosed(t *testing.T) {
 	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
 
 	heartbeatLiveSetUptime(t, runtimeID, []string{}, nil)
+
+	stopGateClosedFor(t, issueID, run)
+}
+
+// heartbeatHostScan posts a heartbeat with an empty live set, a daemon that
+// booted 1 min ago, and the host scan (nil = field absent).
+func heartbeatHostScan(t *testing.T, runtimeID string, hostIDs []string, scanOK *bool) {
+	t.Helper()
+	body := map[string]any{"runtime_id": runtimeID, "live_task_ids": []string{}, "daemon_uptime_ms": 60_000}
+	if hostIDs != nil {
+		body["host_task_ids"] = hostIDs
+	}
+	if scanOK != nil {
+		body["host_scan_ok"] = *scanOK
+	}
+	testutil.Decode[heartbeatJSON](t, testHandler.DaemonHeartbeat, newOwnerDaemonRequest(http.MethodPost, "/api/daemon/heartbeat", body), http.StatusOK)
+}
+
+// CHE-5745: a run from before the daemon booted is proven stopped when a clean
+// host scan finds no process carrying its task id.
+func TestStopGateReconcile_PreBootRunAbsentFromHostScanOpensGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "online")
+	issueID := dbfx.Issue(t, "host scan absent", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	heartbeatHostScan(t, runtimeID, []string{}, boolPtr(true))
+
+	stopGateOpen(t, issueID)
+	if got, _ := ackReason(t, run); got != "host_scan" {
+		t.Fatalf("cancel_ack_reason = %q, want host_scan", got)
+	}
+}
+
+func TestStopGateReconcile_PreBootRunPresentInHostScanKeepsGateClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "online")
+	issueID := dbfx.Issue(t, "host scan present", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	heartbeatHostScan(t, runtimeID, []string{run}, boolPtr(true))
+
+	stopGateClosedFor(t, issueID, run)
+}
+
+func TestStopGateReconcile_PreBootRunHostScanNotOKKeepsGateClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "online")
+	issueID := dbfx.Issue(t, "host scan not ok", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	heartbeatHostScan(t, runtimeID, []string{}, boolPtr(false))
+	stopGateClosedFor(t, issueID, run)
+
+	heartbeatHostScan(t, runtimeID, []string{}, nil)
+	stopGateClosedFor(t, issueID, run)
+
+	// ok=true without the id list proves nothing either.
+	heartbeatHostScan(t, runtimeID, nil, boolPtr(true))
+	stopGateClosedFor(t, issueID, run)
+}
+
+func TestStopGateReconcile_HostScanOfflineRuntimeKeepsGateClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "offline")
+	issueID := dbfx.Issue(t, "host scan offline", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	// Direct call: a heartbeat would mark the runtime online.
+	if _, err := service.ReleaseStopsAttestedByDaemon(context.Background(), testHandler.Queries, parseUUID(runtimeID), []string{}, time.Minute, []string{}, true); err != nil {
+		t.Fatal(err)
+	}
 
 	stopGateClosedFor(t, issueID, run)
 }
