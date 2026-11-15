@@ -764,6 +764,63 @@ func (q *Queries) FindActiveDuplicateIssue(ctx context.Context, arg FindActiveDu
 	return i, err
 }
 
+const findIssueByNormalizedTitle = `-- name: FindIssueByNormalizedTitle :one
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read FROM issue i
+WHERE i.workspace_id = $1
+  AND lower(btrim(regexp_replace(i.title, '[[:space:]]+', ' ', 'g'))) = $2
+ORDER BY i.created_at ASC
+LIMIT 1
+`
+
+type FindIssueByNormalizedTitleParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	NormalizedTitle string      `json:"normalized_title"`
+}
+
+// Any issue, open or closed, whose title matches. Used to refuse a second
+// dated autopilot issue (CHE-5757).
+func (q *Queries) FindIssueByNormalizedTitle(ctx context.Context, arg FindIssueByNormalizedTitleParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, findIssueByNormalizedTitle, arg.WorkspaceID, arg.NormalizedTitle)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+		&i.WorkflowID,
+		&i.RequestedByID,
+		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
+	)
+	return i, err
+}
+
 const findRecentAutopilotDuplicateIssue = `-- name: FindRecentAutopilotDuplicateIssue :one
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read FROM issue i
 WHERE i.workspace_id = $1
