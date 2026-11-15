@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,9 @@ type SetIssueWorkflowRequest struct {
 	WorkflowID *string `json:"workflow_id"`
 	// ExpectedRevision, when set, refuses the switch if the issue moved on.
 	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's widening switch (CHE-5228).
+	DecisionBindingFields
 }
 
 // UnmarshalJSON tells an omitted workflow_id from an explicit null, which
@@ -141,6 +145,7 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
+	openCard := false
 	if !isInteractiveRequest(r) {
 		before, err := issueBinding(ctx, qtx, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID, issue.MaxRunsOverride)
 		if err != nil {
@@ -148,12 +153,38 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
-			writeBudgetRebindingRefused(w)
-			return
+			// A task token with no decision asks the owners (CHE-5505); one that
+			// names a decision spends it.
+			if r.Header.Get("X-Actor-Source") == "task_token" && strings.TrimSpace(req.DecisionID) == "" {
+				openCard = true
+			} else if err := h.verifyBoundRebinding(ctx, qtx, r, issue.WorkspaceID, req.DecisionBindingFields, issue.ID, issue.ProjectID, issue.WorkflowID, target); err != nil {
+				writeBoundRebindingError(w, err)
+				return
+			}
 		}
 	}
 	if err := issueworkflow.CheckStatus(next, issue.Status); err != nil {
 		writeIssueWorkflowError(w, err)
+		return
+	}
+	if openCard {
+		// The live-task check waits for the approval: the asking run is itself
+		// live. Release the issue locks before the card takes its own.
+		params, err := issueWorkflowSetParams(ctx, qtx, issue, target)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
+			return
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
+			return
+		}
+		opened, err := h.openIssueWorkflowSetCard(ctx, issue, params)
+		if err != nil {
+			writeDecisionError(w, err, "issue workflow request")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, opened)
 		return
 	}
 	live, err := qtx.HasLiveTaskForIssue(ctx, issue.ID)

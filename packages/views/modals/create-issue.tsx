@@ -64,7 +64,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useProjectWithWorkflow, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
+import { useIssueWorkflows, useProjectWithWorkflow, workflowAllowsStatus, workflowIdForTitle, workflowStep } from "@multica/core/issue-workflows";
 import { stepHandlerActor, useStepHandlerLabel } from "../workflows/step-handler";
 import { WorkflowChoicePill } from "../workflows/workflow-choice-pill";
 import { useIssueDraftStore, type IssueCreateDraft } from "@multica/core/issues/stores/draft-store";
@@ -428,9 +428,18 @@ export function ManualCreatePanel({
     setParentIssueId(id);
     setStage(null);
   };
-  // A project using a named workflow only accepts its columns: a status it
-  // does not list moves to todo, which every workflow keeps. (MUL-7420)
-  const createWorkflow = useProjectWithWorkflow(wsId, projectId, workflowId).workflow;
+  // An issue only takes its workflow's columns — its override's, its project's,
+  // or Default's outside a project: a status it does not list moves to todo,
+  // which every workflow keeps. (MUL-7420, MUL-8250)
+  // The server applies the workspace's title-type mapping when no workflow is
+  // named (CHE-5271), so the form follows the same rule: an explicit choice,
+  // else the workflow the title's type maps to, else the project's.
+  const { workflows: catalog } = useIssueWorkflows(wsId);
+  const titleTypeId = workflowIdForTitle(useCurrentWorkspace()?.settings, title);
+  const mappedWorkflowId = titleTypeId && catalog.some((w) => w.id === titleTypeId) ? titleTypeId : null;
+  const effectiveWorkflowId = workflowId ?? mappedWorkflowId;
+  const { workflow: issueWorkflow, defaultWorkflow: workspaceDefault } = useProjectWithWorkflow(wsId, projectId, effectiveWorkflowId);
+  const createWorkflow = projectId || effectiveWorkflowId ? issueWorkflow : workspaceDefault;
   useEffect(() => {
     if (createWorkflow && !workflowAllowsStatus(createWorkflow, status)) {
       setStatus("todo");
@@ -1064,7 +1073,7 @@ export function ManualCreatePanel({
             {assigneeId ? (
               <CreateRunHint assigneeType={assigneeType} assigneeId={assigneeId} status={status} />
             ) : (
-              <WorkflowHandoffHint projectId={projectId} workflowId={workflowId} status={status} />
+              <WorkflowHandoffHint projectId={projectId} workflowId={effectiveWorkflowId} status={status} />
             )}
 
             {/* Property toolbar — each field renders per the Settings → Preferences → Issue creation
@@ -1075,7 +1084,7 @@ export function ManualCreatePanel({
                 <StatusPicker
                   status={status}
                   projectId={projectId ?? null}
-                  workflowId={workflowId}
+                  workflowId={effectiveWorkflowId}
                   onUpdate={(u) => { if (u.status) updateStatus(u.status); }}
                   triggerRender={<PillButton />}
                   tooltip={tIssues(($) => $.detail.prop_status)}

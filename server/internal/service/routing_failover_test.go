@@ -31,8 +31,8 @@ func routingFailoverFixture(t *testing.T, status string) (*delegatedFailureFixtu
 
 func setRoutingAgent(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture, agent, fallback string) {
 	t.Helper()
-	rows.Exec(t, `UPDATE workspace SET settings = jsonb_build_object('routing_agent',
-		jsonb_build_object('agent_id', $2::text, 'fallback_agent_id', $3::text)) WHERE id = $1`,
+	rows.Exec(t, `UPDATE workspace SET settings = jsonb_build_object('background_agents', jsonb_build_object('routing',
+		jsonb_build_object('agent_id', $2::text, 'fallback_agent_id', $3::text))) WHERE id = $1`,
 		f.workspaceID, agent, fallback)
 }
 
@@ -174,6 +174,20 @@ func TestRoutingFailoverKeepsTheAssigneeWhenTheEnqueueFails(t *testing.T) {
 	failSource(t, svc, f, providerDown)
 	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, f.coordinator); got != 1 {
 		t.Fatal("the issue stayed with the fallback agent after the enqueue failed")
+	}
+}
+
+// The generic failover rule (CHE-4117): a fallback whose runtime is not live is
+// not handed the step; the issue keeps its assignee and the failure stays visible.
+func TestRoutingFailoverSkipsAnUnreachableFallback(t *testing.T) {
+	f, svc, rows := routingFailoverFixture(t, "todo")
+	rows.Exec(t, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, f.runtimeID)
+	failSource(t, svc, f, providerDown)
+	if got := fallbackRuns(t, rows, f, f.worker); got != 0 {
+		t.Fatalf("fallback runs = %d, want 0 for an unreachable fallback", got)
+	}
+	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, f.coordinator); got != 1 {
+		t.Fatal("the issue left its assignee for an unreachable fallback")
 	}
 }
 

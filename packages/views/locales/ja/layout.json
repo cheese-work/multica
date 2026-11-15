@@ -38,6 +38,28 @@
     "feedback": "フィードバック",
     "server_version": "サーバーバージョン {{version}}"
   },
+  "whats_new": {
+    "trigger": "新機能",
+    "card": {
+      "eyebrow": "Multica が更新されました · {{range}}",
+      "title_other": "前回の訪問以降、{{count}} 件の新機能が追加されました",
+      "dismiss": "閉じる",
+      "view_details": "詳細を見る",
+      "got_it": "了解"
+    },
+    "panel": {
+      "title": "新機能",
+      "close": "閉じる",
+      "new": "未読",
+      "release_notes": "v{{version}} の変更ログ",
+      "full_changelog": "すべての変更ログ"
+    },
+    "action": {
+      "try": "試してみる",
+      "open": "開く",
+      "learn_more": "詳しく見る"
+    }
+  },
   "workspace_loader": {
     "loading_workspace": "ワークスペースを読み込み中…",
     "loading_named_prefix": "読み込み中"
@@ -64,24 +86,30 @@
     "show_fewer_pins": "表示を減らす"
   },
   "spaces": {
-    "work": "タスク",
+    "work": "作業",
     "team": "チーム"
   },
   "rail": {
     "label": "アプリナビゲーション",
     "sheet_description": "スペースとワークスペースを切り替えます。",
     "inbox": "受信箱",
-    "work": "タスク",
+    "work": "作業",
     "team": "チーム",
     "chat": "チャット",
     "autopilots": "自動化",
     "switch_workspace": "ワークスペースを切り替え",
-    "invitation_from": "{{name}} さんから招待されています"
+    "invitation_from": "{{name}} さんから招待されています",
+    "open_in_new_window": "新しいウィンドウで開く",
+    "open_in_new_window_click": "クリック",
+    "open_in_other_window": "別のウィンドウで開いています",
+    "in_other_window": "別ウィンドウ",
+    "all_workspaces_open": "すべてのワークスペースがすでにウィンドウで開いています"
   },
   "panels": {
     "work": {
       "my_agents": "マイエージェントの作業",
       "all_issues": "すべてのタスク",
+      "unread": "未読",
       "views": "ビュー",
       "new_project": "新規プロジェクト",
       "new_issue_in_project": "{{name}} に新規タスク",
@@ -89,12 +117,14 @@
       "project_issues": "{{name}} のタスク",
       "project_issues_empty": "タスクはありません",
       "project_issues_error": "タスクを読み込めませんでした",
+      "project_issues_retry": "再試行",
       "project_issues_settings": "プロジェクトのタスク",
       "settings_status": "ステータス",
       "settings_assignee": "担当者",
       "assignee_anyone": "全員",
       "assignee_me": "自分",
       "assignee_my_agents": "自分のエージェント",
+      "assignee_me_and_my_agents": "自分と自分のエージェント",
       "reset": "リセット",
       "load_more": "さらに表示",
       "show_less": "表示を減らす",
@@ -127,7 +157,7 @@
       "squads_and_members": "スクワッドとメンバー",
       "members_other": "メンバー {{count}} 人",
       "resources": "リソース",
-      "runtimes_offline_other": "{{count}} 件オフライン",
+      "runtimes_online_other": "{{count}} 台オンライン",
       "invite_member": "メンバーを招待"
     },
     "autopilots": {
@@ -152,6 +182,9 @@
     "filter": "フィルター",
     "filter_count_other": "{{count}} 件のフィルター",
     "reset": "リセット",
+    "clear_search": "検索をクリア",
+    "clear_filters": "フィルターをクリア",
+    "clear_filters_and_search": "フィルターと検索をクリア",
     "display": "表示設定",
     "selected_other": "{{count}} 件選択中",
     "clear_selection": "選択を解除",
@@ -168,5 +201,21 @@
   "object_page": {
     "toggle_panel": "右サイドバーを切り替え",
     "properties": "プロパティ"
+  },
+  "feature_intro": {
+    "read_docs": "ドキュメントを読む",
+    "carousel": "カルーセル",
+    "slide": "スライド",
+    "slide_position": "{{total}} 枚中 {{current}} 枚目",
+    "go_to_slide": "{{index}} 枚目に移動",
+    "previous": "前へ",
+    "next": "次へ"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} がスケジューリングを一時停止しました · {{time}}。",
+    "paused_at": "スケジューリングは一時停止中 · {{time}}。",
+    "detail": "どのエージェントも新しい実行を取得しません。実行中のタスクは完了し、待機中の作業は待ちます。",
+    "resume": "再開",
+    "resume_failed": "ワークスペースを再開できませんでした"
   }
 }

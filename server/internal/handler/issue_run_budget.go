@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -37,7 +39,12 @@ func (h *Handler) GetIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
 		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	next, err := h.loadRunBudgetNextStep(r.Context(), h.Queries, issue, snap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
+		return
+	}
+	writeJSON(w, http.StatusOK, runBudgetView{RunBudgetSnapshot: snap, OpenCard: next.OpenCard, NextCommand: next.NextCommand})
 }
 
 // GetIssueStageQueue returns where the issue's stage run stands in its owner's
@@ -148,8 +155,7 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 }
 
 // TopUpIssueRunBudget opens a new run-budget window on the issue without a
-// status move (CHE-2297 L2d): the window credit is the cap in force, and the
-// token allowance follows once token accounting is active. Members only, for
+// status move (CHE-2297 L2d): the window credit is the cap in force. Members only, for
 // the same reason as a raise: an agent cannot pay for its own runs. The
 // activity row is the window's start, so it commits with the credit.
 func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
@@ -168,61 +174,93 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only a person can top up an issue's run budget")
 		return
 	}
-	// Moves and top-ups on one issue start their windows one at a time, and
-	// wait for their turn before they hold a connection.
-	leave, err := h.enterRunBudgetBoundary(r.Context(), issue.ID)
+	actor := parseUUID(actorID)
+	max, err := h.topUpRunBudget(r.Context(), issue, actorType, actor, []byte("{}"), nil, nil)
+	if errors.Is(err, errRunBudgetNotBudgeted) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	defer leave()
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-	if err := qtx.LockIssueRunBudgetBoundary(r.Context(), issue.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	// The activity row below starts the next window. Writing the current one
-	// first keeps its credit or debt in the ledger; the lock it takes holds to
-	// the commit.
-	max, err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	if max == 0 {
-		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
-		return
-	}
-	// The transaction began before the wait for the lock, so now() would sort
-	// this boundary before any move recorded during the wait.
-	startedAt, err := qtx.RunBudgetBoundaryClock(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
-		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
-		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: []byte("{}"),
-		CreatedAt: startedAt,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")
-		return
-	}
-	if _, err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("run budget: top-up failed", "err", err, "issue_id", uuidToString(issue.ID))
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"max_runs": max})
+}
+
+var errRunBudgetNotBudgeted = errors.New("the issue has no workflow run budget to top up")
+
+// topUpRunBudget opens a new window for the issue, as a member's top-up or the
+// auto-approver's. guard, when set, runs under the boundary lock once the window
+// is written and before anything is forgiven; an error from it aborts the
+// top-up. after, when set, runs in the same transaction once the new window is
+// open, so work that needs the window (the refused run) commits with it, and
+// the function it returns runs after the commit. It returns the run cap the new
+// window grants.
+func (h *Handler) topUpRunBudget(ctx context.Context, issue db.Issue, actorType string, actorID pgtype.UUID, details []byte, guard func(context.Context, *db.Queries) error, after func(context.Context, *db.Queries) (func(), error)) (int, error) {
+	// Moves and top-ups on one issue start their windows one at a time, and
+	// wait for their turn before they hold a connection.
+	leave, err := h.enterRunBudgetBoundary(ctx, issue.ID)
+	if err != nil {
+		return 0, err
+	}
+	defer leave()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.LockIssueRunBudgetBoundary(ctx, issue.ID); err != nil {
+		return 0, err
+	}
+	// The activity row below starts the next window. Writing the current one
+	// first keeps its credit or debt in the ledger; the lock it takes holds to
+	// the commit.
+	max, err := service.OpenRunBudgetWindow(ctx, qtx, issue.ID)
+	if err != nil {
+		return 0, err
+	}
+	if max == 0 {
+		return 0, errRunBudgetNotBudgeted
+	}
+	if guard != nil {
+		if err := guard(ctx, qtx); err != nil {
+			return 0, err
+		}
+	}
+	if err := service.ForgiveRunBudgetDebt(ctx, qtx, issue.ID); err != nil {
+		return 0, err
+	}
+	// The transaction began before the wait for the lock, so now() would sort
+	// this boundary before any move recorded during the wait.
+	startedAt, err := qtx.RunBudgetBoundaryClock(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
+		ActorID: actorID, Action: "run_budget_top_up", Details: details,
+		CreatedAt: startedAt,
+	}); err != nil {
+		return 0, fmt.Errorf("record top-up: %w", err)
+	}
+	if _, err := service.OpenRunBudgetWindow(ctx, qtx, issue.ID); err != nil {
+		return 0, err
+	}
+	var afterCommit func()
+	if after != nil {
+		if afterCommit, err = after(ctx, qtx); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	if afterCommit != nil {
+		afterCommit()
+	}
+	return max, nil
 }
 
 // openRunBudgetWindow brings the issue's ledger to the window in force, in its
@@ -284,36 +322,56 @@ func boundarySlotsOf(starter txStarter) chan struct{} {
 // caller takes a second boundary lock while it holds one, so a slot never
 // waits on its own holder.
 func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (leave func(), err error) {
+	return h.enterRunBudgetBoundaries(ctx, issueID)
+}
+
+// enterRunBudgetBoundaries is one boundary entry for several issues: it takes
+// every issue's turn, in id order so two batches never wait on each other, then
+// one slot. A batch of top-ups holds one slot, not one per issue.
+func (h *Handler) enterRunBudgetBoundaries(ctx context.Context, issueIDs ...pgtype.UUID) (leave func(), err error) {
+	issueIDs = slices.Clone(issueIDs)
+	slices.SortFunc(issueIDs, func(a, b pgtype.UUID) int { return bytes.Compare(a.Bytes[:], b.Bytes[:]) })
+	issueIDs = slices.Compact(issueIDs)
+
 	boundaryQueue.Lock()
-	turn := boundaryQueue.turns[issueID]
-	if turn == nil {
-		turn = &boundaryTurn{held: make(chan struct{}, 1)}
-		boundaryQueue.turns[issueID] = turn
+	turns := make([]*boundaryTurn, len(issueIDs))
+	for index, issueID := range issueIDs {
+		turn := boundaryQueue.turns[issueID]
+		if turn == nil {
+			turn = &boundaryTurn{held: make(chan struct{}, 1)}
+			boundaryQueue.turns[issueID] = turn
+		}
+		turn.waiting++
+		turns[index] = turn
 	}
-	turn.waiting++
 	boundaryQueue.Unlock()
 
 	slots := boundarySlotsOf(h.TxStarter)
-	var gotTurn, gotSlot bool
+	held := 0 // turns taken, in order
+	var gotSlot bool
 	leave = sync.OnceFunc(func() {
 		if gotSlot {
 			<-slots
 		}
-		if gotTurn {
+		for _, turn := range turns[:held] {
 			<-turn.held
 		}
 		boundaryQueue.Lock()
-		if turn.waiting--; turn.waiting == 0 {
-			delete(boundaryQueue.turns, issueID)
+		for index, turn := range turns {
+			if turn.waiting--; turn.waiting == 0 {
+				delete(boundaryQueue.turns, issueIDs[index])
+			}
 		}
 		boundaryQueue.Unlock()
 	})
-	select {
-	case turn.held <- struct{}{}:
-		gotTurn = true
-	case <-ctx.Done():
-		leave()
-		return nil, ctx.Err()
+	for _, turn := range turns {
+		select {
+		case turn.held <- struct{}{}:
+			held++
+		case <-ctx.Done():
+			leave()
+			return nil, ctx.Err()
+		}
 	}
 	select {
 	case slots <- struct{}{}:
@@ -396,11 +454,10 @@ func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, act
 }
 
 // openRunBudgetWindowForMove opens the run-budget window a person's status move
-// started, so its token allowance is claimed when the move is recorded rather
-// than at the next admission or report. It runs after the event is published:
-// the activity listener has written the move by then, and the window begins at
-// that row. A failure is logged; the next admission or report claims the same
-// allowance.
+// started, when the move is recorded rather than at the next admission. It runs
+// after the event is published: the activity listener has written the move by
+// then, and the window begins at that row. A failure is logged; the next
+// admission opens the same window.
 func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
 	if err := h.openRunBudgetWindow(ctx, issue); err != nil {
 		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)

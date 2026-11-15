@@ -18,7 +18,8 @@ import (
 
 // lockedIssueTaint reads the issue's active taint IDs under a share lock on the
 // issue row, in a second statement so it sees what a writer committed while
-// the lock was awaited. Lock order everywhere: task_elevation, task, issue.
+// the lock was awaited. Lock order everywhere a run of an issue is read, inserted
+// or updated: the issue row first, then task_elevation, then the task row.
 func lockedIssueTaint(ctx context.Context, q *db.Queries, issueID pgtype.UUID) ([]string, error) {
 	if err := q.LockIssueForTaint(ctx, issueID); err != nil {
 		return nil, err
@@ -59,13 +60,12 @@ func (h *Handler) ClearIssueTaint(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	// Fence first: an elevation that predates the taint must not outlive it. This
-	// takes the task_elevation locks before the issue lock, as authorize does.
-	if _, err := qtx.FenceIssueTaskElevations(r.Context(), issue.ID); err != nil {
+	if err := qtx.LockIssueForTaintClear(r.Context(), issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear the taint")
 		return
 	}
-	if err := qtx.LockIssueForTaintClear(r.Context(), issue.ID); err != nil {
+	// Fence next: an elevation that predates the taint must not outlive it.
+	if _, err := qtx.FenceIssueTaskElevations(r.Context(), issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear the taint")
 		return
 	}

@@ -102,6 +102,12 @@ type AppConfig struct {
 	// replies unless it is declared.
 	CommentDeleteKeepRepliesSupported bool `json:"comment_delete_keep_replies_supported"`
 
+	// AutopilotDescriptionGuardSupported tells independently deployed clients
+	// that PATCH /api/autopilots/{id} enforces expected_description_sha256.
+	// Older handlers ignored the unknown JSON field and still overwrote the
+	// description, so clients must fail closed when this declaration is absent.
+	AutopilotDescriptionGuardSupported bool `json:"autopilot_description_guard_supported"`
+
 	// ServerVersion is the running API plain semver version, ServerBuild is the
 	// fork ICT build stamp (YYYYMMDD-hhmm), and ServerCommit is the 7-char short
 	// commit SHA. Only emitted on self-hosted deployments — omitted on the
@@ -129,6 +135,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		AgentConversationStartersSupported: true,
 		IssueCreatePropertiesSupported:     true,
 		CommentDeleteKeepRepliesSupported:  true,
+		AutopilotDescriptionGuardSupported: true,
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",
 		GoogleClientID:                     os.Getenv("GOOGLE_CLIENT_ID"),
 		WorkspaceCreationDisabled:          os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",

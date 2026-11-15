@@ -2,8 +2,9 @@
 """Pre-merge security gate (CHE-2671).
 
 Sets the `security-gate` commit status on a PR's exact head SHA:
-  success  a valid cross-lab PASS verdict for this SHA, no FAIL, no secret in the added lines, no new semgrep finding
-  failure  a valid FAIL verdict, an RGS-1 violation, a secret in the added lines, or a new semgrep ERROR (CHE-3121)
+  success  a valid PASS from every required signer for this SHA, no FAIL, no secret in the added lines, no new semgrep finding
+           (CHE-4596: Opus signs; a sensitive path also needs Sol; an Opus-authored PR needs Sol only; nobody signs their own PR)
+  failure  a valid FAIL verdict, a reviewer who signs their own PR, a secret in the added lines, or a new semgrep ERROR (CHE-3121)
   pending  no verdict for this SHA, or only malformed ones (a new push lands here); semgrep could not run
 
 Verdict = a PR comment by a trusted workspace bot:
@@ -45,6 +46,9 @@ import time
 from pathlib import Path
 
 CONTEXT = "security-gate"
+# CHE-4671: dependabot[bot] (GitHub numeric user id) may AUTHOR a PR. It is not a signer and not an instruction author;
+# the PR still needs the normal Opus (and Sol on a sensitive path) verdict, so registration only skips the author refusal.
+PR_ONLY_AUTHOR_IDS = frozenset({49699333})
 TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.json"
 SEMGREP_BASELINE = "scripts/security-gate/semgrep-baseline.json"
 SEMGREP_CONFIGS = ("p/default", "p/golang", "p/gosec", "p/typescript", "p/python", "p/kotlin")
@@ -62,6 +66,42 @@ SECRET_RES = [re.compile(p) for p in (
     r"\bgh[pousr]_[A-Za-z0-9]{36,}\b",
     r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
     r"\bsk-[A-Za-z0-9_-]{32,}",
+)]
+
+
+# CHE-3122 / CHE-4322: a PR that changes the gate, its rules or its instruction text is a gate-path PR (Cheese still merges it).
+# Match on the whole path, never a substring: `notCODEOWNERS` and `docs/github/workflows/` are ordinary files.
+# Sensitive set (CHE-4596; named TWO_SIGNER_RES since CHE-3122): the gate itself, credential, auth and secrets, CD/deploy, DB
+# migration, and permission and trust-boundary paths. Needs Opus PASS and Sol PASS (see `required_signers`). This list is the
+# sensitive-path glob list the PR reviews; docs/cheese-work/SECURITY-GATE.md mirrors it.
+TWO_SIGNER_RES = [re.compile(p) for p in (
+    r"^scripts/security-gate/",  # verdict signing, trusted-author check, secret regexes, the sweep
+    r"(?:^|/)trusted-authors\.json$",  # who may sign
+    r"^\.github/rulesets/",
+    r"^\.github/workflows/security-gate[^/]*\.ya?ml$",
+    r"^\.github/workflows/mechanical-tier\.ya?ml$",  # runs with the shared bot token
+    r"^scripts/(?:mechanical-tier|agent-merge-brake)/",  # merge authority
+    r"^\.github/workflows/skill-sync\.ya?ml$",  # passes the workspace-admin MULTICA_TOKEN (CHE-4322, Sol P1)
+    r"^scripts/skill-sync/",  # runs with that token
+    r"^scripts/instruction-manifest/",  # instruction_drift.py puts the whole directory first on sys.path while holding that token: a new `datetime.py` shadows a stdlib import (CHE-4322, Sol P1)
+    r"^\.github/workflows/ocr-review\.ya?ml$",  # reads the runner-mounted /run/secrets/ocr-sub2api-key and hands it to a third-party action (CHE-4322, Opus P1)
+    r"^\.github/scripts/",  # helpers every workflow step runs; they can write env and PATH for later steps that hold secrets
+    r"^scripts/(?:(?:run-)?in-review-gate|stack-state)$",  # stack-state runs inside the gate with its token (CHE-4005, Sol)
+    r"(?:^|/)\.semgrepignore$",  # the semgrep gate reads the default branch's copy; a widened ignore hides later findings
+    # Credential, auth and secrets paths in any repo that copies this gate (e.g. `server/internal/auth/jwt.go`). Whole path
+    # components or file stems only: `authoring.md`, `author/` and `tokenizer/` stay ordinary. Prose (`.md`) never matches.
+    r"(?:^|/)(?:auth|authn|authz|oauth|secrets?|credentials?|jwt)/(?!.*\.md$)",
+    r"(?:^|/)(?:[^/]*[._-])?(?:auth|authn|authz|oauth|secrets?|credentials?|jwt|tokens?|passwords?)(?:[._-][^/]*)?\.(?:go|py|kt|java|rs|js|ts|tsx|ya?ml|json|toml|sql|sh)$",  # the word may lead or trail: `daemon_auth.go`, `personal_access_token.go`
+    r"(?:^|/)\.env(?:\.[^/]*)?$",
+    r"\.(?:pem|key|p12|pfx|jks|keystore)$",
+    # CD and deploy (CHE-4596): they ship to the live hosts.
+    r"(?:^|/)deploy/(?!.*\.md$)",
+    r"^\.github/workflows/(?:[^/]*[-_])?(?:deploy|release|cd)(?:[-_.][^/]*)?\.ya?ml$",
+    # DB migrations (CHE-4596): irreversible schema changes.
+    r"(?:^|/)(?:migrations?|db/migrate)/(?!.*\.md$)",
+    # Permission and trust-boundary code (CHE-4596): whole components or stems, so `trustworthy.py` and `acl_docs.md` stay plain.
+    r"(?:^|/)(?:permissions?|rbac|acl|trust)/(?!.*\.md$)",
+    r"(?:^|/)(?:[^/]*[._-])?(?:permissions?|rbac|acl|trust)(?:[._-][^/]*)?\.(?:go|py|kt|java|rs|js|ts|tsx|ya?ml|json|toml|sql|sh)$",
 )]
 
 
@@ -103,9 +143,29 @@ def lab_of(name: str) -> str | None:
     return None
 
 
+# CHE-4596 signer roles, matched on whole name tokens (`x99-claude-opus`, `mbp-claude-opus`, `x99-codex-sol-200k`).
+# CHE-5097: Sol's review work moved to Gemini, so `x99-agy-gemini` holds the `sol` role too.
+SIGNER_RES = {"opus": re.compile(r"(?:^|-)claude-opus(?:$|-)"),
+              "sol": re.compile(r"(?:^|-)(?:codex-sol|agy-gemini)(?:$|-)")}
+
+
+def signer_role(name: str | None) -> str | None:
+    return next((r for r, rx in SIGNER_RES.items() if name and rx.search(name)), None)
+
+
+def required_signers(author: str | None, sensitive: bool) -> set[str]:
+    """Roles that must PASS. Opus signs every PR it did not author; a sensitive path adds Sol; an Opus PR is signed by
+    Sol only. Nobody signs their own PR, so an author's own role is never required (a Sol PR on a sensitive path
+    is left with Opus alone)."""
+    role = signer_role(author)
+    if role == "opus":
+        return {"sol"}
+    return ({"opus", "sol"} if sensitive else {"opus"}) - {role}
+
+
 def author_agent(head_ref: str) -> str | None:
     m = re.match(r"^agent/([^/]+)/", head_ref)
-    return m.group(1) if m else None
+    return m.group(1).casefold() if m else None
 
 
 def added_lines(diff_text: str):
@@ -129,6 +189,65 @@ def added_lines(diff_text: str):
             if m:
                 old_left, new_left = int(m[2] or 1), int(m[4] or 1)
                 line = int(m[3]) - 1
+
+
+def unquote_path(raw: str) -> str:
+    """Decode a Git C-quoted path (`"caf\\303\\251.py"`, `"a\\"b"`); an unquoted path is returned as is. Semgrep reports
+    the decoded name, so a quoted one would never match it and a finding on an added line would be dropped."""
+    if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
+        return raw
+    out, i, body = bytearray(), 0, raw[1:-1]
+    simple = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
+    while i < len(body):
+        c = body[i]
+        if c == "\\" and i + 1 < len(body):
+            m = re.match(r"[0-7]{3}", body[i + 1:i + 4])
+            if m:
+                out.append(int(m[0], 8) & 0xFF)
+                i += 4
+                continue
+            out.append(simple.get(body[i + 1], ord(body[i + 1])))
+            i += 2
+            continue
+        out.extend(c.encode())
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def header_path(raw: str) -> str:
+    """Path of a `+++ ` header value. Git quotes a name with special characters, and appends a TAB to an unquoted name
+    that has a space; an unquoted name never contains a TAB itself."""
+    return unquote_path(raw) if raw.startswith('"') else raw.split("\t")[0]
+
+
+def changed_paths(diff_text: str) -> set[str]:
+    """Paths named by `diff --git` headers (covers deletes and renames) and `+++ b/` lines. A hunk line can only
+    spoof an extra path, which makes the gate stricter, never looser."""
+    paths = set()
+    for raw in diff_text.splitlines():
+        m = re.match(r"^diff --git a/(.+) b/(.+)$", raw)
+        q = re.match(r'^diff --git ("a/(?:[^"\\]|\\.)*") ("b/(?:[^"\\]|\\.)*")$', raw)
+        if q:  # Git quotes a name with non-ASCII, quote, backslash or control characters
+            paths.update(unquote_path(g)[2:] for g in q.groups())
+        elif m:
+            paths.update(m.groups())
+        elif raw.startswith("+++ "):
+            name = header_path(raw[4:])
+            if name.startswith("b/"):
+                paths.add(name[2:])
+    return paths
+
+
+def diff_paths(repo: str, base: str, head: str) -> set[str]:
+    """Changed paths from NUL-delimited git output: never quoted, so a non-ASCII or odd name cannot hide."""
+    out = subprocess.run(["git", "-C", repo, "diff", "--name-only", "-z", "--no-renames", f"{base}...{head}"],
+                         check=True, capture_output=True, text=True).stdout
+    return {p for p in out.split("\0") if p}
+
+
+def two_signer_paths(diff_text: str, paths=()) -> list[str]:
+    """The subset of gate paths that needs 2 distinct PASS verdicts (CHE-4322)."""
+    return sorted(p for p in changed_paths(diff_text) | set(paths) if any(r.search(p) for r in TWO_SIGNER_RES))
 
 
 def scan_secrets(diff_text: str) -> list[str]:
@@ -237,14 +356,16 @@ def parse_verdict(body: str) -> tuple[dict | None, str]:
         return None, "PASS needs `Findings: none`"
     if result == "FAIL" and not any(FINDING_RE.match(f) for f in findings):
         return None, "FAIL needs `- path:line <exploit path>`"
-    return {"result": result, "agent": rev.group(1), "model": rev.group(2), "sha": fields["SHA"],
+    # casefold: `X99-CODEX-SOL` and `x99-codex-sol` are one reviewer, never two
+    return {"result": result, "agent": rev.group(1).casefold(), "model": rev.group(2), "sha": fields["SHA"],
             "repo": fields["Repo"], "pr": int(fields["PR"]), "base": fields["Base"], "digest": fields.get("Diff-Digest"), "findings": findings}, ""
 
 
 def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: str,
              human_ids: frozenset[int] | set[int] = frozenset(), semgrep: list[str] | None = None,
-             digest: str | None = None) -> tuple[str, str]:
-    """`digest` = `pr_diff_digest` of the current head; None = not computed, so only an exact SHA match counts."""
+             digest: str | None = None, paths=()) -> tuple[str, str]:
+    """`digest` = `pr_diff_digest` of the current head; None = not computed, so only an exact SHA match counts.
+    `paths` = NUL-delimited changed paths (`diff_paths`); the diff headers are a stricter-only backstop."""
     head, why = pr["head_sha"], []
     if pr["base_ref"] != pr["default_branch"]:
         # A stacked layer is gated when it is retargeted to the default branch (the `edited` event re-runs this).
@@ -259,6 +380,8 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
     # Authorship comes from the PR author's registered identity, never from a branch name alone.
     if pr["author_id"] in human_ids:
         author, author_lab = None, "human"
+    elif pr["author_id"] in PR_ONLY_AUTHOR_IDS:
+        author, author_lab = None, "bot"
     elif pr["author_id"] in trusted_ids:
         author = author_agent(pr["head_ref"])
         author_lab = lab_of(author) if author else None
@@ -285,21 +408,30 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
             latest[v["agent"]] = v
         else:
             why.append(f"verdict is for {v['sha'][:12]}, head is {head[:12]}")
-    passes = []
+    gated = two_signer_paths(diff_text, paths)
+    need, passed, author_role = required_signers(author, bool(gated)), set(), signer_role(author)
     for agent, v in latest.items():
-        lab = lab_of(agent)
-        if lab is None or lab_of(v["model"]) not in (None, lab):
+        role, lab = signer_role(agent), lab_of(agent)
+        if lab is None or lab_of(v["model"]) not in (None, lab) or (role == "opus" and "opus" not in v["model"].casefold()):
             why.append(f"reviewer {agent}: lab unknown or model mismatch")
-        elif agent == author or lab == author_lab:
-            why.append(f"reviewer {agent} fails RGS-1 (author lab {author_lab})")
+        elif role is None and not (v["result"] == "FAIL" and agent != author and lab != author_lab):
+            # A PASS is limited to the signer roles. A non-signer FAIL still blocks when its reviewer is not the author
+            # and comes from another lab than the author (base RGS-1 behaviour); any other non-signer verdict is ignored.
+            why.append(f"reviewer {agent}: not an allowed signer (Opus or Sol)")
+        elif agent == author or (role and role == author_role):
+            why.append(f"reviewer {agent} cannot sign its own PR (author {author})")
             latest[agent] = {**v, "rgs1": True}
         elif v["result"] == "FAIL":
             find = next(f for f in v["findings"] if FINDING_RE.match(f))
             return _out("failure", f"FAIL by {agent}: {find[2:]}")
         else:
-            passes.append(agent)
-    if passes:
-        return _out("success", f"PASS on {head[:12]} by {', '.join(passes)}")
+            passed.add(role)
+    if need <= passed:
+        return _out("success", f"PASS on {head[:12]} by {', '.join(sorted(passed))}")
+    if passed & need:
+        missing = " and ".join(r.capitalize() for r in sorted(need - passed))
+        return _out("pending", f"sensitive path {gated[0]}: {missing} PASS still needed" if gated
+                    else f"{missing} PASS still needed")
     if any(v.get("rgs1") for v in latest.values()):
         return _out("failure", why[-1])
     return _out("pending", f"no valid verdict for {head[:12]}" + (f" ({why[-1]})" if why else ""))
@@ -322,6 +454,9 @@ def _gh(*args: str) -> str:
     except subprocess.CalledProcessError as e:  # CHE-4234: capture_output hid the API error; show it in the job log
         print(f"gh api {args[0]} failed (exit {e.returncode}): {(e.stderr or '').strip()}", file=sys.stderr)
         raise
+
+
+FRESHNESS_TRIES = 3
 
 
 def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
@@ -404,11 +539,12 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     lines = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq",
                 '.[] | {id, author_id: .user.id, body: (.body // ""), updated_at}').splitlines()
     comments = [json.loads(l) for l in lines]
-    diff, semgrep, digest = "", None, None  # a non-default base returns before the diff is read; its base may not be in this checkout
+    diff, semgrep, digest, paths = "", None, None, ()  # a non-default base returns before the diff is read; its base may not be in this checkout
     if pull["base"]["ref"] == default_branch:
-        diff = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", f"{base}...{head}"],
+        diff = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", "--no-renames", f"{base}...{head}"],
                               check=True, capture_output=True, text=True).stdout
         digest = pr_diff_digest(repo, base, head)
+        paths = diff_paths(repo, base, head)
         if baseline is not None:
             try:
                 names = subprocess.run(["git", "-C", repo, "diff", "--name-only", "-z", "--diff-filter=d",
@@ -418,7 +554,34 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
                 return head, "pending", _out("pending", f"semgrep did not run: {e}")[1]
     state, desc = evaluate({"head_sha": head, "head_ref": pull["head"]["ref"], "base_ref": pull["base"]["ref"],
                             "default_branch": default_branch, "author_id": pull["user"]["id"],
-                            "repo": github, "number": number}, comments, trusted, diff, humans, semgrep, digest)
+                            "repo": github, "number": number}, comments, trusted, diff, humans, semgrep, digest, paths)
+    return head, state, desc
+
+
+def _fingerprint(github: str, number: int) -> tuple:
+    """What a success depends on: the PR head, every comment id + edit time, and the current gate status."""
+    head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
+    comments = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
+    status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
+                 f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+    return head, comments, status
+
+
+def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
+    head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
+    # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
+    # head objects may not be fetched, so they are filtered here, before any diff is read.
+    rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
+                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
+    results = [(state, desc)]
+    for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
+        try:
+            h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
+        except Exception as e:  # an unreadable sibling must block, never skip the status write
+            h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
+        if h == head:
+            results.append((st, f"#{n}: {d}"))
+    state, desc = _out(*combine(results))
     return head, state, desc
 
 
@@ -436,6 +599,8 @@ def main() -> int:
     ap.add_argument("--waiver-record", metavar="FILE",
                     help="with --print-digest: check a human waiver record (file, or - for stdin) against the PR; exit 3 if it does not apply")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
+    ap.add_argument("--revoke-only", action="store_true",
+                    help="only flip the merge-queue heads that carry the PR to failure, without reading a verdict (sweep retry)")
     a = ap.parse_args()
     if a.write_baseline:
         fps = sorted(f["fp"] for f in semgrep_scan(a.repo, "HEAD"))
@@ -453,6 +618,15 @@ def main() -> int:
             out["waiver_applies"] = waiver_applies(record, head, out["digest"])
         print(json.dumps(out))
         return 3 if out.get("waiver_applies") is False else 0
+    if a.revoke_only:
+        # The sweep chose this PR as non-success some time ago; a gate run may have turned it green since.
+        # Read the live head status right before the flip so a recovered PR keeps its queue entry.
+        head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
+        status = _gh(f"repos/{a.github}/commits/{head}/status", "--jq",
+                     f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+        if status != "success":
+            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)
     trusted = {b["id"] for b in registry["workspace_bots"]}
@@ -461,20 +635,15 @@ def main() -> int:
         baseline = load_baseline(a.repo) if a.semgrep else None
     except SemgrepError as e:
         sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
-    head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
-    # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
-    # head objects may not be fetched, so they are filtered here, before any diff is read.
-    rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
-                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
-    results = [(state, desc)]
-    for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
-        try:
-            h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
-        except Exception as e:  # an unreadable sibling must block, never skip the status write
-            h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
-        if h == head:
-            results.append((st, f"#{n}: {d}"))
-    state, desc = _out(*combine(results))
+    for _ in range(FRESHNESS_TRIES):
+        before = _fingerprint(a.github, a.pr)
+        head, state, desc = _evaluate(a, trusted, humans, baseline)
+        # CHE-4385: the scheduled sweep can run for minutes. A FAIL verdict, a new head or a status change that
+        # landed meanwhile must not be overwritten by a success: re-read, and evaluate again if anything moved.
+        if not a.post or state != "success" or _fingerprint(a.github, a.pr) == before:
+            break
+    else:
+        sys.exit("security-gate: the PR changed on every evaluation; no success posted")
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
         _post(a.github, head, state, desc, a.run_url)

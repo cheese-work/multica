@@ -105,7 +105,8 @@ func TestRecoveryLineageGetsNoGenericRetry(t *testing.T) {
 	}
 }
 
-// Ordinary tasks keep the generic schedule. Expected values are fixed literals
+// Ordinary tasks keep the generic schedule. provider_server_error left this
+// table in CHE-1736 M1.2: its one retry is held (provider_held_retry_integration_test.go). Expected values are fixed literals
 // taken from the schedule before CHE-1773, not read back from the helpers.
 func TestNonRecoveryTaskKeepsGenericRetry(t *testing.T) {
 	o := newOwnerFixture(t)
@@ -127,7 +128,6 @@ func TestNonRecoveryTaskKeepsGenericRetry(t *testing.T) {
 		{"provider_network tier 1", network, 1, 2, true, 3, 0},
 		{"provider_network tier 2", network, 2, 2, true, 3, 5 * time.Second},
 		{"provider_network tier 3 is exhausted", network, 3, 3, false, 0, 0},
-		{"provider_server_error stays unretried (CHE-1699)", "agent_error.provider_server_error", 1, 2, false, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id := o.runningTask(t, testutil.Cols{"attempt": tc.attempt, "max_attempts": tc.taskMax})
@@ -233,10 +233,15 @@ func TestRecoveryLineageDepthCapAndCycle(t *testing.T) {
 		b := o.runningTask(t, testutil.Cols{"retry_of_task_id": a})
 		o.Exec(t, "UPDATE agent_task_queue SET retry_of_task_id=$2 WHERE id=$1", a, b)
 		t.Cleanup(func() { o.Exec(t, "UPDATE agent_task_queue SET retry_of_task_id=NULL WHERE id IN ($1,$2)", a, b) })
+		// The walk ends on the cycle and is no cap. b is already a's one retry
+		// child (CHE-4581), so failing a mints no second one.
+		fence, err := o.svc.TaskSvc.fenceRecoveryLineage(ctx, o.q, parseTestUUID(t, a))
+		if err != nil || fence.Capped() {
+			t.Fatalf("fence capped=%t err=%v, want no cap", fence.Capped(), err)
+		}
 		failTimeout(t, a)
-		// b points at a already, so one new retry child makes two.
-		if n := o.retryChildren(t, a); n != 2 {
-			t.Fatalf("retry children=%d, want 2", n)
+		if n := o.retryChildren(t, a); n != 1 {
+			t.Fatalf("retry children=%d, want 1 (b only)", n)
 		}
 	})
 }

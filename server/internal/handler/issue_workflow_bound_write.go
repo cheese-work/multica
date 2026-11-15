@@ -1,15 +1,15 @@
 package handler
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -59,21 +59,9 @@ const (
 
 // workflowStepsHash is the recipe above for steps of the workflow with id.
 func workflowStepsHash(id pgtype.UUID, steps []issueworkflow.Step) string {
-	payload := make([]IssueWorkflowStepPayload, len(steps))
-	for i, s := range steps {
-		payload[i] = stepToPayload(s)
-	}
-	raw, _ := json.Marshal(map[string]any{"steps": payload, "workflow_id": uuidToString(id)}) // a plain struct tree always marshals
-	var generic any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	_ = dec.Decode(&generic)
-	var canonical bytes.Buffer
-	enc := json.NewEncoder(&canonical) // a map encodes with its keys sorted
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(generic)
-	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
-	return hex.EncodeToString(sum[:])
+	raw, _ := json.Marshal(stepsPayload(steps)) // a plain struct tree always marshals
+	digest, _ := decisionaction.WorkflowDigest(uuidToString(id), raw)
+	return digest
 }
 
 // workflowWriteField names the governed field a change from before to after
@@ -93,18 +81,115 @@ func workflowWriteField(before, after []issueworkflow.Step) string {
 	return workflowStepsField
 }
 
-// refuseUnboundMachineWrite answers 403 for a machine credential that is not
-// an agent task token carrying a decision id or receipt issue, and reports whether it did. A
-// human caller passes.
-func refuseUnboundMachineWrite(w http.ResponseWriter, r *http.Request, binding DecisionBindingFields) bool {
+// refuseMachineWorkflowWrite answers 403 passkey_action_required for every
+// machine credential, a decision-bound or receipt-bound write included
+// (CHE-3482), and reports whether it did. A human caller passes.
+// ponytail: the bound-write verification below is unreachable from the routes
+// now; delete it in a follow-up.
+func refuseMachineWorkflowWrite(w http.ResponseWriter, r *http.Request) bool {
 	if !isMachineCredentialActor(r) {
 		return false
 	}
-	if r.Header.Get("X-Actor-Source") != "task_token" || (strings.TrimSpace(binding.DecisionID) == "" && strings.TrimSpace(binding.ReceiptIssue) == "") {
-		writeError(w, http.StatusForbidden, "agents may change a workflow only with a decision-bound write (decision_id, before_sha256, after_sha256) or, for step instructions, a PASS receipt (receipt_issue, before_sha256, after_sha256)")
-		return true
+	writePasskeyActionRequired(w, workflowStepsAction)
+	return true
+}
+
+// refuseMachineWorkflowUpdate is refuseMachineWorkflowWrite for a workflow
+// PATCH. When the request changes the instructions of one step and nothing
+// else, the refusal names workflow.step.instructions.set and the command that
+// proposes it, the action that works for that change (CHE-5843).
+func (h *Handler) refuseMachineWorkflowUpdate(w http.ResponseWriter, r *http.Request, workspaceID, workflowID pgtype.UUID, steps *[]IssueWorkflowStepInput) bool {
+	if !isMachineCredentialActor(r) {
+		return false
 	}
-	return false
+	if steps != nil {
+		if current, err := h.Queries.GetIssueWorkflow(r.Context(), db.GetIssueWorkflowParams{ID: workflowID, WorkspaceID: workspaceID}); err == nil {
+			if live, err := issueworkflow.DecodeSteps(current.Steps); err == nil {
+				if statusKey, ok := onlyInstructionsDiffer(live, *steps); ok {
+					command, _ := decisiontx.PasskeyOnlyCommand(workflowInstructionsField, uuidToString(workflowID), statusKey)
+					writePasskeyActionRequiredWithCommand(w, decisionaction.WorkflowStepInstructionsSet, command)
+					return true
+				}
+			}
+		}
+	}
+	writePasskeyActionRequired(w, workflowStepsAction)
+	return true
+}
+
+// onlyInstructionsDiffer reports the status key of the one step whose
+// instructions the request changes, when every other step and every other
+// field of that step match the live workflow. An entry or wait flag the
+// request leaves out keeps the stored value; one it states must equal the
+// stored value, or the edit is structural.
+func onlyInstructionsDiffer(live []issueworkflow.Step, requested []IssueWorkflowStepInput) (string, bool) {
+	if len(live) != len(requested) {
+		return "", false
+	}
+	changed := ""
+	for i, step := range live {
+		if requested[i].StatusKey != step.StatusKey || requested[i].NewStatus != nil {
+			return "", false
+		}
+		if !sameStepExceptInstructions(stepToPayload(step), requested[i]) || !statedGateAndWaitMatch(step, requested[i]) {
+			return "", false
+		}
+		if requested[i].Instructions != step.Instructions {
+			if changed != "" {
+				return "", false
+			}
+			changed = step.StatusKey
+		}
+	}
+	return changed, changed != ""
+}
+
+// statedGateAndWaitMatch reports whether the entry gates and wait flag the
+// request states equal the live step's. A field the request omits matches.
+func statedGateAndWaitMatch(live issueworkflow.Step, requested IssueWorkflowStepInput) bool {
+	if requested.Entry != nil && !(len(requested.Entry) == 0 && len(live.Entry) == 0) && !reflect.DeepEqual(requested.Entry, live.Entry) {
+		return false
+	}
+	return requested.WaitsOnOpenDecision == nil || *requested.WaitsOnOpenDecision == live.WaitsOnOpenDecision
+}
+
+// sameStepExceptInstructions compares two steps as JSON with empty values and
+// the fields statedGateAndWaitMatch checks removed.
+func sameStepExceptInstructions(live IssueWorkflowStepPayload, requested IssueWorkflowStepInput) bool {
+	shape := func(step any) map[string]any {
+		raw, _ := json.Marshal(step)
+		fields := map[string]any{}
+		_ = json.Unmarshal(raw, &fields)
+		for _, key := range []string{"instructions", "entry", "waits_on_open_decision"} {
+			delete(fields, key)
+		}
+		for key, value := range fields {
+			switch typed := value.(type) {
+			case nil:
+				delete(fields, key)
+			case string:
+				if typed == "" {
+					delete(fields, key)
+				}
+			case bool:
+				if !typed {
+					delete(fields, key)
+				}
+			case []any:
+				if len(typed) == 0 {
+					delete(fields, key)
+				}
+			case map[string]any:
+				for inner, innerValue := range typed {
+					if innerValue == "" || innerValue == nil {
+						delete(typed, inner)
+					}
+				}
+			}
+		}
+		return fields
+	}
+	return reflect.DeepEqual(shape(live), shape(requested))
 }
 
 // verifyWorkflowWrite proves an agent's workflow write: the live workflow still
@@ -116,6 +201,18 @@ func (h *Handler) verifyWorkflowWrite(ctx context.Context, tx db.DBTX, qtx *db.Q
 	if strings.TrimSpace(binding.ReceiptIssue) != "" {
 		return h.verifyWorkflowReceipt(ctx, tx, r, workspaceID, workflowID, binding, before, after)
 	}
+	if !protectedStepBlocksUnchanged(before, after) {
+		return decisionIntentRefusal{http.StatusForbidden, "a governed:human block would change"}
+	}
+	return h.verifyBoundDigests(ctx, qtx, r, workspaceID, binding, workflowWriteField(before, after), workflowStepsHash(workflowID, before), workflowStepsHash(workflowID, after))
+}
+
+// verifyBoundDigests is the check every decision-bound write shares: the live
+// state still hashes to before_sha256 (409 when it moved), the state the write
+// would store hashes to after_sha256 (403 when the agent wrote something
+// else), and a workspace owner approved exactly that change of field for this
+// agent. It records the single-use row in qtx's transaction.
+func (h *Handler) verifyBoundDigests(ctx context.Context, qtx *db.Queries, r *http.Request, workspaceID pgtype.UUID, binding DecisionBindingFields, field, liveSHA, afterSHA string) error {
 	decisionID, err := util.ParseUUID(binding.DecisionID)
 	if err != nil {
 		return decisionIntentRefusal{http.StatusBadRequest, "decision_id must be a decision request id"}
@@ -124,19 +221,16 @@ func (h *Handler) verifyWorkflowWrite(ctx context.Context, tx db.DBTX, qtx *db.Q
 	if err != nil {
 		return decisionIntentRefusal{http.StatusForbidden, "agent identity is required"}
 	}
-	if !protectedStepBlocksUnchanged(before, after) {
-		return decisionIntentRefusal{http.StatusForbidden, "a governed:human block would change"}
+	if binding.BeforeSHA256 != liveSHA {
+		return decisionIntentRefusal{http.StatusConflict, "before_sha256 does not match the live " + field + "; read it again and ask for a new decision"}
 	}
-	if binding.BeforeSHA256 != workflowStepsHash(workflowID, before) {
-		return decisionIntentRefusal{http.StatusConflict, "before_sha256 does not match the live workflow; read it again and ask for a new decision"}
-	}
-	if binding.AfterSHA256 != workflowStepsHash(workflowID, after) {
-		return decisionIntentRefusal{http.StatusForbidden, "after_sha256 does not match the steps this write would store"}
+	if binding.AfterSHA256 != afterSHA {
+		return decisionIntentRefusal{http.StatusForbidden, "after_sha256 does not match what this write would store"}
 	}
 	gate := func(ctx context.Context, _ *db.Queries, ws, agent pgtype.UUID, field string) (bool, bool) {
 		return h.delegatedWriteAllowed(ctx, ws, uuidToString(agent), field)
 	}
-	return verifyDecisionBinding(ctx, qtx, gate, workspaceID, decisionID, agentID, workflowWriteField(before, after), binding.BeforeSHA256, binding.AfterSHA256)
+	return verifyDecisionBinding(ctx, qtx, gate, workspaceID, decisionID, agentID, field, binding.BeforeSHA256, binding.AfterSHA256)
 }
 
 // verifyWorkflowReceipt proves a workflow.instructions write by a PASS receipt

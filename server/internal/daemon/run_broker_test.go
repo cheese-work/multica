@@ -39,8 +39,8 @@ func brokerTestConfig(t *testing.T, gh *gatesuite.GitHub) *BrokerConfig {
 	}
 }
 
-// fakeTools puts stand-in git and gh first on PATH and returns the dir.
-func fakeTools(t *testing.T) {
+// brokerFakeTools puts stand-in git and gh first on PATH and returns the dir.
+func brokerFakeTools(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{"git": "#!/bin/sh\nexit 0\n", "gh": "#!/bin/sh\necho \"$GH_TOKEN\"\n"} {
@@ -99,7 +99,7 @@ func TestRunBrokerRefusedWithoutIsolation(t *testing.T) {
 func TestRunBrokerFakeAgentGHRefreshAndRevoke(t *testing.T) {
 	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
 	cfg := brokerTestConfig(t, gh)
-	fakeTools(t)
+	brokerFakeTools(t)
 	mc := buildMultica(t)
 	multicaExe = func() (string, error) { return mc, nil }
 	t.Cleanup(func() { multicaExe = os.Executable })
@@ -152,7 +152,7 @@ func TestRunBrokerFakeAgentGHRefreshAndRevoke(t *testing.T) {
 
 func TestRunBrokerStartRefusals(t *testing.T) {
 	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
-	fakeTools(t)
+	brokerFakeTools(t)
 	rb, err := applyRunBroker(sandbox.ModeOn, true, brokerTestConfig(t, gh), map[string]string{}, quietLog())
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestStartRunBrokerFromCheckout(t *testing.T) {
 	if _, err := os.Stat(realGit); err != nil {
 		t.Skip("no /usr/bin/git")
 	}
-	fakeTools(t)
+	brokerFakeTools(t)
 	root := t.TempDir()
 	run := func(dir string, args ...string) {
 		t.Helper()

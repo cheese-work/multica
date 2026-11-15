@@ -55,7 +55,7 @@
     "needs_auth_description": "需要登入 Multica 才能完成繫結。連結中的 token 會將你的飛書帳號繫結到當前登入的 Multica 使用者。",
     "sign_in": "登入",
     "done_title": "已繫結。",
-    "done_description": "下次在飛書向 Bot 傳送訊息時，會直接送達繫結的智慧體。可以關閉此頁面。",
+    "done_description": "下次在飛書向 Bot 傳送訊息時，會直接送達繫結的 AI 代理。可以關閉此頁面。",
     "error_title": "繫結未完成",
     "error_admin_hint": "如果反覆失敗，請讓工作區管理員從飛書重新傳送繫結連結。",
     "error_missing_token": "連結缺少繫結 token。請讓 Bot 在飛書重新傳送一份。",
@@ -70,7 +70,7 @@
     "needs_auth_description": "需要登入 Multica 才能完成關聯。連結中的 token 會將你的 Slack 帳號繫結到當前登入的 Multica 使用者。",
     "sign_in": "登入",
     "done_title": "已關聯。",
-    "done_description": "下次在 Slack 向機器人傳送訊息時，會直接送達繫結的智慧體。可以關閉此頁面。",
+    "done_description": "下次在 Slack 向機器人傳送訊息時，會直接送達繫結的 AI 代理。可以關閉此頁面。",
     "error_title": "關聯未完成",
     "error_admin_hint": "如果反覆失敗，請在 Slack 重新向機器人發訊息以獲取新的連結。",
     "error_missing_token": "連結缺少 token。請在 Slack 重新向機器人發訊息以獲取新的連結。",
@@ -85,7 +85,7 @@
     "needs_auth_description": "需要登入 Multica 才能完成關聯。連結中的 token 會將你的釘釘帳號繫結到當前登入的 Multica 使用者。",
     "sign_in": "登入",
     "done_title": "已關聯。",
-    "done_description": "下次在釘釘向機器人傳送訊息時，會直接送達繫結的智慧體。可以關閉此頁面。",
+    "done_description": "下次在釘釘向機器人傳送訊息時，會直接送達繫結的 AI 代理。可以關閉此頁面。",
     "error_title": "關聯未完成",
     "error_admin_hint": "如果反覆失敗，請在釘釘重新向機器人發訊息以獲取新的連結。",
     "error_missing_token": "連結缺少 token。請在釘釘重新向機器人發訊息以獲取新的連結。",
@@ -100,7 +100,7 @@
     "needs_auth_description": "請先登入 Multica 完成繫結。連結中的 token 會把你的 Telegram 帳號繫結到當前登入的 Multica 使用者，因此需要先登入。",
     "sign_in": "登入",
     "done_title": "繫結成功。",
-    "done_description": "你在 Telegram 中發給機器人的下一條訊息將直達智慧體。可以關閉此頁面了。",
+    "done_description": "你在 Telegram 中發給機器人的下一條訊息將直達 AI 代理。可以關閉此頁面了。",
     "error_title": "繫結未完成",
     "error_admin_hint": "如果問題持續出現，請在 Telegram 中再給機器人發一條訊息以獲取新連結。",
     "error_missing_token": "連結缺少 token。請在 Telegram 中再給機器人發一條訊息以獲取新連結。",
@@ -119,7 +119,7 @@
     "needs_auth_description": "需要登入 Multica 才能完成關聯。連結中的 token 會將你在企業微信的身份繫結到當前登入的 Multica 使用者。",
     "sign_in": "登入",
     "done_title": "已關聯。",
-    "done_description": "下次在企業微信向智慧機器人傳送訊息時，會直接送達繫結的智慧體。可以關閉此頁面。",
+    "done_description": "下次在企業微信向智慧機器人傳送訊息時，會直接送達繫結的 AI 代理。可以關閉此頁面。",
     "error_title": "關聯未完成",
     "error_admin_hint": "如果反覆失敗，請在企業微信重新向機器人發訊息以獲取新的連結。",
     "error_missing_token": "連結缺少 token。請在企業微信重新向機器人發訊息以獲取新的連結。",
@@ -142,8 +142,8 @@
     "reject_error": "拒絕未完成。請重試。",
     "waiting": "正在等待你的通行金鑰…",
     "state": {
-      "executed": "已執行",
-      "failed": "失敗",
+      "executed": "已套用",
+      "failed": "未套用",
       "rejected": "已拒絕",
       "expired": "已過期",
       "cancelled": "已取消"
@@ -155,18 +155,36 @@
       "other": "失敗：{{code}}",
       "stale_base": "請求之後目標已變更。請重新請求。"
     },
+    "refusal": {
+      "class_needs_owner": "只有工作區擁有者可以核准此變更。",
+      "payload_mismatch": "核准的變更與所要求的變更不一致。請重新要求。",
+      "preview_required": "請針對所顯示的預覽進行核准。請重新載入卡片。",
+      "precondition_drift": "自要求以來目標已變更。請重新要求。",
+      "busy_retry": "另一項變更正在進行。請重試。",
+      "not_permitted": "你無權進行此變更。",
+      "action_not_executable": "此類變更暫時無法核准。",
+      "approval_proof_unavailable": "此伺服器暫時無法驗證通行金鑰核准。",
+      "other": "已拒絕：{{code}}"
+    },
+    "owner_only": "只有工作區擁有者可以核准此變更。",
     "no_passkey": "核准前請先新增通行金鑰。",
     "add_passkey": "新增通行金鑰",
     "error": "通行金鑰核准未完成。請重試。",
     "lost": "回應遺失。該操作不會被再次核准。請檢查結果。",
     "check": "檢查結果",
-    "outcome": { "cap_applied": "已套用上限", "run_queued": "執行已排入佇列", "still_blocked": "仍被封鎖：{{reason}}" },
+    "outcome": {
+      "cap_applied": "已套用上限",
+      "run_queued": "執行已排入佇列",
+      "still_blocked": "仍被封鎖：{{reason}}"
+    },
     "panel": {
       "title": "執行預算請求",
       "raise_cap": "將此視窗中 {{issue}} 的執行上限提高到 {{cap}} 次。",
       "top_up": "為此視窗中的 {{issue}} 補充執行預算。",
-      "mismatch": "此核准不是針對該議題的執行預算請求，無法在此核准。",
-      "unreadable": "你無權查看此核准，或它已不存在。"
+      "settled": "此核准已處於「{{state}}」狀態。如仍需要，請讓代理重新提出。",
+      "mismatch": "此核准不是針對該議題的執行預算請求。請在私訊或收件匣中開啟該卡片進行決定。",
+      "open_card": "開啟卡片",
+      "unreadable": "此核准對你不可用，或已不存在。請讓代理重新提出。"
     }
   }
 }

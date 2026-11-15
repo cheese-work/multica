@@ -45,14 +45,21 @@ for (const [name, files, selected] of [
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
   ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
   ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
+  ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
   ["radius policy", ["scripts/check-ui-radius-tokens.mjs"], ["quality"]],
+  ["pattern ledger", ["design/patterns.yml"], ["quality"]],
+  ["pattern validator", ["scripts/design/validate-patterns.mjs"], ["quality"]],
+  ["design record", ["DESIGN.md"], ["quality"]],
   ["shared quality action", [".github/actions/frontend-quality/action.yml"], ["frontend", "quality"]],
   ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality", "images"]],
   ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "backend", "sqlc"]],
   ["CI configuration", [".github/ci-paths.json"], Object.keys(filters)],
+  ["another workflow runs the wait-policy scan", [".github/workflows/release.yml"], ["deploy_cd"]],
+  ["wait policy script", [".github/scripts/ci-wait-policy.py"], ["deploy_cd"]],
+  ["wait policy exceptions", [".github/ci-policy.yml"], ["deploy_cd"]],
 ]) {
   test(`PR, main and merge groups select only affected scopes: ${name}`, () => {
     for (const event of ["pull_request", "push", "merge_group"]) {
@@ -157,12 +164,13 @@ test("deploy admission accepts skipped push tests only after green merge-group C
   const contexts = { mobile: "success", "cd-qualification": "success" };
   for (const gate of ["backend", "frontend"]) {
     const needs = productionNeeds(gate, outputs);
-    for (const job of Object.keys(productionMapping(gate))) {
-      needs[job].result = "skipped";
+    for (const [job, scope] of Object.entries(productionMapping(gate))) {
+      if (scope !== "always") needs[job].result = "skipped";
     }
     checkGate(needs, productionMapping(gate));
     contexts[gate] = "success";
-    assert.ok(Object.values(productionNeeds(gate, outputs)).slice(1).every((job) => job.result === "skipped"));
+    const mapping = productionMapping(gate);
+    assert.ok(Object.entries(productionNeeds(gate, outputs)).slice(1).every(([job, { result }]) => mapping[job] === "always" || result === "skipped"));
   }
   const checks = join(directory, "checks.json");
   writeFileSync(checks, JSON.stringify({ sha: sourceSha, contexts }));
@@ -343,8 +351,8 @@ test("a merge-group migration failure cannot pass the backend gate", () => {
   ]));
   assert.equal(outputs.backend, "true");
   assert.equal(outputs.sqlc, "true");
-  assert.equal(productionMapping("backend")["backend-tests"], "push_full");
-  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_full == 'true' \}\}$/m);
+  assert.equal(productionMapping("backend")["backend-tests"], "push_backend");
+  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_backend == 'true' \}\}$/m);
   const needs = productionNeeds("backend", outputs);
   checkGate(needs, productionMapping("backend"));
   needs["backend-tests"].result = "failure";
@@ -438,7 +446,7 @@ test("installer does not advertise PowerShell coverage without Windows runners",
 });
 
 test("go-lint filters findings from the locally fetched merge base", () => {
-  assert.match(jobs["go-lint"], /args: --new-from-merge-base=origin\/\$\{\{ github\.base_ref \}\}/);
+  assert.match(jobs["go-lint"], /run: golangci-lint run --new-from-merge-base="origin\/\$BASE_REF"/);
   assert.doesNotMatch(jobs["go-lint"], /only-new-issues:/);
 });
 
@@ -448,19 +456,15 @@ test("quality checks run on frontend-build and, when frontend-build is skipped, 
   assert.deepEqual(owners.sort(), ["frontend-build", "frontend-quality"]);
   assert.equal(productionMapping("frontend")["frontend-quality"], "quality_only");
   assert.match(jobs["frontend-build"], /      - name: Check frontend quality\n        uses: \.\/\.github\/actions\/frontend-quality\n/);
-  // CHE-748 made frontend-build unconditional (no job-level if:), so it now
-  // always runs regardless of frontend/quality scope -- the "exactly one
-  // runner" invariant this test previously enforced no longer holds: a
-  // quality-only PR (frontend=false, quality=true) runs BOTH frontend-build
-  // (always) and frontend-quality (quality_only), duplicating the knip/UI
-  // checks. Documented here as a real behavior change from CHE-748, not
-  // something this test should mask.
+  // CHE-748 made frontend-build unconditional, so a quality-only PR ran both runners. CHE-4874
+  // scopes it by push_frontend again: frontend PRs run quality in frontend-build, quality-only
+  // PRs in frontend-quality, and PRs with neither run no quality runner.
   for (const frontend of ["true", "false"]) {
     for (const quality of ["true", "false"]) {
       const outputs = decideScopes("pull_request", { ...filterFiles([]), frontend, quality });
       const results = productionNeeds("frontend", outputs);
       const runners = owners.filter((job) => results[job].result === "success");
-      const expected = frontend === "true" ? 1 : (quality === "true" ? 2 : 1);
+      const expected = frontend === "true" || quality === "true" ? 1 : 0;
       assert.equal(runners.length, expected);
     }
   }
@@ -489,4 +493,51 @@ test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (
   });
   assert.equal(gate.status, 1);
   assert.match(gate.stderr, /backend-tests/);
+});
+
+// CHE-4874: on pull requests the full-suite jobs follow their own path scope;
+// merge_group, main pushes and manual/scheduled runs keep the whole suite.
+const PUSH_SCOPES = { push_backend: "backend", push_frontend: "frontend", push_sqlc: "sqlc" };
+const pushOutputs = (outputs) => Object.fromEntries(Object.keys(PUSH_SCOPES).map((key) => [key, outputs[key]]));
+
+test("pull requests scope full-suite jobs by path", () => {
+  for (const [files, expected] of [
+    [["README.md"], { push_backend: "false", push_frontend: "false", push_sqlc: "false" }],
+    [["apps/docs/content/docs/guide.mdx"], { push_backend: "false", push_frontend: "false", push_sqlc: "false" }],
+    [["apps/web/features/landing/i18n/en.ts"], { push_backend: "false", push_frontend: "true", push_sqlc: "false" }],
+    [["server/internal/skill/service.go"], { push_backend: "true", push_frontend: "false", push_sqlc: "false" }],
+    [["server/migrations/999_example.up.sql"], { push_backend: "true", push_frontend: "false", push_sqlc: "true" }],
+    [["packages/core/runtimes/cli-version.ts"], { push_backend: "true", push_frontend: "true", push_sqlc: "false" }],
+    [[".github/ci-paths.json"], { push_backend: "true", push_frontend: "true", push_sqlc: "true" }],
+  ]) {
+    assert.deepEqual(pushOutputs(decideScopes("pull_request", filterFiles(files))), expected, files.join());
+  }
+});
+
+test("merge_group, main push, schedule and dispatch run every full-suite job whatever the paths", () => {
+  const every = { push_backend: "true", push_frontend: "true", push_sqlc: "true" };
+  assert.deepEqual(pushOutputs(decideScopes("merge_group", filterFiles(["README.md"]))), every);
+  assert.deepEqual(pushOutputs(decideScopes("push", filterFiles(["README.md"]), "main")), every);
+  assert.deepEqual(pushOutputs(decideScopes("push", filterFiles(["README.md"]), "main", false, true)), every);
+  assert.deepEqual(pushOutputs(decideScopes("schedule", {})), every);
+  assert.deepEqual(pushOutputs(decideScopes("workflow_dispatch", {})), every);
+  // A reused green merge group skips them all.
+  assert.deepEqual(pushOutputs(decideScopes("push", filterFiles(["README.md"]), "main", true)),
+    { push_backend: "false", push_frontend: "false", push_sqlc: "false" });
+});
+
+test("full-suite jobs use their scope's push output in the job condition and the gate map", () => {
+  const cases = [
+    ["sqlc-check", "push_sqlc", "backend"], ["go-vulnerability-scan", "push_backend", "backend"], ["go-lint", "push_backend", "backend"],
+    ["backend-test-shards", "push_backend", null], ["backend-tests", "push_backend", "backend"],
+    ["frontend-build", "push_frontend", "frontend"], ["frontend-test", "push_frontend", "frontend"],
+  ];
+  for (const [name, output, gate] of cases) {
+    assert.match(jobs[name], new RegExp(`^    if: \\$\\{\\{ (!cancelled\\(\\) && )?needs\\.changes\\.outputs\\.${output} == 'true' \\}\\}$`, "m"), name);
+    assert.doesNotMatch(jobs[name], /outputs\.push_full\b/, name);
+    if (gate) assert.equal(productionMapping(gate)[name], output, name);
+  }
+  for (const output of Object.keys(PUSH_SCOPES)) {
+    assert.ok(jobs.changes.includes(`      ${output}: \${{ steps.decide.outputs.${output} }}`), output);
+  }
 });

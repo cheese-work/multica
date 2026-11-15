@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -268,6 +269,43 @@ func TestIssueWakeupCreatePrintsServerWarningsToStderr(t *testing.T) {
 	}
 }
 
+func TestIssueWakeupCLISendsDecisionPurposeAndAgentFilter(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body = nil
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "wake", "enabled": true})
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	const issue = "a57c0511-1ebc-471d-a314-438ca16cc75d"
+	const request = "0f1f7c1e-2a41-4a6b-9a3f-6b3a2f0c9d11"
+	for name, tc := range map[string]struct {
+		flags []string
+		want  map[string]string
+	}{
+		"decision": {[]string{"--decision", request}, map[string]string{"decision_request_id": request}},
+		"purpose":  {[]string{"--purpose", "observe"}, map[string]string{"purpose": "observe"}},
+		"agents":   {[]string{"--filter-actor-type", "agent"}, map[string]string{"filter_actor_type": "agent"}},
+	} {
+		cmd := newIssueWakeupCommand()
+		cmd.SetArgs(append([]string{"create", issue, "--event", "comment.created", "--instruction", "wait"}, tc.flags...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for k, v := range tc.want {
+			if body[k] != v {
+				t.Fatalf("%s: body[%s] = %v, want %s (%+v)", name, k, body[k], v, body)
+			}
+		}
+	}
+}
+
 // The CLI has no definition commands: scoped defaults are managed in the web
 // and desktop apps or the API. `list` and `get` must still show where a
 // default-derived instance came from and its disabled/paused state.
@@ -308,5 +346,41 @@ func TestIssueWakeupCLIListKeepsDefaultOriginAndState(t *testing.T) {
 	}
 	if rows[1]["default_rule_key"] != nil {
 		t.Errorf("local row claims an origin: %+v", rows[1])
+	}
+}
+
+func TestIssueWakeupCLISendsWatchInputs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const issue = "a57c0511-1ebc-471d-a314-438ca16cc75d"
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "wake"})
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	for _, args := range [][]string{
+		{"create", issue, "--after", "10m", "--instruction", "x", "--kind", "at", "--watch", "issue", "--watch", "pr"},
+		{"update", issue, "wake", "--after", "10m", "--instruction", "x", "--kind", "at", "--watch", "children"},
+		{"create", issue, "--after", "10m", "--instruction", "x", "--kind", "at"},
+	} {
+		cmd := newIssueWakeupCommand()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := bodies[0]["watch_inputs"]; !reflect.DeepEqual(got, []any{"issue", "pr"}) {
+		t.Fatalf("repeated --watch sent %v", got)
+	}
+	if got := bodies[1]["watch_inputs"]; !reflect.DeepEqual(got, []any{"children"}) {
+		t.Fatalf("update --watch sent %v", got)
+	}
+	if _, ok := bodies[2]["watch_inputs"]; ok {
+		t.Fatalf("no --watch must omit watch_inputs: %v", bodies[2])
 	}
 }

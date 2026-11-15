@@ -318,3 +318,37 @@ func TestEnqueueSkipsDisallowedInstallation(t *testing.T) {
 		t.Fatalf("view trigger queued a disallowed installation: queue=%d", len(m.queue))
 	}
 }
+
+// CHE-5313: a refresh that hangs (blocked fetch or write) must not hold its
+// worker forever; with every worker wedged no snapshot refreshes and every
+// checks_finished wakeup stalls.
+func TestHungRefreshDoesNotWedgeWorker(t *testing.T) {
+	m := NewManager(enabledClient(t), nil, nil, nil)
+	m.concurrency = 1
+	m.processTimeout = 100 * time.Millisecond
+	m.jitter = func() time.Duration { return 0 }
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
+	second := make(chan struct{}, 1)
+	m.fetch = func(ctx context.Context, _ *Client, _ int64, _ string, _ string, number int32) (*PRSnapshot, error) {
+		if number == 1 {
+			<-ctx.Done() // a stuck GitHub call that only the context can end
+			return nil, ctx.Err()
+		}
+		second <- struct{}{}
+		return nil, errors.New("stop after fetch")
+	}
+	m.Enqueue(1, "o", "r", 1)
+	m.Enqueue(1, "o", "r", 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a hung refresh wedged the only worker")
+	}
+}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -98,6 +99,15 @@ type wakeupSatisfiedResponse struct {
 	Satisfied int  `json:"satisfied"`
 	Examined  int  `json:"examined"`
 	Truncated bool `json:"truncated"`
+	// Issues names the satisfied issues, one per Satisfied. Older servers
+	// omit it; clients treat a missing list as unknown.
+	Issues []wakeupMatchedIssueResponse `json:"issues"`
+}
+
+type wakeupMatchedIssueResponse struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
 }
 
 type wakeupEffectiveResponse struct {
@@ -309,6 +319,23 @@ func (a wakeupDefinitionAPI) service() *service.IssueWakeupService {
 	return &service.IssueWakeupService{Tasks: a.h.TaskService}
 }
 
+// auditedService is service() plus the audit hook for a project-scope write of
+// the given kind (workspace and issue scopes are not audited here).
+func (a wakeupDefinitionAPI) auditedService(r *http.Request, c wakeupDefinitionCaller, kind string) *service.IssueWakeupService {
+	svc := a.service()
+	if c.ref.Kind != service.WakeupScopeProject {
+		return svc
+	}
+	svc.AuditDefinition = func(ctx context.Context, q *db.Queries, ch service.WakeupDefinitionChange) error {
+		before, after := wakeupDefinitionAuditFields(ch.RuleKey, ch.BeforeRevision, ch.BeforeConfig), wakeupDefinitionAuditFields(ch.RuleKey, ch.AfterRevision, ch.AfterConfig)
+		if err := a.h.writeAudit(ctx, q, r, auditInput{Kind: kind, WorkspaceID: ch.Ref.WorkspaceID, TargetID: ch.Ref.ID, Before: before, After: after}); err != nil {
+			return auditWriteError{err}
+		}
+		return nil
+	}
+	return svc
+}
+
 func (a wakeupDefinitionAPI) List(w http.ResponseWriter, r *http.Request) {
 	c, ok := a.caller(w, r, false, false)
 	if !ok {
@@ -358,7 +385,14 @@ func (a wakeupDefinitionAPI) save(w http.ResponseWriter, r *http.Request, ruleKe
 	if c.actorType == "agent" {
 		patch.Disable()
 	}
-	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch, Pending: c.actorType == "agent"})
+	kind := "project.wakeup_definition.update"
+	if ruleKey == "" {
+		kind = "project.wakeup_definition.create"
+	}
+	saved, err := a.auditedService(r, c, kind).SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch, Pending: c.actorType == "agent"})
+	if failedAudit(w, r, err, kind) {
+		return
+	}
 	if err != nil {
 		wakeupError(w, err)
 		return
@@ -383,7 +417,11 @@ func (a wakeupDefinitionAPI) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "revision is required")
 		return
 	}
-	if err := a.service().DeleteWakeupDefinition(r.Context(), c.ref, chi.URLParam(r, "rule"), revision); err != nil {
+	err = a.auditedService(r, c, "project.wakeup_definition.delete").DeleteWakeupDefinition(r.Context(), c.ref, chi.URLParam(r, "rule"), revision)
+	if failedAudit(w, r, err, "project.wakeup_definition.delete") {
+		return
+	}
+	if err != nil {
 		wakeupError(w, err)
 		return
 	}
@@ -438,7 +476,12 @@ func (a wakeupDefinitionAPI) effective(w http.ResponseWriter, r *http.Request, c
 		Capabilities: a.h.wakeupCapabilities(r),
 	}
 	if eff.AlreadySatisfied != nil {
-		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated}
+		prefix := a.h.getIssuePrefix(r.Context(), c.ref.WorkspaceID)
+		issues := make([]wakeupMatchedIssueResponse, 0, len(eff.AlreadySatisfied.Issues))
+		for _, m := range eff.AlreadySatisfied.Issues {
+			issues = append(issues, wakeupMatchedIssueResponse{ID: m.ID, Identifier: service.IssueIdentifier(prefix, m.Number), Title: m.Title})
+		}
+		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated, Issues: issues}
 	}
 	for field, scope := range eff.Sources {
 		out.Sources[field] = string(scope)

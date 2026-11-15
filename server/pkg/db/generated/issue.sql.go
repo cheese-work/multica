@@ -547,6 +547,9 @@ cleared_pr_events AS (
 ),
 cleared_review_admissions AS (
     DELETE FROM issue_review_admission WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_unread AS (
+    DELETE FROM issue_unread WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target)
 `
@@ -721,6 +724,63 @@ func (q *Queries) FindActiveDuplicateIssue(ctx context.Context, arg FindActiveDu
 		arg.ParentIssueID,
 		arg.NormalizedTitle,
 	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+		&i.WorkflowID,
+		&i.RequestedByID,
+		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
+	)
+	return i, err
+}
+
+const findIssueByNormalizedTitle = `-- name: FindIssueByNormalizedTitle :one
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read FROM issue i
+WHERE i.workspace_id = $1
+  AND lower(btrim(regexp_replace(i.title, '[[:space:]]+', ' ', 'g'))) = $2
+ORDER BY i.created_at ASC
+LIMIT 1
+`
+
+type FindIssueByNormalizedTitleParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	NormalizedTitle string      `json:"normalized_title"`
+}
+
+// Any issue, open or closed, whose title matches. Used to refuse a second
+// dated autopilot issue (CHE-5757).
+func (q *Queries) FindIssueByNormalizedTitle(ctx context.Context, arg FindIssueByNormalizedTitleParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, findIssueByNormalizedTitle, arg.WorkspaceID, arg.NormalizedTitle)
 	var i Issue
 	err := row.Scan(
 		&i.ID,
@@ -1832,6 +1892,66 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.DescriptionExternalRead,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUrgentOrphanIssues = `-- name: ListUrgentOrphanIssues :many
+SELECT i.id, i.number, i.title, i.status, i.assignee_type, i.assignee_id, i.updated_at
+FROM issue i
+WHERE i.workspace_id = $1
+  AND i.priority = 'urgent'
+  AND i.status <> ALL($2::text[])
+  AND NOT EXISTS (
+    SELECT 1 FROM agent_task_queue t
+    WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory'))
+  AND NOT EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    WHERE w.issue_id = i.id AND w.enabled AND w.paused_reason IS NULL)
+ORDER BY i.updated_at, i.id
+`
+
+type ListUrgentOrphanIssuesParams struct {
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	TerminalStatusKeys []string    `json:"terminal_status_keys"`
+}
+
+type ListUrgentOrphanIssuesRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Number       int32              `json:"number"`
+	Title        string             `json:"title"`
+	Status       string             `json:"status"`
+	AssigneeType pgtype.Text        `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Urgent issues nothing will pick up: not terminal, no live task, no enabled
+// wakeup. Feeds the pulse so an urgent issue cannot sit unowned.
+func (q *Queries) ListUrgentOrphanIssues(ctx context.Context, arg ListUrgentOrphanIssuesParams) ([]ListUrgentOrphanIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listUrgentOrphanIssues, arg.WorkspaceID, arg.TerminalStatusKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUrgentOrphanIssuesRow{}
+	for rows.Next() {
+		var i ListUrgentOrphanIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Number,
+			&i.Title,
+			&i.Status,
+			&i.AssigneeType,
+			&i.AssigneeID,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

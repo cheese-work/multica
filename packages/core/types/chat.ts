@@ -94,6 +94,24 @@ export interface ChatChannelSource {
 }
 
 /** How long the oldest visible thing Cheese owes in a DM has waited. `none` = nothing owed. */
+/** One chain's attention projection, as returned by the DM attention actions. */
+export interface ChatAttentionView {
+  root_id: string;
+  canonical_id: string;
+  stale_level: ChatStaleLevel;
+  attention_source: ChatAttentionSource | null;
+  attention_since: string | null;
+  counts: Record<string, number>;
+  keys: string[];
+  next_change_at: string | null;
+}
+
+/** Result of "Xong tất cả" and its undo: the batch id and the chains' new projections. */
+export interface ChatAttentionBatch {
+  batch_id: string;
+  attention: ChatAttentionView[];
+}
+
 export type ChatStaleLevel = "none" | "fresh" | "yellow" | "red";
 
 /** The kind of the oldest visible obligation in a DM. */
@@ -156,6 +174,10 @@ export interface ChatSession {
   /** Subject keys (`turn:<task_id>`) of visible untyped turns. Listed collapsed with no
    *  colour or age; not part of `stale_level`. */
   attention_unclassified_keys?: string[];
+  /** Every displayed subject key. Xong, Để sau and Xong tất cả send these back as the snapshot. */
+  attention_keys?: string[];
+  /** Displayed asks that still need a reply: the `ask_ids` of the reply-to-ask control. */
+  attention_ask_ids?: string[];
   created_at: string;
   updated_at: string;
 }

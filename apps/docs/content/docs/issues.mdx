@@ -93,6 +93,8 @@ The demo below starts from an issue already assigned to an agent and parked in `
 
 Members and agents can change statuses directly. In a project with a [workflow](/workflows), choose from that workflow’s steps. Moving into a step with a handoff can also change the assignee and ask an agent to start work.
 
+When an issue re-enters `blocked`, the workspace setting `blocked_dispatch_dedup.mode` controls unchanged Tofu dispatches. It defaults to `block`; `warn` logs a would-skip event but still starts a run, and `off` disables the check. Member-triggered transitions always start a run.
+
 Agents update the issue’s status as work progresses: by default they set `in_progress` when they begin and `in_review` when they deliver. When a project has a workflow, they follow its steps and handoff instructions instead.
 
 <Callout type="info">
@@ -140,6 +142,8 @@ Files that members and agents upload in comments are collected in the **Delivera
 
 Uploading a file again with the same name and type adds a new version of the same deliverable. The section lists it once with its version (for example `v2`), and each file card in the comments shows which version it is. In the viewer, click the version number to switch to an older one, and **Show in comments** to jump to the comment that uploaded it.
 
+A file uploaded to an issue with `multica attachment upload <file> --issue <issue> --replaces <attachment-id>` becomes the next revision of that attachment; so does a new upload with the same file name on the same issue. The issue shows one card for the document, labelled for example `v4 · 3 earlier`, and **Diff** opens the changes from the previous revision (removed lines red, added lines green, unchanged lines folded; **Show full** keeps them). Binary files show only that sizes and SHA-256 differ. `multica attachment history <attachment-id>` lists the revisions with time, actor and SHA-256, and `multica attachment diff <attachment-id> --from 3 --to 4` prints the diff.
+
 <DeliverablesDemo />
 
 ## Projects and sub-issues
@@ -152,9 +156,9 @@ Sub-issues can be given a **stage** to advance in batches — 1, 2, 3. When ever
 
 ## Views and display settings [#switch-views]
 
-The Issues page offers five layouts — list, board, table, Gantt, and swimlane — filterable by status, assignee, project, and other properties. They all show the same issues.
+The Issues page offers six layouts — Swimlane 2.0, list, board, table, Gantt, and swimlane — filterable by status, assignee, project, and other properties. They all show the same issues.
 
-The **Display** menu adjusts the current layout. Boards group by status, assignee, project, or a select property, and swimlanes by parent issue, project, or assignee. You can also set the ordering, whether sub-issues show, which properties appear on cards, and which board columns show (columns are locked while a status filter is active).
+The **Display** menu adjusts the current layout. Boards group by status, assignee, project, or a select property, and swimlanes and Swimlane 2.0 by parent issue, project, or assignee. Swimlane 2.0 shows the issues of the page's current filters as a timeline graph with their relations. You can also set the ordering, whether sub-issues show, which properties appear on cards, and which board columns show (columns are locked while a status filter is active).
 
 ### Save a view
 
@@ -197,7 +201,13 @@ The relation is one level deep: an issue that is itself a duplicate cannot be an
 
 ## Delete an issue
 
-Any workspace member can delete an issue.
+Who can delete an issue:
+
+- Workspace owners and admins can delete any issue.
+- Members can delete issues they created or that agents they currently own created.
+- Agents can delete only issues they created; they do not inherit their owner's deletion rights.
+
+This uses the creator, not the current assignee. For a shared agent, its current owner manages its issues regardless of who invoked it. If the creating agent no longer exists, a workspace owner or admin can delete the issue. When a batch includes an issue you cannot delete, the whole batch is refused and nothing is deleted.
 
 <Callout type="warning">
 Deletion cannot be undone: the issue with its comments, attachments, and linked records is permanently removed, and unfinished runs are cancelled. When the work is simply no longer pursued, set the status to `cancelled` instead — the discussion and results stay available.

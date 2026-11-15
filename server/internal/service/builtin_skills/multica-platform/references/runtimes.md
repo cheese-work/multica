@@ -254,6 +254,16 @@ multica runtime rename <runtime-id> "Build box"   # "" clears the custom name
 multica runtime rename <runtime-id> "Build box" --machine   # every runtime on the machine
 ```
 
+## Runtime-wide concurrency limit
+
+```bash
+multica runtime concurrency <runtime-id> 2      # at most 2 runs in progress across all agents on this runtime
+multica runtime concurrency <runtime-id> none   # remove the limit
+```
+
+Each agent's own `max_concurrent_tasks` still applies. The runtime limit caps
+their combined work, for example agents that share one local GPU.
+
 A runtime profile describes a custom agent command the daemon can run.
 
 ```bash

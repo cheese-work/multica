@@ -72,8 +72,14 @@ export interface LiveEndFollow {
   /**
    * The surface itself scrolled. Confirms staged input or continues recent
    * reader motion; returns whether to pin the viewport back to the live end.
+   *
+   * `jumpLimit`: a displacement with no input that leaves the viewport farther
+   * than this from the live end is the reader navigating by a route that sends
+   * no wheel, touch or key event (`scrollTo`, find-in-page, assistive tech), not
+   * a system shift — those are a few hundred px. It releases the follow instead
+   * of being pinned back (CHE-5376). Omit it and every such move is pinned.
    */
-  onScroll(distance: number): boolean;
+  onScroll(distance: number, jumpLimit?: number): boolean;
   /**
    * The live end moved without a scroll (content grew, viewport resized).
    * Never attributes displacement to the reader; returns whether to pin back.
@@ -182,7 +188,7 @@ export function createLiveEndFollow(now: () => number = () => Date.now()): LiveE
       motionSource = null;
       motionCarry = 0;
     },
-    onScroll(distance: number): boolean {
+    onScroll(distance: number, jumpLimit = Infinity): boolean {
       if (!active) return false;
       const moved = distance - lastDistance;
       lastDistance = distance;
@@ -266,6 +272,10 @@ export function createLiveEndFollow(now: () => number = () => Date.now()): LiveE
           }
           return false;
         }
+      }
+      if (moved > 0 && distance > jumpLimit && !mouseHeld && !touchHeld) {
+        following = false;
+        return false;
       }
       return pinVerdict(distance);
     },

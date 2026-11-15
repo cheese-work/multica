@@ -137,12 +137,25 @@ func (f voteFixture) write(tg ownerCASTarget, id, content, before string, mutate
 }
 
 // eachVoteCase seeds a target holding initial, approves next, and runs fn.
+// agentWriteTargets are the targets an agent can still write through a vote
+// receipt, decision binding or PASS receipt: the covered fields moved to
+// passkey actions (CHE-3482), so only project.description is left.
+func agentWriteTargets() []ownerCASTarget {
+	all := voteTargets()
+	return all[len(all)-1:]
+}
+
 func eachVoteCase(t *testing.T, initial, next string, fn func(t *testing.T, tg ownerCASTarget, f voteFixture, id, label string)) {
+	t.Helper()
+	eachVoteCaseOf(t, agentWriteTargets(), initial, next, fn)
+}
+
+func eachVoteCaseOf(t *testing.T, targets []ownerCASTarget, initial, next string, fn func(t *testing.T, tg ownerCASTarget, f voteFixture, id, label string)) {
 	t.Helper()
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	for _, tg := range voteTargets() {
+	for _, tg := range targets {
 		t.Run(tg.name, func(t *testing.T) {
 			t.Setenv("MULTICA_VOTE_GATE_LABS", voteLabs)
 			t.Setenv("MULTICA_VOTE_GATE_FIELDS", voteAllFields)
@@ -441,7 +454,7 @@ func TestVoteGate_FieldRollout(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(strings.ReplaceAll(c.name, " ", "_"), func(t *testing.T) {
-			for _, tg := range voteTargets() {
+			for _, tg := range agentWriteTargets() {
 				t.Run(tg.name, func(t *testing.T) {
 					t.Setenv("MULTICA_VOTE_GATE_LABS", voteLabs)
 					t.Setenv("MULTICA_VOTE_GATE_FIELDS", c.fields)

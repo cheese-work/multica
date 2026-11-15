@@ -39,6 +39,9 @@ func init() {
 				Before: stepInstructionsView(live[index]), After: stepInstructionsView(after[index]),
 				LiveSHA256: workflowStepsHash(workflow.ID, live), AfterSHA256: workflowStepsHash(workflow.ID, after),
 				HumanBlocksIntact: protectedStepBlocksUnchanged(live, after),
+				// Named from the live row, inside the preview digest: the approver
+				// sees which workflow and step this lands on, not the ask's claim.
+				Meta: map[string]any{"workflow_name": workflow.Name, "status_key": live[index].StatusKey},
 			}, nil
 		},
 		Apply: func(ctx context.Context, execution decisionActionExecution, _ configChangeRead) error {

@@ -19,6 +19,14 @@ Execution modes:
 - `create_issue` creates a Multica issue, making the run visible as issue state.
 - `run_only` creates an agent task directly. No issue is created; any durable
   report location has to come from other task context or instructions.
+- `script` runs one allowlisted script under the agent's task token, with no
+  model session: `--mode script --script <name> [--arg <value>]...`. The
+  description is never executed. With no daemon allowlist every script task
+  fails closed. `--output json` shows `script_config` (name and args).
+  The server deletes the task token at task end on a best-effort basis; if the
+  delete fails the token stays valid until it expires (no earlier revocation).
+  The run result records `script` (name, argv SHA-256, exit code, duration) and
+  `token_revoke_failed` when a delete failed.
 
 `issue-title-template` only supports `{{date}}`. Do not invent `{{trigger_id}}`,
 `{{branch}}`, or other variables.
@@ -28,7 +36,7 @@ Execution modes:
 ```bash
 multica autopilot list --output json
 multica autopilot get <autopilot-id> --output json
-multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only --output json
+multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only|script [--script <name> --arg <value>] --output json
 multica autopilot update <autopilot-id> --status active|paused --output json
 multica autopilot runs <autopilot-id> --output json
 multica autopilot trigger-add <autopilot-id> --kind schedule --cron "0 9 * * *" --timezone Asia/Shanghai --output json

@@ -48,7 +48,46 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 | `warn` | The guard records an event and a metric. The operation goes ahead. |
 | `block` | The guard records the event first, then refuses the operation with `422`. Only `block` events become recovery work. |
 
+### Autopilot assignment guard
+
+The workspace setting `autopilot_assign_gate` controls what happens when an issue that names an autopilot (its id next to the word "autopilot") is assigned to an agent or squad and the person the run acts for cannot write that autopilot: not its creator, a workspace admin or a granted collaborator.
+
+| Value | Effect |
+| --- | --- |
+| `block` (default) | The create or update is refused with `403` and code `autopilot_assign_no_write`. |
+| `warn` | The server logs a warning. The assignment goes ahead. |
+| `off` | The guard does nothing. |
+
 Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
+
+When the run that raised a `block` event has ended, the server sends the one person the ask names an automatic recovery notice: a DM message, an issue comment and an inbox item, written in one transaction. The notice quotes the stored ask, links the issue, and has no options, recommendation or approval, so it is never a decision request. It is sent only if the stored source has the ask text, names exactly one member, and that member is still in the workspace; otherwise the event waits for repair. Replying in the notice's comment thread marks it `answered`. A member who left the workspace can no longer read or answer it.
+
+An event that cannot be sent as a notice goes to the agent whose run produced it instead: one repair run per recovery root, started through the normal run gates (project stops, run budget, role and approval gates). The first `block` event is the root, and an event raised by a repair run inherits it, so a repair never starts a second repair. The run message holds the exact `multica decision request ... --recovers <event-id>` command and no source text. A refused run, an unavailable agent, a repair run that ends without a matching request, or a new ask raised by the repair run fails the root. The agent is its owner: one system comment on the issue names the agent and mentions no member, and `multica decision brief` lists the failure with an excerpt of the ask. Runs in a chat lane only raise `warn` events, so they are never repaired.
+
+The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
+
+### Held-setting ask guard
+
+The workspace setting `held_setting_ask_mode` (`off` by default, `warn` or `block`) controls what happens when a decision or action request asks a person for a workspace setting the workspace settings already hold. The request names the keys in the typed field `settings_needed`; the server never reads the prose. A key counts as held when its stored value is not null, not an empty string, list or object. Key names compare without case.
+
+| Value | Effect |
+| --- | --- |
+| `off` (default) | The guard does nothing. |
+| `warn` | The request is created and the response carries one hint per held key. |
+| `block` | The request is refused with `400` and no request row. The message names the key and never the stored value. |
+
+To revert, set `held_setting_ask_mode` to `off`. No data changes.
+
+### Delegated governed writes
+
+The workspace setting `delegated_governed_writes` decides which agents may write governed fields, and whether each write still needs a person's decision. Find it in workspace settings under **Delegated governed writes**.
+
+- **Who can edit:** `owner` and `admin`. A `member` sees the same table read-only, with a lock note and no Edit button.
+- **Allowed agents:** the agents that may write. An archived agent cannot be added.
+- **Allowed fields:** any of `workflow.steps`, `workflow.instructions`, `workspace.context`, `squad.instructions`, `agent.instructions`, `project.description`, `workflow.budget`, `issue.workflow`. Fields you do not tick stay read-only for every agent.
+- **Requires human decision:** on by default. An allowed agent then opens a decision request instead of writing. Turning it off lets allowed agents write directly, so Save asks you to confirm first.
+
+Unsaved edits are kept if a save fails, so nothing you typed is lost.
 
 ## Switch and leave
 

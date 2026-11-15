@@ -310,6 +310,9 @@ WITH deleted_wakeup_pr_events AS (
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
 ),
+deleted_unread AS (
+ DELETE FROM issue_unread WHERE workspace_id=$1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),
@@ -439,6 +442,15 @@ deleted_system1_observations AS (
 deleted_system1_labels AS (
     DELETE FROM system1_label WHERE workspace_id = $1
 ),
+deleted_system1_predictions AS (
+    DELETE FROM system1_prediction WHERE workspace_id = $1
+),
+deleted_system1_label_samples AS (
+    DELETE FROM system1_label_sample WHERE workspace_id = $1
+),
+deleted_system1_epochs AS (
+    DELETE FROM system1_epoch WHERE workspace_id = $1
+),
 deleted_ci_watch_configs AS (
     DELETE FROM ci_watch_config WHERE workspace_id = $1
 ),
@@ -453,6 +465,9 @@ deleted_ci_watch_actions AS (
 ),
 deleted_ci_signature_owners AS (
     DELETE FROM ci_signature_owner WHERE workspace_id = $1
+),
+deleted_ci_flake_increments AS (
+    DELETE FROM ci_flake_increment WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -501,6 +516,9 @@ deleted_issue_taints AS (
 ),
 deleted_issue_taint_clears AS (
     DELETE FROM issue_taint_clear WHERE workspace_id = $1
+),
+deleted_issue_run_taints AS (
+    DELETE FROM issue_run_taint WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
@@ -725,6 +743,9 @@ deleted_channel_user_bindings AS (
 deleted_channel_binding_tokens AS (
     DELETE FROM channel_binding_token WHERE workspace_id = $1
 ),
+deleted_wecom_install_sessions AS (
+    DELETE FROM wecom_install_session WHERE workspace_id = $1
+),
 deleted_lark_chat_bindings AS (
     DELETE FROM lark_chat_session_binding
     WHERE installation_id IN (SELECT id FROM ws_lark_installations)
@@ -773,6 +794,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-3345 ask guard events: workspace-owned leaf, no FK.
 // CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
 // CHE-4470 System 1 labels: workspace-owned leaf, no FK.
+// CHE-4471 System 1 predictions: workspace-owned leaf, no FK.
+// CHE-4473 System 1 served label samples: workspace-owned leaf, no FK.
+// CHE-4474 System 1 epochs: workspace-owned leaf, no FK.
 // CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
 // budget tables are per App installation, have no workspace_id, and stay.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
@@ -915,6 +939,11 @@ func (q *Queries) DeleteWorkspaceRuntimesAndProjects(ctx context.Context, worksp
 const deleteWorkspaceSquadsAndSkills = `-- name: DeleteWorkspaceSquadsAndSkills :exec
 WITH deleted_squads AS (
     DELETE FROM squad WHERE squad.workspace_id = $1
+),
+deleted_skill_versions AS (
+    -- Keyed by skill_id so the delete uses idx_skill_version_skill_version.
+    DELETE FROM skill_version
+    WHERE skill_version.skill_id IN (SELECT skill.id FROM skill WHERE skill.workspace_id = $1)
 )
 DELETE FROM skill WHERE skill.workspace_id = $1
 `
@@ -949,12 +978,48 @@ func (q *Queries) DetachTaskBatchReferences(ctx context.Context, taskIds []pgtyp
 	return err
 }
 
+const listIssueIDsOfTaskBatch = `-- name: ListIssueIDsOfTaskBatch :many
+SELECT t.issue_id AS id
+FROM (
+    SELECT p.issue_id FROM agent_task_queue p
+    WHERE p.id = ANY($1::uuid[])
+    UNION
+    SELECT c.issue_id FROM agent_task_queue c
+    WHERE c.parent_task_id = ANY($1::uuid[])
+) t
+WHERE t.issue_id IS NOT NULL
+ORDER BY t.issue_id
+`
+
+// Issues the deletion of a task batch touches: the issue of each task and the
+// issue of each child that names a task as parent. Nulling parent_task_id re-runs
+// the taint inheritance trigger on each child, whose issue-taint trigger locks the
+// child's issue FOR NO KEY UPDATE. Ascending, so callers can lock in this order.
+func (q *Queries) ListIssueIDsOfTaskBatch(ctx context.Context, taskIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueIDsOfTaskBatch, taskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskIDsByAgentFirstPage = `-- name: ListTaskIDsByAgentFirstPage :many
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1
 ORDER BY id
 LIMIT $2
-FOR UPDATE
 `
 
 type ListTaskIDsByAgentFirstPageParams struct {
@@ -964,7 +1029,7 @@ type ListTaskIDsByAgentFirstPageParams struct {
 
 // First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 // a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
-// the single-key / keyset / FOR UPDATE rationale.
+// the single-key / keyset rationale.
 func (q *Queries) ListTaskIDsByAgentFirstPage(ctx context.Context, arg ListTaskIDsByAgentFirstPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByAgentFirstPage, arg.AgentID, arg.Limit)
 	if err != nil {
@@ -990,7 +1055,6 @@ SELECT id FROM agent_task_queue
 WHERE agent_id = $1 AND id > $2
 ORDER BY id
 LIMIT $3
-FOR UPDATE
 `
 
 type ListTaskIDsByAgentPageParams struct {
@@ -1017,11 +1081,9 @@ type ListTaskIDsByAgentPageParams struct {
 // the agent's entire task set in front of every page, so a busy agent costs
 // roughly O(N² / page) for the sweep.
 //
-// FOR UPDATE is load-bearing for correctness, not throughput. It locks the rows
-// this page is about to delete, and under READ COMMITTED PostgreSQL re-checks the
-// WHERE clause after acquiring each lock: a task a concurrent committed UPDATE
-// has already moved to another owner no longer matches and is skipped, and one we
-// did lock cannot be moved away before we delete it.
+// The page takes no row lock. Locking the run rows before the issues they touch
+// inverts the order of AuthorizeElevatedOp (issue, then run), so the sweep locks
+// the issues of the page first and then the rows, through LockTaskBatch.
 func (q *Queries) ListTaskIDsByAgentPage(ctx context.Context, arg ListTaskIDsByAgentPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByAgentPage, arg.AgentID, arg.ID, arg.Limit)
 	if err != nil {
@@ -1047,7 +1109,6 @@ SELECT id FROM agent_task_queue
 WHERE issue_id = $1
 ORDER BY id
 LIMIT $2
-FOR UPDATE
 `
 
 type ListTaskIDsByIssueFirstPageParams struct {
@@ -1057,7 +1118,7 @@ type ListTaskIDsByIssueFirstPageParams struct {
 
 // First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 // a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
-// the single-key / keyset / FOR UPDATE rationale.
+// the single-key / keyset rationale.
 func (q *Queries) ListTaskIDsByIssueFirstPage(ctx context.Context, arg ListTaskIDsByIssueFirstPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByIssueFirstPage, arg.IssueID, arg.Limit)
 	if err != nil {
@@ -1083,7 +1144,6 @@ SELECT id FROM agent_task_queue
 WHERE issue_id = $1 AND id > $2
 ORDER BY id
 LIMIT $3
-FOR UPDATE
 `
 
 type ListTaskIDsByIssuePageParams struct {
@@ -1093,7 +1153,7 @@ type ListTaskIDsByIssuePageParams struct {
 }
 
 // Uses idx_agent_task_queue_issue_id_keyset (migration 279). See
-// ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
+// ListTaskIDsByAgentPage for the single-key / keyset rationale.
 func (q *Queries) ListTaskIDsByIssuePage(ctx context.Context, arg ListTaskIDsByIssuePageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByIssuePage, arg.IssueID, arg.ID, arg.Limit)
 	if err != nil {
@@ -1119,7 +1179,6 @@ SELECT id FROM agent_task_queue
 WHERE runtime_id = $1
 ORDER BY id
 LIMIT $2
-FOR UPDATE
 `
 
 type ListTaskIDsByRuntimeFirstPageParams struct {
@@ -1129,7 +1188,7 @@ type ListTaskIDsByRuntimeFirstPageParams struct {
 
 // First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 // a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
-// the single-key / keyset / FOR UPDATE rationale.
+// the single-key / keyset rationale.
 func (q *Queries) ListTaskIDsByRuntimeFirstPage(ctx context.Context, arg ListTaskIDsByRuntimeFirstPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByRuntimeFirstPage, arg.RuntimeID, arg.Limit)
 	if err != nil {
@@ -1155,7 +1214,6 @@ SELECT id FROM agent_task_queue
 WHERE runtime_id = $1 AND id > $2
 ORDER BY id
 LIMIT $3
-FOR UPDATE
 `
 
 type ListTaskIDsByRuntimePageParams struct {
@@ -1166,7 +1224,7 @@ type ListTaskIDsByRuntimePageParams struct {
 
 // Uses idx_agent_task_queue_runtime_id (migration 273, (runtime_id, id)); before
 // it every runtime_id index was partial, so this path had none at all. See
-// ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
+// ListTaskIDsByAgentPage for the single-key / keyset rationale.
 func (q *Queries) ListTaskIDsByRuntimePage(ctx context.Context, arg ListTaskIDsByRuntimePageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByRuntimePage, arg.RuntimeID, arg.ID, arg.Limit)
 	if err != nil {
@@ -1382,6 +1440,80 @@ type ListWorkspaceRuntimeIDPageParams struct {
 // Uses idx_agent_runtime_workspace_id_keyset (migration 283).
 func (q *Queries) ListWorkspaceRuntimeIDPage(ctx context.Context, arg ListWorkspaceRuntimeIDPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceRuntimeIDPage, arg.WorkspaceID, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockIssuesByID = `-- name: LockIssuesByID :exec
+SELECT 1 FROM issue i
+WHERE i.id = ANY($1::uuid[])
+ORDER BY i.id
+FOR NO KEY UPDATE OF i
+`
+
+// AuthorizeElevatedOp takes the issue lock first and then waits on the run row, so
+// teardown takes the issue locks before any run row it deletes or updates, or
+// Postgres aborts one side (40P01). Ascending id, so two teardowns cannot cross.
+func (q *Queries) LockIssuesByID(ctx context.Context, issueIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssuesByID, issueIds)
+	return err
+}
+
+const lockIssuesOfWorkspaceCommentTasks = `-- name: LockIssuesOfWorkspaceCommentTasks :exec
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT t.issue_id FROM agent_task_queue t
+    JOIN comment c ON c.id = t.trigger_comment_id
+    WHERE c.workspace_id = $1 AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i
+`
+
+// Runs before DeleteWorkspaceComments. A run can name one of the workspace's
+// comments from an issue of a neighbour workspace, and nulling that trigger
+// locks the run's issue. Take those issues first, in ascending id order.
+func (q *Queries) LockIssuesOfWorkspaceCommentTasks(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssuesOfWorkspaceCommentTasks, workspaceID)
+	return err
+}
+
+const lockTaskBatch = `-- name: LockTaskBatch :many
+SELECT q.id FROM agent_task_queue q
+WHERE q.id = ANY($1::uuid[])
+  AND (q.agent_id = $2 OR q.issue_id = $2 OR q.runtime_id = $2)
+ORDER BY q.id
+FOR UPDATE OF q
+`
+
+type LockTaskBatchParams struct {
+	TaskIds []pgtype.UUID `json:"task_ids"`
+	OwnerID pgtype.UUID   `json:"owner_id"`
+}
+
+// Locks the rows of one task page, after the issues of the page are locked. Under
+// READ COMMITTED PostgreSQL re-checks the WHERE clause after acquiring each lock:
+// a task a concurrent committed UPDATE has already moved to another owner no
+// longer matches and is skipped, and a row that is gone is not returned. A task
+// we did lock cannot be moved away before we delete it. The owner id is that of
+// the agent, issue or runtime the page was listed for; the three id spaces are
+// disjoint.
+func (q *Queries) LockTaskBatch(ctx context.Context, arg LockTaskBatchParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockTaskBatch, arg.TaskIds, arg.OwnerID)
 	if err != nil {
 		return nil, err
 	}

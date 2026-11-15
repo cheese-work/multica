@@ -94,11 +94,13 @@ func (h *Handler) chatMessageHistory(r *http.Request, scope chatHistoryScope) (c
 		messages, err = h.Queries.ListChatMessagesPageForChannelContext(r.Context(), db.ListChatMessagesPageForChannelContextParams{
 			ChatSessionID: scope.sessionID, ChannelContextRevision: scope.contextRevision,
 			PageLimit: int32(limit), BeforeCreatedAt: beforeCreatedAt, BeforeID: beforeID,
+			FloorCreatedAt: scope.floorAt, FloorID: scope.floorID,
 		})
 	} else {
 		messages, err = h.Queries.ListChatMessagesPage(r.Context(), db.ListChatMessagesPageParams{
 			ChatSessionID: scope.sessionID, Limit: int32(limit),
 			BeforeCreatedAt: beforeCreatedAt, BeforeID: beforeID,
+			FloorCreatedAt: scope.floorAt, FloorID: scope.floorID,
 		})
 	}
 	if err != nil {
@@ -246,6 +248,9 @@ type chatHistoryScope struct {
 	historyStart    string
 	historyEnd      string
 	boundaryPending bool
+	// floorAt/floorID hide the DM's closed segments from the agent (CHE-2819).
+	floorAt pgtype.Timestamptz
+	floorID pgtype.UUID
 }
 
 func (s chatHistoryScope) historyOptions(r *http.Request) channel.HistoryOptions {
@@ -301,6 +306,7 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 		return chatHistoryScope{}, false
 	}
 	scope := chatHistoryScope{sessionID: task.ChatSessionID, contextRevision: task.ChannelContextRevision}
+	scope.floorAt, scope.floorID = agentSegmentFloor(session, "task_token")
 	if task.ChannelContextRevision.Valid {
 		generation, err := h.Queries.GetChannelChatContextGeneration(r.Context(), db.GetChannelChatContextGenerationParams{
 			ChatSessionID: task.ChatSessionID, Revision: task.ChannelContextRevision.Int64,

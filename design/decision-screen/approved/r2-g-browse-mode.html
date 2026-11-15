@@ -1,0 +1,193 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHE-5480 · Round 2 · (g) browse mode</title><style>
+:root{--app-shell:#0f1012;--page-canvas:#141518;--surface:#17181b;--surface-raised:#1c1d21;--surface-hover:#232428;--surface-selected:#2b2c31;--surface-border:#2d2e33;
+--primary:#ececee;--muted-foreground:#a3a3ab;--faint-foreground:#8f8f98;--destructive:#f08a82;--success:#6fcf97;--warning:#e7bf4a;--info:#8fb4ff;--brand:#6b8cff;
+--ok-bg:#14341f;--no-bg:#3b1b1a;--open-bg:#3a3014;--info-bg:#172a4d;
+--surface-inset:#121316;--app-bg:#0b0c0e;--border-strong:#3a3b42;--destructive-border:#5a2b29;--warning-border:#6b5a1c;--info-border:#2e4170}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--app-bg);color:var(--primary);font:14px/1.45 Inter,"Helvetica Neue",Arial,"Liberation Sans","Noto Sans","DejaVu Sans",sans-serif;-webkit-font-smoothing:antialiased}
+svg{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+button{font:inherit;color:inherit;cursor:pointer}
+.band{padding:18px 28px;border-bottom:1px solid var(--surface-border);display:flex;justify-content:space-between;align-items:baseline;gap:24px}
+.band h1{font-size:18px;font-weight:650;white-space:nowrap}.band p{color:var(--muted-foreground);font-size:13px;max-width:760px}
+.dir{display:inline-block;padding:2px 10px;border-radius:99px;background:var(--surface-selected);font-size:12px;margin-right:10px;vertical-align:2px}
+.lab{padding:10px 28px;color:var(--faint-foreground);font-size:12px}
+/* desktop mock */
+.desk{width:1440px;display:flex;background:var(--app-shell);border-top:1px solid var(--surface-border);border-bottom:1px solid var(--surface-border)}
+.rail{width:72px;flex:none;padding:12px 6px;display:flex;flex-direction:column;gap:4px;align-items:center;border-right:1px solid var(--surface-border)}
+.ri{width:60px;padding:8px 0 6px;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted-foreground);position:relative;text-decoration:none}
+.ri.on{background:var(--surface-selected);color:var(--primary)}
+.ri .bd{position:absolute;top:3px;right:8px;min-width:16px;height:16px;padding:0 4px;border-radius:99px;background:var(--brand);color:var(--app-bg);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.ri .bd.q{background:var(--warning)}
+.main{flex:1;background:var(--page-canvas);display:flex;flex-direction:column;min-width:0}
+.top{height:48px;padding:0 20px;border-bottom:1px solid var(--surface-border);display:flex;align-items:center;gap:12px}
+.top h2{font-size:16px;font-weight:650}
+.tabs{display:flex;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--surface-border);border-radius:10px}
+.tab{padding:5px 12px;border-radius:7px;font-size:13px;color:var(--muted-foreground);display:flex;gap:6px;align-items:center;background:none;border:0}
+.tab.on{background:var(--surface-selected);color:var(--primary)}
+.tab i{font-style:normal;font-size:11px;padding:0 6px;border-radius:99px;background:var(--surface-hover);color:var(--primary);min-width:18px;text-align:center}
+.tab.on i{background:var(--brand);color:var(--app-bg)}
+.body{padding:20px;display:flex;gap:20px;min-height:560px}
+.list{width:340px;flex:none;display:flex;flex-direction:column;gap:2px}
+.lr{padding:10px 12px;border-radius:10px;display:flex;flex-direction:column;gap:3px;font-size:13px;border:1px solid transparent}
+.lr.sel{background:var(--surface-selected)}
+.lr b{font-weight:600;font-size:13px;line-height:1.35}
+.lr small{color:var(--muted-foreground);font-size:12px;display:flex;gap:8px;align-items:center}
+.lh{padding:6px 12px;color:var(--faint-foreground);font-size:12px}
+.pane{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
+.pane.c{max-width:760px;margin:0 auto;width:100%}
+/* card (B v9 vocabulary) */
+.card{background:var(--surface);border:1px solid var(--surface-border);border-radius:14px;overflow:hidden}
+.hd{padding:12px 16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--surface-border)}
+.tag{padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;display:inline-flex;gap:5px;align-items:center}
+.t-open{background:var(--open-bg);color:var(--warning)}.t-ok{background:var(--ok-bg);color:var(--success)}.t-no{background:var(--no-bg);color:var(--destructive)}.t-info{background:var(--info-bg);color:var(--info)}.t-mute{background:var(--surface-hover);color:var(--muted-foreground)}
+.chip{padding:2px 9px;border-radius:99px;border:1px solid var(--surface-border);font-size:12px;color:var(--muted-foreground)}
+.sp{flex:1}.meta{color:var(--muted-foreground);font-size:12px}
+.bd2{padding:16px;display:flex;flex-direction:column;gap:14px}
+.ask{font-size:19px;font-weight:650;line-height:1.3}
+.sum{color:var(--muted-foreground)}
+.kv{background:var(--surface-inset);border:1px solid var(--surface-border);border-radius:10px;padding:10px 12px;display:grid;grid-template-columns:128px 1fr;gap:6px 12px;font-size:13px}
+.kv dt{color:var(--muted-foreground)}.kv dd{color:var(--primary)}
+.kvt{font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:-6px}
+.seg{display:flex;flex-direction:column;gap:8px}
+.opt{display:flex;gap:10px;padding:11px 12px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);min-height:44px;align-items:flex-start}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:2px solid var(--faint-foreground);margin-top:2px;flex:none;position:relative}
+.opt.on{border-color:var(--primary);background:var(--surface-hover)}.opt.on .rd{border-color:var(--primary)}.opt.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.opt.rec{border-color:var(--success)}
+.opt b{font-weight:600;display:block}.opt span{color:var(--muted-foreground);font-size:13px}
+.opt .tg{margin-left:auto;align-self:center}
+.ta{background:var(--surface-inset);border:1px solid var(--surface-border);border-radius:10px;padding:10px 12px;color:var(--faint-foreground);min-height:64px;font:inherit;font-size:13px;width:100%;resize:none;display:block}
+.ta::placeholder{color:var(--faint-foreground);opacity:1}
+.hint{font-size:12px;color:var(--muted-foreground);display:flex;gap:6px;align-items:center}
+.hint.w{color:var(--warning)}
+.btns{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{justify-content:center;padding:0 16px;height:40px;border-radius:10px;border:1px solid var(--surface-border);background:var(--surface-raised);font-weight:600;display:inline-flex;align-items:center;gap:8px}
+.btn.p{background:var(--primary);color:#111214;border-color:var(--primary)}
+.btn.d{color:var(--destructive);border-color:var(--destructive-border);background:transparent}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.sm{height:32px;padding:0 12px;font-size:13px}
+.lot{display:flex;gap:14px;align-items:center;padding:12px;border:1px dashed var(--faint-foreground);border-radius:10px}
+.lot .box{width:64px;height:64px;border-radius:50%;background:var(--ok-bg);color:var(--success);display:flex;align-items:center;justify-content:center;flex:none}
+.lot .box svg{width:34px;height:34px;stroke-width:2.4}
+.lot p{font-size:12px;color:var(--muted-foreground)}.lot p b{color:var(--primary);font-weight:600}
+.neu{border:1px solid var(--info-border);background:var(--info-bg);border-radius:10px;padding:12px;display:flex;gap:10px;font-size:13px;color:#cfdcff}
+.row{display:grid;grid-template-columns:96px 1fr auto;gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--surface-border)}
+.row:last-child{border-bottom:0}
+.row b{font-weight:600;display:block}.row span{font-size:12px;color:var(--muted-foreground)}
+.empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:64px 20px;text-align:center}
+.empty .ic{width:56px;height:56px;border-radius:50%;background:var(--surface-hover);display:flex;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.empty .ic svg{width:26px;height:26px}
+.empty h3{font-size:18px;font-weight:650}.empty p{color:var(--muted-foreground);max-width:420px}
+.lnk{color:var(--info);text-decoration:underline;text-underline-offset:3px}
+.sk{height:12px;border-radius:6px;background:var(--surface-hover)}
+a{color:var(--info)}
+/* phone */
+.low{display:flex;gap:28px;padding:24px 28px 32px;align-items:flex-start}
+.ph{width:390px;flex:none;background:var(--page-canvas);border:1px solid var(--surface-border);border-radius:28px;overflow:hidden;display:flex;flex-direction:column}
+.ph .top{height:52px;padding:0 14px}
+.ph .body{padding:12px;flex-direction:column;gap:12px;min-height:0}
+.ph .ask{font-size:17px}.ph .kv{grid-template-columns:104px 1fr}
+.ph .btn{height:44px}.ph .btn.sm{height:44px}
+.ph .row{grid-template-columns:1fr;gap:8px}.ph .row>.tag{justify-self:start}
+.ph .tabs{width:100%;overflow:hidden}
+.ph .tab{flex:1;justify-content:center;padding:8px 6px;font-size:12px}
+.ph .bd2{padding:14px}
+.pb{display:flex;justify-content:space-around;padding:8px 4px 14px;border-top:1px solid var(--surface-border);background:var(--app-shell)}
+.pb .ri{width:64px}
+.notes{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px;font-size:12.5px;color:var(--muted-foreground)}
+.notes h3{font-size:13px;color:var(--primary);font-weight:650;margin-bottom:2px}
+.notes code{font:12px/1.4 "DejaVu Sans Mono",ui-monospace,monospace;color:var(--primary);background:var(--surface-hover);padding:1px 5px;border-radius:5px}
+.notes .n{padding:12px 14px;background:var(--surface);border:1px solid var(--surface-border);border-radius:12px}
+.notes ul{margin:4px 0 0 16px}.notes li{margin:2px 0}
+.rm{background:var(--no-bg)!important;border-color:var(--destructive-border)!important}.rm h3{color:var(--destructive)}
+.x{opacity:.75}
+/* accessibility: focus, sr-only, back button reset */
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible,[role="tab"]:focus-visible,[role="radio"]:focus-visible,[role="switch"]:focus-visible,[role="checkbox"]:focus-visible,[role="option"]:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.opt:has(input:focus-visible){outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.focus-demo{outline:2px solid var(--info,#8fb4ff);outline-offset:2px}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.bk{width:44px;height:44px;margin:0 -14px;padding:0;border:0;background:none;display:inline-flex;align-items:center;justify-content:center;flex:none}
+@media (prefers-reduced-motion:no-preference){.lot .box{animation:none}}
+
+svg.sprite{position:absolute;width:0;height:0}
+.kbd{font:11px/1 "DejaVu Sans Mono",ui-monospace,monospace;padding:2px 5px;border-radius:5px;border:1px solid var(--surface-border);background:var(--surface-hover);color:var(--muted-foreground)}
+.btn.g{background:transparent}
+.btn .kbd{margin-left:2px}
+.ibtn{width:44px;height:44px;border-radius:12px;border:1px solid var(--surface-border);background:var(--surface-raised);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.ibtn svg{width:20px;height:20px}
+.ibtn.dis{opacity:.4}
+.cnt{font-variant-numeric:tabular-nums;font-weight:650;color:var(--primary);font-size:13px}
+.hi{outline:2px solid var(--brand);outline-offset:2px}
+.mention{background:var(--info-bg);color:var(--info);padding:0 4px;border-radius:5px;font-weight:600}
+.cm{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid var(--surface-border)}
+.cm:last-child{border-bottom:0}
+.av{width:28px;height:28px;border-radius:50%;background:var(--surface-selected);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--primary);flex:none}
+.cm b{font-weight:600}.cm small{color:var(--faint-foreground);font-size:12px;margin-left:6px}
+.cm p{color:var(--muted-foreground);margin-top:2px}
+.fold{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--surface-border);border-radius:10px;color:var(--muted-foreground);font-size:13px;background:var(--surface);min-height:44px}
+.fold .sp{flex:1}
+.side{width:240px;flex:none;border-left:1px solid var(--surface-border);padding:16px;display:flex;flex-direction:column;gap:12px;font-size:13px}
+.side dl{display:grid;grid-template-columns:78px 1fr;gap:8px 8px}.side dt{color:var(--faint-foreground)}
+.side h5{font-size:12px;color:var(--faint-foreground);font-weight:600}
+.iss{flex:1;min-width:0;padding:20px 28px;display:flex;flex-direction:column;gap:14px;position:relative}
+.iss h1{font-size:22px;line-height:1.25;font-weight:650}
+.ss{border-left:3px solid var(--brand);padding:6px 12px;background:var(--surface);border-radius:0 8px 8px 0;color:var(--muted-foreground);font-size:13px}
+.sec{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--faint-foreground)}
+.sec:after{content:"";flex:1;height:1px;background:var(--surface-border)}
+.crumb{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted-foreground)}
+.mode{padding:2px 9px;border-radius:99px;background:var(--info-bg);color:var(--info);font-size:12px;font-weight:600;display:inline-flex;gap:5px;align-items:center}
+.float{position:absolute;left:28px;right:28px;bottom:16px;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.55);padding:12px 14px;display:flex;flex-direction:column;gap:10px;z-index:3}
+.float .q{font-size:14px;font-weight:650;line-height:1.3}
+.float .os{display:flex;gap:8px;flex-wrap:wrap}
+.float .o{flex:1;min-width:150px;padding:8px 10px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);display:flex;gap:8px;align-items:flex-start;font-size:13px;min-height:44px}
+.float .o .rd{width:14px;height:14px;border-radius:50%;border:2px solid var(--faint-foreground);margin-top:2px;flex:none;position:relative}
+.float .o.on{border-color:var(--primary);background:var(--surface-hover)}.float .o.on .rd{border-color:var(--primary)}.float .o.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.float .fa{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ghost{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 10px;border-radius:9px;border:1px solid var(--surface-border);background:transparent;font-size:13px;font-weight:600}
+.ghost svg{width:15px;height:15px}
+.bar{position:absolute;left:0;right:0;bottom:0;background:var(--surface-raised);border-top:1px solid var(--border-strong);box-shadow:0 -8px 24px rgba(0,0,0,.5);padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;z-index:3}
+.bar .q{font-size:13.5px;font-weight:650;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bar .o{padding:8px 10px;border:1px solid var(--surface-border);border-radius:10px;background:var(--surface-inset);display:flex;gap:8px;align-items:flex-start;font-size:13px;min-height:44px;align-items:center}
+.bar .o .rd{width:14px;height:14px;border-radius:50%;border:2px solid var(--faint-foreground);flex:none;position:relative}
+.bar .o.on{border-color:var(--primary);background:var(--surface-hover)}.bar .o.on .rd{border-color:var(--primary)}.bar .o.on .rd:after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--primary)}
+.bar .ba{display:flex;gap:8px}.bar .ba .ibtn{flex:1;width:auto;height:44px;font-size:12px;gap:6px;font-weight:600}
+.edge{position:absolute;left:0;top:0;bottom:0;width:24px;background:repeating-linear-gradient(45deg,rgba(231,191,74,.14) 0 6px,transparent 6px 12px);border-right:1px dashed var(--warning);z-index:2;pointer-events:none}
+.ghostcard{opacity:.55}
+.minis{display:flex;gap:18px;padding:18px 28px}
+.mini{position:relative;background:var(--page-canvas);border:1px solid var(--surface-border);border-radius:14px;overflow:hidden;flex:1;min-width:0}
+.mini .mh{padding:8px 12px;border-bottom:1px solid var(--surface-border);font-size:12px;color:var(--muted-foreground);display:flex;gap:8px;align-items:center}
+.mini .mb{position:relative;height:280px}
+.cap{padding:8px 12px;font-size:12px;color:var(--muted-foreground);border-top:1px solid var(--surface-border);background:var(--surface)}
+.cap b{color:var(--primary)}
+.sk2{height:10px;border-radius:5px;background:var(--surface-hover)}
+.fc{position:absolute;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:10px;display:flex;flex-direction:column;gap:7px}
+.fc .l1{height:10px;border-radius:5px;background:var(--primary);opacity:.85}
+.fc .l2{height:8px;border-radius:4px;background:var(--surface-selected)}
+.fc .ol{height:22px;border-radius:7px;border:1px solid var(--surface-border);background:var(--surface-inset)}
+.chat{position:absolute;right:20px;bottom:16px;width:360px;background:var(--surface);border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 10px 32px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden;z-index:4}
+.chat .ch{padding:10px 12px;border-bottom:1px solid var(--surface-border);display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600}
+.chat .ch .sp{flex:1}
+.chat .cb{padding:12px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+.pill{position:absolute;right:20px;bottom:16px;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:99px;box-shadow:0 6px 20px rgba(0,0,0,.5);padding:8px 14px 8px 10px;display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600;z-index:4;min-height:44px}
+.pill .bd{min-width:18px;height:18px;border-radius:99px;background:var(--warning);color:var(--app-bg);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 5px}
+.pop{position:absolute;background:var(--surface-raised);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:6px;z-index:5;display:flex;flex-direction:column;gap:2px;font-size:13px}
+.pop .pi{display:flex;gap:10px;padding:8px 10px;border-radius:8px;align-items:center;min-height:44px}
+.pop .pi.on{background:var(--surface-hover)}
+.pop .pi small{display:block;color:var(--faint-foreground);font-size:12px}
+.hl{background:rgba(231,191,74,.22);border-bottom:2px solid var(--warning);border-radius:2px}
+.draftchip{display:inline-flex;gap:6px;align-items:center;padding:4px 10px;border-radius:99px;border:1px solid var(--warning-border);background:var(--open-bg);color:var(--warning);font-size:12px;font-weight:600;min-height:28px}
+.mdopt{font-size:13px;color:var(--muted-foreground)}
+.mdopt b{color:var(--primary)}.mdopt code,.opt code{font:12px/1.4 "DejaVu Sans Mono",ui-monospace,monospace;background:var(--surface-hover);padding:1px 5px;border-radius:5px;color:var(--primary)}
+.mdopt ul{margin:4px 0 0 16px}
+.stage{position:relative;overflow:hidden}
+.ph.tall{height:800px;position:relative}
+.ph.tall .body{flex:1;overflow:hidden}
+.lab2{padding:10px 28px 0;color:var(--faint-foreground);font-size:12px}
+</style></head><body>
+<header class="band"><h1><span class="dir">D1 sidebar</span>CHE-5480 · Round 2 · (g) browse mode</h1><p>One card per screen. Swipe or arrows only skip or snooze; a pick is a tap and a confirm. Skipped cards can be reopened.</p></header>
+<div class="lab">Desktop 1440 px</div><div class="desk"><nav class="rail" aria-label="Primary"><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/></svg>Inbox<i class="bd">3<span class="sr-only"> unread</span></i></a><a class="ri on" href="#" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M5 7h14M5 7l-2.5 6a3.2 3.2 0 0 0 5 0zM19 7l-2.5 6a3.2 3.2 0 0 0 5 0z"/></svg>Decisions<i class="bd q">7<span class="sr-only"> open</span></i></a><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12l3 3 5-6"/></svg>Work</a><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M18 14.8c1.9.6 3 2.3 3 5.2"/></svg>Team</a><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Chat</a><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>Autopilots</a><div style="flex:1"></div><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Settings</a></nav><main class="main"><div class="top"><h2>Decisions</h2><span class="sp"></span><span class="meta">Order: nearest deadline first, then most issues blocked</span><div class="tabs" role="tablist" aria-label="Decisions view"><button type="button" class="tab on" role="tab" id="g-tab-browse" aria-selected="true" aria-controls="g-panel-browse"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg> Browse</button><button type="button" class="tab" role="tab" id="g-tab-list" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg> List</button></div></div>
+<div class="body" id="g-panel-browse" role="tabpanel" aria-labelledby="g-tab-browse" style="justify-content:center;min-height:800px"><div class="pane c" style="gap:12px">
+<div style="display:flex;align-items:center;gap:12px"><button type="button" class="ibtn" aria-label="Previous card"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg></button><span class="cnt">2 of 7</span><span class="meta">· 1 skipped · 0 snoozed</span><span class="sp"></span><span class="meta">Arrow keys and swipe only skip or snooze. A pick needs a tap and a confirm.</span><button type="button" class="ibtn" aria-label="Next card"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7"/></svg></button></div>
+<div class="card"><div class="hd"><span class="tag t-open">Open</span><span class="chip">Spend</span><span class="meta">x99-claude-planner · CHE-2365</span><span class="sp"></span><span class="meta">Due 16 Nov 2026 · blocks 4</span></div><div class="bd2"><h3 class="ask">Raise the metered model API budget from USD 150 to USD 200 for November?</h3><div class="sum">Spend is at 62% of the cap on day 13; two review runs are queued behind the limit. <span class="mention">@Cheese</span></div><dl class="kv"><dt>Cost</dt><dd>+USD 50 this month, one time</dd><dt>Undo</dt><dd>Revocable until 30 Nov 2026 23:59 ICT</dd><dt>Affects</dt><dd>Jev limit and 4 agents</dd></dl><div class="seg" role="radiogroup" aria-label="Raise the metered model API budget from USD 150 to USD 200 for November?"><label class="opt"><input type="radio" class="sr-only" name="g-desk-opt"><i class="rd" aria-hidden="true"></i><div><b>A · Raise to USD 200</b><span class="">Review runs continue; cap resets on 1 Dec 2026.</span></div></label><label class="opt"><input type="radio" class="sr-only" name="g-desk-opt"><i class="rd" aria-hidden="true"></i><div><b>B · Keep USD 150</b><span class="">Queue non-urgent runs until 1 Dec 2026.</span></div></label><label class="opt"><input type="radio" class="sr-only" name="g-desk-opt"><i class="rd" aria-hidden="true"></i><div><b>C · Raise to USD 175</b><span class="">Smaller step; re-check on 22 Nov 2026.</span></div></label></div><div class="hint"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Our recommendation stays hidden until you lock your pick.</div><textarea class="ta" rows="2" name="g-desk-other" aria-label="Other: write your own answer or a reason" placeholder="Other: write your own answer or a reason (kept until you send or discard)"></textarea><div class="btns"><button type="button" class="btn p" disabled><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Lock my pick</button><span class="sp"></span><button type="button" class="btn g sm focus-demo"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 9l7 7 7-7"/></svg> Skip <span class="kbd">↓</span></button><button type="button" class="btn g sm"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Snooze <span class="kbd">S</span></button><button type="button" class="btn g sm"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg> Open issue <span class="kbd">O</span></button></div></div></div>
+<div class="fold" style="border-style:dashed"><span style="color:var(--warning)"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></span><b style="color:var(--primary);font-weight:600">1 skipped</b><span>Back to the one I skipped</span><span class="sp"></span><button type="button" class="btn sm"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg> Reopen</button></div>
+</div></div></main></div><div class="lab">Phone 390 px (A active card · B snooze swipe · C end of queue), and frame notes</div><div class="low"><section class="ph tall" aria-label="Phone A: active card"><div class="top"><button type="button" class="bk" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg></button><h2>Decisions</h2><span class="sp"></span><span class="cnt">2/7</span><button type="button" class="ibtn" style="width:44px;height:44px;border:0;background:none" aria-label="List"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="body" style="padding-bottom:84px"><div class="card"><div class="hd"><span class="tag t-open">Open</span><span class="chip">Spend</span><span class="meta">x99-claude-planner · CHE-2365</span><span class="sp"></span><span class="meta">Due 16 Nov 2026 · blocks 4</span></div><div class="bd2"><h3 class="ask">Raise the metered model API budget from USD 150 to USD 200 for November?</h3><div class="seg" role="radiogroup" aria-label="Raise the metered model API budget from USD 150 to USD 200 for November?"><label class="opt"><input type="radio" class="sr-only" name="g-pa-opt"><i class="rd" aria-hidden="true"></i><div><b>A · Raise to USD 200</b><span class="">Review runs continue; cap resets on 1 Dec 2026.</span></div></label><label class="opt"><input type="radio" class="sr-only" name="g-pa-opt"><i class="rd" aria-hidden="true"></i><div><b>B · Keep USD 150</b><span class="">Queue non-urgent runs until 1 Dec 2026.</span></div></label><label class="opt"><input type="radio" class="sr-only" name="g-pa-opt"><i class="rd" aria-hidden="true"></i><div><b>C · Raise to USD 175</b><span class="">Smaller step; re-check on 22 Nov 2026.</span></div></label></div><div class="hint"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Our recommendation stays hidden until you lock your pick.</div><button type="button" class="btn p" disabled><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Lock my pick</button></div></div></div><div class="bar" role="group" aria-label="Card actions" style="gap:8px"><div class="ba"><button type="button" class="ibtn focus-demo"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 9l7 7 7-7"/></svg> Skip</button><button type="button" class="ibtn"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Snooze</button><button type="button" class="ibtn"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg> Open</button></div></div></section><section class="ph tall" aria-label="Phone B: snooze swipe"><div class="top"><button type="button" class="bk" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg></button><h2>Decisions</h2><span class="sp"></span><span class="cnt">2/7</span><button type="button" class="ibtn" style="width:44px;height:44px;border:0;background:none" aria-label="List"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="body" style="position:relative;padding-bottom:84px"><div aria-hidden="true" style="position:absolute;inset:12px 12px auto 12px;height:66px;border-radius:14px;background:var(--info-bg);border:1px solid var(--info-border);display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 20px;color:var(--info);font-weight:650">Snooze <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div style="transform:translateX(-64px) rotate(-3deg);margin-top:78px;position:relative"><div class="card"><div class="hd"><span class="tag t-open">Open</span><span class="chip">Spend</span><span class="meta">x99-claude-planner · CHE-2365</span><span class="sp"></span><span class="meta">Due 16 Nov 2026 · blocks 4</span></div><div class="bd2"><h3 class="ask">Raise the metered model API budget from USD 150 to USD 200 for November?</h3><div class="seg" role="radiogroup" aria-label="Raise the metered model API budget from USD 150 to USD 200 for November?"><label class="opt"><input type="radio" class="sr-only" name="g-pb-opt"><i class="rd" aria-hidden="true"></i><div><b>A · Raise to USD 200</b><span class="">Review runs continue; cap resets on 1 Dec 2026.</span></div></label><label class="opt"><input type="radio" class="sr-only" name="g-pb-opt"><i class="rd" aria-hidden="true"></i><div><b>B · Keep USD 150</b><span class="">Queue non-urgent runs until 1 Dec 2026.</span></div></label><label class="opt"><input type="radio" class="sr-only" name="g-pb-opt"><i class="rd" aria-hidden="true"></i><div><b>C · Raise to USD 175</b><span class="">Smaller step; re-check on 22 Nov 2026.</span></div></label></div></div></div></div></div><div class="bar" role="group" aria-label="Card actions"><div class="hint"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Swipe left to snooze · release past 40% to confirm · or tap Snooze</div><div class="ba"><button type="button" class="ibtn"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 9l7 7 7-7"/></svg> Skip</button><button type="button" class="ibtn"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Snooze</button><button type="button" class="ibtn"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg> Open</button></div></div></section><section class="ph tall" aria-label="Phone C: end of queue"><div class="top"><button type="button" class="bk" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7"/></svg></button><h2>Decisions</h2><span class="sp"></span><span class="cnt">2/7</span><button type="button" class="ibtn" style="width:44px;height:44px;border:0;background:none" aria-label="List"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="body" style="padding-bottom:84px"><div class="empty" style="padding:36px 12px"><div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12l5 5 9-10"/></svg></div><h3>End of the queue</h3><p>5 decided today. 1 skipped, 1 snoozed until 15 Nov 2026 09:00 ICT.</p></div><div class="fold" style="border-style:dashed"><span style="color:var(--warning)"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></span><b style="color:var(--primary);font-weight:600">1 skipped</b><span>Back to the one I skipped</span><span class="sp"></span><button type="button" class="btn sm"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg> Reopen</button></div><div class="fold"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> <span>1 snoozed · returns 15 Nov 2026 09:00 ICT</span><span class="sp"></span><button type="button" class="btn sm">View</button></div></div><nav class="pb" aria-label="Primary"><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/></svg>Inbox<i class="bd">3<span class="sr-only"> unread</span></i></a><a class="ri on" href="#" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M5 7h14M5 7l-2.5 6a3.2 3.2 0 0 0 5 0zM19 7l-2.5 6a3.2 3.2 0 0 0 5 0z"/></svg>Decisions<i class="bd q">7<span class="sr-only"> open</span></i></a><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12l3 3 5-6"/></svg>Work</a><a class="ri" href="#"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Chat</a></nav></section></div><div class="low" style="padding-top:0"><div class="notes"><div class="n"><h3>(g) Browse mode · what you see</h3><ul><li>One card per screen, order <code>nearest deadline</code> then <code>issues blocked</code>. The counter reads <code>2 of 7</code>.</li><li>Skip and snooze are the only things a swipe or an arrow does. A pick is a tap on an option plus <code>Lock my pick</code>. The recommendation stays hidden until the lock (round 1, not redrawn).</li><li>Reopen: the dashed row <code>Back to the one I skipped</code> returns to that card and keeps its place in the queue.</li><li>Phone: vertical swipe up skips, swipe left snoozes. Buttons always exist (no gesture-only path). A gesture that starts within 24 px of the left edge is ignored, so the iOS back swipe wins.</li></ul></div><div class="n"><h3>Components, tokens, i18n</h3><ul><li><code>packages/views/decisions/decisions-page.tsx</code> gains a <code>Browse</code> tab; card stays <code>decision-request-card.tsx</code> + <code>decision-answer-content.tsx</code>.</li><li>Tokens: <code>--surface</code>, <code>--surface-border</code>, <code>--warning</code> (skipped row), <code>--info-bg</code> (snooze reveal).</li><li>New keys: <code>decisions:browse.counter</code>, <code>browse.skip</code>, <code>browse.snooze</code>, <code>browse.backToSkipped</code>, <code>browse.endOfQueue</code>; 6-locale parity (<code>parity.test.ts</code>).</li><li>Touch targets 44 px on phone; gesture arrows have <code>aria-label</code>; <code>S</code>, <code>O</code>, arrows are shortcuts.</li><li>Focus: 2 px outline, 2 px offset, token <code>--info</code>, on every control; keyboard order follows reading order.</li></ul></div><div class="n"><h3>States</h3><div>Phone C is the end of the queue with the skipped and snoozed rows. Loading uses the round 1 skeleton card; error and offline reuse the round 1 inline notice.</div></div></div></div>
+</body></html>

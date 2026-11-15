@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1279,6 +1279,60 @@ func TestBuildWorkspaceUpdateBodyIdleGuard(t *testing.T) {
 	}
 }
 
+// CHE-5987: --time-wakeup-skip-mode sends only time_wakeup_skip.mode.
+func TestBuildWorkspaceUpdateBodyTimeWakeupSkip(t *testing.T) {
+	for _, mode := range []string{"off", "warn", "block"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "time-wakeup-skip-mode", mode)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if want := map[string]any{"time_wakeup_skip": map[string]any{"mode": mode}}; !reflect.DeepEqual(body, want) {
+			t.Errorf("%s: body = %#v, want %#v", mode, body, want)
+		}
+	}
+	for _, mode := range []string{"on", "", "WARN"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "time-wakeup-skip-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+}
+
+// CHE-5987 review F1: --time-wakeup-skip-mode patches settings.time_wakeup_skip
+// alone, so combining it with any other update flag is refused and names both.
+func TestBuildWorkspaceUpdateBodyTimeWakeupSkipConflicts(t *testing.T) {
+	for _, other := range []struct{ flag, value string }{
+		{"idle-guard-mode", "shadow"},
+		{"idle-guard-after-hours", "6"},
+		{"name", "x"},
+		{"issue-prefix", "ABC"},
+		{"routing-agent", "a1"},
+	} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "time-wakeup-skip-mode", "warn")
+		setStringFlag(t, other.flag, other.value)
+		_, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "--time-wakeup-skip-mode") || !strings.Contains(err.Error(), "--"+other.flag) {
+			t.Errorf("%s: err = %v, want a conflict naming both flags", other.flag, err)
+		}
+	}
+}
+
+// The digest-mode update changes exactly one field, so the new flag conflicts
+// with it like --idle-guard-mode does.
+func TestWorkspaceUpdateDigestRejectsTimeWakeupSkip(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "expected-before-digest", strings.Repeat("0", 64))
+	setStringFlag(t, "time-wakeup-skip-mode", "warn")
+	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "--time-wakeup-skip-mode") {
+		t.Fatalf("err = %v, want a conflict naming --time-wakeup-skip-mode", err)
+	}
+}
+
 func TestMergeRoutingFlagsKeepsUnnamedFields(t *testing.T) {
 	resetWorkspaceUpdateFlags(t)
 	current := map[string]any{"agent_id": "a1", "fallback_agent_id": "f1", "statuses": []any{"todo"}, "overrides": map[string]any{"todo": "o1"}}
@@ -1308,5 +1362,34 @@ func TestMergeRoutingFlagsKeepsUnnamedFields(t *testing.T) {
 	setStringFlag(t, "routing-overrides", "todo")
 	if _, err := mergeRoutingFlags(workspaceUpdateCmd, current); err == nil {
 		t.Fatal("malformed override accepted")
+	}
+}
+
+// CHE-4116: the --routing-* flags write the routing job through the
+// background-agents body and leave the other jobs as they are.
+func TestRoutingAliasBodyWritesTheRoutingJob(t *testing.T) {
+	current := map[string]bgChain{
+		"dm_title": {"agent_id": "d1"},
+		"routing":  {"agent_id": "a1", "fallback_agent_id": "f1", "statuses": []any{"todo"}},
+	}
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-agent", "a2")
+	body, err := routingAliasBody(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routing, _ := body["routing"].(map[string]any)
+	if routing["agent_id"] != "a2" || routing["fallback_agent_id"] != "f1" || !reflect.DeepEqual(body["dm_title"], bgChain{"agent_id": "d1"}) {
+		t.Fatalf("body = %v", body)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-agent", "none")
+	body, err = routingAliasBody(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["routing"]; ok || body["dm_title"] == nil {
+		t.Fatalf("routing off left body = %v", body)
 	}
 }

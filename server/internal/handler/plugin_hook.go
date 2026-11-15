@@ -183,8 +183,14 @@ func (h *Handler) RotatePluginToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	credentials, err := h.PluginService.RotateInstallCredentials(r.Context(), installation.ID)
+	audit := h.pluginAudit(r, installation.WorkspaceID, "plugin.token.rotate", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return map[string]any{"token": pluginTokenState(c.Before)}, map[string]any{"token": "rotated"}
+	})
+	credentials, err := h.PluginService.RotateInstallCredentials(r.Context(), installation, audit)
 	if err != nil {
+		if failedAudit(w, r, err, "plugin.token.rotate") {
+			return
+		}
 		writePluginError(w, err, "failed to issue the Plugin token")
 		return
 	}
@@ -197,7 +203,13 @@ func (h *Handler) RevokePluginToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.PluginService.RevokeInstallToken(r.Context(), installation.ID); err != nil {
+	audit := h.pluginAudit(r, installation.WorkspaceID, "plugin.token.revoke", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return map[string]any{"token": pluginTokenState(c.Before)}, map[string]any{"token": "revoked"}
+	})
+	if err := h.PluginService.RevokeInstallToken(r.Context(), installation, audit); err != nil {
+		if failedAudit(w, r, err, "plugin.token.revoke") {
+			return
+		}
 		writePluginError(w, err, "failed to revoke the Plugin token")
 		return
 	}

@@ -8,6 +8,7 @@ import enChat from "../../locales/en/chat.json";
 import { NavigationProvider } from "../../navigation";
 
 const listChatSessions = vi.fn();
+const listOpenDecisionRequests = vi.fn();
 
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...await importOriginal<typeof import("@multica/core/paths")>(),
@@ -17,11 +18,11 @@ vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/api", () => ({
   api: {
     listChatSessions: (...args: unknown[]) => listChatSessions(...args),
-    listOpenDecisionRequests: () => Promise.resolve([]),
+    listOpenDecisionRequests: (...args: unknown[]) => listOpenDecisionRequests(...args),
   },
 }));
 
-import { NeedsYouList } from "./needs-you-list";
+import { NeedsYouList, decisionHeadline } from "./needs-you-list";
 
 const NOW = Date.parse("2026-11-08T03:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
@@ -83,8 +84,19 @@ describe("Needs you box: attention rows", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(NOW);
     listChatSessions.mockReset();
+    listOpenDecisionRequests.mockReset().mockResolvedValue([]);
   });
   afterEach(() => vi.useRealTimers());
+
+  it("decisionHeadline gives a plain one-line summary for a proposed action, never raw markdown", () => {
+    const ask =
+      "**Proposed action**\n`workflow.steps.set` version 1 on [Issue](mention://issue/01a1bb73-0000-7000-8000-000000000000)\n\n**Parameters**\n```json\n{\n  \"step\": \"review\"\n}\n```";
+    const headline = decisionHeadline(ask, "CHE-4678");
+    expect(headline).not.toContain("mention://");
+    expect(headline).not.toContain("](");
+    expect(headline).not.toContain("Parameters");
+    expect(headline).toBe("workflow.steps.set v1 on CHE-4678");
+  });
 
   it("orders red, yellow, fresh, then oldest start, then id", async () => {
     listChatSessions.mockResolvedValue([

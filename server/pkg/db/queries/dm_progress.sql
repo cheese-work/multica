@@ -128,28 +128,34 @@ FROM dm_progress_follow AS f
 WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active';
 
 -- name: DeleteDMProgressForIssue :exec
--- No FKs (repo rule): issue delete sweeps its follows and lane events here.
+-- No FKs (repo rule): issue delete sweeps its follows, lane events and pending rows here.
 WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
+), gone_pending AS (
+    DELETE FROM dm_progress_pending AS p WHERE p.issue_id = $1 AND p.workspace_id = $2
 )
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2;
 
 -- name: DeleteDMProgressForLineage :exec
--- No FKs (repo rule): chat session delete sweeps its follows, lane events and lane here.
+-- No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows and lane here.
 -- Callers hold the chat_session lock, so a new follow cannot slip in between.
 WITH gone AS (
     DELETE FROM dm_progress_follow AS f WHERE f.lineage_id = $1 AND f.workspace_id = $2
 ), gone_events AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.lineage_id = $1 AND e.workspace_id = $2
+), gone_pending AS (
+    DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps all four tables here.
+-- No FKs (repo rule): workspace delete sweeps all five tables here.
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
 ), gone_events AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.workspace_id = $1
+), gone_pending AS (
+    DELETE FROM dm_progress_pending AS p WHERE p.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )

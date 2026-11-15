@@ -146,6 +146,16 @@ function SteerReceipt({ issueId, entry, receipt }: {
   // A run that ended before delivery settles the receipt as turn_ended; the
   // task status can show it before the receipt update arrives.
   const reasonCode = inFlight ? "turn_ended" : receipt.failure_reason;
+  // The server replays an unread steer as a follow-up run (CHE-5542): queued
+  // means the next run reads it, not a failure.
+  if (reasonCode === "replay_queued") {
+    return (
+      <p role="status" className="flex items-center gap-1.5 text-caption text-muted-foreground">
+        <Loader2 aria-hidden className="size-3.5 shrink-0" />
+        <span>{t(($) => $.inline_run.steer_replay_queued, { name })}</span>
+      </p>
+    );
+  }
   const reason = reasonCode === "turn_ended"
     ? t(($) => $.inline_run.supplement_failure_turn_ended)
     : reasonCode === "turn_not_started"
@@ -154,8 +164,16 @@ function SteerReceipt({ issueId, entry, receipt }: {
         ? t(($) => $.inline_run.supplement_failure_provider_rejected)
         : reasonCode === "timeout"
           ? t(($) => $.inline_run.supplement_failure_timeout)
-          : t(($) => $.inline_run.supplement_failure_unknown);
-  const canRetry = !terminal && reasonCode !== "turn_ended";
+          : reasonCode === "replay_exhausted"
+            ? t(($) => $.inline_run.supplement_failure_replay_exhausted)
+            : reasonCode === "run_budget_exhausted"
+              ? t(($) => $.inline_run.supplement_failure_run_budget_exhausted)
+              : reasonCode === "agent_paused"
+                ? t(($) => $.inline_run.supplement_failure_agent_paused)
+                : t(($) => $.inline_run.supplement_failure_unknown);
+  // Replay outcomes are final for this run: Resend queues a new one.
+  const canRetry = !terminal && reasonCode !== "turn_ended" && !reasonCode?.startsWith("replay_")
+    && reasonCode !== "run_budget_exhausted" && reasonCode !== "agent_paused";
   return (
     <div role="alert" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-destructive">
       <span className="inline-flex items-center gap-1.5">
