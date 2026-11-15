@@ -7,6 +7,11 @@
 # A merge-queue build has no PR payload: the PR comes from the queue branch name
 # (refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>, set by GitHub in MERGE_GROUP_HEAD_REF). Anything
 # else is unreadable, so the PR was not judged and the check is red.
+# CHE-5752: the variables are a copy of the stored policy (workspace settings.guard_policy). With GUARD_POLICY_READ_TOKEN
+# (a read-only token) the check reads the live stored policy through the CLI and fails closed (exit 2) when the copy
+# differs (key order aside) or the live policy cannot be read, including a response with no settings object. GUARD_POLICY_LIVE_REQUIRED=1 makes a missing token red
+# too; without either, the check notes that freshness was not checked. MULTICA_SERVER_URL and MULTICA_WORKSPACE_ID
+# select the workspace.
 # Env: PR_URL or MERGE_GROUP_HEAD_REF, REPO, GUARD_POLICY_JSON, GUARD_POLICY_SHA256, RUNNER_TEMP; MULTICA_BIN (default
 # $RUNNER_TEMP/multica); GH_TOKEN for gh.
 set -euo pipefail
@@ -21,6 +26,28 @@ elif [ -z "${GUARD_POLICY_JSON:-}" ]; then
 elif [ -z "${GUARD_POLICY_SHA256:-}" ]; then
   echo "::error::PR guard rules: repository variable GUARD_POLICY_SHA256 is not set; the policy has no digest. Set it to the sha256 of GUARD_POLICY_JSON, or unset both."
   exit 2
+fi
+
+bin="${MULTICA_BIN:-$RUNNER_TEMP/multica}"
+if [ -n "${GUARD_POLICY_READ_TOKEN:-}" ]; then
+  if ! live="$(MULTICA_TOKEN="$GUARD_POLICY_READ_TOKEN" "$bin" workspace get --output json | jq -S -c 'if (type == "object") and (.settings | type == "object") then .settings.guard_policy // null else error("no workspace settings object") end')"; then
+    echo "::error::PR guard rules: the live stored guard policy cannot be read, so the variable copy cannot be shown fresh."
+    exit 2
+  fi
+  copy=null
+  if [ "$policy_set" = 1 ] && ! copy="$(printf '%s' "$GUARD_POLICY_JSON" | jq -S -c .)"; then
+    echo "::error::PR guard rules: GUARD_POLICY_JSON is not valid JSON."
+    exit 2
+  fi
+  if [ "$live" != "$copy" ]; then
+    echo "::error::PR guard rules: the variable policy copy is stale: it differs from the live stored guard policy. Update GUARD_POLICY_JSON and GUARD_POLICY_SHA256 from the stored policy."
+    exit 2
+  fi
+elif [ "${GUARD_POLICY_LIVE_REQUIRED:-}" = 1 ]; then
+  echo "::error::PR guard rules: GUARD_POLICY_LIVE_REQUIRED is set but GUARD_POLICY_READ_TOKEN is not, so the live stored policy cannot be read."
+  exit 2
+else
+  echo "::notice::PR guard rules: no GUARD_POLICY_READ_TOKEN, so the variable policy copy is not checked against the live stored policy."
 fi
 
 pr="${PR_URL:-}"
@@ -42,4 +69,4 @@ fi
 MULTICA_GUARD_REAL_GH="$(command -v gh || true)"
 export MULTICA_GUARD_REAL_GH
 
-exec "${MULTICA_BIN:-$RUNNER_TEMP/multica}" guard check-pr "$pr" -R "$REPO"
+exec "$bin" guard check-pr "$pr" -R "$REPO"
