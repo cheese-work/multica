@@ -269,3 +269,39 @@ func TestBackgroundAgentsUnchangedMachineWriteSkipsEligibility(t *testing.T) {
 	// A human still gets the eligibility check.
 	wantCode(t, putBG(t, wsID, val, nil), http.StatusBadRequest, "agent_not_eligible")
 }
+
+// A PUT carrying If-Match is refused with 409 and the current value when
+// another owner saved since the GET it was built from (design D2 frame 6).
+func TestBackgroundAgentsPutRefusesStaleIfMatch(t *testing.T) {
+	wsID, a, b, _ := bgFixture(t, "bg-etag")
+	putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": a}}, nil).Want(http.StatusOK)
+
+	got := bgCall(t, testHandler.GetBackgroundAgents, "GET", wsID, nil, nil).Want(http.StatusOK)
+	etag := got.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("GET sent no ETag")
+	}
+
+	// Another owner saves first.
+	putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": b}}, nil).Want(http.StatusOK)
+
+	stale := putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": a}, "quick_actions": map[string]any{"agent_id": a}},
+		func(r *http.Request) { r.Header.Set("If-Match", etag) })
+	wantCode(t, stale, http.StatusConflict, "background_agents_conflict")
+	current, _ := stale.Map()["current"].(map[string]any)
+	if !reflect.DeepEqual(current, map[string]any{"dm_title": map[string]any{"agent_id": b}}) {
+		t.Fatalf("conflict body current = %v, want the other owner's value", current)
+	}
+	if stale.Header().Get("ETag") == "" || stale.Header().Get("ETag") == etag {
+		t.Fatalf("conflict must carry the new ETag, got %q", stale.Header().Get("ETag"))
+	}
+	if !reflect.DeepEqual(storedBG(t, wsID), map[string]any{"dm_title": map[string]any{"agent_id": b}}) {
+		t.Fatalf("a refused write stored %v", storedBG(t, wsID))
+	}
+
+	// Re-sending with the fresh ETag succeeds; so does a PUT without If-Match.
+	fresh := bgCall(t, testHandler.GetBackgroundAgents, "GET", wsID, nil, nil).Header().Get("ETag")
+	putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": a}},
+		func(r *http.Request) { r.Header.Set("If-Match", fresh) }).Want(http.StatusOK)
+	putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": b}}, nil).Want(http.StatusOK)
+}

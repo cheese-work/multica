@@ -55,6 +55,10 @@ const (
 	EventTaskMessage               = "task:message"
 	EventTaskCancelled             = "task:cancelled" // * → cancelled
 
+	// Browser lease events (CHE-4734, W3-5). Internal: the steel-gateway event stream (W3-6)
+	// reads them from the bus; the realtime fanout never forwards them to clients.
+	EventBrowserLeaseRevoked = "browser_lease:revoked" // active or queued → ended or dropped
+
 	// Inbox events
 	EventInboxNew           = "inbox:new"
 	EventInboxUpdated       = "inbox:updated" // an unread record gained another reply
