@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowUpRight } from "@multica/ui/icons";
+import { CliInstallCommand } from "@multica/views/common/cli-install-command";
 import { docsHrefForLocale, useLocale } from "../i18n";
 import { ActionLink, Container, Section, SectionHeader } from "./primitives";
 import { AgentSessionVisual, CliScene } from "./demo/cli-visuals";
@@ -55,15 +56,11 @@ function Hero() {
   );
 }
 
-const INSTALL: { title: string; body: string; code: CodeVariant[] }[] = [
+// The install step has no static code: its command comes from this server (CliInstallCommand).
+const INSTALL: { title: string; body: string; code?: CodeVariant[] }[] = [
   {
     title: "Install it",
-    body: "One line in a terminal on macOS and Linux, or in PowerShell on Windows. Homebrew works too.",
-    code: [
-      { label: "macOS / Linux", code: "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash" },
-      { label: "Windows", code: "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex" },
-      { label: "Homebrew", code: "brew install multica-ai/tap/multica" },
-    ],
+    body: "One line in a terminal on macOS and Linux. It installs the build from this server.",
   },
   {
     title: "Connect the computer",
@@ -103,7 +100,13 @@ function Install() {
                   <p className="mt-site-stack max-w-[26rem] text-site-body text-site-muted text-pretty">{step.body}</p>
                 </span>
               </div>
-              <CodeBlock variants={step.code} />
+              {step.code ? (
+                <CodeBlock variants={step.code} />
+              ) : (
+                <CliInstallCommand labels={{ group: "Choose your platform", macosLinux: "macOS / Linux" }}>
+                  {(code) => <CodeBlock variants={[{ label: "macOS / Linux", code }]} />}
+                </CliInstallCommand>
+              )}
             </li>
           ))}
         </ol>
