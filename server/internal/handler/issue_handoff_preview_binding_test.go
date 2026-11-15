@@ -63,8 +63,8 @@ func TestHandoffConfirmationIsBoundToWhatWasPreviewed(t *testing.T) {
 			Code string `json:"code"`
 		}
 		resp.JSON(&body)
-		if body.Code != "handoff_preview_stale" {
-			t.Fatalf("code = %q, want handoff_preview_stale", body.Code)
+		if body.Code != "stale_preview" {
+			t.Fatalf("code = %q, want stale_preview", body.Code)
 		}
 		if got := taskStatus(t, newOwnerRun); got != "queued" {
 			t.Fatalf("the new assignee's run = %q, want queued: the person never approved stopping it", got)
