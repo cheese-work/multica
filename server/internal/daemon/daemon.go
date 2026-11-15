@@ -5159,7 +5159,7 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	d.updateProgress.Store(rep)
 	output, err := d.runUpdateFn(update.TargetVersion)
 	d.updateProgress.Store(nil)
-	rep.wait() // a late progress report must not land after the terminal one
+	rep.flush() // the last bytes_done and phase land before the terminal report, and no late one after
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
@@ -5252,7 +5252,7 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 	if err := cli.CheckUpdateFreeze(); err != nil {
 		return "", err
 	}
-	if cli.ForkUpdateSupported(runtime.GOOS) {
+	if forkUpdateSource() {
 		// targetVersion is an upstream release tag from the server or poller; the
 		// fork source ignores it and takes the build its own server carries.
 		return d.runForkUpdate()
@@ -5266,7 +5266,11 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 		return out, nil
 	}
 	d.logger.Info("updating CLI via direct download...", "target_version", targetVersion)
-	out, err := cli.UpdateViaDownload(targetVersion)
+	opts := cli.DownloadOptions{Timeout: cli.DefaultUpdateDownloadTimeout}
+	if rep := d.updateProgress.Load(); rep != nil { // set only by a server-triggered update; the poller stays quiet
+		opts.Progress = rep.progress()
+	}
+	out, err := cli.UpdateViaDownloadWithOptions(targetVersion, opts)
 	if err != nil {
 		return out, fmt.Errorf("download update failed: %w", err)
 	}
@@ -8152,10 +8156,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		return TaskResult{}, err
 	}
+	// A status handoff comment is context, so the runtime brief gets no reply target.
+	triggerCommentID, triggerThreadID := task.TriggerCommentID, task.TriggerThreadID
+	if task.isStatusHandoff() {
+		triggerCommentID, triggerThreadID = "", ""
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
-		TriggerCommentID:    task.TriggerCommentID,
-		TriggerThreadID:     task.TriggerThreadID,
+		TriggerCommentID:    triggerCommentID,
+		TriggerThreadID:     triggerThreadID,
 		CommentReplyTargets: commentReplyThreads(task),
 		NewCommentCount:     task.NewCommentCount,
 		NewCommentsSince:    task.NewCommentsSince,

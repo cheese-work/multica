@@ -20,6 +20,11 @@ import {
   issueAppRequestsOptions,
   useDecideAppRequest,
 } from "@multica/core/connected-apps";
+import {
+  EMPTY_APP_REQUEST_DRAFT,
+  useAppRequestDraftStore,
+} from "@multica/core/connected-apps/request-draft-store";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { useActorName } from "@multica/core/workspace/hooks";
 import type { AppRequest } from "@multica/core/types";
 import { useLocale, useT } from "../i18n";
@@ -129,11 +134,24 @@ function AppRequestList({
     (r) => r.status === "pending" && r.kind === "action" && r.approver_user_id === viewerId,
   );
   const approveAll = async () => {
+    // Send each card's edited arguments; one invalid edit stops the whole batch.
+    const edits = new Map<string, Record<string, unknown>>();
+    for (const r of batch) {
+      const draft = useAppRequestDraftStore.getState().getDraft(r.id);
+      if (!draft?.editing) continue;
+      const args = parseArgs(draft.args);
+      if (!args) {
+        toast.error(t(($) => $.connected_apps.request.invalid_json));
+        return;
+      }
+      edits.set(r.id, args);
+    }
     let failed = 0;
     let limited = 0;
     for (const r of batch) {
       try {
-        await decide.mutateAsync({ id: r.id, decision: "approve" });
+        await decide.mutateAsync({ id: r.id, decision: "approve", arguments: edits.get(r.id) });
+        useAppRequestDraftStore.getState().clearDraft(r.id);
       } catch (e) {
         if (e instanceof ApiError && e.status === 429) limited++;
         else failed++;
@@ -180,6 +198,16 @@ function approveErrorMessage(e: unknown, t: SettingsT): string {
   return t(($) => $.connected_apps.request.toast_failed);
 }
 
+function parseArgs(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function prettyArgs(args: Record<string, unknown> | undefined) {
   return JSON.stringify(args ?? {}, null, 2);
 }
@@ -209,10 +237,12 @@ function AppRequestCard({
   }, [highlightToken]);
   const { getActorName } = useActorName();
   const decide = useDecideAppRequest();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(() => prettyArgs(request.arguments));
-  const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState("");
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(
+    useAppRequestDraftStore,
+    request.id,
+    EMPTY_APP_REQUEST_DRAFT,
+  );
+  const { editing, rejecting, reason } = draft;
   const [connecting, setConnecting] = useState(false);
 
   const agent = getActorName("agent", request.agent_id);
@@ -223,11 +253,8 @@ function AppRequestCard({
   const approve = () => {
     let args: Record<string, unknown> | undefined;
     if (editing) {
-      try {
-        const parsed: unknown = JSON.parse(draft);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-        args = parsed as Record<string, unknown>;
-      } catch {
+      args = parseArgs(draft.args) ?? undefined;
+      if (!args) {
         toast.error(t(($) => $.connected_apps.request.invalid_json));
         return;
       }
@@ -235,7 +262,10 @@ function AppRequestCard({
     decide.mutate(
       { id: request.id, decision: "approve", arguments: args },
       {
-        onSuccess: () => toast.success(t(($) => $.connected_apps.request.toast_approved)),
+        onSuccess: () => {
+          clearDraft();
+          toast.success(t(($) => $.connected_apps.request.toast_approved));
+        },
         onError: (e) => toast.error(approveErrorMessage(e, t)),
       },
     );
@@ -244,7 +274,10 @@ function AppRequestCard({
     decide.mutate(
       { id: request.id, decision: "reject", reason: reason.trim() || undefined },
       {
-        onSuccess: () => toast.success(t(($) => $.connected_apps.request.toast_rejected)),
+        onSuccess: () => {
+          clearDraft();
+          toast.success(t(($) => $.connected_apps.request.toast_rejected));
+        },
         onError: () => toast.error(t(($) => $.connected_apps.request.toast_failed)),
       },
     );
@@ -308,8 +341,8 @@ function AppRequestCard({
               </p>
             ) : editing ? (
               <Textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                value={draft.args}
+                onChange={(e) => patchDraft({ args: e.target.value })}
                 className="min-h-32 font-mono text-caption"
                 aria-label={t(($) => $.connected_apps.request.arguments)}
               />
@@ -328,13 +361,13 @@ function AppRequestCard({
             <Input
               autoFocus
               value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              onChange={(e) => patchDraft({ reason: e.target.value })}
               placeholder={t(($) => $.connected_apps.request.reject_reason)}
             />
           )}
           <div className="flex flex-wrap items-center justify-end gap-2">
             {request.kind === "action" && !editing && !rejecting && (
-              <Button size="xs" variant="ghost" onClick={() => setEditing(true)}>
+              <Button size="xs" variant="ghost" onClick={() => patchDraft({ editing: true, args: prettyArgs(request.arguments) })}>
                 <Pencil />
                 {t(($) => $.connected_apps.request.edit)}
               </Button>
@@ -343,7 +376,7 @@ function AppRequestCard({
               size="xs"
               variant="outline"
               disabled={decide.isPending}
-              onClick={() => (rejecting ? reject() : setRejecting(true))}
+              onClick={() => (rejecting ? reject() : patchDraft({ rejecting: true }))}
             >
               {t(($) => $.connected_apps.request.reject)}
             </Button>

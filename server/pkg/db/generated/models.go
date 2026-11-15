@@ -260,6 +260,7 @@ type AgentTaskQueue struct {
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
+	TriggerKind               pgtype.Text        `json:"trigger_kind"`
 }
 
 type AgentToLabel struct {
@@ -351,6 +352,8 @@ type AskGuardEvent struct {
 	SourceText         pgtype.Text        `json:"source_text"`
 	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
 	RepairReason       pgtype.Text        `json:"repair_reason"`
+	RootID             pgtype.UUID        `json:"root_id"`
+	RepairHandledAt    pgtype.Timestamptz `json:"repair_handled_at"`
 }
 
 type AskRecoveryNotice struct {
@@ -365,6 +368,20 @@ type AskRecoveryNotice struct {
 	State         string             `json:"state"`
 	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
 	AnsweredAt    pgtype.Timestamptz `json:"answered_at"`
+}
+
+type AskRepairRoot struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	RepairTaskID     pgtype.UUID        `json:"repair_task_id"`
+	State            string             `json:"state"`
+	FailureReason    pgtype.Text        `json:"failure_reason"`
+	FailureCommentID pgtype.UUID        `json:"failure_comment_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SettledAt        pgtype.Timestamptz `json:"settled_at"`
+	FailedAt         pgtype.Timestamptz `json:"failed_at"`
 }
 
 type Attachment struct {
@@ -1392,6 +1409,7 @@ type DecisionRequest struct {
 	AnswerRevision           int32              `json:"answer_revision"`
 	WakeSeq                  int64              `json:"wake_seq"`
 	BatchID                  pgtype.UUID        `json:"batch_id"`
+	PingOutcome              pgtype.Text        `json:"ping_outcome"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 }

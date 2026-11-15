@@ -50,6 +50,11 @@ vi.mock("@/data/mutations/pins", () => ({
   useCreatePin: () => ({ mutate: vi.fn() }),
   useDeletePin: () => ({ mutate: vi.fn() }),
 }));
+vi.mock("@/data/api", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(message: string, readonly status: number) { super(message); }
+  },
+}));
 vi.mock("@/data/auth-store", () => ({
   useAuthStore: (sel: (s: { user: null }) => unknown) => sel({ user: null }),
 }));

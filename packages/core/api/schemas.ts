@@ -1119,6 +1119,13 @@ const DecisionActionSchema = z.lazy(() => z.object({
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
   owner_only: z.boolean().optional().catch(undefined),
+  effect: z.string().optional().catch(undefined),
+  effect_reason: z.string().optional().catch(undefined),
+  decided_at: z.string().optional().catch(undefined),
+  decided_by_name: z.string().optional().catch(undefined),
+  on_behalf_of_name: z.string().optional().catch(undefined),
+  revocable: z.boolean().optional().catch(undefined),
+  revoke: z.object({ at: z.string(), by_name: z.string().optional().catch(undefined), reason: z.string().catch("") }).loose().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -1164,6 +1171,17 @@ export const DecisionRequestCardSchema = z.lazy(() => z.object({
     }).loose()).catch([]),
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
+  batch_id: z.string().optional().catch(undefined),
+  // A malformed list degrades to none: the card then offers no per-item choice.
+  batch_items: z.array(z.object({
+    action_id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    state: z.string().default(""),
+    result: z.unknown().optional(),
+    error_code: z.string().optional().catch(undefined),
+  }).loose()).optional().catch(undefined),
 }).loose());
 
 export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
@@ -4863,14 +4881,14 @@ const AgentAppSchema = z.object({
   level: AppAccessLevelSchema,
 }).loose();
 
-export const AppsOverviewSchema = z.object({
+export const AppsOverviewSchema = z.lazy(() => z.object({
   catalog_mode: AppCatalogModeSchema,
   allowed_toolkits: z.array(z.string()).default([]).catch([]),
   can_manage: z.boolean().default(false).catch(false),
   team: z.array(AppConnectionSchema).default([]),
   personal: z.array(AppConnectionSchema).default([]),
   agent_apps: z.array(AgentAppSchema).default([]),
-}).loose();
+}).loose());
 
 const AppCatalogEntrySchema = z.object({
   slug: z.string(),
@@ -4882,26 +4900,26 @@ const AppCatalogEntrySchema = z.object({
   allowed: z.boolean().optional().catch(undefined),
 }).loose();
 
-export const AppCatalogResponseSchema = z.object({
+export const AppCatalogResponseSchema = z.lazy(() => z.object({
   catalog_mode: AppCatalogModeSchema,
   apps: z.array(AppCatalogEntrySchema).default([]),
-}).loose();
+}).loose());
 
-export const AppSettingsResponseSchema = z.object({
+export const AppSettingsResponseSchema = z.lazy(() => z.object({
   catalog_mode: AppCatalogModeSchema,
   allowed_toolkits: z.array(z.string()).default([]).catch([]),
-}).loose();
+}).loose());
 
-export const AppRulesResponseSchema = z.object({
+export const AppRulesResponseSchema = z.lazy(() => z.object({
   rules: z.array(z.object({
     action_class: AppActionClassSchema,
     policy: AppActionPolicySchema,
     default_policy: AppActionPolicySchema,
     custom: z.boolean().default(false).catch(false),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const AppActivityResponseSchema = z.object({
+export const AppActivityResponseSchema = z.lazy(() => z.object({
   calls: z.array(z.object({
     id: z.string(),
     agent_id: z.string(),
@@ -4914,20 +4932,20 @@ export const AppActivityResponseSchema = z.object({
     error: appNullableString,
     created_at: z.string(),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const TeamAppImpactSchema = z.object({
+export const TeamAppImpactSchema = z.lazy(() => z.object({
   agents: z.array(z.object({ id: z.string(), name: z.string().default("") }).loose()).default([]),
   active_tasks: z.number().default(0).catch(0),
   active_autopilots: z.number().default(0).catch(0),
   pending_requests: z.number().default(0).catch(0),
-}).loose();
+}).loose());
 
-export const AgentAppsResponseSchema = z.object({
+export const AgentAppsResponseSchema = z.lazy(() => z.object({
   apps: z.array(AgentAppSchema).default([]),
-}).loose();
+}).loose());
 
-export const AppRequestSchema = z.object({
+export const AppRequestSchema = z.lazy(() => z.object({
   id: z.string(),
   kind: z.enum(["action", "connect"]).catch("action"),
   status: z.string(),
@@ -4951,14 +4969,14 @@ export const AppRequestSchema = z.object({
   decided_by: appNullableString,
   decided_at: appNullableString,
   created_at: z.string(),
-}).loose();
+}).loose());
 
-export const AppRequestListSchema = z.object({
+export const AppRequestListSchema = z.lazy(() => z.object({
   requests: z.array(AppRequestSchema).default([]),
   next_before: appNullableString,
-}).loose();
+}).loose());
 
-export const AppToolsResponseSchema = z.object({
+export const AppToolsResponseSchema = z.lazy(() => z.object({
   tools: z.array(z.object({
     slug: z.string(),
     name: z.string().default(""),
@@ -4967,9 +4985,9 @@ export const AppToolsResponseSchema = z.object({
     class: AppActionClassSchema,
     overridden: z.boolean().default(false).catch(false),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const IssueAppCallsResponseSchema = z.object({
+export const IssueAppCallsResponseSchema = z.lazy(() => z.object({
   calls: z.array(z.object({
     id: z.string(),
     task_id: appNullableString,
@@ -4984,9 +5002,9 @@ export const IssueAppCallsResponseSchema = z.object({
     error: appNullableString,
     created_at: z.string(),
   }).loose()).default([]),
-}).loose();
+}).loose());
 
-export const AppConnectInitSchema = z.object({ redirect_url: z.string().min(1) }).loose();
+export const AppConnectInitSchema = z.lazy(() => z.object({ redirect_url: z.string().min(1) }).loose());
 
 export const EMPTY_APPS_OVERVIEW: AppsOverview = {
   catalog_mode: "curated",
