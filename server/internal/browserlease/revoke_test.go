@@ -65,9 +65,7 @@ type leaseSeed struct {
 	instance                   pgtype.UUID
 }
 
-func withTask(id pgtype.UUID) leaseOpt    { return func(s *leaseSeed) { s.task = id } }
 func withUser(id pgtype.UUID) leaseOpt    { return func(s *leaseSeed) { s.user = id } }
-func withAgent(id pgtype.UUID) leaseOpt   { return func(s *leaseSeed) { s.agent = id } }
 func withProfile(id pgtype.UUID) leaseOpt { return func(s *leaseSeed) { s.profile = id } }
 func queued() leaseOpt                    { return func(s *leaseSeed) { s.state = "queued" } }
 func ended() leaseOpt                     { return func(s *leaseSeed) { s.state = "ended" } }
