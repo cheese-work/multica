@@ -199,6 +199,8 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 	})
 }
 
+// Mutation-checked: deleting the notifyRuntimeMayHaveWork call from either
+// resume method fails the matching subtest (CHE-3071).
 func TestSchedulingResumeBumpsEmptyClaimVersion(t *testing.T) {
 	ctx := context.Background()
 	cache := NewEmptyClaimCache(newRedisTestClient(t))
