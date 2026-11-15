@@ -15,7 +15,7 @@ func TestProjectSubscriptionAPI(t *testing.T) {
 	})
 
 	call := func(method, userID string) *testutil.Response {
-		req := withURLParam(asUser(newRequest(method, "/api/projects/"+f.projectID+"/subscription", nil), userID), "id", f.projectID)
+		req := withURLParam(asProjectUser(newRequest(method, "/api/projects/"+f.projectID+"/subscription", nil), userID), "id", f.projectID)
 		switch method {
 		case http.MethodPut:
 			return testutil.Call(t, testHandler.SubscribeToProject, req)
@@ -78,7 +78,7 @@ func TestIssueSubscribersIncludeProjectSubscribers(t *testing.T) {
 	reasons := func() map[string][]string {
 		t.Helper()
 		var resp []SubscriberResponse
-		req := withURLParam(asUser(newRequest(http.MethodGet, issuePath+"/subscribers", nil), testUserID), "id", f.secretIssue)
+		req := withURLParam(asProjectUser(newRequest(http.MethodGet, issuePath+"/subscribers", nil), testUserID), "id", f.secretIssue)
 		testutil.Call(t, testHandler.ListIssueSubscribers, req).Want(http.StatusOK).JSON(&resp)
 		got := map[string][]string{}
 		for _, s := range resp {
@@ -88,7 +88,7 @@ func TestIssueSubscribersIncludeProjectSubscribers(t *testing.T) {
 	}
 	act := func(h http.HandlerFunc, path, userID string) {
 		t.Helper()
-		req := withURLParam(asUser(newRequest(http.MethodPost, path, nil), userID), "id", f.secretIssue)
+		req := withURLParam(asProjectUser(newRequest(http.MethodPost, path, nil), userID), "id", f.secretIssue)
 		testutil.Call(t, h, req).Want(http.StatusOK)
 	}
 	optOutScope := func(userID string) string {
