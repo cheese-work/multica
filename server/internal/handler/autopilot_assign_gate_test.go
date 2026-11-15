@@ -232,3 +232,88 @@ func TestBatchUpdateIssues_AutopilotEditReassignedWithoutWriteIsSkipped(t *testi
 		t.Fatalf("owner (can_write): assignee = %v, want %s", a, agentID)
 	}
 }
+
+// Round 2: the gate judges the human the RUN will act for, not the assigner. A
+// member assigning acts for themselves; an agent assigning starts a run whose
+// human comes from the issue (its creator chain), not from the assigner's task.
+
+func autopilotIssueBy(t *testing.T, creatorUserID, title, apID string) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	body := map[string]any{"title": title, "status": "todo", "description": "Edit autopilot `" + apID + "`."}
+	testHandler.CreateIssue(w, newRequestAs(creatorUserID, "POST", "/api/issues?workspace_id="+testWorkspaceID, body))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+	}
+	var is IssueResponse
+	json.NewDecoder(w.Body).Decode(&is)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id=$1`, is.ID)
+		testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE issue_id=$1`, is.ID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, is.ID)
+	})
+	return is.ID
+}
+
+// assignAsAgent assigns the issue to targetAgent from inside a running task of
+// assigner (an agent), the way the CLI does.
+func assignAsAgent(t *testing.T, batch bool, issueID, assignerAgent, assignerTask, targetAgent string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	assignee := map[string]any{"assignee_type": "agent", "assignee_id": targetAgent}
+	var r *http.Request
+	if batch {
+		r = newRequestAs(testUserID, "POST", "/api/issues/batch-update?workspace_id="+testWorkspaceID,
+			map[string]any{"issue_ids": []string{issueID}, "updates": assignee})
+	} else {
+		r = withURLParam(newRequestAs(testUserID, "PUT", "/api/issues/"+issueID+"?workspace_id="+testWorkspaceID, assignee), "id", issueID)
+	}
+	r.Header.Set("X-Actor-Source", "task_token")
+	r.Header.Set("X-Agent-ID", assignerAgent)
+	r.Header.Set("X-Task-ID", assignerTask)
+	if batch {
+		testHandler.BatchUpdateIssues(w, r)
+	} else {
+		testHandler.UpdateIssue(w, r)
+	}
+	return w
+}
+
+func TestAutopilotAssignGate_JudgesTheRunsHumanNotTheAssigner(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	apID, memberID, targetAgent := autopilotAssignFixture(t, "che5947-run-human@multica.test")
+	assigner := createHandlerTestAgent(t, "che5947-assigner", nil)
+	ownerTask := callerTask(t, assigner, testUserID) // assigner's task acts for the owner (can_write)
+	memberTask := callerTask(t, assigner, memberID)  // assigner's task acts for a member without write
+	assignee := func(id string) *string {
+		var a *string
+		testPool.QueryRow(context.Background(), `SELECT assignee_id::text FROM issue WHERE id=$1`, id).Scan(&a)
+		return a
+	}
+
+	for _, batch := range []bool{false, true} {
+		name := map[bool]string{false: "update", true: "batch"}[batch]
+
+		// The assigner's human can write, but the run would act for the issue's
+		// creator, a member without write: refuse (batch: skip).
+		byMember := autopilotIssueBy(t, memberID, name+" authorized assigner, creator without write", apID)
+		w := assignAsAgent(t, batch, byMember, assigner, ownerTask, targetAgent)
+		if batch {
+			if w.Code != http.StatusOK || assignee(byMember) != nil {
+				t.Errorf("%s: authorized assigner, run acts for a member without write: got %d, assigned, want skipped", name, w.Code)
+			}
+		} else if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "autopilot_assign_no_write") {
+			t.Errorf("%s: authorized assigner, run acts for a member without write: got %d %s, want 403 autopilot_assign_no_write", name, w.Code, w.Body.String())
+		}
+
+		// The assigner's human cannot write, but the run acts for the issue's
+		// creator, the owner: allow.
+		byOwner := autopilotIssueBy(t, testUserID, name+" unauthorized assigner, creator owner", apID)
+		w = assignAsAgent(t, batch, byOwner, assigner, memberTask, targetAgent)
+		if a := assignee(byOwner); w.Code != http.StatusOK || a == nil || *a != targetAgent {
+			t.Errorf("%s: unauthorized assigner, run acts for the owner: got %d %s, assignee %v, want 200 and assigned", name, w.Code, w.Body.String(), a)
+		}
+	}
+}

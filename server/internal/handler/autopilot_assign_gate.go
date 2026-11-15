@@ -20,8 +20,11 @@ import (
 // it holds for every client and runtime.
 //
 // An agent's run acts for the human at the top of its chain, so "can the
-// assignee write the autopilot" is "can the human this request acts for write
-// it": the same acting human and the same predicate as requireAutopilotWrite.
+// assignee write the autopilot" is "can the human the RUN will act for write
+// it": the same predicate as requireAutopilotWrite, judged on the originator the
+// enqueue will stamp on the run, not on whoever makes the assignment. A member
+// who assigns is that human. When an agent or the platform assigns, the run's
+// human comes from the issue (its creator chain), not from the assigner's task.
 // The issue names its target in its text, as an autopilot id next to the word
 // "autopilot"; an id that is not an autopilot of this workspace is ignored.
 
@@ -66,8 +69,8 @@ func autopilotAssignMode(settings []byte) string {
 
 // refuseAutopilotAssign reports whether the assignment must stop; it has then
 // written the 403.
-func (h *Handler) refuseAutopilotAssign(w http.ResponseWriter, r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, title, description string) bool {
-	msg := h.autopilotAssignRefusal(r, workspaceID, assigneeType, assigneeID, title, description)
+func (h *Handler) refuseAutopilotAssign(w http.ResponseWriter, r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, title, description string, issue *db.Issue) bool {
+	msg := h.autopilotAssignRefusal(r, workspaceID, assigneeType, assigneeID, title, description, issue)
 	if msg == "" {
 		return false
 	}
@@ -75,10 +78,29 @@ func (h *Handler) refuseAutopilotAssign(w http.ResponseWriter, r *http.Request, 
 	return true
 }
 
+// runHumanForAssignment is the human the run an assignment starts will act for,
+// and whether the platform can name one. issue is the issue being reassigned, or
+// nil on create. A member acts for themselves. An agent that creates an issue
+// passes its own originator on (the issue's agent_create origin). An agent or the
+// platform reassigning an existing issue starts a run attributed from the issue,
+// exactly as the enqueue does; none then means the run has no human at all.
+func (h *Handler) runHumanForAssignment(r *http.Request, workspaceID string, issue *db.Issue) (userID string, none bool) {
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+	if actorType == "member" || issue == nil {
+		return h.invokeOriginatorFromRequest(r, actorType, actorID), false
+	}
+	if h.TaskService == nil {
+		return "", false
+	}
+	userID = uuidToString(h.TaskService.OriginatorForIssueTask(r.Context(), *issue, pgtype.UUID{}))
+	return userID, userID == ""
+}
+
 // autopilotAssignRefusal returns the refusal message, or "" when the assignment
-// may go on. The check opens when it cannot judge (no human behind the run, an
-// unreadable setting): the gate never blocks work it cannot read.
-func (h *Handler) autopilotAssignRefusal(r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, title, description string) string {
+// may go on. The check opens when it cannot judge (an unreadable setting, no
+// human behind a create): the gate never blocks work it cannot read. A run that
+// is known to have no human cannot write an autopilot, so that is refused.
+func (h *Handler) autopilotAssignRefusal(r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, title, description string, issue *db.Issue) string {
 	if !assigneeID.Valid || (assigneeType.String != "agent" && assigneeType.String != "squad") {
 		return ""
 	}
@@ -99,13 +121,15 @@ func (h *Handler) autopilotAssignRefusal(r *http.Request, workspaceID string, as
 	if mode == autopilotAssignModeOff {
 		return ""
 	}
-	userID := h.autopilotActingUserID(r, workspaceID)
-	if userID == "" {
-		return ""
-	}
-	member, err := h.getWorkspaceMember(ctx, userID, workspaceID)
-	if err != nil {
-		return ""
+	userID, none := h.runHumanForAssignment(r, workspaceID, issue)
+	var member db.Member
+	if !none {
+		if userID == "" {
+			return ""
+		}
+		if member, err = h.getWorkspaceMember(ctx, userID, workspaceID); err != nil {
+			return ""
+		}
 	}
 	seen := map[string]bool{}
 	for _, id := range autopilotAssignUUIDRe.FindAllString(text, -1) {
@@ -121,7 +145,7 @@ func (h *Handler) autopilotAssignRefusal(r *http.Request, workspaceID string, as
 			continue
 		}
 		ap, err := h.Queries.GetAutopilotInWorkspace(ctx, db.GetAutopilotInWorkspaceParams{ID: apUUID, WorkspaceID: wsUUID})
-		if err != nil || h.memberCanWriteAutopilot(ctx, ap, member) {
+		if err != nil || (!none && h.memberCanWriteAutopilot(ctx, ap, member)) {
 			continue
 		}
 		if mode == autopilotAssignModeWarn {

@@ -3872,7 +3872,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
-	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description)) {
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 		return
 	}
 	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
@@ -3952,7 +3952,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 					writeError(w, status, msg)
 					return
 				}
-				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description)) {
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 					return
 				}
 			}
@@ -4841,7 +4841,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, r, workspaceID, params.AssigneeType, params.AssigneeID,
-			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String)) {
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
 			return
 		}
 		if handoff == nil && (touchedType || touchedID) {
@@ -5920,7 +5920,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
-				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String)) != "" {
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
 				continue
 			}
 			if handoff == nil {
