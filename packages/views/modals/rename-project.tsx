@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { onlineManager } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,11 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Spinner } from "@multica/ui/components/ui/spinner";
 import { useUpdateProject } from "@multica/core/projects/mutations";
+import {
+  EMPTY_PROJECT_RENAME_DRAFT,
+  useProjectRenameDraftStore,
+} from "@multica/core/projects";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { useT } from "../i18n";
 
 /**
@@ -36,7 +41,14 @@ export function RenameProjectModal({
   const { t } = useT("modals");
   const projectId = typeof data?.projectId === "string" ? data.projectId : "";
   const seedTitle = typeof data?.title === "string" ? data.title : "";
-  const [title, setTitle] = useState(seedTitle);
+  // The unsent name survives unmount, navigation and reload. It is cleared only
+  // by a successful save or an explicit discard (Cancel, or an unchanged name).
+  const [draft, setDraft, clearDraft] = usePersistedDraft(
+    useProjectRenameDraftStore,
+    projectId,
+    EMPTY_PROJECT_RENAME_DRAFT,
+  );
+  const title = draft.value ?? seedTitle;
   const inputRef = useRef<HTMLInputElement>(null);
   const updateProject = useUpdateProject();
   const pending = updateProject.isPending;
@@ -65,6 +77,7 @@ export function RenameProjectModal({
       return;
     }
     if (unchanged) {
+      clearDraft();
       onClose();
       return;
     }
@@ -74,6 +87,7 @@ export function RenameProjectModal({
     }
     try {
       await updateProject.mutateAsync({ id: projectId, title: trimmed });
+      clearDraft();
       toast.success(t(($) => $.rename_project.toast_renamed));
       onClose();
     } catch (err) {
@@ -109,7 +123,9 @@ export function RenameProjectModal({
             disabled={pending}
             placeholder={t(($) => $.rename_project.placeholder)}
             aria-label={t(($) => $.rename_project.title)}
-            onChange={(event) => setTitle(event.target.value)}
+            onChange={(event) =>
+              setDraft({ value: event.target.value, base: seedTitle })
+            }
           />
         </form>
         <DialogFooter>
@@ -118,7 +134,10 @@ export function RenameProjectModal({
             variant="outline"
             size="sm"
             disabled={pending}
-            onClick={onClose}
+            onClick={() => {
+              clearDraft();
+              onClose();
+            }}
           >
             {t(($) => $.common.cancel)}
           </Button>

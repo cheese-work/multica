@@ -3,6 +3,7 @@ import { act, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project, UpdateProjectRequest } from "@multica/core/types";
+import { useProjectRenameDraftStore } from "@multica/core/projects";
 import { renderWithI18n } from "../test/i18n";
 import { RenameProjectModal } from "./rename-project";
 
@@ -49,17 +50,23 @@ function renderModal(modalData: Record<string, unknown> | null = data) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  renderWithI18n(
+  const view = renderWithI18n(
     <QueryClientProvider client={queryClient}>
       <RenameProjectModal onClose={onClose} data={modalData} />
     </QueryClientProvider>,
   );
-  return { onClose, queryClient, input: screen.getByRole("textbox", { name: "Rename project" }) };
+  return {
+    onClose,
+    queryClient,
+    unmount: view.unmount,
+    input: screen.getByRole("textbox", { name: "Rename project" }),
+  };
 }
 
 describe("RenameProjectModal", () => {
   beforeEach(() => {
     onlineManager.setOnline(true);
+    useProjectRenameDraftStore.getState().clearDraft("project-1");
     vi.clearAllMocks();
     mockUpdate.mockImplementation(async (_id: string, updates: UpdateProjectRequest) => ({
       ...project,
@@ -203,5 +210,69 @@ describe("RenameProjectModal", () => {
 
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  // Unsent input survives unmount, navigation and reload until a successful
+  // save or an explicit discard.
+  describe("unsent name", () => {
+    it("is restored after unmount and remount", () => {
+      const first = renderModal();
+      fireEvent.change(first.input, { target: { value: "Unsent project name" } });
+      expect(mockUpdate).not.toHaveBeenCalled();
+      first.unmount();
+
+      const second = renderModal();
+      expect(second.input).toHaveValue("Unsent project name");
+    });
+
+    it("is restored after the dialog is dismissed with Escape", async () => {
+      const user = userEvent.setup();
+      const first = renderModal();
+      fireEvent.change(first.input, { target: { value: "Unsent project name" } });
+      await user.keyboard("{Escape}");
+      expect(first.onClose).toHaveBeenCalledOnce();
+      first.unmount();
+
+      expect(renderModal().input).toHaveValue("Unsent project name");
+    });
+
+    it("is kept after a failed write", async () => {
+      mockUpdate.mockRejectedValueOnce(new Error("boom"));
+      const first = renderModal();
+      fireEvent.change(first.input, { target: { value: "Unsent project name" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("boom"));
+      first.unmount();
+
+      expect(renderModal().input).toHaveValue("Unsent project name");
+    });
+
+    it("is cleared after a successful save", async () => {
+      const first = renderModal();
+      fireEvent.change(first.input, { target: { value: "New name" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(first.onClose).toHaveBeenCalled());
+      first.unmount();
+
+      expect(renderModal().input).toHaveValue("Old name");
+    });
+
+    it("is cleared by an explicit Cancel", () => {
+      const first = renderModal();
+      fireEvent.change(first.input, { target: { value: "Unsent project name" } });
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      first.unmount();
+
+      expect(renderModal().input).toHaveValue("Old name");
+    });
+
+    it("is kept per project", () => {
+      const first = renderModal();
+      fireEvent.change(first.input, { target: { value: "Unsent project name" } });
+      first.unmount();
+
+      const other = renderModal({ projectId: "project-2", title: "Other" });
+      expect(other.input).toHaveValue("Other");
+    });
   });
 });
