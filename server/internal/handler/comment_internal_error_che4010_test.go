@@ -98,3 +98,21 @@ func TestCreateComment_EnqueueFailureLogsIds(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateComment_TriageIssueMentionReportsTypedReason (CHE-4012): an agent
+// mention on an issue in Triage answers blocked + issue_in_triage over HTTP.
+func TestCreateComment_TriageIssueMentionReportsTypedReason(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "Triage Mention Agent", nil)
+	issueID := createCommentTriggerPreviewIssue(t, "triage mention", "", "")
+	dbfx.Exec(t, `UPDATE issue SET triage_state = 'pending' WHERE id = $1`, issueID)
+
+	resp := postMentionComment(t, issueID, agentID, createHandlerTestAgent(t, "Triage Author", nil))
+
+	got := findCommentOutcome(t, resp.TriggerOutcomes, agentID)
+	if got.Status != DispatchBlocked || got.ReasonCode != ReasonIssueInTriage {
+		t.Errorf("outcome = %+v, want blocked/issue_in_triage", got)
+	}
+}
