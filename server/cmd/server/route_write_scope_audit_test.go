@@ -109,7 +109,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/cloud-runtime":            {7, byWorkspace},
 	"api/cloud-subscriptions":      {5, byHuman},
 	"api/contact-sales":            {1, byPublic},
-	"api/daemon":                   {35, byDaemon},
+	"api/daemon":                   {36, byDaemon},
 	"api/decision-actions":         {5, byHuman + "; the two run-token routes, POST /proposals (a running task on its issue_id, ProposeDecisionAction) and POST /proposals/batch (a running chat task, ProposeDecisionActionBatch)"},
 	"api/decision-answers":         {1, byHuman},
 	"api/decision-requests":        {3, byHuman},
@@ -156,10 +156,11 @@ var otherWriteFamilies = map[string]writeFamily{
 	"v1/storage":                   {2, "Public Plugin API: accepts only mpi_/mpc_ plugin tokens (PluginBearerOnly)"},
 }
 
-func TestRouterWriteRoutesAuditedAgainstTaskWriteScope(t *testing.T) {
+// walkWriteRoutes sorts every non-read route of the real router into denied,
+// scoped and per-family buckets.
+func walkWriteRoutes() (families map[string][]string, scoped, denied []string) {
 	router := NewRouter(testPool, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil)
-	families := map[string][]string{}
-	var scoped, denied []string
+	families = map[string][]string{}
 	_ = chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
 			return nil
@@ -178,6 +179,24 @@ func TestRouterWriteRoutesAuditedAgainstTaskWriteScope(t *testing.T) {
 		}
 		return nil
 	})
+	return families, scoped, denied
+}
+
+// The daemon write family is pinned on its own so its count stays checked
+// even while unrelated families in the full audit drift.
+func TestDaemonWriteRouteFamilyAudited(t *testing.T) {
+	families, _, _ := walkWriteRoutes()
+	known, ok := otherWriteFamilies["api/daemon"]
+	if !ok {
+		t.Fatal("api/daemon is not in otherWriteFamilies")
+	}
+	if got := families["api/daemon"]; len(got) != known.writes {
+		t.Errorf("write family api/daemon has %d routes, audited %d (%s): %q", len(got), known.writes, known.why, got)
+	}
+}
+
+func TestRouterWriteRoutesAuditedAgainstTaskWriteScope(t *testing.T) {
+	families, scoped, denied := walkWriteRoutes()
 
 	if want := sorted(deniedRunTokenRoutes); !slices.Equal(sorted(denied), want) {
 		t.Errorf("denied run-token routes changed; they must exist in the router and stay behind DenyTaskTokenWrites\n got: %q\nwant: %q", sorted(denied), want)

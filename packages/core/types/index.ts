@@ -277,6 +277,12 @@ export type {
   GitHubConnectResponse,
 } from "./github";
 export type {
+  IssueEnvironment,
+  IssueEnvironmentSource,
+  IssueEnvironmentState,
+  IssueEnvironmentsResponse,
+} from "./environment";
+export type {
   VCSProvider,
   VCSConnection,
   ListVCSConnectionsResponse,
