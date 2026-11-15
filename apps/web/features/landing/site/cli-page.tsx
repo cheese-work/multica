@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ArrowUpRight } from "@multica/ui/icons";
+import { cliInstallCommand } from "@multica/views/common/cli-install-command";
 import { docsHrefForLocale, useLocale } from "../i18n";
 import { ActionLink, Container, Section, SectionHeader } from "./primitives";
 import { AgentSessionVisual, CliScene } from "./demo/cli-visuals";
@@ -55,15 +57,13 @@ function Hero() {
   );
 }
 
-const INSTALL: { title: string; body: string; code: CodeVariant[] }[] = [
+// The install script comes from this server (CHE-2641), never from upstream.
+// The server builds Linux and macOS only, so there is no Windows or Homebrew entry.
+const installSteps = (serverUrl: string): { title: string; body: string; code: CodeVariant[] }[] => [
   {
     title: "Install it",
-    body: "One line in a terminal on macOS and Linux, or in PowerShell on Windows. Homebrew works too.",
-    code: [
-      { label: "macOS / Linux", code: "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash" },
-      { label: "Windows", code: "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex" },
-      { label: "Homebrew", code: "brew install multica-ai/tap/multica" },
-    ],
+    body: "One line in a terminal on macOS and Linux.",
+    code: [{ label: "macOS / Linux", code: cliInstallCommand(serverUrl) }],
   },
   {
     title: "Connect the computer",
@@ -84,12 +84,15 @@ const INSTALL: { title: string; body: string; code: CodeVariant[] }[] = [
 ];
 
 function Install() {
+  const [origin, setOrigin] = useState("");
+  useEffect(() => setOrigin(window.location.origin), []);
+  const steps = installSteps(origin || "https://<your-multica-server>");
   return (
     <Section id="install" className="scroll-mt-site-header">
       <Container>
         <SectionHeader title="A runtime in three commands" />
         <ol className="mt-site-block flex flex-col">
-          {INSTALL.map((step, index) => (
+          {steps.map((step, index) => (
             <li
               key={step.title}
               className="grid gap-6 border-t border-site-line py-8 last:border-b lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] lg:gap-16 lg:py-10"
