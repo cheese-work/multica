@@ -71,12 +71,12 @@ func TestGC_IdleActiveChatReclaimsArtifacts(t *testing.T) {
 	taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws", "idle-chat", meta)
 	writeFile(t, filepath.Join(taskDir, sandboxBinRel, "codex"), 4096)
 	writeFile(t, filepath.Join(taskDir, chatCacheFile), 32)
-	writeFile(t, filepath.Join(taskDir, "workdir/repo/packages/app/.turbo/cache"), 32)
-	writeFile(t, filepath.Join(taskDir, "workdir/repo/src/index.ts"), 32)
-	writeFile(t, filepath.Join(taskDir, "logs/run.log"), 32)
-	writeFile(t, filepath.Join(taskDir, "output/result.md"), 32)
-	writeFile(t, filepath.Join(taskDir, "codex-home/auth.json"), 32)
-	writeFile(t, filepath.Join(taskDir, "workdir/repo/.sandbox-bin/user-owned"), 32)
+	writeFile(t, filepath.Join(taskDir, "workdir", "repo", "packages", "app", ".turbo", "cache"), 32)
+	writeFile(t, filepath.Join(taskDir, "workdir", "repo", "src", "index.ts"), 32)
+	writeFile(t, filepath.Join(taskDir, "logs", "run.log"), 32)
+	writeFile(t, filepath.Join(taskDir, "output", "result.md"), 32)
+	writeFile(t, filepath.Join(taskDir, "codex-home", "auth.json"), 32)
+	writeFile(t, filepath.Join(taskDir, "workdir", "repo", ".sandbox-bin", "user-owned"), 32)
 
 	stats := &gcStats{byPattern: map[string]int{}}
 	d.gcWorkspace(context.Background(), filepath.Dir(taskDir), stats)
@@ -137,7 +137,7 @@ func TestGC_IdleChatSweepsOncePerCompletionAndPatternSet(t *testing.T) {
 
 	// A new effective pattern must be considered for this same completed run.
 	restarted.cfg.GCArtifactPatterns = append(restarted.cfg.GCArtifactPatterns, ".cache")
-	writeFile(t, filepath.Join(taskDir, "workdir/repo/.cache/data"), 32)
+	writeFile(t, filepath.Join(taskDir, "workdir", "repo", ".cache", "data"), 32)
 	restarted.gcWorkspace(ctx, filepath.Dir(taskDir), &gcStats{})
 	assertGone(t, taskDir, "workdir/repo/.cache")
 	assertGone(t, taskDir, "workdir/repo/node_modules")
@@ -190,11 +190,11 @@ func TestGC_IdleChatRetriesIncompleteSweep(t *testing.T) {
 			writeFile(t, filepath.Join(taskDir, chatCacheFile), 32)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			gitFile := filepath.Join(taskDir, "workdir/repo/.git")
+			gitFile := filepath.Join(taskDir, "workdir", "repo", ".git")
 			if reason == "git lookup failure" {
 				writeFile(t, gitFile, 32) // malformed checkout metadata makes Git refuse the lookup
 			} else {
-				writeFile(t, filepath.Join(taskDir, "workdir/repo/.next/data"), 32)
+				writeFile(t, filepath.Join(taskDir, "workdir", "repo", ".next", "data"), 32)
 				d.logger = slog.New(cancelAfterArtifactRemoval{slog.NewTextHandler(io.Discard, nil), cancel})
 			}
 			d.gcWorkspace(ctx, filepath.Dir(taskDir), &gcStats{})
@@ -380,8 +380,8 @@ func TestManagedArtifact_LocalDirectoryChatReclaimsSandboxBin(t *testing.T) {
 		CompletedAt:    time.Now().Add(-24 * time.Hour),
 	})
 	writeFile(t, filepath.Join(taskDir, sandboxBinRel, "codex"), 4096)
-	writeFile(t, filepath.Join(taskDir, "output/node_modules/dependency/index.js"), 32)
-	writeFile(t, filepath.Join(taskDir, "logs/run.log"), 32)
+	writeFile(t, filepath.Join(taskDir, "output", "node_modules", "dependency", "index.js"), 32)
+	writeFile(t, filepath.Join(taskDir, "logs", "run.log"), 32)
 
 	d.gcWorkspace(context.Background(), filepath.Dir(taskDir), &gcStats{})
 	assertGone(t, taskDir, sandboxBinRel)
@@ -475,8 +475,8 @@ func TestManagedArtifact_DirectRemovalIgnoresSameNamedUserDir(t *testing.T) {
 	d := newGCTestDaemon(t, http.NewServeMux())
 
 	taskDir := t.TempDir()
-	writeFile(t, filepath.Join(taskDir, "workdir/repo/.sandbox-bin/user-owned"), 32)
-	writeFile(t, filepath.Join(taskDir, "codex-home/auth.json"), 32)
+	writeFile(t, filepath.Join(taskDir, "workdir", "repo", ".sandbox-bin", "user-owned"), 32)
+	writeFile(t, filepath.Join(taskDir, "codex-home", "auth.json"), 32)
 
 	if removed, _, _ := d.cleanManagedTaskArtifacts(taskDir); removed != 0 {
 		t.Fatalf("removed=%d, want 0 when the managed path is absent", removed)
@@ -507,7 +507,7 @@ func TestManagedArtifact_UnreachableIssueStillReclaimsCache(t *testing.T) {
 	}
 	taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws", "unreachable-issue", meta)
 	writeFile(t, filepath.Join(taskDir, sandboxBinRel, "codex"), 4096)
-	writeFile(t, filepath.Join(taskDir, "output/result.md"), 32)
+	writeFile(t, filepath.Join(taskDir, "output", "result.md"), 32)
 
 	stats := &gcStats{byPattern: map[string]int{}}
 	d.gcWorkspaceIssues(context.Background(), "ws", []issueGCCandidate{{taskDir: taskDir, meta: meta}}, stats)
