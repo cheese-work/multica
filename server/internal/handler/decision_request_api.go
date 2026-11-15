@@ -75,6 +75,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	if input.Action == nil {
+		if refusal := deadBoundWriteCardRefusal(parsed); refusal != "" {
+			writeErrorCode(writer, http.StatusBadRequest, "bound_write_card_refused", refusal)
+			return
+		}
+	}
 	hints := decisiontx.LintAsk(parsed)
 	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
 	if !ok {
@@ -93,6 +99,11 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	heldHints, ok := checkHeldSettingsAsk(writer, parsed, workspace.Settings)
+	if !ok {
+		return
+	}
+	hints = append(hints, heldHints...)
 	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
 		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
 		if !ok {
@@ -181,6 +192,19 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// deadBoundWriteCardRefusal is the one-line refusal of a card that asks the
+// owner to "Apply this change to <field>?" for a field only a passkey action
+// can write (CHE-5843). The write is refused for every machine credential
+// (CHE-3482), so the approval would authorize nothing and cost a second card.
+func deadBoundWriteCardRefusal(ask decisiontx.Ask) string {
+	field, ok := decisiontx.PasskeyOnlyBoundWriteField(ask.Decision)
+	if !ok {
+		return ""
+	}
+	command, _ := decisiontx.PasskeyOnlyCommand(field, "", "")
+	return "a card cannot authorize a write to " + field + "; run `" + command + "`, then send the action file with `multica decision request --action-file <out>`"
 }
 
 // configChangeWords matches a decision or option that reads like a change to
