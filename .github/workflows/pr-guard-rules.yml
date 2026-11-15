@@ -8,8 +8,9 @@ name: pr-guard-rules
 # variables and base tip. A call adds a job, not a run. It builds the CLI from the trusted commit (the workflow commit,
 # or the queue's base commit, because the queue ref holds PR code) and runs `multica guard check-pr`, which reads the PR
 # back and the repository's `.github/agent-rules.yml` from the current tip of the protected base branch. Nothing is
-# edited. Fail closed: the review policy comes from the repository variables GUARD_POLICY_JSON and GUARD_POLICY_SHA256
-# (digest of the JSON; the CLI verifies it); either unset, the check is red. Never add a secret to this workflow.
+# edited. The review policy comes from the repository variables GUARD_POLICY_JSON and GUARD_POLICY_SHA256
+# (digest of the JSON; the CLI verifies it). Both unset (no stored policy, CHE-5934): the compiled default policy judges
+# the PR. Only one set: the check is red. Never add a secret to this workflow.
 
 on:
   workflow_call:
