@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { GroupedVirtuoso } from "react-virtuoso";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -70,6 +71,11 @@ import { useChatSelection, type BulkAction, type GroupState } from "./use-chat-s
 import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
 import { ListEmpty, ListError, ListLoading, ListOffline } from "./chat-thread-list-states";
 import { useOnline } from "../../settings/components/use-online";
+import { VIRTUOSO_SEED_COUNT } from "../../common/virtuoso-seed";
+import { findScrollParent, useScrollPointerShield } from "./use-scroll-pointer-shield";
+
+// Row height is fixed (`h-14`), so Virtuoso starts from the real value.
+const ROW_HEIGHT_PX = 56;
 
 const apiLogger = createLogger("chat.api");
 
@@ -730,6 +736,47 @@ export function ChatThreadList({
       .filter((g) => g.sessions.length > 0)
       .map((g) => ({ ...g, label: label[g.key] }));
   }, [visibleSessions, listView, locale, t]);
+  const visibleInOrder = useMemo(() => sections.flatMap((g) => g.sessions), [sections]);
+  // computeItemKey is called with the flat index, group headers included
+  // (itemContent gets the item index only), so keys follow that layout.
+  const flatKeys = useMemo(
+    () => sections.flatMap((g) => [`group:${g.key}`, ...g.sessions.map((s) => s.id)]),
+    [sections],
+  );
+
+  // Virtuoso needs the real scroll container (the page owns it); until the
+  // wrapper has found it, a bounded slice of real rows keeps the first frame
+  // populated. The same slice is what renders where nothing scrolls (tests).
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
+  const attachBody = useCallback((el: HTMLDivElement | null) => {
+    setScrollEl(el ? findScrollParent(el) : null);
+  }, []);
+  // Rows slide under a still cursor while scrolling; keep that from opening
+  // avatar hover cards (and their queries).
+  useScrollPointerShield(scrollEl);
+
+  const renderGroupHeader = (g: (typeof sections)[number]) => (
+    <div
+      data-testid="chat-day-header"
+      data-group={g.key}
+      style={{ position: "sticky", top: 0 }}
+      className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
+    >
+      {/* Slot for the group checkbox (select mode). */}
+      <span data-slot="group-select" className="empty:hidden">
+        {selecting && (
+          <SelectCheckbox
+            className="-my-3 -ml-2.5"
+            state={selection.groupState(g.sessions.map((s) => s.id))}
+            label={t(($) => $.list.bulk.group_aria, { label: g.label })}
+            onToggle={() => selection.toggleGroup(g.sessions.map((s) => s.id))}
+          />
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{g.label}</span>
+      <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
+    </div>
+  );
 
   let body: React.ReactNode;
   if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
@@ -738,36 +785,42 @@ export function ChatThreadList({
     body = <NeedsYouList sessions={rows} agents={agents} refresh={false} />;
   else if (visibleSessions.length === 0)
     body = <ListEmpty kind={rows.length === 0 ? "none" : listView === "waiting" ? "waiting" : "view"} />;
-  else
+  else if (scrollEl) {
+    // ponytail: Tab reaches mounted rows only; the row shortcuts and the bulk
+    // bar walk the data, so they cover off-screen rows.
     body = (
       <div className="contents" data-testid={`chat-thread-group-${listView}`}>
-        {sections.map((g) => (
-          <section key={g.key}>
-            <div
-              data-testid="chat-day-header"
-              data-group={g.key}
-              style={{ position: "sticky", top: 0 }}
-              className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
-            >
-              {/* Slot for the group checkbox (select mode). */}
-              <span data-slot="group-select" className="empty:hidden">
-                {selecting && (
-                  <SelectCheckbox
-                    className="-my-3 -ml-2.5"
-                    state={selection.groupState(g.sessions.map((s) => s.id))}
-                    label={t(($) => $.list.bulk.group_aria, { label: g.label })}
-                    onToggle={() => selection.toggleGroup(g.sessions.map((s) => s.id))}
-                  />
-                )}
-              </span>
-              <span className="min-w-0 flex-1 truncate">{g.label}</span>
-              <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
-            </div>
-            {g.sessions.map(renderRow)}
-          </section>
-        ))}
+        <GroupedVirtuoso
+          customScrollParent={scrollEl}
+          groupCounts={sections.map((g) => g.sessions.length)}
+          groupContent={(i) => renderGroupHeader(sections[i]!)}
+          itemContent={(i) => <MemoRow render={renderRow} session={visibleInOrder[i]!} />}
+          computeItemKey={(i) => flatKeys[i] ?? i}
+          initialItemCount={Math.min(visibleInOrder.length, VIRTUOSO_SEED_COUNT)}
+          defaultItemHeight={ROW_HEIGHT_PX}
+          increaseViewportBy={{ top: 400, bottom: 400 }}
+        />
       </div>
     );
+  } else {
+    let left = VIRTUOSO_SEED_COUNT;
+    body = (
+      <div className="contents" data-testid={`chat-thread-group-${listView}`}>
+        {sections.map((g) => {
+          const shown = g.sessions.slice(0, Math.max(left, 0));
+          left -= shown.length;
+          return shown.length === 0 ? null : (
+            <section key={g.key}>
+              {renderGroupHeader(g)}
+              {shown.map((s) => (
+                <MemoRow key={s.id} render={renderRow} session={s} />
+              ))}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -792,7 +845,7 @@ export function ChatThreadList({
       )}
       <ChatFilterChips value={listView} counts={counts} onChange={setListView} />
       {!online && <ListOffline />}
-      {body}
+      <div ref={attachBody}>{body}</div>
       {selecting && (
         <div className="sticky bottom-0 z-20">
           <ChatBulkBar
@@ -807,6 +860,23 @@ export function ChatThreadList({
 }
 
 /** Round checkbox look at 22 px inside a 44×44 hit area. `mixed` = some of a group. */
+/**
+ * Virtuoso re-calls `itemContent` on every scroll step, and `renderRow` is a
+ * closure over the whole list's state. `renderRow` changes identity only when
+ * the list itself re-renders, so keying on it keeps mounted rows untouched
+ * while scrolling (the cost was re-rendering ~25 rows per wheel step) and
+ * still refreshes every row whenever any list state changes.
+ */
+function MemoRow({
+  render,
+  session,
+}: {
+  render: (session: ChatSession) => React.ReactNode;
+  session: ChatSession;
+}) {
+  return useMemo(() => render(session), [render, session]);
+}
+
 function SelectCheckbox({
   state,
   label,
