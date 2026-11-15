@@ -66,6 +66,7 @@ function AgentStatusSection({
     >
       <PanelList id={listId}>{displayed.map(renderAgent)}</PanelList>
       {agents.length > AGENT_PREVIEW_LIMIT && (
+        // ui-pattern-ref: allow full-width panel row toggle sized by PANEL_ROW_CLASS; Button has no panel-row variant
         <button
           type="button"
           aria-expanded={expanded}
