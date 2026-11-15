@@ -28,7 +28,7 @@ func newAutoUpdateTestDaemon(t *testing.T, currentVersion string) (*Daemon, *ato
 			restartCalls.Add(1)
 		},
 	}
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		t.Fatalf("runUpdateFn called unexpectedly")
 		return "", nil
 	}
@@ -60,7 +60,7 @@ func TestTryAutoUpdate_InstallsWhenTasksRunning(t *testing.T) {
 	d.activeTasks.Store(1)
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
 	var upgradedTo string
-	d.runUpdateFn = func(target string) (string, error) {
+	d.runUpdateFn = func(_ context.Context, target string) (string, error) {
 		upgradedTo = target
 		return "upgraded", nil
 	}
@@ -82,7 +82,7 @@ func TestTryAutoUpdate_DefersWhenClaimInFlightAtBarrier(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
 	var upgradedTo string
-	d.runUpdateFn = func(target string) (string, error) {
+	d.runUpdateFn = func(_ context.Context, target string) (string, error) {
 		upgradedTo = target
 		return "upgraded", nil
 	}
@@ -112,7 +112,7 @@ func TestTryAutoUpdate_DefersWhenClaimInFlightAtBarrier(t *testing.T) {
 func TestTryAutoUpdate_HoldsBarrierAcrossRestart(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
-	d.runUpdateFn = func(string) (string, error) { return "upgraded", nil }
+	d.runUpdateFn = func(context.Context, string) (string, error) { return "upgraded", nil }
 
 	d.tryAutoUpdate(context.Background())
 
@@ -130,7 +130,7 @@ func TestTryAutoUpdate_HoldsBarrierAcrossRestart(t *testing.T) {
 func TestTryAutoUpdate_ReleasesBarrierOnUpgradeFailure(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		return "brew network error", errors.New("brew upgrade failed")
 	}
 
@@ -198,7 +198,7 @@ func TestTryAutoUpdate_RunsUpgradeAndRestartsOnNewer(t *testing.T) {
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
 
 	var upgradedTo string
-	d.runUpdateFn = func(target string) (string, error) {
+	d.runUpdateFn = func(_ context.Context, target string) (string, error) {
 		upgradedTo = target
 		return "upgraded", nil
 	}
@@ -220,7 +220,7 @@ func TestTryAutoUpdate_DoesNotRestartOnUpgradeFailure(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
 
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		return "brew: network error", errors.New("brew upgrade failed")
 	}
 
@@ -255,7 +255,7 @@ func TestAutoUpdateLoop_EarlyExits(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := &Daemon{cfg: tt.cfg, logger: slog.Default()}
-			d.runUpdateFn = func(string) (string, error) {
+			d.runUpdateFn = func(context.Context, string) (string, error) {
 				t.Fatalf("runUpdateFn called from an early-exit code path")
 				return "", nil
 			}
@@ -279,7 +279,7 @@ func TestRunUpdate_RefusesWhenFrozen(t *testing.T) {
 	t.Setenv(cli.UpdateFreezeFileEnv, file)
 	d := &Daemon{logger: slog.Default()}
 
-	if _, err := d.runUpdate("v9.9.9"); err == nil || !strings.Contains(err.Error(), "frozen") {
+	if _, err := d.runUpdate(context.Background(), "v9.9.9"); err == nil || !strings.Contains(err.Error(), "frozen") {
 		t.Fatalf("runUpdate with freeze file: want frozen error, got %v", err)
 	}
 }

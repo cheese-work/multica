@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 )
@@ -25,11 +26,11 @@ func TestHandleUpdateAlreadyOnServerBuildCompletesWithoutRestart(t *testing.T) {
 	})
 	var restarts atomic.Int32
 	d.cancelFunc = func() { restarts.Add(1) }
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		return "", fmt.Errorf("fork update unavailable, installed daemon unchanged: %w", cli.ErrForkUpToDate)
 	}
 
-	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: "0.7.1"})
+	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: "0.7.1"}, time.Now())
 	d.updateOutbox.Wait()
 
 	last := payloads[len(payloads)-1]
@@ -53,7 +54,7 @@ func TestRunUpdateUpToDateIsReportedAsErrForkUpToDate(t *testing.T) {
 	d, _ := newAutoUpdateTestDaemon(t, "v0.1.13")
 	stubFork(t, nil, cli.ErrForkUpToDate)
 
-	_, err := d.runUpdate("0.7.1")
+	_, err := d.runUpdate(context.Background(), "0.7.1")
 
 	if !errors.Is(err, cli.ErrForkUpToDate) {
 		t.Fatalf("err = %v, want ErrForkUpToDate in the chain", err)

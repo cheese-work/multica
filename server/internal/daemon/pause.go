@@ -23,7 +23,7 @@ type heldPause struct {
 // applyHeartbeatPause records the pause carried by an ack, or clears it when
 // the ack carries none. An unparseable expiry is treated as no pause: failing
 // open keeps a malformed ack from idling the machine.
-func (d *Daemon) applyHeartbeatPause(p *protocol.DaemonHeartbeatPaused) {
+func (d *Daemon) applyHeartbeatPause(p *protocol.DaemonHeartbeatPaused, anchor time.Time) {
 	if p == nil {
 		d.pause.Store(nil)
 		return
@@ -32,6 +32,13 @@ func (d *Daemon) applyHeartbeatPause(p *protocol.DaemonHeartbeatPaused) {
 	if err != nil {
 		d.pause.Store(nil)
 		return
+	}
+	// expires_in_ms counts from the heartbeat send time on the daemon's own
+	// clock; the earlier of the two ends the pause, so skew cannot stretch it.
+	if p.ExpiresInMs != nil {
+		if rel := anchor.Add(time.Duration(*p.ExpiresInMs) * time.Millisecond); rel.Before(expires) {
+			expires = rel
+		}
 	}
 	d.pause.Store(&heldPause{reason: p.Reason, expiresAt: expires})
 }

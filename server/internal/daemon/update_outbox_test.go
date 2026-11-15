@@ -54,7 +54,7 @@ func TestUpdateOutbox_SurvivesCancelledHeartbeatContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	d.handleUpdate(ctx, "rt-1", &PendingUpdate{ID: "upd-1"})
+	d.handleUpdate(ctx, "rt-1", &PendingUpdate{ID: "upd-1"}, time.Now())
 	d.updateOutbox.Wait()
 
 	if got := atomic.LoadInt32(calls); got != 1 {
@@ -154,11 +154,11 @@ func TestUpdateOutbox_BlockedEndpointDoesNotHoldBarrier(t *testing.T) {
 			if name == "busy" {
 				d.activeTasks.Store(1)
 			} else {
-				d.runUpdateFn = func(string) (string, error) { return "", context.DeadlineExceeded }
+				d.runUpdateFn = func(context.Context, string) (string, error) { return "", context.DeadlineExceeded }
 			}
 			returned := make(chan struct{})
 			go func() {
-				d.handleUpdate(context.Background(), "rt-1", &PendingUpdate{ID: "upd-1"})
+				d.handleUpdate(context.Background(), "rt-1", &PendingUpdate{ID: "upd-1"}, time.Now())
 				close(returned)
 			}()
 			waitDone(t, returned, 500*time.Millisecond, "handleUpdate return")
@@ -195,11 +195,11 @@ func TestUpdateOutbox_RestartWaitsForCompletedAtMostBound(t *testing.T) {
 		})
 		var once sync.Once
 		t.Cleanup(func() { once.Do(func() { close(release) }); d.updateOutbox.Wait() })
-		d.runUpdateFn = func(string) (string, error) { return "ok", nil }
+		d.runUpdateFn = func(context.Context, string) (string, error) { return "ok", nil }
 		var restarted atomic.Int32
 		d.cancelFunc = func() { restarted.Add(1) }
 		start := time.Now()
-		d.handleUpdate(context.Background(), "rt-1", &PendingUpdate{ID: "upd-1", TargetVersion: "v1"})
+		d.handleUpdate(context.Background(), "rt-1", &PendingUpdate{ID: "upd-1", TargetVersion: "v1"}, time.Now())
 		el := time.Since(start)
 		if restarted.Load() != 1 {
 			t.Fatal("daemon did not restart")

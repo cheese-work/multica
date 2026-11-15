@@ -41,7 +41,7 @@ func TestHandleUpdateReportsWhyItWasDeferred(t *testing.T) {
 				}
 				w.WriteHeader(http.StatusOK)
 			})
-			d.runUpdateFn = func(string) (string, error) {
+			d.runUpdateFn = func(context.Context, string) (string, error) {
 				t.Fatal("runUpdateFn must not run while the update is deferred")
 				return "", nil
 			}
@@ -50,7 +50,7 @@ func TestHandleUpdateReportsWhyItWasDeferred(t *testing.T) {
 			d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{
 				ID:            "update-1",
 				TargetVersion: "v0.4.14",
-			})
+			}, time.Now())
 			d.updateOutbox.Wait()
 
 			if got := atomic.LoadInt32(reportCalls); got != 1 {
@@ -83,7 +83,7 @@ func TestHandleUpdateWaitsForEmptyClaimInsteadOfStarving(t *testing.T) {
 	})
 	d.claimsInFlight = 1
 	updateStarted := make(chan struct{})
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		close(updateStarted)
 		return "upgraded", nil
 	}
@@ -92,7 +92,7 @@ func TestHandleUpdateWaitsForEmptyClaimInsteadOfStarving(t *testing.T) {
 		d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{
 			ID:            "update-1",
 			TargetVersion: "v0.4.14",
-		})
+		}, time.Now())
 		d.updateOutbox.Wait()
 		close(done)
 	}()
@@ -126,7 +126,7 @@ func TestHandleUpdateReportsBusyWhenClaimBecomesTask(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	d.claimsInFlight = 1
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		t.Fatal("runUpdateFn must not run after the claim hands off an active task")
 		return "", nil
 	}
@@ -135,7 +135,7 @@ func TestHandleUpdateReportsBusyWhenClaimBecomesTask(t *testing.T) {
 		d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{
 			ID:            "update-1",
 			TargetVersion: "v0.4.14",
-		})
+		}, time.Now())
 		d.updateOutbox.Wait()
 		close(done)
 	}()
@@ -215,7 +215,7 @@ func TestHandleUpdateKeepsBarrierOnlyWhenRestartWasScheduled(t *testing.T) {
 			d, _ := updateReportDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
-			d.runUpdateFn = func(string) (string, error) {
+			d.runUpdateFn = func(context.Context, string) (string, error) {
 				return "upgraded", nil
 			}
 			var restartCalls atomic.Int32
@@ -226,7 +226,7 @@ func TestHandleUpdateKeepsBarrierOnlyWhenRestartWasScheduled(t *testing.T) {
 			d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{
 				ID:            "update-1",
 				TargetVersion: "v0.4.14",
-			})
+			}, time.Now())
 			d.updateOutbox.Wait()
 
 			if got := d.updating.Load(); got != tt.wantUpdating {

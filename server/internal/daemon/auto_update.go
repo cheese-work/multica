@@ -236,7 +236,9 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 	d.logger.Info("auto-update: newer release available, upgrading",
 		"current", d.cfg.CLIVersion, "target", target)
 
-	output, err := d.runUpdateFn(target)
+	installCtx, cancel := context.WithTimeout(context.Background(), manualUpdateBound)
+	defer cancel()
+	output, err := d.runUpdateFn(installCtx, target)
 	if err != nil {
 		d.logger.Warn("auto-update: upgrade failed — will retry", "error", err, "output", output)
 		return
@@ -470,12 +472,14 @@ func (d *Daemon) updateServer() (serverURL, token string) {
 	return d.client.BaseURL(), d.client.Token()
 }
 
+// manualUpdateBound bounds an update that carries no server deadline (the
+// Update button, the auto-update poller).
+const manualUpdateBound = cli.DefaultUpdateDownloadTimeout + time.Minute
+
 // runForkUpdate installs the daemon build the daemon's own server carries.
 // Every failure leaves the installed binary intact and is returned as-is;
 // nothing falls back to GitHub, upstream releases or Homebrew.
-func (d *Daemon) runForkUpdate() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cli.DefaultUpdateDownloadTimeout+time.Minute)
-	defer cancel()
+func (d *Daemon) runForkUpdate(ctx context.Context) (string, error) {
 	serverURL, token := d.updateServer()
 	u, err := resolveForkUpdate(ctx, serverURL, token, runtime.GOOS, runtime.GOARCH, currentCommit())
 	if err != nil {
