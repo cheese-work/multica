@@ -119,6 +119,7 @@ type Config struct {
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
 	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
+	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex task bindings
 	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
@@ -679,6 +680,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
 		SandboxMode:                     sandboxMode,
+		RunBindingsDir:                  strings.TrimSpace(os.Getenv("MULTICA_RUN_BINDINGS_DIR")),
 		SandboxHomeTemplate:             strings.TrimSpace(os.Getenv("MULTICA_SANDBOX_HOME_TEMPLATE")),
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,

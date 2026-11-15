@@ -199,6 +199,6 @@ test("the workflow uses trusted code on a hosted runner and reruns on every push
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /test "\$\(git rev-parse FETCH_HEAD\)" = "\$EXPECTED_HEAD"/);
   assert.doesNotMatch(workflow, /self-hosted|pull_request\.head\.repo/);
-  assert.deepEqual(workflow.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only token of the changelog job");
+  assert.deepEqual(workflow.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN", "secrets.GUARD_POLICY_READ_TOKEN"], "only the read-only token of the changelog job and the read-only guard policy token (CHE-5752)");
   assert.match(workflow, /node scripts\/fork-sync-guard.mjs/);
 });
