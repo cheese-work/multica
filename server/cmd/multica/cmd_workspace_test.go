@@ -1301,6 +1301,26 @@ func TestBuildWorkspaceUpdateBodyTimeWakeupSkip(t *testing.T) {
 	}
 }
 
+// CHE-5987 review F1: --time-wakeup-skip-mode patches settings.time_wakeup_skip
+// alone, so combining it with any other update flag is refused and names both.
+func TestBuildWorkspaceUpdateBodyTimeWakeupSkipConflicts(t *testing.T) {
+	for _, other := range []struct{ flag, value string }{
+		{"idle-guard-mode", "shadow"},
+		{"idle-guard-after-hours", "6"},
+		{"name", "x"},
+		{"issue-prefix", "ABC"},
+		{"routing-agent", "a1"},
+	} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "time-wakeup-skip-mode", "warn")
+		setStringFlag(t, other.flag, other.value)
+		_, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "--time-wakeup-skip-mode") || !strings.Contains(err.Error(), "--"+other.flag) {
+			t.Errorf("%s: err = %v, want a conflict naming both flags", other.flag, err)
+		}
+	}
+}
+
 // The digest-mode update changes exactly one field, so the new flag conflicts
 // with it like --idle-guard-mode does.
 func TestWorkspaceUpdateDigestRejectsTimeWakeupSkip(t *testing.T) {

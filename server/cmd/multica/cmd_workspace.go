@@ -742,6 +742,13 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 		body["idle_started_guard"] = guard
 	}
 	if cmd.Flags().Changed("time-wakeup-skip-mode") {
+		// The flag patches settings.time_wakeup_skip alone; refuse any other
+		// update flag rather than send a mixed patch.
+		for _, name := range []string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+			if cmd.Flags().Changed(name) {
+				return nil, fmt.Errorf("--time-wakeup-skip-mode cannot be combined with --%s; it changes only the time-wakeup skip mode", name)
+			}
+		}
 		mode, _ := cmd.Flags().GetString("time-wakeup-skip-mode")
 		if mode != "off" && mode != "warn" && mode != "block" {
 			return nil, fmt.Errorf("--time-wakeup-skip-mode must be off, warn or block")
