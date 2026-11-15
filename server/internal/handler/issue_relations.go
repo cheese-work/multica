@@ -41,10 +41,14 @@ func (handler *Handler) GetIssueRelations(writer http.ResponseWriter, request *h
 	if !ok {
 		return
 	}
+	hidden, ok := handler.requestHiddenProjects(writer, request, workspaceID)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
 	defer cancel()
 	var graph json.RawMessage
-	err := handler.DB.QueryRow(ctx, issueRelationsSQL(includeMentions), issue.WorkspaceID, issue.ID, depth, agents, handler.getIssuePrefix(ctx, issue.WorkspaceID)).Scan(&graph)
+	err := handler.DB.QueryRow(ctx, issueRelationsSQL(includeMentions), issue.WorkspaceID, issue.ID, depth, agents, handler.getIssuePrefix(ctx, issue.WorkspaceID), hidden.IDs()).Scan(&graph)
 	if err != nil {
 		slog.ErrorContext(ctx, "load issue relations failed", "issue_id", uuidToString(issue.ID), "error", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load issue relations")
@@ -154,7 +158,7 @@ func issueRelationsSQL(includeMentions bool) string {
 WITH RECURSIVE
 workspace_issues AS NOT MATERIALIZED (
  SELECT id,number,title,status,description,parent_issue_id,duplicate_of_issue_id,stage
- FROM issue WHERE workspace_id=$1
+ FROM issue WHERE workspace_id=$1 AND ` + hiddenProjectPredicate("project_id", "$6") + `
 ), walk(ids,seen,hops) AS (
  SELECT ARRAY[$2::uuid],ARRAY[$2::uuid],0
  UNION ALL
@@ -278,10 +282,14 @@ func (handler *Handler) GetIssueRelationsBatch(writer http.ResponseWriter, reque
 	if !ok {
 		return
 	}
+	hidden, ok := handler.requestHiddenProjects(writer, request, workspaceID)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
 	defer cancel()
 	var inWorkspace int
-	err := handler.DB.QueryRow(ctx, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND id=ANY($2::uuid[])`, workspaceUUID, ids).Scan(&inWorkspace)
+	err := handler.DB.QueryRow(ctx, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND id=ANY($2::uuid[]) AND `+hiddenProjectPredicate("project_id", "$3"), workspaceUUID, ids, hidden.IDs()).Scan(&inWorkspace)
 	if err != nil {
 		slog.ErrorContext(ctx, "check relations batch ids failed", "error", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load issue relations")
@@ -297,7 +305,7 @@ func (handler *Handler) GetIssueRelationsBatch(writer http.ResponseWriter, reque
 	}
 	var graph json.RawMessage
 	err = handler.DB.QueryRow(ctx, issueRelationsBatchSQL(body.IncludeMentions), workspaceUUID, ids, types, agents,
-		handler.getIssuePrefix(ctx, workspaceUUID), cursor, cursorSource, cursorTarget, limit).Scan(&graph)
+		handler.getIssuePrefix(ctx, workspaceUUID), cursor, cursorSource, cursorTarget, limit, hidden.IDs()).Scan(&graph)
 	if err != nil {
 		slog.ErrorContext(ctx, "load relations batch failed", "error", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load issue relations")
@@ -315,12 +323,13 @@ func uniqueUUIDs(ids []pgtype.UUID) map[pgtype.UUID]struct{} {
 }
 
 // issueRelationsBatchSQL reuses the shared edge CTE with frontier = $2.
-// $1 workspace, $2 ids, $3 types, $4 agents, $5 prefix, $6-$8 cursor, $9 limit.
+// $1 workspace, $2 ids, $3 types, $4 agents, $5 prefix, $6-$8 cursor, $9 limit,
+// $10 hidden project ids (never NULL: see hiddenProjectPredicate).
 func issueRelationsBatchSQL(includeMentions bool) string {
 	return `
 WITH workspace_issues AS NOT MATERIALIZED (
  SELECT id,number,title,status,description,parent_issue_id,duplicate_of_issue_id,stage
- FROM issue WHERE workspace_id=$1
+ FROM issue WHERE workspace_id=$1 AND ` + hiddenProjectPredicate("project_id", "$10") + `
 ), frontier AS MATERIALIZED (
  SELECT * FROM workspace_issues WHERE id=ANY($2::uuid[])
 ), ` + relationEdgesSQL(includeMentions) + `, fetched AS MATERIALIZED (

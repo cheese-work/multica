@@ -57,7 +57,7 @@ func TestIssueRelationsWithoutMentionsDoesNotTouchComments(t *testing.T) {
 	for _, includeMentions := range []bool{false, true} {
 		var plan []byte
 		err := testPool.QueryRow(context.Background(), "EXPLAIN (FORMAT JSON) "+issueRelationsSQL(includeMentions),
-			parseUUID(testWorkspaceID), parseUUID(root), 1, []pgtype.UUID{}, "TEST").Scan(&plan)
+			parseUUID(testWorkspaceID), parseUUID(root), 1, []pgtype.UUID{}, "TEST", []pgtype.UUID{}).Scan(&plan)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 		t.Helper()
 		var planJSON []byte
 		err := testPool.QueryRow(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+issueRelationsSQL(true),
-			parseUUID(testWorkspaceID), parseUUID(root), depth, []pgtype.UUID{}, "TEST").Scan(&planJSON)
+			parseUUID(testWorkspaceID), parseUUID(root), depth, []pgtype.UUID{}, "TEST", []pgtype.UUID{}).Scan(&planJSON)
 		if err != nil {
 			t.Fatal(err)
 		}
