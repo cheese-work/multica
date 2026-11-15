@@ -3872,6 +3872,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+		return
+	}
 	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
 	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
@@ -3947,6 +3950,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				assigneeID = id
 				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
 					writeError(w, status, msg)
+					return
+				}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 					return
 				}
 			}
@@ -4832,6 +4838,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeHandoffAssigneeRefusal(w, handoff, status, msg)
+			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
 			return
 		}
 		if handoff == nil && (touchedType || touchedID) {
@@ -5907,6 +5917,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		if batchTouchedType || batchTouchedID || handoff != nil {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
+				continue
+			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
 				continue
 			}
 			if handoff == nil {
