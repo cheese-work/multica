@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -14,12 +15,22 @@ const askGuardEditFix = "post a new comment with multica decision request ... to
 const askGuardCommentFix = "multica decision request ... to ask the person, or add --notify-only to multica issue comment add if the comment needs no answer"
 
 // askGuardAllowsComment is S2: a plain comment from an agent task that
-// mentions a member must be a typed kind. The typed kinds (ask comment,
+// mentions a member must be a typed kind. A comment with no member link that
+// still asks a person to act on a UI path, repo file, command or placeholder
+// (decisiontx.CheckCommentAsk, CHE-5753) is refused too: it has no field for
+// the evidence. The typed kinds (ask comment,
 // decision intent, record, veto, --notify-only) never reach it. It writes the
 // response when the comment may not be posted.
 func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, content string) bool {
-	if authorType != "agent" || len(askguard.MentionedMembers(content)) == 0 {
+	if authorType != "agent" {
 		return true
+	}
+	if len(askguard.MentionedMembers(content)) == 0 {
+		err := decisiontx.CheckCommentAsk(content)
+		if err == nil {
+			return true
+		}
+		return h.askGuardMemberMention(w, r, issue, task, "comment_ask", content, "multica decision request --kind action ... with observed, files and dry_run, or add --notify-only to multica issue comment add if the comment needs no answer (comment refused: "+err.Error()+")")
 	}
 	return h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix)
 }

@@ -44,6 +44,12 @@ func TestHumanAskGuardRejects(test *testing.T) {
 		{"repo file without files entry", func(ask map[string]any) {
 			firstStep(ask)["command"] = "bash scripts/run-checks.sh MULTICA_SERVER_URL"
 		}, "ask.human_steps[0] names the file scripts/run-checks.sh without a files entry with repo and a 40-character commit SHA"},
+		{"file after from is still a file", func(ask map[string]any) {
+			firstStep(ask)["action"] = "Copy the contents from `docs/setup/runner.md`"
+		}, "ask.human_steps[0] names the file docs/setup/runner.md without a files entry with repo and a 40-character commit SHA"},
+		{"file after from with no git verb", func(ask map[string]any) {
+			firstStep(ask)["action"] = "Read from docs/setup/runner.md"
+		}, "ask.human_steps[0] names the file docs/setup/runner.md without a files entry with repo and a 40-character commit SHA"},
 		{"repo file in action", func(ask map[string]any) {
 			firstStep(ask)["action"] = "Edit docs/setup/runner.md"
 		}, "ask.human_steps[0] names the file docs/setup/runner.md without a files entry with repo and a 40-character commit SHA"},
@@ -163,6 +169,24 @@ func TestHumanAskGuardAccepts(test *testing.T) {
 			step := firstStep(ask)
 			step["command"] = "bash scripts/run-checks.sh MULTICA_SERVER_URL"
 			step["files"] = []any{map[string]any{"path": "scripts/run-checks.sh", "attachment_id": "01a1ca54-f86b-7081-8cf6-bef63814cfb6"}}
+		},
+		"shell redirection is not a UI path": func(ask map[string]any) {
+			step := firstStep(ask)
+			step["action"] = "Write the local result"
+			step["command"] = "printf ok > result"
+			delete(step, "observed")
+		},
+		"shell redirection after run is not a UI path": func(ask map[string]any) {
+			step := firstStep(ask)
+			step["action"] = "Run printf ok > result"
+			delete(step, "command")
+			delete(step, "observed")
+		},
+		"branch after a git verb is a ref, not a file": func(ask map[string]any) {
+			firstStep(ask)["action"] = "On your laptop, pull from feature/foo.bar"
+		},
+		"branch after the word branch is a ref": func(ask map[string]any) {
+			firstStep(ask)["action"] = "Check out branch feature/foo.bar"
 		},
 		"repo slug is not a file": func(ask map[string]any) {
 			firstStep(ask)["command"] = "gh secret set MULTICA_SERVER_URL -R cheese-work/multica-dotfiles"
@@ -289,6 +313,40 @@ func TestActionAskGuardAccepts(test *testing.T) {
 			mutate(ask)
 			raw, _ := json.Marshal(ask)
 			if _, err := DecodeAskKind(raw, KindAction); err != nil {
+				test.Fatal(err)
+			}
+		})
+	}
+}
+
+// A plain comment has no fields to carry evidence, so one that asks a person to
+// act and cites a UI path, repo file, command or placeholder is refused.
+func TestCommentAskGuard(test *testing.T) {
+	refused := map[string]string{
+		"ui path":     "Cheese, open Workspace settings → Delegated governed writes and switch it on.",
+		"repo file":   "Please edit docs/setup/runner.md and push.",
+		"command":     "Please run `gh secret set X --body 1`.",
+		"placeholder": "Please run bash scripts/setup.sh <token>.",
+		"vietnamese":  "Vui lòng mở Settings > Members rồi bật nó.",
+		"chinese":     "请编辑 docs/setup/runner.md。",
+		"both":        "Cheese, open Workspace settings → Delegated governed writes and run bash scripts/setup.sh <token>.",
+	}
+	for name, text := range refused {
+		test.Run("refuses "+name, func(test *testing.T) {
+			if err := CheckCommentAsk(text); err == nil {
+				test.Fatal("comment ask was accepted")
+			}
+		})
+	}
+	allowed := map[string]string{
+		"no ask cue":                "Fixed docs/setup/runner.md and ran `go test ./...`.",
+		"ask with nothing to check": "Please decide whether to waive or rewrite it.",
+		"ask with a git range":      "Please review main...HEAD.",
+		"ask with a url":            "Please open https://example.com/files/run.sh.",
+	}
+	for name, text := range allowed {
+		test.Run("allows "+name, func(test *testing.T) {
+			if err := CheckCommentAsk(text); err != nil {
 				test.Fatal(err)
 			}
 		})

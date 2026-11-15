@@ -41,8 +41,9 @@ var (
 	repoPath = regexp.MustCompile("(?:^|[\\s'\"(=`])((?:\\.{1,2}/)?(?:[\\w.-]+/)+[\\w-]+\\.[A-Za-z][A-Za-z0-9]{0,7})\\b")
 	// A file in the repo root: setup.sh, ./Makefile.mk. Only known file extensions, so a domain is not a file.
 	rootFile = regexp.MustCompile("(?:^|[\\s'\"(=`])((?:\\.{1,2}/)?[\\w-][\\w.-]*\\.(?:sh|bash|zsh|md|json|ya?ml|toml|go|py|ts|tsx|jsx?|mjs|sql|kts?|gradle|xml|txt|env|properties|conf|cfg|ini|mod|sum|lock))\\b")
-	// "from feature/foo.bar", "into release/1.2": a branch, not a file.
-	gitRefBefore = regexp.MustCompile("(?i)\\b(?:from|into|onto|branch|base)\\s+[`'\"]?$")
+	// "branch feature/foo.bar", "merge ... from feature/foo.bar": a git ref, not
+	// a file. "from" alone is not enough: "copy it from docs/a.md" is a file.
+	gitRefBefore = regexp.MustCompile("(?i)(?:\\b(?:branch|base)|\\b(?:merge|rebase|checkout|switch|cherry-pick|pull|push|fetch|diff|reset)\\b[^\\n]*\\b(?:from|into|onto|with))\\s+[`'\"]?$")
 	productJS    = regexp.MustCompile(`^[A-Z][a-z]+\.js$`)
 
 	// A command written inside action text: a fenced block, a code span with a
@@ -171,7 +172,7 @@ func (ev askEvidence) check(subject, home string, texts []askText) error {
 		return err
 	}
 	for _, t := range texts {
-		if uiPath.MatchString(t.text) && blank(ev.Observed) {
+		if uiPath.MatchString(uiText(t)) && blank(ev.Observed) {
 			return &AskError{subject, "cites a UI path with no observed; say where and when you saw the control"}
 		}
 	}
@@ -179,6 +180,17 @@ func (ev askEvidence) check(subject, home string, texts []askText) error {
 		return ev.checkDryRun(home)
 	}
 	return nil
+}
+
+// uiText is the part of a text read for UI paths: a command, a fenced block, a
+// "$ " line and the words after run/execute/invoke are shell, not menus.
+func uiText(t askText) string {
+	if t.command {
+		return ""
+	}
+	text := fencedBlock.ReplaceAllString(t.text, " ")
+	text = shellLine.ReplaceAllString(text, " ")
+	return runVerb.ReplaceAllString(text, " ")
 }
 
 func placeholderIn(command string) string {

@@ -233,3 +233,21 @@ func TestAskGuardCommentEditAddingMemberMention(t *testing.T) {
 		}
 	})
 }
+
+// CHE-5753: a comment with no member link that asks a person to act on an
+// unproven UI path, file, command or placeholder is refused like a member ask.
+func TestAskGuardCommentRefusesUnprovenAskWithoutMemberLink(t *testing.T) {
+	setAskGuardMode(t, "block")
+	f := newAskGuardCommentFixture(t)
+	res := f.post(t, map[string]any{"content": "Cheese, open Workspace settings → Delegated governed writes and run bash scripts/setup.sh <token>."}).Want(http.StatusUnprocessableEntity)
+	for _, fix := range []string{"multica decision request", "--notify-only", "comment"} {
+		if !strings.Contains(res.Text(), fix) {
+			t.Errorf("422 body lacks %q: %s", fix, res.Text())
+		}
+	}
+	if n := f.comments(t); n != 0 {
+		t.Errorf("refused comment saved %d rows", n)
+	}
+	f.post(t, map[string]any{"content": "Cheese, open Workspace settings → Delegated governed writes.", "notify_only": true}).Want(http.StatusCreated)
+	f.post(t, map[string]any{"content": "Fixed docs/setup/runner.md and ran `go test ./...`."}).Want(http.StatusCreated)
+}
