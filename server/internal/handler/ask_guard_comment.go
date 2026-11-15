@@ -12,6 +12,8 @@ import (
 
 const askGuardEditFix = "post a new comment with multica decision request ... to ask the person, or with --notify-only if it needs no answer; an edit cannot add a member mention"
 
+const askGuardEditAskFix = "post a new comment with multica decision request ... with observed, files and dry_run to ask the person, or with --notify-only if it needs no answer"
+
 const askGuardCommentFix = "multica decision request ... to ask the person, or add --notify-only to multica issue comment add if the comment needs no answer"
 
 // askGuardAllowsComment is S2: a plain comment from an agent task that
@@ -36,17 +38,24 @@ func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, 
 }
 
 // askGuardAllowsCommentEdit is S2 for an edit. A plain edit has no typed kind,
-// so an agent edit that adds a member link is refused like a plain comment.
-// Links the comment already had never block an unrelated edit.
+// so an agent edit that adds a member link, or turns the text into an unproven
+// ask (decisiontx.CheckCommentAsk, CHE-5753), is refused like a plain comment.
+// Links and asks the comment already had never block an unrelated edit.
 func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Request, issue db.Issue, actorType, oldContent, newContent string) bool {
-	if actorType != "agent" || !addsMemberMention(oldContent, newContent) {
+	if actorType != "agent" {
 		return true
 	}
 	var actorTask *db.AgentTaskQueue
 	if task, ok := h.taskFromRequestHeader(r); ok {
 		actorTask = &task
 	}
-	return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditFix)
+	if addsMemberMention(oldContent, newContent) {
+		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditFix)
+	}
+	if err := decisiontx.CheckCommentAsk(newContent); err != nil && decisiontx.CheckCommentAsk(oldContent) == nil {
+		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditAskFix+" (edit refused: "+err.Error()+")")
+	}
+	return true
 }
 
 func addsMemberMention(oldContent, newContent string) bool {
