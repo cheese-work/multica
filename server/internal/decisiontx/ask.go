@@ -20,6 +20,12 @@ type AskOption struct {
 	CostOrTime  string   `json:"cost_or_time"`
 	// OptionKey is the machine key of a waiver-topic option (CHE-4383 B2a). Empty on every other ask.
 	OptionKey string `json:"option_key,omitempty"`
+	// AfterChoice says who acts once this option is picked: agent_run, human_steps or record_only (CHE-5902).
+	AfterChoice string `json:"after_choice,omitempty"`
+	// AgentCommands are the commands an agent_run option runs after the answer, each an argv array.
+	AgentCommands [][]string `json:"agent_commands,omitempty"`
+	// AgentSurface names a console-only surface (a key of the agent_cannot_do catalog) the option promises to use.
+	AgentSurface string `json:"agent_surface,omitempty"`
 }
 
 type Ask struct {
@@ -88,7 +94,7 @@ const askOptionShape = "must be an object with label, what_happens, pros, cons, 
 
 var (
 	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts", "topic", "waiver"}
-	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key"}
+	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -315,7 +321,7 @@ func decodeOptions(raw json.RawMessage, into *[]AskOption) error {
 		for _, field := range []struct {
 			name string
 			into *string
-		}{{"label", &option.Label}, {"what_happens", &option.WhatHappens}, {"cost_or_time", &option.CostOrTime}, {"option_key", &option.OptionKey}} {
+		}{{"label", &option.Label}, {"what_happens", &option.WhatHappens}, {"cost_or_time", &option.CostOrTime}, {"option_key", &option.OptionKey}, {"after_choice", &option.AfterChoice}, {"agent_surface", &option.AgentSurface}} {
 			if err := decodeString(prefix+"."+field.name, fields[field.name], field.into); err != nil {
 				return err
 			}
@@ -324,6 +330,9 @@ func decodeOptions(raw json.RawMessage, into *[]AskOption) error {
 			return err
 		}
 		if err := decodeStrings(prefix+".cons", fields["cons"], &option.Cons); err != nil {
+			return err
+		}
+		if err := decodeArgvList(prefix+".agent_commands", fields["agent_commands"], &option.AgentCommands); err != nil {
 			return err
 		}
 		*into = append(*into, option)
@@ -361,6 +370,9 @@ func (ask Ask) Validate() error {
 			if !slices.ContainsFunc(list.items, func(item string) bool { return strings.TrimSpace(item) != "" }) {
 				return &AskError{prefix + "." + list.name, "requires at least one nonblank item"}
 			}
+		}
+		if err := option.validateAfterChoice(prefix); err != nil {
+			return err
 		}
 		label := strings.ToLower(strings.TrimSpace(option.Label))
 		if labels[label] {
