@@ -918,7 +918,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeBudgetRequiresDecision(w)
 		return
 	}
-	if !budgetWrite && refuseMachineWorkflowWrite(w, r) {
+	if !budgetWrite && h.refuseMachineWorkflowUpdate(w, r, wsUUID, idUUID, req.Steps) {
 		return
 	}
 	carriesMore := req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun
