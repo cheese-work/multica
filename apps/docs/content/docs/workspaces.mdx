@@ -48,6 +48,16 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 | `warn` | The guard records an event and a metric. The operation goes ahead. |
 | `block` | The guard records the event first, then refuses the operation with `422`. Only `block` events become recovery work. |
 
+### Autopilot assignment guard
+
+The workspace setting `autopilot_assign_gate` controls what happens when an issue that names an autopilot (its id next to the word "autopilot") is assigned to an agent or squad and the person the run acts for cannot write that autopilot: not its creator, a workspace admin or a granted collaborator.
+
+| Value | Effect |
+| --- | --- |
+| `block` (default) | The create or update is refused with `403` and code `autopilot_assign_no_write`. |
+| `warn` | The server logs a warning. The assignment goes ahead. |
+| `off` | The guard does nothing. |
+
 Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
 
 The workspace setting `reversible_ask_guard` (`off` by default, `warn`, `block`) covers a plain decision request from an agent whose class is `reversible`: the agent asks a person to approve work that agents may already decide and do themselves. `warn` logs it. `block` refuses it with `422`. Action, proposal and batch requests are unaffected. Set it back to `off` to revert; no data changes. The same setting covers a plain reply from an agent under a member's comment on an issue in `blocked` or `need_decision`, where the reply can ask that person without any decision request: `warn` logs it and `block` refuses it with `422`. Top-level comments, replies under an agent, comments that mention an agent or squad, comments with `--notify-only` and decision requests are unaffected.
