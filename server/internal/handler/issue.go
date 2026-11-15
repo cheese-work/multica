@@ -1614,7 +1614,7 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.description_external_read`
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read`
 
 var narrowColumns = strings.NewReplacer(
 	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
@@ -1640,7 +1640,7 @@ func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
 			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
 			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
 			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
-			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.WorkflowID, &row.RequestedByID, &row.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}
@@ -2169,7 +2169,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id, i.description_external_read
+	   i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE %s
 ORDER BY %s
