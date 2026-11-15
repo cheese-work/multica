@@ -196,7 +196,7 @@ func init() {
 	agentUpdateCmd.Flags().String("instructions-file", "", "Read the new instructions byte-for-byte from a file")
 	agentUpdateCmd.Flags().String("expected-before-digest", "", "Owner-only guarded write: sha256 hex of the RAW UTF-8 bytes of the instructions you believe are live (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). The server swaps atomically and answers 409 with no write when it is stale. Requires --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments) and forbids every other update flag. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	agentUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
-	agentUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
+	agentUpdateCmd.Flags().String("decision-id", "", "Refused: this field needs a passkey-approved action, not a decision card. The command stops and names the \"multica config propose\" command to run.")
 	agentUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
 	agentUpdateCmd.Flags().String("conversation-starters", "", "New conversation starters as a JSON array of {\"label\",\"prompt\"} objects (at most 3; label ≤80, prompt ≤4000). Pass '[]' to clear. Omit to leave the stored value unchanged.")
 	agentUpdateCmd.Flags().String("runtime-id", "", "New runtime ID")
@@ -768,7 +768,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 
 	// --expected-before-digest -> owner-only guarded CAS on exactly
 	// `instructions`; see governed_cas.go.
-	if err := checkBindingFlags(cmd); err != nil {
+	if err := checkBindingFlags(cmd, "agent.instructions", args[0]); err != nil {
 		return err
 	}
 	if cmd.Flags().Changed("expected-before-digest") {

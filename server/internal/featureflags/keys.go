@@ -49,6 +49,12 @@ const (
 	// 404 unless a rule in MULTICA_FEATURE_FLAGS_FILE turns it on. OFF by default.
 	// Server-side only.
 	CITokenBroker = "ci_token_broker"
+	// InteractiveDM (CHE-5918, CHE-3073 v11 slice 1a) gates interactive actions
+	// on a `dm:` conversation source: bind, send a turn, find-or-create. It is
+	// per workspace (target it with allow_by workspace_id), OFF by default and
+	// enforced on the server. It must not be turned on before CHE-3073 slice 1c
+	// is recorded and the slice 2a isolation tests are green.
+	InteractiveDM = "interactive_dm"
 	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
 	// provenance-export capability and its export-privacy config endpoints.
 	// Default TRUE: export already shipped in CHE-755 without a flag, so a
@@ -187,4 +193,13 @@ func CITokenBrokerEnabled(ctx context.Context, flags *featureflag.Service) bool 
 		return false
 	}
 	return flags.IsEnabled(ctx, CITokenBroker, false)
+}
+
+// InteractiveDMEnabled reports whether interactive DM actions are open for the
+// workspace in ctx. A nil service or provider is closed, never "unset".
+func InteractiveDMEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, InteractiveDM, false)
 }

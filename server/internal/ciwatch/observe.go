@@ -49,15 +49,19 @@ type LabelSetter interface {
 // FlakeCounter returns the 7-day flake counter for a signature of run's repo.
 type FlakeCounter func(ctx context.Context, run Run, signature string) (int, error)
 
+// HistoryLoader returns what earlier events say about a signature of run's repo.
+type HistoryLoader func(ctx context.Context, run Run, signature string) (History, error)
+
 // Observer writes system1_observation rows (kind=ci_event, decision_source=rule).
 // The write is idempotent (unique index on the run's subject id), so call it on
 // every delivery: a retry after a failed write records the row, a redelivery adds none.
 type Observer struct {
 	W          ObservationWriter
-	Labels     LabelSetter  // nil = a P0 result's Label is not applied
-	Flake      FlakeCounter // nil = History.FlakeCount7d is used as given
-	Jev        Jev          // nil = off
-	JevEnabled bool         // the jev_enabled switch
+	Labels     LabelSetter   // nil = a P0 result's Label is not applied
+	Flake      FlakeCounter  // nil = History.FlakeCount7d is used as given
+	Hist       HistoryLoader // nil = the counts in History are used as given
+	Jev        Jev           // nil = off
+	JevEnabled bool          // the jev_enabled switch
 	Log        *slog.Logger
 }
 
@@ -110,6 +114,15 @@ func (o Observer) Build(ctx context.Context, run Run, res Result, h History) (*d
 		class, choice = res.Reason, "P0"
 	case KindEvidence:
 		ev := res.Event
+		if o.Hist != nil {
+			loaded, err := o.Hist(ctx, run, ev.SignatureHash)
+			if err != nil {
+				return nil, err
+			}
+			// Keep the caller's Extra features; the loader owns the counts.
+			loaded.Extra = h.Extra
+			h = loaded
+		}
 		if o.Flake != nil {
 			n, err := o.Flake(ctx, run, ev.SignatureHash)
 			if err != nil {

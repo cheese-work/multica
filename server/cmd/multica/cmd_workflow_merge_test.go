@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -39,25 +38,6 @@ func handoffRecorder(t *testing.T, put *map[string]any, puts *int32) *httptest.S
 	return srv
 }
 
-func TestWorkflowHandoffSetDecisionIDSendsBoundBody(t *testing.T) {
-	var put map[string]any
-	var puts int32
-	defer handoffRecorder(t, &put, &puts).Close()
-
-	cmd := newHandoffDecisionCmd()
-	_ = cmd.Flags().Set("instructions", "S1 new")
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-	if _, err := captureStdout(t, func() error { return runWorkflowHandoffSet(cmd, []string{testWorkflowID, "todo"}) }); err != nil {
-		t.Fatal(err)
-	}
-	if put["decision_id"] != testDecisionID {
-		t.Errorf("decision_id = %v", put["decision_id"])
-	}
-	if put["before_sha256"] != sha256Hex(hashFixtureCanonical) || put["after_sha256"] != sha256Hex(hashFixtureAfter) {
-		t.Errorf("hashes = %v / %v, want %s / %s", put["before_sha256"], put["after_sha256"], sha256Hex(hashFixtureCanonical), sha256Hex(hashFixtureAfter))
-	}
-}
-
 func TestWorkflowHandoffSetPrintHashWritesNothing(t *testing.T) {
 	var put map[string]any
 	var puts int32
@@ -79,39 +59,6 @@ func TestWorkflowHandoffSetPrintHashWritesNothing(t *testing.T) {
 	}
 	if got["before_sha256"] != sha256Hex(hashFixtureCanonical) || got["after_sha256"] != sha256Hex(hashFixtureAfter) {
 		t.Errorf("hashes = %v", got)
-	}
-}
-
-func TestWorkflowDecisionBoundWriteRefusesOwnerOnlyFlagsBeforeAnyCall(t *testing.T) {
-	var put map[string]any
-	var puts int32
-	var gets int32
-	srv := handoffRecorder(t, &put, &puts)
-	defer srv.Close()
-	counting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&gets, 1)
-		srv.Config.Handler.ServeHTTP(w, r)
-	}))
-	defer counting.Close()
-	setCLITestServerEnv(t, counting.URL)
-
-	handoff := newHandoffDecisionCmd()
-	_ = handoff.Flags().Set("decision-id", testDecisionID)
-	_ = handoff.Flags().Set("copy-for-project", "44444444-4444-4444-4444-444444444444")
-	if err := runWorkflowHandoffSet(handoff, []string{testWorkflowID, "todo"}); err == nil || !strings.Contains(err.Error(), "--copy-for-project") {
-		t.Errorf("handoff err = %v, want --copy-for-project refused", err)
-	}
-
-	update := newWorkflowDecisionCmd()
-	update.Flags().String("name", "", "")
-	_ = update.Flags().Set("steps-file", writeTemp(t, `[{"status_key":"todo"}]`))
-	_ = update.Flags().Set("name", "Renamed")
-	_ = update.Flags().Set("decision-id", testDecisionID)
-	if err := runWorkflowUpdate(update, []string{testWorkflowID}); err == nil || !strings.Contains(err.Error(), "--name") {
-		t.Errorf("update err = %v, want --name refused", err)
-	}
-	if n := atomic.LoadInt32(&gets) + atomic.LoadInt32(&puts); n != 0 {
-		t.Errorf("HTTP calls = %d, want 0", n)
 	}
 }
 
