@@ -1,0 +1,191 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:che-5480",
+  "snapshot_id": "pvdFzm9p3Q",
+  "page_note": "Page 'CHE-5480 · decision screen'. Direction D1 only (Decisions in the sidebar): round 1 frames (a)-(f) plus round 2 frames (g)-(v), (g2) and the round 2 header. D2 frames and the 'before / removed surfaces' reference frame DVYh9mZYeg stay on the canvas as history and are not locked.",
+  "screens": [
+    {
+      "screen": "d1-a-queue-blind-pick",
+      "frame_id": "jAc96l36ZQ",
+      "updatedAt": "2026-11-13T10:11:00.637Z",
+      "content_sha256": "6d6507904ad501dd8f5d58cfb5354aa59fc597d382b3c4f27ee412c8c17ba087"
+    },
+    {
+      "screen": "d1-b-reveal-matched",
+      "frame_id": "yHt1Yk3q6g",
+      "updatedAt": "2026-11-13T10:13:55.768Z",
+      "content_sha256": "efde331ce2e36a19164e1722636c098435801d6e4b86dcacef596468fe8eb013"
+    },
+    {
+      "screen": "d1-c-reveal-different-pick",
+      "frame_id": "bBc53Rrq6s",
+      "updatedAt": "2026-11-13T10:13:59.015Z",
+      "content_sha256": "1e74537c1d56e2517b1955f7fc1242c1104ace5fe8134448f0bf17101af40604"
+    },
+    {
+      "screen": "d1-d-decided-card",
+      "frame_id": "g8Fk6OYJKo",
+      "updatedAt": "2026-11-13T10:11:10.562Z",
+      "content_sha256": "c8de0c09161fdf66e0ea27ffc49ca6f1fbf1eeb5720872b9fe3f07df4a1e33b2"
+    },
+    {
+      "screen": "d1-e-batch-lane-veto",
+      "frame_id": "GXtVSWCQG-",
+      "updatedAt": "2026-11-13T10:11:13.844Z",
+      "content_sha256": "fb6b5266c8d38324efa3e77ed5dfbefa31ac7ec2e028aa511525ebb59d68a385"
+    },
+    {
+      "screen": "d1-f-empty-state",
+      "frame_id": "RPbpN279Ja",
+      "updatedAt": "2026-11-13T10:11:17.114Z",
+      "content_sha256": "99e087edf3695072d66fa04fca9a741d85305260948b1f6b085520ac73bad44b"
+    },
+    {
+      "screen": "r2-00-section-header",
+      "frame_id": "obvaZ_tTpU",
+      "updatedAt": "2026-11-14T07:06:06.890Z",
+      "content_sha256": "ecfde78a49bae02b1c081c9afc73d4bf1f8cfe6957243fa5dda247dabf94e321"
+    },
+    {
+      "screen": "r2-g-browse-mode",
+      "frame_id": "jc6bFru-mB",
+      "updatedAt": "2026-11-14T19:37:14.176Z",
+      "content_sha256": "18c85c8111a0f36469bfc82b21e9f8cb6267f03bed7ab9999dd27330017faede"
+    },
+    {
+      "screen": "r2-h-hero-transition",
+      "frame_id": "NYQ7xYMXAE",
+      "updatedAt": "2026-11-14T19:38:24.577Z",
+      "content_sha256": "f091ab430710e415fe92d4749efae72b27b9b373c9f48dcb7940a9ba487ccec9"
+    },
+    {
+      "screen": "r2-i-issue-decision-mode",
+      "frame_id": "yrx-9NFvIL",
+      "updatedAt": "2026-11-14T19:37:26.866Z",
+      "content_sha256": "f092f106ef5ca9600c85790ef6eb2e28a6bc2954f47eff55ca5b4e3d26fdb491"
+    },
+    {
+      "screen": "r2-j-scrolled-away-floating-card",
+      "frame_id": "aZ_r8-6s9M",
+      "updatedAt": "2026-11-14T19:38:59.238Z",
+      "content_sha256": "aced0fe80a5a8275edc2f1ffbe36dbbece27948057a7187941c410623e4e49c0"
+    },
+    {
+      "screen": "r2-k-mention-navigation",
+      "frame_id": "gjlOt7YbHT",
+      "updatedAt": "2026-11-14T19:40:15.818Z",
+      "content_sha256": "946ae777c583fec6f9ef74eb5c5fc9e3a3d9bc598416f9d84a93180aeb24799d"
+    },
+    {
+      "screen": "r2-l-dm-origin-decision",
+      "frame_id": "E0LFdHKYta",
+      "updatedAt": "2026-11-14T19:36:34.231Z",
+      "content_sha256": "37d0610f72f6393c9822cbbf2985c045dce044a9a04291caf80c6d70d85dcbd2"
+    },
+    {
+      "screen": "r2-m-draft-annotation-reopen",
+      "frame_id": "dZBO020tZi",
+      "updatedAt": "2026-11-14T19:37:10.307Z",
+      "content_sha256": "22596f77b321ea8893d8037bbd496e52eed53226c10579a7c31d5a8d47cc92d1"
+    },
+    {
+      "screen": "r2-n-ask-more-pseudo-dm",
+      "frame_id": "GFZrCi1xBx",
+      "updatedAt": "2026-11-14T19:37:28.449Z",
+      "content_sha256": "c68e31a262b82ba8f31c63867b37a8ea757377268f9aac38af1a4a45ece34497"
+    },
+    {
+      "screen": "r2-o-other-draft-shared",
+      "frame_id": "cmP1gZxKQ3",
+      "updatedAt": "2026-11-14T19:37:23.275Z",
+      "content_sha256": "a4b311d3d3f0215d681caf2a58f7374e57af44164754a60cf6879664d01e0c10"
+    },
+    {
+      "screen": "r2-p-snooze-picker",
+      "frame_id": "jG6HSlYzM2",
+      "updatedAt": "2026-11-14T19:38:57.097Z",
+      "content_sha256": "2f39d3c0827177d30423a8dbf32549e56becbcc8f627de6a8ea0c027564cb033"
+    },
+    {
+      "screen": "r2-q-consequence-graph",
+      "frame_id": "3w6sqjF8Rm",
+      "updatedAt": "2026-11-14T19:39:45.818Z",
+      "content_sha256": "8044f2b97647d7abe2a7d52b641a8a49f174f7c2c8363b998c83b882f40a7643"
+    },
+    {
+      "screen": "r2-r-after-pick",
+      "frame_id": "bceqi0FFVY",
+      "updatedAt": "2026-11-14T19:36:26.472Z",
+      "content_sha256": "f11997fec1ec9c0adf2ee1d2ac0a7e99b2db9aab88267a1aa110f9207514f3db"
+    },
+    {
+      "screen": "r2-s-stale-card",
+      "frame_id": "lVH1S71wv8",
+      "updatedAt": "2026-11-14T19:37:14.541Z",
+      "content_sha256": "addc055e35fa901ce859637aa1b55e56a0e32951cd96208709030d70468f257c"
+    },
+    {
+      "screen": "r2-t-review-and-stats",
+      "frame_id": "GQtzVontGv",
+      "updatedAt": "2026-11-14T19:38:23.461Z",
+      "content_sha256": "3b3663e062886d8f7d360c734b677881a7fd0c51cddda88109fa714cbc8eb2d2"
+    },
+    {
+      "screen": "r2-u-public-debate-invited-agent",
+      "frame_id": "89HGA4bo1Q",
+      "updatedAt": "2026-11-14T19:36:53.261Z",
+      "content_sha256": "7300e517397ca2c4b69214550241f7b9b9bbf8ca50f2163d2e297736ee05aafe"
+    },
+    {
+      "screen": "r2-v-decided-thread-folded",
+      "frame_id": "cMkaGnfcB2",
+      "updatedAt": "2026-11-14T19:37:39.582Z",
+      "content_sha256": "2d70424b5b7c65f17866d896331bfc44f738dea6d11b640991ccb0357ad413ed"
+    },
+    {
+      "screen": "r2-g2-new-decisions-push-inbox-item",
+      "frame_id": "E21vqe5214",
+      "updatedAt": "2026-11-14T19:42:37.619Z",
+      "content_sha256": "0ac8971133b0fc58d44117f727790b6b2b470cfabd7c5b874b89184500f57415"
+    }
+  ],
+  "export_sha256": "e3f2e22f8bcbea9384bc02909e10f78a68f30a7274f10106ed38170448f83d90",
+  "export_sha256_method": "sha256 of MANIFEST.sha256 content: sha256sum lines '<sha256>  <file>' for export_files, sorted by file name (the manifest file is not committed; it is reproduced by `cd design/decision-screen/approved && LC_ALL=C sha256sum *.html | sha256sum`)",
+  "export_sha256_exporter_manifest": "d48274344dbe4932b9f7f9f8154d31d6ed0adba7142a9084ad7a8f055ef57084 (same sha256sum lines but with the file names prefixed 'd1/', as in the export attachment che-5480-d1-export-pvdFzm9p3Q.tgz, sha256 cb9023cbd493b0408e2310c587fc34a45efd7b4046e0440d8cc1e31eb96c64d6). The file hashes are identical; only the path prefix differs.",
+  "export_files": {
+    "d1-a-queue-blind-pick.html": "6d6507904ad501dd8f5d58cfb5354aa59fc597d382b3c4f27ee412c8c17ba087",
+    "d1-b-reveal-matched.html": "efde331ce2e36a19164e1722636c098435801d6e4b86dcacef596468fe8eb013",
+    "d1-c-reveal-different-pick.html": "1e74537c1d56e2517b1955f7fc1242c1104ace5fe8134448f0bf17101af40604",
+    "d1-d-decided-card.html": "c8de0c09161fdf66e0ea27ffc49ca6f1fbf1eeb5720872b9fe3f07df4a1e33b2",
+    "d1-e-batch-lane-veto.html": "fb6b5266c8d38324efa3e77ed5dfbefa31ac7ec2e028aa511525ebb59d68a385",
+    "d1-f-empty-state.html": "99e087edf3695072d66fa04fca9a741d85305260948b1f6b085520ac73bad44b",
+    "r2-00-section-header.html": "ecfde78a49bae02b1c081c9afc73d4bf1f8cfe6957243fa5dda247dabf94e321",
+    "r2-g-browse-mode.html": "18c85c8111a0f36469bfc82b21e9f8cb6267f03bed7ab9999dd27330017faede",
+    "r2-g2-new-decisions-push-inbox-item.html": "0ac8971133b0fc58d44117f727790b6b2b470cfabd7c5b874b89184500f57415",
+    "r2-h-hero-transition.html": "f091ab430710e415fe92d4749efae72b27b9b373c9f48dcb7940a9ba487ccec9",
+    "r2-i-issue-decision-mode.html": "f092f106ef5ca9600c85790ef6eb2e28a6bc2954f47eff55ca5b4e3d26fdb491",
+    "r2-j-scrolled-away-floating-card.html": "aced0fe80a5a8275edc2f1ffbe36dbbece27948057a7187941c410623e4e49c0",
+    "r2-k-mention-navigation.html": "946ae777c583fec6f9ef74eb5c5fc9e3a3d9bc598416f9d84a93180aeb24799d",
+    "r2-l-dm-origin-decision.html": "37d0610f72f6393c9822cbbf2985c045dce044a9a04291caf80c6d70d85dcbd2",
+    "r2-m-draft-annotation-reopen.html": "22596f77b321ea8893d8037bbd496e52eed53226c10579a7c31d5a8d47cc92d1",
+    "r2-n-ask-more-pseudo-dm.html": "c68e31a262b82ba8f31c63867b37a8ea757377268f9aac38af1a4a45ece34497",
+    "r2-o-other-draft-shared.html": "a4b311d3d3f0215d681caf2a58f7374e57af44164754a60cf6879664d01e0c10",
+    "r2-p-snooze-picker.html": "2f39d3c0827177d30423a8dbf32549e56becbcc8f627de6a8ea0c027564cb033",
+    "r2-q-consequence-graph.html": "8044f2b97647d7abe2a7d52b641a8a49f174f7c2c8363b998c83b882f40a7643",
+    "r2-r-after-pick.html": "f11997fec1ec9c0adf2ee1d2ac0a7e99b2db9aab88267a1aa110f9207514f3db",
+    "r2-s-stale-card.html": "addc055e35fa901ce859637aa1b55e56a0e32951cd96208709030d70468f257c",
+    "r2-t-review-and-stats.html": "3b3663e062886d8f7d360c734b677881a7fd0c51cddda88109fa714cbc8eb2d2",
+    "r2-u-public-debate-invited-agent.html": "7300e517397ca2c4b69214550241f7b9b9bbf8ca50f2163d2e297736ee05aafe",
+    "r2-v-decided-thread-folded.html": "2d70424b5b7c65f17866d896331bfc44f738dea6d11b640991ccb0357ad413ed"
+  },
+  "export_transform": "none: HTML is the exact current frame HTML. The exporter read back every frame and matched its SHA-256 to the entry in snapshot pvdFzm9p3Q (24 of 24). Self-contained (inline SVG sprites, no http URL, no url()).",
+  "exported_at": "2026-11-15 09:51 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99 (export); lock files assembled by x99-claude-sonnet-200k / claude-sonnet-5-5 / x99",
+  "issue": "CHE-5481",
+  "selection_id": "01a1dd15-5932-73f6-8571-481360ef6bf9",
+  "selection_source": "Cheese picked D1 on decision card 01a1dc34-1dd5-711a-b19c-6038d86d3287 (15 Nov 2026 ICT). Tofu recorded the pick in CHE-5481 comment 01a1dd15-5932-73f6-8571-481360ef6bf9.",
+  "ux_verdict_id": "01a1db99-79cb-7323-b00a-f84ffd2de2f7",
+  "ux_verdict_source": "CHE-5555 comment 01a1db99-79cb-7323-b00a-f84ffd2de2f7, x99-codex-luna-design (OpenAI), PASS on snapshot pvdFzm9p3Q: 8/7/9/9/7/7. Round 1 frames (a)-(f) were first scored in CHE-5481 round 1 (version OHWA_e6wGD, D1 47/60); the snapshot re-score covers their unchanged HTML."
+}
