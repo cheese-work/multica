@@ -106,7 +106,10 @@ function commonResponse(pathname: string): unknown | undefined {
       issues: [], comments: [], projects: [], deleted: { issues: [], comments: [], projects: [] },
       cursor: "0", has_more: false,
     };
-    default: return undefined;
+    // Issue-page side panels added after the harness: empty objects let their parsers fall back.
+    case "/api/decisions/issue-cards": case "/api/issues/unread": return {};
+    default:
+      return /^\/api\/issues\/[0-9a-f-]{36}\/(run-budget|wakeup-definitions)$/.test(pathname) ? {} : undefined;
   }
 }
 

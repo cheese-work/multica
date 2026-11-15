@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,9 +36,27 @@ const (
 
 	codeBackgroundAgentsHumanOnly = "background_agents_human_only"
 	codeAgentNotEligible          = "agent_not_eligible"
+	codeBackgroundAgentsConflict  = "background_agents_conflict"
 )
 
 var errBackgroundAgentsHumanOnly = errors.New("background agents can only be changed by a human owner or admin")
+
+// bgConflict is a save whose If-Match no longer names the stored value: another
+// owner saved since the read it was built from. Nothing is stored.
+type bgConflict struct{ current map[string]any }
+
+func (bgConflict) Error() string { return "background agents changed since they were read" }
+
+// bgETag is a strong validator of the stored value; an absent key and an empty
+// object share one (see bgValue). json.Marshal sorts map keys, so it is stable.
+func bgETag(v map[string]any) string {
+	if len(v) == 0 {
+		v = map[string]any{}
+	}
+	raw, _ := json.Marshal(v)
+	sum := sha256.Sum256(raw)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
 
 // bgChange is one job whose chain effectively changed.
 type bgChange struct {
@@ -88,10 +108,13 @@ func (h *Handler) GetBackgroundAgents(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = map[string]any{}
 	}
+	w.Header().Set("ETag", bgETag(out))
 	writeJSON(w, http.StatusOK, out)
 }
 
-// UpdateBackgroundAgents replaces the whole value with the body.
+// UpdateBackgroundAgents replaces the whole value with the body. A request with
+// If-Match (the ETag of its GET) is refused with 409 and the current value when
+// the stored value moved on; one without it replaces unconditionally.
 func (h *Handler) UpdateBackgroundAgents(w http.ResponseWriter, r *http.Request) {
 	member, ok := h.requireWorkspaceRole(w, r, workspaceIDFromURL(r, "id"), "workspace not found", "owner", "admin")
 	if !ok {
@@ -107,7 +130,7 @@ func (h *Handler) UpdateBackgroundAgents(w http.ResponseWriter, r *http.Request)
 		writeErrorCode(w, http.StatusBadRequest, bad.Code, bad.Msg)
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), next, "workspace.background_agents.update")
+	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), next, "workspace.background_agents.update", strings.TrimSpace(r.Header.Get("If-Match")))
 }
 
 // ResetBackgroundAgents clears every job.
@@ -116,7 +139,7 @@ func (h *Handler) ResetBackgroundAgents(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), map[string]any{}, "workspace.background_agents.reset")
+	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), map[string]any{}, "workspace.background_agents.reset", "")
 }
 
 func (h *Handler) backgroundAgentsMachine(r *http.Request, member db.Member) bool {
@@ -124,10 +147,22 @@ func (h *Handler) backgroundAgentsMachine(r *http.Request, member db.Member) boo
 	return isGovernedFieldMachineActor(r, actorType)
 }
 
-func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, machine bool, next map[string]any, auditKind string) {
+func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, machine bool, next map[string]any, auditKind, ifMatch string) {
 	id := uuidToString(member.WorkspaceID)
-	changes, cancelled, err := h.writeBackgroundAgents(r, member, machine, next, auditKind)
+	changes, cancelled, err := h.writeBackgroundAgents(r, member, machine, next, auditKind, ifMatch)
 	if failedAudit(w, r, err, auditKind) {
+		return
+	}
+	var stale bgConflict
+	if errors.As(err, &stale) {
+		current := stale.current
+		if current == nil {
+			current = map[string]any{}
+		}
+		w.Header().Set("ETag", bgETag(current))
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": stale.Error(), "code": codeBackgroundAgentsConflict, "current": current, "etag": bgETag(current),
+		})
 		return
 	}
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
@@ -144,6 +179,7 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 		writeError(w, http.StatusInternalServerError, "failed to update background agents")
 		return
 	}
+	w.Header().Set("ETag", bgETag(next))
 	h.TaskService.BroadcastCancelledTasks(r.Context(), id, cancelled)
 	for _, c := range changes {
 		h.publish(protocol.EventWorkspaceBackgroundAgentChanged, id, "member", requestUserID(r), map[string]any{
@@ -166,7 +202,7 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 // the post-commit broadcast. Lock order is workspace, every chat_session of the
 // workspace, then agents (FOR SHARE), then agent_task_queue: the order of a chat
 // enqueue. An enqueue's uncommitted task is therefore visible to the sweep.
-func (h *Handler) writeBackgroundAgents(r *http.Request, member db.Member, machine bool, next map[string]any, auditKind string) ([]bgChange, []db.AgentTaskQueue, error) {
+func (h *Handler) writeBackgroundAgents(r *http.Request, member db.Member, machine bool, next map[string]any, auditKind, ifMatch string) ([]bgChange, []db.AgentTaskQueue, error) {
 	ctx := r.Context()
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -184,6 +220,9 @@ func (h *Handler) writeBackgroundAgents(r *http.Request, member db.Member, machi
 		stored = map[string]any{}
 	}
 	prev := bgValue(stored[backgroundAgentsKey])
+	if ifMatch != "" && ifMatch != bgETag(prev) {
+		return nil, nil, bgConflict{current: prev}
+	}
 	var changes []bgChange
 	for _, job := range sortedUnionKeys(prev, next) {
 		if !reflect.DeepEqual(prev[job], next[job]) {

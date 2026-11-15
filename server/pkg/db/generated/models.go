@@ -2576,6 +2576,19 @@ type IssueWorkflow struct {
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
 	StartStatusKey          pgtype.Text        `json:"start_status_key"`
+	LintOverrideReason      pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt        pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings            []byte             `json:"lint_findings"`
+}
+
+type IssueWorkflowLintOverride struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Version     pgtype.Timestamptz `json:"version"`
+	Reason      string             `json:"reason"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type LarkBindingToken struct {
