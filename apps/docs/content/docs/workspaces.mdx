@@ -66,6 +66,18 @@ An event that cannot be sent as a notice goes to the agent whose run produced it
 
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
 
+### Held-setting ask guard
+
+The workspace setting `held_setting_ask_mode` (`off` by default, `warn` or `block`) controls what happens when a decision or action request asks a person for a workspace setting the workspace settings already hold. The request names the keys in the typed field `settings_needed`; the server never reads the prose. A key counts as held when its stored value is not null, not an empty string, list or object. Key names compare without case.
+
+| Value | Effect |
+| --- | --- |
+| `off` (default) | The guard does nothing. |
+| `warn` | The request is created and the response carries one hint per held key. |
+| `block` | The request is refused with `400` and no request row. The message names the key and never the stored value. |
+
+To revert, set `held_setting_ask_mode` to `off`. No data changes.
+
 ### Delegated governed writes
 
 The workspace setting `delegated_governed_writes` decides which agents may write governed fields, and whether each write still needs a person's decision. Find it in workspace settings under **Delegated governed writes**.
