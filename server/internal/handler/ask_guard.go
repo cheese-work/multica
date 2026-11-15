@@ -10,6 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -89,13 +90,17 @@ const reversibleCommentFix = "Standing Delivery Authorization (CHE-584) lets age
 
 // askGuardReversibleComment (CHE-5754) is the issue-comment path of the
 // reversible ask guard. A plain comment has no class, so no text is read. The
-// structural facts are an agent task, no typed kind (notify-only, decision
-// intent, record and veto never reach here) and an issue waiting on a person:
-// blocked or need_decision. block refuses with 422, warn logs, off allows. A
-// run with no task or in a chat lane only warns: it has no run to recover
-// through a refusal. Set the setting to off to revert; no data changes.
-func (handler *Handler) askGuardReversibleComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, task *db.AgentTaskQueue) bool {
-	if issue.Status != "blocked" && issue.Status != "need_decision" {
+// structural facts are: an agent task, no typed kind (notify-only, decision
+// intent, record and veto never reach here), an issue waiting on a person
+// (blocked or need_decision), a parent comment written by a member, and no
+// agent or squad mention. Such a reply is addressed to that member, which is
+// the CHE-5281 shape. A top-level report, a reply under an agent and a handoff
+// that mentions an agent or squad are never refused. block refuses with 422,
+// warn logs, off allows. A run with no task or in a chat lane only warns: it
+// has no run to recover through a refusal. Set the setting to off to revert;
+// no data changes.
+func (handler *Handler) askGuardReversibleComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, task *db.AgentTaskQueue, parent *db.Comment, content string) bool {
+	if (issue.Status != "blocked" && issue.Status != "need_decision") || parent == nil || parent.AuthorType != "member" || mentionsAgentOrSquad(content) {
 		return true
 	}
 	workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
@@ -117,4 +122,13 @@ func (handler *Handler) askGuardReversibleComment(writer http.ResponseWriter, re
 		slog.Warn("ask guard: plain comment on a waiting issue", "issue_id", uuidToString(issue.ID), "status", issue.Status)
 	}
 	return true
+}
+
+func mentionsAgentOrSquad(content string) bool {
+	for _, m := range util.ParseMentions(content) {
+		if m.Type == "agent" || m.Type == "squad" {
+			return true
+		}
+	}
+	return false
 }
