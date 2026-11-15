@@ -85,6 +85,16 @@ linters:
       - path: pkg/db/generated/
         linters: [errcheck, gocritic, revive, staticcheck, unused]
 
+      # Upstream museapp.go arrives verbatim in the v0.9.0 sync (CHE-5610); the fork keeps it byte-identical
+      # to upstream so later syncs stay conflict-free, so its findings are excluded rather than edited.
+      - path: '^pkg/agent/museapp\.go$'
+        linters: [revive]
+        text: '^indent-error-flow:'
+        source: 'else \{'
+      - path: '^pkg/agent/museapp\.go$'
+        linters: [staticcheck]
+        text: '^ST1005:'
+        source: 'fmt\.Errorf\("Muse worker stop unconfirmed'
       - path: '^(cmd/qoder-runtime/main\.go|internal/integrations/wecom/media_temp_test\.go)$'
         linters: [gocritic]
         text: '^exitAfterDefer:'
