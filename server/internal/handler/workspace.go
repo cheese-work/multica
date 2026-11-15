@@ -1820,6 +1820,12 @@ func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request,
 			},
 		},
 		{
+			name: "delete issue workflow lint overrides",
+			run: func() error {
+				return qtx.DeleteIssueWorkflowLintOverridesForWorkspace(ctx, requester.WorkspaceID)
+			},
+		},
+		{
 			name: "delete autopilot children",
 			run:  func() error { return qtx.DeleteWorkspaceAutopilotChildren(ctx, requester.WorkspaceID) },
 		},
