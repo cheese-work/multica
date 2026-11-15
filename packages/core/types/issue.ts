@@ -218,6 +218,7 @@ export interface Issue {
    * their behalf. The "human by role" workflow handler hands to them first.
    */
   requested_by_id?: string | null;
+  requester_id?: string | null;
   parent_issue_id: string | null;
   /**
    * The original this issue duplicates (MUL-7349): present only while the

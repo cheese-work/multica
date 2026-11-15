@@ -39,6 +39,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     assignee_id: null,
     creator_type: "member",
     creator_id: "u-1",
+    requester_id: null,
     parent_issue_id: null,
     project_id: null,
     position: 0,
@@ -1017,5 +1018,19 @@ describe("applyIssueFilters workflow override", () => {
   it("keeps only issues whose own override is selected (OR within)", () => {
     expect(ids(["w-1"])).toEqual(["1"]);
     expect(ids(["w-1", "w-2"])).toEqual(["1", "2"]);
+  });
+});
+
+describe("persisted requester relation", () => {
+  it("matches requester, negates known null, and defers missing legacy fields", () => {
+    const rows = [
+      makeIssue({ id: "mine", creator_type: "agent", requester_id: "me" }),
+      makeIssue({ id: "peer", creator_type: "agent", requester_id: "peer" }),
+      makeIssue({ id: "none", creator_type: "agent", requester_id: null }),
+      makeIssue({ id: "legacy", creator_type: "agent", requester_id: undefined }),
+    ];
+    const filters: IssueFilters = { ...NO_FILTER, relationContext: { userId: "me" }, relationFilters: ["created"] };
+    expect(filterIssues(rows, filters).map((i) => i.id)).toEqual(["mine", "legacy"]);
+    expect(filterIssues(rows, { ...filters, negatedFilters: ["relation"] }).map((i) => i.id)).toEqual(["peer", "none", "legacy"]);
   });
 });
