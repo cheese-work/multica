@@ -97,7 +97,7 @@ var agentEnvCmd = &cobra.Command{
 
 var agentEnvGetCmd = &cobra.Command{
 	Use:   "get <agent-id>",
-	Short: "Print an agent's custom_env as a JSON map (agent owner or workspace owner/admin; every call is recorded)",
+	Short: "List an agent's env keys and their source; values are never shown (agent owner or workspace owner/admin)",
 	Args:  exactArgs(1),
 	RunE:  runAgentEnvGet,
 }
@@ -1192,10 +1192,9 @@ func printAgentSkillsMutationResult(cmd *cobra.Command, agentID string, result j
 
 // Agent env subcommands
 
-// runAgentEnvGet fetches the plaintext custom_env for a single agent
-// via the audited `/env` endpoint. The CLI prints raw JSON in JSON
-// mode and a key/value table otherwise; we never truncate or mask
-// values here — the security gate is on the server, not the printer.
+// runAgentEnvGet fetches env metadata for a single agent via the `/env`
+// endpoint. The server never returns a value (every one is masked), so JSON
+// mode prints the body as received and the table lists key and source only.
 func runAgentEnvGet(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -1215,11 +1214,12 @@ func runAgentEnvGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, resp)
 	}
 
-	headers := []string{"KEY", "VALUE"}
-	env, _ := resp["custom_env"].(map[string]any)
-	rows := make([][]string, 0, len(env))
-	for k, v := range env {
-		rows = append(rows, []string{k, fmt.Sprintf("%v", v)})
+	headers := []string{"KEY", "SOURCE"}
+	keys, _ := resp["keys"].([]any)
+	rows := make([][]string, 0, len(keys))
+	for _, k := range keys {
+		m, _ := k.(map[string]any)
+		rows = append(rows, []string{strVal(m, "key"), strVal(m, "source")})
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
