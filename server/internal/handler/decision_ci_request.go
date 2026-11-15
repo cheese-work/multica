@@ -106,6 +106,7 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hints = append(hints, lintHints...)
+	lintMode, _ := decisiontx.CardLintModeFromSettings(workspace.Settings) // checkCardLint read it
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask})) > maxCommentContentBytes {
 		writeError(w, http.StatusBadRequest, "ask is too long")
@@ -123,7 +124,7 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 	card := decisionRequestInput{
 		HumanUserID: human, Ask: ask, Options: parsed.Options, AskJSON: askJSON, EscalationClass: "deploy",
 		SourceCommentID: sourceCommentID, Parsed: &parsed, Slug: workspace.Slug, Kind: decisiontx.KindDecision,
-		Fingerprint: ciFingerprintPrefix + candidateSHA + ":" + candidateAt.UTC().Format(time.RFC3339),
+		CardLintMode: lintMode, Fingerprint: ciFingerprintPrefix + candidateSHA + ":" + candidateAt.UTC().Format(time.RFC3339),
 	}
 	actor := parseUUID(r.Header.Get("X-User-ID"))
 	var result decisionRequestResult
