@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -570,7 +571,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAgentCannotDoSetting(req.Settings), ghstack.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -712,6 +713,10 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, errSettingsPasskeyRequired) {
 		writePasskeyActionRequired(w, settingsPatchAction)
+		return
+	}
+	if errors.Is(err, errCannotDoOwnerOnly) {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if errors.As(err, &rejected) {
@@ -1826,6 +1831,12 @@ func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request,
 			name: "delete issue workflows",
 			run: func() error {
 				return qtx.DeleteIssueWorkflowsForWorkspace(ctx, requester.WorkspaceID)
+			},
+		},
+		{
+			name: "delete issue workflow lint overrides",
+			run: func() error {
+				return qtx.DeleteIssueWorkflowLintOverridesForWorkspace(ctx, requester.WorkspaceID)
 			},
 		},
 		{
