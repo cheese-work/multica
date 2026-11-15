@@ -94,12 +94,14 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	intentID := handoffIntentFrom(ctx)
 	if trigger.BlockedEntry {
 		lastTask, skip, err := h.TaskService.SkipBlockedDispatch(ctx, issue, trigger.AgentID, actorType)
 		if err != nil {
 			slog.Warn("blocked dispatch comparison failed; starting run", "issue_id", uuidToString(issue.ID), "error", err)
 		} else if skip {
 			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask, actorType, actorID)
+			h.skipHandoffIntent(ctx, intentID, "blocked_unchanged_inputs")
 			return false
 		}
 	}
@@ -108,7 +110,18 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 	var notConfirmed *service.StopNotConfirmedError
 	if err := service.StopGate(ctx, h.Queries, issue.ID); errors.As(err, &notConfirmed) {
 		h.recordStopNotConfirmed(ctx, issue, actorType, actorID, notConfirmed)
+		h.skipHandoffIntent(ctx, intentID, "stop_not_confirmed")
 		return false
+	}
+	if intentID.Valid {
+		intent, err := h.dispatchHandoffIntent(ctx, intentID)
+		if err != nil {
+			// The intent stays pending: the run is still owed, and the recovery
+			// sweep (CHE-2299 S1c) finds it.
+			slog.Error("dispatch handoff intent failed", "issue_id", uuidToString(issue.ID), "intent_id", uuidToString(intentID), "error", err)
+			return false
+		}
+		return intent.State == handoffDispatched
 	}
 	switch trigger.AssigneeType {
 	case "agent":

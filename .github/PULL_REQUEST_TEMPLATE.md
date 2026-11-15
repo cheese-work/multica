@@ -72,6 +72,16 @@ Changelog: <one user-facing sentence, or none>
        deviation: <id> — <reason>
      Not a UI change: leave the section empty. -->
 
+## Agent-facing
+
+<!-- Required when the PR touches CLI commands (`server/cmd/multica/`), the agent brief or the daemon
+     (`server/internal/daemon/`); a CI check fails without it (CHE-5717). Replace the first line with
+     `Agent-facing: yes` or `Agent-facing: no`. On yes, fill `Adoption item:` with what agents or skills must
+     change. The daily adoption issue lists every merged and deployed `yes` PR with its owner. -->
+
+Agent-facing: yes | no
+Adoption item:
+
 ## Cost delta
 
 <!-- Required (CHE-4396). One line each; numbers or a measured range, `unknown` only with how it will be measured. -->

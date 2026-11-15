@@ -1680,6 +1680,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// this when an agent picks one of its tools; the server makes the
 		// signed request so the daemon never holds the signing secret.
 		r.Post("/tasks/{id}/plugin-hooks", h.InvokeAgentPluginHook)
+		// An agent's task releases one of its Steel browser leases (CHE-4734).
+		r.Post("/tasks/{id}/browser-leases/{leaseId}/release", h.ReleaseBrowserLease)
 		// The broker asks for an mcp hook's credential at connection time, so
 		// a secret never sits in a task record.
 		r.Get("/tasks/{id}/plugin-mcp/{contributionId}/credential", h.ResolvePluginMCPCredential)
@@ -1721,10 +1723,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
-		// Browser leases (CHE-4732). Daemon credential only; see browser_lease.go.
-		r.Post("/tasks/{taskId}/browser-leases", h.MintBrowserLease)
-		r.Post("/tasks/{taskId}/browser-leases/{leaseId}/renew", h.RenewBrowserLease)
-		r.Post("/tasks/{taskId}/browser-leases/{leaseId}/release", h.ReleaseBrowserLease)
+		// Browser leases (CHE-4732). Daemon credential only; see browser_lease.go. Release is CHE-4734's, above.
+		r.Post("/tasks/{id}/browser-leases", h.MintBrowserLease)
+		r.Post("/tasks/{id}/browser-leases/{leaseId}/renew", h.RenewBrowserLease)
 
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
 		r.Get("/issues/{issueId}/gc-check", h.GetIssueGCCheck)
@@ -1912,6 +1913,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateWorkspace)
 					// Scheduling pause: the handler also refuses agent credentials.
 					r.Post("/pause", h.PauseWorkspaceScheduling)
+					// Kill switch for every Steel browser lease (CHE-4734); the handler refuses agents.
+					r.Post("/browser-leases/revoke-all", h.RevokeAllBrowserLeases)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
 					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)

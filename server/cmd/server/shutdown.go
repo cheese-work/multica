@@ -26,6 +26,11 @@ type shutdownSequence struct {
 	// Drain the internal maintenance listener while the primary pool is alive.
 	DrainMaintenance func()
 
+	// DrainInternal drains the gateway-facing control-plane listener
+	// (CHE-4746). Its event streams are long-lived, so it drains before the
+	// public listener and the workers they read from.
+	DrainInternal func()
+
 	// DrainHTTP before anything that serves it. In-flight handlers finish
 	// calling Schedule() before the scheduler stops, and no new task
 	// completion can arrive after this — which is what makes the relay stop
@@ -67,6 +72,7 @@ func (s shutdownSequence) run() {
 	for _, step := range []func(){
 		s.StopAutopilot,
 		s.DrainMaintenance,
+		s.DrainInternal,
 		s.DrainHTTP,
 		s.StopOutboundRelay,
 		s.CancelWorkers,
