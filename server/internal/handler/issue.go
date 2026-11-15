@@ -3865,6 +3865,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description)) {
+		return
+	}
 
 	if req.ProjectID != nil {
 		id, ok := parseUUIDOrBadRequest(w, *req.ProjectID, "project_id")
@@ -4812,6 +4815,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeError(w, status, msg)
+			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, r, workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String)) {
 			return
 		}
 	}
