@@ -8,6 +8,7 @@ import {
   validateDevices,
   validateBlocksMap,
   validateRepoFiles,
+  lockLabelWidths,
 } from "./validate-fidelity-files.mjs";
 
 const profile = (over = {}) => ({
@@ -95,4 +96,9 @@ test("a case may carry interaction steps; a malformed step is an error", () => {
     assert.match(validateBlocksMap(map({ cases: [kase({ steps: [bad] })] }), ctx).errors.join(), /steps\[0\]/, JSON.stringify(bad));
   }
   assert.match(validateBlocksMap(map({ cases: [kase({ steps: "x" })] }), ctx).errors.join(), /steps must be a list/);
+});
+
+test("lockLabelWidths reads a label that carries a data-annotation mark (CHE-5845)", () => {
+  const html = '<div class="col ph"><div class="lbl" data-annotation>7 · Phone</div></div>';
+  assert.deepEqual([...lockLabelWidths(html)], [["7", 358]]);
 });

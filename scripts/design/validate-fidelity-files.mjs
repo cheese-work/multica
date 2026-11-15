@@ -101,7 +101,7 @@ export function lockLabelWidths(html) {
   for (const line of html.split("\n")) {
     const col = line.match(/<div class="col( ph)?"(?: style="width:(\d+)px")?/);
     if (col) width = col[2] ? Number(col[2]) : col[1] ? 358 : 540;
-    for (const m of line.matchAll(/class="lbl">(\d+[a-z]?) ·/g)) widths.set(m[1], width);
+    for (const m of line.matchAll(/class="lbl"[^>]*>(\d+[a-z]?) ·/g)) widths.set(m[1], width);
   }
   return widths;
 }
