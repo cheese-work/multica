@@ -1,6 +1,7 @@
 package connectedapps
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -82,16 +83,16 @@ func TestTaskToken(t *testing.T) {
 	if err != nil || got != "task-1" {
 		t.Fatalf("verify = %q, %v", got, err)
 	}
-	if _, err := VerifyTaskToken(secret, token, now.Add(2*time.Hour)); err != ErrTokenExpired {
+	if _, err := VerifyTaskToken(secret, token, now.Add(2*time.Hour)); !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("expired token: %v", err)
 	}
-	if _, err := VerifyTaskToken(DeriveTokenSecret([]byte("other")), token, now); err != ErrTokenSignature {
+	if _, err := VerifyTaskToken(DeriveTokenSecret([]byte("other")), token, now); !errors.Is(err, ErrTokenSignature) {
 		t.Fatalf("foreign secret: %v", err)
 	}
-	if _, err := VerifyTaskToken(secret, token[:len(token)-2]+"xx", now); err != ErrTokenSignature {
+	if _, err := VerifyTaskToken(secret, token[:len(token)-2]+"xx", now); !errors.Is(err, ErrTokenSignature) {
 		t.Fatalf("tampered token: %v", err)
 	}
-	if _, err := VerifyTaskToken(secret, "Bearer "+token, now); err != ErrTokenMalformed {
+	if _, err := VerifyTaskToken(secret, "Bearer "+token, now); !errors.Is(err, ErrTokenMalformed) {
 		t.Fatalf("unprefixed token: %v", err)
 	}
 }

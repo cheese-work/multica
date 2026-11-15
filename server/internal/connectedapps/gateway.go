@@ -3,6 +3,7 @@ package connectedapps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -459,7 +460,7 @@ func (s *Service) toolRun(ctx context.Context, rn *run, toolSlug string, args ma
 	policy, acct, err := s.policyFor(ctx, rn, app, class)
 	call.acct = acct
 	if err != nil {
-		if err == ErrAccountMissing {
+		if errors.Is(err, ErrAccountMissing) {
 			return textResult(fmt.Sprintf("the %s account for %s is not connected. Call %s to ask for it, then end your turn.", app.AccountScope, slug, toolRequestConnection), true)
 		}
 		return textResult("could not resolve the account for this app", true)
