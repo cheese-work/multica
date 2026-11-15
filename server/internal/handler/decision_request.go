@@ -145,6 +145,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
 	}
+	if err := handler.refuseReversibleAsk(request.Context(), issue, input); err != nil {
+		return empty, err
+	}
 	if input.HumanUserID.Valid {
 		var err error
 		if input.HumanUserID, err = handler.resolveDecisionRecipient(request.Context(), issue, input.HumanUserID); err != nil {

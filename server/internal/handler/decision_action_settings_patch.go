@@ -107,7 +107,7 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateProviderHoldSetting(map[string]any{key: value})
 	case key == "guard_policy":
 		err = validateGuardPolicySetting(map[string]any{key: value})
-	case key == askguard.SettingKey:
+	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
 	case key == "compact_prompt":

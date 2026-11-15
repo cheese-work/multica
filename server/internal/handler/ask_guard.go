@@ -2,12 +2,15 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // askGuardHit runs the guard for one agent operation and reports whether the
@@ -41,11 +44,43 @@ func validateAskGuardSetting(value any) error {
 	if !ok {
 		return nil
 	}
-	v, present := config[askguard.SettingKey]
-	if !present {
+	for _, key := range []string{askguard.SettingKey, askguard.ReversibleSettingKey} {
+		v, present := config[key]
+		if !present {
+			continue
+		}
+		s, _ := v.(string)
+		if _, err := askguard.ParseMode(s); err != nil {
+			return fmt.Errorf("%s must be off, warn or block", key)
+		}
+	}
+	return nil
+}
+
+const reversibleAskFix = "Standing Delivery Authorization (CHE-584) lets agents decide and execute reversible work without asking: do it and record it. Ask a person only for spend, deploy, publish, irreversible or product_direction, or use an approval-gated action request"
+
+// refuseReversibleAsk (CHE-5754) refuses a plain agent question whose class is
+// reversible: the ask is for work Standing Delivery Authorization already
+// allows. Action, proposal and batch requests are the approval-gated path
+// (CHE-5167) and stay open. The reversible_ask_guard setting decides: off allows,
+// warn logs, block refuses. Set it to off to revert; no data changes.
+func (handler *Handler) refuseReversibleAsk(ctx context.Context, issue db.Issue, input decisionRequestInput) error {
+	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction {
 		return nil
 	}
-	s, _ := v.(string)
-	_, err := askguard.ParseMode(s)
-	return err
+	workspace, err := handler.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	mode, err := askguard.ReversibleModeFromSettings(workspace.Settings)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case askguard.ModeBlock:
+		return decisionIntentRefusal{http.StatusUnprocessableEntity, "this asks a person to approve reversible work; " + reversibleAskFix}
+	case askguard.ModeWarn:
+		slog.Warn("ask guard: reversible decision request", "issue_id", uuidToString(issue.ID))
+	}
+	return nil
 }
