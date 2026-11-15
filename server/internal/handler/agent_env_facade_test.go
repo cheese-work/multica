@@ -218,13 +218,85 @@ func TestAgentEnvFacade_ErrorPathsAndLogsHoldNoPlantedValue(t *testing.T) {
 	// 412: stale revision.
 	bad(http.MethodPatch, testHandler.PatchAgentEnv, ownerID,
 		map[string]any{"set": planted, "if_revision": "v-stale-" + plantedEnvValue}, http.StatusPreconditionFailed)
-	// 409, 413, 500: no handler path produces them today (no conflict state, no body
-	// cap, no injectable store fault in this harness); the error writers are static
-	// strings, which the 400/403/412 cases above exercise.
+	// 500 is covered by TestAgentEnvFacade_InternalErrorBodiesAndLogsHoldNoPlantedValue.
+	// 409, 413: no handler path produces them today (no conflict state, no body cap).
 
 	// A successful write adds to the same log capture.
 	if w := putAgentEnvAs(ownerID, agentID, map[string]any{"custom_env": planted}); w.Code != http.StatusOK {
 		t.Fatal(w.Body.String())
+	}
+	assertNoPlanted(t, "slog output", logs.String())
+}
+
+// Check 4 (500) and check 6 (failure-path logs): a transaction-start failure and
+// an audit-write failure, each on PUT and PATCH with the planted value in the
+// request body, leave the 500 body and the captured slog output free of it.
+func TestAgentEnvFacade_InternalErrorBodiesAndLogsHoldNoPlantedValue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	logs := captureSlog(t)
+	agentID, ownerID := plantedEnvFixture(t, "env-facade-500")
+	planted := map[string]string{"PLANTED_KEY": plantedEnvValue, "NEW_KEY": plantedEnvValue}
+
+	call := func(h *Handler, method string, body any) *httptest.ResponseRecorder {
+		req := withURLParam(newRequestAs(ownerID, method, "/api/agents/"+agentID+"/env", body), "id", agentID)
+		w := httptest.NewRecorder()
+		if method == http.MethodPut {
+			h.UpdateAgentEnv(w, req)
+		} else {
+			h.PatchAgentEnv(w, req)
+		}
+		return w
+	}
+	bodies := map[string]any{
+		http.MethodPut:   map[string]any{"custom_env": planted},
+		http.MethodPatch: map[string]any{"set": planted},
+	}
+	expect500 := func(what string, w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("%s: status %d, want 500: %s", what, w.Code, w.Body.String())
+		}
+		assertNoPlanted(t, what+" 500 body", w.Body.String())
+	}
+
+	// Transaction-start failure.
+	for _, method := range []string{http.MethodPut, http.MethodPatch} {
+		failing := *testHandler
+		failing.TxStarter = &failNthBegin{delegate: testPool, failAt: 1}
+		expect500(method+" begin-tx failure", call(&failing, method, bodies[method]))
+	}
+
+	// Audit-write failure (activity_log insert raises), scoped to this agent.
+	for _, stmt := range []string{
+		`CREATE OR REPLACE FUNCTION che6044_fail_audit() RETURNS trigger AS $$
+		 BEGIN
+		   IF NEW.action = 'agent_env_updated' AND NEW.details->>'agent_id' = '` + agentID + `' THEN
+		     RAISE EXCEPTION 'synthetic audit outage';
+		   END IF;
+		   RETURN NEW;
+		 END $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER che6044_fail_audit BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION che6044_fail_audit()`,
+	} {
+		if _, err := testPool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("install failing audit trigger: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS che6044_fail_audit ON activity_log`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS che6044_fail_audit()`)
+	})
+	for _, method := range []string{http.MethodPut, http.MethodPatch} {
+		expect500(method+" audit failure", call(testHandler, method, bodies[method]))
+	}
+	if got := storedAgentEnv(t, agentID); len(got) != 1 || got["PLANTED_KEY"] != plantedEnvValue {
+		t.Fatalf("failed writes changed the stored env: %v", got)
+	}
+
+	if logs.Len() == 0 {
+		t.Fatal("expected failure-path log lines; the log capture saw nothing")
 	}
 	assertNoPlanted(t, "slog output", logs.String())
 }
