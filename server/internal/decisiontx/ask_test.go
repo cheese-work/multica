@@ -168,7 +168,7 @@ func validActionAskMap() map[string]any {
 		"why_human": "Owner-only: property create needs the workspace owner.", "steps": []any{"Run `multica property create --name Readiness`."},
 		"done_when": "The Readiness property is listed.", "default_if_no_reply": "Continue without the property.",
 		"source_issue_id": testIssueID, "source_comment_id": testCommentID,
-		"dry_run": map[string]any{"host": "x99 linux bash, multica 0.9", "result": "exit 0, property listed"},
+		"dry_run":      map[string]any{"host": "x99 linux bash, multica 0.9", "result": "exit 0, property listed"},
 		"state_claims": freshClaims(),
 	}
 }
