@@ -129,9 +129,10 @@ class WorkflowShape(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_runs_on_pull_request_target_so_the_definition_comes_from_the_default_branch(self):
-        self.assertRegex(self.text, r"(?m)^  pull_request_target:")
-        self.assertNotRegex(self.text, r"(?m)^  pull_request:")
+    def test_is_called_by_workflows_that_run_the_default_branch_definition(self):
+        # CHE-4385: no event of its own. pr-guards (pull_request_target) and security-gate (dispatch) call it.
+        self.assertRegex(self.text, r"(?m)^on:\n  workflow_call:\n\npermissions:")
+        self.assertNotRegex(self.text, r"(?m)^  (pull_request|pull_request_target):")
 
     def test_checks_out_only_the_base_and_never_the_head(self):
         self.assertEqual(self.text.count("actions/checkout@"), 1)
@@ -157,10 +158,10 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_a_finished_ci_run_re_runs_the_classifier(self):
-        # `status` events posted with GITHUB_TOKEN start no workflow run; workflow_run does fire for them.
-        # A security verdict that lands later refreshes the receipt through workflow_dispatch (security-gate.yml, CHE-4250).
-        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]")
+    def test_no_workflow_run_cascade_starts_the_classifier(self):
+        # CHE-4385: a finished CI run no longer starts a run of its own (the cascade doubled the CI run count). The
+        # receipt after CI and a verdict is taken by the security-gate.yml dispatch run, which calls this workflow.
+        self.assertNotRegex(self.text, r"(?m)^  workflow_run:")
         self.assertNotRegex(self.text, r"(?m)^  status:")
         self.assertNotRegex(self.text, r"(?m)^  issue_comment:")
 
@@ -170,7 +171,10 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
         self.assertEqual(classify["needs"], "find")
         self.assertEqual(classify["strategy"]["matrix"]["include"], "${{ fromJSON(needs.find.outputs.targets) }}")
         self.assertFalse(classify["strategy"]["fail-fast"])
-        self.assertEqual(classify["concurrency"], {"group": "mechanical-tier-${{ matrix.head }}", "cancel-in-progress": False})
+        # CHE-3990: no concurrency at all. GitHub keeps one running and one pending job per group, so a third event on
+        # a head cancels the pending job even with cancel-in-progress: false, and a cancelled run is the latest red check.
+        self.assertNotIn("concurrency", classify)
+        self.assertNotIn("concurrency", wf)
         self.assertEqual(classify["env"]["HEAD_SHA"], "${{ matrix.head }}")
         self.assertEqual(classify["env"]["PR_NUMBER"], "${{ matrix.pr }}")
 
@@ -193,7 +197,7 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
             out = Path(d) / "out"
             full = {**os.environ, "PATH": d + ":" + os.environ["PATH"], "GITHUB_REPOSITORY": "o/r",
                     "GITHUB_OUTPUT": str(out), "EVENT_NAME": event, "PR_NUMBER": "", "BASE_SHA": "", "HEAD_SHA": "",
-                    "RUN_NAME": "", "INPUT_PR": "", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
+                    "INPUT_PR": "", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
             done = subprocess.run(["bash", "-e", "-c", script], env=full, capture_output=True, text=True, timeout=120)
             targets = None
             if out.exists():
@@ -212,14 +216,8 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
         got = self.find("pull_request_target", PR_NUMBER="7", BASE_SHA=B, HEAD_SHA=A)
         self.assertEqual(got, [{"pr": 7, "base": B, "head": A}])
 
-    def test_a_finished_run_for_a_pull_request_head_names_that_pull_request_from_the_api(self):
-        self.assertEqual(self.find("workflow_run", HEAD_SHA=A, RUN_NAME="CI"), [{"pr": 7, "base": B, "head": A}])
-
-    def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing(self):
-        self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="CI"), [])
-
-    def test_a_pull_request_whose_head_moved_since_the_run_is_not_named(self):
-        self.assertEqual(self.find("workflow_run", HEAD_SHA="e" * 40, RUN_NAME="CI"), [])
+    def test_a_dispatch_for_a_pull_request_names_that_pull_request_from_the_api(self):
+        self.assertEqual(self.find("workflow_dispatch", INPUT_PR="7"), [{"pr": 7, "base": B, "head": A}])
 
     def shared_head_fixture(self):
         fx = find_fixture()
@@ -250,14 +248,14 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def test_a_failed_pull_request_read_fails_the_job_instead_of_dropping_it(self):
         fx = find_fixture()
         fx["fail"] = ["repos/o/r/pulls/7"]
-        done, targets = self.run_find("workflow_run", fx, HEAD_SHA=A, RUN_NAME="CI")
+        done, targets = self.run_find("workflow_dispatch", fx, INPUT_PR="7")
         self.assertNotEqual(done.returncode, 0, done.stdout)
         self.assertIsNone(targets)
 
     def test_more_pull_requests_than_a_matrix_can_hold_fails_the_job_instead_of_dropping_some(self):
         fx = find_fixture()
         fx["pulls_for"][A] = [{"number": n, "state": "open", "head": {"sha": A}} for n in range(100, 400)]
-        done, _ = self.run_find("workflow_run", fx, HEAD_SHA=A, RUN_NAME="CI")
+        done, _ = self.run_find("workflow_dispatch", fx, INPUT_PR="7")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("256", done.stdout + done.stderr)
 
@@ -299,10 +297,29 @@ class MulticaPathsMapToTiers(unittest.TestCase):
                  "scripts/install.test.sh", "scripts/daemon-artifact-version.test.mjs", "server/internal/daemon/daemon_test.go")
         self.assertEqual(protected({p: "x\n" for p in paths}), set())
 
-    def test_registry_is_valid_and_has_no_active_waiver_claim(self):
+    def test_a_decision_action_governance_change_is_tier_2_with_no_uncovered_path(self):
+        path = "server/internal/decisionaction/config.go"
+        mt, d, base, head = head_commit({path: "x\n"})
+        try:
+            receipt = mt.classify(d, base, head)
+            self.assertIsNone(receipt["error"])
+            self.assertEqual({m["path"] for m in receipt["capability_matches"]}, {path})
+            self.assertEqual(receipt["tier"], 2, receipt["tier_reasons"])
+            self.assertEqual(receipt["coverage"]["uncovered"], [])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_change_of_only_decision_action_tests_is_not_flagged(self):
+        self.assertEqual(protected({"server/internal/decisionaction/config_test.go": "x\n"}), set())
+
+    def test_registry_is_valid_and_covered_scopes_are_exact_paths(self):
         reg = json.loads((TIER_DIR / "registry.json").read_text())
         self.assertEqual(reg["schema"], 1)
-        self.assertEqual(reg["covered_scopes"], [])
+        scopes = reg["covered_scopes"]
+        self.assertEqual({s["analysis"] for s in scopes}, {"path-registry"} if scopes else set())
+        self.assertEqual(len({s["id"] for s in scopes}), len(scopes))
+        for s in scopes:
+            self.assertFalse(any(c in s["glob"] for c in "*?[{"), s)
 
 
 if __name__ == "__main__":

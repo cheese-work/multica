@@ -50,6 +50,8 @@ type ProjectResponse struct {
 	// DecisionDelegates are the member ids, besides the workspace owner, that a
 	// reversible decision on this project's issues may concern. Owner-only to set.
 	DecisionDelegates []string `json:"decision_delegates"`
+	// WorkflowSplit is the CHE-5238 A/B split; null means none.
+	WorkflowSplit *ProjectWorkflowSplit `json:"workflow_split"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -70,6 +72,7 @@ func projectToResponse(p db.Project) ProjectResponse {
 		WorkflowID:  uuidToPtr(p.WorkflowID),
 
 		DecisionDelegates: append([]string{}, uuidsToStrings(p.DecisionDelegates)...),
+		WorkflowSplit:     decodeWorkflowSplit(p.WorkflowSplit),
 	}
 }
 
@@ -431,20 +434,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		WorkflowID:  workflowID,
 	}
 
-	// Without resources, keep the simple non-tx path.
-	if len(req.Resources) == 0 {
-		project, err := h.Queries.CreateProject(r.Context(), createParams)
-		if err != nil {
-			h.writeProjectWriteError(w, r, err, "create")
-			return
-		}
-		resp := projectToResponse(project)
-		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
-		writeJSON(w, http.StatusCreated, resp)
-		return
-	}
-
-	// Transactional path: project + all resources are atomic.
+	// Project, bundled resources and their audit rows are atomic.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -456,6 +446,15 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	project, err := qtx.CreateProject(r.Context(), createParams)
 	if err != nil {
 		h.writeProjectWriteError(w, r, err, "create")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.create",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    project.ID,
+		After:       projectAuditFields(project),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.create")
 		return
 	}
 
@@ -487,10 +486,26 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to attach resource at index "+strconv.Itoa(i))
 			return
 		}
+		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind:        "project.resource.create",
+			WorkspaceID: row.WorkspaceID,
+			TargetID:    row.ID,
+			After:       projectResourceAuditFields(row),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "project.resource.create")
+			return
+		}
 		resourceRows = append(resourceRows, row)
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit project create")
+		return
+	}
+
+	if len(resourceRows) == 0 {
+		resp := projectToResponse(project)
+		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
+		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
 
@@ -670,8 +685,22 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
 	}
-	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent")
+	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent",
+		func(ctx context.Context, q *db.Queries, previous, updated db.Project) error {
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "project.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
+				Before: projectAuditFields(previous), After: projectAuditFields(updated),
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
 	if err != nil {
+		var auditErr auditWriteError
+		if errors.As(err, &auditErr) {
+			writeAuditFailure(w, r, auditErr.err, "project.update")
+			return
+		}
 		if writeProjectAdmissionError(w, err) {
 			return
 		}
@@ -787,6 +816,15 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: project.WorkspaceID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete project")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.delete",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    project.ID,
+		Before:      projectAuditFields(project),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

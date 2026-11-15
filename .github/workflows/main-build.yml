@@ -122,7 +122,7 @@ jobs:
   # holding one file named `multica`. Delete this job once every host runs a
   # server-only build.
   daemon-artifact:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_DAEMON_ARTIFACT || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -159,3 +159,13 @@ jobs:
           path: dist/multica
           if-no-files-found: error
           retention-days: 30
+
+  # CHE-4385: ran as a separate workflow run per push to main; as a called workflow it adds a job only.
+  # Cache maintenance runs after every completed build, as its old `workflow_run` trigger did.
+  cache-maintenance:
+    needs: [push-go-cache-warm, push-turbo-cache-warm, daemon-artifact]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/cache-maintenance.yml

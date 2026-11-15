@@ -158,22 +158,62 @@ func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issue
 			'none', 'member', gen_random_uuid(), n,
 			now() - make_interval(mins => n), now() - make_interval(mins => n)
 		FROM generate_series(1, %d) n`,
-		words(1, 6), words(2, 330), issues)
-	if _, err := pool.Exec(ctx, issueSQL, wsID, benchVocabulary); err != nil {
+		words(1, 6), words(2, 110), issues)
+	// Bulk rows skip the per-row triggers (they cost ~3 ms each on a GIN-indexed
+	// table); the search side tables are filled set-based below instead.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	// Runs before Release, so a failed seed never returns a trigger-less conn to the pool.
+	defer conn.Exec(context.WithoutCancel(ctx), "RESET session_replication_role")
+	if _, err := conn.Exec(ctx, "SET session_replication_role = replica"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, issueSQL, wsID, benchVocabulary); err != nil {
 		t.Fatalf("seed issues: %v", err)
 	}
 
 	commentSQL := fmt.Sprintf(`
 		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, created_at, updated_at)
-		SELECT $1::uuid, (SELECT id FROM issue WHERE workspace_id = $1 AND number = 1 + (n %% %d)),
+		SELECT $1::uuid, i.id,
 			'member', gen_random_uuid(),
 			CASE WHEN n %% 200 = 0 THEN 'login bug ' WHEN n %% 150 = 1 THEN 'login ' WHEN n %% 130 = 2 THEN 'bug '
 				WHEN n %% 180 = 3 THEN 'đăng nhập ' WHEN n %% 240 = 4 THEN 'dang nhap ' ELSE '' END || %s,
 			now() - make_interval(secs => n), now() - make_interval(secs => n)
-		FROM generate_series(1, %d) n`,
-		issues, words(3, 50), comments)
-	if _, err := pool.Exec(ctx, commentSQL, wsID, benchVocabulary); err != nil {
+		FROM generate_series(1, %d) n
+		JOIN issue i ON i.workspace_id = $1 AND i.number = 1 + (n %% %d)`,
+		words(3, 10), comments, issues)
+	if _, err := conn.Exec(ctx, commentSQL, wsID, benchVocabulary); err != nil {
 		t.Fatalf("seed comments: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "RESET session_replication_role"); err != nil {
+		t.Fatal(err)
+	}
+	// Same projection as issue_search_text_sync / comment_search_text_sync.
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO issue_search_text (issue_id, workspace_id, title_folded, description_folded, title_accents, description_accents)
+		WITH f AS MATERIALIZED (
+			SELECT id, workspace_id, title, description, search_fold(title) AS t, search_fold(description) AS d
+			FROM issue WHERE workspace_id = $1)
+		SELECT id, workspace_id, t, d,
+			CASE WHEN lower(COALESCE(title, '')) <> t THEN lower(COALESCE(title, '')) END,
+			CASE WHEN lower(COALESCE(description, '')) <> d THEN lower(COALESCE(description, '')) END
+		FROM f
+		ON CONFLICT (issue_id) DO NOTHING`, wsID); err != nil {
+		t.Fatalf("seed issue search text: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO comment_search_text (comment_id, workspace_id, issue_id, created_at, content_folded, content_accents)
+		WITH f AS MATERIALIZED (
+			SELECT id, workspace_id, issue_id, created_at, content, search_fold(content) AS c
+			FROM comment WHERE workspace_id = $1)
+		SELECT id, workspace_id, issue_id, created_at, c,
+			CASE WHEN lower(COALESCE(content, '')) <> c THEN lower(COALESCE(content, '')) END
+		FROM f
+		ON CONFLICT (comment_id) DO NOTHING`, wsID); err != nil {
+		t.Fatalf("seed comment search text: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `ANALYZE issue; ANALYZE comment; ANALYZE issue_search_text; ANALYZE comment_search_text`); err != nil {
 		t.Fatal(err)

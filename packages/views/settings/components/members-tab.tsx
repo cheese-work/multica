@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -15,6 +15,7 @@ import {
   Trash2,
   User,
   UserMinus,
+  Users,
   X,
 } from "@multica/ui/icons";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -90,6 +91,7 @@ import {
 } from "@multica/core/workspace/queries";
 import { api, errorCode } from "@multica/core/api";
 import { useLocale, useT } from "../../i18n";
+import { ObjectSectionEmpty } from "../../layout/object-page";
 import {
   SettingsCard,
   SettingsReadOnlyNotice,
@@ -489,6 +491,18 @@ export function MembersTab() {
 
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
   const canManageWorkspace = currentMember?.role === "owner" || currentMember?.role === "admin";
+
+  // The Team panel's invite button links here with `?invite=1`; it waits for
+  // the member list so only managers get the dialog.
+  const inviteRequested = navigation?.searchParams.has("invite") ?? false;
+  useEffect(() => {
+    if (!inviteRequested || !navigation || !currentMember) return;
+    if (canManageWorkspace) setInviteOpen(true);
+    const params = new URLSearchParams(navigation.searchParams);
+    params.delete("invite");
+    navigation.replace(`${navigation.pathname}?${params}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consume the intent once the role is known
+  }, [inviteRequested, currentMember?.role]);
   const isOwner = currentMember?.role === "owner";
   const ownerCount = members.filter((m) => m.role === "owner").length;
   // Only owners/admins may list share links; skip the request for plain
@@ -990,9 +1004,10 @@ export function MembersTab() {
               ))}
             </SettingsCard>
           ) : (
-            <EmptyList>
-              {needle ? t(($) => $.members.no_results) : t(($) => $.members.no_members)}
-            </EmptyList>
+            <ObjectSectionEmpty
+              icon={needle ? Search : Users}
+              description={needle ? t(($) => $.members.no_results) : t(($) => $.members.no_members)}
+            />
           )
         ) : activeView === "invitations" ? (
           invitations.length > 0 ? (
@@ -1009,7 +1024,7 @@ export function MembersTab() {
               ))}
             </SettingsCard>
           ) : (
-            <EmptyList>{t(($) => $.members.no_invitations)}</EmptyList>
+            <ObjectSectionEmpty icon={Mail} description={t(($) => $.members.no_invitations)} />
           )
         ) : shareLinks.length > 0 ? (
           <SettingsCard>
@@ -1025,7 +1040,7 @@ export function MembersTab() {
             ))}
           </SettingsCard>
         ) : (
-          <EmptyList>{t(($) => $.members.no_share_links)}</EmptyList>
+          <ObjectSectionEmpty icon={Link} description={t(($) => $.members.no_share_links)} />
         )}
       </section>
 
@@ -1316,13 +1331,5 @@ export function MembersTab() {
         </AlertDialogContent>
       </AlertDialog>
     </SettingsTab>
-  );
-}
-
-function EmptyList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-xl border border-dashed border-surface-border px-4 py-10 text-center text-body text-muted-foreground">
-      {children}
-    </div>
   );
 }

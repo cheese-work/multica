@@ -62,7 +62,7 @@ for (const colour of colours) {
   const mount = service.volumes.find((volume) => volume.target === "/app/feature-flags.yaml");
   ok(mount?.type === "bind" && mount.source === flagsFile && mount.read_only === true, `${colour} generic flags mount`);
   const withoutFlags = structuredClone(service);
-  delete withoutFlags.environment.MULTICA_FEATURE_FLAGS_FILE;
+  for (const k of ["MULTICA_FEATURE_FLAGS_FILE", "MULTICA_WEBAUTHN_RP_ID", "MULTICA_WEBAUTHN_ORIGINS", "MULTICA_PASSKEY_ENROLL_KEY", "MULTICA_REVIEW_ADMISSION", "MULTICA_REVIEW_ADMISSION_CHECKS", "MULTICA_REVIEW_ADMISSION_REVIEWERS"]) delete withoutFlags.environment[k]; // passkey keys: CHE-4787; admission keys: CHE-4982
   withoutFlags.volumes = withoutFlags.volumes.filter((volume) => volume.target !== "/app/feature-flags.yaml");
   eq(withoutFlags, baseline, `${colour} flags-only leaves other fields unchanged`);
 }
@@ -102,7 +102,7 @@ for (const c of colours) {
   // Jev stays scoped: no global override, no legacy credential.
   ok(!("FF_JEV_ENABLED" in env) && !("JEV_API_KEY" in env), `${c} carries a global Jev override`);
   // Everything else on the service is unchanged.
-  const strip = (x) => { const y = structuredClone(x); for (const k of ["MULTICA_JEV_SECRET_KEY", "MULTICA_FEATURE_FLAGS_FILE", "DATABASE_URL"]) delete y.environment[k]; delete y.volumes; delete y.networks; return y; };
+  const strip = (x) => { const y = structuredClone(x); for (const k of ["MULTICA_JEV_SECRET_KEY", "MULTICA_FEATURE_FLAGS_FILE", "DATABASE_URL", "MULTICA_WEBAUTHN_RP_ID", "MULTICA_WEBAUTHN_ORIGINS", "MULTICA_PASSKEY_ENROLL_KEY", "MULTICA_REVIEW_ADMISSION", "MULTICA_REVIEW_ADMISSION_CHECKS", "MULTICA_REVIEW_ADMISSION_REVIEWERS"]) delete y.environment[k]; delete y.volumes; delete y.networks; return y; };
   eq(strip(s), strip(off.services[`backend-${c}`]), `${c} other fields`);
   eq(on.services[`frontend-${c}`], off.services[`frontend-${c}`], `frontend-${c}`);
 }

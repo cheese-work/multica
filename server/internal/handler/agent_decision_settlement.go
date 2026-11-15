@@ -104,8 +104,13 @@ func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID
 		return err
 	}
 	// The notice is delivered by the worker after this transaction commits.
-	_, err = tx.Exec(ctx, `INSERT INTO decision_agent_notice(instance_id,workspace_id,issue_id) VALUES($1,$2,$3) ON CONFLICT(instance_id) DO NOTHING`, instance, workspaceID, issueID)
-	return err
+	if _, err = tx.Exec(ctx, `INSERT INTO decision_agent_notice(instance_id,workspace_id,issue_id) VALUES($1,$2,$3) ON CONFLICT(instance_id) DO NOTHING`, instance, workspaceID, issueID); err != nil {
+		return err
+	}
+	if gate == agentDecisionGateTestFirstRed {
+		return createWaiverFollowup(ctx, tx, workspaceID, issueID, instance, scope)
+	}
+	return nil
 }
 
 type agentDecisionBinding struct {

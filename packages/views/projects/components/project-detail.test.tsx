@@ -21,7 +21,10 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
   copyText: mocks.copyText,
 }));
 
-vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
+vi.mock("../../workflows/project-workflow-menu", () => ({
+  ProjectWorkflowMenuHost: ({ children }: { children: (submenu: null) => React.ReactNode }) => children(null),
+}));
+vi.mock("../../workflows/project-workflow-row", () => ({ ProjectWorkflowControl: () => null }));
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: { queryKey?: readonly unknown[] }) => {
@@ -239,12 +242,25 @@ vi.mock("./project-due-date-picker", () => ({
 }));
 
 vi.mock("../../issues/surface/issue-surface", () => ({
-  IssueSurface: () => null,
+  IssueSurface: ({
+    renderHeader,
+  }: {
+    renderHeader?: (ctx: { controller: unknown }) => React.ReactNode;
+  }) => <>{renderHeader?.({ controller: {} })}</>,
 }));
 
-vi.mock("../../layout/breadcrumb-header", () => ({
-  BreadcrumbHeader: ({ actions }: { actions: React.ReactNode }) => (
-    <header>{actions}</header>
+vi.mock("../../issue-views/view-header", () => ({
+  IssueViewHeader: ({
+    baseMenu,
+    trailing,
+  }: {
+    baseMenu?: React.ReactNode;
+    trailing?: React.ReactNode;
+  }) => (
+    <header>
+      {baseMenu}
+      {trailing}
+    </header>
   ),
 }));
 

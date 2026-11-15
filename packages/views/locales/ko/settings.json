@@ -315,10 +315,6 @@
         "label": "알림 보관",
         "description": "열린 인박스 알림을 보관합니다. 보관함을 보는 중에는 보관을 해제합니다."
       },
-      "searchChat": {
-        "label": "채팅 검색",
-        "description": "채팅 페이지의 검색창으로 이동합니다."
-      },
       "send": {
         "label": "보내기",
         "description": "새 태스크 생성에도 사용됩니다."
@@ -395,7 +391,8 @@
   },
   "chat": {
     "floating_label": "플로팅 채팅 창",
-    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다."
+    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다.",
+    "recent_agents_label": "새 채팅의 최근 에이전트"
   },
   "issue": {
     "opening": {
@@ -473,7 +470,8 @@
       "code": "코드",
       "channels": "메신저",
       "apps": "연결된 앱",
-      "workflows": "워크플로"
+      "workflows": "워크플로",
+      "provider_breakers": "공급자 차단기"
     },
     "groups": {
       "personal": "개인",
@@ -761,6 +759,7 @@
     "add": "패스키 추가",
     "code_hint": "이메일로 코드를 보냈습니다. 코드를 입력한 뒤 브라우저 안내에 따라 패스키를 만드세요.",
     "code_label": "이메일 코드",
+    "attempt_tag": "시도 {{tag}}: 제목이 [{{tag}}]로 끝나는 이메일을 사용하세요.",
     "confirm": "확인",
     "cancel": "취소",
     "empty": "아직 패스키가 없습니다.",
@@ -873,13 +872,23 @@
     "auto_compact_hint": "웹 DM은 컨텍스트가 임계값에 도달하면 답변 후 새 DM으로 이어집니다.",
     "auto_compact_threshold_label": "임계값 (%)",
     "auto_compact_threshold_invalid": "50에서 90 사이의 정수를 입력하세요.",
+    "auto_compact_tokens_200k_label": "임계값, 200k 모델 (토큰)",
+    "auto_compact_tokens_1m_label": "임계값, 1M 모델 (토큰)",
+    "auto_compact_tokens_200k_invalid": "100000에서 200000 사이의 정수를 입력하세요.",
+    "auto_compact_tokens_1m_invalid": "100000에서 400000 사이의 정수를 입력하세요.",
     "auto_compact_readonly_on": "켜짐, {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "켜짐, {{small}} / {{large}} 토큰",
     "auto_compact_readonly_off": "꺼짐",
     "agent_decisions_label": "에이전트 결정",
     "agent_decisions_hint": "에이전트가 허용 목록에 있는 게이트를 대신 결정할 수 있습니다. 각 결정은 일일 브리프에 표시되며 24시간 동안 거부할 수 있습니다.",
     "agent_decisions_stopped_title": "결정이 자동으로 중지되었습니다",
     "agent_decisions_stopped_description": "사유: {{reason}}. 결정을 켜면 이 기록이 지워집니다.",
     "agent_decisions_stopped_confirm": "켜기",
+    "runtime_profile_label": "런타임 프로필",
+    "runtime_profile_hint": "에이전트 CLI 설정 방식의 워크스페이스 기본값입니다. Managed는 작업마다 최소 구성 홈을 만듭니다. 관리형 어댑터가 없는 도구는 Managed에서 실패하므로, 해당 에이전트에는 개인을 명시적으로 지정하세요.",
+    "runtime_profile_personal": "개인",
+    "runtime_profile_managed": "관리형",
+    "runtime_profile_inherit": "워크스페이스 기본값",
     "idle_guard_label": "유휴 이슈 가드",
     "idle_guard_hint": "실행도 웨이크업도 없는 시작된 이슈를 N시간 후에 이동합니다. Shadow는 기록만 합니다.",
     "idle_guard_off": "꺼짐",
@@ -903,7 +912,18 @@
     "prefix_new_label": "새 접두사",
     "prefix_rule": "영문자와 숫자만, 최대 10자까지 사용할 수 있습니다.",
     "prefix_confirm_action": "{{prefix}}(으)로 변경",
-    "prefix_external_warning": "PR 제목, 브랜치 이름, 문서, 채팅에 있는 이전 키({{oldExample}} 등)는 업데이트되지 않으므로 해당 링크가 작동하지 않습니다."
+    "prefix_external_warning": "PR 제목, 브랜치 이름, 문서, 채팅에 있는 이전 키({{oldExample}} 등)는 업데이트되지 않으므로 해당 링크가 작동하지 않습니다.",
+    "scheduling_label": "스케줄링",
+    "scheduling_hint": "일시 중지하면 모든 에이전트가 새 실행을 가져가지 않습니다. 실행 중인 작업은 끝나고 대기 중인 작업은 기다립니다.",
+    "scheduling_pause_action": "워크스페이스 일시 중지",
+    "scheduling_resume_action": "워크스페이스 재개",
+    "scheduling_pause_title": "이 워크스페이스를 일시 중지할까요?",
+    "scheduling_pause_description": "재개할 때까지 어떤 에이전트도 새 실행을 가져가지 않습니다. 대기 중인 작업은 유지됩니다.",
+    "scheduling_keep": "계속 실행",
+    "scheduling_confirm": "일시 중지",
+    "scheduling_paused_toast": "워크스페이스를 일시 중지했습니다",
+    "scheduling_resumed_toast": "워크스페이스를 재개했습니다",
+    "scheduling_failed_toast": "워크스페이스 스케줄링을 변경하지 못했습니다"
   },
   "export_privacy": {
     "title": "내보내기 개인정보 보호",
@@ -1552,6 +1572,27 @@
     "byo_credentials_rejected": "WeCom이 이 Bot ID와 시크릿을 거부했어요. WeCom 관리 콘솔에서 두 값을 확인하고, 장기 연결이 켜진 스마트 봇인지도 확인해 주세요.",
     "byo_credentials_unverifiable": "WeCom에 연결하지 못해 이 봇을 확인할 수 없었어요. 인증 정보는 변경되지 않았어요. 잠시 후 다시 시도해 주세요.",
     "byo_install_failed": "봇을 저장하지 못했어요. 저희 쪽 문제입니다. 인증 정보는 변경되지 않았어요. 다시 시도해 보시고, 계속 실패하면 지원팀에 문의해 주세요.",
+    "scan_option_title": "새 봇 만들기",
+    "scan_option_description": "WeCom에서 QR 코드를 스캔해 새 스마트 봇을 만들고 연결합니다.",
+    "byo_option_title": "기존 봇 연결",
+    "byo_option_description": "이미 만든 스마트 봇의 Bot ID와 시크릿을 입력하세요.",
+    "scan_dialog_title": "QR 코드로 WeCom 봇 만들기",
+    "scan_starting": "QR 코드를 준비하는 중…",
+    "scan_hint": "휴대폰에서 WeCom을 열고 이 QR 코드를 스캔해 봇을 만드세요.",
+    "scan_expires_in": "{{seconds}}초 후 만료",
+    "scan_success_toast": "WeCom 봇을 만들고 연결했습니다",
+    "scan_again": "새 코드 받기",
+    "scan_close": "닫기",
+    "scan_error_expired": "스캔하기 전에 QR 코드가 만료되었습니다.",
+    "scan_error_generate_failed": "WeCom에서 QR 코드를 가져올 수 없습니다. 잠시 후 다시 시도하세요.",
+    "scan_error_integration_unconfigured": "이 서버에서는 QR 설치가 활성화되지 않았습니다.",
+    "scan_error_installation_conflict": "이 봇은 이미 다른 곳에 연결되어 있습니다. 그곳에서 연결을 해제한 뒤 다시 스캔하세요.",
+    "scan_error_bind_failed": "WeCom에서 봇은 만들어졌지만 이 에이전트에 연결하지 못했습니다. WeCom에서 봇을 삭제한 뒤 다시 스캔하세요.",
+    "scan_error_wecom_protocol_error": "WeCom이 예상치 못한 응답을 반환했습니다.",
+    "scan_error_internal_error": "문제가 발생했습니다. 다시 시도하세요.",
+    "scan_error_session_lost": "이 설치 세션을 사용할 수 없습니다. 새 코드를 받으세요.",
+    "scan_error_already_connected": "이 에이전트에는 이미 WeCom 봇이 연결되어 있습니다. 먼저 연결을 해제하세요.",
+    "scan_error_rate_limited": "시도 횟수가 너무 많습니다. 몇 분 후에 다시 시도하세요.",
     "byo_failed_toast": "WeCom 봇을 연결하지 못했어요"
   },
   "integrations": {
@@ -1612,5 +1653,71 @@
     "mcp": "관리자가 추가해 워크스페이스에서 공유하고, 에이전트별로 할당합니다.",
     "apps": "내 계정으로 Composio를 통해 승인하고, 내가 소유한 에이전트에서 사용합니다.",
     "plugins": "설치하면 도구, 예약 훅, 저장소를 추가할 수 있으며 플러그인마다 권한을 부여합니다."
+  },
+  "provider_breakers": {
+    "description": "차단기는 서버 오류가 반복된 공급자로 가는 새 작업을 막고, 스스로 다시 확인합니다.",
+    "empty": "이 워크스페이스에서 작동한 차단기가 없습니다.",
+    "load_error": "차단기를 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "columns": {
+      "provider": "공급자",
+      "state": "상태",
+      "reason": "사유",
+      "failures": "실패 횟수",
+      "opened": "열린 시각",
+      "next_probe": "다음 확인",
+      "last_success": "마지막 성공",
+      "actions": "작업"
+    },
+    "states": {
+      "closed": "닫힘",
+      "open": "열림",
+      "half_open": "반열림"
+    },
+    "none": "—",
+    "reset": "초기화",
+    "reset_label": "{{provider}} 차단기 초기화",
+    "reset_title": "{{provider}} 차단기를 초기화할까요?",
+    "reset_description": "차단기가 바로 닫히고 새 작업이 다시 {{provider}}에 전달됩니다. 공급자가 계속 실패하면 차단기가 다시 작동합니다. 초기화는 감사 로그에 기록됩니다.",
+    "reset_cancel": "취소",
+    "reset_confirm": "차단기 초기화",
+    "resetting": "초기화 중…",
+    "reset_success": "차단기를 초기화했습니다.",
+    "reset_error": "차단기를 초기화하지 못했습니다."
+  },
+  "delegated_writes": {
+    "title": "위임된 거버넌스 쓰기",
+    "description": "어떤 에이전트가 어떤 거버넌스 필드에 쓸 수 있는지, 그리고 사람이 먼저 결정해야 하는지 설정합니다.",
+    "edit": "규칙 편집",
+    "setup": "위임 설정",
+    "member_note": "워크스페이스 소유자와 관리자만 변경할 수 있습니다. 회원님은 멤버입니다. 소유자에게 변경을 요청하세요.",
+    "agents_count_other": "에이전트 {{count}}개",
+    "fields_count_other": "필드 {{count}}개",
+    "summary_decision": "{{agents}}가 {{fields}}에 쓸 수 있습니다. 모든 변경은 결정 카드에서 대기합니다.",
+    "summary_direct": "{{agents}}가 {{fields}}에 결정 카드 없이 직접 쓸 수 있습니다.",
+    "empty_title": "거버넌스 필드에 쓸 수 있는 에이전트가 없습니다.",
+    "empty_body": "에이전트는 변경을 제안할 수 있습니다. 적용은 사람만 할 수 있습니다. 에이전트를 허용하면 끄지 않는 한 모든 변경이 결정 카드에서 대기합니다.",
+    "col_agent": "에이전트",
+    "may_write": "쓰기 가능",
+    "read_only": "읽기 전용",
+    "writes_directly": "직접 쓰기",
+    "new_tag": "신규",
+    "others_read_only": "그 밖의 에이전트: 모든 거버넌스 필드가 읽기 전용입니다.",
+    "allowed_agents": "허용된 에이전트",
+    "add_agent": "에이전트 추가",
+    "remove_agent": "{{name}} 제거",
+    "archived": "보관됨",
+    "unknown_agent": "알 수 없는 에이전트",
+    "allowed_fields": "허용된 필드",
+    "requires_decision": "사람의 결정 필요",
+    "requires_decision_on": "작성된 변경은 결정 카드에서 대기합니다. 한 번 클릭으로 적용합니다.",
+    "requires_decision_off": "먼저 검토하는 사람이 없습니다.",
+    "confirm_direct": "에이전트가 결정 없이 이 필드에 쓰게 된다는 점을 이해했습니다.",
+    "unsaved": "저장되지 않은 변경",
+    "cancel": "취소",
+    "save": "변경 저장",
+    "not_saved": "저장되지 않았습니다. 변경된 것은 없습니다.",
+    "load_failed": "규칙을 불러오지 못했습니다.",
+    "save_failed": "규칙을 저장하지 못했습니다."
   }
 }

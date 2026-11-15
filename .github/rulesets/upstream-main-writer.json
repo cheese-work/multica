@@ -1,4 +1,4 @@
 {"name":"upstream-main writer","target":"branch","enforcement":"active",
  "conditions":{"ref_name":{"include":["refs/heads/upstream-main"],"exclude":[]}},
- "bypass_actors":[{"actor_id":15368,"actor_type":"Integration","bypass_mode":"always"}],
+ "bypass_actors":[{"actor_id":4093382,"actor_type":"Integration","bypass_mode":"always"}],
  "rules":[{"type":"update"}]}

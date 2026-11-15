@@ -11,7 +11,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func (handler *Handler) DisclaimDecisionAnswer(writer http.ResponseWriter, request *http.Request) {
@@ -49,11 +48,7 @@ func (handler *Handler) DisclaimDecisionAnswer(writer http.ResponseWriter, reque
 		writeDecisionError(writer, err, "decision disclaim")
 		return
 	}
-	for _, comment := range result.Comments {
-		handler.publish(protocol.EventCommentCreated, workspaceID, "member", uuidToString(userID), map[string]any{"comment": commentToResponse(comment, nil, nil)})
-	}
-	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "member", uuidToString(userID))
-	handler.publishDecisionAnswerUpdated(workspaceID, "member", uuidToString(userID), result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	handler.publishWithdrawalEvents(workspaceID, "member", uuidToString(userID), result, nil)
 	writeJSON(writer, http.StatusOK, result.Answer)
 }
 
@@ -117,6 +112,9 @@ func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspac
 	}
 	result, err := decisiontx.Withdraw(ctx, queries, current, answer, session.Status, "human", userID)
 	if err != nil {
+		return empty, err
+	}
+	if err := withdrawCoveredAnswers(ctx, queries, current, &result, userID); err != nil {
 		return empty, err
 	}
 	if len(result.Comments) > 0 && root != nil {

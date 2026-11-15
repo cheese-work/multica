@@ -158,8 +158,42 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(gh.call_count, 3)
 
 
+def sched(created):
+    return {"id": 30, "event": "schedule", "created_at": created, "html_url": "https://example.test/run/30"}
+
+
+def at(h, m=0, day=5):
+    return dt.datetime(2026, 11, day, h, m, tzinfo=dt.timezone.utc)
+
+
+class MissedSlotTest(unittest.TestCase):
+    """cd-deploy.yml slots: 01:17, 05:17, 09:17, 13:17, 17:17, 21:17 UTC (08:17 ... 04:17 ICT). CHE-5182 reopened."""
+
+    def missed(self, now, runs):
+        return fresh.missed_slot(now, runs)
+
+    def test_slot_passed_over_30_minutes_with_no_schedule_run_is_missed(self):
+        self.assertEqual(self.missed(at(13, 48), []), at(13, 17))
+
+    def test_inside_the_30_minute_grace_nothing_is_missed(self):
+        self.assertIsNone(self.missed(at(13, 46), [sched("2026-11-05T09:20:00Z")]))
+
+    def test_a_run_created_since_the_slot_clears_it(self):
+        self.assertIsNone(self.missed(at(13, 48), [sched("2026-11-05T13:22:00Z")]))
+
+    def test_a_run_from_the_previous_slot_does_not_clear_the_new_one(self):
+        self.assertEqual(self.missed(at(13, 48), [sched("2026-11-05T09:20:00Z")]), at(13, 17))
+
+    def test_slot_before_midnight_is_found_after_midnight(self):
+        self.assertEqual(self.missed(at(21, 50, day=5), []), at(21, 17))
+        self.assertEqual(self.missed(at(0, 30, day=6), []), at(21, 17, day=5))
+
+    def test_off_slot_hours_use_the_latest_slot(self):
+        self.assertEqual(self.missed(at(3, 0), []), at(1, 17))
+
+
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", schedule_runs=(sched("2026-11-05T09:20:00Z"),), any_runs=(), dispatch_fails=False, log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
         commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
@@ -167,12 +201,18 @@ class MainTest(unittest.TestCase):
         def fake(*args):
             seen.append(args)
             path = args[-1]
-            if args[:2] == ("run", "rerun"):
+            if args[:2] == ("workflow", "run") and dispatch_fails:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403")
+            if args[:2] in (("run", "rerun"), ("workflow", "run")):
                 return ""
             if "/commits/main" in path:
                 return json.dumps(commit)
             if "workflows/cd-qualification.yml/runs" in path:
                 return json.dumps({"workflow_runs": qual_runs})
+            if "workflows/cd-deploy.yml/runs" in path and "event=schedule" in path:
+                return json.dumps({"workflow_runs": list(schedule_runs)})
+            if "workflows/cd-deploy.yml/runs" in path and "branch=main" in path:
+                return json.dumps({"workflow_runs": list(any_runs)})
             if "workflows/cd-deploy.yml/runs" in path:
                 self.assertIn("status=success", path)
                 return json.dumps({"workflow_runs": deploy_runs})
@@ -217,6 +257,50 @@ class MainTest(unittest.TestCase):
         rc, out, _ = self.run_main([qual("success")], [deploy("failure")], 120, log="nothing useful\n")
         self.assertEqual(rc, 1)
         self.assertIn("::error::", out)
+
+
+    def test_missed_deploy_slot_alerts_even_when_main_is_deployed(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+        self.assertIn("09:17 UTC", out)
+        self.assertIn("16:17 ICT", out)
+
+    DISPATCH = ("workflow", "run", "cd-deploy.yml", "--ref", "main", "-f", "schedule_backup=true", "-R", "cheese-work/multica")
+
+    @staticmethod
+    def dispatches(seen):
+        return [a for a in seen if a[:2] == ("workflow", "run")]
+
+    def test_missed_slot_dispatches_cd_deploy_once_and_stays_red(self):
+        rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[])
+        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::cd-deploy.yml slot 09:17 UTC", out)
+        self.assertIn("backup dispatch", out)
+
+    def test_no_second_dispatch_when_a_cd_deploy_run_started_since_the_slot(self):
+        # the run an earlier alarm dispatched (or a workflow_run deploy) is created after 09:17 UTC
+        started = {"id": 40, "event": "workflow_dispatch", "created_at": "2026-11-05T09:50:00Z"}
+        rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[], any_runs=[started])
+        self.assertEqual(self.dispatches(seen), [])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+
+    def test_a_run_from_before_the_slot_does_not_block_the_dispatch(self):
+        old = {"id": 41, "event": "schedule", "created_at": "2026-11-05T05:20:00Z"}
+        _, _, seen = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[], any_runs=[old])
+        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
+
+    def test_no_dispatch_when_the_slot_ran(self):
+        _, _, seen = self.run_main([qual("success")], [deploy("success")], 300)
+        self.assertEqual(self.dispatches(seen), [])
+
+    def test_failed_dispatch_keeps_the_alarm_and_the_rerun(self):
+        rc, out, seen = self.run_main([qual("failure")], [], 30, schedule_runs=[], dispatch_fails=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("backup dispatch failed", out)
+        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [("run", "rerun", "10", "--failed", "-R", "cheese-work/multica")])
 
 
 class WorkflowFileTest(unittest.TestCase):

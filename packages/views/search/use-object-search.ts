@@ -63,7 +63,12 @@ function memberScore(member: MemberWithUser, query: string): number {
  * the palette does not otherwise need (autopilots, chats, skills) load only
  * once the user types.
  */
-export function useObjectSearch(query: string, open: boolean): ObjectHits & { directory: ReturnType<typeof useActorDirectory> } {
+export function useObjectSearch(
+  query: string,
+  open: boolean,
+  /** Replaces the default "not archived" rule for chat title hits (filter chips). */
+  chatFilter?: (session: ChatSession) => boolean,
+): ObjectHits & { directory: ReturnType<typeof useActorDirectory> } {
   const wsId = useWorkspaceId();
   const directory = useActorDirectory(open);
   const typing = open && query.length > 0;
@@ -88,7 +93,7 @@ export function useObjectSearch(query: string, open: boolean): ObjectHits & { di
         5,
       ),
       chats: rank(
-        chats.filter((c) => c.status !== "archived"),
+        chats.filter(chatFilter ?? ((c) => c.status !== "archived")),
         (c) => scoreText(c.title, query),
         5,
       ),
@@ -102,7 +107,7 @@ export function useObjectSearch(query: string, open: boolean): ObjectHits & { di
         50,
       ),
     };
-  }, [autopilots, chats, directory, query, skills, workspaces, wsId]);
+  }, [autopilots, chatFilter, chats, directory, query, skills, workspaces, wsId]);
 
   return { ...hits, directory };
 }

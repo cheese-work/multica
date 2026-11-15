@@ -10,37 +10,29 @@
 # trust itself unless its bytes equal the base revision's copy, so a PR that edits the classifier or registry is
 # Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
 #
-# Refresh (CHE-3339, CHE-4250): a receipt records required-check state at classification time, so one taken while CI is
-# pending stops verifying once CI finishes. Only a receipt taken after CI finishes is useful, so `pull_request_target`
-# runs on reopen and ready only, and `workflow_run` re-classifies when CI completes. (A `status` or `issue_comment`
-# trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
-# A security verdict that lands after CI asks for a refresh through `workflow_dispatch` (security-gate.yml, job
-# `refresh-mechanical-tier`); it names one pull request. Runs for `main` and merge-queue branches are skipped at the
-# trigger: they have no open pull request for their head SHA.
-# `find` names every open pull request whose head is the run's head SHA (or the dispatched pull request's head SHA, so a
+# Runs (CHE-4385): never as a run of its own. GitHub disabled Actions at about 2,500 created runs a day, so this is a
+# reusable workflow: pr-guards.yml calls it at push time, and security-gate.yml calls it after a verdict dispatch. A
+# receipt records required-check state at classification time, so the push-time receipt usually reads Tier 1 (CI is
+# pending); the useful receipt is the one a `workflow_dispatch` of security-gate.yml takes once CI and the verdict exist.
+# There is no `workflow_run`, `status` or `issue_comment` trigger.
+# `find` names every open pull request whose head is the dispatched pull request's head SHA (so a
 # sibling PR on the same head is refreshed too). The pull request, base SHA and head SHA come from the API, `find` checks
 # nothing out, and each `mechanical-tier` job still checks out only its base. The dispatch input is matched against a
 # digits-only pattern before use. The run records the fresh receipt in its step summary; it attaches no check to the
 # pull request. Merge decisions use the latest receipt for the exact head, re-verified with `verify`.
 #
 # Runner (CHE-3603): GitHub-hosted. The repo is public, so minutes are free, and 61 queued runs no longer block X99 runners.
+# CHE-3990: no `concurrency` block, on purpose. A cancelled run becomes the latest check for its head and shows red
+# even after an earlier run passed. GitHub keeps one running and one pending job per group, so a third event on a head
+# cancels the pending job even with `cancel-in-progress: false`. Every run is an idempotent receipt: run them all.
+# Do not add a shared group back.
+#
 # The classifier excludes its own check name from the required-check set, so it is never its own evidence.
 
 name: mechanical-tier
 
 on:
-  pull_request_target:
-    types: [reopened, ready_for_review]
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches-ignore: [main, 'gh-readonly-queue/**']
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: Pull request number to re-classify
-        required: true
-        type: string
+  workflow_call:
 
 permissions:
   contents: read
@@ -53,16 +45,13 @@ jobs:
     name: mechanical-tier-find
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # CHE-4250: a cancelled or skipped CI run has no result to refresh from; make no API call.
-    if: github.event_name != 'workflow_run' || !contains(fromJSON('["cancelled","skipped"]'), github.event.workflow_run.conclusion)
     outputs:
       targets: ${{ steps.find.outputs.targets }}
     env:
       EVENT_NAME: ${{ github.event_name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
-      RUN_NAME: ${{ github.event.workflow_run.name }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       INPUT_PR: ${{ github.event.inputs.pr }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -105,9 +94,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.find.outputs.targets) }}
-    concurrency:
-      group: mechanical-tier-${{ matrix.head }}
-      cancel-in-progress: false
     env:
       PR_NUMBER: ${{ matrix.pr }}
       BASE_SHA: ${{ matrix.base }}

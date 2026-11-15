@@ -554,13 +554,14 @@ func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 			runes := []rune(wsContext)
 			wsContext = string(runes[:57]) + "..."
 		}
-		headers := []string{"ID", "NAME", "SLUG", "DESCRIPTION", "CONTEXT"}
+		headers := []string{"ID", "NAME", "SLUG", "DESCRIPTION", "CONTEXT", "PAUSED"}
 		rows := [][]string{{
 			strVal(ws, "id"),
 			strVal(ws, "name"),
 			strVal(ws, "slug"),
 			desc,
 			wsContext,
+			strVal(ws, "scheduling_paused_at"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
 		return nil
@@ -810,16 +811,18 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if routing {
-		var current map[string]any
-		if err := client.GetJSON(ctx, "/api/workspaces/"+wsID+"/routing-agent", &current); err != nil {
-			return fmt.Errorf("read routing agent: %w", err)
-		}
-		next, err := mergeRoutingFlags(cmd, current)
+		// CHE-4116: the --routing-* flags are an alias over `background-agents set routing`:
+		// the same route, the same stored job.
+		current, err := bgRead(ctx, client, wsID, bgWorkspaceScope)
 		if err != nil {
 			return err
 		}
-		if err := client.PutJSON(ctx, "/api/workspaces/"+wsID+"/routing-agent", next, nil); err != nil {
-			return fmt.Errorf("update routing agent: %w", err)
+		next, err := routingAliasBody(cmd, current)
+		if err != nil {
+			return err
+		}
+		if err := client.PutJSON(ctx, "/api/workspaces/"+wsID+bgWorkspaceScope.path, next, nil); err != nil {
+			return bgWriteError("update routing agent", err)
 		}
 	}
 	var ws map[string]any
@@ -1148,6 +1151,26 @@ func routingFlagsChanged(cmd *cobra.Command) bool {
 		}
 	}
 	return false
+}
+
+// routingAliasBody is the background-agents PUT body for the --routing-* flags:
+// every other job as it is, the routing job with the changed flags laid over it.
+// A cleared agent turns routing off, which drops the job.
+func routingAliasBody(cmd *cobra.Command, current map[string]bgChain) (map[string]any, error) {
+	routing, err := mergeRoutingFlags(cmd, current["routing"])
+	if err != nil {
+		return nil, err
+	}
+	next := map[string]any{}
+	for job, chain := range current {
+		next[job] = chain
+	}
+	if strVal(routing, "agent_id") == "" {
+		delete(next, "routing")
+	} else {
+		next["routing"] = routing
+	}
+	return next, nil
 }
 
 // mergeRoutingFlags lays the changed --routing-* flags over the current

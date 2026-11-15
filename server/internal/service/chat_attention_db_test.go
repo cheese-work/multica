@@ -47,6 +47,7 @@ func TestLoadChatAttention(t *testing.T) {
 		pool.Exec(bg, `DELETE FROM chat_attention_mark WHERE user_id = $1`, userID)
 		pool.Exec(bg, `DELETE FROM chat_attention_item WHERE user_id = $1`, userID)
 		pool.Exec(bg, `DELETE FROM decision_request WHERE human_user_id = $1`, userID)
+		pool.Exec(bg, `DELETE FROM chat_turn_outcome WHERE user_id = $1`, userID)
 		pool.Exec(bg, `DELETE FROM agent_task_queue WHERE chat_session_id = ANY($1)`, []string{x1, x2, y, z})
 		pool.Exec(bg, `DELETE FROM chat_session WHERE id = ANY($1)`, []string{x1, x2, y, z})
 	})
@@ -99,8 +100,12 @@ func TestLoadChatAttention(t *testing.T) {
 		workspaceID, issueID, agentID, userID, x1, now.Add(-time.Hour)).Scan(&decisionID); err != nil {
 		t.Fatal(err)
 	}
-	task(z, "completed", 3*time.Hour)
-	latestZ := task(z, "completed", time.Hour)
+	// Finished turns are recorded when they end (CHE-4149); only the latest recorded turn can be unclassified.
+	for _, id := range []string{task(z, "completed", 3*time.Hour), task(z, "completed", time.Hour)} {
+		mustExec(`INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind) VALUES ($1, $4, $2, $2, $3, 'unclassified')`, id, z, userID, workspaceID)
+	}
+	latestZ := task(z, "completed", time.Hour/2)
+	mustExec(`INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind) VALUES ($1, $4, $2, $2, $3, 'unclassified')`, latestZ, z, userID, workspaceID)
 	task(z, "running", 0) // not finished: not a turn
 
 	got, err := LoadChatAttention(ctx, q, util.MustParseUUID(workspaceID), util.MustParseUUID(userID), now)

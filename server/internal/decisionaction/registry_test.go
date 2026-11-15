@@ -40,6 +40,9 @@ func TestNormalizeRefusals(t *testing.T) {
 		{"env duplicate slot", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `"}`), SecretSlots: []SecretSlot{slotFor(agentA, "K"), slotFor(agentA, "K")}}, "invalid_params"},
 		{"env slot name differs from env key", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `"}`), SecretSlots: []SecretSlot{{Slot: "S", Target: SlotTarget{AgentID: agentA, EnvKey: "K"}}}}, "invalid_params"},
 		{"env bad key", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `"}`), SecretSlots: []SecretSlot{slotFor(agentA, "1 BAD")}}, "invalid_params"},
+		{"top-up missing window", Request{Type: "issue.run_budget.top_up", Version: 1, Params: json.RawMessage(`{"issue_id":"` + agentA + `"}`)}, "invalid_params"},
+		{"top-up bad refusal id", Request{Type: "issue.run_budget.top_up", Version: 1, Params: json.RawMessage(`{"issue_id":"` + agentA + `","window_id":"w","refusal_id":"nope"}`)}, "invalid_params"},
+		{"top-up extra field", Request{Type: "issue.run_budget.top_up", Version: 1, Params: json.RawMessage(`{"issue_id":"` + agentA + `","window_id":"w","new_cap":9}`)}, "invalid_params"},
 		{"trailing json", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `","unset":["A"]} {}`)}, "invalid_params"},
 	}
 	for _, tc := range cases {
@@ -189,6 +192,59 @@ func TestRunBudgetRaiseRefusals(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Normalize(raiseRequest(params))
+			var e *Error
+			if !errors.As(err, &e) || e.Code != CodeInvalidParams {
+				t.Fatalf("err = %v; want invalid_params", err)
+			}
+		})
+	}
+}
+
+func workflowSetRequest(params string) Request {
+	return Request{Type: "issue.workflow.set", Version: 1, Params: json.RawMessage(params)}
+}
+
+const workflowSetBinding = `{"workflow_id":"` + agentA + `","source":"project","project_id":"` + agentB + `","project_workflow_id":"` + agentA + `","budgeted":true,"cap":20,"start":"2026-11-01T05:22:39.1Z"}`
+
+func TestWorkflowSetIsASpendActionOnAnIssue(t *testing.T) {
+	def, ok := Lookup("issue.workflow.set", 1)
+	if !ok || def.MinClass != "spend" || def.Target != TargetIssue || def.Template.Title == "" {
+		t.Fatalf("definition = %+v, found %v; want a spend-class issue-target action with a title", def, ok)
+	}
+}
+
+func TestWorkflowSetNormalizesAndIsStable(t *testing.T) {
+	params := `{"issue_id":"` + budgetIssue + `","workflow_id":"` + agentA + `","explicit_workflow_id":null,"before":` + workflowSetBinding + `,"after":` + workflowSetBinding + `}`
+	first, err := Normalize(workflowSetRequest(params))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Normalize(workflowSetRequest(string(first.Params)))
+	if err != nil || string(first.Params) != string(second.Params) {
+		t.Fatalf("normalizing twice gave %s then %s (err %v); want the same bytes", first.Params, second.Params, err)
+	}
+}
+
+func TestWorkflowSetRefusals(t *testing.T) {
+	good := workflowSetBinding
+	unbudgetedWithCap := `{"workflow_id":"","source":"none","budgeted":false,"cap":5}`
+	for name, params := range map[string]string{
+		"extra field":      `{"issue_id":"` + budgetIssue + `","workflow_id":null,"explicit_workflow_id":null,"before":` + good + `,"after":` + good + `,"admin":true}`,
+		"bad issue id":     `{"issue_id":"x","workflow_id":null,"explicit_workflow_id":null,"before":` + good + `,"after":` + good + `}`,
+		"bad target id":    `{"issue_id":"` + budgetIssue + `","workflow_id":"x","explicit_workflow_id":null,"before":` + good + `,"after":` + good + `}`,
+		"bad source":       `{"issue_id":"` + budgetIssue + `","workflow_id":null,"explicit_workflow_id":null,"before":` + strings.Replace(good, `"project"`, `"agent"`, 1) + `,"after":` + good + `}`,
+		"cap over maximum": `{"issue_id":"` + budgetIssue + `","workflow_id":null,"explicit_workflow_id":null,"before":` + good + `,"after":` + strings.Replace(good, `"cap":20`, `"cap":1001`, 1) + `}`,
+		"start not exact":  `{"issue_id":"` + budgetIssue + `","workflow_id":null,"explicit_workflow_id":null,"before":` + good + `,"after":` + strings.Replace(good, `05:22:39.1Z`, `12:22:39.1+07:00`, 1) + `}`,
+		"unbudgeted + cap": `{"issue_id":"` + budgetIssue + `","workflow_id":null,"explicit_workflow_id":null,"before":` + good + `,"after":` + unbudgetedWithCap + `}`,
+		"secret slot":      "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := workflowSetRequest(params)
+			if name == "secret slot" {
+				req = workflowSetRequest(`{"issue_id":"` + budgetIssue + `","workflow_id":null,"explicit_workflow_id":null,"before":` + good + `,"after":` + good + `}`)
+				req.SecretSlots = []SecretSlot{slotFor(agentA, "KEY")}
+			}
+			_, err := Normalize(req)
 			var e *Error
 			if !errors.As(err, &e) || e.Code != CodeInvalidParams {
 				t.Fatalf("err = %v; want invalid_params", err)

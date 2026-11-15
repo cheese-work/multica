@@ -172,7 +172,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			failures = errors.Join(failures, decisionAttempt(ctx, func() error {
 				result, err := stage.apply(ctx, request.WorkspaceID, request.ID)
 				if err == nil && len(result.Comments) > 0 {
-					worker.publishWithdrawal(result)
+					worker.handler.publishWithdrawal(result)
 				}
 				return err
 			}))
@@ -210,6 +210,20 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	// CHE-2689: the pinged ask of a coalesced group was answered or cancelled.
+	repings, err := handler.Queries.ListDecisionPingRepings(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, request := range repings {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			item, err := decisiontx.RepingCoalesced(ctx, handler.TxStarter, handler.Queries, request.WorkspaceID, request.ID)
+			if err == nil && item != nil {
+				handler.publish(protocol.EventInboxNew, uuidToString(request.WorkspaceID), "agent", uuidToString(request.AskingAgentID), map[string]any{"item": inboxToResponse(*item)})
+			}
+			return err
+		}))
+	}
 	orphans, err := handler.Queries.ListDecisionActionsAwaitingPostCommit(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -228,6 +242,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.DeliverDecisionWake(ctx, request.WorkspaceID, request.ID)
 		}))
 	}
+	failures = errors.Join(failures, handler.deliverDecisionWakeReceipts(ctx))
 	retractions, err := handler.Queries.ListDecisionRetractionCandidates(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -257,6 +272,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionItem(ctx, wait.WorkspaceID, wait.ID, "episode")
 		}))
 	}
+	reminders, err := handler.Queries.ListDecisionReminderCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, wait := range reminders {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionReminder(ctx, wait.WorkspaceID, wait.ID)
+		}))
+	}
 	recipients, err := handler.Queries.ListDecisionExpiryDigestRecipients(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -266,18 +290,21 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
 		}))
 	}
-	failures = errors.Join(failures, handler.deliverAgentDecisionNotices(ctx))
+	failures = errors.Join(failures, handler.deliverAgentDecisionNotices(ctx), handler.reconcileAskGuard(ctx), handler.deliverAskRecoveries(ctx), handler.repairAsks(ctx))
 	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 
-func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {
+func (handler *Handler) publishWithdrawal(result decisiontx.Withdrawal) {
 	workspaceID, agentID := uuidToString(result.Request.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	for _, comment := range result.Comments {
-		worker.handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
+		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
-	worker.handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	if result.Answer.DisclaimedAt.Valid {
-		worker.handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+		handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	}
+	for _, item := range result.Covered {
+		handler.publishWithdrawalEvents(workspaceID, "agent", agentID, item, nil)
 	}
 }
 
@@ -304,7 +331,18 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 	if err != nil {
 		return err
 	}
-	for _, requestID := range requests {
+	var withdrawn []decisiontx.Withdrawal
+	for _, request := range requests {
+		requestID := request.ID
+		// An orphaned batch request takes its answer with it: the cards it closed
+		// reopen with their answers disclaimed, as for any withdrawn batch answer.
+		result := decisiontx.Withdrawal{Request: request}
+		if err := withdrawCoveredAnswers(ctx, queries, request, &result, pgtype.UUID{}); err != nil {
+			return err
+		}
+		if len(result.Covered) > 0 {
+			withdrawn = append(withdrawn, result)
+		}
 		if err := queries.DeleteDecisionOrphanRequestAction(ctx, requestID); err != nil {
 			return err
 		}
@@ -333,5 +371,11 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 			return err
 		}
 	}
-	return transaction.Commit(ctx)
+	if err := transaction.Commit(ctx); err != nil {
+		return err
+	}
+	for _, result := range withdrawn {
+		handler.publishWithdrawal(result)
+	}
+	return nil
 }

@@ -38,9 +38,18 @@ var chatRouteClasses = map[string]chatRouteClass{
 
 	"GET /api/chat/sessions/{sessionId}/messages":       chatRouteDeny,
 	"GET /api/chat/sessions/{sessionId}/messages/page":  chatRouteDeny,
+	"GET /api/chat/sessions/{sessionId}/segments":       chatRouteContent,
+	"GET /api/chat/sessions/{sessionId}/segment":        chatRouteContent,
 	"GET /api/chat/sessions/{sessionId}/pending-task":   chatRouteDeny,
 	"GET /api/chat/sessions/{sessionId}/draft-restores": chatRouteDeny,
 	"GET /api/chat/search":                              chatRouteDeny,
+
+	// DM attention (CHE-4147): human-only; the routes also sit behind humanOnly.
+	"GET /api/chat/sessions/{sessionId}/attention":        chatRouteDeny,
+	"POST /api/chat/sessions/{sessionId}/attention/xong":  chatRouteDeny,
+	"POST /api/chat/sessions/{sessionId}/attention/later": chatRouteDeny,
+	"POST /api/chat/attention/xong-all":                   chatRouteDeny,
+	"POST /api/chat/attention/xong-all/{batchId}/undo":    chatRouteDeny,
 
 	"GET /api/chat/sessions/":                    chatRouteMetadata,
 	"GET /api/chat/sessions/{sessionId}/":        chatRouteMetadata,
@@ -73,6 +82,7 @@ var chatRouteClasses = map[string]chatRouteClass{
 	"DELETE /api/chat/pinned-agents/{agentId}":                                   chatRouteWrite,
 	"POST /api/chat/continue":                                                    chatRouteWrite,
 	"POST /api/chat/compact":                                                     chatRouteWrite,
+	"POST /api/chat/outcome":                                                     chatRouteWrite,
 	"POST /api/chat/wakeups":                                                     chatRouteWrite,
 	"DELETE /api/chat/wakeups/{wakeupId}":                                        chatRouteWrite,
 	"POST /api/chat/fork":                                                        chatRouteWrite,

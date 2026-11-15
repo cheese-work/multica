@@ -1,4 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
+import type { InboxItem } from "@multica/core/types";
+import { unreadMentionIssueIds } from "@multica/core/inbox/unread-mention-items";
 import { api } from "@/data/api";
 
 /**
@@ -37,3 +39,13 @@ export const inboxUnreadSummaryOptions = (wsId: string | null) =>
     queryFn: ({ signal }) => api.getInboxUnreadSummary({ signal }),
     enabled: !!wsId,
   });
+
+/**
+ * Whether one issue holds an unread mention of the viewer (direct or `@all`),
+ * read off the inbox list the tab already keeps fresh. The selector is core's
+ * pure one, so both clients agree.
+ */
+export const unreadMentionOptions = (wsId: string | null, issueId: string) => ({
+  ...inboxListOptions(wsId),
+  select: (items: InboxItem[]) => unreadMentionIssueIds(items).has(issueId),
+});

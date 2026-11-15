@@ -159,8 +159,10 @@ func TestListSortEffectiveDueCandidatesAreNarrow(t *testing.T) {
 	}
 	for _, q := range rec.queries {
 		if strings.Contains(q, "ORDER BY") && strings.Contains(q, "FROM issue i") {
+			// the external-read flag is a boolean the read filter needs, not a large column
+			narrowed := strings.ReplaceAll(q, "i.description_external_read", "")
 			for _, col := range []string{"i.title", "i.description", "i.metadata", "i.properties"} {
-				if strings.Contains(q, col) {
+				if strings.Contains(narrowed, col) {
 					t.Fatalf("candidate query must not read %s: %s", col, q)
 				}
 			}

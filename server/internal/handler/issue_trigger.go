@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -93,6 +94,15 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	if trigger.BlockedEntry {
+		lastTask, skip, err := h.TaskService.SkipBlockedDispatch(ctx, issue, trigger.AgentID, actorType)
+		if err != nil {
+			slog.Warn("blocked dispatch comparison failed; starting run", "issue_id", uuidToString(issue.ID), "error", err)
+		} else if skip {
+			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask, actorType, actorID)
+			return false
+		}
+	}
 	// Checked here as well as at the queue door so the activity names the actor
 	// whose status move or assignment was refused; the door has no actor.
 	var notConfirmed *service.StopNotConfirmedError
@@ -159,7 +169,7 @@ func (h *Handler) withIssueWriteExternalRead(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to update issue")
 		return ctx, false
 	}
-	if !ok || !actor.ExternalRead {
+	if !ok || !(actor.ExternalRead || len(actor.TaintIds) > 0) {
 		return ctx, true
 	}
 	return context.WithValue(ctx, issueWriteExternalReadKey{}, true), true
@@ -186,7 +196,7 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		return false
 	}
 	if len(taint) > 0 {
-		n, err := h.Queries.TaintQueuedRunCarryingIssueWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
+		n, err := h.taintQueuedRunCarryingWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
 			TaintIds:     taint,
 			IssueID:      issue.ID,
 			AgentID:      agentID,
@@ -204,6 +214,39 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		Step:         issue.Status,
 	})
 	return err == nil && carries
+}
+
+// underIssueLock runs fn in one transaction that holds the issue row lock
+// first. A write to a run's taint-bearing columns fires the run's taint
+// trigger, which locks the issue; every other path that touches the runs of an
+// issue takes the issue first, so such a write takes it first too. A missing
+// issue (a chat run has none) is tolerated: the trigger does not lock then.
+func (h *Handler) underIssueLock(ctx context.Context, issueID pgtype.UUID, fn func(q *db.Queries) error) error {
+	if h.TxStarter == nil {
+		return errors.New("transaction starter is not configured")
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err := fn(qtx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// taintQueuedRunCarryingWrite updates the queued run under the issue lock.
+func (h *Handler) taintQueuedRunCarryingWrite(ctx context.Context, arg db.TaintQueuedRunCarryingIssueWriteParams) (n int64, err error) {
+	err = h.underIssueLock(ctx, arg.IssueID, func(q *db.Queries) error {
+		n, err = q.TaintQueuedRunCarryingIssueWrite(ctx, arg)
+		return err
+	})
+	return n, err
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the

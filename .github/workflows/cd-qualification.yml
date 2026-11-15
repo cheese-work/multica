@@ -23,7 +23,9 @@ jobs:
     timeout-minutes: 6
     continue-on-error: true
     permissions:
+      actions: read
       contents: read
+      deployments: read
       pull-requests: read
     env:
       FORK_CHANGELOG_START: '2026-10-11'
@@ -64,6 +66,52 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
+
+  # Fixture suites are pure script/YAML checks: run them once on a hosted runner
+  # (public repo, free) so they neither add ~80 s to each X99 image leg nor
+  # take an X99 queue slot (CHE-3983). Images may push before this finishes;
+  # cd-qualification needs both, so no evidence manifest exists unless it passes.
+  d1-fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the PyYAML the fixture suites import
+        run: bash deploy/cd/ensure-pyyaml.sh
+
+      - name: Run D1 fixture checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/cd/test-release-manifest.sh
+          bash deploy/cd/test-admission.sh
+          bash deploy/cd/test-record-checks.sh
+          bash deploy/cd/test-resolve-candidate.sh
+          bash deploy/cd/test-resolve-scheduled.sh
+          python3 deploy/cd/test-github-api-retry.py
+          python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
+          python3 deploy/cd/test-candidate-preflight.py
+          python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-authorize-c00.py
+          python3 deploy/cd/test-deploy-job-guard.py
+          python3 deploy/cd/test-deploy-schedule.py
+          python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-post-deploy-confirm.py
+          python3 deploy/cd/test-health-window.py
+          python3 deploy/cd/test-install-health-observer.py
+          python3 .github/scripts/test_ci_wait_policy.py
+          python3 .github/scripts/ci-wait-policy.py
+          python3 deploy/cd/test-rollback-failed-readback.py
+          bash deploy/cd/test-workflow-path-filters.sh
+          bash deploy/cd/test-isolated-qualification.sh
+          bash deploy/cd/test-tuple-snapshot.sh
 
   build-images:
     needs: fork-changelog
@@ -124,21 +172,6 @@ jobs:
         run: |
           rm -f apps/web/.fork-changelog/entries.json
           echo 'Fork entries unavailable for this build.' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Run D1 fixture checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash deploy/cd/test-release-manifest.sh
-          bash deploy/cd/test-admission.sh
-          bash deploy/cd/test-record-checks.sh
-          python3 deploy/cd/test-build-cache.py
-          python3 .github/scripts/test_cache_policy.py
-          python3 deploy/cd/test-candidate-preflight.py
-          python3 deploy/cd/test-deploy-approval.py
-          bash deploy/cd/test-workflow-path-filters.sh
-          bash deploy/cd/test-isolated-qualification.sh
-          bash deploy/cd/test-tuple-snapshot.sh
 
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
       # Keep those release requirements and use an isolated BuildKit container.
@@ -283,8 +316,10 @@ jobs:
           retention-days: 7
 
   cd-qualification:
-    needs: build-images
-    runs-on: [self-hosted, linux, x64, cheese-x99]
+    needs: [build-images, d1-fixtures]
+    # Manifest assembly is hash and JSON work: hosted, so a busy X99 queue
+    # cannot delay it (CHE-3983).
+    runs-on: ubuntu-24.04
     timeout-minutes: 6
     env:
       BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
@@ -302,9 +337,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Use disposable build caches
-        shell: bash
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+      - name: Set up Node for the manifest scripts
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
 
       - name: Download both immutable image results
         uses: actions/download-artifact@v8

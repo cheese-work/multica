@@ -314,6 +314,7 @@ export function McpTab() {
         server={dialogServer}
         existingNames={existingNames}
         replacementMode={editingServer !== null}
+        draftKey={`workspace:${editingServer?.id ?? "new"}`}
         onOpenChange={setEditorOpen}
         onSave={handleSaveServer}
       />

@@ -85,7 +85,7 @@ func (s *PluginService) DiscoverMCPHookTools(ctx context.Context, installation d
 // Pinned by digest, not just by name: a server that keeps a tool's name and
 // changes its arguments has changed what the agent is calling, and the agent
 // would have no way to notice.
-func (s *PluginService) ApproveMCPHookTools(ctx context.Context, installation db.PluginInstallation, hookKey string, names []string, userID pgtype.UUID) (db.PluginInstallation, error) {
+func (s *PluginService) ApproveMCPHookTools(ctx context.Context, installation db.PluginInstallation, hookKey string, names []string, userID pgtype.UUID, audit PluginAuditFn) (db.PluginInstallation, error) {
 	discovered, err := s.DiscoverMCPHookTools(ctx, installation, hookKey)
 	if err != nil {
 		return db.PluginInstallation{}, err
@@ -125,12 +125,24 @@ func (s *PluginService) ApproveMCPHookTools(ctx context.Context, installation db
 	if err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorInvalid, Message: "encode approvals", Err: err}
 	}
-	updated, err := s.Queries.SetPluginMCPApprovals(ctx, db.SetPluginMCPApprovalsParams{
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "begin approvals", Err: err}
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	queries := s.Queries.WithTx(tx)
+	updated, err := queries.SetPluginMCPApprovals(ctx, db.SetPluginMCPApprovalsParams{
 		ID:           installation.ID,
 		McpApprovals: encoded,
 	})
 	if err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "store approvals", Err: err}
+	}
+	if err := audit.run(ctx, queries, PluginChange{Before: &installation, After: &updated}); err != nil {
+		return db.PluginInstallation{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit approvals", Err: err}
 	}
 	return updated, nil
 }

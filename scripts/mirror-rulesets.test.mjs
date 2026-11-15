@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
 // CHE-3955: ruleset JSON for upstream-main. Force-push and deletion must be
-// blocked for every actor (no bypass). Only the GitHub Actions app may bypass
+// blocked for every actor (no bypass). Only the c00-multicado App (4093382) may bypass
 // the update rule, which is how the mirror job writes.
 const dir = new URL("../.github/rulesets/", import.meta.url);
 const sets = readdirSync(dir)
   .filter((f) => f.startsWith("upstream-main"))
   .map((f) => JSON.parse(readFileSync(new URL(f, dir), "utf8")));
 const types = (s) => s.rules.map((r) => r.type);
-const ACTIONS_APP = [{ actor_id: 15368, actor_type: "Integration", bypass_mode: "always" }];
+const ACTIONS_APP = [{ actor_id: 4093382, actor_type: "Integration", bypass_mode: "always" }];
 
 test("every ruleset targets only refs/heads/upstream-main and is active", () => {
   assert.ok(sets.length >= 1);
@@ -28,7 +28,7 @@ test("deletion and non_fast_forward are enforced with no bypass actor", () => {
   }
 });
 
-test("update rule is bypassed only by the GitHub Actions app", () => {
+test("update rule is bypassed only by the c00-multicado App", () => {
   const holders = sets.filter((s) => types(s).includes("update"));
   assert.ok(holders.length >= 1, "update missing");
   for (const s of holders) assert.deepEqual(s.bypass_actors, ACTIONS_APP);

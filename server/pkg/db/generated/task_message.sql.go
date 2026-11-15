@@ -358,3 +358,39 @@ func (q *Queries) ListTaskProgressSince(ctx context.Context, arg ListTaskProgres
 	}
 	return items, nil
 }
+
+const listTaskTextSteps = `-- name: ListTaskTextSteps :many
+SELECT seq, type, COALESCE(CASE WHEN type = 'text' THEN content END, '')::text AS content
+FROM task_message
+WHERE task_id = $1
+ORDER BY seq ASC
+`
+
+type ListTaskTextStepsRow struct {
+	Seq     int32  `json:"seq"`
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// Step order plus the text rows' content only. Chat interim messages (CHE-4704)
+// rebuild message boundaries from this on every step batch of a running chat
+// turn, so tool input/output stay out of the read.
+func (q *Queries) ListTaskTextSteps(ctx context.Context, taskID pgtype.UUID) ([]ListTaskTextStepsRow, error) {
+	rows, err := q.db.Query(ctx, listTaskTextSteps, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskTextStepsRow{}
+	for rows.Next() {
+		var i ListTaskTextStepsRow
+		if err := rows.Scan(&i.Seq, &i.Type, &i.Content); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

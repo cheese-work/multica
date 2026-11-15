@@ -21,7 +21,8 @@ const (
 // in-place /compact, when no provider session resumes: the compaction summary,
 // then the messages sent since the boundary (newest whole messages that fit,
 // rendered oldest first), excluding the current turn's input. It shares the
-// fork block's size cap. A summary that fills the cap leaves no room for
+// fork block's size cap, except the live decisions block, which sits outside
+// it (CHE-4447). A summary that fills the cap leaves no room for
 // messages. It returns "" when the DM has no summary row.
 func (h *Handler) compactionSeedBlock(ctx context.Context, session db.ChatSession, input []db.ChatMessage) (string, error) {
 	summary, err := h.Queries.GetLatestCompactionSummary(ctx, session.ID)
@@ -42,10 +43,22 @@ func (h *Handler) compactionSeedBlock(ctx context.Context, session db.ChatSessio
 		older      = "Messages before the compaction are not included; read them with multica chat history.\n"
 		cutNote    = "Only the newest messages since the compaction fit here; read the rest with multica chat history.\n"
 	)
-	content := strings.ReplaceAll(summary.Content, compactionSummaryClose, `<\/compaction_summary>`)
+	// The decisions block is rebuilt from the live records, so a decision
+	// withdrawn since the compaction is not handed on as standing, and it is
+	// never cut. It sits outside the size cap: the cap sizes only the agent's
+	// own text and the recent messages, which a large block must not push out
+	// (CHE-4447).
+	decisions, err := compactionDecisionsBlock(ctx, h.Queries, session)
+	if err != nil {
+		return "", err
+	}
+	decisions = strings.ReplaceAll(decisions, compactionSummaryClose, `<\/compaction_summary>`)
+	_, agentText := splitCompactionDecisions(summary.Content)
+	agentText = strings.ReplaceAll(agentText, compactionSummaryClose, `<\/compaction_summary>`)
 	budget := forkBlockMaxBytes - len(head) - len(recentOpen) - len(compactionRecentClose) - 1 - len(older) - len(cutNote)
-	content = cutUTF8(content, budget)
-	budget -= len(content)
+	agentText = cutUTF8(agentText, budget)
+	budget -= len(agentText)
+	content := decisions + agentText
 
 	var entries []string
 	cut := false

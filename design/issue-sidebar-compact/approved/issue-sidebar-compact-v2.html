@@ -1,0 +1,168 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--shell:oklch(0.155 0.005 285.823);--surface:oklch(0.21 0.006 285.885);--raised:oklch(0.235 0.007 285.885);--hover:oklch(0.274 0.006 286.033);--sel:oklch(0.3 0.006 286.033);--bd:oklch(1 0 0 / 10%);--fg:oklch(0.985 0 0);--mut:oklch(0.705 0.015 286.067);--faint:oklch(0.60 0.015 286.067);--inp:oklch(1 0 0 / 15%);--ring:oklch(0.552 0.016 285.938);--pri:oklch(0.92 0.004 286.32);--prifg:oklch(0.21 0.006 285.885);--ok:oklch(0.65 0.15 145);--warn:oklch(0.70 0.16 85);--err:oklch(0.704 0.191 22.216);--menu:0 10px 28px rgb(0 0 0 / .3),0 2px 8px rgb(0 0 0 / .18)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1440px;padding:32px;background:var(--shell);color:var(--fg);font:13px/18px Inter,"Segoe UI",Roboto,"Helvetica Neue",Helvetica,Arial,"Liberation Sans","DejaVu Sans",sans-serif}
+h1{font-size:20px;line-height:28px;font-weight:600}
+.lead{color:var(--mut);font-size:14px;line-height:20px;max-width:1000px;margin-top:4px}
+.lead b,.cap b{color:var(--fg);font-weight:600}
+.band{margin-top:28px}
+.band>h2{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);font-weight:600;margin-bottom:12px}
+.rowf{display:flex;gap:24px;align-items:flex-start}
+.sp{display:flex;flex-direction:column;gap:8px}
+.cap{font-size:12px;line-height:16px;color:var(--mut);max-width:320px}
+.ph+.cap{max-width:390px}
+.sb{width:320px;background:var(--surface);border:1px solid var(--bd);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:16px;position:relative}
+.sb.ph{width:390px;padding:8px 4px}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.sh{display:flex;align-items:center;gap:4px;min-height:32px;padding:0 2px 0 8px;font-weight:500;font-size:13px}
+.n{color:var(--mut);font-weight:400}
+.f1{flex:1}
+.ib{width:24px;height:24px;display:inline-grid;place-items:center;border-radius:6px;color:var(--mut);flex:none}
+.ph .ib{width:40px;height:40px}
+.ph .sh{min-height:40px}
+.hb{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 6px 0 8px;border-radius:6px;border:1px solid var(--inp);font-size:12px;line-height:16px;font-weight:500;color:var(--mut);white-space:nowrap}
+.hb.on{background:var(--hover);color:var(--fg);border-color:var(--ring)}
+.hb.w{color:var(--warn);border-color:oklch(0.70 0.16 85 / 45%)}
+.ph .hb{height:40px;font-size:13px;padding:0 10px}
+.r2{display:flex;align-items:flex-start;gap:8px;padding:4px 8px;border-radius:6px}
+.r1{display:flex;align-items:center;gap:8px;padding:0 4px 0 8px;min-height:28px;border-radius:6px}
+.ph .r2{padding:6px 12px;min-height:48px;align-items:center}
+.ph .r1{min-height:40px;padding:0 4px 0 12px}
+.r2.sel,.r1.sel{background:var(--hover)}
+.col{flex:1;min-width:0}
+.t{color:var(--fg);font-size:13px;line-height:18px;display:flex;gap:6px;align-items:center}
+.t.tr{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ph .t{font-size:14px;line-height:20px}
+.m{color:var(--mut);font-size:12px;line-height:16px}
+.m.w{color:var(--warn)}
+.chip{font-size:11px;line-height:15px;padding:0 5px;border-radius:4px;background:var(--sel);color:var(--mut);white-space:nowrap;font-weight:500}
+.sw{width:32px;height:18px;border-radius:9px;background:var(--pri);position:relative;flex:none;margin-top:1px}
+.sw::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:7px;background:var(--prifg)}
+.ph .sw{margin-top:0}
+.dis{color:var(--mut)}
+.st{font-size:12px;line-height:16px;color:var(--mut);display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.st.w{color:var(--warn)}
+.menu{position:absolute;width:248px;white-space:nowrap;background:var(--raised);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--menu);padding:4px;z-index:3}
+.mi{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:5px;font-size:13px}
+.mi.sel{background:var(--hover)}
+.ph .mi{height:40px;font-size:14px}.ph .menu{width:260px}
+.mi.d{color:var(--faint)}
+.pill{padding:0 6px;border-radius:999px;background:var(--sel);color:var(--mut);font-size:11px;line-height:15px;display:inline-flex;font-weight:500}
+.pos{color:var(--ok)}.neg{color:var(--err)}
+.mrow{display:flex;gap:8px;align-items:center}
+.pn{margin:2px 0 6px;background:var(--raised);border:1px solid var(--bd);border-radius:8px;padding:4px 0 4px}
+.pn .m.c{padding:2px 8px 4px 8px}
+.ph .pn .m.c{padding:2px 12px 4px}
+.ring{outline:2px solid var(--ring);outline-offset:1px}
+table.k{border-collapse:collapse;font-size:12px;line-height:16px;width:100%}
+table.k td,table.k th{border-bottom:1px solid var(--bd);padding:5px 16px 5px 0;text-align:left;color:var(--mut);font-weight:400;vertical-align:top}
+table.k th{color:var(--fg);font-weight:600}
+table.k td:first-child{color:var(--fg)}
+.tag{display:inline-block;padding:1px 8px;border-radius:4px;background:var(--sel);font-size:12px;color:var(--fg);margin-left:8px;font-weight:500;vertical-align:middle}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="cd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="cu" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+<symbol id="cr" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="pl" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+<symbol id="mo" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+<symbol id="pr" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></symbol>
+<symbol id="ed" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+<symbol id="rs" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></symbol>
+<symbol id="pa" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></symbol>
+</defs></svg>
+<h1>CHE-3986 · v2 · Header Defaults button, opens inline<span class="tag">proposal</span></h1>
+<p class="lead"><b>Cheese's pick:</b> “A: summary row”, note “C but adapt A”. <b>Reading:</b> take C's placement and height (defaults leave the list; one <b>Defaults · 3 on</b> button in the Wakeups header; the button turns warm when a rule is paused) but keep A's mechanics (it opens <b>inline, no popover or sheet</b>; each rule keeps its one-line row and “more” menu with Override, Edit, Reset, Open project). Pull requests stays above Wakeups. Same tokens, rows, override form, edge rules and shared states as A.</p>
+<div class="band"><h2>Desktop · sidebar column 320 px</h2>
+<div class="rowf">
+
+<div class="sp"><div class="sb">
+<div><div class="sh"><span>Pull requests</span><span class="n">1</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+<div class="r2"><svg class="i" style="color:var(--mut);margin-top:2px"><use href="#pr"/></svg><div class="col"><div class="t tr">fix(core): drop non-primitive issue fields from the event payload</div><div class="m mrow"><span>#918</span><span class="pos">+113</span><span class="neg">−6</span><span class="f1"></span><span class="pill">Draft</span></div></div></div></div>
+<div><div class="sh"><span>Wakeups</span><span class="n">2</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="hb">Defaults · 3 on<svg class="i"><use href="#cd"/></svg></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span></div>
+<div class="r2"><div class="col"><div class="t">When all sub-issues finish <span class="chip">System</span></div><div class="m">Wake x99-codex-terra · 1 to go</div></div><span class="sw"></span></div>
+<div class="r2"><div class="col"><div class="t">When CHE-3531 is done or cancelled</div><div class="m">Wake Tofu · Trigger once · 2d 19h left</div></div><span class="sw"></span></div>
+<div class="r1 dis"><svg class="i"><use href="#cr"/></svg><span>Wakeup history · 1</span></div>
+</div></div>
+<div class="cap"><b>D1 · default.</b> PR, 2 live wakeups, history in about 234 px (today ≈ 565 px). The list holds live things only; defaults sit behind one header button.</div></div>
+
+<div class="sp"><div class="sb">
+<div><div class="sh"><span>Pull requests</span><span class="n">1</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+<div class="r2"><svg class="i" style="color:var(--mut);margin-top:2px"><use href="#pr"/></svg><div class="col"><div class="t tr">fix(core): drop non-primitive issue fields from the event payload</div><div class="m mrow"><span>#918</span><span class="pos">+113</span><span class="neg">−6</span><span class="f1"></span><span class="pill">Draft</span></div></div></div></div>
+<div><div class="sh"><span>Wakeups</span><span class="n">2</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="hb on ring">Defaults · 3 on<svg class="i"><use href="#cu"/></svg></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span></div>
+<div class="pn">
+<div class="m c">Inherited from the default unless noted</div>
+<div style="position:relative">
+<div class="r1 sel"><span class="f1">When the linked PR merges</span><span class="st">On</span><span class="ib ring" style="color:var(--fg)"><svg class="i"><use href="#mo"/></svg></span>
+<div class="menu" style="top:28px;right:4px"><div class="mi sel"><svg class="i"><use href="#ed"/></svg>Override</div><div class="mi d"><svg class="i"><use href="#rs"/></svg>Reset to default<span class="f1"></span><span class="m" style="font-size:11px">Not overridden</span></div></div></div>
+<div class="r1"><span class="f1">When PR checks fail</span><span class="st">On</span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+<div class="r1"><span class="f1">When the linked PR needs attention</span><span class="st">On</span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+</div></div>
+<div class="r2" style="margin-top:2px"><div class="col"><div class="t">When all sub-issues finish <span class="chip">System</span></div><div class="m">Wake x99-codex-terra · 1 to go</div></div><span class="sw"></span></div>
+<div class="r2"><div class="col"><div class="t">When CHE-3531 is done or cancelled</div><div class="m">Wake Tofu · Trigger once · 2d 19h left</div></div><span class="sw"></span></div>
+<div class="r1 dis"><svg class="i"><use href="#cr"/></svg><span>Wakeup history · 1</span></div>
+</div>
+<div style="height:36px"></div></div>
+<div class="cap"><b>D2 · opened, row menu open.</b> The panel opens inline under the header (no overlay, no focus trap): about +100 px, live wakeups stay visible below. The button shows pressed state and an up chevron; <b>Esc</b> or a second click closes it.</div></div>
+
+<div class="sp"><div class="sb">
+<div><div class="sh"><span>Wakeups</span><span class="n">2</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="hb w"><svg class="i"><use href="#pa"/></svg>Defaults · 1 paused<svg class="i"><use href="#cd"/></svg></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span></div>
+<div class="r2"><div class="col"><div class="t">When all sub-issues finish <span class="chip">System</span></div><div class="m">Wake x99-codex-terra · 1 to go</div></div><span class="sw"></span></div>
+<div class="r1 dis"><svg class="i"><use href="#cr"/></svg><span>Wakeup history · 1</span></div>
+</div>
+<div style="border-top:1px dashed var(--inp);padding-top:12px;margin-top:-4px"><div class="m" style="padding:0 8px 4px;font-size:11px">Another state, same section:</div><div class="sh"><span>Wakeups</span><span class="n">0</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="hb on">Defaults · 3 on, 1 edited<svg class="i"><use href="#cd"/></svg></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span></div>
+<div class="m" style="padding:2px 8px 0">No live wakeups. Defaults still apply.</div></div>
+<div style="height:60px"></div>
+</div>
+<div class="cap"><b>D3 · states on the button.</b> Top: a rule is paused, so the button turns warm and says so with an icon and the word “paused” (not colour alone). Bottom: no live wakeups, so the section keeps a one-line empty state and the button still shows what applies; “1 edited” appears when a default is overridden on this issue.</div></div>
+
+</div></div>
+<div class="band"><h2>390 px · 40 px header button, 40 px rows</h2>
+<div class="rowf">
+
+<div class="sp"><div class="sb ph">
+<div><div class="sh"><span>Pull requests</span><span class="n">1</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+<div class="r2"><svg class="i" style="color:var(--mut)"><use href="#pr"/></svg><div class="col"><div class="t tr">fix(core): drop non-primitive issue fields from the event payload</div><div class="m mrow"><span>#918</span><span class="pos">+113</span><span class="neg">−6</span><span class="f1"></span><span class="pill">Draft</span></div></div></div></div>
+<div><div class="sh"><span>Wakeups</span><span class="n">2</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="hb">Defaults · 3 on<svg class="i"><use href="#cd"/></svg></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span></div>
+<div class="r2"><div class="col"><div class="t">When all sub-issues finish <span class="chip">System</span></div><div class="m">Wake x99-codex-terra · 1 to go</div></div><span class="sw"></span></div>
+<div class="r2"><div class="col"><div class="t">When CHE-3531 is done or cancelled</div><div class="m">Wake Tofu · Trigger once · 2d 19h left</div></div><span class="sw"></span></div>
+<div class="r1 dis"><svg class="i"><use href="#cr"/></svg><span style="font-size:14px">Wakeup history · 1</span></div>
+</div></div>
+<div class="cap"><b>P1 · default at 390.</b> PR and both live wakeups fit without scrolling. The button is a 40 px target; the Add button keeps its 40 px slot.</div></div>
+
+<div class="sp"><div class="sb ph">
+<div><div class="sh"><span>Wakeups</span><span class="n">2</span><svg class="i" style="color:var(--mut)"><use href="#cd"/></svg><span class="f1"></span><span class="hb on ring">Defaults · 3 on<svg class="i"><use href="#cu"/></svg></span><span class="ib"><svg class="i"><use href="#pl"/></svg></span></div>
+<div class="pn">
+<div class="m c">Inherited from the default unless noted</div>
+<div style="position:relative">
+<div class="r1 sel"><span class="f1 t">When the linked PR merges</span><span class="st">On</span><span class="ib ring" style="color:var(--fg)"><svg class="i"><use href="#mo"/></svg></span>
+<div class="menu" style="top:40px;right:4px"><div class="mi sel"><svg class="i"><use href="#ed"/></svg>Override</div><div class="mi d"><svg class="i"><use href="#rs"/></svg>Reset to default<span class="f1"></span><span class="m" style="font-size:11px">Not overridden</span></div></div></div>
+<div class="r1"><span class="f1 t">When PR checks fail</span><span class="st">On</span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+<div class="r1"><span class="f1 t">When the linked PR needs attention</span><span class="st">On</span><span class="ib"><svg class="i"><use href="#mo"/></svg></span></div>
+</div></div>
+<div class="r2"><div class="col"><div class="t">When all sub-issues finish <span class="chip">System</span></div><div class="m">Wake x99-codex-terra · 1 to go</div></div><span class="sw"></span></div>
+</div><div style="height:76px"></div></div>
+<div class="cap"><b>P2 · opened at 390.</b> Inline, so no bottom sheet: the page scrolls normally and the menu stays inside the 390 px column. Override form opens in place as in A.</div></div>
+
+</div></div>
+<div class="band"><h2>What changed vs A and C · heights</h2>
+<div class="rowf">
+<div style="width:760px"><table class="k">
+<tr><th>Item</th><th>A (picked)</th><th>C</th><th>v2</th></tr>
+<tr><td>Where Defaults lives</td><td>Row under the list</td><td>Header button</td><td>Header button (from C)</td></tr>
+<tr><td>How it opens</td><td>Inline</td><td>Popover / bottom sheet</td><td>Inline (from A); no overlay, no focus trap</td></tr>
+<tr><td>Paused / edited signal</td><td>Row label</td><td>Warm button</td><td>Warm button + icon + word</td></tr>
+<tr><td>Override, Edit, Reset, Open project</td><td>Row menu</td><td>Row menu</td><td>Row menu (unchanged)</td></tr>
+<tr><td>Clicks to Override</td><td>2 after open</td><td>2 after open</td><td>Open, more, Override (3 from default)</td></tr>
+</table></div>
+<div style="width:520px"><table class="k">
+<tr><th>Height, Pull requests to last Wakeups row</th><th>px</th></tr>
+<tr><td>Today (Ref)</td><td>≈ 565</td></tr>
+<tr><td>A1 · defaults closed</td><td>≈ 262</td></tr>
+<tr><td>C · defaults closed</td><td>≈ 234</td></tr>
+<tr><td>v2 D1 · defaults closed</td><td>≈ 234</td></tr>
+<tr><td>v2 D2 · defaults open</td><td>≈ 334</td></tr>
+</table>
+<p class="cap" style="max-width:500px;margin-top:8px">Heights are computed from the row sizes in this frame (header 32, two-line row 42, one-line row 28, panel 4 + 18 + 3 × 28 + 4 + 6 margin), not measured in a browser. Override form, edge rules (edited, paused, project, redacted) and loading, empty, error, offline, read-only and 409 states are the A frames and the shared-states frame, unchanged.</p></div>
+</div></div>
+</body></html>

@@ -726,6 +726,40 @@ func TestProjectWorkflowSetMappingRequiredKeepsLargePlan(t *testing.T) {
 	}
 }
 
+func TestWorkflowUpdateSendsStartStatus(t *testing.T) {
+	var patched map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		patched = nil
+		_ = json.NewDecoder(r.Body).Decode(&patched)
+		_ = json.NewEncoder(w).Encode(workflowFixture())
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	newCmd := func() *cobra.Command {
+		cmd := newWorkflowRulesCmd()
+		cmd.Flags().String("start-status", "", "")
+		return cmd
+	}
+	cmd := newCmd()
+	_ = cmd.Flags().Set("start-status", "in_progress")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("start status alone: %v", err)
+	}
+	if !reflect.DeepEqual(patched, map[string]any{"start_status_key": "in_progress"}) {
+		t.Fatalf("sent %v, want only start_status_key=in_progress", patched)
+	}
+
+	cmd = newCmd()
+	_ = cmd.Flags().Set("start-status", "")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if !reflect.DeepEqual(patched, map[string]any{"start_status_key": ""}) {
+		t.Fatalf("sent %v, want start_status_key cleared", patched)
+	}
+}
+
 func lintFixture() map[string]any {
 	finding := func(rule, level, step string, waived bool) map[string]any {
 		return map[string]any{"rule": rule, "level": level, "step": step, "message": rule + " message", "waived": waived}

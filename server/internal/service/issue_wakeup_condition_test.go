@@ -485,12 +485,13 @@ func TestWakeupConditionChildrenAndOtherIssue(t *testing.T) {
 // The security-gate status stays PENDING until a cross-lab verdict exists, and a
 // flow waits for finished checks before asking for that verdict. Only the
 // verdict-driven context is ignored: any other unfinished check still holds.
+// The result on the old head 'aaa' is baselined while the PR head is already 'bbb'.
 func TestWakeupConditionPullRequestChecksIgnoreVerdictContext(t *testing.T) {
 	f, s, issue, agent := conditionFixture(t)
 	s.Tasks.PRSnapshotsEnabled = true
 	var pr string
 	if err := f.Pool.QueryRow(context.Background(), `INSERT INTO github_pull_request(workspace_id,installation_id,repo_owner,repo_name,pr_number,title,state,html_url,pr_created_at,pr_updated_at,head_sha,snapshot_head_sha,checks_rollup_state)
-		VALUES($1,1,'multica-ai','wakeup-verdict',(extract(epoch from clock_timestamp())*1000)::bigint % 100000,'PR','open','https://example.test/pr',now(),now(),'aaa','aaa','SUCCESS') RETURNING id`, f.WorkspaceID).Scan(&pr); err != nil {
+		VALUES($1,1,'multica-ai','wakeup-verdict',(extract(epoch from clock_timestamp())*1000)::bigint % 100000,'PR','open','https://example.test/pr',now(),now(),'bbb','aaa','SUCCESS') RETURNING id`, f.WorkspaceID).Scan(&pr); err != nil {
 		t.Fatal(err)
 	}
 	f.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", pr)
@@ -550,6 +551,26 @@ func TestWakeupConditionPullRequestChecksWaitForNewResult(t *testing.T) {
 	}
 	if !strings.Contains(task.HandoffNote.String, `"checks":"failure"`) || !strings.Contains(task.HandoffNote.String, `"head_sha":"bbb"`) {
 		t.Fatalf("PR facts missing: %s", task.HandoffNote.String)
+	}
+}
+
+// Checks already finished on the PR's current head fire on the first poll.
+func TestWakeupConditionPullRequestChecksFinishedOnCurrentHead(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	s.Tasks.PRSnapshotsEnabled = true
+	var pr string
+	if err := f.Pool.QueryRow(context.Background(), `INSERT INTO github_pull_request(workspace_id,installation_id,repo_owner,repo_name,pr_number,title,state,html_url,pr_created_at,pr_updated_at,head_sha,snapshot_head_sha,checks_rollup_state)
+		VALUES($1,1,'multica-ai','wakeup-current',(extract(epoch from clock_timestamp())*1000)::bigint % 100000,'PR','open','https://example.test/pr',now(),now(),'aaa','aaa','SUCCESS') RETURNING id`, f.WorkspaceID).Scan(&pr); err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", pr)
+	f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pr)
+	f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", issue, pr)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Instruction: "Look at CI",
+		Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})})
+	wakeTick(t, f, s, w.ID)
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("checks finished on the current head started %d runs, want 1", n)
 	}
 }
 

@@ -492,6 +492,7 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"dim":         dimBlockedArgs,
 	"devin":       devinBlockedArgs,
 	"zeroclaw":    zeroclawBlockedArgs,
+	"zcode":       zcodeBlockedArgs,
 }
 
 // ValidateCustomArgs rejects arguments that the runtime always discards at launch.

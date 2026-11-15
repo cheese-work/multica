@@ -76,6 +76,8 @@ Resolves MUL-123
 
 正文中的普通提及，例如 `Related to MUL-123`，不会与该任务建立关联。Commit message 和 PR 评论也不会触发关联。
 
+来自 fork 的 PR 仅在该 fork 与基础仓库属于同一所有者时才会自动关联。合并这类 PR 不会推进任务状态。来自其他所有者 fork 的 PR 请手动关联。
+
 也可以手动关联：在任务的 **Pull requests** 区块点 **+**，粘贴 PR 链接。要把 PR 从任务上移除，打开这一行的 **⋯** 菜单，选择 **移除关联**；之后 Multica 不会再根据标题或分支把它关联回来。
 
 ## 在任务中查看 PR
@@ -111,6 +113,22 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 
 状态变化会以系统操作写入时间线并列出相关 PR，订阅该任务的成员会收到通知。
 
+### 在工作流中
+
+任务的工作流包含目标状态，并且该步骤设有交接时，合并引起的移动就是一次交接：任务交给该步骤的处理人；处理人是智能体时，会像进入该步骤的其他移动一样启动一次运行。没有处理人的步骤只改状态，不启动运行。工作流不包含目标状态时，任务不会移动。同一次合并的"PR 合并"唤醒会并入这次运行，所以一次合并只启动一次运行。如果这次运行在启动前就结束了，唤醒会代替它启动一次运行。参见[唤醒](/issue-wakeups#pr-merged)。
+
+### 包含子任务的 PR
+
+工作流的**包含子 Issue 的 PR** 开关打开时（见[工作流](/workflows)），检查会读取任务自身及其直接子任务的 PR。这些 PR 中至少有一个是 `Merged`，并且没有 `Open` 或 `Draft` 的，任务就会移动。关闭但未合并的 PR 不会阻止移动，也不检查子任务的状态。子任务上的 PR 事件会让其父任务重新检查。
+
+开关关闭时，只计入任务自身的 PR；已有 PR 合并的父任务要等所有子任务都是 `done` 或 `cancelled`。最后一个子任务进入其中一个状态时会重新检查，所以父任务在那时移动，不需要新的 PR 事件。
+
+### 检查无法完成时
+
+如果检查无法完成，例如移动被拒绝，或服务器在 PR 事件刚发生后停止，Multica 会为该任务保留一次重试。第一次尝试在事件发生 2 分钟后。尝试失败后，等待时间从 30 秒开始，每次翻倍，最长 1 小时。你不需要重新投递 Webhook，也不需要重新关联 PR。检查完成后，重试就会被删除。自托管 Git 服务的 PR 事件同样适用。
+
+工作流里保存的 `PR merged` 转换已弃用，上面的设置会取代它。参见[工作流](/workflows#pr-merged)。
+
 ## 多个工作区
 
 同一个 GitHub App installation 可以连接到多个 Multica 工作区。GitHub 事件会分别进入每个工作区，再按照各自的任务前缀匹配。
@@ -124,6 +142,12 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 在 **设置 → 代码** 的 GitHub 一行，从 **⋯** 菜单选择 **断开**，只会移除当前 Multica 工作区与该 installation 的关系，不会替你从 GitHub 卸载 App。已有 PR 记录会保留，新的事件不再进入该工作区。
 
 撤销 GitHub 侧的仓库授权，需到个人或组织的 GitHub App installations 页面卸载或调整仓库范围。卸载后，与该 installation 关联的所有 Multica 工作区都会停止接收事件。
+
+## 检查通过唤醒
+
+在工作区设置中将 `github_wake_on_ci_success` 设为 `true` 后，已关联的打开或草稿 PR 的检查在当前提交上通过时会启动一次运行。该设置默认关闭。唯一未完成的检查是 `security-gate` 裁决状态的 PR 视为已通过。新提交会再次唤醒。失败的运行在同一提交上重跑变绿时会再唤醒一次。重复投递同一次通过不会再唤醒。
+
+运行会交给 PR 的作者智能体，解析方式与冲突和检查失败唤醒相同。作者未知时交给议题的负责人。负责人是人且作者智能体未知时，该人会收到通知。
 
 ## 等待 GitHub Actions 运行
 
@@ -191,6 +215,8 @@ Repository permissions：
 | Actions | Read-only；`--until-gh-run` 唤醒所需 |
 | Checks | Read-only；用于显示 CI 状态 |
 | Commit statuses | Read-only；用于汇总 legacy status 形式的 CI |
+| Variables | Read-only；合并暂停检查需要读取仓库变量 `AGENT_MERGE_PAUSED` 和 `MAIN_RED_PAUSED` |
+| Actions | 可选，Read-only；同一提交上，被同一工作流的新运行取代的已取消运行不再计入 CI 状态 |
 
 Organization permissions：
 
@@ -205,7 +231,7 @@ Organization permissions：
 - **Workflow run** 和 **Workflow job**，`--until-gh-run` 唤醒所需；
 - **Check suite**、**Check run** 和 **Status**，用于触发 CI 与可合并性刷新。
 
-PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。
+PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。授予可选的 Actions 权限后，还会读取该提交的工作流运行记录；未授予时，即使同一工作流的新运行已通过，被取消的旧运行仍按失败计算。
 
 <Callout type="warning">
 这里需要的是 **Webhook secret**，不是 OAuth Client secret。两边填写的 Webhook secret 不一致时，GitHub delivery 会返回 `401 invalid signature`。

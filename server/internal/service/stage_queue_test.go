@@ -475,3 +475,48 @@ func TestStageQueueCommentTriggeredRefusalStaysOnRecordAndReleases(t *testing.T)
 		t.Fatalf("released run originator %q taint %v, want the requester %q with [ext-1]", originator, taint, actor)
 	}
 }
+
+// CHE-3613: a full stage lists its waiting PRs, next first, and shows whether
+// a queued-PR push task (a run of an agent other than the owner) is open.
+func TestLoadFullStagesListsQueuedPRsAndOpenPushTask(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	a := f.reviewIssue(t, "PR A", 3*time.Hour)
+	b := f.reviewIssue(t, "PR B", 2*time.Hour)
+	c := f.reviewIssue(t, "PR C", 1*time.Hour)
+	f.run(t, a, "running")
+	for _, id := range []string{b, c} {
+		if err := f.guard(id); !errors.Is(err, ErrStageQueueFull) {
+			t.Fatalf("%s while A runs: err = %v, want ErrStageQueueFull", id, err)
+		}
+	}
+	ws := util.MustParseUUID(f.WorkspaceID)
+	load := func() []FullStage {
+		got, err := LoadFullStages(context.Background(), f.q, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	got := load()
+	if len(got) != 1 || got[0].Stage != "review" || got[0].AgentID != f.agentID || got[0].Limit != 1 {
+		t.Fatalf("full stages = %+v, want one review stage owned by the lane owner, limit 1", got)
+	}
+	if q := got[0].Queued; len(q) != 2 || q[0] != (QueuedPR{b, false}) || q[1] != (QueuedPR{c, false}) {
+		t.Fatalf("queued = %+v, want B then C, no push task", q)
+	}
+
+	// An author's run on queued PR B is its open push task. The owner's own run does not count.
+	rt := f.Runtime(t, "Author runtime")
+	author := f.Agent(t, "Author", rt)
+	f.Task(t, author, testutil.Cols{"issue_id": b, "status": "running", "runtime_id": rt})
+	if q := load()[0].Queued; !q[0].PushOpen || q[1].PushOpen {
+		t.Fatalf("queued = %+v, want push task open on B only", q)
+	}
+
+	// Another workspace sees nothing.
+	other, err := LoadFullStages(context.Background(), f.q, util.MustParseUUID(f.Fixture.Workspace(t, "Other", fmt.Sprintf("other-%d", time.Now().UnixNano()))))
+	if err != nil || len(other) != 0 {
+		t.Fatalf("other workspace: %+v, %v; want none", other, err)
+	}
+}

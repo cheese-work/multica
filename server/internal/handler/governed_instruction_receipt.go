@@ -237,32 +237,15 @@ func (h *Handler) receiptApply(w http.ResponseWriter, r *http.Request, writerID 
 		return internal(err)
 	}
 	defer tx.Rollback(r.Context())
-	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "governed_vote:"+issueID); err != nil {
-		return internal(err)
-	}
-	reviewers, reason, err := receiptReviewers(r.Context(), tx, wsUUID, issueUUID, writerID, r.Header.Get("X-Task-ID"), c.kind+":"+id, before, after)
+	reviewerID, reason, err := claimPassReceipt(r.Context(), tx, wsUUID, issueUUID, idUUID, writerID, r.Header.Get("X-Task-ID"), c.kind, before, after)
 	if err != nil {
 		return internal(err)
 	}
+	if reason == receiptUsed {
+		return fail(http.StatusConflict, receiptUsed, receiptUsed, nil)
+	}
 	if reason != "" {
 		return deny(reason)
-	}
-	var reviewerID string
-	for _, rec := range reviewers {
-		tag, err := tx.Exec(r.Context(), `
-			INSERT INTO governed_pass_receipt (comment_id, workspace_id, issue_id, reviewer_id, writer_id, field, target_id, before_sha256, after_sha256)
-			VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9) ON CONFLICT (comment_id) DO NOTHING`,
-			rec.commentID, wsUUID, issueUUID, rec.authorID, writerID, c.kind, idUUID, before, after)
-		if err != nil {
-			return internal(err)
-		}
-		if tag.RowsAffected() == 1 {
-			reviewerID = rec.authorID
-			break
-		}
-	}
-	if reviewerID == "" {
-		return fail(http.StatusConflict, "receipt already used", "receipt already used", nil)
 	}
 
 	result, rejected, err := ownerCASWriteTx(r.Context(), tx, c, workspaceID, id, content, before)
@@ -278,4 +261,33 @@ func (h *Handler) receiptApply(w http.ResponseWriter, r *http.Request, writerID 
 	slog.Info("pass-receipt governed-field write applied", append(logger.RequestAttrs(r), "che_issue", "CHE-3490",
 		"actor_agent_id", writerID, "target_kind", c.kind, "target_id", id, "receipt_issue", issueID, "reviewer", reviewerID)...)
 	return result, true
+}
+
+const receiptUsed = "receipt already used"
+
+// claimPassReceipt locks the receipt issue, checks 5 to 8 for the change to
+// field:targetID, and records one single-use row in tx. reason is non-empty
+// when no receipt may sign (receiptUsed when every one was spent); the caller
+// commits tx with the write, so a refused write consumes nothing.
+func claimPassReceipt(ctx context.Context, tx db.DBTX, wsUUID, issueUUID, targetUUID pgtype.UUID, writerID, writerTaskID, field, before, after string) (reviewerID, reason string, err error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "governed_vote:"+uuidToString(issueUUID)); err != nil {
+		return "", "", err
+	}
+	reviewers, reason, err := receiptReviewers(ctx, tx, wsUUID, issueUUID, writerID, writerTaskID, field+":"+uuidToString(targetUUID), before, after)
+	if err != nil || reason != "" {
+		return "", reason, err
+	}
+	for _, rec := range reviewers {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO governed_pass_receipt (comment_id, workspace_id, issue_id, reviewer_id, writer_id, field, target_id, before_sha256, after_sha256)
+			VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9) ON CONFLICT (comment_id) DO NOTHING`,
+			rec.commentID, wsUUID, issueUUID, rec.authorID, writerID, field, targetUUID, before, after)
+		if err != nil {
+			return "", "", err
+		}
+		if tag.RowsAffected() == 1 {
+			return rec.authorID, "", nil
+		}
+	}
+	return "", receiptUsed, nil
 }

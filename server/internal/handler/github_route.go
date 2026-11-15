@@ -178,6 +178,34 @@ func (h *Handler) routeGrantProject(w http.ResponseWriter, r *http.Request) (db.
 	return member, project, true
 }
 
+// routeGrantTx runs a route-grant write and its audit row in one transaction.
+// On false it has already answered.
+func (h *Handler) routeGrantTx(w http.ResponseWriter, r *http.Request, project db.Project, kind, failMsg string, before, after map[string]any, mutate func(*db.Queries) error) bool {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return false
+	}
+	defer tx.Rollback(ctx)
+	q := h.Queries.WithTx(tx)
+	if err := mutate(q); err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return false
+	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: kind, WorkspaceID: project.WorkspaceID, TargetID: project.ID, Before: before, After: after,
+	}); err != nil {
+		writeAuditFailure(w, r, err, kind)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) SetGitHubRouteGrant(w http.ResponseWriter, r *http.Request) {
 	member, project, ok := h.routeGrantProject(w, r)
 	if !ok {
@@ -195,11 +223,15 @@ func (h *Handler) SetGitHubRouteGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to look up member")
 		return
 	}
-	grant, err := h.Queries.UpsertGitHubRouteGrant(r.Context(), db.UpsertGitHubRouteGrantParams{
-		ProjectID: project.ID, UserID: userID, GrantedBy: pgtype.UUID{Bytes: member.UserID.Bytes, Valid: true},
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to set route grant")
+	var grant db.GithubRouteGrant
+	if !h.routeGrantTx(w, r, project, "project.route_grant.set", "failed to set route grant",
+		routeGrantAuditFields(pgtype.UUID{}), routeGrantAuditFields(userID),
+		func(q *db.Queries) (err error) {
+			grant, err = q.UpsertGitHubRouteGrant(r.Context(), db.UpsertGitHubRouteGrantParams{
+				ProjectID: project.ID, UserID: userID, GrantedBy: pgtype.UUID{Bytes: member.UserID.Bytes, Valid: true},
+			})
+			return err
+		}) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gitHubRouteGrantToResponse(grant))
@@ -214,8 +246,12 @@ func (h *Handler) DeleteGitHubRouteGrant(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if _, err := h.Queries.DeleteGitHubRouteGrant(r.Context(), db.DeleteGitHubRouteGrantParams{ProjectID: project.ID, UserID: userID}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete route grant")
+	if !h.routeGrantTx(w, r, project, "project.route_grant.remove", "failed to delete route grant",
+		routeGrantAuditFields(userID), routeGrantAuditFields(pgtype.UUID{}),
+		func(q *db.Queries) error {
+			_, err := q.DeleteGitHubRouteGrant(r.Context(), db.DeleteGitHubRouteGrantParams{ProjectID: project.ID, UserID: userID})
+			return err
+		}) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

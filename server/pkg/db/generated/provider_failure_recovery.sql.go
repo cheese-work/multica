@@ -409,6 +409,92 @@ func (q *Queries) GetProviderFailureTriggerID(ctx context.Context, taskID pgtype
 	return trigger_id, err
 }
 
+const getProviderHeldRetryFence = `-- name: GetProviderHeldRetryFence :one
+SELECT (
+    i.id IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM agent_task_queue newer
+        WHERE newer.issue_id = t.issue_id AND newer.id <> t.id
+          AND (newer.created_at, newer.id) > (t.created_at, t.id)
+    )
+    AND i.status NOT IN ('done', 'cancelled')
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed')
+    )
+    AND (
+        (i.assignee_type = 'agent' AND i.assignee_id = t.agent_id)
+        OR (i.assignee_type = 'squad' AND i.assignee_id = t.squad_id)
+    )
+)::boolean AS allowed
+FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+WHERE t.id = $1
+`
+
+// CHE-1736 M1.2 fence for a held provider retry. TRUE only if the failed task is
+// still the issue's latest run, the issue is not in a terminal status, and the
+// issue is still assigned to the task's agent or squad. An unassigned issue, a
+// newer run or a reassignment means no retry.
+func (q *Queries) GetProviderHeldRetryFence(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getProviderHeldRetryFence, taskID)
+	var allowed bool
+	err := row.Scan(&allowed)
+	return allowed, err
+}
+
+const getRecoveryLineageFacts = `-- name: GetRecoveryLineageFacts :one
+WITH RECURSIVE lineage(id, depth, path) AS (
+    SELECT t.id, 0, ARRAY[t.id] FROM agent_task_queue t WHERE t.id = $1
+    UNION ALL
+    SELECT parent.id, lineage.depth + 1, lineage.path || parent.id
+    FROM lineage
+    JOIN agent_task_queue child ON child.id = lineage.id
+    JOIN agent_task_queue parent ON parent.id IN (child.retry_of_task_id, child.parent_task_id)
+    WHERE lineage.depth < 32 AND NOT parent.id = ANY (lineage.path)
+)
+SELECT
+    EXISTS (
+        SELECT 1 FROM provider_failure_recovery recovery
+        WHERE recovery.recovery_task_id IN (SELECT id FROM lineage)
+    ) AS task_lineage,
+    EXISTS (
+        SELECT 1
+        FROM lineage
+        JOIN agent_task_queue child ON child.id = lineage.id
+        WHERE lineage.depth = 32
+          AND (child.retry_of_task_id IS NOT NULL OR child.parent_task_id IS NOT NULL)
+    ) AS too_deep,
+    EXISTS (
+        SELECT 1
+        FROM agent_task_queue task
+        JOIN provider_failure_recovery recovery ON recovery.recovery_wakeup_id::text = task.context->>'wakeup_id'
+        WHERE task.id = $1
+          AND CASE WHEN task.context->>'wakeup_revision' ~ '^[0-9]{1,18}$'
+                   THEN (task.context->>'wakeup_revision')::bigint ELSE 0 END
+              >= COALESCE(recovery.recovery_wakeup_revision, 0)
+    ) AS wakeup_lineage
+`
+
+type GetRecoveryLineageFactsRow struct {
+	TaskLineage   bool `json:"task_lineage"`
+	TooDeep       bool `json:"too_deep"`
+	WakeupLineage bool `json:"wakeup_lineage"`
+}
+
+// CHE-1773: is this task in a provider-failure recovery lineage? Used to fence
+// every generic retry entry point. The ancestor walk is capped at 32 hops and
+// never revisits a task, so a cycle ends; a chain that still has a parent at the
+// cap is reported as too_deep and the caller treats it as a hit. The wakeup
+// match is revision-aware: a run at or after the recovery revision is covered,
+// an earlier run of the same wakeup is not.
+func (q *Queries) GetRecoveryLineageFacts(ctx context.Context, taskID pgtype.UUID) (GetRecoveryLineageFactsRow, error) {
+	row := q.db.QueryRow(ctx, getRecoveryLineageFacts, taskID)
+	var i GetRecoveryLineageFactsRow
+	err := row.Scan(&i.TaskLineage, &i.TooDeep, &i.WakeupLineage)
+	return i, err
+}
+
 const recordProviderFailureRecovery = `-- name: RecordProviderFailureRecovery :execrows
 INSERT INTO provider_failure_recovery (
     failed_task_id, trigger_kind, trigger_id, condition_key, failed_at,

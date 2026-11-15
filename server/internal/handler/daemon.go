@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
@@ -1566,6 +1568,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1635,6 +1638,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	}
 	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
 	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req)
 	return ack, err
 }
 
@@ -2855,6 +2859,31 @@ func applyFreshSessionRetryWorkdir(task db.AgentTaskQueue, resp *AgentTaskRespon
 	resp.PriorSessionResumeUnavailable = true
 }
 
+// loadClaimParentIssue reads a sub-issue's parent for the claim payload. The
+// parent is context, not a precondition, so a failed read only drops it.
+func (h *Handler) loadClaimParentIssue(ctx context.Context, task *db.AgentTaskQueue, issue db.Issue) (*ClaimParentIssue, int32) {
+	parent, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID:          issue.ParentIssueID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("task claim: failed to load parent issue",
+				"task_id", uuidToString(task.ID),
+				"issue_id", uuidToString(issue.ID),
+				"parent_issue_id", uuidToString(issue.ParentIssueID),
+				"error", err,
+			)
+		}
+		return nil, 0
+	}
+	return &ClaimParentIssue{
+		ID:     uuidToString(parent.ID),
+		Title:  parent.Title,
+		Status: parent.Status,
+	}, parent.Number
+}
+
 func claimResponseAgentIdentityMatches(resp AgentTaskResponse) bool {
 	return resp.AgentID != "" && resp.Agent != nil && resp.Agent.ID == resp.AgentID
 }
@@ -2896,7 +2925,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.StartClaimSupported = true
 		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
-	var issueNumber int32
+	var issueNumber, parentIssueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -3084,6 +3113,36 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// resp was snapshotted before this write; report what is now stored.
 		resp.ClaimedModel = &preset.Settings.Model
 	}
+	harnessProfile, err := h.resolveClaimHarnessProfile(r.Context(), agent)
+	if err != nil {
+		slog.Error("daemon claim: resolve harness profile failed; preserving task for redelivery",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "error", err)
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			&claimBuildFailure{outcome: "error_harness_profile", status: http.StatusInternalServerError, message: "failed to resolve harness profile"}
+	}
+	// Anything other than personal restricts the launch, so only a daemon that
+	// advertises runtime-profile-v1 may receive it: an older daemon drops the
+	// field and would run the user's personal config instead (CHE-3706).
+	if harnessProfile != service.HarnessProfilePersonal && !requestHasClientCapability(r, protocol.DaemonCapabilityRuntimeProfileV1) {
+		slog.Error("daemon claim: daemon lacks runtime-profile capability; failing task instead of launching unrestricted",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "harness_profile", harnessProfile)
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"This agent's runtime profile is "+harnessProfile+", but the daemon that claimed the task does not support runtime profiles. Update the daemon, or set the agent's runtime profile to personal.",
+				taskfailure.ReasonEnvironmentPrepareFailed, "error_harness_profile_unsupported", http.StatusConflict, "daemon does not support the agent's runtime profile")
+	}
+	// CHE-4331: compaction env for Claude Code, derived from auto_compact at
+	// claim time; never stored in agent env, and the agent's own env wins.
+	if runtime.Provider == "claude" {
+		if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(runtimeWorkspaceID)); err != nil {
+			slog.Warn("daemon claim: load workspace for auto-compact env failed", "task_id", uuidToString(task.ID), "error", err)
+		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
+			if customEnv == nil {
+				customEnv = map[string]string{}
+			}
+			maps.Copy(customEnv, extra)
+		}
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
@@ -3095,6 +3154,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		ThinkingLevel:         preset.Settings.ThinkingLevel,
 		ServiceTier:           preset.Settings.ServiceTier,
 		RuntimeConfig:         runtimeConfig,
+		HarnessProfile:        harnessProfile,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
 	// Snapshot the agent's persistent OpenClaw model override for this claim.
@@ -3196,6 +3256,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		if issue.AssigneeID.Valid {
 			resp.IssueAssigneeID = uuidToString(issue.AssigneeID)
+		}
+		if issue.ParentIssueID.Valid {
+			resp.ParentIssue, parentIssueNumber = h.loadClaimParentIssue(r.Context(), task, issue)
 		}
 		// This claim's own snapshot, recorded by FinalizeTaskClaim so a LATER
 		// run that resumes this one's session can compare against what THIS run
@@ -3738,6 +3801,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
 				h.rejectClaimSourceLoad(r.Context(), task, deliveryErr, "channel task delivery", uuidToString(task.ID))
 		}
+		// The prompt lists the DM's open asks so the agent can name one in `multica chat reply-state`.
+		openAsks, asksErr := h.Queries.ListOpenChatAttentionAsksOfAgent(r.Context(), db.ListOpenChatAttentionAsksOfAgentParams{
+			ChainRootSessionID: cs.ChainRootSessionID, UserID: cs.CreatorID, AgentID: task.AgentID,
+		})
+		if asksErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, asksErr, "chat open asks", uuidToString(task.ChatSessionID))
+		}
+		for _, id := range openAsks {
+			resp.ChatOpenAskIDs = append(resp.ChatOpenAskIDs, uuidToString(id))
+		}
+		resp.ChatNoticeLocale = h.qoderChatNoticeLocale(r.Context(), runtime, *task, cs, resp.ChatChannelType, resp.ChatType)
 		// A web chat can opt into the same durable project context as an
 		// issue-bound task.
 		projectCtx, projectErr := h.resolveClaimProjectContext(r.Context(), cs.ProjectID, cs.WorkspaceID)
@@ -4028,10 +4103,23 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return nil
 		}
 
-		if cs.CompactionEpoch > 0 && resp.PriorSessionID == "" {
-			// An in-place /compact cleared the resume session: seed this turn
-			// with the summary and what was said since. It outranks the fork and
-			// continuation blocks, which describe history the summary replaced.
+		if cs.SegmentFloorID.Valid && resp.PriorSessionID == "" {
+			// Branch order (CHE-2819): a compacted DM never reaches the fork block,
+			// whose history reads the unfiltered DM; the summary carries what mattered.
+			block, err := h.carryOverBlock(r.Context(), cs, unanswered)
+			if err != nil {
+				slog.Error("chat claim: build carry-over block failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_carry_over", status: http.StatusInternalServerError, message: "failed to build carry-over context",
+				}
+			}
+			if failure := seedWithTaint(block); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
+		} else if cs.CompactionEpoch > 0 && resp.PriorSessionID == "" {
+			// A DM compacted before segment floors existed: seed from the latest
+			// summary row. It still outranks the fork and continuation blocks.
 			block, err := h.compactionSeedBlock(r.Context(), cs, unanswered)
 			if err != nil {
 				slog.Error("chat claim: build compaction seed failed; preserving task for redelivery",
@@ -4107,6 +4195,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.AutopilotTriggerPayload = json.RawMessage(run.TriggerPayload)
 		}
 		resp.AutopilotTitle = ap.Title
+		resp.Script = claimScriptFor(ap.ExecutionMode, ap.ScriptConfig)
+		if resp.Script != nil {
+			h.AutopilotService.RecordScriptClaim(r.Context(), run.ID, resp.Script.Name, resp.Script.Args)
+		}
 		resp.ThreadName = ap.Title
 		if ap.Description.Valid {
 			resp.AutopilotDescription = ap.Description.String
@@ -4130,6 +4222,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+	}
+
+	// Output-only background task (CHE-4100): no issue / chat / autopilot link.
+	// Workspace and input come from the task context; nothing else is hydrated.
+	if task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid {
+		var bc service.BackgroundTaskContext
+		if json.Unmarshal(task.Context, &bc) == nil && bc.Type == service.BackgroundTaskContextType {
+			resp.BackgroundJob = bc.Job
+			resp.BackgroundInput = bc.Input
+			resp.BackgroundRunSeconds = bc.RunSeconds
+			resp.ThreadName = bc.Job
+			resp.WorkspaceID = bc.WorkspaceID
+			if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, false); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
+		}
 	}
 
 	// Quick-create task: no issue / chat / autopilot link — workspace and
@@ -4300,6 +4408,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.WorkspaceSlug = ws.Slug
 		if issueNumber > 0 {
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
+		}
+		if resp.ParentIssue != nil && parentIssueNumber > 0 {
+			resp.ParentIssue.Identifier = service.IssueIdentifier(ws.IssuePrefix, parentIssueNumber)
 		}
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
@@ -5155,6 +5266,9 @@ type TaskCompleteRequest struct {
 		Tokens int64 `json:"tokens"`
 		Window int64 `json:"window"`
 	} `json:"context,omitempty"`
+	// InitContext is the daemon's first-prompt token report, stored as part of
+	// the run's result. Optional: daemons that predate it omit it.
+	InitContext *initctx.Report `json:"init_context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -5172,6 +5286,15 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
+	if req.InitContext != nil {
+		for i := range req.InitContext.Parts {
+			p := &req.InitContext.Parts[i]
+			p.Part = initctx.Part(util.SanitizeTextForPostgres(string(p.Part)))
+			for j := range p.Notes {
+				p.Notes[j] = util.SanitizeTextForPostgres(p.Notes[j])
+			}
+		}
+	}
 }
 
 func sanitizeTaskFailRequest(req *TaskFailRequest) {
@@ -5285,15 +5408,10 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// task's agent capacity or serialization key is re-claimed immediately.
 	h.TaskService.NotifyTaskFinished(*task)
 
-	// Best-effort revoke of any agent task token minted at claim time.
-	// The token would naturally expire at the 24h watermark and is also
-	// cascaded on agent_task deletion, but eagerly deleting it on
-	// completion shrinks the window where a compromised agent process
-	// can keep making API calls after its task finishes. Failure here is
-	// non-fatal; the expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("complete task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
-	}
+	// Best-effort delete of any agent task token minted at claim time. Not an
+	// immediate-revocation guarantee: on failure the row stays valid until its
+	// expiry, and RevokeTaskTokens logs and records that.
+	h.TaskService.RevokeTaskTokens(r.Context(), *task)
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -5636,90 +5754,15 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 			}
 			continue
 		}
-		var parentComment *db.Comment
-		if c.ParentID.Valid {
-			// Scope to the issue's workspace; a comment's parent is always in the
-			// same workspace, so this only fails closed against a stray foreign
-			// UUID rather than changing behavior (MUL-4252).
-			if parent, err := h.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
-				ID:          c.ParentID,
-				WorkspaceID: issue.WorkspaceID,
-			}); err == nil {
-				parentComment = &parent
-			}
-		}
-		// Compute what this comment would trigger, then keep ONLY the agent
-		// that just completed — never the full fan-out (that would re-wake
-		// unrelated `@other-agent` targets).
-		//
-		// The comment is routed under its OWN author_type. A member is its own
-		// originator. For an agent author, the originator is the human at the
-		// top of that agent's trigger chain (resolved from the comment's source
-		// task); canInvokeAgent judges an agent→agent (A2A) mention by that
-		// originator, not the immediate agent principal (MUL-3963).
-		actorType := c.AuthorType
-		actorID := uuidToString(c.AuthorID)
-		originatorUserID := actorID
-		if actorType != "member" {
-			originatorUserID = uuidToString(h.TaskService.ResolveOriginatorFromTriggerComment(ctx, issue.WorkspaceID, c.ID))
-		}
-		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, c.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
-			ExcludeTriggerCommentID: c.ID,
-			AuthoringTaskID:         c.SourceTaskID,
-			OriginatorUserID:        originatorUserID,
-		})
-		// Agent replies discovered only by timestamp must not start a new
-		// conversation. Replay explicit mentions, or a worker reply that the
-		// creation path already accepted and recorded in this run's input plan.
-		// Recomputed routing still checks current permissions and the self guard.
-		if actorType != "member" {
-			triggers = keepReplayableAgentTriggers(triggers, slices.Contains(plannedCommentIDs, c.ID) || unreadSteers[uuidToString(c.ID)])
-		}
-		scoped := make([]commentAgentTrigger, 0, 1)
-		for _, trigger := range triggers {
-			if uuidToString(trigger.Agent.ID) == agentID {
-				scoped = append(scoped, trigger)
-			}
-		}
-		if len(scoped) == 0 {
+		unread := unreadSteers[uuidToString(c.ID)]
+		out := h.replayComment(ctx, issue, task, c, slices.Contains(plannedCommentIDs, c.ID), unread)
+		if !out.routed {
 			continue
 		}
-		// The first qualifying comment enqueues the follow-up task; later ones
-		// find it AlreadyPending and merge in, so all undelivered comments end
-		// up covered by a single bounded run.
-		//
-		// A BLOCKED replay must not be discarded (#5914, Elon round 8): the slot
-		// can be held by a task that will never see this comment (it predates that
-		// task and is not in its planned ids), so dropping the failure here is
-		// exactly how a promised follow-up is lost. Hand the obligation to that
-		// blocker instead, keeping it alive until some run provably covers it.
-		res := h.enqueueCommentAgentTriggers(ctx, issue, c.ID, scoped)[agentID]
-		handled := res.status != DispatchBlocked
-		if res.status == DispatchBlocked {
-			headSha := h.TaskService.ResolveIssueReviewSHAParam(ctx, task.IssueID)
-			if h.propagateUncoveredCommentObligation(ctx, issue, scoped[0], c.ID, headSha) {
-				handled = true
-				slog.Info("reconcile comments on completion: replay blocked, obligation handed to the active task",
-					"issue_id", uuidToString(task.IssueID), "agent_id", agentID, "comment_id", uuidToString(c.ID))
-			} else {
-				// The slot is held by a DIFFERENT-head queued task: it can neither
-				// cover this comment nor accept it (merging would let an old-head
-				// run consume a new-head request — TEN-356). Today's schema has no
-				// safe place to park the obligation, so surface it loudly rather
-				// than let it disappear quietly.
-				slog.Error("reconcile comments on completion: replay blocked and obligation could not be handed off; comment needs a durable obligation record",
-					"issue_id", uuidToString(task.IssueID), "agent_id", agentID, "comment_id", uuidToString(c.ID),
-					"reason", res.reason)
-			}
-		}
-		// The replayed agent steer is now an ordinary input of the follow-up;
-		// its failed receipt would otherwise invite a member to resend it.
-		if handled && c.AuthorType == "agent" && unreadSteers[uuidToString(c.ID)] {
-			if n, err := h.Queries.DeleteUndeliveredTaskSupplementForRun(ctx, db.DeleteUndeliveredTaskSupplementForRunParams{
-				CommentID: c.ID, TaskID: task.ID,
-			}); err == nil && n > 0 {
-				h.publishCommentSupplementUpdate(ctx, issue.WorkspaceID, c.ID)
-			}
+		// A member steer the turn never read keeps its receipt until the
+		// follow-up exists: a transient failure retries, a refusal is shown.
+		if unread {
+			h.settleReplayedSteer(ctx, issue.WorkspaceID, task.ID, c, out, 0, time.Now())
 		}
 		scheduled++
 	}
@@ -5986,6 +6029,20 @@ type TaskUsagePayload struct {
 	// every provider except Grok today) — stored as NULL so the reader knows
 	// to fall back to rate-table estimation rather than reading a real $0.
 	CostUSDTicks int64 `json:"cost_usd_ticks"`
+	// CreditsMicros is the provider's own charge in millionths of its credit
+	// unit, for providers that bill in credits instead of exposing tokens
+	// (Qoder Cloud Agents). A pointer because 0 credits is a real answer that
+	// must stay distinct from "this provider does not report credits".
+	CreditsMicros *int64 `json:"credits_micros,omitempty"`
+}
+
+// reportedCredits converts a reported credit charge into the nullable column.
+// Negative is nonsense from a malformed report and is dropped.
+func reportedCredits(micros *int64) pgtype.Int8 {
+	if micros == nil || *micros < 0 {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: *micros, Valid: true}
 }
 
 // authoritativeCostTicks converts a reported cost into the nullable column.
@@ -6003,21 +6060,29 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	task, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
 	}
 
 	var req struct {
 		Usage []TaskUsagePayload `json:"usage"`
+		// Snapshot marks a mid-run cumulative report from a daemon that meters
+		// while its agent works (STOE-30). The rows are upserted identically —
+		// UpsertTaskUsage overwrites per (task_id, provider, model), so a
+		// snapshot can never add up twice — but the additive metrics counter and
+		// the per-run cache-ratio log stay on the terminal report: summing each
+		// cumulative snapshot into RecordLLMUsage would bill the same tokens
+		// once per flush.
+		Snapshot bool `json:"snapshot"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// A negative counter would turn into a token credit at settlement. Reject
-	// the whole report before anything is written.
+	// Reject a negative counter before anything is written: a report that
+	// subtracts tokens is malformed, not a correction.
 	for _, u := range req.Usage {
 		if u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
 			writeError(w, http.StatusBadRequest, "token counts must not be negative")
@@ -6025,7 +6090,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The rows and their run-budget charge commit together (CHE-2297 L2b).
+	// One report's rows commit together.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		slog.Warn("begin task usage transaction failed", "task_id", taskID, "error", err)
@@ -6034,20 +6099,11 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(context.WithoutCancel(r.Context()))
 	qtx := h.Queries.WithTx(tx)
-	// Take a lock before any usage row, so two reports for one task that write
-	// their rows in different orders cannot each hold a row the other waits
-	// for. Settlement needs the issue lock anyway; a task with no issue (a chat
-	// task) is serialized on its own id.
-	var lockErr error
-	if task.IssueID.Valid {
-		if _, err := qtx.LockIssueRunBudget(r.Context(), task.IssueID); !errors.Is(err, pgx.ErrNoRows) {
-			lockErr = err
-		}
-	} else {
-		lockErr = qtx.LockTaskUsageReport(r.Context(), task.ID)
-	}
-	if lockErr != nil {
-		slog.Warn("lock task usage report failed", "task_id", taskID, "error", lockErr)
+	// Take the task's lock before any usage row, so two reports for one task
+	// that write their rows in different orders cannot each hold a row the
+	// other waits for.
+	if err := qtx.LockTaskUsageReport(r.Context(), task.ID); err != nil {
+		slog.Warn("lock task usage report failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to store usage")
 		return
 	}
@@ -6057,6 +6113,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	// resolve to a provider instead of landing as '' and pricing $0.
 	var runtimeProvider string
 	runtimeProviderLoaded := false
+	updated := false
 	providers := make([]string, len(req.Usage))
 	for i, u := range req.Usage {
 		provider := normalizeProvider(u.Provider)
@@ -6081,17 +6138,14 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			CacheReadTokens:  u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
+			CreditsMicros:    reportedCredits(u.CreditsMicros),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to store usage")
 			return
 		}
 		providers[i] = provider
-	}
-	if err := service.SettleRunBudgetUsage(r.Context(), qtx, task); err != nil {
-		slog.Warn("settle run budget usage failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to store usage")
-		return
+		updated = true
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit task usage failed", "task_id", taskID, "error", err)
@@ -6100,25 +6154,44 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, u := range req.Usage {
 		provider := providers[i]
-		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+		// A snapshot reports the run's total so far, so it is not a new charge:
+		// RecordLLMUsage adds, and each flush would bill the tokens the previous
+		// flush already billed. The terminal report carries them once.
+		if !req.Snapshot {
+			h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+		}
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are
 		// observable in logs, not just queryable from runtime_usage. The ratio
 		// is cached input over total input-side tokens; a persistently low
 		// value flags a prompt prefix that is not being reused across runs
 		// (e.g. volatile values poisoning the cacheable prefix). MUL-3887.
-		if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
-			slog.Info("task prompt-cache usage",
-				"task_id", taskID,
-				"provider", provider,
-				"model", u.Model,
-				"input_tokens", u.InputTokens,
-				"output_tokens", u.OutputTokens,
-				"cache_read_tokens", u.CacheReadTokens,
-				"cache_write_tokens", u.CacheWriteTokens,
-				"cache_read_ratio", float64(u.CacheReadTokens)/float64(totalInput),
-			)
+		if !req.Snapshot {
+			if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
+				slog.Info("task prompt-cache usage",
+					"task_id", taskID,
+					"provider", provider,
+					"model", u.Model,
+					"input_tokens", u.InputTokens,
+					"output_tokens", u.OutputTokens,
+					"cache_read_tokens", u.CacheReadTokens,
+					"cache_write_tokens", u.CacheWriteTokens,
+					"cache_read_ratio", float64(u.CacheReadTokens)/float64(totalInput),
+				)
+			}
 		}
+	}
+
+	if updated {
+		// This invalidates the existing task and issue-usage queries without
+		// broadcasting token counts or changing task progress/status.
+		h.Bus.Publish(events.Event{
+			Type:        protocol.EventTaskUsage,
+			WorkspaceID: workspaceID,
+			ActorType:   "system",
+			TaskID:      uuidToString(task.ID),
+			Payload:     protocol.TaskUsageUpdatedPayload{TaskID: uuidToString(task.ID)},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -6243,12 +6316,9 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 	}
 	h.TaskService.NotifyTaskFinished(*task)
 
-	// Best-effort revoke of the mat_ task token minted at claim. Same
-	// rationale as CompleteTask — eager deletion shrinks the post-
-	// terminal window. The 24h expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("fail task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
-	}
+	// Best-effort delete of the mat_ task token minted at claim; same
+	// semantics as CompleteTask (the row stays valid until expiry on failure).
+	h.TaskService.RevokeTaskTokens(r.Context(), *task)
 
 	slog.Info("task failed", "task_id", taskID, "agent_id", uuidToString(task.AgentID), "task_error", req.Error, "failure_reason", req.FailureReason)
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -6281,6 +6351,16 @@ type TaskMessageBatchRequest struct {
 	Messages []TaskMessageRequest `json:"messages"`
 }
 
+// sealsChatText reports whether a batch holds a row that ends a text block.
+func sealsChatText(rows []db.CreateTaskMessagesRow) bool {
+	for _, m := range rows {
+		if m.Type != string(agent.MessageText) {
+			return true
+		}
+	}
+	return false
+}
+
 // ReportTaskMessages receives a batch of agent execution messages from the daemon.
 func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
@@ -6309,8 +6389,12 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	// Broadcast reach is deliberately unchanged: only issue- and chat-backed
 	// tasks streamed live messages before, and widening that to autopilot /
 	// quick-create tasks is a product decision, not part of this optimization.
+	// A DM-derived background task streams too, to its DM's creator alone: the
+	// owner session below scopes the event. A bg task with no source session
+	// has no private room, and an unscoped event would reach the workspace, so
+	// it publishes nothing.
 	workspaceID := ""
-	if task.IssueID.Valid || task.ChatSessionID.Valid {
+	if task.IssueID.Valid || ownerSession(task).Valid {
 		workspaceID = scope.WorkspaceID
 	}
 
@@ -6432,8 +6516,8 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		// guarantee, and subscribers render these events as they arrive, so the
 		// ordering lives in the query rather than in the clients.
 		chatSessionID := ""
-		if task.ChatSessionID.Valid {
-			chatSessionID = uuidToString(task.ChatSessionID)
+		if session := ownerSession(task); session.Valid {
+			chatSessionID = uuidToString(session)
 		}
 		for _, m := range created {
 			// The ordered CTE makes sqlc name the row type after the query
@@ -6449,6 +6533,18 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 				ChatSessionOwnerID: scope.ChatSessionOwnerID,
 				Payload:            taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)),
 			})
+		}
+	}
+
+	// A non-text row seals the text before it, so an agent line that came before
+	// a tool call is final now: show it in the DM instead of waiting for the end
+	// of the turn, and keep it if the turn fails or is cancelled (CHE-4704).
+	// Best-effort: the completion path writes whatever this misses.
+	if task.ChatSessionID.Valid && sealsChatText(created) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if err := h.TaskService.PublishChatInterimMessages(ctx, task); err != nil {
+			slog.Warn("publish chat interim messages failed", "task_id", taskID, "error", err)
 		}
 	}
 
@@ -6971,9 +7067,49 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	// for a column that is near-empty on runs that have not finished.
 	if !activeOnly {
 		h.hydrateTaskUsage(r.Context(), issue.ID, resp)
+		resp = h.withSkippedRuns(r.Context(), issue, tasks, resp)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// withSkippedRuns adds the runs the review-head guard declined (CHE-4649) to
+// the run list as cancelled entries whose failure_reason is the skip reason, in
+// time order with the real runs. They are no task rows (a row would count
+// against the run budget), so the list reads them from the activity. A read
+// error leaves the list as it was.
+func (h *Handler) withSkippedRuns(ctx context.Context, issue db.Issue, tasks []db.AgentTaskQueue, resp []AgentTaskResponse) []AgentTaskResponse {
+	skips, err := h.Queries.ListIssueRunSkips(ctx, issue.ID)
+	if err != nil || len(skips) == 0 {
+		return resp
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	// resp is newest first, one entry per task; place each skip before the first
+	// run that is older than it.
+	for _, skip := range skips {
+		var d struct {
+			Reason  string `json:"reason"`
+			AgentID string `json:"agent_id"`
+			Head    string `json:"head_sha"`
+			Trigger string `json:"trigger"`
+		}
+		if json.Unmarshal(skip.Details, &d) != nil || d.Reason == "" {
+			continue
+		}
+		msg := fmt.Sprintf("Run not started: agent already answered PR head %s (%s)", d.Head, d.Trigger)
+		entry := AgentTaskResponse{
+			ID: uuidToString(skip.ID), AgentID: d.AgentID, IssueID: uuidToString(issue.ID), WorkspaceID: workspaceID,
+			Status: "cancelled", FailureReason: d.Reason, Error: &msg, TriggerSummary: &msg,
+			CreatedAt: timestampToString(skip.CreatedAt), CompletedAt: timestampToPtr(skip.CreatedAt),
+		}
+		at := slices.IndexFunc(tasks, func(t db.AgentTaskQueue) bool { return t.CreatedAt.Time.Before(skip.CreatedAt.Time) })
+		if at < 0 {
+			at = len(resp)
+		}
+		resp = slices.Insert(resp, at, entry)
+		tasks = slices.Insert(tasks, at, db.AgentTaskQueue{CreatedAt: skip.CreatedAt})
+	}
+	return resp
 }
 
 // hydrateTaskUsage attaches each run's own token usage to the execution-log
@@ -6997,7 +7133,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 	for _, row := range rows {
 		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
-			row.CacheWriteTokens, row.CostUsdTicks)
+			row.CacheWriteTokens, row.CostUsdTicks, row.CreditsMicros)
 	}
 	attachTaskUsage(resp, byTask)
 }
@@ -7026,7 +7162,7 @@ func (h *Handler) hydrateAgentTaskUsage(ctx context.Context, agentID pgtype.UUID
 	for _, row := range rows {
 		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
-			row.CacheWriteTokens, row.CostUsdTicks)
+			row.CacheWriteTokens, row.CostUsdTicks, row.CreditsMicros)
 	}
 	attachTaskUsage(resp, byTask)
 	return nil
@@ -7042,11 +7178,17 @@ func appendTaskUsage(
 	cacheReadTokens int64,
 	cacheWriteTokens int64,
 	costUsdTicks pgtype.Int8,
+	creditsMicros pgtype.Int8,
 ) {
 	var cost *int64
 	if costUsdTicks.Valid {
 		value := costUsdTicks.Int64
 		cost = &value
+	}
+	var credits *int64
+	if creditsMicros.Valid {
+		value := creditsMicros.Int64
+		credits = &value
 	}
 	id := uuidToString(taskID)
 	byTask[id] = append(byTask[id], TaskUsageData{
@@ -7057,6 +7199,7 @@ func appendTaskUsage(
 		CacheReadTokens:  cacheReadTokens,
 		CacheWriteTokens: cacheWriteTokens,
 		CostUsdTicks:     cost,
+		CreditsMicros:    credits,
 	})
 }
 
@@ -7106,9 +7249,10 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	// A chat task's transcript belongs to the chat session's creator alone;
-	// to anyone else it does not exist either.
-	if task.ChatSessionID.Valid && (scope.ChatSessionOwnerID == "" || scope.ChatSessionOwnerID != requestUserID(r)) {
+	// A chat task's transcript belongs to the chat session's creator alone, and
+	// a DM-derived background task's to the DM's creator; to anyone else it
+	// does not exist either.
+	if taskContentHiddenFrom(task, scope, requestUserID(r)) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
@@ -7417,10 +7561,7 @@ func (h *Handler) GetTaskGCCheck(w http.ResponseWriter, r *http.Request) {
 // be recorded, and the caller then starts a fresh session instead, since a
 // resume that is not marked would run with a grant the transcript has not earned.
 func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
-	taint, err := h.Queries.InheritSessionTaint(ctx, db.InheritSessionTaintParams{
-		ID:        task.ID,
-		SessionID: sessionID,
-	})
+	taint, err := h.inheritSessionTaintLocked(ctx, task, sessionID)
 	if err != nil {
 		slog.Warn("daemon claim: could not record session taint; starting fresh",
 			"task_id", uuidToString(task.ID), "error", err)
@@ -7428,6 +7569,28 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// inheritSessionTaintLocked takes the issue row lock before it updates the
+// task: the update fires the task's taint trigger, which locks the issue, and
+// every other path that touches the runs of an issue takes the issue first.
+func (h *Handler) inheritSessionTaintLocked(ctx context.Context, task *db.AgentTaskQueue, sessionID string) ([]string, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	qtx := h.Queries.WithTx(tx)
+	if task.IssueID.Valid {
+		if _, err := qtx.LockIssueRunBudget(ctx, task.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+	taint, err := qtx.InheritSessionTaint(ctx, db.InheritSessionTaintParams{ID: task.ID, SessionID: sessionID})
+	if err != nil {
+		return nil, err
+	}
+	return taint, tx.Commit(ctx)
 }
 
 // recordChatTaint is the single path by which a DM task takes the taint of chat
@@ -7478,4 +7641,19 @@ func (h *Handler) chatPointerIsCurrent(ctx context.Context, cs db.ChatSession) b
 		return false
 	}
 	return current
+}
+
+// resolveClaimHarnessProfile applies the agent override, then the workspace
+// default. An explicit agent value needs no workspace read. Otherwise a failed
+// read is an error: launching personal when the workspace default may be
+// managed would silently drop the isolation the workspace asked for.
+func (h *Handler) resolveClaimHarnessProfile(ctx context.Context, agent db.Agent) (string, error) {
+	if profile, ok := service.AgentHarnessProfile(agent.RuntimeConfig); ok {
+		return profile, nil
+	}
+	ws, err := h.Queries.GetWorkspace(ctx, agent.WorkspaceID)
+	if err != nil {
+		return "", fmt.Errorf("load workspace for harness profile: %w", err)
+	}
+	return service.ResolveHarnessProfile(ws.Settings, agent.RuntimeConfig), nil
 }

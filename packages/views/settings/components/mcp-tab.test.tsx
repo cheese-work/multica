@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -68,6 +69,8 @@ function Wrapper({ children }: { children: ReactNode }) {
     </I18nProvider>
   );
 }
+
+afterEach(() => resetAllRegisteredDrafts());
 
 describe("McpTab", () => {
   beforeEach(() => {

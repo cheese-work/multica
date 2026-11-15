@@ -171,6 +171,7 @@
       "statistic": "Afficher l’utilisation et le coût de cette conversation",
       "archive": "Archiver cette conversation sans lancer l’agent",
       "pin": "Épingler ou détacher cette conversation",
+      "unseen": "Marquer ce DM comme non vu et le quitter",
       "unarchive": "Désarchiver cette conversation. Rien n’est envoyé à l’agent."
     }
   },

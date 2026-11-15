@@ -7,12 +7,19 @@ import enChat from "../../locales/en/chat.json";
 
 const archiveAsync = vi.hoisted(() => vi.fn());
 const pinAsync = vi.hoisted(() => vi.fn());
+const unseenAsync = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
+const toastInfo = vi.hoisted(() => vi.fn());
+const laterAsync = vi.hoisted(() => vi.fn());
 
-vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: toastError }) }));
+vi.mock("sonner", () => ({ toast: Object.assign(toastInfo, { error: toastError }) }));
+vi.mock("@multica/core/chat/attention-mutations", () => ({
+  useChatAttentionLater: () => ({ mutateAsync: laterAsync }),
+}));
 vi.mock("@multica/core/chat/mutations", () => ({
   useSetChatSessionArchived: () => ({ mutateAsync: archiveAsync }),
   useSetChatSessionPinned: () => ({ mutateAsync: pinAsync }),
+  useMarkChatSessionUnread: () => ({ mutateAsync: unseenAsync }),
 }));
 vi.mock("./chat-session-stats-dialog", () => ({
   ChatSessionStatsDialog: ({ open, sessionId }: { open: boolean; sessionId: string | null }) =>
@@ -29,6 +36,7 @@ function setup(session: ChatSession | null) {
     send: vi.fn(async () => true),
     onOpenSession: vi.fn(),
     onArchived: vi.fn(),
+    onUnseen: vi.fn(),
     onRename: vi.fn(async () => true),
     onFork: vi.fn(),
   };
@@ -54,6 +62,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   archiveAsync.mockReset();
   pinAsync.mockReset();
+  unseenAsync.mockReset();
+  laterAsync.mockReset();
   registerChatStore(createChatStore({ storage: localStorage }));
 });
 
@@ -64,6 +74,7 @@ describe("useDmSessionSurface", () => {
     expect(input.onStatistic).toBeTypeOf("function");
     expect(input.onArchive).toBeTypeOf("function");
     expect(input.onPin).toBeTypeOf("function");
+    expect(input.onUnseen).toBeTypeOf("function");
     expect(input.onUnarchive).toBeUndefined();
     expect(input.onRename).toBe(onRename);
     expect(input.onFork).toBe(onFork);
@@ -77,6 +88,7 @@ describe("useDmSessionSurface", () => {
     expect(input.onStatistic).toBeUndefined();
     expect(input.onArchive).toBeUndefined();
     expect(input.onPin).toBeUndefined();
+    expect(input.onUnseen).toBeUndefined();
     expect(input.onRename).toBeUndefined();
     expect(input.onFork).toBeUndefined();
     expect(input.sessionArchived).toBe(true);
@@ -108,6 +120,33 @@ describe("useDmSessionSurface", () => {
 
     expect(order).toEqual(["server", "navigate"]);
     expect(onArchived).toHaveBeenCalledWith(active);
+  });
+
+  it("moves the pane off the DM only after the server marked it unseen", async () => {
+    const order: string[] = [];
+    unseenAsync.mockImplementation(async () => void order.push("server"));
+    const { result, onUnseen } = setup(active);
+    onUnseen.mockImplementation(() => void order.push("navigate"));
+
+    await act(async () => {
+      await result.current.inputProps.onUnseen?.();
+    });
+
+    expect(order).toEqual(["server", "navigate"]);
+    expect(onUnseen).toHaveBeenCalledWith(active);
+  });
+
+  it("keeps the DM open when marking unseen fails", async () => {
+    unseenAsync.mockRejectedValue(new Error("nope"));
+    const { result, onUnseen } = setup(active);
+
+    let ok: boolean | void = true;
+    await act(async () => {
+      ok = await result.current.inputProps.onUnseen?.();
+    });
+
+    expect(ok).toBe(false);
+    expect(onUnseen).not.toHaveBeenCalled();
   });
 
   it("keeps the DM open and reports the server error when the archive fails", async () => {
@@ -148,5 +187,81 @@ describe("useDmSessionSurface", () => {
 
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     expect(archiveAsync).toHaveBeenCalledWith({ sessionId: "s1", archived: false });
+  });
+
+  describe("/later", () => {
+    const withKeys = {
+      ...active,
+      attention_keys: ["item:i1", "decision:d1@2", "turn:t1"],
+    } as ChatSession;
+
+    it("snoozes every displayed key with a UUID request id and shows the ICT resume time", async () => {
+      laterAsync.mockResolvedValue(undefined);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-12T17:00:00Z")); // 00:00 ICT on 13 Nov
+      try {
+        const { result } = setup(withKeys);
+        let ok: boolean | void = false;
+        await act(async () => {
+          ok = await result.current.inputProps.onLater?.("3h");
+        });
+        expect(ok).toBe(true);
+        expect(laterAsync).toHaveBeenCalledWith({
+          sessionId: "s1",
+          keys: ["item:i1", "decision:d1@2", "turn:t1"],
+          durationSeconds: 10800,
+          requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+        });
+        expect(toastInfo).toHaveBeenCalledWith(expect.stringContaining("03:00"));
+        expect(toastInfo).toHaveBeenCalledWith(expect.stringContaining("ICT"));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("defaults to 2 hours when no duration is typed", async () => {
+      laterAsync.mockResolvedValue(undefined);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-12T17:00:00Z"));
+      try {
+        const { result } = setup(withKeys);
+        await act(async () => {
+          await result.current.inputProps.onLater?.("");
+        });
+        expect(laterAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ durationSeconds: undefined }),
+        );
+        expect(toastInfo).toHaveBeenCalledWith(expect.stringContaining("02:00"));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects a bad duration without calling the server", async () => {
+      const { result } = setup(withKeys);
+      let ok: boolean | void = true;
+      await act(async () => {
+        ok = await result.current.inputProps.onLater?.("8d");
+      });
+      expect(ok).toBe(false);
+      expect(laterAsync).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(enChat.input.later_bad_duration);
+    });
+
+    it("keeps the draft and says so when the server fails", async () => {
+      laterAsync.mockRejectedValue(new Error("boom"));
+      const { result } = setup(withKeys);
+      let ok: boolean | void = true;
+      await act(async () => {
+        ok = await result.current.inputProps.onLater?.("1h");
+      });
+      expect(ok).toBe(false);
+      expect(toastError).toHaveBeenCalledWith(enChat.input.later_failed_toast);
+    });
+
+    it("is not wired for an archived DM or a chat that does not exist yet", () => {
+      expect(setup(archived).result.current.inputProps.onLater).toBeUndefined();
+      expect(setup(null).result.current.inputProps.onLater).toBeUndefined();
+    });
   });
 });

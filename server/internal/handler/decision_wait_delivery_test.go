@@ -398,6 +398,7 @@ var terminalMap = map[string]string{
 	"cancelled/agent_withdrawn/task":  "agent_withdrawn",
 	"cancelled/issue_closed":          "system_cancelled",
 	"cancelled/agent_archived":        "system_cancelled",
+	"cancelled/agent_unavailable":     "system_cancelled",
 	"cancelled/record_disclaimed":     "other_terminal",
 	"cancelled/record_vetoed":         "other_terminal",
 	"cancelled/class_needs_owner":     "other_terminal",
@@ -515,25 +516,23 @@ func episodeCandidateIDs(t *testing.T, rotation int64) []string {
 	return ids
 }
 
-// An episode that cannot progress must not take a batch slot: more than one
-// batch of closed-issue or unavailable-asker episodes sorts ahead of a ready
-// episode, and the ready one is still selected. Neither kind is selected.
-func TestDecisionEpisodeCandidatesAreNotStarvedByStuckEpisodes(t *testing.T) {
+// A closed issue or an unavailable asking agent makes the episode a system-close
+// candidate (design §4.4.1 clause 1); the ready episode is selected beside them.
+func TestDecisionEpisodeCandidatesIncludeSystemCloses(t *testing.T) {
 	f, readyID := readyEpisode(t)
 	_ = f
-	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "done", "", false, decisionBatchSize+1, 1)
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "done", "", false, 1, 1)
 	gone := dbfx.Agent(t, "Without runtime", "")
-	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "in_progress", gone, false, decisionBatchSize+1, 1000)
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "in_progress", gone, false, 1, 1000)
 
-	var found bool
+	selected := map[string]bool{}
 	for _, id := range episodeCandidateIDs(t, 0) {
-		found = found || id == readyID
-		if strings.HasPrefix(id, "00000000-0000-0000-0000-") {
-			t.Fatalf("episode %s cannot progress before the system close and was selected", id)
-		}
+		selected[id] = true
 	}
-	if !found {
-		t.Fatal("the ready episode is not among the candidates behind two batches of stuck ones")
+	for _, id := range []string{readyID, "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000001000"} {
+		if !selected[id] {
+			t.Fatalf("episode %s is not a candidate; selected %v", id, selected)
+		}
 	}
 }
 
@@ -639,6 +638,84 @@ func TestDecisionEpisodeRevalidatesAuthorityUnderTheLocks(t *testing.T) {
 			}
 			if dbfx.Count(t, `SELECT count(*) FROM decision_wait WHERE issue_id = $1 AND closed_at IS NULL AND dispatch_refused_since IS NOT NULL`, f.issueID) != 1 {
 				t.Fatal("the episode was not demoted to the retry order")
+			}
+		})
+	}
+}
+
+// An episode wakes the issue's owner, not the agent that asked, when the two
+// differ: the continuation is the owner's run and the restore is unchanged.
+func TestDecisionEpisodeDeliveryWakesTheOwnerWhenTheAskerDiffers(t *testing.T) {
+	for _, withSquad := range []bool{false, true} {
+		name := "agent owner"
+		if withSquad {
+			name = "squad owner"
+		}
+		t.Run(name, func(t *testing.T) {
+			runner := newDeliveryRunner(t)
+			f := newEpisodeFixture(t, false)
+			f.enter(t)
+			ownerID := createHandlerTestAgent(t, "Episode owner", []byte("[]"))
+			ownerType, restoreID, squadID := "agent", ownerID, ""
+			if withSquad {
+				squadID = dbfx.Squad(t, "Episode owner squad", ownerID)
+				ownerType, restoreID = "squad", squadID
+			}
+			dbfx.Exec(t, `UPDATE decision_wait SET restore_assignee_type = $2, restore_assignee_id = $3 WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID, ownerType, restoreID)
+			answerID, _ := f.answerRequest(t, f.requestID, -time.Minute, false)
+
+			decisionPass(t, runner)
+			closed := f.closedEpisodes(t)
+			if len(closed) != 1 || closed[0].reason != "answered" || closed[0].outcome != "run_enqueued" {
+				t.Fatalf("closed episodes = %+v, want one closed answered with run_enqueued", closed)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND id <> $3`, f.issueID, ownerID, f.taskID); n != 1 {
+				t.Fatalf("owner runs = %d, want 1", n)
+			}
+			if got := f.continuations(t); got != 0 {
+				t.Fatalf("asker runs = %d, want 0 while the owner is eligible", got)
+			}
+			if status, assigneeType, assigneeID := issueStatusAndAssignee(t, f.issueID); status != "in_progress" || assigneeType != ownerType || assigneeID != restoreID {
+				t.Fatalf("issue = %s %s/%s, want the restore placement in_progress %s/%s", status, assigneeType, assigneeID, ownerType, restoreID)
+			}
+			if woken, outcome := f.answerState(t, answerID); !woken || outcome != "run_enqueued" {
+				t.Fatalf("answer woken=%v outcome=%q, want acknowledged run_enqueued", woken, outcome)
+			}
+			decisionPass(t, runner)
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND id <> $2`, f.issueID, f.taskID); n != 1 {
+				t.Fatalf("a second pass left %d runs on the issue, want 1", n)
+			}
+		})
+	}
+}
+
+// Negative control: an owner (or squad leader) the person cannot invoke is not
+// woken; the continuation stays with the asking agent and the restore is unchanged.
+func TestDecisionEpisodeDeliverySkipsAnOwnerThePersonCannotInvoke(t *testing.T) {
+	for _, withSquad := range []bool{false, true} {
+		name := "agent owner"
+		if withSquad {
+			name = "squad leader"
+		}
+		t.Run(name, func(t *testing.T) {
+			runner := newDeliveryRunner(t)
+			f := newEpisodeFixture(t, false)
+			f.enter(t)
+			ownerID := dbfx.Agent(t, "Restricted episode owner", handlerTestRuntimeID(t))
+			dbfx.Exec(t, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, ownerID, createEphemeralUser(t, "restricted"))
+			ownerType, restoreID := "agent", ownerID
+			if withSquad {
+				ownerType, restoreID = "squad", dbfx.Squad(t, "Restricted squad", ownerID)
+			}
+			dbfx.Exec(t, `UPDATE decision_wait SET restore_assignee_type = $2, restore_assignee_id = $3 WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID, ownerType, restoreID)
+			f.answerRequest(t, f.requestID, -time.Minute, false)
+
+			decisionPass(t, runner)
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, f.issueID, ownerID); n != 0 {
+				t.Fatalf("restricted owner runs = %d, want 0", n)
+			}
+			if got := f.continuations(t); got != 1 {
+				t.Fatalf("asker runs = %d, want 1", got)
 			}
 		})
 	}

@@ -85,6 +85,9 @@ func decisionCancelOtherContent(reason string, cancelled decisionCancelIssue) st
 	if reason == "human_removed" {
 		content += " The person asked is no longer a workspace member. Ask again with a new decision request."
 	}
+	if reason == "agent_unavailable" {
+		content += " The asking agent has no runtime binding or is a system agent, so it cannot resume the work."
+	}
 	if reason == decisiontx.ClassNeedsOwner || reason == "delegate_removed" {
 		content += " " + decisiontx.OwnerRequiredNotice
 	}

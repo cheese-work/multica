@@ -98,15 +98,26 @@ func (a *auditBot) wantOne(t *testing.T) {
 }
 
 // Lease expiry is database time, which auditClock cannot move, so cases that
-// exercise a takeover shorten the lease and really wait it out. The lease also
-// sizes every provider call's budget (a third of it, see callContext), and that
-// budget covers real Postgres writes: the 33ms a 100ms lease left timed out a
-// send claim on a slow -race CI runner and failed the case (MUL-7547).
-const (
-	testLeaseTTL = 600 * time.Millisecond
-	// testLeaseLapse outlasts testLeaseTTL, so any lease taken before it has expired.
-	testLeaseLapse = testLeaseTTL + 150*time.Millisecond
-)
+// exercise a takeover expire the lease in the database (lapseLeases) instead
+// of waiting it out. The lease also sizes every provider call's budget (a
+// third of it, see callContext), and that budget covers real Postgres writes
+// and a local HTTP round trip. A short lease made the budget so small that a
+// loaded -race runner exhausted it, which failed the case with "outcome
+// unknown" (MUL-7547, CHE-4224); a long lease that is never waited on avoids
+// both the flake and the wall-clock sleep.
+const testLeaseTTL = 30 * time.Second
+
+// lapseLeases expires every Telegram delivery lease, as if testLeaseTTL had
+// passed since it was taken. Cases use different installations, so it is scoped
+// by channel (other packages share the table), not by installation.
+func lapseLeases(t *testing.T) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE channel_reply_delivery SET owner_expires_at = now() - interval '1 second'
+		 WHERE channel_type = 'telegram' AND owner_expires_at > now()`); err != nil {
+		t.Fatalf("lapse delivery leases: %v", err)
+	}
+}
 
 type auditClock struct{ nanos atomic.Int64 }
 
@@ -405,7 +416,7 @@ func TestAuditReplayAfterInterruptionBetweenChunks(t *testing.T) {
 	a.q = q
 	// The interrupted process never releases its lease — it stops existing.
 	// Expiry is what frees the turn, and expiry is database time, so the test
-	// shortens the lease and really waits for it.
+	// expires the lease in the database (lapseLeases).
 	a.leaseTTL = testLeaseTTL
 	e := telegramTestEventFor(3, 2, strings.Repeat("A", maxMessageUnits)+"tail")
 	a.enqueueTerminalReply(e)
@@ -424,7 +435,7 @@ func TestAuditReplayAfterInterruptionBetweenChunks(t *testing.T) {
 	}
 	// Simulate losing process memory before the next chunk. A replay-capable
 	// caller delivers the same completion against the same durable database.
-	time.Sleep(testLeaseLapse)
+	lapseLeases(t)
 	b := NewOutbound(q, nil, srv.URL, srv.Client(), nil)
 	b.now = c.now
 	b.leaseTTL = testLeaseTTL

@@ -102,6 +102,25 @@ describe("PasskeysTab", () => {
     expect(toast.success).toHaveBeenCalled();
   });
 
+  it("shows the attempt tag next to the code field so the user picks the matching email", async () => {
+    const user = userEvent.setup();
+    mocks.startPasskeyEnrollment.mockResolvedValue({ ...start, tag: "ab12" });
+    renderWithI18n(<PasskeysTab />);
+    await screen.findAllByRole("button", { name: /^Revoke passkey/ });
+    await user.click(screen.getByRole("button", { name: "Add passkey" }));
+    expect(await screen.findByText(/Attempt ab12/)).toBeTruthy();
+  });
+
+  it("starts one ceremony on a double click of Add passkey", async () => {
+    const user = userEvent.setup();
+    mocks.startPasskeyEnrollment.mockResolvedValue(start);
+    renderWithI18n(<PasskeysTab />);
+    await screen.findAllByRole("button", { name: /^Revoke passkey/ });
+    await user.dblClick(screen.getByRole("button", { name: "Add passkey" }));
+    await screen.findByLabelText("Email code");
+    expect(mocks.startPasskeyEnrollment).toHaveBeenCalledTimes(1);
+  });
+
   it("signs the gate assertion first when enrollment start returns one", async () => {
     const user = userEvent.setup();
     const envelope = { challenge_id: "ch1", credential: { id: "sig" } };

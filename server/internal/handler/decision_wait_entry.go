@@ -20,8 +20,8 @@ import (
 // their intents, seals the intents, records the placement it replaces as the
 // restore target and gives the issue to the person in charge. Any other status
 // write while an episode is open clears its restore flag, and suspends a
-// waiting episode unless the new status is closed. Restore, delivery and the
-// other suspension kinds are not part of this layer.
+// waiting episode unless the new status is closed. Delivery and restore are in
+// decision_wait_delivery.go; the refusal suspensions are in decision_wait_suspend.go.
 
 // decisionEpisodeRefusal is an entry or re-attach the write refuses (409). The
 // write changes nothing.
@@ -235,20 +235,25 @@ func (h *Handler) reattachDecisionEpisode(ctx context.Context, q *db.Queries, is
 	if err := h.checkEpisodeDelivery(ctx, q, issue.WorkspaceID, requestIDs, openIDs); err != nil {
 		return err
 	}
-	arg := db.ReattachDecisionWaitParams{
-		ID: wait.ID, WorkspaceID: issue.WorkspaceID, HumanUserID: humanID,
-		RestoreStatus: wait.RestoreStatus, RestoreAssigneeType: wait.RestoreAssigneeType, RestoreAssigneeID: wait.RestoreAssigneeID,
-	}
-	// Capture rule: a write that is not the episode's makes the current
-	// placement the target; the episode's own step is never a target.
-	if !wait.RestoreOnResume && !holdsPerson(issue.Status) {
-		arg.RestoreStatus, arg.RestoreAssigneeType, arg.RestoreAssigneeID = issue.Status, issue.AssigneeType, issue.AssigneeID
-	}
+	arg := db.ReattachDecisionWaitParams{ID: wait.ID, WorkspaceID: issue.WorkspaceID, HumanUserID: humanID}
+	// The episode's own step is never a target.
+	arg.RestoreStatus, arg.RestoreAssigneeType, arg.RestoreAssigneeID = captureRestoreTarget(wait, issue, !holdsPerson(issue.Status))
 	if _, err := q.ReattachDecisionWait(ctx, arg); err != nil {
 		return err
 	}
 	holdForPerson(params, humanID)
 	return nil
+}
+
+// captureRestoreTarget is the capture rule (design §4.4.6), run under the issue
+// lock before an episode write that replaces the placement. A true flag means
+// the latest status write was the episode's, so the target stays; otherwise,
+// when capturable, the current status and assignee become the target.
+func captureRestoreTarget(wait db.DecisionWait, issue db.Issue, capturable bool) (status string, assigneeType pgtype.Text, assigneeID pgtype.UUID) {
+	if !wait.RestoreOnResume && capturable {
+		return issue.Status, issue.AssigneeType, issue.AssigneeID
+	}
+	return wait.RestoreStatus, wait.RestoreAssigneeType, wait.RestoreAssigneeID
 }
 
 func (h *Handler) askingAgentForWait(ctx context.Context, q *db.Queries, issue db.Issue, wait db.DecisionWait) (db.Agent, error) {

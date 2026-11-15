@@ -76,6 +76,8 @@ Resolves MUL-123
 
 Une simple mention dans la description, comme `Related to MUL-123`, n'associe pas du tout la PR à cette tâche. Les messages de commit et les commentaires de PR ne déclenchent pas non plus l'association.
 
+Une PR issue d'un fork s'associe automatiquement seulement si le fork a le même propriétaire que le dépôt de base. La fusion d'une telle PR ne fait pas avancer la tâche. Associez à la main les PR issues de forks d'autres propriétaires.
+
 Vous pouvez aussi associer une PR à la main : dans le bloc **Pull requests** de la tâche, cliquez sur **+** et collez l'URL de la PR. Pour retirer une PR d'une tâche, ouvrez le menu **⋯** de sa ligne et choisissez **Retirer de la tâche** ; Multica ne la réassociera plus à partir de son titre ou de sa branche.
 
 ## Voir les PR d'une tâche
@@ -111,6 +113,22 @@ La vérification a lieu lorsqu'un événement de PR touche la tâche : une PR as
 
 Le changement de statut est inscrit dans la chronologie comme une action système qui nomme les PR, et les membres abonnés à la tâche sont notifiés.
 
+### Dans un workflow
+
+Lorsque le workflow de la tâche contient le statut cible et que cette étape prévoit un passage de relais, le déplacement dû à la fusion est un passage de relais : la tâche est confiée au responsable de l'étape et, si c'est un agent, une exécution démarre, comme pour tout autre déplacement vers cette étape. Une étape sans responsable ne change que le statut et ne démarre aucune exécution. Si le workflow ne contient pas le statut cible, la tâche ne bouge pas. Le réveil « PR fusionnée » de la même fusion se joint à cette exécution : une fusion ne démarre qu'une seule exécution. Si cette exécution se termine avant d'avoir démarré, le réveil en démarre une à sa place. Voir [Réveils de tâche](/issue-wakeups#pr-merged).
+
+### Inclure les PR des sous-tâches
+
+Quand l'option **Inclure les PR des sous-tickets** du workflow est activée (voir [Workflows](/workflows)), la vérification lit les PR de la tâche et celles de ses sous-tâches directes. La tâche passe au statut cible lorsqu'au moins une de ces PR est `Merged` et qu'aucune n'est `Open` ou `Draft`. Une PR fermée sans fusion ne bloque pas, et les statuts des sous-tâches ne sont pas vérifiés. Un événement de PR sur une sous-tâche relance la vérification pour sa tâche parente.
+
+Quand l'option est désactivée, seules les PR de la tâche elle-même comptent, et une tâche parente dont les PR sont fusionnées attend que toutes ses sous-tâches soient `done` ou `cancelled`. La vérification est relancée quand la dernière sous-tâche atteint l'un de ces statuts : le parent passe alors au statut cible, sans nouvel événement de PR.
+
+### Quand une vérification ne peut pas aboutir
+
+Si une vérification ne peut pas aboutir, par exemple parce que le déplacement a été refusé ou que le serveur s'est arrêté juste après un événement de PR, Multica garde une nouvelle tentative pour cette tâche. La première tentative est prévue 2 minutes après l'événement. Après un échec, l'attente commence à 30 secondes et double jusqu'à 1 heure. Inutile de renvoyer le webhook ou d'associer à nouveau la PR. Une vérification terminée supprime la nouvelle tentative. Cela vaut aussi pour les événements de PR des hôtes Git auto-hébergés.
+
+Une transition `PR fusionnée` enregistrée dans un workflow est obsolète. Le réglage ci-dessus la remplace ; voir [Workflows](/workflows#pr-merged).
+
 ## Plusieurs espaces de travail
 
 Une même installation de la GitHub App peut être connectée à plusieurs espaces de travail Multica. Les événements GitHub parviennent à chaque espace de travail séparément et sont comparés au préfixe de tâche propre à chacun.
@@ -124,6 +142,12 @@ Si un même identifiant correspond à une tâche dans plusieurs des espaces de t
 Choisir **Déconnecter** dans le menu **⋯** de la ligne GitHub, sur **Paramètres → Code**, supprime seulement la relation entre l'espace de travail Multica courant et l'installation ; cela ne désinstalle pas l'App de GitHub à votre place. Les enregistrements de PR existants sont conservés, et les nouveaux événements cessent d'arriver dans cet espace de travail.
 
 Pour révoquer l'autorisation d'accès aux dépôts côté GitHub, désinstallez l'App ou ajustez son périmètre de dépôts depuis la page des installations de GitHub Apps de votre compte personnel ou de votre organisation. Après la désinstallation, tous les espaces de travail Multica liés à cette installation cessent de recevoir des événements.
+
+## Réveils sur vérifications réussies
+
+Définissez `github_wake_on_ci_success` à `true` dans les paramètres de l'espace de travail pour lancer une exécution lorsque les vérifications d'une PR ouverte ou brouillon liée réussissent sur son commit courant. Ce paramètre est désactivé par défaut. Une PR dont la seule vérification non terminée est le statut de verdict `security-gate` compte comme réussie. Un nouveau commit réveille à nouveau. Une exécution en échec relancée jusqu'au vert sur le même commit réveille une fois de plus. La même réussite livrée de nouveau ne réveille pas.
+
+L'exécution va à l'agent auteur de la PR, déterminé comme pour les réveils sur conflit et sur échec de vérifications. Si l'auteur est inconnu, elle va à l'assigné de la tâche. Si l'assigné est une personne et qu'aucun agent auteur n'est connu, la personne reçoit une notification.
 
 ## Attendre une exécution GitHub Actions
 
@@ -190,6 +214,8 @@ Permissions de dépôt (Repository permissions) :
 | Actions | Read-only ; nécessaire aux réveils `--until-gh-run` |
 | Checks | Read-only ; sert à afficher le statut CI |
 | Commit statuses | Read-only ; sert à agréger la CI basée sur les statuts hérités (legacy statuses) |
+| Variables | Read-only ; nécessaire pour lire les variables de dépôt `AGENT_MERGE_PAUSED` et `MAIN_RED_PAUSED` pour les contrôles de pause de fusion |
+| Actions | Facultatif, Read-only ; permet au statut CI d'ignorer une exécution annulée remplacée par une exécution plus récente du même workflow sur le même commit |
 
 Permissions d'organisation (Organization permissions) :
 
@@ -204,7 +230,7 @@ Abonnez-vous à ces événements :
 - **Workflow run** et **Workflow job**, nécessaires aux réveils `--until-gh-run` ;
 - **Check suite**, **Check run** et **Status**, qui déclenchent l'actualisation de la CI et de la possibilité de fusion.
 
-Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire.
+Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire. Avec la permission facultative Actions, Multica lit aussi les exécutions de workflow du commit. Sans elle, une exécution annulée compte toujours comme un échec, même après la réussite d'une exécution plus récente du même workflow.
 
 <Callout type="warning">
 Il s'agit du **Webhook secret**, et non du Client secret OAuth. Si les deux côtés n'ont pas le même secret de webhook, les livraisons GitHub renvoient `401 invalid signature`.

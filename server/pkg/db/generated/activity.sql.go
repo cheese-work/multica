@@ -258,3 +258,38 @@ func (q *Queries) ListActivitiesForIssue(ctx context.Context, arg ListActivities
 	}
 	return items, nil
 }
+
+const listIssueRunSkips = `-- name: ListIssueRunSkips :many
+SELECT id, created_at, details FROM activity_log
+WHERE issue_id = $1 AND action = 'run_skipped'
+ORDER BY created_at DESC
+LIMIT 50
+`
+
+type ListIssueRunSkipsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Details   []byte             `json:"details"`
+}
+
+// The runs the platform declined to start on an issue (CHE-4649), newest
+// first. They are no task rows, so the run list reads them from the activity.
+func (q *Queries) ListIssueRunSkips(ctx context.Context, issueID pgtype.UUID) ([]ListIssueRunSkipsRow, error) {
+	rows, err := q.db.Query(ctx, listIssueRunSkips, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssueRunSkipsRow{}
+	for rows.Next() {
+		var i ListIssueRunSkipsRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt, &i.Details); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

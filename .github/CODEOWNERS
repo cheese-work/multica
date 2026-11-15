@@ -6,3 +6,8 @@
 /server/internal/handler/governed_instruction_owner_cas.go @congvc-dev
 /server/internal/integrations/ghsnapshot/configsync_reader.go @congvc-dev
 /server/migrations/897_workspace_config_sync.*.sql        @congvc-dev
+
+# Weekly security scan (CHE-3701): reports are sealed to the X99 key; a swapped recipient would expose findings in public artifacts. GitHub reads CODEOWNERS from the base branch, so this file guards itself and must land before the scan PR.
+/.github/CODEOWNERS                                       @congvc-dev
+/scripts/security-weekly/                                 @congvc-dev
+/.github/workflows/security-weekly.yml                    @congvc-dev

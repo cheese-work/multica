@@ -15,6 +15,8 @@ import {
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { resolveClickIntent, useIntentNavigate, type LinkClickIntent } from "../navigation";
 import { useT } from "../i18n";
+import { ChatChipBar, useChipCandidates } from "./chat-chip-bar";
+import { chipForTab, toggleChip, type ChatChip } from "./chat-chips";
 import { PaletteContext, type PaletteApi } from "./palette-context";
 import { PaletteFooter } from "./footer";
 import { PaletteHostDialogs } from "./host-dialogs";
@@ -172,7 +174,9 @@ function PaletteFrame({
   const current = stack[stack.length - 1] ?? null;
   const inputValue = current ? pageQuery : rawQuery;
 
-  const model = useRootModel(rawQuery, contexts, { active: true, dismissedDelegateFor });
+  const [chips, setChips] = useState<ChatChip[]>([]);
+  const chipCandidates = useChipCandidates();
+  const model = useRootModel(rawQuery, contexts, { active: true, dismissedDelegateFor, chips });
   const submitDelegate = useDelegateSubmit();
   const onDelegate = useCallback(
     (actor: DelegateActor, prompt: string) => void submitDelegate(actor, prompt, model.attachments),
@@ -189,6 +193,22 @@ function PaletteFrame({
     if (e.key === "Backspace" && current && pageQuery === "") {
       e.preventDefault();
       setStack((prev) => prev.slice(0, -1));
+      return;
+    }
+    // Tab turns the typed text (or, when empty, the next chip) into a filter chip;
+    // ⌫ on an empty input drops the last one. With nothing to add, Tab moves focus on.
+    if (!current && e.key === "Tab" && !e.shiftKey) {
+      const chip = chipForTab(rawQuery, chipCandidates, chips);
+      if (chip) {
+        e.preventDefault();
+        setChips(toggleChip(chips, chip));
+        setRawQuery("");
+      }
+      return;
+    }
+    if (!current && e.key === "Backspace" && rawQuery === "" && chips.length > 0) {
+      e.preventDefault();
+      setChips(chips.slice(0, -1));
       return;
     }
     // ⇧↵ treats an input that read as an instruction as a plain search.
@@ -255,6 +275,14 @@ function PaletteFrame({
           )}
           <ShortcutKeycaps shortcut={ESCAPE} className="hidden shrink-0 sm:inline-flex" />
         </div>
+
+        {!current && (
+          <ChatChipBar
+            chips={chips}
+            candidates={chipCandidates}
+            onToggle={(chip) => setChips((prev) => toggleChip(prev, chip))}
+          />
+        )}
 
         <CommandPrimitive.List className="max-h-[min(440px,55vh)] overflow-y-auto overflow-x-hidden py-1">
           {current ? (

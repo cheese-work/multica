@@ -77,6 +77,18 @@ describe("ApiClient passkeys", () => {
     expect(outcome.call().url).toBe("https://api.example.test/api/decision-actions/a1/outcome");
   });
 
+  it("opens a card-answer challenge and returns the revisions it binds", async () => {
+    const challenge = client({ challenge_id: "c", options, expires_at: "t", answer_revision: 3, policy_revision: 2 });
+    expect((await challenge.api.challengeDecisionAnswer("r/1", { option: "A", text: "why" })).answer_revision).toBe(3);
+    expect(challenge.call().url).toBe("https://api.example.test/api/decision-requests/r%2F1/answer/challenge");
+    expect(JSON.parse(challenge.call().init.body)).toEqual({ option: "A", text: "why" });
+
+    const answer = client({});
+    await answer.api.answerDecisionRequest("r1", { option: "A", answer_revision: 3, policy_revision: 2, assertion: envelope });
+    expect(JSON.parse(answer.call().init.body)).toEqual({ option: "A", answer_revision: 3, policy_revision: 2, assertion: envelope });
+    await expect(client({ challenge_id: "c", options, expires_at: "t" }).api.challengeDecisionAnswer("r1", {})).rejects.toThrow(/unexpected/);
+  });
+
   it("throws instead of reporting success on a malformed response", async () => {
     await expect(client({ revoked: "yes" }).api.revokePasskey("p1", envelope)).rejects.toThrow(/unexpected/);
     await expect(client({ revoked: false }).api.revokePasskey("p1", envelope)).rejects.toThrow(/unexpected/);

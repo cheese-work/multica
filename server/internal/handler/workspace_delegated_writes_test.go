@@ -150,3 +150,38 @@ func TestDelegatedWritesRejectsInvalidBodies(t *testing.T) {
 		t.Fatalf("rejected bodies stored a setting: %s", raw)
 	}
 }
+
+// The approval transaction reads the grant through its own *db.Queries; the
+// function must see a write that is only visible inside that transaction and
+// agree with the Handler method everywhere else.
+func TestDelegatedWriteAllowedQReadsThroughTheGivenQueries(t *testing.T) {
+	wsID, agentID := delegatedWritesFixture(t, "dw-q")
+	ws, err := util.ParseUUID(wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if requires, ok := delegatedWriteAllowedQ(ctx, testHandler.Queries, ws, agentID, "workflow.steps"); ok || !requires {
+		t.Fatalf("default: ok=%v requires=%v, want denied", ok, requires)
+	}
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	grant := `{"delegated_governed_writes":{"allowed_agents":["` + agentID + `"],"allowed_fields":["workflow.steps"],"requires_human_decision":false}}`
+	if _, err := tx.Exec(ctx, `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, wsID, grant); err != nil {
+		t.Fatal(err)
+	}
+	inTx := testHandler.Queries.WithTx(tx)
+	if requires, ok := delegatedWriteAllowedQ(ctx, inTx, ws, agentID, "workflow.steps"); !ok || requires {
+		t.Fatalf("inside the transaction: ok=%v requires=%v, want allowed", ok, requires)
+	}
+	if _, ok := delegatedWriteAllowedQ(ctx, testHandler.Queries, ws, agentID, "workflow.steps"); ok {
+		t.Fatal("an uncommitted grant leaked outside its transaction")
+	}
+	wantRequires, wantOK := testHandler.delegatedWriteAllowed(ctx, ws, agentID, "workflow.steps")
+	if requires, ok := delegatedWriteAllowedQ(ctx, testHandler.Queries, ws, agentID, "workflow.steps"); requires != wantRequires || ok != wantOK {
+		t.Fatal("Q variant and Handler method disagree")
+	}
+}

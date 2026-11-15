@@ -18,11 +18,13 @@ vi.mock("@multica/core/chat", () => ({
     selector({ setActiveSession: vi.fn() }),
 }));
 vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
+vi.mock("./open-decisions-badge", () => ({ OpenDecisionsBadge: () => null }));
 vi.mock("./scheduled-wakeups-chip", () => ({ ScheduledWakeupsChip: () => null }));
 vi.mock("../../navigation", () => ({
   AppLink: ({ children, href: _href, ...props }: { children: React.ReactNode; href?: string }) => (
     <a {...props}>{children}</a>
   ),
+  useNavigation: () => ({ push: vi.fn() }),
 }));
 
 import { ChatSessionHeader } from "./chat-session-header";
@@ -70,12 +72,14 @@ describe("ChatSessionHeader more menu", () => {
       enChat.header.pin,
       enChat.header.rename,
       enChat.header.view_profile,
+      enChat.header.agent_settings,
       enChat.header.archive,
     ]);
     expect(screen.getByTestId("chat-more-menu-statistics")).toBeInTheDocument();
     expect(screen.getByTestId("chat-more-menu-pin")).toBeInTheDocument();
     expect(screen.getByTestId("chat-more-menu-rename")).toBeInTheDocument();
     expect(screen.getByTestId("chat-more-menu-view-profile")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-more-menu-agent-settings")).toBeInTheDocument();
     expect(screen.getByTestId("chat-more-menu-archive")).toBeInTheDocument();
   });
 
@@ -108,6 +112,7 @@ describe("ChatSessionHeader more menu", () => {
       enChat.header.statistics,
       enChat.header.rename,
       enChat.header.view_profile,
+      enChat.header.agent_settings,
       enChat.header.unarchive,
       enChat.header.delete,
     ]);
@@ -121,6 +126,7 @@ describe("ChatSessionHeader more menu", () => {
     expect(labels()).toEqual([
       enChat.header.rename,
       enChat.header.view_profile,
+      enChat.header.agent_settings,
       enChat.header.archive,
     ]);
   });

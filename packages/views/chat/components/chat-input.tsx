@@ -63,10 +63,18 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
   return attachmentReferenceUrls(attachment).some((url) => content.includes(url));
 }
 
+const LATER_COMMAND = /^\/later(?:\s+([\s\S]*))?$/i;
+
 interface ChatInputProps {
   /** Comments on agent replies for this DM. They are sent with the next message as quotes. */
   annotationScope?: ChatInputAnnotations;
   onRename?: (title: string) => Promise<boolean>;
+  /**
+   * Handles `/later [duration]` (the owner snoozes the DM; nothing is sent to
+   * the agent). Receives the raw duration text, "" for the server default. A
+   * handler that resolves `false` keeps the command in the box.
+   */
+  onLater?: (duration: string) => Promise<boolean>;
   /**
    * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
    * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
@@ -75,13 +83,14 @@ interface ChatInputProps {
   onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
   /**
    * DM commands the owner answers itself; nothing is sent to the agent. Pass a
-   * handler only when the command applies to the open DM: `/archive` and `/pin`
-   * on an active DM, `/unarchive` on an archived one. A handler that resolves
+   * handler only when the command applies to the open DM: `/archive`, `/pin`
+   * and `/unseen` on an active DM, `/unarchive` on an archived one. A handler that resolves
    * `false` keeps the command in the box.
    */
   onStatistic?: () => void | boolean | Promise<void | boolean>;
   onArchive?: () => void | boolean | Promise<void | boolean>;
   onPin?: () => void | boolean | Promise<void | boolean>;
+  onUnseen?: () => void | boolean | Promise<void | boolean>;
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
   /** The open, active DM's agent: offers `/preset <name>` completions for its presets. */
   presetAgentId?: string;
@@ -89,12 +98,18 @@ interface ChatInputProps {
   sessionArchived?: boolean;
   /** Identifies the composer for UI checks; the floating window overrides it. */
   testId?: string;
+  /**
+   * Open asks (question cards) the DM is waiting on. Every send answers all
+   * of them: `onSend` gets them as `askIds`; there is no per-ask choice.
+   */
+  replyAskIds?: string[];
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
     commitInput: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
     draftAttachments: Attachment[],
     decisionRequestId?: string,
+    askIds?: string[],
   ) => void | boolean | Promise<void | boolean>;
   restoreDraftRequest?: {
     id: string;
@@ -211,10 +226,13 @@ export function ChatInput({
   annotationScope,
   onSend,
   onRename,
+  onLater,
+  replyAskIds,
   onFork,
   onStatistic,
   onArchive,
   onPin,
+  onUnseen,
   onUnarchive,
   presetAgentId,
   sessionArchived,
@@ -299,11 +317,12 @@ export function ChatInput({
   }, [draftKey]);
   // A fork input keeps the Send action even while a turn runs: a fork never
   // joins the agent's queue, so it is not gated by queue support.
-  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unarchive: onUnarchive };
+  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unseen: onUnseen, unarchive: onUnarchive };
   const draftDmAttempt = parseDmClientCommandAttempt(inputDraft);
   // A DM command is answered locally and never joins the agent's queue either.
   const isForkInput =
     (!!onFork && parseForkCommand(inputDraft) !== null) ||
+    (!!onLater && LATER_COMMAND.test(inputDraft.trim())) ||
     (!!draftDmAttempt && !!dmCommandHandlers[draftDmAttempt.command]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
@@ -571,7 +590,7 @@ export function ChatInput({
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
-      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnarchive);
+      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnseen || onUnarchive);
       const dmAttempt = hasDmCommandHandler
         ? parseDmClientCommandAttempt(editorRef.current?.getText() ?? "")
         : null;
@@ -585,7 +604,8 @@ export function ChatInput({
         dmAttempt && !isLegacyOrdinaryArchiveNow
           ? dmCommandHandlers[dmAttempt.command]
           : undefined;
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
+      const laterMatch = onLater ? LATER_COMMAND.exec(editorRef.current?.getText().trim() ?? "") : null;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler && !laterMatch)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -696,6 +716,17 @@ export function ChatInput({
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
+      if (onLater && laterMatch) {
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: "later" }));
+          return false;
+        }
+        setForkError(null);
+        // The command text is cleared only once the server confirmed the snooze.
+        if (!await onLater((laterMatch[1] ?? "").trim())) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
         if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
@@ -714,12 +745,19 @@ export function ChatInput({
         draftKey: keyAtSend,
         attachmentCount: uniqueActiveIds.length,
       });
+      // Trailing args are appended only when set, so plain sends keep the short call.
+      const askIds = replyAskIds?.length ? replyAskIds : undefined;
+      const sendTail: [decisionRequestId?: string, askIds?: string[]] = askIds
+        ? [prepared.decisionRequestId, askIds]
+        : prepared.decisionRequestId
+          ? [prepared.decisionRequestId]
+          : [];
       const accepted = await onSend(
         content,
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
         draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
-        ...(prepared.decisionRequestId ? [prepared.decisionRequestId] as const : []),
+        ...sendTail,
       );
       // Owner rejected the send (or threw, which useComposerSubmit also treats
       // as a rejection): the draft was never committed, so it stays put for
@@ -943,6 +981,8 @@ export function ChatInput({
             enableStatisticCommand={!!onStatistic}
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
+            enableUnseenCommand={!!onUnseen}
+            enableLaterCommand={!!onLater}
             enableUnarchiveCommand={!!onUnarchive}
             presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}
