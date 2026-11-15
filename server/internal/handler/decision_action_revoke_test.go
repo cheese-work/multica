@@ -64,13 +64,17 @@ func readRevoke(test *testing.T, requestID string) revokeRead {
 	return read
 }
 
-// Only agent.pause registers an inverse in this slice, and every inverse has an
-// executor, so a revoke can never name a type that cannot run.
-func TestOnlyAgentPauseRegistersAnInverse(test *testing.T) {
+// Only agent.pause and doop.deploy_lift register an inverse, and every inverse
+// has an executor, so a revoke can never name a type that cannot run. The lift
+// changes nothing, so it is its own inverse.
+func TestOnlyPauseAndDeployLiftRegisterAnInverse(test *testing.T) {
 	for _, definition := range decisionaction.Definitions() {
 		want := ""
-		if definition.Type == "agent.pause" {
+		switch definition.Type {
+		case "agent.pause":
 			want = "agent.resume"
+		case "doop.deploy_lift":
+			want = "doop.deploy_lift"
 		}
 		if definition.Inverse != want {
 			test.Fatalf("%s inverse = %q, want %q", definition.Type, definition.Inverse, want)

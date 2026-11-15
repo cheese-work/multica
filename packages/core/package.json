@@ -53,6 +53,7 @@
     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
     "./issue-workflows/draft-stores": "./issue-workflows/draft-stores.ts",
     "./issues": "./issues/index.ts",
+    "./issues/use-issue-deletion": "./issues/use-issue-deletion.ts",
     "./issues/batch": "./issues/batch.ts",
     "./issues/graph-core": "./issues/graph-core.ts",
     "./issues/swimlane-layout": "./issues/swimlane-layout.ts",
@@ -240,6 +241,7 @@
   "devDependencies": {
     "@multica/eslint-config": "workspace:*",
     "@multica/tsconfig": "workspace:*",
+    "@multica/vitest-setup": "workspace:*",
     "@testing-library/react": "catalog:",
     "@types/react": "catalog:",
     "@typescript/native": "catalog:",

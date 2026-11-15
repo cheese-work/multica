@@ -1208,6 +1208,15 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) scheduleWorkingAgentRefresh(wsId);
       }
+      if (msg.type === "skill:deleted") {
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          // Agent lists and details embed skill summaries used by duplication.
+          debouncedRefresh("skill:deleted", () => {
+            qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+          });
+        }
+      }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
       // A category move is the one catalog edit that does reach issue caches:
