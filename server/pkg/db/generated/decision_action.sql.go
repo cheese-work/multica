@@ -898,7 +898,7 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 }
 
 const lockDecisionWorkflowNowaitCols = `-- name: LockDecisionWorkflowNowaitCols :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -909,20 +909,23 @@ type LockDecisionWorkflowNowaitColsParams struct {
 }
 
 type LockDecisionWorkflowNowaitColsRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	Name             string             `json:"name"`
-	Description      string             `json:"description"`
-	InitialStatusKey string             `json:"initial_status_key"`
-	Steps            []byte             `json:"steps"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	IsDefault        bool               `json:"is_default"`
-	OwnerID          pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs  bool               `json:"include_child_prs"`
-	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Description        string             `json:"description"`
+	InitialStatusKey   string             `json:"initial_status_key"`
+	Steps              []byte             `json:"steps"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	IsDefault          bool               `json:"is_default"`
+	OwnerID            pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs    bool               `json:"include_child_prs"`
+	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey     pgtype.Text        `json:"start_status_key"`
+	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings       []byte             `json:"lint_findings"`
 }
 
 func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDecisionWorkflowNowaitColsParams) (LockDecisionWorkflowNowaitColsRow, error) {
@@ -943,6 +946,9 @@ func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDe
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
 		&i.StartStatusKey,
+		&i.LintOverrideReason,
+		&i.LintOverriddenAt,
+		&i.LintFindings,
 	)
 	return i, err
 }
