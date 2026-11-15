@@ -368,6 +368,8 @@ multica config propose workspace.settings --set compact_prompt="..." --set wakeu
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```
 
+`decision` 카드의 각 선택지는 선택된 뒤에 누가 움직이는지 밝힐 수 있습니다. `after_choice` 를 `agent_run`, `human_steps`, `record_only` 중 하나로 설정합니다. `agent_run` 선택지는 `agent_commands` 를 나열합니다. 하나 이상의 argv 배열이며, 예는 `["$MULTICA_CLI_PATH", "daemon", "restart"]` 입니다. 하나의 문자열로 준 명령은 서버가 셸 텍스트를 해석하지 않으므로 필드 이름과 함께 거부됩니다. 콘솔 전용 화면을 쓰는 선택지는 대신 `agent_surface` 에 카탈로그 키를 설정합니다. 이 검사는 타입이 있는 필드만 읽고 `what_happens` 는 읽지 않습니다. 각 명령을 도구와 앞쪽 단어로 줄인 뒤(경로, `.exe`, 전역 플래그 `--profile`, `--server-url`, `--workspace-id`, `--debug` 는 제거) 워크스페이스 설정 `agent_cannot_do` 와 비교합니다. 이것은 에이전트 실행이 할 수 없는 일의 `{key, tool, subcommand, human_step}` 목록입니다. 이 설정이 없으면 항목은 `multica` 의 `daemon restart` 와 `daemon stop` 입니다. `env`, `sudo`, `nohup`, `timeout`, `xargs`, `bash`, `sh`, `zsh` 같은 래퍼는 실제 명령을 가리므로 명령 자체를 argv 로 주세요. 워크스페이스 설정 `agent_cannot_do_mode`(`off`, `warn`, `block`; 기본값 `off`)가 결과를 정합니다. `warn` 에서는 카드를 만들고 응답에 힌트를 담습니다. `block` 에서는 서버가 `400` 을 반환하며 선택지 라벨, 카탈로그 키, `human_steps` 에 넣을 사람의 단계를 알려 주고 카드를 만들지 않습니다. `warn` 과 `block` 에서 `after_choice` 가 없는 선택지는 힌트가 하나 붙거나 필드 이름과 함께 거부됩니다. 액션 카드와 면제 주제 카드는 검사하지 않습니다.
+
 ## 명령 개요
 
 | 명령 | 용도 |
