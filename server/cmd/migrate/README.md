@@ -442,3 +442,14 @@ already uses `646` for `646_wakeup_content_revision`, so it takes the next free 
 
 The up and down SQL bytes are unchanged. The migration creates a table and has no concurrent
 index, so the runner's concurrent-index name map needs no entry.
+
+Upstream's `647_project_subscriber` and `648_project_subscriber_user_idx` (MUL-8969) add the
+`project_subscriber` table and an index on it. The sync range is already past `9999951`, so they
+take the next free numbers (CHE-5620):
+
+- `647_project_subscriber` is now `9999952_project_subscriber`
+- `648_project_subscriber_user_idx` is now `9999953_project_subscriber_user_idx`
+
+The up and down SQL bytes are unchanged. The index migration builds concurrently, so the runner's
+concurrent-index name map has an entry for it under its new name. A later sync must not
+reintroduce the upstream filenames under their original prefixes.

@@ -30,6 +30,7 @@ import { useChatStore } from "@multica/core/chat";
 import { useRecentAgentsSettingsStore } from "@multica/core/chat/recent-agents-settings-store";
 import {
   useCommentComposerStore,
+  type CommentImageLayout,
   type RunningAgentReply,
 } from "@multica/core/issues/stores";
 import {
@@ -87,6 +88,7 @@ export function PreferencesTab() {
         <SettingsCard>
           <StickyCommentBarRow />
           <RunningAgentReplyRow />
+          <CommentImageLayoutRow />
           <FloatingChatRow />
           <RecentAgentsRow />
           <QuickChatAgentRow />
@@ -216,6 +218,32 @@ function RunningAgentReplyRow() {
           ))}
         </SelectContent>
       </Select>
+    </SettingsRow>
+  );
+}
+
+function CommentImageLayoutRow() {
+  const { t } = useT("settings");
+  const value = useCommentComposerStore((s) => s.imageLayout);
+  const setValue = useCommentComposerStore((s) => s.setImageLayout);
+  const label = t(($) => $.preferences.comment_images.title);
+  return (
+    <SettingsRow
+      anchor="comment-images"
+      label={label}
+      description={t(($) => $.preferences.comment_images.hint)}
+    >
+      <div role="group" aria-label={label}>
+        <SegmentedToggle<CommentImageLayout>
+          value={value}
+          onChange={setValue}
+          buttonClassName="px-3 py-1 text-label"
+          options={[
+            ["thumbnails", t(($) => $.preferences.comment_images.thumbnails)],
+            ["full", t(($) => $.preferences.comment_images.full)],
+          ]}
+        />
+      </div>
     </SettingsRow>
   );
 }

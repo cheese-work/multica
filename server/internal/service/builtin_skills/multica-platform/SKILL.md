@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
+description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, local environments, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -35,6 +35,7 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
 | `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
+| `references/environments.md` | Local environments in the issue sidebar: writing `.multica/environments.toml`, `multica env start` / `stop` / `list`, detected servers |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
 
 Open what the task needs. A single-domain task usually needs one; a task that

@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   copyText: vi.fn(),
   deleteProject: vi.fn(),
   getProject: vi.fn(),
+  getProjectSubscription: vi.fn(),
+  setProjectSubscription: vi.fn(),
   getShareableUrl: vi.fn((path: string) => `https://app.example${path}`),
   push: vi.fn(),
   recordVisit: vi.fn(),
@@ -278,7 +280,14 @@ beforeEach(() => {
   mocks.copyText.mockReset().mockResolvedValue(true);
   mocks.deleteProject.mockReset().mockReturnValue(pending.promise);
   mocks.getProject.mockReset().mockResolvedValue(PROJECT);
-  setApiInstance({ deleteProject: mocks.deleteProject, getProject: mocks.getProject } as unknown as ApiClient);
+  mocks.getProjectSubscription.mockReset().mockResolvedValue(false);
+  mocks.setProjectSubscription.mockReset().mockImplementation(async (_id: string, subscribed: boolean) => subscribed);
+  setApiInstance({
+    deleteProject: mocks.deleteProject,
+    getProject: mocks.getProject,
+    getProjectSubscription: mocks.getProjectSubscription,
+    setProjectSubscription: mocks.setProjectSubscription,
+  } as unknown as ApiClient);
   mocks.getShareableUrl.mockClear();
   mocks.push.mockReset();
   mocks.recordVisit.mockReset();
@@ -352,6 +361,31 @@ describe("ProjectDetail wakeups", () => {
     const section = screen.getByTestId("project-wakeups");
     expect(section).toHaveAttribute("data-project", PROJECT.id);
     expect(section).toHaveAttribute("data-can-manage", canManage);
+  });
+});
+
+describe("ProjectDetail subscription", () => {
+  it("subscribes to every issue in the project and can unsubscribe again", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Subscribe to all issues" }));
+    expect(mocks.setProjectSubscription).toHaveBeenCalledWith("project-1", true);
+    expect(mocks.toastSuccess).toHaveBeenCalled();
+
+    await user.click(await screen.findByRole("button", { name: "Unsubscribe from project" }));
+    expect(mocks.setProjectSubscription).toHaveBeenLastCalledWith("project-1", false);
+    expect(await screen.findByRole("button", { name: "Subscribe to all issues" })).toBeInTheDocument();
+  });
+
+  it("keeps the current state and reports a failed update", async () => {
+    mocks.setProjectSubscription.mockRejectedValueOnce(new Error("boom"));
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Subscribe to all issues" }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Subscribe to all issues" })).toBeInTheDocument();
   });
 });
 
