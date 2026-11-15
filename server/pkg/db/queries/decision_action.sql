@@ -22,6 +22,19 @@ JOIN decision_request request ON request.id = action.decision_request_id AND req
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.batch_id = sqlc.arg('batch_id')
 ORDER BY action.id;
 
+-- A batch card's read: one row per item, in id order (the order the card lists
+-- and the choices are keyed by).
+-- name: ListDecisionBatchItems :many
+SELECT action.id AS action_id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix,
+    issue.number AS issue_number, issue.title AS issue_title, action.state, action.result,
+    COALESCE(action.error_code, '')::text AS error_code
+FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.batch_id = sqlc.arg('batch_id')
+ORDER BY action.id;
+
 -- The approve and reject transaction takes every row lock NOWAIT (plan 3.2):
 -- it is never a waiter in a lock cycle. Each row is locked once, at the
 -- strongest mode a later statement needs.
@@ -90,7 +103,7 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 FOR UPDATE NOWAIT;
 
 -- name: LockDecisionWorkflowNowaitCols :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 FOR UPDATE NOWAIT;
 

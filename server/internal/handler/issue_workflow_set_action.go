@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -266,4 +267,72 @@ func (h *Handler) publishIssueWorkflowSet(ctx context.Context, action db.Decisio
 	}
 	h.publishIssueSnapshots(ctx, []db.Issue{issue}, "member", uuidToString(action.ApprovedByUserID))
 	return nil
+}
+
+// issueWorkflowSetPreview renders the sealed move for the card: the issue, the
+// workflow and run cap before and after, and the delta. It reads the names the
+// owner sees; the binding itself is checked by the executor at approve.
+func (h *Handler) issueWorkflowSetPreview(ctx context.Context, action db.DecisionAction) ([]ActionPreviewField, error) {
+	var params decisionaction.IssueWorkflowSetParams
+	if err := json.Unmarshal(action.Params, &params); err != nil {
+		return nil, err
+	}
+	issueID, err := parseUUIDString(params.IssueID)
+	if err != nil {
+		return nil, err
+	}
+	issue, err := h.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	from, ok, err := h.workflowSetName(ctx, issue.WorkspaceID, params.Before)
+	if err != nil || !ok {
+		return nil, err
+	}
+	to, ok, err := h.workflowSetName(ctx, issue.WorkspaceID, params.After)
+	if err != nil || !ok {
+		return nil, err
+	}
+	label := fmt.Sprintf("%s-%d %s", h.getIssuePrefix(ctx, issue.WorkspaceID), issue.Number, issue.Title)
+	verdict := "This move does not widen the run budget"
+	if params.After.Budgeted && (!params.Before.Budgeted || params.After.Cap > params.Before.Cap) {
+		verdict = "This move widens the run budget"
+		if params.Before.Budgeted {
+			verdict = fmt.Sprintf("This move widens by %d runs", params.After.Cap-params.Before.Cap)
+		}
+	}
+	return []ActionPreviewField{
+		{"Issue", label, label},
+		{"Workflow", from, to},
+		{"Run cap", workflowSetCapLabel(params.Before), workflowSetCapLabel(params.After)},
+		{"Run budget", "", verdict},
+	}, nil
+}
+
+func workflowSetCapLabel(b decisionaction.IssueWorkflowSetBinding) string {
+	if !b.Budgeted {
+		return "No cap"
+	}
+	return strconv.Itoa(b.Cap)
+}
+
+// workflowSetName is the workflow's name, "None" when the binding has none.
+// ok is false when the named workflow is gone: the executor ends the action
+// with a failure, so the card shows no preview.
+func (h *Handler) workflowSetName(ctx context.Context, workspaceID pgtype.UUID, b decisionaction.IssueWorkflowSetBinding) (string, bool, error) {
+	if b.WorkflowID == "" {
+		return "None", true, nil
+	}
+	id, err := parseUUIDString(b.WorkflowID)
+	if err != nil {
+		return "", false, err
+	}
+	row, err := h.Queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return row.Name, true, nil
 }

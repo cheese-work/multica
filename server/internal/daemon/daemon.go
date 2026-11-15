@@ -41,6 +41,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/awakeclock"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -5116,7 +5117,7 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	d.updateProgress.Store(rep)
 	output, err := d.runUpdateFn(update.TargetVersion)
 	d.updateProgress.Store(nil)
-	rep.wait() // a late progress report must not land after the terminal one
+	rep.flush() // the last bytes_done and phase land before the terminal report, and no late one after
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
@@ -5209,7 +5210,7 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 	if err := cli.CheckUpdateFreeze(); err != nil {
 		return "", err
 	}
-	if cli.ForkUpdateSupported(runtime.GOOS) {
+	if forkUpdateSource() {
 		// targetVersion is an upstream release tag from the server or poller; the
 		// fork source ignores it and takes the build its own server carries.
 		return d.runForkUpdate()
@@ -5223,7 +5224,11 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 		return out, nil
 	}
 	d.logger.Info("updating CLI via direct download...", "target_version", targetVersion)
-	out, err := cli.UpdateViaDownload(targetVersion)
+	opts := cli.DownloadOptions{Timeout: cli.DefaultUpdateDownloadTimeout}
+	if rep := d.updateProgress.Load(); rep != nil { // set only by a server-triggered update; the poller stays quiet
+		opts.Progress = rep.progress()
+	}
+	out, err := cli.UpdateViaDownloadWithOptions(targetVersion, opts)
 	if err != nil {
 		return out, fmt.Errorf("download update failed: %w", err)
 	}
@@ -8110,10 +8115,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		return TaskResult{}, err
 	}
+	// A status handoff comment is context, so the runtime brief gets no reply target.
+	triggerCommentID, triggerThreadID := task.TriggerCommentID, task.TriggerThreadID
+	if task.isStatusHandoff() {
+		triggerCommentID, triggerThreadID = "", ""
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
-		TriggerCommentID:    task.TriggerCommentID,
-		TriggerThreadID:     task.TriggerThreadID,
+		TriggerCommentID:    triggerCommentID,
+		TriggerThreadID:     triggerThreadID,
 		CommentReplyTargets: commentReplyThreads(task),
 		NewCommentCount:     task.NewCommentCount,
 		NewCommentsSince:    task.NewCommentsSince,
@@ -8931,16 +8941,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
-	selfBin, selfErr := resolveSelfExecutable()
-	if selfErr == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	// Ensure the multica CLI is on PATH inside the agent's environment and pin
+	// its path in MULTICA_CLI_PATH (MUL-8603). Some runtimes (e.g. Codex) run in
+	// an isolated sandbox that may not inherit the daemon's PATH, and login
+	// shells can reorder it. A failure only costs the pin and the guard shims,
+	// never the run (fork behaviour).
+	selfBin := ""
+	if err := configureTaskCLIEnvironment(agentEnv); err != nil {
+		taskLog.Warn("task CLI path not pinned; run continues without it", "error", err)
 	} else {
-		selfBin = ""
+		selfBin = agentEnv["MULTICA_CLI_PATH"]
 	}
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
 	// failure only costs the guard, never the run.
@@ -9030,6 +9040,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
+	// Reserve the trusted name in the exact shell allowlist. The backend assigns
+	// a fresh opaque ID per launch attempt before it starts the process.
+	if provider == "codex" {
+		agentEnv["MULTICA_RUN_BINDING_ID"] = ""
+	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, agent.BaseEnviron(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
@@ -9064,6 +9079,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+	}
+	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
+		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
 	}
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can

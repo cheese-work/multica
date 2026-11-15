@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
 )
 
@@ -83,8 +84,14 @@ func (h *Handler) PublishPluginPackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	published, err := h.PluginService.PublishBundle(r.Context(), workspaceID, member.UserID, archive)
+	audit := h.pluginAudit(r, workspaceID, "plugin.package.publish", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return nil, map[string]any{"plugin_key": c.Package.PluginKey, "version": c.Version.Version}
+	})
+	published, err := h.PluginService.PublishBundle(r.Context(), workspaceID, member.UserID, archive, audit)
 	if err != nil {
+		if failedAudit(w, r, err, "plugin.package.publish") {
+			return
+		}
 		writePluginError(w, err, "failed to publish the Plugin")
 		return
 	}
@@ -126,8 +133,14 @@ func (h *Handler) PublishLocalPluginPackage(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	published, err := h.PluginService.PublishLocalBundle(r.Context(), workspaceID, member.UserID, strings.TrimSpace(req.Name))
+	audit := h.pluginAudit(r, workspaceID, "plugin.package.publish", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return nil, map[string]any{"plugin_key": c.Package.PluginKey, "version": c.Version.Version}
+	})
+	published, err := h.PluginService.PublishLocalBundle(r.Context(), workspaceID, member.UserID, strings.TrimSpace(req.Name), audit)
 	if err != nil {
+		if failedAudit(w, r, err, "plugin.package.publish") {
+			return
+		}
 		writePluginError(w, err, "failed to publish the Plugin")
 		return
 	}
@@ -143,7 +156,13 @@ func (h *Handler) DeletePluginPackage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.PluginService.DeletePackage(r.Context(), workspaceID, chi.URLParam(r, "packageId")); err != nil {
+	audit := h.pluginAudit(r, workspaceID, "plugin.package.delete", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return map[string]any{"plugin_key": c.Package.PluginKey}, nil
+	})
+	if err := h.PluginService.DeletePackage(r.Context(), workspaceID, chi.URLParam(r, "packageId"), audit); err != nil {
+		if failedAudit(w, r, err, "plugin.package.delete") {
+			return
+		}
 		writePluginError(w, err, "failed to delete the published Plugin")
 		return
 	}

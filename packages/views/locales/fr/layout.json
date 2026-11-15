@@ -110,6 +110,7 @@
     "work": {
       "my_agents": "Travail de mes agents",
       "all_issues": "Toutes les tâches",
+      "unread": "Non lues",
       "views": "Vues",
       "new_project": "Nouveau projet",
       "new_issue_in_project": "Nouvelle tâche dans {{name}}",
@@ -118,6 +119,7 @@
       "project_issues": "Tâches de {{name}}",
       "project_issues_empty": "Aucune tâche",
       "project_issues_error": "Impossible de charger les tâches",
+      "project_issues_retry": "Réessayer",
       "project_issues_settings": "Tâches des projets",
       "settings_status": "Statut",
       "settings_assignee": "Responsable",
@@ -160,8 +162,8 @@
       "members_one": "{{count}} membre",
       "members_other": "{{count}} membres",
       "resources": "Ressources",
-      "runtimes_offline_one": "{{count}} hors ligne",
-      "runtimes_offline_other": "{{count}} hors ligne",
+      "runtimes_online_one": "{{count}} en ligne",
+      "runtimes_online_other": "{{count}} en ligne",
       "invite_member": "Inviter un membre"
     },
     "autopilots": {

@@ -107,6 +107,21 @@ type agentDecisionNoticeFailure struct {
 	NextAttemptAt string `json:"next_attempt_at"`
 }
 
+// An ask that never reached a person: the agent that produced it owns the
+// failure. The excerpt is the stored source, cut short.
+type agentAskFailure struct {
+	RootID     string `json:"root_id"`
+	IssueID    string `json:"issue_id"`
+	Identifier string `json:"identifier"`
+	AgentID    string `json:"agent_id"`
+	Agent      string `json:"agent"`
+	Reason     string `json:"reason"`
+	FailedAt   string `json:"failed_at"`
+	Excerpt    string `json:"excerpt,omitempty"`
+}
+
+const agentAskFailureExcerptRunes = 200
+
 func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace_id")
 	if !ok {
@@ -220,6 +235,12 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	askFailures, err := h.agentAskFailures(ctx, workspaceID)
+	if err != nil {
+		fail(err)
+		return
+	}
+
 	var pilot struct {
 		Effective   int   `json:"effective"`
 		Vetoed      int   `json:"vetoed"`
@@ -267,13 +288,20 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
+	runGuard, err := h.weeklyRunGuardBrief(ctx, workspaceID, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		fail(err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_budget_auto":     runBudgetAuto,
+		"run_guard":           runGuard,
 		"enabled":             parsed.Enabled,
 		"stopped":             parsed.Stopped,
 		"review_target_hours": int(agentDecisionReviewTarget / time.Hour),
 		"decisions":           records,
 		"notice_failures":     failures,
+		"ask_failures":        askFailures,
 		"pilot":               pilot,
 		"waivers":             waivers,
 		"jev":                 jev,
@@ -371,6 +399,27 @@ func (h *Handler) agentDecisionJevAsks(ctx context.Context, workspaceID pgtype.U
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ponytail: access is workspace membership, which the brief already requires;
+// the repo has no per-issue ACL. The excerpt is withheld if the issue is gone.
+func (h *Handler) agentAskFailures(ctx context.Context, workspaceID pgtype.UUID) ([]agentAskFailure, error) {
+	rows, err := h.Queries.ListFailedAskRepairRoots(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentAskFailure, 0, len(rows))
+	for _, row := range rows {
+		failure := agentAskFailure{RootID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), Identifier: row.Identifier, AgentID: uuidToString(row.AgentID),
+			Agent: row.AgentName, Reason: row.FailureReason.String, FailedAt: row.FailedAt.Time.UTC().Format(time.RFC3339)}
+		if runes := []rune(row.Source); len(runes) > agentAskFailureExcerptRunes {
+			failure.Excerpt = string(runes[:agentAskFailureExcerptRunes]) + "…"
+		} else {
+			failure.Excerpt = row.Source
+		}
+		out = append(out, failure)
+	}
+	return out, nil
 }
 
 // The line names the reader as undo owner, so pasting it needs no edit.

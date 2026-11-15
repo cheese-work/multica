@@ -258,6 +258,8 @@ type AgentTaskQueue struct {
 	ReservationLeaseID        pgtype.UUID        `json:"reservation_lease_id"`
 	ReservationExpiresAt      pgtype.Timestamptz `json:"reservation_expires_at"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
+	TriggerKind               pgtype.Text        `json:"trigger_kind"`
+	HandoffDispatchID         pgtype.UUID        `json:"handoff_dispatch_id"`
 }
 
 type AgentToLabel struct {
@@ -282,6 +284,8 @@ type AskGuardEvent struct {
 	SourceText         pgtype.Text        `json:"source_text"`
 	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
 	RepairReason       pgtype.Text        `json:"repair_reason"`
+	RootID             pgtype.UUID        `json:"root_id"`
+	RepairHandledAt    pgtype.Timestamptz `json:"repair_handled_at"`
 }
 
 type AskRecoveryNotice struct {
@@ -296,6 +300,20 @@ type AskRecoveryNotice struct {
 	State         string             `json:"state"`
 	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
 	AnsweredAt    pgtype.Timestamptz `json:"answered_at"`
+}
+
+type AskRepairRoot struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	RepairTaskID     pgtype.UUID        `json:"repair_task_id"`
+	State            string             `json:"state"`
+	FailureReason    pgtype.Text        `json:"failure_reason"`
+	FailureCommentID pgtype.UUID        `json:"failure_comment_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SettledAt        pgtype.Timestamptz `json:"settled_at"`
+	FailedAt         pgtype.Timestamptz `json:"failed_at"`
 }
 
 type Attachment struct {
@@ -1321,6 +1339,7 @@ type DecisionRequest struct {
 	AnswerRevision           int32              `json:"answer_revision"`
 	WakeSeq                  int64              `json:"wake_seq"`
 	BatchID                  pgtype.UUID        `json:"batch_id"`
+	PingOutcome              pgtype.Text        `json:"ping_outcome"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 }
@@ -2199,6 +2218,26 @@ type IssueDescriptionRevision struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueHandoffDispatch struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	StatusHistoryID   pgtype.UUID        `json:"status_history_id"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	ContextCommentIds []pgtype.UUID      `json:"context_comment_ids"`
+	HandoffWrite      string             `json:"handoff_write"`
+	State             string             `json:"state"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	SkipReason        pgtype.Text        `json:"skip_reason"`
+	Attempts          int32              `json:"attempts"`
+	NextAttemptAt     pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueIdleGuard struct {
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -2568,6 +2607,19 @@ type IssueWorkflow struct {
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
 	StartStatusKey          pgtype.Text        `json:"start_status_key"`
+	LintOverrideReason      pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt        pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings            []byte             `json:"lint_findings"`
+}
+
+type IssueWorkflowLintOverride struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Version     pgtype.Timestamptz `json:"version"`
+	Reason      string             `json:"reason"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type LarkBindingToken struct {
@@ -3324,6 +3376,22 @@ type SkillToLabel struct {
 	SkillID   pgtype.UUID        `json:"skill_id"`
 	LabelID   pgtype.UUID        `json:"label_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SkillVersion struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SkillID             pgtype.UUID        `json:"skill_id"`
+	Version             int32              `json:"version"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Content             string             `json:"content"`
+	Files               []byte             `json:"files"`
+	ContentHash         string             `json:"content_hash"`
+	Source              string             `json:"source"`
+	RestoredFromVersion pgtype.Int4        `json:"restored_from_version"`
+	CreatedBy           pgtype.UUID        `json:"created_by"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
 type Squad struct {

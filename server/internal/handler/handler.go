@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
@@ -129,6 +130,9 @@ type Config struct {
 	CloudTimeout             time.Duration
 	AttachmentDownloadMode   string
 	AttachmentDownloadURLTTL time.Duration
+	// MaxPreviewSizeBytes bounds text-backed attachment previews independently
+	// of upload/download limits. Zero selects the default 2 MiB limit.
+	MaxPreviewSizeBytes int64
 	// AttachmentFrameAncestors are trusted browser origins allowed to embed
 	// attachment preview responses. In production this should mirror the
 	// frontend/CORS origin allowlist so split app/api self-hosted deployments
@@ -639,6 +643,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
+	service.SetOnWeeklyRunGuardTripped(h.onWeeklyRunGuardTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
@@ -647,6 +652,9 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		}
 	}
 
+	taskSvc.BackgroundWriters = map[string]service.BackgroundWriter{
+		bgagents.Purpose(bgagents.DMTitle): h.writeDMTitle,
+	}
 	return h
 }
 

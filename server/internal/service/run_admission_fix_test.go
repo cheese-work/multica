@@ -391,7 +391,7 @@ func TestAdmissionCoalescedSquadLeaderTxEnqueueIsRecordedWithProducerEvent(t *te
 			t.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(context.Background())
-		_, _, err = e.svc.EnqueueSquadLeaderRunInTx(WithEventID(context.Background(), ev), e.svc.Queries.WithTx(tx), issue, util.MustParseUUID(e.agent), pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{})
+		_, _, err = e.svc.EnqueueSquadLeaderRunInTx(WithEventID(context.Background(), ev), e.svc.Queries.WithTx(tx), issue, util.MustParseUUID(e.agent), pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{}, nil)
 		if cerr := tx.Commit(context.Background()); cerr != nil {
 			t.Fatalf("commit: %v", cerr)
 		}

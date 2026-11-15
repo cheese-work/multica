@@ -1,0 +1,132 @@
+# Blocks map for the decision-card lock, B v9 (CHE-5793 C2).
+# One case per state the lock draws (its numbered label): lock file, state id, profile id, fixture.
+# State id s<N> is the lock label number N. Block ids are data-testid values the code carries today;
+# blocks the lock draws that the code does not yet tag (options, composer, buttons) join in step 5.
+# Fixtures are named by the action each card shows; the harness supplies them (step 2).
+topic: decision-card
+cases:
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s1
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s1b
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s2
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s3
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s4
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s5
+    profile: card-540
+    fixture: status-change-backlog
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s6
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s7
+    profile: card-540
+    fixture: batch-run-budget
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s7b
+    profile: card-540
+    fixture: batch-run-budget
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s8
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s9
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s10
+    profile: phone-358
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s11
+    profile: card-540
+    fixture: config-change-agent-disable
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s12
+    profile: card-540
+    fixture: text-change-workflow
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s13
+    profile: card-540
+    fixture: text-change-workflow
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s14
+    profile: card-540
+    fixture: config-change-agent-disable
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s15
+    profile: card-540
+    fixture: config-change-agent-disable
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s16
+    profile: card-540
+    fixture: question-answered
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s17
+    profile: card-540
+    fixture: expired-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s18
+    profile: card-540
+    fixture: delegate-approved
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s19
+    profile: card-540
+    fixture: config-change-agent-disable
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s20
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s21
+    profile: phone-358
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s23
+    profile: dm-card-520
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s24
+    profile: dm-card-520
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s25
+    profile: dm-card-520
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s26
+    profile: dm-card-520
+    fixture: dm-multi-issue
+blocks:
+  decision-request-card:
+    selector: ".card"
+  decision-request-asker:
+    selector: ".card .hd"
+  decision-request-ask:
+    selector: ".card .ask"
+  decision-request-effect:
+    selector: ".card .sum"
+  decision-request-meta:
+    selector: ".card .kv"
+  decision-request-action-preview:
+    selector: ".card .fcs"
+  decision-request-folded:
+    selector: ".cc"
+  decision-request-fold-toggle:
+    selector: ".cc .cc-h"

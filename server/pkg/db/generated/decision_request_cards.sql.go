@@ -118,7 +118,7 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
-    request.covers_request_ids, request.answered_by_batch_request_id,
+    request.covers_request_ids, request.answered_by_batch_request_id, request.batch_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
     last_answer.chosen_option_index AS answer_chosen_option_index,
@@ -181,6 +181,7 @@ type ListDecisionRequestCardsRow struct {
 	RecordCommentID          pgtype.UUID        `json:"record_comment_id"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	BatchID                  pgtype.UUID        `json:"batch_id"`
 	AnswerID                 pgtype.UUID        `json:"answer_id"`
 	AnswerCreatedAt          pgtype.Timestamptz `json:"answer_created_at"`
 	AnswerWokenAt            pgtype.Timestamptz `json:"answer_woken_at"`
@@ -222,6 +223,7 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.RecordCommentID,
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
+			&i.BatchID,
 			&i.AnswerID,
 			&i.AnswerCreatedAt,
 			&i.AnswerWokenAt,

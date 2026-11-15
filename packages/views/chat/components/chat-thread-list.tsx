@@ -1,23 +1,29 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { GroupedVirtuoso } from "react-virtuoso";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
+  CheckIcon,
   Clock,
   Eye,
   EyeOff,
   ListChecks,
   Loader2,
+  MinusIcon,
   MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Square,
   Trash2,
+  X,
 } from "@multica/ui/icons";
+import { Button } from "@multica/ui/components/ui/button";
+import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
@@ -33,13 +39,14 @@ import {
   sortChatSessions,
 } from "@multica/core/chat/queries";
 import {
+  useBatchChatSessions,
   useDeleteChatSession,
   useMarkChatSessionRead,
   useSetChatSessionPinned,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
-import type { Agent, ChatSearchHit, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
+import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {
   RowActionsMenu,
@@ -54,15 +61,21 @@ import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { handleRowShortcut } from "./use-row-shortcuts";
 import { SessionRenameInput } from "./session-rename-input";
-import { ChatSearch } from "./chat-search";
 import { SwipeRow, type SwipeAction } from "./swipe-row";
 import { formatChatClock } from "./format-chat-time";
 import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
 import { NeedsYouList } from "./needs-you-list";
 import { useAttentionRefresh } from "./use-attention-refresh";
+import { ChatBulkBar } from "./chat-bulk-bar";
+import { useChatSelection, type BulkAction, type GroupState } from "./use-chat-selection";
 import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
 import { ListEmpty, ListError, ListLoading, ListOffline } from "./chat-thread-list-states";
 import { useOnline } from "../../settings/components/use-online";
+import { VIRTUOSO_SEED_COUNT } from "../../common/virtuoso-seed";
+import { findScrollParent, useScrollPointerShield } from "./use-scroll-pointer-shield";
+
+// Row height is fixed (`h-14`), so Virtuoso starts from the real value.
+const ROW_HEIGHT_PX = 56;
 
 const apiLogger = createLogger("chat.api");
 
@@ -73,6 +86,25 @@ function toPreview(content: string): string {
     .replace(/[#*`>~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+interface ChatThreadListProps {
+  sessions: ChatSession[];
+  agents: Agent[];
+  activeSessionId: string | null;
+  onSelectSession: (session: ChatSession) => void;
+  // Archiving is owned by the parent so the selection advance stays layout-
+  // aware (desktop advances to the next chat; mobile drops back to the list)
+  // and routes through the shared controller — see ChatPage.handleArchive.
+  onArchive: (session: ChatSession) => void;
+  /** First load of the list. Only shown while there are no rows to show. */
+  loadState?: "loading" | "error";
+  onRetry?: () => void;
+  /**
+   * Called after the list enters multi-select with this row (`X`, the menu
+   * item or a long-press); the list owns the selection itself.
+   */
+  onEnterSelectMode?: (session: ChatSession) => void;
 }
 
 /**
@@ -91,53 +123,7 @@ function toPreview(content: string): string {
  * unarchive + delete). Both views read the same flat sessions cache and split
  * on `status` locally.
  */
-export function ChatThreadList(props: ChatThreadListProps) {
-  const { sessions, agents, activeSessionId, onSelectSession, onArchive, onOpenSearchHit } = props;
-  const setPinned = useSetChatSessionPinned();
-  const sessionActions = useChatSessionActions();
-  return (
-    <ChatSearch
-      scope="page"
-      bindShortcut
-      sessions={sessions}
-      agents={agents}
-      activeSessionId={activeSessionId}
-      onOpenHit={(hit) => {
-        if (onOpenSearchHit) return onOpenSearchHit(hit);
-        const session = sessions.find((s) => s.id === hit.session_id);
-        if (session) onSelectSession(session);
-      }}
-      onUnarchive={(session) => void sessionActions.unarchive(session)}
-      onTogglePin={(session) => setPinned.mutate({ sessionId: session.id, pinned: !session.pinned })}
-      onArchive={onArchive}
-    >
-      <ChatThreadListBody {...props} />
-    </ChatSearch>
-  );
-}
-
-interface ChatThreadListProps {
-  sessions: ChatSession[];
-  agents: Agent[];
-  activeSessionId: string | null;
-  onSelectSession: (session: ChatSession) => void;
-  // Archiving is owned by the parent so the selection advance stays layout-
-  // aware (desktop advances to the next chat; mobile drops back to the list)
-  // and routes through the shared controller — see ChatPage.handleArchive.
-  onArchive: (session: ChatSession) => void;
-  /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
-  onOpenSearchHit?: (hit: ChatSearchHit) => void;
-  /** First load of the list. Only shown while there are no rows to show. */
-  loadState?: "loading" | "error";
-  onRetry?: () => void;
-  /**
-   * Enters multi-select with this row. Seam for the select UI: while the host
-   * does not pass it, the `X` shortcut and the "Select multiple" item are off.
-   */
-  onEnterSelectMode?: (session: ChatSession) => void;
-}
-
-function ChatThreadListBody({
+export function ChatThreadList({
   sessions,
   agents,
   activeSessionId,
@@ -202,6 +188,19 @@ function ChatThreadListBody({
   const hasUnclassified = rows.some((s) => (s.attention_unclassified_keys?.length ?? 0) > 0);
   useAttentionRefresh(sessions);
   const online = useOnline();
+  const isMobile = useIsMobile();
+  const batch = useBatchChatSessions();
+  const visibleIds = useMemo(() => visibleSessions.map((s) => s.id), [visibleSessions]);
+  const selection = useChatSelection(visibleIds);
+  const selecting = selection.active && listView !== "waiting";
+  const exitSelection = selection.exit;
+  useEffect(() => {
+    if (selection.active && listView === "waiting") exitSelection();
+  }, [selection.active, listView, exitSelection]);
+  const enterSelect = (session: ChatSession) => {
+    selection.enter(session.id);
+    onEnterSelectMode?.(session);
+  };
 
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
@@ -277,6 +276,35 @@ function ChatThreadListBody({
       setStoppingTaskId(null);
       setConfirmingStopId(null);
     });
+  };
+
+  const handleBulk = async (action: BulkAction, ids: string[]) => {
+    // Hold auto mark-read first, as the single "unseen" action does.
+    if (action === "unseen" && activeSessionId && ids.includes(activeSessionId)) {
+      useChatStore.getState().suppressAutoRead(activeSessionId);
+    }
+    let failed: string[];
+    try {
+      ({ failed } = await batch.mutateAsync({ action, sessionIds: ids }));
+    } catch {
+      failed = ids;
+    }
+    if (failed.length > 0) toast.error(t(($) => $.list.bulk.failed, { count: failed.length }));
+    const done = ids.filter((id) => !failed.includes(id));
+    if (done.length === 0) return;
+    if (activeSessionId && done.includes(activeSessionId) && (action === "unseen" || action === "archive")) {
+      setActiveSession(null);
+    }
+    if (action === "archive") {
+      toast(t(($) => $.list.bulk.archived_toast, { count: done.length }), {
+        duration: 5000,
+        action: {
+          label: t(($) => $.list.undo),
+          onClick: () => void batch.mutateAsync({ action: "unarchive", sessionIds: done }),
+        },
+      });
+    }
+    selection.exit();
   };
 
   const handleRenameSubmit = (session: ChatSession, raw: string) => {
@@ -368,17 +396,15 @@ function ChatThreadListBody({
       shortcut: "R",
       onSelect: () => setRenamingId(session.id),
     };
-    const selectItem: RowActionItem[] = onEnterSelectMode
-      ? [
+    const selectItem: RowActionItem[] = [
           {
             key: "select",
             icon: <ListChecks className="size-3.5" />,
             label: t(($) => $.list.select),
             shortcut: "X",
-            onSelect: () => onEnterSelectMode(session),
+            onSelect: () => enterSelect(session),
           },
-        ]
-      : [];
+        ];
     const rowActions: RowActionItem[] =
       session.status === "archived"
         ? [
@@ -444,6 +470,7 @@ function ChatThreadListBody({
     const menuGroups = [rowActions, [renameItem, ...selectItem]];
     const shortcutItems = menuGroups.flat();
     const isRenaming = renamingId === session.id;
+    const isPicked = selecting && selection.selected.has(session.id);
 
     // Swipe left: the row's own pin / archive (or stop, or unarchive) + More.
     // A full swipe archives, never on a running or already-archived DM.
@@ -489,22 +516,26 @@ function ChatThreadListBody({
     return (
       <SwipeRow
         key={session.id}
-        leftActions={leftActions}
-        rightAction={rightAction}
+        leftActions={selecting ? [] : leftActions}
+        rightAction={selecting ? undefined : rightAction}
         onFullSwipeLeft={
-          session.status !== "archived" && !isRunning && !isConfirmingAction
+          !selecting && session.status !== "archived" && !isRunning && !isConfirmingAction
             ? () => onArchive(session)
             : undefined
         }
-        onLongPress={onEnterSelectMode ? () => onEnterSelectMode(session) : undefined}
+        onLongPress={selecting ? undefined : () => enterSelect(session)}
       >
       <RowContextMenu
-        groups={isConfirmingAction ? [] : menuGroups}
+        groups={isConfirmingAction || selecting ? [] : menuGroups}
         data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
         onClick={(e) => {
           if (isConfirmingAction || e.defaultPrevented) return;
+          if (selecting) {
+            selection.toggle(session.id);
+            return;
+          }
           // Plain click keeps the master-detail selection. On web, a modifier
           // click opens the session as its own browser tab. Desktop tabs
           // dedupe chat by pathname (a session is view state, not a subject —
@@ -536,6 +567,11 @@ function ChatThreadListBody({
         }}
         onKeyDown={(e) => {
           if (isConfirmingAction) return;
+          if (selecting) {
+            if (e.key === "Escape") selection.exit();
+            else handleRowActivationKey(e, () => selection.toggle(session.id));
+            return;
+          }
           handleRowActivationKey(e, () => onSelectSession(session));
           // A portal (the open ⋯ menu) still bubbles React events to the row;
           // only keys pressed inside the row's own DOM are row shortcuts.
@@ -545,10 +581,17 @@ function ChatThreadListBody({
           // Fixed height so nothing (hover actions, confirm prompts) can change
           // the row size and make the list jump. Content is vertically centered.
           "group/row relative flex h-14 min-w-0 cursor-default items-center gap-3 rounded-md px-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-          isCurrent ? "bg-accent" : "hover:bg-accent/50",
+          isCurrent || isPicked ? "bg-accent" : "hover:bg-accent/50",
           isConfirmingAction && "bg-destructive/5 hover:bg-destructive/5",
         )}
       >
+        {selecting && (
+          <SelectCheckbox
+            state={isPicked ? "all" : "none"}
+            label={t(($) => $.list.bulk.row_aria, { title: titleText })}
+            onToggle={() => selection.toggle(session.id)}
+          />
+        )}
         {/* Thin ring keeps photo + fallback avatars reading as the same circle
             (the fallback's faint bg otherwise looks smaller). */}
         {agent ? (
@@ -658,7 +701,7 @@ function ChatThreadListBody({
 
         {/* One ⋯ menu. Where the pointer can hover it shows on row hover or
             keyboard focus; right-click opens the same menu. */}
-        {!isConfirmingAction && (
+        {!isConfirmingAction && !selecting && (
           <RowActionsMenu
             label={t(($) => $.list.row_actions_aria)}
             groups={menuGroups}
@@ -693,6 +736,47 @@ function ChatThreadListBody({
       .filter((g) => g.sessions.length > 0)
       .map((g) => ({ ...g, label: label[g.key] }));
   }, [visibleSessions, listView, locale, t]);
+  const visibleInOrder = useMemo(() => sections.flatMap((g) => g.sessions), [sections]);
+  // computeItemKey is called with the flat index, group headers included
+  // (itemContent gets the item index only), so keys follow that layout.
+  const flatKeys = useMemo(
+    () => sections.flatMap((g) => [`group:${g.key}`, ...g.sessions.map((s) => s.id)]),
+    [sections],
+  );
+
+  // Virtuoso needs the real scroll container (the page owns it); until the
+  // wrapper has found it, a bounded slice of real rows keeps the first frame
+  // populated. The same slice is what renders where nothing scrolls (tests).
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
+  const attachBody = useCallback((el: HTMLDivElement | null) => {
+    setScrollEl(el ? findScrollParent(el) : null);
+  }, []);
+  // Rows slide under a still cursor while scrolling; keep that from opening
+  // avatar hover cards (and their queries).
+  useScrollPointerShield(scrollEl);
+
+  const renderGroupHeader = (g: (typeof sections)[number]) => (
+    <div
+      data-testid="chat-day-header"
+      data-group={g.key}
+      style={{ position: "sticky", top: 0 }}
+      className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
+    >
+      {/* Slot for the group checkbox (select mode). */}
+      <span data-slot="group-select" className="empty:hidden">
+        {selecting && (
+          <SelectCheckbox
+            className="-my-3 -ml-2.5"
+            state={selection.groupState(g.sessions.map((s) => s.id))}
+            label={t(($) => $.list.bulk.group_aria, { label: g.label })}
+            onToggle={() => selection.toggleGroup(g.sessions.map((s) => s.id))}
+          />
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{g.label}</span>
+      <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
+    </div>
+  );
 
   let body: React.ReactNode;
   if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
@@ -701,34 +785,135 @@ function ChatThreadListBody({
     body = <NeedsYouList sessions={rows} agents={agents} refresh={false} />;
   else if (visibleSessions.length === 0)
     body = <ListEmpty kind={rows.length === 0 ? "none" : listView === "waiting" ? "waiting" : "view"} />;
-  else
+  else if (scrollEl) {
+    // ponytail: Tab reaches mounted rows only; the row shortcuts and the bulk
+    // bar walk the data, so they cover off-screen rows.
     body = (
       <div className="contents" data-testid={`chat-thread-group-${listView}`}>
-        {sections.map((g) => (
-          <section key={g.key}>
-            <div
-              data-testid="chat-day-header"
-              data-group={g.key}
-              style={{ position: "sticky", top: 0 }}
-              className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
-            >
-              {/* Slot for the group checkbox (select mode). */}
-              <span data-slot="group-select" className="empty:hidden" />
-              <span className="min-w-0 flex-1 truncate">{g.label}</span>
-              <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
-            </div>
-            {g.sessions.map(renderRow)}
-          </section>
-        ))}
+        <GroupedVirtuoso
+          customScrollParent={scrollEl}
+          groupCounts={sections.map((g) => g.sessions.length)}
+          groupContent={(i) => renderGroupHeader(sections[i]!)}
+          itemContent={(i) => <MemoRow render={renderRow} session={visibleInOrder[i]!} />}
+          computeItemKey={(i) => flatKeys[i] ?? i}
+          initialItemCount={Math.min(visibleInOrder.length, VIRTUOSO_SEED_COUNT)}
+          defaultItemHeight={ROW_HEIGHT_PX}
+          increaseViewportBy={{ top: 400, bottom: 400 }}
+        />
       </div>
     );
+  } else {
+    let left = VIRTUOSO_SEED_COUNT;
+    body = (
+      <div className="contents" data-testid={`chat-thread-group-${listView}`}>
+        {sections.map((g) => {
+          const shown = g.sessions.slice(0, Math.max(left, 0));
+          left -= shown.length;
+          return shown.length === 0 ? null : (
+            <section key={g.key}>
+              {renderGroupHeader(g)}
+              {shown.map((s) => (
+                <MemoRow key={s.id} render={renderRow} session={s} />
+              ))}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <>
+      {selecting && (
+        <div className="flex items-center gap-1 px-2 py-1.5">
+          <span className="min-w-0 flex-1 truncate text-label font-semibold">
+            {t(($) => $.list.bulk.selected, { count: selection.selected.size })}
+          </span>
+          <Button type="button" variant="ghost" size="sm" onClick={selection.selectAll}>
+            {t(($) => $.list.bulk.select_all)}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t(($) => $.list.bulk.cancel)}
+            onClick={selection.exit}
+          >
+            <X />
+          </Button>
+        </div>
+      )}
       <ChatFilterChips value={listView} counts={counts} onChange={setListView} />
       {!online && <ListOffline />}
-      {body}
+      <div ref={attachBody}>{body}</div>
+      {selecting && (
+        <div className="sticky bottom-0 z-20">
+          <ChatBulkBar
+            sessions={visibleSessions.filter((s) => selection.selected.has(s.id))}
+            compact={isMobile}
+            onAction={handleBulk}
+          />
+        </div>
+      )}
     </>
+  );
+}
+
+/** Round checkbox look at 22 px inside a 44×44 hit area. `mixed` = some of a group. */
+/**
+ * Virtuoso re-calls `itemContent` on every scroll step, and `renderRow` is a
+ * closure over the whole list's state. `renderRow` changes identity only when
+ * the list itself re-renders, so keying on it keeps mounted rows untouched
+ * while scrolling (the cost was re-rendering ~25 rows per wheel step) and
+ * still refreshes every row whenever any list state changes.
+ */
+function MemoRow({
+  render,
+  session,
+}: {
+  render: (session: ChatSession) => React.ReactNode;
+  session: ChatSession;
+}) {
+  return useMemo(() => render(session), [render, session]);
+}
+
+function SelectCheckbox({
+  state,
+  label,
+  onToggle,
+  className,
+}: {
+  state: GroupState;
+  label: string;
+  onToggle: () => void;
+  className?: string;
+}) {
+  return (
+    // ui-pattern-ref: allow tri-state role="checkbox" control with mixed state; Button has no checkbox semantics
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={state === "all" ? true : state === "some" ? "mixed" : false}
+      aria-label={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className={cn(
+        "flex size-11 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        className,
+      )}
+    >
+      <span
+        className={cn(
+          "flex size-5.5 items-center justify-center rounded-xs border border-input text-primary-foreground",
+          state !== "none" && "border-primary bg-primary",
+        )}
+      >
+        {state === "all" && <CheckIcon className="size-3.5" />}
+        {state === "some" && <MinusIcon className="size-3.5" />}
+      </span>
+    </button>
   );
 }
 

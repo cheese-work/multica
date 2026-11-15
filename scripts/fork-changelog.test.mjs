@@ -520,7 +520,7 @@ test("PR check job (pr-guards): GitHub-hosted, no secrets, skips closed PRs, tru
   assert.match(wf, /^permissions: \{\}$/m);
   assert.match(job, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.doesNotMatch(wf, /self-hosted/);
-  assert.deepEqual(wf.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only workflow token");
+  assert.deepEqual(wf.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN", "secrets.GUARD_POLICY_READ_TOKEN"], "only the read-only workflow token and the read-only guard policy token (CHE-5752)");
   assert.match(job, /pull-requests: read/);
   assert.match(job, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
   assert.match(job, /pulls\/\$\{?PR_NUMBER\}?\/files/);

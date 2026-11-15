@@ -111,6 +111,8 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		protocol.EventInvitationCreated:  true,
 		protocol.EventInvitationRevoked:  true,
 		protocol.EventIssueUnreadChanged: true,
+		// Internal to the steel-gateway event stream (CHE-4734): no client receives it.
+		protocol.EventBrowserLeaseRevoked: true,
 	}
 
 	// Helper: marshal event and send to a specific user.

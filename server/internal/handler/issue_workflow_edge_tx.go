@@ -253,6 +253,12 @@ func (h *Handler) enqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, 
 // judges that member, never the issue's creator (mirrors
 // enqueueSquadLeaderTaskOutcome).
 func (h *Handler) enqueueSquadLeaderRunAsInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, actorType, actorID string) (pgtype.UUID, func(), error) {
+	return h.enqueueSquadLeaderRunWithOverlayInTx(ctx, q, issue, triggerCommentID, actorType, actorID, nil)
+}
+
+// enqueueSquadLeaderRunWithOverlayInTx is enqueueSquadLeaderRunAsInTx for a run
+// whose Composio overlay was built before the transaction opened.
+func (h *Handler) enqueueSquadLeaderRunWithOverlayInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, actorType, actorID string, overlay *service.PreparedRuntimeMCPOverlay) (pgtype.UUID, func(), error) {
 	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 	if err != nil {
 		return pgtype.UUID{}, nil, errSquadLeaderNotAdmitted
@@ -264,7 +270,7 @@ func (h *Handler) enqueueSquadLeaderRunAsInTx(ctx context.Context, q *db.Queries
 	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, actorType, actorID, originator, uuidToString(issue.WorkspaceID)) {
 		return pgtype.UUID{}, nil, errSquadLeaderNotAdmitted
 	}
-	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, triggerCommentID, memberActorUserID(actorType, actorID))
+	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, triggerCommentID, memberActorUserID(actorType, actorID), overlay)
 }
 
 // onQueries is a handler whose reads go through q, the queries of a

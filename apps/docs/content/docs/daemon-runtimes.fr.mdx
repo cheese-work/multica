@@ -294,7 +294,7 @@ Sur la page Qoder Cloud Agents, les administrateurs peuvent modifier la connexio
 
 Au-delà de la limite de simultanéité, les exécutions attendent dans la file. Une relance sur le même ticket reprend la session Qoder précédente de l'agent si elle est inactive. Un agent peut définir un dépôt par défaut, utilisé quand le projet du ticket n'en a pas. L'agent est invité à pousser une branche nommée d'après l'identifiant du ticket et à préfixer le titre de la pull request avec cet identifiant, afin que la pull request soit liée au ticket.
 
-Cette première version prend en charge l'exécution des tickets, le suivi de progression, l'annulation et la reprise à partir d'un journal d'exécution persistant. Le chat interactif, les répertoires locaux, les pièces jointes et la création d'agents Qoder Cloud Agents distants depuis Multica ne sont pas pris en charge. La page Runtimes sépare les runtimes distants des ordinateurs connectés.
+Cette première version prend en charge l'exécution des tickets, le chat, le suivi de progression, l'annulation et la reprise à partir d'un journal d'exécution persistant. Les fichiers et images joints aux tickets et aux messages de chat sont transmis à la session, PDF et documents Office compris, jusqu'à 5 Mo par fichier ; les fichiers plus volumineux ne le sont pas, et l'agent est informé de leur existence. Les répertoires locaux et la création d'agents Qoder Cloud Agents distants depuis Multica ne sont pas pris en charge. La page Runtimes sépare les runtimes distants des ordinateurs connectés. Dans le chat, les fichiers que l’agent livre avec DeliverArtifacts, jusqu’à 10 Mo chacun, sont joints à sa réponse.
 
 Pour le déploiement du pont autonome et ses limites opérationnelles, consultez le [README du runtime Qoder](https://github.com/multica-ai/multica/blob/main/server/cmd/qoder-runtime/README.md).
 
@@ -330,3 +330,11 @@ Si le problème persiste, consultez [Dépannage](/troubleshooting).
 - [Installer les outils de codage IA](/install-agent-runtime) — installer et vérifier un outil de codage IA pris en charge.
 - [Comparatif des outils de codage IA](/providers) — comparer les modèles, la reprise de session, MCP et la prise en charge des skills.
 - [Exécutions](/tasks) — file d'attente, arrêt et relances.
+
+## Liaisons locales des exécutions gérées
+
+`MULTICA_RUN_BINDINGS_DIR` est désactivé par défaut. Sous Linux, le propriétaire peut choisir un répertoire existant en mode 0700 hors des chemins modifiables par les tâches. Après le lancement de Codex, un fichier 0600 `<binding_id>.json` est publié. Seul `MULTICA_RUN_BINDING_ID` est transmis aux outils shell. Chaque tentative utilise un nouvel identifiant. La fin du processus, une annulation ou un échec invalide la liaison.
+
+Le schéma version 1 contient `binding_id`, `agent_id`, `principal` (identifiant de l’agent), `task_id`, `issue_id`, le `pid` hôte, `process_start`, `boot_id` et `pid_namespace`. Le courtier doit partager l’espace de noms PID du lanceur, vérifier les identités et contrôler lui-même le processus. Un wrapper exec conserve le PID ; un wrapper en attente ne vaut que tant qu’il vit. Un enfant détaché ne prolonge pas la liaison.
+
+Ce contrat coopératif entre processus du même UID ne protège pas contre le propriétaire hôte. L’isolation des identifiants refuse cette route locale ; R1 reste soumis à ses propres autorisations. Aucun accès aux appareils n’est accordé. Configuration et déploiement restent séparés.

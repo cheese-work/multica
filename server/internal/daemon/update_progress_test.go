@@ -96,8 +96,11 @@ func TestHandleUpdate_ReportsThrottledDownloadProgress(t *testing.T) {
 	runProgressUpdate(t, srv, false, 0)
 
 	reports := srv.progressReports()
-	if len(reports) != 1 {
-		t.Fatalf("progress reports = %d, want exactly 1 (the whole fake download takes well under 1s): %v", len(reports), reports)
+	if len(reports) != 2 { // first report, then the flushed final one; the rest of the sub-second download is coalesced
+		t.Fatalf("progress reports = %d, want 2 (first + flushed final): %v", len(reports), reports)
+	}
+	if fin := reports[1]["progress"].(map[string]any); fin["bytes_done"].(float64) != 1<<20 || fin["phase"] != "Verifying sha256" {
+		t.Fatalf("final progress = %v, want bytes_done == bytes_total and the last phase", fin)
 	}
 	if reports[0]["status"] != "running" {
 		t.Fatalf("status = %v, want running", reports[0]["status"])
