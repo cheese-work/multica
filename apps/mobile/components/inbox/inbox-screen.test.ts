@@ -9,6 +9,7 @@ vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
   useState: (initial: unknown) => [initial, vi.fn()],
   useMemo: (create: () => unknown) => create(),
+  useState: (initial: unknown) => [initial, vi.fn()],
   useCallback: (callback: unknown) => callback,
 }));
 vi.mock("react-native", () => ({

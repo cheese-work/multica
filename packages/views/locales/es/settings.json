@@ -25,6 +25,7 @@
       "key_hint": "La API y la CLI lo identifican como {{key}}.",
       "created": "Estado creado. La API y la CLI lo identifican como {{key}}.",
       "category": "Categoría",
+      "category_change_hint": "Cambiar la categoría modifica el comportamiento de todas las tareas con este estado. Se te pedirá confirmación antes de guardar.",
       "description": "Descripción",
       "description_placeholder": "Qué significa este estado para tu equipo",
       "color": "Color",
@@ -43,6 +44,13 @@
       "save": "Guardar",
       "saving": "Guardando…",
       "save_failed": "No se ha podido guardar el estado."
+    },
+    "category_change_dialog": {
+      "title": "¿Cambiar la categoría?",
+      "description_one": "{{count}} tarea con este estado pasará de {{from}} a {{to}}.",
+      "description_other": "{{count}} tareas con este estado pasarán de {{from}} a {{to}}.",
+      "cancel": "Cancelar",
+      "confirm": "Cambiar categoría"
     },
     "archive_dialog": {
       "retry": "Reintentar el archivado",
@@ -124,14 +132,14 @@
     "field_name": "Nombre",
     "field_name_placeholder": "Revisión de código",
     "field_target": "Se ejecuta como",
+    "no_target": "Sin objetivo",
+    "no_target_hint": "Publica un mensaje sin mencionar a nadie.",
     "field_prompt": "Prompt",
     "field_prompt_placeholder": "Revisa el código vinculado a esta tarea. Céntrate en la corrección y los casos límite.",
     "prompt_hint": "Se envía tal cual. El agente ya ve la tarea.",
     "template_not_supported": "Las variables aún no se admiten: elimina {{token}}. El agente ya lee esta tarea.",
     "delete_title": "¿Eliminar esta acción rápida?",
-    "delete_description": "Desaparecerá del panel lateral de todas las tareas. Las ejecuciones anteriores quedan en el registro de ejecución. Archívala si puede que la quieras recuperar.",
-    "no_target": "Sin objetivo",
-    "no_target_hint": "Publica un mensaje sin mencionar a nadie."
+    "delete_description": "Desaparecerá del panel lateral de todas las tareas. Las ejecuciones anteriores quedan en el registro de ejecución. Archívala si puede que la quieras recuperar."
   },
   "auto_save": {
     "saving": "Guardando…",
@@ -163,8 +171,8 @@
       "browser_suffix": " (navegador)",
       "hint": "Se usa para fechas y gráficas en todos tus espacios de trabajo.",
       "sync_failed": "No se ha podido guardar tu preferencia de zona horaria.",
-      "empty": "Ninguna zona horaria coincide",
-      "search": "Buscar zonas horarias..."
+      "search": "Buscar zonas horarias...",
+      "empty": "Ninguna zona horaria coincide"
     },
     "sticky_comment_bar": {
       "title": "Fijar la barra de comentarios abajo"
@@ -176,15 +184,15 @@
       "hint": "Solo establece el valor predeterminado. Puedes cambiarlo para cualquier mensaje antes de enviarlo."
     },
     "comments_title": "Comentarios",
+    "region_title": "Idioma y región",
     "appearance_title": "Apariencia",
+    "issue_fields_title": "Campos al crear tareas",
     "issue_fields": {
       "field": "Campo",
-      "manual": "Creación manual",
       "quick": "Crear con agente",
+      "manual": "Creación manual",
       "unsupported": "No disponible al crear con un agente"
-    },
-    "issue_fields_title": "Campos al crear tareas",
-    "region_title": "Idioma y región"
+    }
   },
   "shortcuts": {
     "title": "Atajos de teclado",
@@ -320,9 +328,17 @@
   },
   "chat": {
     "floating_label": "Ventana de chat flotante",
-    "floating_hint": "Muestra el botón de chat flotante en todas las páginas."
+    "floating_hint": "Muestra el botón de chat flotante en todas las páginas.",
+    "recent_agents_label": "Agentes recientes en Nuevo chat"
   },
   "issue": {
+    "opening": {
+      "title": "Apertura de tareas",
+      "click": "Al hacer clic en una tarjeta o fila se abre",
+      "page": "Página completa",
+      "peek": "Vista previa lateral",
+      "hint": "Mayús+Clic abre la otra opción."
+    },
     "description": "Elige qué campos mantiene cada diálogo de creación en su barra de herramientas. Los campos ocultos siguen disponibles en el menú ⋯ y reaparecen mientras tengan un valor.",
     "fields": {
       "status": "Estado",
@@ -332,13 +348,6 @@
       "project": "Proyecto",
       "due_date": "Fecha de entrega",
       "start_date": "Fecha de inicio"
-    },
-    "opening": {
-      "click": "Al hacer clic en una tarjeta o fila se abre",
-      "hint": "Mayús+Clic abre la otra opción.",
-      "page": "Página completa",
-      "peek": "Vista previa lateral",
-      "title": "Apertura de tareas"
     }
   },
   "mcp": {
@@ -381,22 +390,25 @@
       "issue": "Tarea",
       "notifications": "Notificaciones",
       "tokens": "Tokens de API",
+      "passkeys": "Claves de acceso",
       "general": "General",
       "github": "GitHub",
       "labs": "Labs",
       "members": "Miembros",
+      "export_privacy": "Privacidad de exportaciones",
       "labels": "Etiquetas",
       "issue_statuses": "Estados de tarea",
+      "wakeups": "Despertares",
       "properties": "Propiedades",
       "quick_actions": "Acciones rápidas",
       "plugins": "Plugins",
       "mcp": "MCP",
       "billing": "Facturación",
-      "apps": "Apps conectadas",
-      "channels": "Mensajería",
       "code": "Código",
-      "wakeups": "Despertares",
-      "workflows": "Flujos de trabajo"
+      "channels": "Mensajería",
+      "apps": "Apps conectadas",
+      "workflows": "Flujos de trabajo",
+      "provider_breakers": "Disyuntores de proveedores"
     },
     "groups": {
       "personal": "Personal",
@@ -406,12 +418,12 @@
       "device": "Aplicación de escritorio"
     },
     "navigate": "Ir a la página de configuración",
-    "admin_only": "Solo los propietarios y administradores pueden cambiar esto",
     "search": "Buscar ajustes",
     "search_clear": "Borrar búsqueda",
     "search_empty": "Ningún ajuste coincide",
     "search_results_one": "{{count}} resultado",
-    "search_results_other": "{{count}} resultados"
+    "search_results_other": "{{count}} resultados",
+    "admin_only": "Solo los propietarios y administradores pueden cambiar esto"
   },
   "plugins": {
     "title": "Plugins",
@@ -635,6 +647,7 @@
     "toast_profile_failed": "Error al actualizar el perfil"
   },
   "notifications": {
+    "focused_delivery": "Solo decisiones y tareas que me asignan",
     "title": "Notificaciones de la bandeja",
     "description": "Los eventos silenciados siguen visibles en la tarea.",
     "toast_failed": "Error al actualizar la configuración de notificaciones",
@@ -756,17 +769,68 @@
     "toast_delete_failed": "Error al eliminar el espacio de trabajo",
     "confirm_cancel": "Cancelar",
     "confirm_action": "Confirmar",
-    "change_prefix": "Cambiar prefijo...",
     "context_hint": "Se da a cada agente de este espacio de trabajo en cada ejecución.",
-    "copy_failed": "No se ha podido copiar al portapapeles",
+    "compact_prompt_label": "Prompt de compactación",
+    "compact_prompt_hint": "Requisitos del resumen para /compact en mensajes directos. Déjalo vacío para usar el valor predeterminado integrado.",
+    "compact_prompt_placeholder": "Escribe un resumen en formato de traspaso con el objetivo de esta sesión, las decisiones, las evidencias, los puntos abiertos, los ID y URL exactos y la siguiente acción.",
+    "compact_prompt_source_default": "Origen: valor predeterminado integrado",
+    "compact_prompt_source_workspace": "Origen: espacio de trabajo",
+    "auto_compact_label": "Compactación automática",
+    "auto_compact_hint": "Un mensaje directo web pasa a un nuevo mensaje directo tras una respuesta cuando su contexto alcanza el umbral.",
+    "auto_compact_threshold_label": "Umbral (%)",
+    "auto_compact_threshold_invalid": "Introduce un número entero del 50 al 90.",
+    "auto_compact_tokens_200k_label": "Umbral, modelos de 200k (tokens)",
+    "auto_compact_tokens_1m_label": "Umbral, modelos de 1M (tokens)",
+    "auto_compact_tokens_200k_invalid": "Introduce un número entero de 100000 a 200000.",
+    "auto_compact_tokens_1m_invalid": "Introduce un número entero de 100000 a 400000.",
+    "auto_compact_readonly_on": "Activada, al {{threshold}} %",
+    "auto_compact_readonly_on_tokens": "Activada, a {{small}} / {{large}} tokens",
+    "auto_compact_readonly_off": "Desactivada",
+    "agent_decisions_label": "Decisiones de agentes",
+    "agent_decisions_hint": "Los agentes pueden decidir por ti en las puertas de la lista de permitidos. Cada decisión aparece en el resumen diario con un veto de 24 h.",
+    "agent_decisions_stopped_title": "Las decisiones se detuvieron automáticamente",
+    "agent_decisions_stopped_description": "Motivo: {{reason}}. Al activar las decisiones se borra este registro.",
+    "agent_decisions_stopped_confirm": "Activar",
+    "runtime_profile_label": "Perfil de runtime",
+    "runtime_profile_hint": "Valor predeterminado del espacio de trabajo para cómo obtienen su configuración las CLI de los agentes. Managed crea un home mínimo por tarea. Las herramientas sin adaptador gestionado fallan con Managed; dale a esos agentes una anulación Personal explícita.",
+    "runtime_profile_personal": "Personal",
+    "runtime_profile_managed": "Managed",
+    "runtime_profile_inherit": "Predeterminado del espacio de trabajo",
+    "idle_guard_label": "Guardia de tareas inactivas",
+    "idle_guard_hint": "Mueve las tareas iniciadas sin ejecución ni wakeup tras N horas. Shadow solo registra.",
+    "idle_guard_off": "Desactivada",
+    "idle_guard_shadow": "Shadow",
+    "idle_guard_act": "Actuar",
+    "idle_guard_hours_label": "Después de (horas)",
+    "idle_guard_hours_invalid": "Introduce un número entero del 1 al 72.",
+    "idle_guard_readonly": "{{mode}}, después de {{hours}} h",
+    "routing_agent_label": "Agente de enrutamiento",
+    "routing_agent_hint": "Gestiona los pasos del flujo de trabajo que solo enrutan: todo, blocked, merged y need decision. Sin definir, cada paso conserva su propio agente.",
+    "routing_fallback_label": "Agente de respaldo",
+    "routing_fallback_hint": "Asume un paso de enrutamiento cuando el agente de enrutamiento falla con un error del proveedor.",
+    "routing_agent_none": "Ninguno",
+    "routing_agent_unknown": "Agente desconocido",
+    "slug_hint": "Forma parte de cada URL del espacio de trabajo. No se puede cambiar.",
     "copy_slug": "Copiar slug",
-    "prefix_confirm_action": "Cambiar a {{prefix}}",
-    "prefix_dialog_description": "Todas las tareas se renumeran, incluidas las completadas y canceladas.",
+    "copy_failed": "No se ha podido copiar al portapapeles",
+    "change_prefix": "Cambiar prefijo...",
     "prefix_dialog_title": "Cambiar el prefijo de tarea",
-    "prefix_external_warning": "Las claves antiguas como {{oldExample}} en títulos de PR, nombres de rama, documentación y chat no se actualizan, así que esos enlaces dejan de funcionar.",
+    "prefix_dialog_description": "Todas las tareas se renumeran, incluidas las completadas y canceladas.",
     "prefix_new_label": "Nuevo prefijo",
     "prefix_rule": "Solo letras y números, hasta 10 caracteres.",
-    "slug_hint": "Forma parte de cada URL del espacio de trabajo. No se puede cambiar."
+    "prefix_confirm_action": "Cambiar a {{prefix}}",
+    "prefix_external_warning": "Las claves antiguas como {{oldExample}} en títulos de PR, nombres de rama, documentación y chat no se actualizan, así que esos enlaces dejan de funcionar.",
+    "scheduling_label": "Programación",
+    "scheduling_hint": "Al pausar, ningún agente puede tomar nuevas ejecuciones. Las tareas en curso terminan; el trabajo en cola espera.",
+    "scheduling_pause_action": "Pausar espacio de trabajo",
+    "scheduling_resume_action": "Reanudar espacio de trabajo",
+    "scheduling_pause_title": "¿Pausar este espacio de trabajo?",
+    "scheduling_pause_description": "Ningún agente tomará nuevas ejecuciones hasta que lo reanudes. El trabajo en cola se conserva.",
+    "scheduling_keep": "Seguir en marcha",
+    "scheduling_confirm": "Pausar",
+    "scheduling_paused_toast": "Espacio de trabajo en pausa",
+    "scheduling_resumed_toast": "Espacio de trabajo reanudado",
+    "scheduling_failed_toast": "No se ha podido cambiar la programación del espacio de trabajo"
   },
   "delete_workspace_dialog": {
     "title": "Eliminar espacio de trabajo",
@@ -786,6 +850,7 @@
     "master_description_off": "Las funciones de GitHub están en pausa. Los datos existentes se conservan.",
     "connected_to": "Conectado como {{login}}",
     "connect_github": "Conectar GitHub",
+    "add_account_or_organization": "Añadir cuenta u organización",
     "connect_opening": "Abriendo…",
     "disconnect": "Desconectar",
     "disconnecting": "Desconectando…",
@@ -809,9 +874,9 @@
     "feature_auto_link_label": "Vincular tareas y PR automáticamente",
     "toast_failed": "Error al actualizar la configuración de GitHub",
     "feature_auto_link_description": "Enlaza un PR con la tarea cuyo ID, p. ej. {{example}}, aparece en su título o nombre de rama, o tras “Closes” en su descripción.",
+    "status_paused": "En pausa",
     "pause": "Pausar funciones de GitHub",
-    "resume": "Reanudar funciones de GitHub",
-    "status_paused": "En pausa"
+    "resume": "Reanudar funciones de GitHub"
   },
   "vcs": {
     "section_title": "Proveedores de Git (self-hosted)",
@@ -851,9 +916,9 @@
     "rotate_confirm_action": "Regenerar",
     "rotating": "Regenerando...",
     "toast_rotate_failed": "No se ha podido regenerar el secreto del webhook",
+    "hosts_hint": "GitLab, Gitea o Forgejo.",
     "connect_another": "Conectar otro",
     "connection_actions": "Acciones de {{url}}",
-    "hosts_hint": "GitLab, Gitea o Forgejo.",
     "webhook_done": "Ya lo he guardado"
   },
   "lark": {
@@ -1091,7 +1156,6 @@
     "byo_credentials_rejected": "WeCom rechazó este Bot ID y secreto. Comprueba ambos en la consola de administración de WeCom, y que sea un smart bot con la conexión larga activada.",
     "byo_credentials_unverifiable": "No se ha podido contactar con WeCom para verificar este bot. Tus credenciales no se modificaron: inténtalo de nuevo en un momento.",
     "byo_install_failed": "No se ha podido guardar este bot: algo falló en nuestro lado. Tus credenciales no se modificaron; inténtalo de nuevo y contacta con soporte si sigue fallando.",
-    "byo_failed_toast": "No se ha podido conectar el bot de WeCom",
     "scan_option_title": "Crear un bot nuevo",
     "scan_option_description": "Escanea un código QR en WeCom para crear y conectar un bot inteligente nuevo.",
     "byo_option_title": "Conectar un bot existente",
@@ -1112,7 +1176,8 @@
     "scan_error_internal_error": "Algo ha ido mal. Inténtalo de nuevo.",
     "scan_error_session_lost": "Esta sesión de instalación ya no está disponible. Obtén un código nuevo.",
     "scan_error_already_connected": "Este agente ya tiene un bot de WeCom conectado. Desconéctalo primero.",
-    "scan_error_rate_limited": "Demasiados intentos. Espera unos minutos y vuelve a intentarlo."
+    "scan_error_rate_limited": "Demasiados intentos. Espera unos minutos y vuelve a intentarlo.",
+    "byo_failed_toast": "No se ha podido conectar el bot de WeCom"
   },
   "telegram": {
     "section_title": "Telegram",
@@ -1163,12 +1228,15 @@
     "add": "Añadir repositorio",
     "connect_github": "Conectar GitHub",
     "choose_from_github": "Elegir desde GitHub",
+    "github_add_account_or_organization": "Añadir cuenta u organización",
     "github_not_configured": "La conexión con GitHub no está configurada en esta instalación.",
     "github_browse_not_configured": "Para explorar repositorios se requieren GITHUB_APP_ID y GITHUB_APP_PRIVATE_KEY.",
     "github_connect_failed": "No se ha podido conectar con GitHub. Inténtalo de nuevo.",
+    "github_installation_not_allowed": "Esta cuenta de GitHub no está permitida en este despliegue.",
     "github_picker_title": "Elegir repositorios de GitHub",
     "github_picker_description": "Las entradas manuales existentes no cambian.",
     "github_account": "Cuenta de GitHub",
+    "github_scope": "Solo se muestran los repositorios autorizados para {{account}}.",
     "github_search_placeholder": "Buscar en los repositorios cargados",
     "github_loading": "Cargando repositorios…",
     "github_load_failed": "No se han podido cargar los repositorios de GitHub. Comprueba el acceso de la instalación e inténtalo de nuevo.",
@@ -1193,14 +1261,14 @@
     "delete_confirm_action": "Eliminar repositorio",
     "manage_hint": "Solo los administradores y propietarios pueden gestionar repositorios.",
     "toast_save_failed": "Error al guardar los repositorios",
-    "actions_aria": "Acciones de {{url}}",
     "add_manually": "Introduce una URL...",
     "add_title": "Añadir repositorio",
+    "edit_title": "Editar repositorio",
+    "edit": "Editar",
+    "url_label": "URL del repositorio",
     "description_label": "Descripción",
     "duplicate": "Este repositorio ya está añadido.",
-    "edit": "Editar",
-    "edit_title": "Editar repositorio",
-    "url_label": "URL del repositorio"
+    "actions_aria": "Acciones de {{url}}"
   },
   "desktop": {
     "tabs": {
@@ -1243,6 +1311,7 @@
       "auto_stop_description": "Detiene el daemon cuando se cierra la app de escritorio.",
       "cli_status": "Estado de la CLI",
       "cli_checking": "Comprobando…",
+      "cli_download_progress": "Descargando runtime… {{done}} / {{total}} MB",
       "cli_installed": "La CLI de multica está instalada y disponible en PATH.",
       "cli_missing": "No se encontró la CLI de multica. Instálala para gestionar el daemon.",
       "installation_guide": "Guía de instalación",
@@ -1368,24 +1437,24 @@
     "expiry_7d": "7 días",
     "expiry_30d": "30 días",
     "expiry_never": "Nunca",
-    "email_label": "Correo electrónico",
-    "expiry_label": "Caduca después de",
-    "invitation_meta": "Enviada {{sent}} · Caduca {{expires}}",
-    "joined": "Se unió el {{date}}",
-    "manage_seats": "Gestionar puestos",
-    "member_actions": "Acciones de {{name}}",
     "members_label": "Miembros",
-    "no_invitations": "No hay invitaciones pendientes.",
-    "no_results": "Ningún miembro coincide con esta búsqueda.",
-    "no_share_links": "Aún no hay enlaces de invitación.",
     "pending_label": "Invitaciones pendientes",
-    "revoke_invitation_aria": "Revocar invitación de {{email}}",
-    "role_label": "Rol",
-    "search_placeholder": "Buscar por nombre o correo electrónico",
-    "seats_used": "{{used}} de {{purchased}} puestos usados",
-    "share_links_description": "Cualquiera con el enlace puede unirse con el rol elegido hasta que caduque o lo revoques.",
     "share_links_label": "Enlaces de invitación",
-    "you": "Tú"
+    "share_links_description": "Cualquiera con el enlace puede unirse con el rol elegido hasta que caduque o lo revoques.",
+    "search_placeholder": "Buscar por nombre o correo electrónico",
+    "no_results": "Ningún miembro coincide con esta búsqueda.",
+    "no_invitations": "No hay invitaciones pendientes.",
+    "no_share_links": "Aún no hay enlaces de invitación.",
+    "email_label": "Correo electrónico",
+    "role_label": "Rol",
+    "expiry_label": "Caduca después de",
+    "you": "Tú",
+    "joined": "Se unió el {{date}}",
+    "member_actions": "Acciones de {{name}}",
+    "invitation_meta": "Enviada {{sent}} · Caduca {{expires}}",
+    "revoke_invitation_aria": "Revocar invitación de {{email}}",
+    "seats_used": "{{used}} de {{purchased}} puestos usados",
+    "manage_seats": "Gestionar puestos"
   },
   "integrations": {
     "status_connected": "Conectado",
@@ -1397,23 +1466,23 @@
     "breadcrumb": "Migas de pan"
   },
   "code": {
-    "github_actions": "Acciones de GitHub",
     "hosting_title": "Alojamiento de código",
-    "pr_linking_title": "Pull requests y tareas"
+    "pr_linking_title": "Pull requests y tareas",
+    "github_actions": "Acciones de GitHub"
   },
   "layout": {
-    "read_only": {
-      "contact": "Solo los propietarios y administradores pueden cambiar estos ajustes. Pídeselo a {{names}}.",
-      "description": "Solo los propietarios y administradores del espacio de trabajo pueden cambiar estos ajustes.",
-      "separator": ", ",
-      "title": "Solo lectura"
-    },
     "scope": {
       "account": "Cuenta · sincronizado",
       "device": "Solo este dispositivo",
       "device_workspace": "Este dispositivo · {{name}}",
       "workspace": "Espacio de trabajo {{name}}",
       "workspace_only": "Solo en {{name}}"
+    },
+    "read_only": {
+      "title": "Solo lectura",
+      "description": "Solo los propietarios y administradores del espacio de trabajo pueden cambiar estos ajustes.",
+      "contact": "Solo los propietarios y administradores pueden cambiar estos ajustes. Pídeselo a {{names}}.",
+      "separator": ", "
     }
   },
   "mcp_sources": {
@@ -1429,27 +1498,69 @@
     "none": "No asignada a ningún agente"
   },
   "pr_merge_status": {
-    "description": "Se aplica cuando todos los PR enlazados a una tarea se hayan fusionado, y solo a fusiones a partir de ahora.",
     "label": "Al fusionarse los PR, mover la tarea a",
+    "description": "Se aplica cuando todos los PR enlazados a una tarea se hayan fusionado, y solo a fusiones a partir de ahora.",
     "none": "No cambiar"
   },
   "wakeups": {
-    "admin_only": "Solo los propietarios y administradores pueden cambiar estos valores predeterminados.",
-    "builtin": "Instrucción integrada",
-    "child_done_description": "Despierta al responsable del padre cuando una etapa termina y otra posterior está en espera, y una vez más cuando todas las subtareas se cierran. Si el responsable es un miembro, recibe una notificación en la bandeja de entrada.",
-    "child_done_title": "Al terminar las subtareas",
-    "customized_one": "{{count}} tarea abierta tiene su propio ajuste e ignora este valor predeterminado.",
-    "customized_other": "{{count}} tareas abiertas tienen su propio ajuste e ignoran este valor predeterminado.",
     "description": "Reglas de la plataforma que se aplican a cada tarea. Cada tarea puede cambiarlas en su sección de Despertares.",
+    "child_done_title": "Al terminar las subtareas",
+    "child_done_description": "Despierta al responsable del padre cuando una etapa termina y otra posterior está en espera, y una vez más cuando todas las subtareas se cierran. Si el responsable es un miembro, recibe una notificación en la bandeja de entrada.",
     "enabled": "Activado por defecto",
     "instruction": "Instrucción predeterminada",
     "instruction_hint": "Se envía al agente despertado. Déjala vacía para usar la instrucción integrada de abajo.",
-    "instruction_invalid": "Mantén la instrucción dentro de 4.000 bytes.",
     "instruction_placeholder": "Déjala vacía para usar la instrucción integrada",
-    "load_error": "No se han podido cargar los valores predeterminados de despertares.",
+    "builtin": "Instrucción integrada",
+    "instruction_invalid": "Mantén la instrucción dentro de 4.000 bytes.",
     "save": "Guardar",
+    "saving": "Guardando…",
     "save_error": "No se ha podido guardar el valor predeterminado.",
-    "saving": "Guardando…"
+    "customized_one": "{{count}} tarea abierta tiene su propio ajuste e ignora este valor predeterminado.",
+    "customized_other": "{{count}} tareas abiertas tienen su propio ajuste e ignoran este valor predeterminado.",
+    "admin_only": "Solo los propietarios y administradores pueden cambiar estos valores predeterminados.",
+    "load_error": "No se han podido cargar los valores predeterminados de despertares.",
+    "pause_label": "Pausar todos los wakeups",
+    "pause_description": "Nada se activa mientras estén en pausa. Los eventos que lleguen entretanto se descartan, no se reproducen. Los wakeups únicos y condicionales que hayan vencido se ejecutan una vez al reanudar.",
+    "pause_error": "No se ha podido cambiar la pausa.",
+    "overridden": "Anulado mientras los wakeups están en pausa.",
+    "pause_saved": "Wakeups en pausa.",
+    "pause_resumed": "Wakeups reanudados.",
+    "retry": "Reintentar",
+    "rules": {
+      "title": "Reglas del espacio de trabajo",
+      "description": "Reglas personalizadas que se aplican a todo el espacio de trabajo. Cada una se activa con un evento o una condición y despierta al agente que elijas.",
+      "empty": "Aún no hay reglas del espacio de trabajo.",
+      "new_title": "Nueva regla del espacio de trabajo",
+      "name": "Nombre de la regla",
+      "delete": "Eliminar {{name}}",
+      "delete_error": "No se ha podido eliminar la regla. Recarga e inténtalo de nuevo.",
+      "preview": "Vista previa",
+      "previewing": "Comprobando…",
+      "create": "Crear regla",
+      "creating": "Creando…",
+      "preview_ok": "Todavía no coincide ninguna tarea abierta; la regla solo se activaría con actividad nueva.",
+      "preview_met": "{{satisfied}} de {{examined}} tareas ya coinciden; al activar la regla se dispararía de inmediato para ellas.",
+      "preview_met_truncated": "{{satisfied}} de las primeras {{examined}} tareas ya coinciden; al activar la regla se dispararía de inmediato para ellas.",
+      "preview_cap": "Límite: {{limit}} wakeups por hora para el espacio de trabajo.",
+      "project_title": "Reglas del proyecto",
+      "project_description": "Reglas personalizadas que se aplican a este proyecto. Cada una se activa con un evento o una condición y despierta al agente que elijas.",
+      "project_empty": "Aún no hay reglas del proyecto.",
+      "project_new_title": "Nueva regla del proyecto",
+      "project_edit_title": "Editar regla del proyecto",
+      "project_preview_cap": "Límite: {{limit}} wakeups por hora para el proyecto.",
+      "preview_error": "No se ha podido mostrar la vista previa de la regla. Revisa los ajustes e inténtalo de nuevo.",
+      "missing_name": "Ponle nombre a la regla (máximo {{max}} caracteres).",
+      "unsupported_filter": "Una regla del espacio de trabajo aún no puede filtrar por autor ni por agente. Elige cualquier persona o cualquier agente.",
+      "unsupported_schedule": "Una regla del espacio de trabajo aún no puede ejecutarse según una programación. Elige un evento o una condición.",
+      "closed_error": "Las reglas de wakeup aún no se pueden editar.",
+      "edit": "Editar {{name}}",
+      "edit_title": "Editar regla del espacio de trabajo",
+      "edit_unsupported": "Esta regla usa opciones que este editor no puede cambiar. Elimínala y crea una nueva.",
+      "conflict_error": "Otra persona ha modificado esta regla. Cancela y ábrela de nuevo para ver sus cambios.",
+      "cancel": "Cancelar",
+      "save": "Guardar regla",
+      "saving": "Guardando…"
+    }
   },
   "connected_apps": {
     "description": "Cuentas que usan tus agentes. Cada llamada pasa por Multica, que aplica tus reglas y pide confirmación antes de enviar, eliminar o compartir.",
@@ -1623,5 +1734,150 @@
       "row_description_one": "{{count}} aplicación permitida",
       "row_description_other": "{{count}} aplicaciones permitidas"
     }
+  },
+  "site_search": {
+    "title": "Búsqueda en el sitio",
+    "url": "URL de búsqueda",
+    "hint": "Añádelo en brave://settings/search → Site search → Add",
+    "copy": "Copiar",
+    "copied": "URL de búsqueda copiada",
+    "copy_failed": "No se ha podido copiar la URL de búsqueda"
+  },
+  "passkeys": {
+    "title": "Claves de acceso",
+    "purpose": "Las claves de acceso firman aprobaciones sensibles con este dispositivo o una llave de seguridad.",
+    "description": "Una clave de acceso demuestra que eres tú cuando apruebas una decisión protegida. Guarda al menos dos, en dispositivos distintos.",
+    "desktop_note": "Las claves de acceso están vinculadas a la aplicación web, así que gestiónalas en tu navegador.",
+    "open_in_browser": "Abrir en el navegador",
+    "add": "Añadir clave de acceso",
+    "code_hint": "Te hemos enviado un código por correo. Introdúcelo y sigue las indicaciones de tu navegador para crear la clave de acceso.",
+    "code_label": "Código del correo",
+    "attempt_tag": "Intento {{tag}}: usa el correo cuyo asunto termina en [{{tag}}].",
+    "confirm": "Confirmar",
+    "cancel": "Cancelar",
+    "empty": "Aún no hay claves de acceso.",
+    "load_failed": "No se han podido cargar tus claves de acceso. Recarga la página para intentarlo de nuevo.",
+    "item_title": "Clave de acceso {{number}}",
+    "item_meta": "Añadida {{created}} · {{lastUsed}}",
+    "last_used_with_date": "Último uso: {{date}}",
+    "last_used_never": "Nunca usada",
+    "suspect": "Sospechosa",
+    "revoke_code_hint": "Te hemos enviado un código por correo para eliminar esta clave de acceso. Introdúcelo para confirmar.",
+    "revoke_aria": "Revocar clave de acceso {{number}}",
+    "toast_enrolled": "Clave de acceso añadida",
+    "toast_enroll_failed": "No se ha podido añadir la clave de acceso",
+    "toast_revoked": "Clave de acceso revocada",
+    "toast_revoke_failed": "No se ha podido revocar la clave de acceso",
+    "revoke_dialog": {
+      "title": "Revocar clave de acceso",
+      "description": "Esta clave de acceso se eliminará y ya no podrá aprobar decisiones. Lo firmas con otra clave de acceso.",
+      "cancel": "Cancelar",
+      "confirm": "Revocar",
+      "use_code": "Usar un código por correo en su lugar"
+    }
+  },
+  "export_privacy": {
+    "title": "Privacidad de exportaciones",
+    "description": "Controla qué ocultan las exportaciones de procedencia y cuánto tiempo se conservan sus manifiestos de auditoría.",
+    "section_title": "Política de exportación",
+    "loading": "Cargando ajustes de privacidad de exportaciones…",
+    "mode_label": "Modo de ocultación",
+    "mode_hint": "La ocultación estricta aún no está disponible y no se puede seleccionar.",
+    "mode_small_label": "Básico (secretos y credenciales ocultos)",
+    "retention_label": "Conservación de manifiestos (días)",
+    "retention_hint": "Los manifiestos de auditoría se eliminan automáticamente pasados estos días ({{min}}–{{max}}).",
+    "retention_range_error": "Introduce un número entre {{min}} y {{max}}.",
+    "unavailable_title": "Los controles de privacidad de exportaciones no están disponibles",
+    "unavailable_description": "Esta función está desactivada temporalmente. Inténtalo de nuevo más tarde.",
+    "load_failed_title": "No se han podido cargar los ajustes de privacidad de exportaciones",
+    "load_failed_description": "Algo ha ido mal al cargar la política actual. Inténtalo de nuevo más tarde.",
+    "errors": {
+      "save_failed": "No se han podido guardar los ajustes de privacidad de exportaciones",
+      "unavailable": "Los controles de privacidad de exportaciones no están disponibles temporalmente",
+      "permission_changed": "Ya no tienes permiso para gestionar los ajustes de privacidad de exportaciones",
+      "permission_changed_title": "Permiso necesario"
+    }
+  },
+  "github_review": {
+    "section_title": "Revisiones de GitHub",
+    "members_label": "Revisores",
+    "members_description": "Asocia un ID de usuario de GitHub con el miembro del espacio de trabajo cuya revisión cuenta.",
+    "members_key": "ID de usuario de GitHub",
+    "members_value": "Miembro",
+    "authors_label": "Autores de pull requests",
+    "authors_description": "Fija un pull request al agente que lo escribió. Sin fijar, decide el nombre de la rama.",
+    "authors_key": "Pull request",
+    "authors_value": "Agente",
+    "add": "Añadir",
+    "remove": "Quitar",
+    "toast_failed": "No se ha podido guardar la asociación"
+  },
+  "provider_breakers": {
+    "description": "Un disyuntor rechaza trabajo nuevo para un proveedor tras errores de servidor repetidos y luego lo sondea de nuevo por sí solo.",
+    "empty": "Ningún disyuntor se ha activado en este espacio de trabajo.",
+    "load_error": "No se han podido cargar los disyuntores de proveedores.",
+    "retry": "Reintentar",
+    "columns": {
+      "provider": "Proveedor",
+      "state": "Estado",
+      "reason": "Motivo",
+      "failures": "Fallos",
+      "opened": "Abierto",
+      "next_probe": "Próximo sondeo",
+      "last_success": "Último éxito",
+      "actions": "Acciones"
+    },
+    "states": {
+      "closed": "Cerrado",
+      "open": "Abierto",
+      "half_open": "Semiabierto"
+    },
+    "none": "—",
+    "reset": "Restablecer",
+    "reset_label": "Restablecer el disyuntor de {{provider}}",
+    "reset_title": "¿Restablecer el disyuntor de {{provider}}?",
+    "reset_description": "El disyuntor se cierra ahora y el trabajo nuevo vuelve a llegar a {{provider}}. Si el proveedor sigue fallando, el disyuntor se activa de nuevo. El restablecimiento queda registrado en el registro de auditoría.",
+    "reset_cancel": "Cancelar",
+    "reset_confirm": "Restablecer disyuntor",
+    "resetting": "Restableciendo…",
+    "reset_success": "Disyuntor restablecido.",
+    "reset_error": "No se ha podido restablecer el disyuntor."
+  },
+  "delegated_writes": {
+    "title": "Escrituras gobernadas delegadas",
+    "description": "Qué agentes pueden escribir qué campos gobernados y si una persona debe decidir antes.",
+    "edit": "Editar regla",
+    "setup": "Configurar delegación",
+    "member_note": "Solo los propietarios y administradores del espacio de trabajo pueden cambiar esto. Eres miembro. Pide a un propietario que lo cambie.",
+    "agents_count_one": "{{count}} agente",
+    "agents_count_other": "{{count}} agentes",
+    "fields_count_one": "{{count}} campo",
+    "fields_count_other": "{{count}} campos",
+    "summary_decision": "{{agents}} pueden escribir {{fields}}. Cada cambio espera en una tarjeta de decisión.",
+    "summary_direct": "{{agents}} pueden escribir {{fields}}, directamente, sin tarjeta de decisión.",
+    "empty_title": "Ningún agente puede escribir un campo gobernado.",
+    "empty_body": "Los agentes aún pueden proponer cambios. Solo las personas los aplican. Cuando permitas a un agente, cada cambio esperará en una tarjeta de decisión, salvo que lo desactives.",
+    "col_agent": "Agente",
+    "may_write": "Puede escribir",
+    "read_only": "Solo lectura",
+    "writes_directly": "Escribe directamente",
+    "new_tag": "Nuevo",
+    "others_read_only": "Todos los demás agentes: solo lectura en todos los campos gobernados.",
+    "allowed_agents": "Agentes permitidos",
+    "add_agent": "Añadir agente",
+    "remove_agent": "Quitar {{name}}",
+    "archived": "archivado",
+    "unknown_agent": "Agente desconocido",
+    "allowed_fields": "Campos permitidos",
+    "requires_decision": "Requiere decisión humana",
+    "requires_decision_on": "Un cambio escrito espera en una tarjeta de decisión. Lo aplicas con un clic.",
+    "requires_decision_off": "Nadie lo revisa antes.",
+    "confirm_direct": "Entiendo que los agentes escribirán este campo sin una decisión.",
+    "unsaved": "Cambios sin guardar",
+    "cancel": "Cancelar",
+    "save": "Guardar cambios",
+    "not_saved": "No guardado. No ha cambiado nada.",
+    "load_failed": "No se ha podido cargar la regla.",
+    "save_failed": "No se ha podido guardar la regla."
   }
 }

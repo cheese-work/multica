@@ -190,6 +190,7 @@
     "./connected-apps": "./connected-apps/index.ts",
     "./connected-apps/queries": "./connected-apps/queries.ts",
     "./connected-apps/mutations": "./connected-apps/mutations.ts",
+    "./connected-apps/request-draft-store": "./connected-apps/request-draft-store.ts",
     "./slack": "./slack/index.ts",
     "./slack/queries": "./slack/queries.ts",
     "./dingtalk": "./dingtalk/index.ts",

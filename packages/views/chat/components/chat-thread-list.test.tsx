@@ -662,3 +662,13 @@ describe("ChatThreadList day headers and unseen style", () => {
     expect(screen.getAllByTestId("chat-decision-tag")).toHaveLength(1);
   });
 });
+
+describe("ChatThreadList has no search of its own (CHE-5593)", () => {
+  it("renders no search field and `/` does not focus or open anything", () => {
+    renderList("s1");
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    fireEvent.keyDown(document.body, { key: "/" });
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+});

@@ -52,7 +52,7 @@ func parseLeaderOutput(output string) (outcome, reason, comment string) {
 	}
 	outcome = strings.ToLower(output[loc[2]:loc[3]])
 	rest := output[loc[1]:]
-	if m := leaderReasonLine.FindStringSubmatchIndex(rest); m != nil && strings.TrimSpace(rest[:m[0]]) == "" {
+	if m := leaderReasonLine.FindStringSubmatchIndex(rest); len(m) > 0 && strings.TrimSpace(rest[:m[0]]) == "" {
 		reason = strings.TrimSpace(strings.Trim(rest[m[2]:m[3]], "*"))
 		rest = rest[m[1]:]
 	}

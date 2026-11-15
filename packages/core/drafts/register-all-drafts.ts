@@ -31,6 +31,7 @@ import "../squads/stores/create-squad-draft-store";
 import "../autopilots/stores/draft-stores";
 import "../quick-actions/draft-store";
 import "../settings/draft-stores";
+import "../connected-apps/request-draft-store";
 import { registerDraftCleanup } from "./cleanup-registry";
 
 // Retired: drafts for a running turn now live in the thread's reply draft.

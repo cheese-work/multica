@@ -26,8 +26,8 @@
     "runtime": "Runtime",
     "attachment": "Adjunto",
     "create_agent": "Crear agente",
-    "unknown": "Página desconocida",
-    "my_agents": "Trabajo de mis agentes"
+    "my_agents": "Trabajo de mis agentes",
+    "unknown": "Página desconocida"
   },
   "help": {
     "trigger": "Ayuda",
@@ -35,34 +35,9 @@
     "docs": "Documentación",
     "changelog": "Registro de cambios",
     "discord": "Discord",
-    "star_on_github": "Dar una estrella en GitHub",
     "feedback": "Comentarios",
-    "server_version": "Versión del servidor {{version}}"
-  },
-  "workspace_loader": {
-    "loading_workspace": "Cargando espacio de trabajo…",
-    "loading_named_prefix": "Cargando"
-  },
-  "sidebar": {
-    "unpin_tooltip": "Dejar de fijar",
-    "workspaces_label": "Espacios de trabajo",
-    "create_workspace": "Crear espacio de trabajo",
-    "pending_invitations_label": "Invitaciones pendientes",
-    "invitation_workspace_fallback": "Espacio de trabajo",
-    "invitation_join": "Unirse",
-    "invitation_decline": "Rechazar",
-    "log_out": "Cerrar sesión",
-    "new_issue": "Nueva tarea",
-    "pinned_label": "Fijados",
-    "show_more_pins": "Mostrar {{count}} más…",
-    "show_fewer_pins": "Mostrar menos"
-  },
-  "window": {
-    "go_back": "Atrás",
-    "go_forward": "Adelante",
-    "hold_for_history": "Mantén pulsado para ver el historial",
-    "back_history": "Historial hacia atrás",
-    "forward_history": "Historial hacia delante"
+    "server_version": "Versión del servidor {{version}}",
+    "star_on_github": "Dar una estrella en GitHub"
   },
   "whats_new": {
     "trigger": "Novedades",
@@ -79,14 +54,30 @@
       "learn_more": "Más información"
     }
   },
-  "star_prompt": {
-    "title_one": "{{agent}} ha completado {{count}} tarea",
-    "title_other": "{{agent}} ha completado {{count}} tareas",
-    "body": "Si Multica te resulta útil, una estrella en GitHub ayuda a que otros equipos lo descubran.",
-    "star": "Star",
-    "star_label": "Dar una Star a Multica en GitHub",
-    "later": "Ahora no",
-    "close": "Cerrar"
+  "workspace_loader": {
+    "loading_workspace": "Cargando espacio de trabajo…",
+    "loading_named_prefix": "Cargando"
+  },
+  "window": {
+    "go_back": "Atrás",
+    "go_forward": "Adelante",
+    "hold_for_history": "Mantén pulsado para ver el historial",
+    "back_history": "Historial hacia atrás",
+    "forward_history": "Historial hacia delante"
+  },
+  "sidebar": {
+    "unpin_tooltip": "Dejar de fijar",
+    "workspaces_label": "Espacios de trabajo",
+    "create_workspace": "Crear espacio de trabajo",
+    "pending_invitations_label": "Invitaciones pendientes",
+    "invitation_workspace_fallback": "Espacio de trabajo",
+    "invitation_join": "Unirse",
+    "invitation_decline": "Rechazar",
+    "log_out": "Cerrar sesión",
+    "new_issue": "Nueva tarea",
+    "pinned_label": "Fijados",
+    "show_more_pins": "Mostrar {{count}} más…",
+    "show_fewer_pins": "Mostrar menos"
   },
   "spaces": {
     "work": "Trabajo",
@@ -148,10 +139,10 @@
       "view_actions": "Acciones de {{name}}",
       "view_copy_link": "Copiar enlace",
       "view_remove": "Quitar de la barra lateral",
-      "view_edit": "Editar vista",
       "view_rename": "Renombrar",
       "view_duplicate": "Duplicar",
-      "view_delete": "Eliminar vista"
+      "view_delete": "Eliminar vista",
+      "view_edit": "Editar vista"
     },
     "team": {
       "new_agent": "Nuevo agente",
@@ -225,5 +216,21 @@
     "go_to_slide": "Ir a la diapositiva {{index}}",
     "previous": "Anterior",
     "next": "Siguiente"
+  },
+  "workspace_pause": {
+    "paused_by": "Programación pausada por {{name}} · {{time}}.",
+    "paused_at": "Programación pausada · {{time}}.",
+    "detail": "Ningún agente toma nuevas ejecuciones. Las tareas en curso terminan; el trabajo en cola espera.",
+    "resume": "Reanudar",
+    "resume_failed": "No se ha podido reanudar el espacio de trabajo"
+  },
+  "star_prompt": {
+    "title_one": "{{agent}} ha completado {{count}} tarea",
+    "title_other": "{{agent}} ha completado {{count}} tareas",
+    "body": "Si Multica te resulta útil, una estrella en GitHub ayuda a que otros equipos lo descubran.",
+    "star": "Star",
+    "star_label": "Dar una Star a Multica en GitHub",
+    "later": "Ahora no",
+    "close": "Cerrar"
   }
 }

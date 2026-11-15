@@ -377,7 +377,7 @@ func buildPromptBody(task Task, provider string) string {
 	if task.ChatSessionID != "" {
 		return buildChatPrompt(task)
 	}
-	if task.TriggerCommentID != "" {
+	if task.TriggerCommentID != "" && !task.isStatusHandoff() {
 		return buildCommentPrompt(task, provider)
 	}
 	if task.AutopilotRunID != "" {
@@ -394,6 +394,15 @@ func buildPromptBody(task Task, provider string) string {
 	if task.HandoffNote != "" {
 		b.WriteString("You were handed this issue with a handoff note. Treat it as the assigner's scoping instruction for this run; follow it before doing anything broader, and do not reply to it as if it were a comment:\n\n")
 		for _, line := range strings.Split(strings.TrimSpace(task.HandoffNote), "\n") {
+			fmt.Fprintf(&b, "> %s\n", line)
+		}
+		b.WriteString("\n")
+	}
+	// CHE-5485: the comment a status move linked is context for the step, not a
+	// comment to answer, so it is labelled and carries no reply instructions.
+	if task.isStatusHandoff() && task.TriggerCommentContent != "" {
+		b.WriteString("Handoff context: the issue was moved to your step with the comment below. Treat it as the step brief for this run; do not reply to it as if it were a new comment:\n\n")
+		for _, line := range strings.Split(strings.TrimSpace(task.TriggerCommentContent), "\n") {
 			fmt.Fprintf(&b, "> %s\n", line)
 		}
 		b.WriteString("\n")
@@ -740,7 +749,7 @@ func buildCommentPrompt(task Task, provider string) string {
 // case. Returns nil when there is no trigger or only a single distinct thread —
 // the caller then keeps the existing single-parent reply path unchanged.
 func commentReplyThreads(task Task) []execenv.ThreadReplyTarget {
-	if task.TriggerCommentID == "" {
+	if task.TriggerCommentID == "" || task.isStatusHandoff() {
 		return nil
 	}
 	// A comment with no explicit thread id is a root comment: it is its own
