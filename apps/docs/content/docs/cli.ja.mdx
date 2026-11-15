@@ -368,6 +368,8 @@ multica config propose workspace.settings --set compact_prompt="..." --set wakeu
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```
 
+`decision` カードの各選択肢は、選ばれた後に誰が動くかを示せます。`after_choice` に `agent_run`、`human_steps`、`record_only` のいずれかを設定します。`agent_run` の選択肢は `agent_commands` を列挙します。1 つ以上の argv 配列で、例は `["$MULTICA_CLI_PATH", "daemon", "restart"]` です。1 つの文字列で渡したコマンドは、サーバーがシェル文を解析しないため、フィールド名付きで拒否されます。コンソール専用の画面を使う選択肢は、代わりに `agent_surface` にカタログのキーを設定します。この検査は型付きフィールドだけを読み、`what_happens` は読みません。各コマンドをツール名と先頭の語に正規化し(パス、`.exe`、グローバルフラグ `--profile`、`--server-url`、`--workspace-id`、`--debug` は除去)、ワークスペース設定 `agent_cannot_do` と比較します。これはエージェントの実行ではできないことの `{key, tool, subcommand, human_step}` 一覧です。この設定がない場合、エントリは `multica` の `daemon restart` と `daemon stop` です。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` などのラッパーは実際のコマンドを隠すため、コマンド自体を argv で渡してください。ワークスペース設定 `agent_cannot_do_mode`(`off`、`warn`、`block`。既定は `off`)が結果を決めます。`warn` ではカードを作成し、応答にヒントを付けます。`block` ではサーバーが `400` を返し、選択肢のラベル、カタログのキー、`human_steps` に書く人の手順を示し、カードは作成しません。`warn` と `block` では、`after_choice` のない選択肢はヒントが 1 件付くか、フィールド名付きで拒否されます。アクションカードと免除トピックのカードは検査しません。
+
 ## コマンド概要
 
 | コマンド | 用途 |
@@ -507,6 +509,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `runs <id>` | 実行履歴を表示 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | スケジュールと webhook のトリガーを管理 | `trigger-add`: `--kind`（`schedule` または `webhook`）、`--cron`、`--timezone`（既定は UTC）、`--label` |
 | `workflow` | `lint [<id>]` | ワークフローのステップ、エッジ、ハンドラー、指示を検査。表形式で出力し、`--output json` で JSON を出力。免除されていないエラーがあると終了コードが 0 以外になる | `--all`（ワークスペースの全ワークフロー。ID とどちらか一方のみ指定）、`--output`（`table` または `json`） |
+| `workflow` | `update <id>` | ワークフローのステップまたは実行ルールを置き換える。保存前に検査され、免除されていないエラーがあると保存を拒否し、各エラーと修正のヒントを一覧表示。警告と情報は保存を妨げない | `--steps-file`、`--max-runs-per-issue`、`--include-child-prs`、`--lint-override "<理由>"`（エラーがあっても保存。理由はワークフローに記録される） |
 | `workspace` | `list/get/create/update/switch` | ワークスペースを管理。`switch` は現在のプロファイルのデフォルトワークスペースを設定 | `create`: `--name`、`--slug`（いずれも必須）、`--issue-prefix`、`--description`、`--context` / `--context-stdin`；`update` は slug 以外の同じ項目を変更 |
 | | `mcp list/add/update/remove` | ワークスペースの MCP サーバーライブラリを管理 | 書き込みは owner/admin のみ。ここに追加したサーバーはどのエージェントにも割り当てられません — `multica agent mcp add` で割り当てます。`list` は名前と transport のみを表示し、保存されたエントリは書き込み専用でどのロールにも返りません。`--server-config-file` / `--server-config-stdin` はトークンをシェル履歴から守ります |
 | | `member list/invite <email>` | メンバーの表示と招待 | `invite`: `--role`（member または admin。デフォルトは member） |
