@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/imagemetadata"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -609,6 +610,9 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		link, err := h.Storage.Upload(r.Context(), key, data, contentType, header.Filename)
 		if err != nil {
+			if writeUploadCancellation(w, r, err) {
+				return
+			}
 			slog.Error("file upload failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "upload failed")
 			return
@@ -642,6 +646,11 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
+			if writeUploadCancellation(w, r, err) {
+				// The record write may have committed. Deleting uploaded bytes
+				// could leave a committed attachment pointing at a missing object.
+				return
+			}
 			slog.Error("failed to create attachment record", "error", err)
 			// S3 upload succeeded but DB record failed — still return the link
 			// so the file is usable. Log the error for investigation.
@@ -682,6 +691,9 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// No workspace context (e.g. avatar upload) — upload directly.
 	link, err := h.Storage.Upload(r.Context(), key, data, contentType, header.Filename)
 	if err != nil {
+		if writeUploadCancellation(w, r, err) {
+			return
+		}
 		slog.Error("file upload failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "upload failed")
 		return
@@ -1666,4 +1678,12 @@ func (h *Handler) deleteS3Objects(ctx context.Context, urls []string) {
 		keys[i] = h.Storage.KeyFromURL(u)
 	}
 	h.Storage.DeleteKeys(ctx, keys)
+}
+
+func writeUploadCancellation(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(r.Context().Err(), context.Canceled) || !errors.Is(err, context.Canceled) {
+		return false
+	}
+	w.WriteHeader(middleware.StatusClientClosedRequest)
+	return true
 }

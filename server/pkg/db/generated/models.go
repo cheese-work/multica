@@ -3114,6 +3114,13 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+type ProjectSubscriber struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type ProtectedPathPolicy struct {
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
 	Name              string             `json:"name"`
