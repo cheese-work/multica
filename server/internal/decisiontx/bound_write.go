@@ -67,5 +67,5 @@ func PasskeyOnlyCommand(field, target, statusKey string) (string, bool) {
 		}
 		command += " --status-key " + statusKey
 	}
-	return command + " --file <path>", true
+	return command + " --file <path> --out <out>", true
 }

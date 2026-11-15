@@ -31,7 +31,7 @@ func TestWorkflowSetInstructionsDecisionIDRefusedBeforeAnyCall(t *testing.T) {
 	_ = cmd.Flags().Set("file", writeTemp(t, "S1 new"))
 	_ = cmd.Flags().Set("decision-id", testDecisionID)
 	err := runWorkflowSetInstructions(cmd, []string{testWorkflowID})
-	wantPasskeyOnlyRefusal(t, err, "multica config propose workflow.step.instructions "+testWorkflowID+" --status-key todo --file <path>", atomic.LoadInt32(&patches))
+	wantPasskeyOnlyRefusal(t, err, "multica config propose workflow.step.instructions "+testWorkflowID+" --status-key todo --file <path> --out <out>", atomic.LoadInt32(&patches))
 }
 
 func TestWorkflowUpdateStepsDecisionIDRefusedBeforeAnyCall(t *testing.T) {
@@ -45,15 +45,15 @@ func TestWorkflowUpdateStepsDecisionIDRefusedBeforeAnyCall(t *testing.T) {
 	_ = cmd.Flags().Set("steps-file", writeTemp(t, `[{"status_key":"todo"}]`))
 	_ = cmd.Flags().Set("decision-id", testDecisionID)
 	err := runWorkflowUpdate(cmd, []string{testWorkflowID})
-	wantPasskeyOnlyRefusal(t, err, "multica config propose workflow.steps "+testWorkflowID+" --file <path>", atomic.LoadInt32(&patches))
+	wantPasskeyOnlyRefusal(t, err, "multica config propose workflow.steps "+testWorkflowID+" --file <path> --out <out>", atomic.LoadInt32(&patches))
 }
 
 func TestInstructionFieldsDecisionIDRefusedBeforeAnyCall(t *testing.T) {
 	for _, tc := range []struct {
 		name, command, server string
 	}{
-		{"agent", "multica config propose agent.instructions agent-123 --file <path>", "agent"},
-		{"squad", "multica config propose squad.instructions squad-123 --file <path>", "squad"},
+		{"agent", "multica config propose agent.instructions agent-123 --file <path> --out <out>", "agent"},
+		{"squad", "multica config propose squad.instructions squad-123 --file <path> --out <out>", "squad"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var body map[string]any
@@ -92,5 +92,5 @@ func TestWorkspaceUpdateDecisionIDRefusedBeforeAnyCall(t *testing.T) {
 	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 	_ = cmd.Flags().Set("decision-id", testDecisionID)
 	err := runWorkspaceUpdate(cmd, []string{testWorkspaceUUID})
-	wantPasskeyOnlyRefusal(t, err, "multica config propose workspace.context --file <path>", atomic.LoadInt32(&calls))
+	wantPasskeyOnlyRefusal(t, err, "multica config propose workspace.context --file <path> --out <out>", atomic.LoadInt32(&calls))
 }

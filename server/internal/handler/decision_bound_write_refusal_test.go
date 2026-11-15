@@ -14,11 +14,11 @@ import (
 // refuses it when it is created, so no card reaches the owner.
 func TestRequestDecisionRefusesBoundWriteCardForPasskeyOnlyField(test *testing.T) {
 	cases := map[string]string{
-		"workflow.instructions": "multica config propose workflow.step.instructions <workflow-id> --status-key <key> --file <path>",
-		"workflow.steps":        "multica config propose workflow.steps <workflow-id> --file <path>",
-		"workspace.context":     "multica config propose workspace.context --file <path>",
-		"squad.instructions":    "multica config propose squad.instructions <squad-id> --file <path>",
-		"agent.instructions":    "multica config propose agent.instructions <agent-id> --file <path>",
+		"workflow.instructions": "multica config propose workflow.step.instructions <workflow-id> --status-key <key> --file <path> --out <out>",
+		"workflow.steps":        "multica config propose workflow.steps <workflow-id> --file <path> --out <out>",
+		"workspace.context":     "multica config propose workspace.context --file <path> --out <out>",
+		"squad.instructions":    "multica config propose squad.instructions <squad-id> --file <path> --out <out>",
+		"agent.instructions":    "multica config propose agent.instructions <agent-id> --file <path> --out <out>",
 	}
 	for field, command := range cases {
 		test.Run(field, func(test *testing.T) {

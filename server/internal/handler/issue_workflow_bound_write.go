@@ -119,9 +119,9 @@ func (h *Handler) refuseMachineWorkflowUpdate(w http.ResponseWriter, r *http.Req
 
 // onlyInstructionsDiffer reports the status key of the one step whose
 // instructions the request changes, when every other step and every other
-// field of that step match the live workflow. The entry gates and the wait
-// flag are left out of the comparison: a write that omits them keeps the
-// stored ones.
+// field of that step match the live workflow. An entry or wait flag the
+// request leaves out keeps the stored value; one it states must equal the
+// stored value, or the edit is structural.
 func onlyInstructionsDiffer(live []issueworkflow.Step, requested []IssueWorkflowStepInput) (string, bool) {
 	if len(live) != len(requested) {
 		return "", false
@@ -131,7 +131,7 @@ func onlyInstructionsDiffer(live []issueworkflow.Step, requested []IssueWorkflow
 		if requested[i].StatusKey != step.StatusKey || requested[i].NewStatus != nil {
 			return "", false
 		}
-		if !sameStepExceptInstructions(stepToPayload(step), requested[i]) {
+		if !sameStepExceptInstructions(stepToPayload(step), requested[i]) || !statedGateAndWaitMatch(step, requested[i]) {
 			return "", false
 		}
 		if requested[i].Instructions != step.Instructions {
@@ -144,8 +144,17 @@ func onlyInstructionsDiffer(live []issueworkflow.Step, requested []IssueWorkflow
 	return changed, changed != ""
 }
 
+// statedGateAndWaitMatch reports whether the entry gates and wait flag the
+// request states equal the live step's. A field the request omits matches.
+func statedGateAndWaitMatch(live issueworkflow.Step, requested IssueWorkflowStepInput) bool {
+	if requested.Entry != nil && !(len(requested.Entry) == 0 && len(live.Entry) == 0) && !reflect.DeepEqual(requested.Entry, live.Entry) {
+		return false
+	}
+	return requested.WaitsOnOpenDecision == nil || *requested.WaitsOnOpenDecision == live.WaitsOnOpenDecision
+}
+
 // sameStepExceptInstructions compares two steps as JSON with empty values and
-// the fields a write may omit removed.
+// the fields statedGateAndWaitMatch checks removed.
 func sameStepExceptInstructions(live IssueWorkflowStepPayload, requested IssueWorkflowStepInput) bool {
 	shape := func(step any) map[string]any {
 		raw, _ := json.Marshal(step)

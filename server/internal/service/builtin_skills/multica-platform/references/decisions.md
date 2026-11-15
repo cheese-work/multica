@@ -152,14 +152,14 @@ passkey on an action card:
 
 1. Write the change to a file and run the propose command. It reads the live
    value and writes an action file; it changes nothing.
-2. Post the card with `multica decision request --action-file <out>`.
+2. Post the card with `multica decision request --action-file ./action.json`.
 
 ```bash
-multica config propose workflow.step.instructions <workflow-id> --status-key <key> --file ./step.md
-multica config propose workflow.steps <workflow-id> --file ./steps.json
-multica config propose agent.instructions <agent-id> --file ./i.md
-multica config propose squad.instructions <squad-id> --file ./i.md
-multica config propose workspace.context --file ./c.md
+multica config propose workflow.step.instructions <workflow-id> --status-key <key> --file ./step.md --out ./action.json
+multica config propose workflow.steps <workflow-id> --file ./steps.json --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./i.md --out ./action.json
+multica config propose squad.instructions <squad-id> --file ./i.md --out ./action.json
+multica config propose workspace.context --file ./c.md --out ./action.json
 ```
 
 Use `workflow.step.instructions` when only one step's instructions change;

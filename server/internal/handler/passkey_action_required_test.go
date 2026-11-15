@@ -214,7 +214,7 @@ func TestPasskeyRequired_WorkflowRoutesRefuseMachineCredentials(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode refusal: %v", err)
 	}
-	if !strings.Contains(refusal.Error, "multica config propose workflow.step.instructions "+write.workflowID+" --status-key in_progress --file <path>") {
+	if !strings.Contains(refusal.Error, "multica config propose workflow.step.instructions "+write.workflowID+" --status-key in_progress --file <path> --out <out>") {
 		t.Fatalf("refusal must name the propose command, got %s", refusal.Error)
 	}
 	if got := write.storedInstructions(t, "in_progress"); got != "" {
