@@ -3952,6 +3952,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 					writeError(w, status, msg)
 					return
 				}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description)) {
+					return
+				}
 			}
 		}
 	}
@@ -5914,6 +5917,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		if batchTouchedType || batchTouchedID || handoff != nil {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
+				continue
+			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String)) != "" {
 				continue
 			}
 			if handoff == nil {

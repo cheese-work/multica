@@ -65,36 +65,47 @@ func autopilotAssignMode(settings []byte) string {
 }
 
 // refuseAutopilotAssign reports whether the assignment must stop; it has then
-// written the 403. The check opens when it cannot judge (no human behind the
-// run, an unreadable setting): the gate never blocks work it cannot read.
+// written the 403.
 func (h *Handler) refuseAutopilotAssign(w http.ResponseWriter, r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, title, description string) bool {
-	if !assigneeID.Valid || (assigneeType.String != "agent" && assigneeType.String != "squad") {
+	msg := h.autopilotAssignRefusal(r, workspaceID, assigneeType, assigneeID, title, description)
+	if msg == "" {
 		return false
+	}
+	writeErrorCode(w, http.StatusForbidden, autopilotAssignNoWrite, msg)
+	return true
+}
+
+// autopilotAssignRefusal returns the refusal message, or "" when the assignment
+// may go on. The check opens when it cannot judge (no human behind the run, an
+// unreadable setting): the gate never blocks work it cannot read.
+func (h *Handler) autopilotAssignRefusal(r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, title, description string) string {
+	if !assigneeID.Valid || (assigneeType.String != "agent" && assigneeType.String != "squad") {
+		return ""
 	}
 	text := title + "\n" + description
 	if !strings.Contains(strings.ToLower(text), "autopilot") {
-		return false
+		return ""
 	}
 	ctx := r.Context()
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
-		return false
+		return ""
 	}
 	ws, err := h.Queries.GetWorkspace(ctx, wsUUID)
 	if err != nil {
-		return false
+		return ""
 	}
 	mode := autopilotAssignMode(ws.Settings)
 	if mode == autopilotAssignModeOff {
-		return false
+		return ""
 	}
 	userID := h.autopilotActingUserID(r, workspaceID)
 	if userID == "" {
-		return false
+		return ""
 	}
 	member, err := h.getWorkspaceMember(ctx, userID, workspaceID)
 	if err != nil {
-		return false
+		return ""
 	}
 	seen := map[string]bool{}
 	for _, id := range autopilotAssignUUIDRe.FindAllString(text, -1) {
@@ -117,12 +128,11 @@ func (h *Handler) refuseAutopilotAssign(w http.ResponseWriter, r *http.Request, 
 			slog.Warn("autopilot assign gate (warn): assignee cannot write the autopilot", "autopilot_id", id, "workspace_id", workspaceID)
 			continue
 		}
-		writeErrorCode(w, http.StatusForbidden, autopilotAssignNoWrite, fmt.Sprintf(
+		return fmt.Sprintf(
 			"autopilot %s has can_write=false for this run, so the assignee cannot edit it; assign the issue to a run that acts for "+
-				"the autopilot's creator, a workspace admin or a granted collaborator, or have a collaborator grant added first", id))
-		return true
+				"the autopilot's creator, a workspace admin or a granted collaborator, or have a collaborator grant added first", id)
 	}
-	return false
+	return ""
 }
 
 func derefString(s *string) string {

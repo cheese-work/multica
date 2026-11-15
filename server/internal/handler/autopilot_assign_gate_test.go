@@ -156,3 +156,79 @@ func TestValidateAutopilotAssignGateSetting(t *testing.T) {
 		}
 	}
 }
+
+// F1: a project column that hands off on create picks the assignee after the
+// request's own assignee is read. The gate judges that resolved assignee.
+func TestCreateIssue_AutopilotEditHandedOffByWorkflowWithoutWriteIsRefused(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	apID, memberID, agentID := autopilotAssignFixture(t, "che5947-handoff@multica.test")
+	projectID := createWorkflowTestProject(t, "Autopilot gate handoff project")
+	setColumnHandoff(t, projectID, "todo", map[string]any{
+		"handler": map[string]any{"type": "agent", "id": agentID}, "instructions": "Edit it.",
+	}).Want(http.StatusOK)
+	body := map[string]any{
+		"title": "edit the retro autopilot", "project_id": projectID,
+		"description": "Edit the description of autopilot `" + apID + "`.",
+	}
+
+	w := createIssueAs(memberID, body)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "autopilot_assign_no_write") {
+		t.Fatalf("member without write, workflow hand-off: got %d %s, want 403 autopilot_assign_no_write", w.Code, w.Body.String())
+	}
+	if w := createIssueAs("", body); w.Code != http.StatusCreated {
+		t.Fatalf("owner (can_write): got %d %s, want 201", w.Code, w.Body.String())
+	}
+}
+
+// F2: the batch path skips an issue the gate refuses, like its other guards.
+func TestBatchUpdateIssues_AutopilotEditReassignedWithoutWriteIsSkipped(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	apID, memberID, agentID := autopilotAssignFixture(t, "che5947-batch@multica.test")
+	newIssue := func(title string) string {
+		w := httptest.NewRecorder()
+		testHandler.CreateIssue(w, newRequestAs(memberID, "POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title": title, "status": "todo", "description": "Edit autopilot `" + apID + "`."}))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+		}
+		var is IssueResponse
+		json.NewDecoder(w.Body).Decode(&is)
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id=$1`, is.ID)
+			testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE issue_id=$1`, is.ID)
+			testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, is.ID)
+		})
+		return is.ID
+	}
+	assignee := func(id string) *string {
+		var a *string
+		testPool.QueryRow(context.Background(), `SELECT assignee_id::text FROM issue WHERE id=$1`, id).Scan(&a)
+		return a
+	}
+	batch := func(userID string, ids ...string) {
+		w := httptest.NewRecorder()
+		testHandler.BatchUpdateIssues(w, newRequestAs(userID, "POST", "/api/issues/batch-update?workspace_id="+testWorkspaceID, map[string]any{
+			"issue_ids": ids, "updates": map[string]any{"assignee_type": "agent", "assignee_id": agentID}}))
+		if w.Code != http.StatusOK {
+			t.Fatalf("BatchUpdateIssues: %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	refused, plain := newIssue("batch edit autopilot one"), newIssue("batch edit autopilot two")
+	testPool.Exec(context.Background(), `UPDATE issue SET description='nothing here' WHERE id=$1`, plain)
+	batch(memberID, refused, plain)
+	if a := assignee(refused); a != nil {
+		t.Fatalf("batch assigned an autopilot edit to an agent that cannot write it: %s", *a)
+	}
+	if a := assignee(plain); a == nil || *a != agentID {
+		t.Fatalf("batch skipped an issue the gate does not cover: assignee = %v, want %s", a, agentID)
+	}
+	owned := newIssue("batch edit autopilot three")
+	batch(testUserID, owned)
+	if a := assignee(owned); a == nil || *a != agentID {
+		t.Fatalf("owner (can_write): assignee = %v, want %s", a, agentID)
+	}
+}
