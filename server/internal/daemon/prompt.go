@@ -480,14 +480,18 @@ func buildQuickCreatePrompt(task Task) string {
 	}
 
 	// description — the core optimization
-	b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
+	if fill {
+		b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use this structure:\n\n")
+	} else {
+		b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
+	}
 	b.WriteString("  1. **User request** — Faithfully restate what the user wants in their own words. Preserve specific names, identifiers, file paths, code snippets, and technical terms verbatim. Strip non-spec material before writing it (this is removal, not paraphrasing): verbal routing wrappers about creating the issue or routing it (e.g. \"create an issue\", \"分配给 X\", \"让 @X 处理\") and pure conversational fillers (e.g. \"对吧？\"). When in doubt, keep it.\n\n")
 	b.WriteString("     CC exception: `multica issue create` has no `--subscriber` flag, and the platform auto-subscribes members whose `[@Name](mention://member/<uuid>)` link appears in the description. When the user wrote \"cc @Y\", strip the verbal \"cc\" wrapper from the User request body and append a final `CC: <mention link(s)>` line to the description so the cc routing still fires.\n\n")
 	b.WriteString("  2. **Context** — include ONLY when the input cited external resources AND you successfully fetched them AND they produced verifiable facts worth recording. Summarize facts only (e.g. \"PR #45 changes auth to JWT\"), not interpretation or unsolicited reference implementations. If you have nothing factual to add, omit the section entirely — never use it as an apology log for resources you could not fetch.\n\n")
 	if fill {
 		b.WriteString("  3. **Acceptance criteria** — checkable items derived from the request. Label the section \"derived by <your agent name>\" so a reader can tell the user's words from yours.\n\n")
 		b.WriteString("  4. **Estimate** — one line `Estimate: <hours>`, labelled \"derived by <your agent name>\". It sets the due date below.\n\n")
-		b.WriteString("  Hard rules: keep the User request section verbatim; never invent implementation details; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+		b.WriteString("  Hard rules: keep the User request section verbatim apart from the routing wrappers stripped above; never invent implementation details; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
 	} else {
 		b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
 	}

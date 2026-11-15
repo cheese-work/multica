@@ -32,6 +32,12 @@ func TestQuickCreateFillOnFillsEmptyFields(t *testing.T) {
 			t.Errorf("fill=on prompt missing %q\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "two-section structure") {
+		t.Error("fill=on prompt says two sections but defines four")
+	}
+	if !strings.Contains(out, "verbatim apart from the routing wrappers") {
+		t.Error("fill=on prompt must reconcile 'verbatim' with the stripped routing wrappers")
+	}
 	for _, banned := range []string{
 		"If unspecified, omit",
 		"**project**: omit",
