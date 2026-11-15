@@ -48,6 +48,8 @@ type Ask struct {
 	// Topic and Waiver are the closed waiver-ask contract (CHE-4383 B2a); both are empty on every other ask.
 	Topic  string  `json:"topic,omitempty"`
 	Waiver *Waiver `json:"waiver,omitempty"`
+	// SettingsNeeded names the workspace.settings keys whose value this ask wants a person to supply (CHE-5951).
+	SettingsNeeded []string `json:"settings_needed,omitempty"`
 	// Kind is set by DecodeAskKind; the stored kind is its own column, so it is not fingerprinted.
 	Kind string `json:"-"`
 	// AskedBy is the asking agent's name, set by the server for a new request;
@@ -83,10 +85,10 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts", "topic", "waiver"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
-	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
+	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "settings_needed"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
 
@@ -131,6 +133,9 @@ func decodeActionAsk(raw []byte) (Ask, error) {
 		}
 	}
 	if err := decodeStrings("ask.steps", fields["steps"], &ask.Steps); err != nil {
+		return ask, err
+	}
+	if err := decodeSettingsNeeded(fields["settings_needed"], &ask.SettingsNeeded); err != nil {
 		return ask, err
 	}
 	return ask, ask.validateAction()
@@ -201,6 +206,9 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		return ask, err
 	}
 	if err := decodeStrings("ask.probes", fields["probes"], &ask.Probes); err != nil {
+		return ask, err
+	}
+	if err := decodeSettingsNeeded(fields["settings_needed"], &ask.SettingsNeeded); err != nil {
 		return ask, err
 	}
 	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
