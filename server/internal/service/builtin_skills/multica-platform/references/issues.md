@@ -457,8 +457,41 @@ multica issue comment add <issue-id> --parent <comment-id> --content-file ./repl
 
 ## Charts and files in a comment
 
-Fenced `html` / `mermaid` blocks render in place; `--attachment` adds a file
-card. See [charts.md](charts.md).
+Where content goes decides how it shows:
+
+- **In the body, rendered in place** — a fenced ` ```html ` or ` ```mermaid `
+  block in the comment content. It renders inside the comment with a title
+  bar (Preview / Source, fullscreen, copy) and takes its content's height;
+  anything taller than 480px collapses behind "Show all". Name it with
+  `title="..."` on the fence line. HTML runs in a scripts-only sandbox (no
+  cookies, storage or parent access; CDN `<script src>` works).
+- **An attached file** — `--attachment <path>`. Every non-image file shows as
+  a file card that opens in the viewer, **HTML included**: an uploaded
+  `report.html` is a deliverable to open, not an inline chart. Use it for
+  something the reader keeps or downloads.
+- **An attached image at a specific spot** — reference the attached path in
+  the body, e.g. `![Option A](./a.png)` with `--attachment ./a.png` in the same
+  call. The CLI rewrites that link to the uploaded file before posting, so the
+  image shows right there instead of at the end. Code spans and blocks are left
+  alone.
+
+For HTML that follows light / dark mode, style it with `var(--background)`,
+`var(--foreground)`, `var(--muted)`, `var(--muted-foreground)`, `var(--border)`,
+`var(--primary)`, `var(--chart-1)` … `var(--chart-5)`, `var(--font-sans)`. Any
+of them opts the block into the app's color scheme, so set the page background
+(`body { background: var(--background); color: var(--foreground) }`). Never put
+token text on a fixed light fill: it is near-white in dark mode, so a pastel
+`background:#fde2e4` needs a fixed dark `color`. HTML that uses no token keeps
+its own look. Size to the content: `100vh` has no fixed viewport to fill here.
+
+````markdown
+```html title="p95 latency, last 7 days"
+<canvas id="c"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>/* draw with getComputedStyle(document.documentElement)
+  .getPropertyValue("--chart-1") so it follows the theme */</script>
+```
+````
 
 ## Incorrect to correct
 

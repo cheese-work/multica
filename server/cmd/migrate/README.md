@@ -434,3 +434,11 @@ runner's concurrent-index name map has an entry for each under its new name. The
 upstream's `requester_user_id` is set at create time from the quick-create or agent-create
 origin and drives the "Created" filter. A later sync must not reintroduce the upstream
 filenames under their original prefixes.
+
+Upstream's `646_theme_store_download` (MUL-8945) adds the `theme_store_download` table. The fork
+already uses `646` for `646_wakeup_content_revision`, so it takes the next free number (CHE-5619):
+
+- `646_theme_store_download` is now `9999951_theme_store_download`
+
+The up and down SQL bytes are unchanged. The migration creates a table and has no concurrent
+index, so the runner's concurrent-index name map needs no entry.

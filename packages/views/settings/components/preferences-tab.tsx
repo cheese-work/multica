@@ -48,6 +48,7 @@ import { browserTimezone, timezoneOptions } from "../../common/timezone-select";
 import { useLanguageSwitch } from "../../common/use-language-switch";
 import { SegmentedToggle } from "../../common/segmented-toggle";
 import { useT } from "../../i18n";
+import { QuickChatAgentRow } from "./quick-chat-agent-row";
 import {
   SettingsCard,
   SettingsRow,
@@ -88,6 +89,7 @@ export function PreferencesTab() {
           <RunningAgentReplyRow />
           <FloatingChatRow />
           <RecentAgentsRow />
+          <QuickChatAgentRow />
         </SettingsCard>
       </SettingsSection>
 

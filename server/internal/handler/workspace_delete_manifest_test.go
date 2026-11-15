@@ -282,6 +282,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"stage_completion_wake":              workspaceDelete,
 	"stage_generation":                   workspaceDelete,
 	"sys_cron_executions":                workspaceDeleteKeep,
+	"theme_store_download":               workspaceDeleteKeep, // per registry theme, not workspace-owned
 	"task_message":                       workspaceDelete,
 	"silence_alert_receipt":              workspaceDelete, // CHE-2990 per-task alert receipt; removed with its task in DeleteTaskBatch.
 	"task_supplement":                    workspaceDelete,

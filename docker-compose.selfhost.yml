@@ -221,6 +221,11 @@ services:
       # storage disabled without affecting the existing process-wide JEV_API_KEY.
       MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:-}
       MULTICA_JEV_SECRET_KEY_PREVIOUS: ${MULTICA_JEV_SECRET_KEY_PREVIOUS:-}
+      # Community theme store (Settings → Appearance → Browse). On by default;
+      # "off" hides it and stops every registry request. The registry URL
+      # points it at another registry's index.json.
+      MULTICA_THEME_STORE: ${MULTICA_THEME_STORE:-}
+      MULTICA_THEME_REGISTRY_URL: ${MULTICA_THEME_REGISTRY_URL:-}
       # WeCom smart-bot integration. MULTICA_WECOM_SECRET_KEY is the
       # opt-in: unset = integration disabled. It encrypts each installation's
       # smart-bot secret at rest. The server needs it to unseal a bot's

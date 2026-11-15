@@ -107,6 +107,8 @@ import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
 import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
+import { CHAT_WINDOW_INSET, useChatWindowAnchor } from "./use-chat-window-anchor";
+import { useFormatTimeAgo } from "./use-format-time-ago";
 import {
   hasInFlightPendingTask,
   isStillOnComposeTarget,
@@ -116,7 +118,7 @@ import {
 import { useChatProjectContextSupport } from "./use-chat-project-context-support";
 import { createLogger } from "@multica/core/logger";
 import type { Agent, Attachment, ChatMessage, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
-import { useLocale, useT } from "../../i18n";
+import { useT } from "../../i18n";
 
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
@@ -828,7 +830,7 @@ export function ChatWindow() {
     "absolute z-50 flex flex-col overflow-hidden bg-surface-raised @container",
     isMobile
       ? "inset-x-0"
-      : "right-2 rounded-xl shadow-[var(--floating-shadow)] ring-1 ring-surface-border",
+      : "rounded-xl shadow-[var(--floating-shadow)] ring-1 ring-floating-border",
   );
   // Soft keyboards shrink only the *visual* viewport — the layout viewport
   // (and this panel's bottom-anchored parent) keeps its full height, so
@@ -844,6 +846,7 @@ export function ChatWindow() {
   // disappears from the style prop, so a conditional spread here would
   // leave the keyboard geometry stuck on the DOM after the keyboard closes.
   const keyboard = useVisualViewportKeyboard();
+  const anchorRight = useChatWindowAnchor(windowRef, isOpen, renderWidth, isDragging);
   const containerStyle: React.CSSProperties = {
     transformOrigin: "bottom right",
     pointerEvents: isOpen ? "auto" : "none",
@@ -852,13 +855,15 @@ export function ChatWindow() {
           // Full-screen panel anchored to the visible bottom edge;
           // width/height live in the motion animate below.
           top: "auto",
+          right: 0,
           bottom: keyboard ? keyboard.occludedBottom : 0,
           maxHeight: "none",
         }
       : {
           // Floating card; only the anchor and the height cap live here.
           top: "auto",
-          bottom: keyboard ? keyboard.occludedBottom + 8 : 8,
+          right: anchorRight,
+          bottom: keyboard ? keyboard.occludedBottom + CHAT_WINDOW_INSET : CHAT_WINDOW_INSET,
           maxHeight: keyboard ? keyboard.viewportHeight - 16 : "none",
         }),
   };
@@ -877,6 +882,7 @@ export function ChatWindow() {
     : { width: renderWidth, height: renderHeight };
 
   const contextItems = useChatContextItems(wsId);
+  const pageContext = contextItems.find((item) => item.group === "current") ?? null;
   const queuedTasks = pendingTask?.queued_tasks ?? [];
   // Reported by the message list while it is mounted; empty while the window is closed.
   const [listedMessages, setListedMessages] = useState<ChatMessage[]>([]);
@@ -1124,6 +1130,7 @@ export function ChatWindow() {
           />
         }
         contextItems={contextItems}
+        pageContext={pageContext}
         focusRequest={focusRequest}
         annotationScope={annotation.input}
       />
@@ -1826,23 +1833,4 @@ export function SessionDropdown({
       </Popover>
     </>
   );
-}
-
-function useFormatTimeAgo(): (dateStr: string) => string {
-  const { t } = useT("chat");
-  const locale = useLocale();
-  return (dateStr: string) => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return t(($) => $.session_history.time.just_now);
-    if (diffMins < 60) return t(($) => $.session_history.time.minutes, { count: diffMins });
-    if (diffHours < 24) return t(($) => $.session_history.time.hours, { count: diffHours });
-    if (diffDays < 7) return t(($) => $.session_history.time.days, { count: diffDays });
-    return date.toLocaleDateString(locale);
-  };
 }

@@ -2,7 +2,8 @@
 
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { TriangleAlert } from "@multica/ui/icons";
+import { Scan, TriangleAlert, X } from "@multica/ui/icons";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { toast } from "sonner";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorRef } from "../../editor/content-editor";
@@ -27,9 +28,10 @@ import { keyboardComposerMaxHeight } from "./keyboard-composer-cap";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
-import { useShortcut } from "@multica/core/shortcuts";
+import { useShortcut, type ShortcutChord } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
+import { escapeMarkdownLabel } from "../../editor/utils/escape-markdown-label";
 import type { Attachment, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { ClearablePillButton } from "../../common/pill-button";
@@ -179,6 +181,9 @@ interface ChatInputProps {
   leftAdornment?: ReactNode;
   /** Chat @ suggestions: current/recent issue/project entries. */
   contextItems?: MentionItem[];
+  /** The issue or project the page behind the composer shows. When set, the
+   *  composer offers to send it with the next message (Tab, or the button). */
+  pageContext?: MentionItem | null;
   /** Optional project context for the draft or current chat session. */
   projects?: Project[];
   projectId?: string | null;
@@ -222,6 +227,11 @@ function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { conten
   };
 }
 
+const PAGE_CONTEXT_SHORTCUT = {
+  key: "Tab",
+  modifiers: { primary: false, control: false, meta: false, alt: false, shift: false },
+} satisfies ShortcutChord;
+
 export function ChatInput({
   annotationScope,
   onSend,
@@ -256,6 +266,7 @@ export function ChatInput({
   agentName,
   leftAdornment,
   contextItems,
+  pageContext,
   projects = [],
   projectId,
   onProjectChange,
@@ -269,6 +280,7 @@ export function ChatInput({
   const { t: tEditor } = useT("editor");
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
+  const editorAreaRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const keyboard = useVisualViewportKeyboard();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -339,6 +351,19 @@ export function ChatInput({
   const appliedRestoreIdRef = useRef<string | null>(null);
   const appliedConversationStarterIdRef = useRef<number | null>(null);
   const editorKey = editorKeyOverride ?? CHAT_COMPOSER_EDITOR_KEY;
+
+  // Leaving the page drops what was attached to it, so coming back later
+  // starts without it.
+  const pageContextKey = pageContext ? `${pageContext.type}:${pageContext.id}` : null;
+  const [attachedPageKey, setAttachedPageKey] = useState<string | null>(null);
+  const [shownPageKey, setShownPageKey] = useState(pageContextKey);
+  if (shownPageKey !== pageContextKey) {
+    setShownPageKey(pageContextKey);
+    setAttachedPageKey(null);
+  }
+  const attachedPage = pageContext && attachedPageKey === pageContextKey ? pageContext : null;
+  const togglePageContext = () =>
+    setAttachedPageKey((current) => (current === pageContextKey ? null : pageContextKey));
 
   // The draft whose document the editor instance is currently HOLDING.
   //
@@ -752,8 +777,13 @@ export function ChatInput({
         : prepared.decisionRequestId
           ? [prepared.decisionRequestId]
           : [];
+      // The page goes ahead of the message as a mention, which is how chat
+      // already hands the agent an issue or project to read.
+      const sent = attachedPage
+        ? `[${escapeMarkdownLabel(attachedPage.label)}](mention://${attachedPage.type}/${attachedPage.id})\n\n${content}`
+        : content;
       const accepted = await onSend(
-        content,
+        sent,
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
         draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
@@ -764,6 +794,8 @@ export function ChatInput({
       // retry. Only a commit — here or by the owner — clears it.
       if (accepted === false) return false;
       if (!committed) commitInput();
+      // Context is for the message it went with; the next one starts without.
+      if (attachedPage) setAttachedPageKey(null);
       return true;
     },
   });
@@ -917,7 +949,41 @@ export function ChatInput({
           noAgent && "pointer-events-none opacity-60",
         )}
         aria-disabled={noAgent || undefined}
+        onKeyDown={(event) => {
+          // Tab is the editor's when it wants it (list indent, the @ and /
+          // pickers): those handle the key first and prevent its default.
+          // Only an unclaimed Tab typed in the editor toggles the page.
+          if (
+            event.key !== "Tab" || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey ||
+            event.defaultPrevented || event.nativeEvent.isComposing || !pageContext ||
+            !(event.target instanceof Node) || !editorAreaRef.current?.contains(event.target)
+          ) return;
+          event.preventDefault();
+          togglePageContext();
+        }}
       >
+        {attachedPage && (
+          <div className="flex min-w-0 items-center px-3 pt-2">
+            <span
+              data-slot="chat-page-context"
+              className="inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md bg-surface-raised pr-0.5 pl-2 text-caption ring-1 ring-surface-border"
+            >
+              <Scan aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="shrink-0 font-medium text-foreground">{attachedPage.label}</span>
+              {attachedPage.type === "issue" && attachedPage.description && (
+                <span className="min-w-0 truncate text-muted-foreground">{attachedPage.description}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => setAttachedPageKey(null)}
+                aria-label={t(($) => $.input.page_context_remove)}
+                className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-surface-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                <X aria-hidden className="size-3" />
+              </button>
+            </span>
+          </div>
+        )}
         {selectedProject && (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pt-2">
             <div
@@ -950,7 +1016,7 @@ export function ChatInput({
             )}
           </div>
         )}
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+        <div ref={editorAreaRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
           <ContentEditor
             // See the editorKey / draftKey split note above — editor identity
             // intentionally tracks neither the session nor the agent.
@@ -1013,6 +1079,18 @@ export function ChatInput({
           </div>
         )}
         <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
+          {pageContext && (
+            <IconButton
+              type="button"
+              aria-pressed={!!attachedPage}
+              onClick={togglePageContext}
+              label={t(($) => $.input.page_context_add)}
+              shortcut={<ShortcutKeycaps shortcut={PAGE_CONTEXT_SHORTCUT} decorative />}
+              className="text-muted-foreground aria-pressed:bg-accent aria-pressed:text-foreground"
+            >
+              <Scan />
+            </IconButton>
+          )}
           <SubmitButton
             onClick={submit}
             testId="chat-send-button"
