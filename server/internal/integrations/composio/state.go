@@ -40,7 +40,10 @@ type stateClaims struct {
 	// toolkit's auth config without re-resolving (which could fail-open). It is
 	// an opaque config handle (ac_…), not a credential.
 	AuthConfigID string `json:"a"`
-	Exp          int64  `json:"e"`
+	// Origin is the browser origin that started the connect flow; the callback
+	// returns there only if it is still in CORS_ALLOWED_ORIGINS.
+	Origin string `json:"o,omitempty"`
+	Exp    int64  `json:"e"`
 }
 
 // signState produces a URL-safe "<payload>.<sig>" token. payload is the

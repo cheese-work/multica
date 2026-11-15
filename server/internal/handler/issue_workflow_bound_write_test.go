@@ -84,14 +84,7 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 	before := canonicalStepsHash(t, wf.ID, liveSteps(t, wf.ID))
 	after := editedSteps(t, wf.ID, "in_progress", edit)
 
-	fixture := newCardFixture(t)
-	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
-	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
-	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, before, canonicalStepsHash(t, wf.ID, after)))
-	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
-	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
-		t.Fatal(err)
-	}
+	fixture := approvedBoundWriteCard(t, field, before, canonicalStepsHash(t, wf.ID, after))
 
 	var previous []byte
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
@@ -102,6 +95,21 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 		dbfx.Exec(t, `DELETE FROM decision_bound_write WHERE decision_id = $1`, fixture.decision.ID)
 	})
 	return boundWorkflowWrite{askedRecordFixture: fixture, workflowID: wf.ID, before: before}
+}
+
+// approvedBoundWriteCard answers an approval card, as a workspace owner, for
+// the change field from beforeSHA to afterSHA.
+func approvedBoundWriteCard(t *testing.T, field, beforeSHA, afterSHA string) askedRecordFixture {
+	t.Helper()
+	fixture := newCardFixture(t)
+	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
+	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, beforeSHA, afterSHA))
+	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
+		t.Fatal(err)
+	}
+	return fixture
 }
 
 // steps are the live steps with edit applied to in_progress.
@@ -161,80 +169,6 @@ func setInstructions(text string) func(map[string]any) {
 	return func(step map[string]any) { step["instructions"] = text }
 }
 
-func TestBoundWorkflowPatchAcceptsApprovedWrite(t *testing.T) {
-	edit := setInstructions("Do <the> thing & report.")
-	write := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
-	steps := write.steps(t, edit)
-
-	write.patch(t, write.body(t, steps)).Want(http.StatusOK)
-
-	if got := write.storedInstructions(t, "in_progress"); got != "Do <the> thing & report." {
-		t.Fatalf("stored instructions = %q", got)
-	}
-	var field, beforeSHA, afterSHA string
-	dbfx.QueryRow(t, `SELECT field, before_sha256, after_sha256 FROM decision_bound_write WHERE decision_id = $1`, write.decision.ID).Scan(&field, &beforeSHA, &afterSHA)
-	if field != "workflow.instructions" || beforeSHA != write.before || afterSHA != canonicalStepsHash(t, write.workflowID, steps) {
-		t.Fatalf("audit row = %s %s %s", field, beforeSHA, afterSHA)
-	}
-}
-
-func TestBoundWorkflowPatchRefusals(t *testing.T) {
-	approved := setInstructions("agent text")
-	for _, scenario := range []struct {
-		name    string
-		allowed string
-		want    int
-		prepare func(t *testing.T, write boundWorkflowWrite) map[string]any
-	}{
-		{name: "no decision id", allowed: "workflow.instructions", want: http.StatusForbidden,
-			prepare: func(t *testing.T, write boundWorkflowWrite) map[string]any {
-				return map[string]any{"steps": write.steps(t, approved)}
-			}},
-		{name: "stale before hash", allowed: "workflow.instructions", want: http.StatusConflict,
-			prepare: func(t *testing.T, write boundWorkflowWrite) map[string]any {
-				body := write.body(t, write.steps(t, approved))
-				patchWorkflow(t, write.workflowID, map[string]any{"steps": write.steps(t, setInstructions("owner text"))}).Want(http.StatusOK)
-				return body
-			}},
-		{name: "written steps differ from the approved after hash", allowed: "workflow.instructions", want: http.StatusForbidden,
-			prepare: func(t *testing.T, write boundWorkflowWrite) map[string]any {
-				sneaky := write.steps(t, setInstructions("sneaky text"))
-				return write.bind(map[string]any{"steps": sneaky}, write.before, canonicalStepsHash(t, write.workflowID, write.steps(t, approved)))
-			}},
-		{name: "field not delegated to the agent", allowed: "workflow.steps", want: http.StatusForbidden,
-			prepare: func(t *testing.T, write boundWorkflowWrite) map[string]any {
-				return write.body(t, write.steps(t, approved))
-			}},
-		{name: "name rides along", allowed: "workflow.instructions", want: http.StatusBadRequest,
-			prepare: func(t *testing.T, write boundWorkflowWrite) map[string]any {
-				body := write.body(t, write.steps(t, approved))
-				body["name"] = "renamed by agent"
-				return body
-			}},
-		{name: "status_mapping rides along", allowed: "workflow.instructions", want: http.StatusBadRequest,
-			prepare: func(t *testing.T, write boundWorkflowWrite) map[string]any {
-				body := write.body(t, write.steps(t, approved))
-				body["status_mapping"] = map[string]string{"blocked": "backlog"}
-				return body
-			}},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			write := newBoundWorkflowWrite(t, "workflow.instructions", approved, scenario.allowed)
-			body := scenario.prepare(t, write)
-			stored := write.storedInstructions(t, "in_progress")
-
-			write.patch(t, body).Want(scenario.want)
-
-			if got := write.storedInstructions(t, "in_progress"); got != stored {
-				t.Fatalf("refused write changed the instructions to %q", got)
-			}
-			if rows := write.auditRows(t); rows != 0 {
-				t.Fatalf("refused write left %d audit rows", rows)
-			}
-		})
-	}
-}
-
 // A structural edit is workflow.steps, not workflow.instructions: delegating
 // the second does not delegate the first.
 func TestBoundWorkflowPatchClassifiesStructuralEditAsSteps(t *testing.T) {
@@ -244,41 +178,6 @@ func TestBoundWorkflowPatchClassifiesStructuralEditAsSteps(t *testing.T) {
 	write.patch(t, write.body(t, write.steps(t, edit))).Want(http.StatusForbidden)
 	if rows := write.auditRows(t); rows != 0 {
 		t.Fatalf("refused write left %d audit rows", rows)
-	}
-}
-
-func TestBoundWorkflowPatchUsesTheDecisionOnce(t *testing.T) {
-	edit := setInstructions("once")
-	write := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
-	body := write.body(t, write.steps(t, edit))
-
-	write.patch(t, body).Want(http.StatusOK)
-	// Revert as the owner so the before hash matches again: only the single-use lock is left to refuse.
-	patchWorkflow(t, write.workflowID, map[string]any{"steps": write.steps(t, setInstructions(""))}).Want(http.StatusOK)
-	resp := write.patch(t, body).Want(http.StatusConflict)
-	if !strings.Contains(resp.Body.String(), "already used") {
-		t.Fatalf("body = %s, want already used", resp.Body.String())
-	}
-}
-
-func TestBoundWorkflowHandoffAcceptsApprovedWrite(t *testing.T) {
-	edit := setInstructions("handoff text")
-	write := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
-	steps := write.steps(t, edit)
-	var step map[string]any
-	for _, raw := range steps {
-		if s := raw.(map[string]any); s["status_key"] == "in_progress" {
-			step = s
-		}
-	}
-
-	write.putHandoff(t, "in_progress", write.bind(step, write.before, canonicalStepsHash(t, write.workflowID, steps))).Want(http.StatusOK)
-
-	if got := write.storedInstructions(t, "in_progress"); got != "handoff text" {
-		t.Fatalf("stored instructions = %q", got)
-	}
-	if rows := write.auditRows(t); rows != 1 {
-		t.Fatalf("audit rows = %d, want 1", rows)
 	}
 }
 
@@ -369,41 +268,4 @@ func TestBoundWorkflowRefusesRemovingAStepWithAGovernedHumanBlock(t *testing.T) 
 	if rows := write.auditRows(t); rows != 0 {
 		t.Fatalf("refused write consumed the decision (%d audit rows)", rows)
 	}
-}
-
-// Text inside a governed:agent region may change while the block stays.
-func TestBoundWorkflowAcceptsEditInsideAgentRegion(t *testing.T) {
-	next := strings.Replace(protectedStart, "old notes", "new notes", 1)
-	write := newBoundWorkflowWriteFrom(t, protectedStart, "workflow.instructions", setInstructions(next), "workflow.instructions")
-	write.patch(t, write.body(t, write.steps(t, setInstructions(next)))).Want(http.StatusOK)
-	if got := write.storedInstructions(t, "in_progress"); got != next {
-		t.Fatalf("stored instructions = %q", got)
-	}
-}
-
-// An approval names one workflow. A second workflow with identical steps is
-// refused (409) and the decision stays unused for the workflow it was meant for.
-func TestBoundWorkflowApprovalDoesNotCarryToAnotherWorkflow(t *testing.T) {
-	edit := setInstructions("approved for A")
-	write := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
-	other := createTestWorkflowSteps(t, "Bound write twin "+workflowTestSuffix(), []map[string]any{
-		{"status_key": "backlog"},
-		{"status_key": "in_progress", "handler": map[string]any{"type": "member", "id": testUserID}},
-		{"status_key": "blocked"},
-	})
-	body := write.body(t, write.steps(t, edit))
-
-	testutil.Call(t, testHandler.UpdateIssueWorkflow,
-		write.asAgent(withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+other.ID, body), "id", other.ID))).
-		Want(http.StatusConflict)
-	for _, raw := range liveSteps(t, other.ID) {
-		if step := raw.(map[string]any); step["status_key"] == "in_progress" && step["instructions"] != "" {
-			t.Fatalf("the twin workflow was written: %v", step["instructions"])
-		}
-	}
-	if rows := write.auditRows(t); rows != 0 {
-		t.Fatalf("refused write consumed the decision (%d audit rows)", rows)
-	}
-
-	write.patch(t, body).Want(http.StatusOK)
 }

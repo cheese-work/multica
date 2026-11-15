@@ -19,3 +19,36 @@ func IssueWakeupJob(dispatcher IssueWakeupDispatcher) JobSpec {
 		},
 	}
 }
+
+type MergePauseRefresher interface{ RefreshMergePauses(context.Context) error }
+
+// MergePauseRefreshJob is the named owner of the AGENT_MERGE_PAUSED and
+// MAIN_RED_PAUSED reads (CHE-5121). The service bounds GitHub calls itself, so
+// the tick is cheap; a failed read is returned so it is logged and retried.
+func MergePauseRefreshJob(refresher MergePauseRefresher) JobSpec {
+	return JobSpec{
+		Name: "merge_pause_refresh", Cadence: 30 * time.Second, CatchUpMode: CatchUpLatestOnly, CatchUpWindow: time.Hour,
+		RunTimeout: 45 * time.Second, StaleTimeout: time.Minute, HeartbeatInterval: 10 * time.Second,
+		AllowStaleReentry: true, MaxAttempts: 1, Scopes: StaticScopes(ScopeGlobal),
+		Handler: func(ctx context.Context, _ HandlerInput) (HandlerResult, error) {
+			return HandlerResult{}, refresher.RefreshMergePauses(ctx)
+		},
+	}
+}
+
+type WakeupDefinitionActivator interface{ RunWakeupActivation(context.Context) error }
+
+// WakeupDefinitionActivationJob advances the legacy backfill that opens scoped
+// definition writes (CHE-1082). Progress is persisted per page, so a missed or
+// failed tick loses nothing, and once the activation is complete a tick is one
+// cheap read. A failure is returned so it is logged and retried next tick.
+func WakeupDefinitionActivationJob(activator WakeupDefinitionActivator) JobSpec {
+	return JobSpec{
+		Name: "wakeup_definition_activation", Cadence: 30 * time.Second, CatchUpMode: CatchUpLatestOnly, CatchUpWindow: time.Hour,
+		RunTimeout: 45 * time.Second, StaleTimeout: time.Minute, HeartbeatInterval: 10 * time.Second,
+		AllowStaleReentry: true, MaxAttempts: 1, Scopes: StaticScopes(ScopeGlobal),
+		Handler: func(ctx context.Context, _ HandlerInput) (HandlerResult, error) {
+			return HandlerResult{}, activator.RunWakeupActivation(ctx)
+		},
+	}
+}

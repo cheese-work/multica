@@ -64,11 +64,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 
 		statusChanged, _ := payload["status_changed"].(bool)
 		// A duplicate mark change is a status change with a better name: the
-		// duplicate row names the other issue and where the status went, so
-		// the generic status row would only repeat it (MUL-7349). Only a row
-		// that was actually written stands in for it; when the original is
-		// gone there is no duplicate row and the status row still records
-		// the move.
+		// duplicate row names the other issue (MUL-7349). With that row
+		// written, the status row no longer hides the assignee row below.
 		if recordDuplicateMarkActivities(ctx, bus, queries, e, issue, payload) {
 			statusChanged = false
 		}
@@ -84,43 +81,9 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 			assigneeChanged = false
 		}
 
-		// A migrated producer wrote the status row in its own transaction and
-		// names it here; one row per change.
-		recorded, _ := payload["activity_id"].(string)
-		if statusChanged && recorded == "" {
-			prevStatus, _ := payload["prev_status"].(string)
-			detailsMap := map[string]string{
-				"from": prevStatus,
-				"to":   issue.Status,
-			}
-			for k, v := range handoff {
-				detailsMap["handoff_"+k] = v
-			}
-			// PR auto-complete (MUL-7429): say why the status moved, so the
-			// timeline explains the change without a hidden rule.
-			if source, _ := payload["source"].(string); source == "pr_automation" {
-				detailsMap["source"] = source
-				if prs, _ := payload["pull_requests"].(string); prs != "" {
-					detailsMap["pull_requests"] = prs
-				}
-			}
-			details, _ := json.Marshal(detailsMap)
-			activity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
-				ID:          dbid.NewV7(),
-				WorkspaceID: parseUUID(issue.WorkspaceID),
-				IssueID:     parseUUID(issue.ID),
-				ActorType:   util.StrToText(e.ActorType),
-				ActorID:     optionalUUID(e.ActorID),
-				Action:      "status_changed",
-				Details:     details,
-			})
-			if err != nil {
-				slog.Error("activity: failed to record status change",
-					"issue_id", issue.ID, "error", err)
-			} else {
-				publishActivityEvent(bus, e, activity)
-			}
-		}
+		// The status_changed row is written by the producer, in the status
+		// transaction, and named in the event as activity_id. The listener
+		// writes none of its own (CHE-2854, C1d).
 
 		if priorityChanged {
 			prevPriority, _ := payload["prev_priority"].(string)
@@ -373,9 +336,22 @@ func recordDuplicateMarkActivities(ctx context.Context, bus *events.Bus, queries
 	}
 	next := derefPayloadString(payload["duplicate_of_issue_id"])
 	prev := derefPayloadString(payload["prev_duplicate_of_issue_id"])
+	// A status row already recorded in the transaction (activity_id) needs no
+	// stand-in from the unmarked row.
+	recorded, _ := payload["activity_id"].(string)
 	statusChanged, _ := payload["status_changed"].(bool)
+	trigger := payload["status_trigger"]
+	statusChanged = statusChanged && recorded == ""
 	record := func(issueID, action string, details map[string]string) bool {
-		body, _ := json.Marshal(details)
+		body := map[string]any{}
+		for k, v := range details {
+			body[k] = v
+		}
+		// Only the duplicate's own mark and unmark rows carry the trigger.
+		if trigger != nil && issueID == issue.ID {
+			body["trigger"] = trigger
+		}
+		raw, _ := json.Marshal(body)
 		activity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
 			ID:          dbid.NewV7(),
 			WorkspaceID: parseUUID(issue.WorkspaceID),
@@ -383,7 +359,7 @@ func recordDuplicateMarkActivities(ctx context.Context, bus *events.Bus, queries
 			ActorType:   util.StrToText(e.ActorType),
 			ActorID:     optionalUUID(e.ActorID),
 			Action:      action,
-			Details:     body,
+			Details:     raw,
 		})
 		if err != nil {
 			slog.Error("activity: failed to record duplicate mark change",

@@ -51,6 +51,18 @@ func TestGetConfigReportsCdnSignedMode(t *testing.T) {
 	}
 }
 
+func TestGetConfigDeclaresAutopilotDescriptionGuard(t *testing.T) {
+	w := httptest.NewRecorder()
+	testHandler.GetConfig(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	var cfg AppConfig
+	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if !cfg.AutopilotDescriptionGuardSupported {
+		t.Fatalf("autopilot_description_guard_supported = false, want true")
+	}
+}
+
 func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	origStorage := testHandler.Storage
 	origCfg := testHandler.cfg
@@ -631,5 +643,48 @@ func TestGetConfigDeclaresCommentDeleteKeepsReplies(t *testing.T) {
 	}
 	if raw["comment_delete_keep_replies_supported"] != true {
 		t.Fatalf("comment_delete_keep_replies_supported = %v, want true", raw["comment_delete_keep_replies_supported"])
+	}
+}
+
+func TestGetConfigAdvertisesInstanceDocs(t *testing.T) {
+	for _, tt := range []struct{ name, docs, want string }{
+		{"served", "http://docs:4000", "/docs"},
+		{"docs not configured", "", ""},
+		// The frontend proxy only forwards to http(s) URLs; anything else
+		// would advertise docs it cannot serve.
+		{"path is not a proxy target", "/docs", ""},
+		{"non-http scheme", "ftp://docs:4000", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DOCS_URL", tt.docs)
+			// A localhost app URL must not leak into what remote browsers see.
+			t.Setenv("MULTICA_APP_URL", "http://localhost:3000")
+			var cfg AppConfig
+			testutil.Call(t, testHandler.GetConfig, httptest.NewRequest(http.MethodGet, "/api/config", nil)).Want(http.StatusOK).JSON(&cfg)
+			if cfg.DocsURL != tt.want {
+				t.Fatalf("docs_url: want %q, got %q", tt.want, cfg.DocsURL)
+			}
+		})
+	}
+}
+
+func TestInstanceDocsRewritesUpstreamLinks(t *testing.T) {
+	const text = "Full guide: https://multica.ai/docs/install-agent-runtime"
+	t.Setenv("MULTICA_APP_URL", "https://app.example.com/")
+	t.Setenv("FRONTEND_ORIGIN", "")
+
+	t.Setenv("DOCS_URL", "")
+	if got := instanceDocs(text); got != text {
+		t.Fatalf("docs not served: want unchanged, got %q", got)
+	}
+	t.Setenv("DOCS_URL", "http://docs:4000")
+	if got, want := instanceDocs(text), "Full guide: https://app.example.com/docs/install-agent-runtime"; got != want {
+		t.Fatalf("docs served: want %q, got %q", want, got)
+	}
+	for _, appURL := range []string{"", "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"} {
+		t.Setenv("MULTICA_APP_URL", appURL)
+		if got := instanceDocs(text); got != text {
+			t.Fatalf("app URL %q is unknown or loopback: want unchanged, got %q", appURL, got)
+		}
 	}
 }

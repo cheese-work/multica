@@ -321,3 +321,108 @@ func TestGitHubApprovalSettlementRechecksTheIntegrationSwitch(t *testing.T) {
 	}
 	f.assertNoEffects(t)
 }
+
+// CHE-3700: the installation allowlist gates approval and settlement.
+const approvalInstallationID int64 = 2019001
+
+// setApprovalAllowlist binds the fixture installation to accountID and turns the
+// policy on with `list`. The handler is shared, so the policy is restored.
+func setApprovalAllowlist(t *testing.T, f approvalFixture, accountID int64, list string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE github_installation SET account_id=$1 WHERE installation_id=$2`, accountID, approvalInstallationID)
+	t.Cleanup(func() { _ = f.fixture.handler.ConfigureGitHubAllowlist("") })
+	if err := f.fixture.handler.ConfigureGitHubAllowlist(list); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGitHubApprovalRefusedForAnUnlistedInstallation(t *testing.T) {
+	f := newApprovalFixture(t)
+	hash := f.snapshotHash(t)
+	f.reader.calls = 0
+	setApprovalAllowlist(t, f, 7001, "7002")
+	if recorder := f.call(t, http.MethodGet, "/snapshot", nil); recorder.Code != http.StatusForbidden {
+		t.Fatalf("snapshot for unlisted installation = %d, want 403", recorder.Code)
+	}
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusForbidden {
+		t.Fatalf("approve for unlisted installation = %d, want 403", recorder.Code)
+	}
+	if f.reader.calls != 0 {
+		t.Fatalf("%d GitHub reads for an unlisted installation, want 0", f.reader.calls)
+	}
+	if state, _ := f.revisionState(t); state != "unsigned" {
+		t.Fatalf("revision = %s, want unsigned", state)
+	}
+	f.assertNoEffects(t)
+}
+
+// An approval stored before the installation was excluded must not read or project.
+func TestGitHubApprovalSettlementDeniesAnUnlistedInstallation(t *testing.T) {
+	f := newApprovalFixture(t)
+	hash := f.snapshotHash(t)
+	reads := 0
+	f.fixture.handler.readApprovalSnapshot = func(ctx context.Context, installationID int64, owner, repo string, number int32, kind string, id int64) (ghsnapshot.ApprovalSnapshot, error) {
+		reads++
+		if reads > 1 {
+			return ghsnapshot.ApprovalSnapshot{}, errors.New("github down")
+		}
+		return f.reader.read(ctx, installationID, owner, repo, number, kind, id)
+	}
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if state, reason := f.revisionState(t); state != "deferred" || reason != "approved_snapshot" {
+		t.Fatalf("revision = %s/%s, want deferred/approved_snapshot", state, reason)
+	}
+	f.fixture.handler.readApprovalSnapshot = f.reader.read
+	f.reader.calls = 0
+	setApprovalAllowlist(t, f, 7001, "7002")
+	if _, err := reconcilerForTest(f.fixture, &fakeReconcileAPI{}).settleApproved(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.reader.calls != 0 {
+		t.Fatalf("%d GitHub reads for an unlisted installation, want 0", f.reader.calls)
+	}
+	if state, reason := f.revisionState(t); state != "denied" || reason != "installation_not_allowed" {
+		t.Fatalf("revision = %s/%s, want denied/installation_not_allowed", state, reason)
+	}
+	f.assertNoEffects(t)
+}
+
+func TestGitHubApprovalProjectsForAListedInstallation(t *testing.T) {
+	f := newApprovalFixture(t)
+	setApprovalAllowlist(t, f, 7001, "7001,7002")
+	hash := f.snapshotHash(t)
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if state, reason := f.revisionState(t); state != "projected" || reason != "gate_g_closed" {
+		t.Fatalf("revision = %s/%s, want projected/gate_g_closed", state, reason)
+	}
+}
+
+// With the policy off, a binding removed after approval is a revoked target
+// (the pre-existing outcome), never an allowlist denial.
+func TestGitHubApprovalSettlementPolicyOffIgnoresAMissingBinding(t *testing.T) {
+	f := newApprovalFixture(t)
+	hash := f.snapshotHash(t)
+	reads := 0
+	f.fixture.handler.readApprovalSnapshot = func(ctx context.Context, installationID int64, owner, repo string, number int32, kind string, id int64) (ghsnapshot.ApprovalSnapshot, error) {
+		reads++
+		if reads > 1 {
+			return ghsnapshot.ApprovalSnapshot{}, errors.New("github down")
+		}
+		return f.reader.read(ctx, installationID, owner, repo, number, kind, id)
+	}
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	f.fixture.handler.readApprovalSnapshot = f.reader.read
+	dbfx.Exec(t, `DELETE FROM github_installation WHERE installation_id=$1`, approvalInstallationID)
+	if _, err := reconcilerForTest(f.fixture, &fakeReconcileAPI{}).settleApproved(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason := f.revisionState(t); state != "denied" || reason != "target_binding_revoked" {
+		t.Fatalf("revision = %s/%s, want denied/target_binding_revoked", state, reason)
+	}
+}

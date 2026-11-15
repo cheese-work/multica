@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,5 +95,17 @@ func TestSuggestedRaiseForBalance(t *testing.T) {
 		if target != c.target || after != c.after {
 			t.Errorf("SuggestedRaiseForBalance(%d, %d) = %d, %d, want %d, %d", c.cap, c.balance, target, after, c.target, c.after)
 		}
+	}
+}
+
+// window_id is the exact RFC3339Nano string a raise action must echo back.
+func TestNewRunBudgetSnapshotExposesTheWindowID(t *testing.T) {
+	start := time.Date(2026, 11, 1, 5, 22, 39, 123456000, time.UTC)
+	got := NewRunBudgetSnapshot(3, 40, 37, "workflow", start)
+	if want := "2026-11-01T05:22:39.123456Z"; got.WindowID != want {
+		t.Fatalf("window_id = %q, want %q", got.WindowID, want)
+	}
+	if body, _ := json.Marshal(got); !strings.Contains(string(body), `"window_id":"2026-11-01T05:22:39.123456Z"`) {
+		t.Fatalf("snapshot JSON %s lacks window_id", body)
 	}
 }

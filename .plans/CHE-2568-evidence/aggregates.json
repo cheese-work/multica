@@ -1,0 +1,156 @@
+{
+ "window": [
+  "2026-10-25T00:00:00Z",
+  "2026-11-01T15:00:00Z"
+ ],
+ "runs": 7767,
+ "run_classes": {
+  "ceremonial": 1125,
+  "substantive": 6120,
+  "silent": 376,
+  "unknown": 146
+ },
+ "usd": 3822,
+ "mtok": 7964.2,
+ "by_trigger_class": {
+  "assignment/status-handoff": {
+   "runs": 3044,
+   "usd": 1931.22,
+   "mtok": 4362.53,
+   "ceremonial_runs": 272,
+   "nochange_usd": 77.07,
+   "nochange_mtok": 133.43,
+   "substantive_runs": 2720,
+   "silent_runs": 52
+  },
+  "autopilot_run": {
+   "runs": 88,
+   "usd": 52.8,
+   "mtok": 102.19,
+   "unknown_runs": 88
+  },
+  "chat": {
+   "runs": 58,
+   "usd": 13.37,
+   "mtok": 26.99,
+   "unknown_runs": 58
+  },
+  "comment": {
+   "runs": 1804,
+   "usd": 761.79,
+   "mtok": 1540.54,
+   "ceremonial_runs": 215,
+   "nochange_usd": 106.14,
+   "nochange_mtok": 171.52,
+   "substantive_runs": 1438,
+   "silent_runs": 151
+  },
+  "delegated_failure": {
+   "runs": 21,
+   "usd": 6.97,
+   "mtok": 11.58,
+   "substantive_runs": 18,
+   "silent_runs": 3,
+   "nochange_usd": 1.18,
+   "nochange_mtok": 1.39
+  },
+  "wakeup:comment.created": {
+   "runs": 69,
+   "usd": 30.18,
+   "mtok": 61.97,
+   "substantive_runs": 63,
+   "ceremonial_runs": 6,
+   "nochange_usd": 1.95,
+   "nochange_mtok": 2.29
+  },
+  "wakeup:condition.met": {
+   "runs": 563,
+   "usd": 183.82,
+   "mtok": 392.0,
+   "substantive_runs": 473,
+   "ceremonial_runs": 87,
+   "nochange_usd": 13.9,
+   "nochange_mtok": 30.03,
+   "silent_runs": 3
+  },
+  "wakeup:condition.met/child_done": {
+   "runs": 61,
+   "usd": 24.7,
+   "mtok": 47.32,
+   "ceremonial_runs": 13,
+   "nochange_usd": 3.27,
+   "nochange_mtok": 5.24,
+   "substantive_runs": 48
+  },
+  "wakeup:pr.checks_failed/pr_checks_failed": {
+   "runs": 347,
+   "usd": 138.48,
+   "mtok": 330.42,
+   "substantive_runs": 246,
+   "ceremonial_runs": 98,
+   "nochange_usd": 35.49,
+   "nochange_mtok": 71.88,
+   "silent_runs": 3
+  },
+  "wakeup:pr.event/pr_needs_attention": {
+   "runs": 470,
+   "usd": 120.26,
+   "mtok": 213.46,
+   "ceremonial_runs": 233,
+   "nochange_usd": 46.47,
+   "nochange_mtok": 78.12,
+   "substantive_runs": 235,
+   "silent_runs": 2
+  },
+  "wakeup:pr.mergeability/pr_needs_attention": {
+   "runs": 96,
+   "usd": 56.93,
+   "mtok": 108.87,
+   "substantive_runs": 83,
+   "ceremonial_runs": 13,
+   "nochange_usd": 6.97,
+   "nochange_mtok": 13.74
+  },
+  "wakeup:pr.merged/pr_merged": {
+   "runs": 271,
+   "usd": 123.36,
+   "mtok": 157.48,
+   "ceremonial_runs": 131,
+   "nochange_usd": 73.23,
+   "nochange_mtok": 77.83,
+   "substantive_runs": 84,
+   "silent_runs": 56
+  },
+  "wakeup:task.completed": {
+   "runs": 4,
+   "usd": 1.03,
+   "mtok": 3.14,
+   "substantive_runs": 4
+  },
+  "wakeup:time.due": {
+   "runs": 727,
+   "usd": 314.98,
+   "mtok": 509.25,
+   "substantive_runs": 579,
+   "silent_runs": 106,
+   "nochange_usd": 47.82,
+   "nochange_mtok": 58.1,
+   "ceremonial_runs": 42
+  },
+  "wakeup:wakeup.manual": {
+   "runs": 12,
+   "usd": 3.52,
+   "mtok": 5.03,
+   "substantive_runs": 12
+  },
+  "wakeup:wakeup.timeout": {
+   "runs": 132,
+   "usd": 58.66,
+   "mtok": 91.39,
+   "substantive_runs": 117,
+   "ceremonial_runs": 15,
+   "nochange_usd": 3.5,
+   "nochange_mtok": 5.98
+  }
+ }
+}

@@ -1,0 +1,65 @@
+# Fork docs site (apps/docs), served at /docs. Mirrors Dockerfile.web; keep the
+# Node pin and the Alpine openssl floor in sync with it.
+FROM node:22.23.4-alpine AS deps
+
+WORKDIR /app
+
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
+COPY apps/docs/package.json apps/docs/
+# postinstall runs fumadocs-mdx, which reads the source config
+COPY apps/docs/source.config.ts apps/docs/source.config.ts
+# Root pnpm patchedDependencies is read even without the mobile workspace.
+COPY patches/ patches/
+COPY apps/mobile/patches/ apps/mobile/patches/
+COPY packages/ui/package.json packages/ui/
+COPY packages/tsconfig/package.json packages/tsconfig/
+COPY packages/eslint-config/package.json packages/eslint-config/
+
+RUN corepack enable && \
+    PNPM_VERSION="$(node -p 'require("./package.json").packageManager')" && \
+    corepack prepare "$PNPM_VERSION" --activate
+RUN --mount=type=cache,target=/pnpm/store,sharing=locked pnpm install --frozen-lockfile --store-dir=/pnpm/store
+
+FROM node:22.23.4-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json ./
+RUN corepack enable && \
+    PNPM_VERSION="$(node -p 'require("./package.json").packageManager')" && \
+    corepack prepare "$PNPM_VERSION" --activate
+
+COPY --from=deps /app ./
+
+COPY package.json turbo.json pnpm-workspace.yaml ./
+COPY apps/docs/ apps/docs/
+COPY packages/ui/ packages/ui/
+
+RUN --mount=type=cache,target=/pnpm/store,sharing=locked pnpm install --frozen-lockfile --offline --store-dir=/pnpm/store
+
+ENV STANDALONE=true
+RUN --mount=type=cache,target=/app/apps/docs/.next/cache pnpm --filter @multica/docs build
+
+FROM node:22.23.4-alpine AS runner
+
+WORKDIR /app
+
+RUN apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0"
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+COPY --from=builder --chown=nextjs:nodejs /app/apps/docs/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/docs/.next/static ./apps/docs/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/docs/public ./apps/docs/public
+COPY --chown=nextjs:nodejs LICENSE NOTICE ./
+
+USER nextjs
+
+EXPOSE 4000
+ENV PORT=4000
+ENV HOSTNAME=0.0.0.0
+
+CMD ["node", "apps/docs/server.js"]

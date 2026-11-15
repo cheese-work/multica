@@ -75,6 +75,7 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { isImeComposing } from "@multica/core/utils";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useModalStore } from "@multica/core/modals";
 import {
@@ -754,6 +755,7 @@ export function InlineTitle({
           onChange={(event) => setDraft(event.target.value)}
           onBlur={commit}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter") commit();
             if (event.key === "Escape") {
               setDraft(row.issue.title);
@@ -1202,6 +1204,7 @@ function IssueTableBodyCell({
             status={issue.status}
             onUpdate={onUpdate}
             projectId={issue.project_id}
+            workflowId={issue.workflow_id}
             issue={issue}
             align="start"
             open={editorOpen}
@@ -1865,7 +1868,7 @@ export function TableView({
           ?.name ?? String(value.value ?? "")
       );
     },
-    [getActorName, groupProjectMap, propertyById, t],
+    [getActorName, groupProjectMap, propertyById, resolveStatusLabel, t],
   );
 
   const serverDisplayRows = useMemo<IssueTableDisplayRow[]>(() => {

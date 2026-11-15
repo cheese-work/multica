@@ -7,11 +7,12 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { configStore } from "@multica/core/config";
 import enCommon from "../locales/en/common.json";
 import enModals from "../locales/en/modals.json";
 import enEditor from "../locales/en/editor.json";
@@ -215,8 +216,9 @@ vi.mock("../navigation/context", () => ({
   useNavigation: () => ({ push: mockPush }),
 }));
 
+const mockWorkspaceSettings = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock("@multica/core/paths", () => ({
-  useCurrentWorkspace: () => ({ name: "Test Workspace" }),
+  useCurrentWorkspace: () => ({ name: "Test Workspace", settings: mockWorkspaceSettings.value }),
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/ws-test/issues/${id}`,
     settings: () => "/ws-test/settings",
@@ -225,6 +227,18 @@ vi.mock("@multica/core/paths", () => ({
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-test",
+}));
+
+// Who may point one issue at another workflow is the server's rule, covered in
+// its own suite; the create form only needs the answer.
+const mockCanManageProject = vi.hoisted(() => ({ value: true }));
+vi.mock("../workflows/permissions", () => ({
+  useWorkflowPermissions: () => ({
+    isAdmin: mockCanManageProject.value,
+    canCreateWorkflow: true,
+    canEditWorkflow: mockCanManageProject.value,
+    canManageProject: mockCanManageProject.value,
+  }),
 }));
 
 vi.mock("./use-issue-limit-upgrade-prompt", () => ({
@@ -465,7 +479,9 @@ vi.mock("../editor", async () => {
 
 vi.mock("../issues/components", () => ({
   StatusIcon: ({ status }: { status: string }) => <span data-testid="status-icon">{status}</span>,
-  StatusPicker: () => <div data-testid="status-picker" />,
+  StatusPicker: ({ workflowId }: { workflowId?: string | null }) => (
+    <div data-testid="status-picker" data-workflow-id={workflowId ?? ""} />
+  ),
   // Surface onUpdate so tests can drive a field-only edit (priority is not
   // part of the draft's recoverable content).
   PriorityPicker: ({ onUpdate }: { onUpdate: (u: { priority: string }) => void }) => (
@@ -518,14 +534,19 @@ vi.mock("../issues/components/pickers/custom-property-picker", () => ({
 
 vi.mock("../projects/components/project-picker", () => ({
   ProjectPicker: ({ projectId, onUpdate }: any) => (
-    <button
-      type="button"
-      data-testid="project-picker"
-      data-project-id={projectId ?? "none"}
-      onClick={() => onUpdate({ project_id: "proj-1" })}
-    >
-      Project {projectId ?? "none"}
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid="project-picker"
+        data-project-id={projectId ?? "none"}
+        onClick={() => onUpdate({ project_id: "proj-1" })}
+      >
+        Project {projectId ?? "none"}
+      </button>
+      <button type="button" data-testid="project-clear" onClick={() => onUpdate({ project_id: null })}>
+        Clear project
+      </button>
+    </>
   ),
 }));
 
@@ -2322,6 +2343,151 @@ describe("CreateIssueModal", () => {
       await waitFor(() => expect(mockListProjects).toHaveBeenCalled());
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.queryByText(/Couldn.t check whether this project hands issues off/)).toBeNull();
+    });
+  });
+  // CHE-2822 gap 2: a new issue can follow a workflow other than its project's.
+  describe("workflow choice", () => {
+    const step = (status_key: string, handler: { type: string; id?: string } = { type: "none" }) => ({
+      status_key,
+      handler,
+      instructions: "",
+    });
+    const reviewFlow = {
+      id: "wf-review",
+      name: "Review flow",
+      is_default: false,
+      steps: [step("todo", { type: "agent", id: "agent-1" }), step("done"), step("cancelled")],
+    };
+    const renderPanel = (data: Record<string, unknown> | null = null) =>
+      renderModal(<ManualCreatePanel onClose={vi.fn()} data={data} isExpanded={false} setIsExpanded={vi.fn()} />);
+    const chooseReviewFlow = async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(await screen.findByRole("button", { name: /from project|Workflow/ }));
+      await user.click(await screen.findByRole("button", { name: "Review flow" }));
+    };
+
+    beforeEach(() => {
+      configStore.getState().setFeatureFlags({ project_workflows_v1: true });
+      mockCanManageProject.value = true;
+      mockListIssueWorkflows.mockResolvedValue({ workflows: [reviewFlow], total: 1 });
+      mockListProjects.mockResolvedValue({ projects: [], total: 0 });
+    });
+
+    it("lists the chosen workflow's statuses and sends its id on create", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await chooseReviewFlow(user);
+
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "wf-review"));
+      fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
+      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalledWith(expect.objectContaining({ workflow_id: "wf-review" })));
+    });
+
+    // CHE-5271: the server applies workflow_by_type when no workflow is named,
+    // so the form shows that workflow's statuses and handoff before saving.
+    describe("workflow mapped from the title type", () => {
+      const mappedId = "8394690d-632a-4b15-a333-c9f0247b0985";
+      const mappedFlow = { ...reviewFlow, id: mappedId, name: "Design flow" };
+      beforeEach(() => {
+        mockWorkspaceSettings.value = { workflow_by_type: { design: mappedId } };
+        mockListIssueWorkflows.mockResolvedValue({ workflows: [reviewFlow, mappedFlow], total: 2 });
+      });
+      afterEach(() => {
+        mockWorkspaceSettings.value = {};
+      });
+
+      it("shows the mapped workflow's statuses and handoff for a mapped title", async () => {
+        renderPanel();
+        fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "design(x): new screen" } });
+
+        await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", mappedId));
+        expect(await screen.findByText("Will be handed to Agent")).toBeInTheDocument();
+      });
+
+      it("keeps the project workflow for an unmapped title", async () => {
+        renderPanel();
+        fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "feat(x): thing" } });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "");
+      });
+
+      it("lets an explicit workflow choice win over the mapped one", async () => {
+        const user = userEvent.setup();
+        renderPanel();
+        fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "design(x): new screen" } });
+        await chooseReviewFlow(user);
+
+        await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "wf-review"));
+      });
+    });
+
+    it("names the chosen workflow's handler for the opening status", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      expect(screen.queryByText("Will be handed to Agent")).toBeNull();
+      await chooseReviewFlow(user);
+
+      expect(await screen.findByText("Will be handed to Agent")).toBeInTheDocument();
+    });
+
+    it("goes back to following the project, sending no workflow", async () => {
+      mockListProjects.mockResolvedValue({ projects: [{ id: "proj-1", workflow_id: null }], total: 1 });
+      const user = userEvent.setup();
+      renderPanel({ project_id: "proj-1" });
+      await chooseReviewFlow(user);
+      await user.click(await screen.findByRole("button", { name: /Review flow/ }));
+      await user.click(await screen.findByRole("button", { name: "Follow the project’s workflow" }));
+
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
+      fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
+      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
+      expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
+    });
+
+    // No project means nothing to follow, but the choice must stay reversible.
+    it("goes back to the default with no project, sending no workflow", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await chooseReviewFlow(user);
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "wf-review"));
+      await user.click(await screen.findByRole("button", { name: /Review flow/ }));
+      await user.click(await screen.findByRole("button", { name: "Default workflow" }));
+
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
+      fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
+      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
+      expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
+    });
+
+    it("can still reset the choice after the project is cleared", async () => {
+      mockListProjects.mockResolvedValue({ projects: [{ id: "proj-1", workflow_id: null }], total: 1 });
+      const user = userEvent.setup();
+      renderPanel({ project_id: "proj-1" });
+      await chooseReviewFlow(user);
+      await user.click(screen.getByTestId("project-clear"));
+      await user.click(await screen.findByRole("button", { name: /Review flow/ }));
+      await user.click(await screen.findByRole("button", { name: "Default workflow" }));
+
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
+      fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
+      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
+      expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
+    });
+
+    it("offers no choice to someone who cannot switch workflows", async () => {
+      mockCanManageProject.value = false;
+      renderPanel();
+
+      await waitFor(() => expect(mockListIssueWorkflows).toHaveBeenCalled());
+      expect(screen.queryByRole("button", { name: /from project/ })).toBeNull();
     });
   });
 });

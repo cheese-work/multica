@@ -87,8 +87,8 @@ func TestDecisionCancelMessageNamesIssueAndAsk(test *testing.T) {
 		if strings.Contains(content, "Second line") || strings.Contains(content, "issue_closed") {
 			test.Fatalf("cancel message leaks a later ask line or the raw reason:\n%s", content)
 		}
-		if !strings.Contains(content, "](https://multica.test/") || !strings.Contains(content, "/issues/") {
-			test.Fatalf("cancel message has no issue link:\n%s", content)
+		if !strings.Contains(content, "](/") || !strings.Contains(content, "/issues/") || strings.Contains(content, "https://") {
+			test.Fatalf("cancel message must link the issue relatively, with no origin:\n%s", content)
 		}
 	}
 }

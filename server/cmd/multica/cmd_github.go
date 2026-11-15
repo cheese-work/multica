@@ -63,6 +63,15 @@ type githubHalts struct {
 		HaltedBy *string `json:"halted_by"`
 		HaltedAt string  `json:"halted_at"`
 	} `json:"halts"`
+	Audit []struct {
+		Scope       string  `json:"scope"`
+		Halted      bool    `json:"halted"`
+		ActorID     *string `json:"actor_id"`
+		ActorSource string  `json:"actor_source"`
+		RunsRevoked int     `json:"runs_revoked"`
+		SweepFailed bool    `json:"sweep_failed"`
+		At          string  `json:"at"`
+	} `json:"audit,omitempty"`
 	RunsRevoked int `json:"runs_revoked"`
 }
 
@@ -104,6 +113,7 @@ func printGitHubHalts(cmd *cobra.Command, resp githubHalts) error {
 	if output, _ := cmd.Flags().GetString("output"); output == "json" {
 		return cli.PrintJSON(os.Stdout, resp)
 	}
+	defer printGitHubHaltAudit(resp)
 	if len(resp.Halts) == 0 {
 		fmt.Println("kill switch: off (GitHub-triggered dispatch is running)")
 		return nil
@@ -118,6 +128,29 @@ func printGitHubHalts(cmd *cobra.Command, resp githubHalts) error {
 	}
 	cli.PrintTable(os.Stdout, []string{"HALTED_SCOPE", "BY", "SINCE"}, rows)
 	return nil
+}
+
+func printGitHubHaltAudit(resp githubHalts) {
+	if len(resp.Audit) == 0 {
+		return
+	}
+	rows := make([][]string, 0, len(resp.Audit))
+	for _, a := range resp.Audit {
+		action, by := "off", a.ActorSource
+		if a.Halted {
+			action = "on"
+		}
+		if a.ActorID != nil {
+			by = strings.Split(*a.ActorID, "-")[0] + " (" + a.ActorSource + ")"
+		}
+		revoked := fmt.Sprint(a.RunsRevoked)
+		if a.SweepFailed {
+			revoked += " (sweep failed)"
+		}
+		rows = append(rows, []string{a.Scope, action, by, revoked, relativeTimestamp(a.At)})
+	}
+	fmt.Println()
+	cli.PrintTable(os.Stdout, []string{"AUDIT_SCOPE", "SWITCH", "BY", "RUNS_REVOKED", "WHEN"}, rows)
 }
 
 type githubIntakeDeliveries struct {

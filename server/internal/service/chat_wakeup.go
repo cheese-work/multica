@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -36,6 +37,10 @@ var (
 	ErrChatWakeupTooLong      = errors.New("chat wakeup: instruction is too long")
 	ErrChatWakeupTitleTooLong = errors.New("chat wakeup: title is too long")
 	ErrChatWakeupNotFound     = errors.New("chat wakeup: no such pending wakeup")
+	ErrChatWatchInvalid       = errors.New("chat wakeup: an issue watch needs exactly one of an event (comment.created) or a status, and an actor filter needs a member or agent type")
+	errChatWatchAccessRevoked = errors.New("chat wakeup: the DM's human left the workspace")
+	errChatWatchSourceGone    = errors.New("chat wakeup: the quoted comment was deleted or tombstoned before the send")
+	ErrChatWatchIssueAccess   = errors.New("chat wakeup: the issue is not readable by this DM's human")
 )
 
 // ChatWakeupService schedules one-shot turns an agent asks for in its own web
@@ -43,6 +48,10 @@ var (
 // it is currently running in.
 type ChatWakeupService struct {
 	Tasks *TaskService
+
+	// Resume point of the pending-watch scan, kept between ticks (see tickWatches).
+	watchMu    sync.Mutex
+	watchAfter db.ListPendingChatIssueWatchesParams
 }
 
 type ChatWakeupInput struct {
@@ -50,6 +59,14 @@ type ChatWakeupInput struct {
 	At          time.Time
 	Title       string
 	Instruction string
+
+	// Issue watch (optional): fire on an event or status of one issue; At is then the expiry.
+	IssueID       pgtype.UUID
+	Event         string // "comment.created"
+	ActorType     string // member | agent, with ActorID, filters Event
+	ActorID       pgtype.UUID
+	UntilStatus   string
+	WakeOnTimeout bool
 }
 
 // session resolves the active web DM that a running chat task belongs to.
@@ -84,7 +101,10 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 	instruction := strings.TrimSpace(in.Instruction)
 	title := strings.TrimSpace(in.Title)
 	now := time.Now()
+	watching := in.IssueID.Valid
 	switch {
+	case watching && !validChatWatch(in):
+		return db.ChatWakeup{}, ErrChatWatchInvalid
 	case instruction == "":
 		return db.ChatWakeup{}, ErrChatWakeupEmpty
 	case len(instruction) > MaxChatWakeupInstruction:
@@ -112,6 +132,15 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 		if locked.Status != "active" {
 			return ErrChatWakeupNotOwner
 		}
+		if watching {
+			// "Readable by the DM's human" is workspace membership, the same bar the issue loaders use.
+			if _, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: in.IssueID, WorkspaceID: session.WorkspaceID}); err != nil {
+				return watchAccessErr(err)
+			}
+			if _, err := qtx.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: session.CreatorID, WorkspaceID: session.WorkspaceID}); err != nil {
+				return watchAccessErr(err)
+			}
+		}
 		pending, err := qtx.CountPendingChatWakeups(ctx, session.ID)
 		if err != nil {
 			return fmt.Errorf("count pending wakeups: %w", err)
@@ -127,6 +156,12 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 			Instruction:     instruction,
 			FireAt:          pgtype.Timestamptz{Time: in.At, Valid: true},
 			CreatedByTaskID: in.TaskID,
+			IssueID:         in.IssueID,
+			EventType:       in.Event,
+			FilterActorType: in.ActorType,
+			FilterActorID:   in.ActorID,
+			UntilStatus:     in.UntilStatus,
+			OnTimeout:       onTimeout(in.WakeOnTimeout),
 		})
 		return err
 	})
@@ -169,11 +204,18 @@ func (s *ChatWakeupService) Tick(ctx context.Context) error {
 	}
 	var errs []error
 	for _, w := range due {
-		if err := s.fire(ctx, w); err != nil {
+		if w.IssueID.Valid {
+			err = s.handleWatch(ctx, w, true)
+		} else {
+			err = s.fire(ctx, w, expiryContent(w), pgtype.UUID{})
+		}
+		if err != nil {
 			slog.Warn("chat wakeup fire failed", "wakeup_id", util.UUIDToString(w.ID), "error", err)
 			errs = append(errs, err)
 		}
 	}
+	// Timed wakeups come first and are bounded, so a long watch backlog cannot starve them.
+	errs = append(errs, s.tickWatches(ctx))
 	return errors.Join(errs...)
 }
 
@@ -181,9 +223,15 @@ func chatWakeupContent(instruction string) string {
 	return "[Scheduled wakeup — you set this earlier in this DM; no person wrote this message.]\nInstruction: " + instruction
 }
 
-func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
+// fire sends the turn. A turn that quotes a comment passes only its id and an
+// empty content: the text and taint are read under lock in the send transaction,
+// so the turn never carries text read earlier.
+func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content string, sourceComment pgtype.UUID) error {
 	q := s.Tasks.Queries
 	drop := func() error { return q.DropChatWakeup(ctx, w.ID) }
+	if content == "" && !sourceComment.Valid { // an expired watch that was not asked to wake the DM
+		return drop()
+	}
 
 	session, err := q.GetChatSession(ctx, w.ChatSessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -210,22 +258,48 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 	var sent DirectChatSendResult
 	claimed := false
 	err = s.Tasks.runInTx(ctx, func(qtx *db.Queries) error {
+		if w.IssueID.Valid {
+			// A member removal that lands after the tick's check waits on this lock
+			// and finds the watch already delivered; one that landed before is seen here.
+			if _, err := qtx.LockMemberByUserAndWorkspace(ctx, db.LockMemberByUserAndWorkspaceParams{UserID: session.CreatorID, WorkspaceID: w.WorkspaceID}); errors.Is(err, pgx.ErrNoRows) {
+				return errChatWatchAccessRevoked
+			} else if err != nil {
+				return err
+			}
+		}
 		if _, err := qtx.ClaimChatWakeup(ctx, w.ID); errors.Is(err, pgx.ErrNoRows) {
 			return nil // another tick or a cancel got there first
 		} else if err != nil {
 			return err
 		}
+		var taint []string
+		turn := content
+		if sourceComment.Valid {
+			c, err := qtx.LockChatWatchSourceComment(ctx, db.LockChatWatchSourceCommentParams{CommentID: sourceComment, IssueID: w.IssueID, WorkspaceID: w.WorkspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errChatWatchSourceGone
+			} else if err != nil {
+				return err
+			}
+			taint = c.TaintIds
+			turn = chatWatchContent(w, chatWatchCommentEvent(w.IssueID, c))
+		}
 		var err error
 		sent, err = s.Tasks.SendDirectChatMessageTx(ctx, qtx, plan, session, session.CreatorID,
-			chatWakeupContent(w.Instruction), nil, "", pgtype.UUID{}, chatWakeupSentVia)
+			turn, nil, "", pgtype.UUID{}, chatWakeupSentVia)
 		if err != nil {
 			return err
+		}
+		if sourceComment.Valid {
+			if err := qtx.StampChatTaskWatchSource(ctx, db.StampChatTaskWatchSourceParams{TaskID: sent.Task.ID, CommentID: sourceComment, TaintIds: taint}); err != nil {
+				return err
+			}
 		}
 		claimed = true
 		return qtx.SetChatWakeupFiredTask(ctx, db.SetChatWakeupFiredTaskParams{ID: w.ID, FiredTaskID: sent.Task.ID})
 	})
 	switch {
-	case errors.Is(err, ErrChatSessionArchived), errors.Is(err, ErrChatTaskAgentArchived), errors.Is(err, ErrChatTaskAgentNoRuntime):
+	case errors.Is(err, errChatWatchAccessRevoked), errors.Is(err, errChatWatchSourceGone), errors.Is(err, ErrChatSessionArchived), errors.Is(err, ErrChatTaskAgentArchived), errors.Is(err, ErrChatTaskAgentNoRuntime):
 		return drop()
 	case err != nil:
 		return err // includes ErrChatCompacting: stays pending, retried next tick

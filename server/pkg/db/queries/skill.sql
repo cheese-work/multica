@@ -44,9 +44,23 @@ UPDATE skill SET
 WHERE id = $1
 RETURNING *;
 
+-- name: TouchSkill :one
+-- Supporting-file writes change the skill as a whole, so they bump the parent's
+-- updated_at in the same transaction. Updating the row also takes its lock,
+-- which serializes concurrent file writes on one skill with UpdateSkill.
+UPDATE skill SET updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;
+
 -- name: DeleteSkill :exec
 -- Defense-in-depth: workspace_id is a SQL-layer tenant guard. See DeleteIssue.
-DELETE FROM skill WHERE id = $1 AND workspace_id = $2;
+-- skill_version has no FK, so the skill's history is removed in the same
+-- statement.
+WITH deleted_versions AS (
+    DELETE FROM skill_version
+    WHERE skill_version.skill_id = $1 AND skill_version.workspace_id = $2
+)
+DELETE FROM skill WHERE skill.id = $1 AND skill.workspace_id = $2;
 
 -- Skill File CRUD
 
@@ -99,6 +113,15 @@ ON CONFLICT (skill_id, path) DO UPDATE SET
     content = EXCLUDED.content,
     updated_at = now()
 RETURNING *;
+
+-- Every writer of an existing skill's files takes this lock first and holds it
+-- to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+-- agent.skills.set approval, which row locks on skill_file could not do for an
+-- insert. It waits under the transaction lock timeout.
+-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
 
 -- name: DeleteSkillFile :exec
 DELETE FROM skill_file WHERE id = $1;
@@ -162,9 +185,63 @@ WHERE agent_id = $1 AND skill_id = $2;
 -- name: RemoveAllAgentSkills :exec
 DELETE FROM agent_skill WHERE agent_id = $1;
 
+-- name: LockSkillsShare :many
+-- The skill rows an approval snapshots, in the workspace, locked FOR SHARE
+-- NOWAIT in id order. Every writer of a skill's files takes a conflicting
+-- parent lock first, so the file set cannot change until the lock holder
+-- commits. Rows are never locked per file: a new file row would escape a row
+-- lock. A busy row answers 55P03. Missing and foreign ids return no row.
+SELECT * FROM skill
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
+ORDER BY id
+FOR SHARE NOWAIT;
+
+-- name: ListAgentSkillAssignments :many
+-- The agent's skill assignments with their enabled flag, for the skill-set digest.
+SELECT skill_id, enabled FROM agent_skill
+WHERE agent_id = $1
+ORDER BY skill_id;
+
 -- name: ListAgentSkillsByWorkspace :many
 SELECT ask.agent_id, s.id, s.name, s.description, ask.enabled
 FROM agent_skill ask
 JOIN skill s ON s.id = ask.skill_id
 WHERE s.workspace_id = $1
 ORDER BY s.name ASC;
+
+-- Skill versions
+
+-- name: LockSkillForVersioning :one
+-- Serializes version-number allocation for one skill. Every content write
+-- takes this row lock inside its transaction before reading the latest
+-- version, so concurrent writers cannot allocate the same number.
+SELECT * FROM skill WHERE id = $1 FOR UPDATE;
+
+-- name: GetLatestSkillVersion :one
+SELECT version, content_hash FROM skill_version
+WHERE skill_id = $1
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: CreateSkillVersion :one
+INSERT INTO skill_version (
+    workspace_id, skill_id, version, name, description, content, files,
+    content_hash, source, restored_from_version, created_by, created_at
+)
+VALUES (
+    @workspace_id, @skill_id, @version, @name, @description, @content, @files,
+    @content_hash, @source, sqlc.narg('restored_from_version'), sqlc.narg('created_by'),
+    COALESCE(sqlc.narg('created_at')::timestamptz, now())
+)
+RETURNING id, workspace_id, skill_id, version, name, source, restored_from_version, created_by, created_at;
+
+-- name: ListSkillVersions :many
+-- Metadata only: snapshots can be large, and the list never shows bodies.
+SELECT id, workspace_id, skill_id, version, name, source, restored_from_version, created_by, created_at
+FROM skill_version
+WHERE skill_id = $1 AND workspace_id = $2
+ORDER BY version DESC;
+
+-- name: GetSkillVersion :one
+SELECT * FROM skill_version
+WHERE skill_id = $1 AND workspace_id = $2 AND version = $3;

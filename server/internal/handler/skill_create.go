@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	skillpkg "github.com/multica-ai/multica/server/internal/skill"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -19,6 +21,9 @@ type skillCreateInput struct {
 	Content     string
 	Config      any
 	Files       []CreateSkillFileRequest
+	// VersionSource labels the skill's first version. Empty means
+	// skillVersionSourceCreate.
+	VersionSource string
 }
 
 // createSkillWithFilesInTx writes a skill plus its supporting files using the
@@ -65,13 +70,26 @@ func createSkillWithFilesInTx(ctx context.Context, qtx *db.Queries, input skillC
 		fileResps = append(fileResps, skillFileToResponse(sf))
 	}
 
+	source := input.VersionSource
+	if source == "" {
+		source = skillVersionSourceCreate
+	}
+	if _, err := recordSkillVersion(ctx, qtx, skill.ID, skillVersionRecord{
+		Source:    source,
+		CreatedBy: input.CreatorID,
+	}); err != nil {
+		return SkillWithFilesResponse{}, err
+	}
+
 	return SkillWithFilesResponse{
 		SkillResponse: skillToResponse(skill),
 		Files:         fileResps,
 	}, nil
 }
 
-func (h *Handler) createSkillWithFiles(ctx context.Context, input skillCreateInput) (SkillWithFilesResponse, error) {
+// createSkillWithFiles audits skill.create in its own tx; a failed audit insert
+// comes back as an auditWriteError and nothing is created.
+func (h *Handler) createSkillWithFiles(ctx context.Context, r *http.Request, input skillCreateInput) (SkillWithFilesResponse, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
@@ -83,6 +101,13 @@ func (h *Handler) createSkillWithFiles(ctx context.Context, input skillCreateInp
 	result, err := createSkillWithFilesInTx(ctx, qtx, input)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
+	}
+	resultConfig, _ := json.Marshal(result.Config)
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "skill.create", WorkspaceID: input.WorkspaceID, TargetID: parseUUID(result.ID),
+		After: skillAuditFields(result.Name, result.Description, result.Content, resultConfig, skillAuditFilesFromResponses(result.Files)),
+	}); err != nil {
+		return SkillWithFilesResponse{}, auditWriteError{err}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -124,6 +149,9 @@ type skillOverwriteInput struct {
 	Content        string
 	Config         any
 	Files          []CreateSkillFileRequest
+	// VersionSource labels the version this overwrite records. Empty means
+	// skillVersionSourceImport.
+	VersionSource string
 }
 
 // overwriteSkillWithFiles re-imports a bundle onto an existing skill in a single
@@ -138,7 +166,7 @@ type skillOverwriteInput struct {
 // content, config (origin), and the full file set — files absent from the new
 // bundle are pruned via DeleteSkillFilesBySkill. On any error the tx rolls back,
 // leaving the original skill unchanged.
-func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwriteInput) (SkillWithFilesResponse, error) {
+func (h *Handler) overwriteSkillWithFiles(ctx context.Context, r *http.Request, input skillOverwriteInput) (SkillWithFilesResponse, error) {
 	config, err := json.Marshal(input.Config)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
@@ -180,6 +208,10 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 		return SkillWithFilesResponse{}, errSkillOverwriteNameMismatch
 	}
 
+	if err := ensureSkillVersionBaseline(ctx, qtx, existing.ID); err != nil {
+		return SkillWithFilesResponse{}, err
+	}
+
 	// Name stays unset by default (COALESCE keeps the existing name): the
 	// import-conflict overwrite targets the same-name skill, so preserving it
 	// avoids any unique-name churn. Refresh-from-source passes NewName to adopt
@@ -208,6 +240,11 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 		return SkillWithFilesResponse{}, err
 	}
 
+	oldFiles, err := qtx.ListSkillFiles(ctx, existing.ID)
+	if err != nil {
+		return SkillWithFilesResponse{}, err
+	}
+
 	// Full replace: drop every existing file, then re-insert the new set so
 	// files no longer present in the local source are removed.
 	if err := qtx.DeleteSkillFilesBySkill(ctx, skill.ID); err != nil {
@@ -224,6 +261,28 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 			return SkillWithFilesResponse{}, err
 		}
 		fileResps = append(fileResps, skillFileToResponse(sf))
+	}
+
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "skill.update", WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: skillRowAuditFields(existing, oldFiles),
+		After:  skillAuditFields(skill.Name, skill.Description, skill.Content, skill.Config, skillAuditFilesFromResponses(fileResps)),
+	}); err != nil {
+		return SkillWithFilesResponse{}, auditWriteError{err}
+	}
+	source := input.VersionSource
+	if source == "" {
+		source = skillVersionSourceImport
+	}
+	var versionAuthor pgtype.UUID
+	if u, err := util.ParseUUID(input.UserID); err == nil {
+		versionAuthor = u
+	}
+	if _, err := recordSkillVersion(ctx, qtx, skill.ID, skillVersionRecord{
+		Source:    source,
+		CreatedBy: versionAuthor,
+	}); err != nil {
+		return SkillWithFilesResponse{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

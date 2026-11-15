@@ -14,7 +14,7 @@
  * — both surfaces produce canonical `[@name](mention://type/id)` markdown
  * recognised by util.ParseMentions on the server.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -30,18 +30,18 @@ import { DescriptionField } from "@/components/issue/description-field";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
-import { useMentionInput } from "@/lib/use-mention-input";
+import { useNewIssueDraft } from "@/data/stores/use-form-drafts";
 import { useT } from "@/lib/i18n";
 
 export default function NewIssueModal() {
   const { t } = useT("issues");
-  const [title, setTitle] = useState("");
-  const description = useMentionInput();
+  const { title, setTitle, description, restored, settle } = useNewIssueDraft();
   // Attribute chips (status / priority / assignee / due date / project)
   // live in `useNewIssueDraftStore` so the new-issue-picker/* formSheet
   // routes can read and write the same values without a parent-child
-  // React relationship. The store is reset on mount + on unmount so
-  // re-opening the new-issue modal starts clean.
+  // React relationship. The unsent form (title, description, chips) is saved
+  // as a draft, so closing the modal keeps it; only a successful create
+  // clears it.
   const status = useNewIssueDraftStore((s) => s.status);
   const priority = useNewIssueDraftStore((s) => s.priority);
   const assignee = useNewIssueDraftStore((s) => s.assignee);
@@ -49,17 +49,10 @@ export default function NewIssueModal() {
   const project = useNewIssueDraftStore((s) => s.project);
   const resetDraft = useNewIssueDraftStore((s) => s.reset);
 
-  useEffect(() => {
-    resetDraft();
-    return () => {
-      resetDraft();
-    };
-  }, [resetDraft]);
-
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
 
-  const canSubmit = !isSubmitting && title.trim().length > 0;
+  const canSubmit = restored && !isSubmitting && title.trim().length > 0;
 
   const onSubmit = useCallback(async () => {
     const trimmedTitle = title.trim();
@@ -77,6 +70,8 @@ export default function NewIssueModal() {
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
       });
+      resetDraft();
+      settle();
       router.back();
     } catch (err) {
       Alert.alert(
@@ -93,6 +88,8 @@ export default function NewIssueModal() {
     dueDate,
     project,
     createIssue,
+    resetDraft,
+    settle,
     t,
   ]);
 
@@ -127,13 +124,13 @@ export default function NewIssueModal() {
             className="text-2xl font-semibold text-foreground py-2"
             autoFocus
             returnKeyType="next"
-            editable={!isSubmitting}
+            editable={restored && !isSubmitting}
           />
           <DescriptionField
             description={description}
-            disabled={isSubmitting}
+            disabled={!restored || isSubmitting}
           />
-          <CreateFormAttributeRow />
+          <CreateFormAttributeRow disabled={!restored} />
         </ScrollView>
 
         {/* Mention suggestions float above the keyboard only when the user

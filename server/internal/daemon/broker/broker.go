@@ -56,6 +56,18 @@ type Pin struct {
 	// MaxPaths caps the paths one push may change, and so the work the
 	// protected-path check does; zero means the default.
 	MaxPaths int `json:"-"`
+	// Elevation, when set, makes every push and PR operation an elevated one.
+	Elevation *Elevation `json:"-"`
+	// Synthetic, when set, marks an elevated run whose checkout is a synthetic
+	// base (plan 3.5): Base is then Synthetic.Root, and a push is translated
+	// onto the real history before any check or write.
+	Synthetic *Synthetic `json:"-"`
+}
+
+// Synthetic ties a synthetic root commit to the real commit whose tree it holds.
+type Synthetic struct {
+	Root   string // the synthetic root, SyntheticBase.Root
+	Parent string // the real commit that replaces it as a parent: SyntheticBase.Source
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
@@ -81,6 +93,22 @@ type Broker struct {
 
 	rmu      sync.Mutex
 	receipts []Receipt
+
+	pinMu    sync.RWMutex // guards Base, Synthetic and baseRepo against a base refresh
+	baseRepo string       // bare repo holding refreshed default-branch tips; "" until the first refresh
+
+	fmu     sync.Mutex // guards fenced, open, changed and the elevOp fields
+	fenced  bool
+	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
+	changed chan struct{}        // closed and replaced when open or its state changes
+
+	refmu     sync.Mutex            // one read-token refresh at a time
+	rdmu      sync.Mutex            // guards reads
+	reads     []grant               // read tokens handed to the run, revoked by Close
+	pending   int                   // mints in flight that hold a slot under maxReadTokens
+	unrevoked map[string]*staleRead // replaced read tokens whose revoke has not succeeded yet, by token id
+
+	beforeWrite, afterWrite func() // test hooks around the remote write
 }
 
 // New starts a broker listening on socket (mode 0600).
@@ -100,12 +128,16 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 		ln.Close()
 		return nil, fmt.Errorf("broker: %w", err)
 	}
-	b := &Broker{pin: p, log: log, ln: ln, socket: socket}
+	b := &Broker{pin: p, log: log, ln: ln, socket: socket, open: map[*elevOp]struct{}{}, changed: make(chan struct{})}
 	b.bg, b.stop = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", b.handlePin)
 	mux.HandleFunc("POST /push", b.track(b.handlePush))
 	mux.HandleFunc("POST /pr", b.track(b.handlePR))
+	mux.HandleFunc("POST /readtoken", b.track(b.handleReadToken))
+	mux.HandleFunc("POST /readtoken/refresh", b.track(b.handleReadRefresh))
+	mux.HandleFunc("POST /readtoken/current", b.track(b.handleReadCurrent))
+	mux.HandleFunc("POST /base-refresh", b.track(b.handleRefresh))
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -141,8 +173,13 @@ func (b *Broker) Close() error {
 	err := b.srv.Close()
 	_ = os.Remove(b.socket)
 	b.ops.Wait()
+	b.revokeReads()
 	b.stop()
 	b.wg.Wait()
+	b.revokeLeftovers()
+	if b.baseRepo != "" {
+		_ = os.RemoveAll(b.baseRepo)
+	}
 	return err
 }
 
@@ -187,6 +224,8 @@ func validRef(ref string) bool {
 
 // handlePin tells the in-sandbox client what to bundle.
 func (b *Broker) handlePin(w http.ResponseWriter, _ *http.Request) {
+	b.pinMu.RLock()
+	defer b.pinMu.RUnlock()
 	_ = json.NewEncoder(w).Encode(b.pin)
 }
 
@@ -268,7 +307,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if err := os.MkdirAll(filepath.Join(work, "objects", "info"), 0o755); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	if err := os.WriteFile(filepath.Join(work, "objects", "info", "alternates"), []byte(b.pin.Objects+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "objects", "info", "alternates"), b.alternates(), 0o644); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	heads, err := bundleHeads(bundle)
@@ -279,8 +318,19 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		return "", http.StatusBadRequest, errors.New("bundle must hold exactly the task branch")
 	}
 	sha = heads[0].sha
+	if b.pin.Synthetic != nil {
+		if status, err := b.seedRoot(ctx, work); err != nil {
+			return "", status, err
+		}
+	}
 	if out, err := b.git(ctx, work, nil, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
 		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", b.scrub(firstLine(out)))
+	}
+	var runSHA map[string]string
+	if b.pin.Synthetic != nil {
+		if sha, runSHA, status, err = b.translate(ctx, work, sha, filepath.Join(scratch, "msg")); err != nil {
+			return "", status, err
+		}
 	}
 	if status, err := b.checkProtected(ctx, work, defRef, sha, patterns, auth); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -288,12 +338,24 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		}
 		return sha, status, err
 	}
-	commits, err := b.commitReceipts(ctx, work, sha)
+	commits, err := b.commitReceipts(ctx, work, sha, runSHA)
 	if errors.Is(err, errTooManyCommits) {
 		return sha, http.StatusRequestEntityTooLarge, err
 	}
 	if err != nil {
 		return sha, http.StatusInternalServerError, err
+	}
+	bundleSum, err := fileSHA256(bundle)
+	if err != nil {
+		return sha, http.StatusInternalServerError, err
+	}
+	op, status, err := b.authorize(ctx, inputHash("push", b.pin.Repo, b.pin.Ref, sha, lease, bundleSum))
+	if err != nil {
+		return sha, status, err
+	}
+	defer func() { b.finish(op, err) }()
+	if err := b.write(op); err != nil {
+		return sha, http.StatusForbidden, err
 	}
 	args := []string{"push", b.pin.RemoteURL, sha + ":" + b.pin.Ref}
 	if lease != "" {
@@ -303,7 +365,11 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return expired(sha)
 		}
-		return sha, http.StatusConflict, fmt.Errorf("push: %s", b.scrub(pushReason(out)))
+		err = fmt.Errorf("push: %s", b.scrub(pushReason(out)))
+		if strings.Contains(out, "rejected]") { // git names a ref the remote refused
+			err = notApplied{err}
+		}
+		return sha, http.StatusConflict, err
 	}
 	b.record(Receipt{Task: b.pin.Task, Repo: b.pin.Repo, Ref: b.pin.Ref, Time: time.Now().UTC(), Forced: lease != "", Commits: commits})
 	return sha, http.StatusOK, nil
@@ -320,14 +386,22 @@ func basicAuthEnv(token string) []string {
 // status to answer with if that fails. The operation deadline starts once the
 // token exists, because that is when the credential is live.
 func (b *Broker) mint(ctx context.Context, pr bool) (grant, int, error) {
+	perms := map[string]string{"contents": "write"}
+	if pr {
+		perms["pull_requests"] = "write"
+	}
+	return b.mintWith(ctx, perms)
+}
+
+func (b *Broker) mintWith(ctx context.Context, perms map[string]string) (grant, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	id, _ := b.pin.repoID() // checked in New
-	g, err := b.pin.Tokens.mint(ctx, id, pr)
+	g, err := b.pin.Tokens.mint(ctx, id, perms)
 	if err != nil {
 		return grant{}, http.StatusBadGateway, err
 	}
-	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "pr", pr)
+	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "perms", perms)
 	return g, 0, nil
 }
 

@@ -482,6 +482,43 @@ func TestWakeupConditionChildrenAndOtherIssue(t *testing.T) {
 	}
 }
 
+// The security-gate status stays PENDING until a cross-lab verdict exists, and a
+// flow waits for finished checks before asking for that verdict. Only the
+// verdict-driven context is ignored: any other unfinished check still holds.
+// The result on the old head 'aaa' is baselined while the PR head is already 'bbb'.
+func TestWakeupConditionPullRequestChecksIgnoreVerdictContext(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	s.Tasks.PRSnapshotsEnabled = true
+	var pr string
+	if err := f.Pool.QueryRow(context.Background(), `INSERT INTO github_pull_request(workspace_id,installation_id,repo_owner,repo_name,pr_number,title,state,html_url,pr_created_at,pr_updated_at,head_sha,snapshot_head_sha,checks_rollup_state)
+		VALUES($1,1,'multica-ai','wakeup-verdict',(extract(epoch from clock_timestamp())*1000)::bigint % 100000,'PR','open','https://example.test/pr',now(),now(),'bbb','aaa','SUCCESS') RETURNING id`, f.WorkspaceID).Scan(&pr); err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", pr)
+	f.Cleanup(t, "DELETE FROM github_pull_request_check_run WHERE pr_id=$1", pr)
+	f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pr)
+	f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", issue, pr)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Instruction: "Look at CI",
+		Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})})
+	wakeTick(t, f, s, w.ID)
+	addCheck := func(ordinal int, name, status, conclusion string, statusContext bool) {
+		f.Exec(t, `INSERT INTO github_pull_request_check_run(pr_id,head_sha,ordinal,name,status,conclusion,is_status_context) VALUES($1,'bbb',$2,$3,$4,NULLIF($5,''),$6)`,
+			pr, ordinal, name, status, conclusion, statusContext)
+	}
+	f.Exec(t, "UPDATE github_pull_request SET head_sha='bbb',snapshot_head_sha='bbb',checks_rollup_state='PENDING' WHERE id=$1", pr)
+	addCheck(0, "build", "in_progress", "", false)
+	addCheck(1, "security-gate", "queued", "", true)
+	wakeTick(t, f, s, w.ID)
+	if n := wakeRuns(t, f, w.ID); n != 0 {
+		t.Fatalf("a running check started %d runs", n)
+	}
+	f.Exec(t, "UPDATE github_pull_request_check_run SET status='completed',conclusion='success' WHERE pr_id=$1 AND name='build'", pr)
+	wakeTick(t, f, s, w.ID)
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("all checks done but security-gate pending started %d runs, want 1", n)
+	}
+}
+
 func TestWakeupConditionPullRequestChecksWaitForNewResult(t *testing.T) {
 	f, s, issue, agent := conditionFixture(t)
 	s.Tasks.PRSnapshotsEnabled = true
@@ -514,6 +551,26 @@ func TestWakeupConditionPullRequestChecksWaitForNewResult(t *testing.T) {
 	}
 	if !strings.Contains(task.HandoffNote.String, `"checks":"failure"`) || !strings.Contains(task.HandoffNote.String, `"head_sha":"bbb"`) {
 		t.Fatalf("PR facts missing: %s", task.HandoffNote.String)
+	}
+}
+
+// Checks already finished on the PR's current head fire on the first poll.
+func TestWakeupConditionPullRequestChecksFinishedOnCurrentHead(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	s.Tasks.PRSnapshotsEnabled = true
+	var pr string
+	if err := f.Pool.QueryRow(context.Background(), `INSERT INTO github_pull_request(workspace_id,installation_id,repo_owner,repo_name,pr_number,title,state,html_url,pr_created_at,pr_updated_at,head_sha,snapshot_head_sha,checks_rollup_state)
+		VALUES($1,1,'multica-ai','wakeup-current',(extract(epoch from clock_timestamp())*1000)::bigint % 100000,'PR','open','https://example.test/pr',now(),now(),'aaa','aaa','SUCCESS') RETURNING id`, f.WorkspaceID).Scan(&pr); err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", pr)
+	f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pr)
+	f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", issue, pr)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Instruction: "Look at CI",
+		Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})})
+	wakeTick(t, f, s, w.ID)
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("checks finished on the current head started %d runs, want 1", n)
 	}
 }
 
@@ -617,7 +674,18 @@ func TestWakeupConditionFailedCommitPreservesFailure(t *testing.T) {
 	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second',last_error='earlier dispatch failure' WHERE id=$1", w.ID)
 	commitErr := errors.New("dispatch commit failed")
 	s.Tasks.TxStarter = wakeupCommitFailureStarter{TxStarter: f.Pool, err: commitErr}
-	if err := s.dispatch(ctx, w); !errors.Is(err, commitErr) {
+	// dispatch holds its locks for at most 50 ms and a pass records a failure
+	// with a write bounded to 100 ms (dispatchFromTick). On a loaded runner
+	// either can time out and the earlier error stays. The rule is still due, so
+	// the next attempt retries it; the commit failure is the state under test
+	// (CHE-4008).
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = s.dispatch(ctx, w); errors.Is(err, commitErr) {
+			break
+		}
+	}
+	if !errors.Is(err, commitErr) {
 		t.Fatalf("dispatch error=%v, want %v", err, commitErr)
 	}
 	got, err := f.q.LocklessWakeup(ctx, w.ID)
@@ -627,12 +695,17 @@ func TestWakeupConditionFailedCommitPreservesFailure(t *testing.T) {
 	if !got.LastError.Valid || got.LastError.String != "earlier dispatch failure" {
 		t.Fatalf("failed commit cleared the earlier failure: %+v", got.LastError)
 	}
-	if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); !errors.Is(err, commitErr) {
-		t.Fatalf("tick error=%v, want %v", err, commitErr)
-	}
-	got, err = f.q.LocklessWakeup(ctx, w.ID)
-	if err != nil {
-		t.Fatal(err)
+	for pass := 0; pass < 20; pass++ {
+		if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); err == nil {
+			t.Fatal("a pass whose commit failed reported no error")
+		}
+		got, err = f.q.LocklessWakeup(ctx, w.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.LastError.Valid && got.LastError.String == commitErr.Error() {
+			break
+		}
 	}
 	if !got.LastError.Valid || got.LastError.String != commitErr.Error() {
 		t.Fatalf("failed pass did not record the current failure: %+v", got.LastError)

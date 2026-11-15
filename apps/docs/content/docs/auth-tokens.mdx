@@ -69,6 +69,58 @@ curl https://api.multica.ai/api/issues \
 
 In scripts, take the token from a secret manager or a protected environment variable — never hardcode it. On self-hosted instances, replace the domain with your own public API address.
 
+## Scoped tokens for CI
+
+A PAT can be created with a `scopes` list. A scoped PAT opens only the routes of its scope and nothing else. The server reads the scope from the token row on every call, so a revoked or re-scoped token stops at once. The PAT user must own the workspace.
+
+| Scope | Opens |
+| --- | --- |
+| `decisions:feed` | `GET /api/decisions/feed` and its acknowledgement |
+| `decisions:ci_request` | `POST /api/decisions/ci` |
+| `decisions:read` | `GET /api/decisions/{id}/state` |
+
+`decisions:ci_request` lets a CI job, which has no running agent task, open one decision card. The card is always class `deploy`, for the named issue and the named member (`for`). The body carries a structured `ask`, a `candidate_sha` (7 to 64 hex digits) and a `candidate_at` (RFC 3339 commit time). It carries no `action` and no covered cards.
+
+```bash
+curl -X POST https://api.multica.ai/api/decisions/ci \
+  -H "Authorization: Bearer $MULTICA_CI_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "issue_id": "<issue-id>",
+    "for": "<member-user-id>",
+    "ask": { ... },
+    "candidate_sha": "<commit-sha>",
+    "candidate_at": "2026-11-10T07:32:29Z"
+  }'
+```
+
+- The first call for a SHA returns `201` with the new card.
+- The same SHA again returns `200` with the existing card, not a duplicate.
+- A newer SHA (by `candidate_at`) withdraws the older open card on that issue.
+- An older SHA after a newer one returns `409` and creates nothing.
+- Any other credential, a PAT without the scope, or a PAT whose user does not own the workspace returns `403`.
+
+`decisions:read` lets a CI job read what became of one action decision, such as `doop.deploy_lift` (version 1, params `marker_value` and `repo`). Only the workspace owner's passkey approval answers that action. The route is read-only and keyed by the decision (request) id.
+
+```bash
+curl https://api.multica.ai/api/decisions/<decision-id>/state \
+  -H "Authorization: Bearer $MULTICA_READ_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID"
+```
+
+The `200` response carries `decision_id`, `action_id`, `action_type`, `action_version`, `state`, `approver_id`, `answered_at`, `withdrawn_at`, `revoked_at`, `expires_at` and `params`. `state` is one of:
+
+- `pending`: waiting for the owner.
+- `approved`: the owner approved with a passkey. `approver_id` and `answered_at` are set.
+- `rejected`: the owner rejected it.
+- `withdrawn`: the request was withdrawn before it was answered.
+- `revoked`: the owner took the approval back after giving it, with a passkey, through the revoke route (`POST /api/decision-requests/{id}/revoke`). This is how to invalidate an approval that was not used yet. `revoked_at` is set.
+- `expired`: the window closed. An approval past its deadline also reads `expired`.
+- `cancelled` and `failed`: the action ended without an approval taking effect.
+
+An unknown decision returns `404`. Any other credential, a PAT without the scope, or a PAT whose user does not own the workspace returns `403`.
+
 ## Logging out and revocation
 
 `multica auth logout` only deletes the PAT saved in the current CLI profile; logging out on the web only deletes the current browser's cookies. Neither revokes the personal access token on the server.

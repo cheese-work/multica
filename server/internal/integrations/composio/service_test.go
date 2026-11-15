@@ -240,7 +240,7 @@ func TestBeginConnect_MappingAndState(t *testing.T) {
 	svc := newTestService(t, sdkFake, newFakeStore())
 	userID := mintUUID(7)
 
-	redirect, err := svc.BeginConnect(context.Background(), userID, "Notion")
+	redirect, err := svc.BeginConnect(context.Background(), userID, "Notion", "")
 	if err != nil {
 		t.Fatalf("BeginConnect: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestBeginConnect_MappingAndState(t *testing.T) {
 func TestBeginConnect_UnsupportedToolkit(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t, &fakeSDK{}, newFakeStore())
-	if _, err := svc.BeginConnect(context.Background(), mintUUID(1), "github"); !errors.Is(err, ErrToolkitNotSupported) {
+	if _, err := svc.BeginConnect(context.Background(), mintUUID(1), "github", ""); !errors.Is(err, ErrToolkitNotSupported) {
 		t.Fatalf("expected ErrToolkitNotSupported, got %v", err)
 	}
 }
@@ -290,7 +290,7 @@ func TestBeginConnect_UnsupportedWhenNoAuthConfig(t *testing.T) {
 	t.Parallel()
 	sdkFake := &fakeSDK{authConfigsSet: true, authConfigs: []sdk.AuthConfig{}}
 	svc := newTestService(t, sdkFake, newFakeStore())
-	if _, err := svc.BeginConnect(context.Background(), mintUUID(1), "notion"); !errors.Is(err, ErrToolkitNotSupported) {
+	if _, err := svc.BeginConnect(context.Background(), mintUUID(1), "notion", ""); !errors.Is(err, ErrToolkitNotSupported) {
 		t.Fatalf("expected ErrToolkitNotSupported with no auth configs, got %v", err)
 	}
 }
@@ -304,7 +304,7 @@ func TestBeginConnect_PrefersCustomAuthConfig(t *testing.T) {
 		{ID: "ac_custom", Toolkit: sdk.Toolkit{Slug: "notion"}, Status: "ENABLED", IsComposioManaged: false},
 	}}
 	svc := newTestService(t, sdkFake, newFakeStore())
-	if _, err := svc.BeginConnect(context.Background(), mintUUID(1), "notion"); err != nil {
+	if _, err := svc.BeginConnect(context.Background(), mintUUID(1), "notion", ""); err != nil {
 		t.Fatalf("BeginConnect: %v", err)
 	}
 	if sdkFake.lastCreateLink.AuthConfigID != "ac_custom" {
@@ -397,7 +397,7 @@ func TestCompleteCallback_SuccessAndIdempotent(t *testing.T) {
 		Exp:          time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
 
-	slug, err := svc.CompleteCallback(context.Background(), state, "success", "ca_123")
+	slug, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_123")
 	if err != nil {
 		t.Fatalf("CompleteCallback: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestCompleteCallback_SuccessAndIdempotent(t *testing.T) {
 		t.Errorf("slug = %q", slug)
 	}
 	// Duplicate callback (same connected account) must not create a 2nd row.
-	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_123"); err != nil {
+	if _, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_123"); err != nil {
 		t.Fatalf("second CompleteCallback: %v", err)
 	}
 	if len(store.rows) != 1 {
@@ -435,7 +435,7 @@ func TestCompleteCallback_AcceptsNestedAuthConfig(t *testing.T) {
 		Exp:          time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
 
-	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_nested"); err != nil {
+	if _, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_nested"); err != nil {
 		t.Fatalf("CompleteCallback: %v", err)
 	}
 	if len(store.rows) != 1 {
@@ -452,7 +452,7 @@ func TestCompleteCallback_NonSuccessNoRow(t *testing.T) {
 		ToolkitSlug: "notion",
 		Exp:         time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
-	slug, err := svc.CompleteCallback(context.Background(), state, "failed", "ca_x")
+	slug, _, err := svc.CompleteCallback(context.Background(), state, "failed", "ca_x")
 	if !errors.Is(err, ErrConnectNotSuccessful) {
 		t.Fatalf("expected ErrConnectNotSuccessful, got %v", err)
 	}
@@ -467,7 +467,7 @@ func TestCompleteCallback_NonSuccessNoRow(t *testing.T) {
 func TestCompleteCallback_BadState(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t, &fakeSDK{}, newFakeStore())
-	if _, err := svc.CompleteCallback(context.Background(), "garbage", "success", "ca_1"); err == nil {
+	if _, _, err := svc.CompleteCallback(context.Background(), "garbage", "success", "ca_1"); err == nil {
 		t.Fatal("expected error for malformed state")
 	}
 }
@@ -488,7 +488,7 @@ func TestCompleteCallback_TamperedAccountRejected(t *testing.T) {
 		AuthConfigID: "ac_notion",
 		Exp:          time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
-	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_evil"); !errors.Is(err, ErrAccountVerification) {
+	if _, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_evil"); !errors.Is(err, ErrAccountVerification) {
 		t.Fatalf("expected ErrAccountVerification for foreign account, got %v", err)
 	}
 	if len(store.rows) != 0 {
@@ -513,7 +513,7 @@ func TestCompleteCallback_WrongAuthConfigRejected(t *testing.T) {
 		AuthConfigID: "ac_notion",
 		Exp:          time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
-	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_x"); !errors.Is(err, ErrAccountVerification) {
+	if _, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_x"); !errors.Is(err, ErrAccountVerification) {
 		t.Fatalf("expected ErrAccountVerification for wrong auth config, got %v", err)
 	}
 	if len(store.rows) != 0 {
@@ -539,7 +539,7 @@ func TestCompleteCallback_MissingAuthConfigFailsClosed(t *testing.T) {
 		// AuthConfigID deliberately omitted (empty) — must fail closed.
 		Exp: time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
-	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_owned"); !errors.Is(err, ErrAccountVerification) {
+	if _, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_owned"); !errors.Is(err, ErrAccountVerification) {
 		t.Fatalf("expected ErrAccountVerification when state carries no auth config, got %v", err)
 	}
 	if len(store.rows) != 0 {
@@ -560,7 +560,7 @@ func TestCompleteCallback_UnknownAccountRejected(t *testing.T) {
 		ToolkitSlug: "notion",
 		Exp:         time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
 	})
-	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_ghost"); !errors.Is(err, ErrAccountVerification) {
+	if _, _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_ghost"); !errors.Is(err, ErrAccountVerification) {
 		t.Fatalf("expected ErrAccountVerification for unknown account, got %v", err)
 	}
 	if len(store.rows) != 0 {
@@ -693,10 +693,10 @@ func TestCreateMCPSession_PinsConnectedAccounts(t *testing.T) {
 func TestCallbackRedirect(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t, &fakeSDK{}, newFakeStore())
-	if got := svc.CallbackRedirect("notion", true); got != "https://multica.ai/settings?tab=integrations&connected=notion" {
+	if got := svc.CallbackRedirect("notion", true, ""); got != "https://multica.ai/settings?tab=integrations&connected=notion" {
 		t.Errorf("success redirect = %q", got)
 	}
-	if got := svc.CallbackRedirect("notion", false); got != "https://multica.ai/settings?tab=integrations&error=composio_connect_failed" {
+	if got := svc.CallbackRedirect("notion", false, ""); got != "https://multica.ai/settings?tab=integrations&error=composio_connect_failed" {
 		t.Errorf("failure redirect = %q", got)
 	}
 }
@@ -711,4 +711,15 @@ func seedActive(store *fakeStore, userID pgtype.UUID, slug, caID string) db.User
 		ComposioUserID:     util.UUIDToString(userID),
 	})
 	return row
+}
+
+func TestCallbackRedirect_Origin(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://multica.ai,https://multica.congvc.dev")
+	svc := newTestService(t, &fakeSDK{}, newFakeStore())
+	if got := svc.CallbackRedirect("notion", true, "https://multica.congvc.dev"); got != "https://multica.congvc.dev/settings?tab=integrations&connected=notion" {
+		t.Errorf("allow-listed origin redirect = %q", got)
+	}
+	if got := svc.CallbackRedirect("notion", true, "https://evil.example"); got != "https://multica.ai/settings?tab=integrations&connected=notion" {
+		t.Errorf("foreign origin redirect = %q", got)
+	}
 }

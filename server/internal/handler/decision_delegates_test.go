@@ -146,7 +146,7 @@ func TestDecisionDelegateUnpromptedRecord(test *testing.T) {
 		class    string
 		refused  bool
 	}{
-		{"owner spend", "owner", false, "spend", false},
+		{"owner reversible", "owner", false, "reversible", false},
 		{"delegate reversible", "member", true, "reversible", false},
 		{"delegate spend", "member", true, "spend", true},
 		{"delegate product_direction", "member", true, "product_direction", true},
@@ -435,8 +435,10 @@ func TestDecisionOwnerWithoutDelegatesUnchanged(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			input := fixture.recordInput()
 			input.ParentID, input.EscalationClass = pgtype.UUID{}, class
-			if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input); err != nil {
-				test.Fatal(err)
+			_, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
+			var refusal decisionIntentRefusal
+			if class == "reversible" && err != nil || class != "reversible" && (!errors.As(err, &refusal) || refusal.status != http.StatusForbidden) {
+				test.Fatalf("unprompted %s record: %v", class, err)
 			}
 		})
 	}

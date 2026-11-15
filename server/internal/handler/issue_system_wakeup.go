@@ -294,6 +294,13 @@ func (h *Handler) UpdateWorkspaceSystemWakeup(w http.ResponseWriter, r *http.Req
 		writeError(w, 404, "system wakeup not found")
 		return
 	}
+	// The default writes two settings allow-table keys: a machine identity,
+	// including a cloud-node PAT that resolves as its owner, needs a passkey
+	// action.
+	actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID)
+	if refuseMachineCoveredWrite(w, r, actorType, true, settingsPatchAction) {
+		return
+	}
 	var in service.SystemWakeupInput
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
 	dec.DisallowUnknownFields()

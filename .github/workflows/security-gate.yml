@@ -1,60 +1,78 @@
-# Pre-merge security gate (CHE-2671). Copy of cheese-work/multica-dotfiles .github/workflows/security-gate.yml.
+# Pre-merge security gate (CHE-2671), switched OFF by Cheese (CHE-5126, 10 Nov 2026; re-scan: CHE-5127; this change: CHE-5148).
 #
-# Sets the `security-gate` commit status on the PR's exact head SHA. Register `security-gate` as a required status
-# check only through the rollout in cheese-work/multica-dotfiles docs/cheese-work/SECURITY-GATE.md; this file alone blocks nothing.
+# While the gate is off this workflow runs no verdict logic: its one step posts commit status `security-gate` = `success`
+# with the description `security gate off (CHE-5126)`, so no PR or queue commit stays yellow.
+# Switch the gate back on by reverting the CHE-5148 PR: the verdict logic and the comment trigger come back with it.
 #
-# SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `issue_comment` both run this
-# definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
-# unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
-# the head is executed. Do not add a head checkout or a secret here.
-# `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
-# on the PR covers a retarget. The script re-reads the live head SHA and base ref.
+# Runs: `workflow_call` (pr-guards.yml, once per PR event), `workflow_dispatch` (input `pr`) and `merge_group`.
+# No `issue_comment` trigger: a comment cannot change a status that is always `success`, and a skipped run still counts
+# toward the daily run budget (CHE-4385).
+# Nothing from a PR head is checked out or executed; the job holds no secret.
 
 name: security-gate
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
-  issue_comment:
-    types: [created, edited, deleted]
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to mark green
+        required: true
+        type: string
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
   pull-requests: read
   statuses: write
 
-concurrency:
-  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-
 jobs:
   security-gate:
-    # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
+    # Job name differs from the status context on purpose: the context is posted by the step, not by the job name.
     name: security-gate-eval
-    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 10
+    # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml posts the queue status and this job skips `merge_group`.
+    if: github.event_name != 'merge_group' || vars.SECURITY_GATE_QUEUE_TRUSTED != 'true'
+    # CHE-3604: GitHub-hosted runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
       GH_TOKEN: ${{ github.token }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
     steps:
-      - name: Discard a reused workspace
+      - name: Post security-gate success (gate off, CHE-5126)
         run: |
-          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-      - name: Check out the protected default branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Fetch the head objects without checking them out
-        run: |
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
-      - name: Evaluate the verdict and post the status
-        run: |
-          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
+          set -euo pipefail
+          sha="$MERGE_GROUP_SHA"
+          if [ -z "$sha" ]; then
+            [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$sha" -f state=success -f context=security-gate \
+            -f "description=security gate off (CHE-5126)" \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # CHE-4251: a queue run that holds no secret. Its completion triggers security-gate-queue.yml, which runs from the
+  # default branch. This definition comes from the queue commit, so it must never name an environment or a secret.
+  queue-handoff:
+    name: queue-handoff
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "queue commit ${{ github.event.merge_group.head_sha }} handed to security-gate-queue"
+
+  # CHE-4385: a verdict that lands after CI changes required-check evidence, so a dispatched run refreshes the receipt
+  # in this same run (no `workflow_run` cascade, no separate run). While CI is still running its receipt is stale by
+  # design: dispatch again once CI is done. Called only on `workflow_dispatch`; a PR push gets its receipt from pr-guards.
+  mechanical-tier:
+    needs: security-gate
+    if: always() && github.event_name == 'workflow_dispatch' && needs.security-gate.result != 'skipped' && needs.security-gate.result != 'cancelled'
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+    uses: ./.github/workflows/mechanical-tier.yml

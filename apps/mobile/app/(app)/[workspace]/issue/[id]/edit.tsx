@@ -18,7 +18,7 @@
  * are NOT edited here — they have dedicated chip pickers on the detail page.
  * This screen only owns the two free-text fields.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -30,7 +30,6 @@ import {
 } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { stripChannelMediaMarkers } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { DescriptionField } from "@/components/issue/description-field";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
@@ -38,9 +37,9 @@ import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { issueDetailOptions } from "@/data/queries/issues";
 import { useUpdateIssue } from "@/data/mutations/issues";
 import { buildIssueTextUpdate } from "@/data/issue-edit";
+import { useIssueEditDraft } from "@/data/stores/use-form-drafts";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
-import { useMentionInput } from "@/lib/use-mention-input";
 
 export default function EditIssue() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -49,37 +48,18 @@ export default function EditIssue() {
   const detail = useQuery(issueDetailOptions(wsId, id));
   const update = useUpdateIssue(id);
 
-  const [title, setTitle] = useState("");
-  const [initialTitle, setInitialTitle] = useState("");
-  const [initialDescription, setInitialDescription] = useState("");
-  const description = useMentionInput();
-  const [seeded, setSeeded] = useState(false);
-  // Seed once when data arrives, before committing the form. Background
-  // refetches must not overwrite edits already in progress.
-  const setDescriptionText = description.setText;
-
-  if (detail.data && !seeded) {
-    setTitle(detail.data.title);
-    setInitialTitle(detail.data.title);
-    const initial = detail.data.description ?? "";
-    setDescriptionText(stripChannelMediaMarkers(initial));
-    setInitialDescription(initial);
-    setSeeded(true);
-  }
-
-  const currentDescription = description.serialize();
-
-  const dirty = useMemo(() => {
-    if (!detail.data || !seeded) return false;
-    return (
-      title.trim() !== initialTitle ||
-      currentDescription.trim() !==
-        stripChannelMediaMarkers(initialDescription).trim()
-    );
-  }, [detail.data, seeded, title, initialTitle, currentDescription, initialDescription]);
+  const {
+    title,
+    setTitle,
+    description,
+    currentDescription,
+    restored,
+    dirty,
+    settle,
+  } = useIssueEditDraft(id, detail.data);
 
   const canSave =
-    seeded && title.trim().length > 0 && dirty && !update.isPending;
+    restored && title.trim().length > 0 && dirty && !update.isPending;
 
   const onCancel = useCallback(() => {
     if (!dirty) {
@@ -94,11 +74,14 @@ export default function EditIssue() {
         {
           text: t("common:actions.discard"),
           style: "destructive",
-          onPress: () => router.back(),
+          onPress: () => {
+            settle();
+            router.back();
+          },
         },
       ],
     );
-  }, [dirty, t]);
+  }, [dirty, settle, t]);
 
   const onSave = useCallback(() => {
     if (!canSave) return;
@@ -110,7 +93,10 @@ export default function EditIssue() {
     // loop. Web/desktop keep baseline protection with their compare UI.
     const patch = buildIssueTextUpdate(title, currentDescription);
     update.mutate(patch, {
-      onSuccess: () => router.back(),
+      onSuccess: () => {
+        settle();
+        router.back();
+      },
       onError: (err) => {
         Alert.alert(
           t("form.save_failed"),
@@ -118,7 +104,7 @@ export default function EditIssue() {
         );
       },
     });
-  }, [canSave, title, currentDescription, update, t]);
+  }, [canSave, title, currentDescription, update, settle, t]);
 
   const headerLeft = useCallback(
     () => (
@@ -156,7 +142,7 @@ export default function EditIssue() {
           contentContainerClassName="px-4 pt-4 pb-6 gap-4"
           keyboardShouldPersistTaps="handled"
         >
-          {!detail.data ? (
+          {!detail.data || !restored ? (
             <Text className="text-sm text-muted-foreground">
               {t("common:states.loading")}
             </Text>

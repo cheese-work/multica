@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -61,13 +62,7 @@ func (handler *Handler) WithdrawDecision(writer http.ResponseWriter, request *ht
 		return
 	}
 	if !result.Replayed {
-		actorType, actorID := result.Comment.AuthorType, uuidToString(result.Comment.AuthorID)
-		handler.publish(protocol.EventCommentCreated, workspaceID, actorType, actorID, map[string]any{"comment": commentToResponse(result.Comment, nil, nil)})
-		handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
-		if result.Message.ID.Valid {
-			message := result.Message
-			handler.publishChatFor(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(result.Request.HumanUserID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
-		}
+		handler.publishDecisionWithdrawal(workspaceID, result)
 	}
 	writeJSON(writer, http.StatusOK, result.Request)
 }
@@ -155,6 +150,22 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	if current.Origin != "asked" || current.Status != "open" {
 		return empty, decisionIntentRefusal{http.StatusConflict, "only an open unanswered ask can be withdrawn"}
 	}
+	result, err := withdrawOpenDecision(ctx, queries, current, root, reason, actorType, actorID, taskID, userID)
+	if err != nil {
+		return empty, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return empty, err
+	}
+	handler.DecisionWorker.Notify()
+	return result, nil
+}
+
+// withdrawOpenDecision cancels one open ask, locked by the caller, and records
+// the withdrawal in its thread and its chat. The caller commits and announces
+// it with publishDecisionWithdrawal.
+func withdrawOpenDecision(ctx context.Context, queries *db.Queries, current db.DecisionRequest, root *db.Comment, reason, actorType string, actorID, taskID, userID pgtype.UUID) (decisionRequestResult, error) {
+	empty := decisionRequestResult{}
 	parentID := pgtype.UUID{}
 	if root != nil {
 		parentID = current.IssueCommentID
@@ -197,9 +208,16 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: current.WorkspaceID, DecisionRequestID: uuidToString(current.ID)}); err != nil {
 		return empty, err
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return empty, err
-	}
-	handler.DecisionWorker.Notify()
 	return decisionRequestResult{Request: current, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
+}
+
+// publishDecisionWithdrawal announces a committed withdrawal to the thread and the chat.
+func (handler *Handler) publishDecisionWithdrawal(workspaceID string, result decisionRequestResult) {
+	actorType, actorID := result.Comment.AuthorType, uuidToString(result.Comment.AuthorID)
+	handler.publish(protocol.EventCommentCreated, workspaceID, actorType, actorID, map[string]any{"comment": commentToResponse(result.Comment, nil, nil)})
+	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
+	if result.Message.ID.Valid {
+		message := result.Message
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(result.Request.HumanUserID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
+	}
 }

@@ -330,3 +330,15 @@ Si vous ne parvenez toujours pas à cerner le problème, recherchez parmi les is
 - [Daemon et runtimes](/daemon-runtimes) — comment les runtimes s'enregistrent et signalent leur statut en ligne.
 - [Exécutions](/tasks) — référence des statuts, des délais d'expiration et des échecs.
 - [Variables d'environnement](/environment-variables) — la référence complète de configuration de l'auto-hébergement.
+
+## Attente liée au disjoncteur du fournisseur
+
+Quand le disjoncteur d’un fournisseur suspend les nouveaux travaux, les tâches des issues restent différées avec le marqueur durable `provider_hold`. Ni le minuteur ni la disponibilité des médias ne les démarrent. Une libération explicite doit revérifier l’état du disjoncteur avant de retirer le marqueur. Le chat et la création rapide refusent la demande avec `provider_breaker`.
+
+Le paramètre d’espace de travail `provider_breaker_max_hold_seconds` vaut **21600 secondes (6 heures)** par défaut. Il limite les nouvelles attentes ; sa modification ne prolonge pas une échéance existante. Préparez une proposition via la CLI, puis suivez le processus habituel d’approbation de configuration :
+
+```bash
+multica config propose workspace.settings --set provider_breaker_max_hold_seconds:=21600 --out provider-hold.json
+```
+
+À l’échéance, la tâche échoue avec `provider_breaker_hold_expired` et crée une seule notification nécessitant une action pour le membre responsable. Cet échec ne déclenche pas de nouvelle tentative automatique. Vérifiez le fournisseur avant de relancer l’issue. Les nouvelles tentatives de reconnexion du runtime conservent leur comportement.

@@ -214,11 +214,13 @@ func TestDecisionDeliveryRefusedUnpromptedRecordIsCancelled(test *testing.T) {
 	fixture := newCardFixture(test)
 	defer dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'cancelled' WHERE status IN ('queued', 'running') AND issue_id = $1`, fixture.issueID)
 	input := fixture.recordInput()
-	input.ParentID, input.EscalationClass = parseUUID(dbfx.Comment(test, fixture.issueID, "An ordinary thread")), "spend"
+	input.ParentID, input.EscalationClass = parseUUID(dbfx.Comment(test, fixture.issueID, "An ordinary thread")), "reversible"
 	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
 	if err != nil || recorded.Request.Origin != "unprompted" || recorded.Answer.AnswerSource != "agent_record" {
 		test.Fatalf("not a gated unprompted agent record: %+v %v", recorded, err)
 	}
+	// Creation refuses non-reversible classes, so raise the class after the record exists.
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, recorded.Request.ID)
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
 	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
 	before := taskDigest(test, fixture.issueID)

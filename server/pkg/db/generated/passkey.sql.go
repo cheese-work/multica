@@ -122,6 +122,19 @@ func (q *Queries) EnsurePasskeyEnrollLimit(ctx context.Context, userID pgtype.UU
 	return err
 }
 
+const enterPasskeyRecovery = `-- name: EnterPasskeyRecovery :one
+UPDATE "user" SET passkey_state = 'recovery_required', session_generation = session_generation + 1, updated_at = now()
+WHERE id = $1
+RETURNING session_generation
+`
+
+func (q *Queries) EnterPasskeyRecovery(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, enterPasskeyRecovery, id)
+	var session_generation int32
+	err := row.Scan(&session_generation)
+	return session_generation, err
+}
+
 const getPasskey = `-- name: GetPasskey :one
 SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey WHERE id = $1
 `
@@ -312,6 +325,59 @@ type InsertPasskeyEventParams struct {
 func (q *Queries) InsertPasskeyEvent(ctx context.Context, arg InsertPasskeyEventParams) error {
 	_, err := q.db.Exec(ctx, insertPasskeyEvent, arg.UserID, arg.Action, arg.Details)
 	return err
+}
+
+const leavePasskeyRecovery = `-- name: LeavePasskeyRecovery :exec
+
+UPDATE "user" SET passkey_state = 'ready', updated_at = now()
+WHERE "user".id = $1 AND "user".passkey_state = 'recovery_required'
+  AND (SELECT count(*) FROM user_passkey WHERE user_passkey.user_id = $1 AND user_passkey.revoked_at IS NULL AND user_passkey.suspect_at IS NULL) >= 2
+`
+
+// Ends recovery in the transaction that brings the usable keys to two.
+func (q *Queries) LeavePasskeyRecovery(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, leavePasskeyRecovery, id)
+	return err
+}
+
+const listLivePasskeys = `-- name: ListLivePasskeys :many
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, id
+`
+
+func (q *Queries) ListLivePasskeys(ctx context.Context, userID pgtype.UUID) ([]UserPasskey, error) {
+	rows, err := q.db.Query(ctx, listLivePasskeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserPasskey{}
+	for rows.Next() {
+		var i UserPasskey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CredentialID,
+			&i.PublicKey,
+			&i.AttestationType,
+			&i.Aaguid,
+			&i.SignCount,
+			&i.Transports,
+			&i.Flags,
+			&i.SuspectAt,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listUsablePasskeys = `-- name: ListUsablePasskeys :many
@@ -583,6 +649,49 @@ func (q *Queries) LockUserForMembershipChange(ctx context.Context, id pgtype.UUI
 	return err
 }
 
+const lockUserForRecovery = `-- name: LockUserForRecovery :one
+
+SELECT id FROM "user" WHERE email = $1 FOR UPDATE
+`
+
+// Recovery (CHE-2798 P6, B3). The C00 command takes the person's row FOR
+// UPDATE; a gate check holds it FOR SHARE, so a check in flight finishes first
+// and a later one sees recovery_required.
+func (q *Queries) LockUserForRecovery(ctx context.Context, email string) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockUserForRecovery, email)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockUserPasskeyState = `-- name: LockUserPasskeyState :one
+
+SELECT passkey_state FROM "user" WHERE id = $1 FOR SHARE NOWAIT
+`
+
+// Approvals read the state under the same share lock the gate check takes.
+// NOWAIT: a recovery in flight answers busy and nothing waits.
+func (q *Queries) LockUserPasskeyState(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lockUserPasskeyState, id)
+	var passkey_state string
+	err := row.Scan(&passkey_state)
+	return passkey_state, err
+}
+
+const lockUserSessionGeneration = `-- name: LockUserSessionGeneration :one
+
+SELECT session_generation FROM "user" WHERE id = $1 FOR SHARE
+`
+
+// Serializes a credential insert with recovery: recovery holds the row FOR
+// UPDATE, so this waits for it and then reads the bumped generation.
+func (q *Queries) LockUserSessionGeneration(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, lockUserSessionGeneration, id)
+	var session_generation int32
+	err := row.Scan(&session_generation)
+	return session_generation, err
+}
+
 const lockUserWorkspaceGates = `-- name: LockUserWorkspaceGates :many
 
 SELECT w.decision_passkey_gate::text FROM member m JOIN workspace w ON w.id = m.workspace_id
@@ -640,6 +749,49 @@ func (q *Queries) MarkPasskeySuspect(ctx context.Context, id pgtype.UUID) error 
 	return err
 }
 
+const passkeyEnrollCodeIsSuperseded = `-- name: PasskeyEnrollCodeIsSuperseded :one
+SELECT EXISTS (
+    SELECT 1 FROM passkey_enroll_ceremony
+    WHERE user_id = $1 AND purpose = $2 AND code_hmac = $3 AND id <> $4
+      AND consumed_at IS NOT NULL AND created_at > now() - interval '1 hour'
+)::bool
+`
+
+type PasskeyEnrollCodeIsSupersededParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	Purpose  string      `json:"purpose"`
+	CodeHmac []byte      `json:"code_hmac"`
+	ID       pgtype.UUID `json:"id"`
+}
+
+// True when the code belongs to an older, consumed ceremony of the same user and
+// purpose: the user typed an earlier email's code.
+func (q *Queries) PasskeyEnrollCodeIsSuperseded(ctx context.Context, arg PasskeyEnrollCodeIsSupersededParams) (bool, error) {
+	row := q.db.QueryRow(ctx, passkeyEnrollCodeIsSuperseded,
+		arg.UserID,
+		arg.Purpose,
+		arg.CodeHmac,
+		arg.ID,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const revokeAllPasskeys = `-- name: RevokeAllPasskeys :execrows
+
+UPDATE user_passkey SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+// Suspect keys included: every credential of the person dies.
+func (q *Queries) RevokeAllPasskeys(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAllPasskeys, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokePasskey = `-- name: RevokePasskey :exec
 UPDATE user_passkey SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
@@ -670,6 +822,16 @@ func (q *Queries) SetWorkspaceDecisionGate(ctx context.Context, arg SetWorkspace
 	var i SetWorkspaceDecisionGateRow
 	err := row.Scan(&i.DecisionPasskeyGate, &i.PolicyRevision)
 	return i, err
+}
+
+const supersedeOpenPasskeyChallenges = `-- name: SupersedeOpenPasskeyChallenges :exec
+UPDATE passkey_assertion_challenge SET superseded_at = now()
+WHERE user_id = $1 AND consumed_at IS NULL AND superseded_at IS NULL
+`
+
+func (q *Queries) SupersedeOpenPasskeyChallenges(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, supersedeOpenPasskeyChallenges, userID)
+	return err
 }
 
 const supersedePasskeyChallenge = `-- name: SupersedePasskeyChallenge :exec

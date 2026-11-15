@@ -1,0 +1,2 @@
+# Upstream multica-ai history (commit 3817e2d8a, 2026-02-05): web-search signing key. Not a Cheese Work credential; CHE-3709.
+3817e2d8a2229fd81d1490aaa4fcaf9197b39ab4:src/agent/tools/web/web-search.ts:generic-api-key:20

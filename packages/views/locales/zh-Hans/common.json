@@ -135,5 +135,56 @@
   },
   "navigation": {
     "open_in_new_tab": "在新标签页打开"
+  },
+  "decision_action": {
+    "approve": "使用通行密钥批准",
+    "reject": "拒绝",
+    "reject_error": "拒绝未完成。请重试。",
+    "waiting": "正在等待你的通行密钥…",
+    "state": {
+      "executed": "已应用",
+      "failed": "未应用",
+      "rejected": "已拒绝",
+      "expired": "已过期",
+      "cancelled": "已取消"
+    },
+    "failed_code": {
+      "stale_cap": "已有更高的上限生效。",
+      "stale_window": "预算窗口已变化。请发起新请求。",
+      "not_budgeted": "此事项已不再受预算限制。",
+      "other": "失败：{{code}}",
+      "stale_base": "请求之后目标已更改。请重新请求。"
+    },
+    "refusal": {
+      "class_needs_owner": "只有工作区所有者可以批准此更改。",
+      "payload_mismatch": "批准的更改与所请求的更改不一致。请重新请求。",
+      "preview_required": "请针对所显示的预览进行批准。请重新加载卡片。",
+      "precondition_drift": "自请求以来目标已更改。请重新请求。",
+      "busy_retry": "另一项更改正在进行。请重试。",
+      "not_permitted": "你无权进行此更改。",
+      "action_not_executable": "此类更改暂时无法批准。",
+      "approval_proof_unavailable": "此服务器暂时无法验证通行密钥批准。",
+      "other": "已拒绝：{{code}}"
+    },
+    "owner_only": "只有工作区所有者可以批准此更改。",
+    "no_passkey": "批准前请先添加通行密钥。",
+    "add_passkey": "添加通行密钥",
+    "error": "通行密钥批准未完成。请重试。",
+    "lost": "响应丢失。该操作不会被再次批准。请检查结果。",
+    "check": "检查结果",
+    "outcome": {
+      "cap_applied": "已应用上限",
+      "run_queued": "运行已排队",
+      "still_blocked": "仍被阻止：{{reason}}"
+    },
+    "panel": {
+      "title": "运行预算请求",
+      "raise_cap": "将此窗口中 {{issue}} 的运行上限提高到 {{cap}} 次。",
+      "top_up": "为此窗口中的 {{issue}} 补充运行预算。",
+      "settled": "此审批已处于“{{state}}”状态。如仍需要，请让智能体重新提出。",
+      "mismatch": "此审批不是针对该问题的运行预算请求。请在私信或收件箱中打开该卡片进行决定。",
+      "open_card": "打开卡片",
+      "unreadable": "此审批对你不可用，或已不存在。请让智能体重新提出。"
+    }
   }
 }

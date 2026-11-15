@@ -83,6 +83,7 @@ export function ActivityHeatmap({
   // user-override store, so saving a custom rate must invalidate the cells.
   const pricings = useCustomPricingStore((s) => s.pricings);
   const { cells, monthLabels, insights } = useMemo(() => {
+    void pricings;
     // Sum priced cost per day. Cost (not tokens) gives the colour scale a
     // financial meaning that lines up with the rest of the page — a "hot"
     // square here means the same thing as a tall bar in Daily cost.

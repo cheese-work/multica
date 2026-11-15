@@ -1,4 +1,9 @@
-import { QueryClient, type InfiniteData } from "@tanstack/react-query";
+import {
+  InfiniteQueryObserver,
+  QueryClient,
+  QueryObserver,
+  type InfiniteData,
+} from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { chatKeys } from "./queries";
 import { upsertChatMessageToCaches } from "./message-cache";
@@ -105,6 +110,52 @@ describe("upsertChatMessageToCaches", () => {
     upsertChatMessageToCaches(qc, sessionId, message({ elapsed_ms: 999, content: "x" }));
 
     expect(qc.getQueryData<ChatMessage[]>(flatKey)?.[0]).toBe(existing);
+  });
+
+  it("keeps a WebSocket upsert when older message fetches resolve afterward", async () => {
+    const old = message({ id: "msg-old" });
+    const incoming = message({ id: "msg-new" });
+    const missed = message({ id: "msg-missed" });
+    const qc = qcWith([old], [page([old])]);
+    let resolveFlat!: (messages: ChatMessage[]) => void;
+    let resolvePage!: (page: ChatMessagesPage) => void;
+    let flatCalls = 0;
+    let pageCalls = 0;
+    const flatObserver = new QueryObserver(qc, {
+      queryKey: flatKey,
+      queryFn: () => flatCalls++ === 0
+        ? new Promise<ChatMessage[]>((resolve) => { resolveFlat = resolve; })
+        : Promise.resolve([old, missed, incoming]),
+      staleTime: Infinity,
+    });
+    const pageObserver = new InfiniteQueryObserver(qc, {
+      queryKey: pageKey,
+      initialPageParam: null,
+      queryFn: () => pageCalls++ === 0
+        ? new Promise<ChatMessagesPage>((resolve) => { resolvePage = resolve; })
+        : Promise.resolve(page([old, missed, incoming])),
+      getNextPageParam: () => undefined,
+      staleTime: Infinity,
+    });
+    const unsubscribeFlat = flatObserver.subscribe(() => undefined);
+    const unsubscribePage = pageObserver.subscribe(() => undefined);
+    const flatFetch = flatObserver.refetch();
+    const pageFetch = pageObserver.refetch();
+
+    expect(qc.getQueryState(flatKey)?.fetchStatus).toBe("fetching");
+    expect(qc.getQueryState(pageKey)?.fetchStatus).toBe("fetching");
+    upsertChatMessageToCaches(qc, sessionId, incoming);
+    resolveFlat([old, missed]);
+    resolvePage(page([old, missed]));
+    await Promise.all([flatFetch, pageFetch]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(flatCalls).toBe(2);
+    expect(pageCalls).toBe(2);
+
+    expect(flatIds(qc)).toEqual(["msg-old", "msg-missed", "msg-new"]);
+    expect(pageIds(qc)).toEqual([["msg-old", "msg-missed", "msg-new"]]);
+    unsubscribeFlat();
+    unsubscribePage();
   });
 
   it("leaves an unfetched cache alone by default", () => {

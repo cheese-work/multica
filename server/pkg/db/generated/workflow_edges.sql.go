@@ -76,14 +76,40 @@ func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueRevie
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
+  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+  AND (
+    action = 'run_budget_top_up'
+    OR created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+    OR (details->'trigger'->>'auth_source' = 'interactive_jwt' AND details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+  )
 ORDER BY created_at DESC LIMIT 1
 `
 
 // When a person last changed the issue's status or topped up its run budget: a
 // person who moves a blocked issue on, or tops it up, starts its run budget over.
+// After the S1d cutover only an interactive session's ui_or_api move opens a
+// window; a PAT, cli_jwt, a row with no trigger and a remap never do.
 func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
 	row := q.db.QueryRow(ctx, latestMemberStatusChange, issueID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
+const latestMemberStatusMove = `-- name: LatestMemberStatusMove :one
+SELECT created_at FROM activity_log
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
+  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+ORDER BY created_at DESC LIMIT 1
+`
+
+// When a person last moved the issue's status or topped up its run budget,
+// whatever session made the move. A refused dispatch resumes on any such move
+// (decision_wait.sql selects on the same rows); only the run-budget window is
+// limited to interactive sessions (LatestMemberStatusChange).
+func (q *Queries) LatestMemberStatusMove(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, latestMemberStatusMove, issueID)
 	var created_at pgtype.Timestamptz
 	err := row.Scan(&created_at)
 	return created_at, err
@@ -95,24 +121,59 @@ SELECT pr.state::text AS state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
        pr.snapshot_head_sha::text AS head_sha,
        pr.head_sha::text AS pr_head_sha,
-       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review
+       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review,
+       (CASE
+          WHEN f.failing = 0 AND f.flaky > 0 THEN 'flaky'
+          WHEN f.failing = 0 THEN ''
+          WHEN f.pr > 0 THEN 'pr'
+          WHEN f.unknown > 0 THEN 'unknown'
+          WHEN f.infra > 0 THEN 'infra'
+          ELSE 'optional'
+        END)::text AS red_cause,
+       pr.id AS pr_id,
+       'github'::text AS provider,
+       pr.pr_number AS pr_number,
+       pr.repo_owner::text AS repo_owner,
+       pr.repo_name::text AS repo_name,
+       pr.merge_commit_sha::text AS merge_commit_sha
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE c.failing) AS failing,
+           count(*) FILTER (WHERE c.failing AND c.red_cause = 'pr') AS pr,
+           count(*) FILTER (WHERE c.failing AND c.red_cause IS NULL) AS unknown,
+           count(*) FILTER (WHERE c.failing AND c.red_cause = 'infra') AS infra,
+           count(*) FILTER (WHERE NOT c.failing AND c.red_cause = 'flaky') AS flaky
+    FROM (
+        SELECT red_cause,
+               (status = 'completed' AND conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')) AS failing
+        FROM github_pull_request_check_run
+        WHERE pr_id = pr.id AND head_sha = pr.snapshot_head_sha
+    ) c
+) f
 WHERE ipr.issue_id = ANY($1::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text,
+       pr.id, pr.provider::text, pr.pr_number, pr.repo_owner::text, pr.repo_name::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY($1::uuid[])
 `
 
 type ListEdgePullRequestsRow struct {
-	State             string `json:"state"`
-	ChecksRollupState string `json:"checks_rollup_state"`
-	HeadFresh         bool   `json:"head_fresh"`
-	HeadSha           string `json:"head_sha"`
-	PrHeadSha         string `json:"pr_head_sha"`
-	Review            string `json:"review"`
+	State             string      `json:"state"`
+	ChecksRollupState string      `json:"checks_rollup_state"`
+	HeadFresh         bool        `json:"head_fresh"`
+	HeadSha           string      `json:"head_sha"`
+	PrHeadSha         string      `json:"pr_head_sha"`
+	Review            string      `json:"review"`
+	RedCause          string      `json:"red_cause"`
+	PrID              pgtype.UUID `json:"pr_id"`
+	Provider          string      `json:"provider"`
+	PrNumber          int32       `json:"pr_number"`
+	RepoOwner         string      `json:"repo_owner"`
+	RepoName          string      `json:"repo_name"`
+	MergeCommitSha    string      `json:"merge_commit_sha"`
 }
 
 // Every PR linked to the given issues, GitHub and self-hosted, as the facts
@@ -120,7 +181,13 @@ type ListEdgePullRequestsRow struct {
 // the snapshot belongs to the PR's newest head; review is the latest human
 // review decision, and counts only while it is on the PR's current head.
 // pr_head_sha is the PR's own newest head, which a checks snapshot may not have
-// caught up with.
+// caught up with. red_cause is why the failing checks are red (CHE-3257):
+// 'pr' when any failing check is PR-caused; ” when nothing fails (or no
+// per-check rows exist yet); 'unknown' when a failing check has no cause; then
+// 'infra' or 'optional'. 'flaky' when nothing fails now but a check was marked
+// flaky on this head: red earlier, green on a rerun of the same head.
+// The last six columns identify the PR for the PR merge rule's activity entry
+// and its refs (CHE-5242); the edge guards ignore them.
 func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UUID) ([]ListEdgePullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listEdgePullRequests, issueIds)
 	if err != nil {
@@ -137,44 +204,17 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 			&i.HeadSha,
 			&i.PrHeadSha,
 			&i.Review,
+			&i.RedCause,
+			&i.PrID,
+			&i.Provider,
+			&i.PrNumber,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.MergeCommitSha,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listMemberStatusChangesAfter = `-- name: ListMemberStatusChangesAfter :many
-SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
-  AND created_at > $2::timestamptz
-ORDER BY created_at
-`
-
-type ListMemberStatusChangesAfterParams struct {
-	IssueID pgtype.UUID        `json:"issue_id"`
-	After   pgtype.Timestamptz `json:"after"`
-}
-
-// Every time a person moved the issue's status or topped up its run budget after
-// a point: each one opened a run-budget window, whether or not anything was admitted in it.
-func (q *Queries) ListMemberStatusChangesAfter(ctx context.Context, arg ListMemberStatusChangesAfterParams) ([]pgtype.Timestamptz, error) {
-	rows, err := q.db.Query(ctx, listMemberStatusChangesAfter, arg.IssueID, arg.After)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.Timestamptz{}
-	for rows.Next() {
-		var created_at pgtype.Timestamptz
-		if err := rows.Scan(&created_at); err != nil {
-			return nil, err
-		}
-		items = append(items, created_at)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

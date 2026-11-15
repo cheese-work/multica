@@ -20,6 +20,8 @@ export function useWorkflowPermissions(
   canCreateWorkflow: boolean;
   canEditWorkflow: boolean;
   canManageProject: boolean;
+  /** Whether the current member leads the project. */
+  isProjectLead: (project?: Pick<Project, "lead_type" | "lead_id"> | null) => boolean;
 } {
   const wsId = useWorkspaceId();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -27,11 +29,14 @@ export function useWorkflowPermissions(
   const role = members.find((m) => m.user_id === userId)?.role;
   const isAdmin = role === "owner" || role === "admin";
   const isOwner = !!userId && !!workflow?.owner_id && workflow.owner_id === userId;
-  const isLead = !!userId && project?.lead_type === "member" && project.lead_id === userId;
+  const isProjectLead = (p?: Pick<Project, "lead_type" | "lead_id"> | null) =>
+    !!userId && p?.lead_type === "member" && p.lead_id === userId;
+  const isLead = isProjectLead(project);
   return {
     isAdmin,
     canCreateWorkflow: !!role,
     canEditWorkflow: isAdmin || isOwner,
     canManageProject: isAdmin || isLead,
+    isProjectLead,
   };
 }

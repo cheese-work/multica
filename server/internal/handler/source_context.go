@@ -719,6 +719,19 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		}
 		stage = pgtype.Int4{Int32: *input.Stage, Valid: true}
 	}
+	// A workflow override goes through the ordinary create's validation and
+	// permission check. The sub-issue inherits the source issue's project when it
+	// names none, as IssueService.Create does.
+	workflowProjectID := projectID
+	if !workflowProjectID.Valid {
+		if source, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: capture.SourceIssueID, WorkspaceID: workspaceID}); err == nil {
+			workflowProjectID = source.ProjectID
+		}
+	}
+	overrideID, _, _, ok := h.resolveCreateWorkflow(w, r, util.UUIDToString(workspaceID), workspaceID, input.WorkflowID, workflowProjectID, DecisionBindingFields{}, title)
+	if !ok {
+		return errSourceContextResponseWritten
+	}
 	prefix := h.getIssuePrefix(r.Context(), workspaceID)
 	// No assignee chosen: the project's workflow step for the status decides, as
 	// on an ordinary create, resolved under the locks the create takes.
@@ -727,10 +740,10 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID, userID)
 	}
 	result, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
-		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID, "member", util.UUIDToString(userID)),
+		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID, "member", util.UUIDToString(userID)), PropertyGate: h.createPropertyGate(workspaceID),
 		WorkspaceID: workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
 		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID, RequestedByID: userID,
-		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, StartDate: startDate, DueDate: dueDate,
+		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, WorkflowID: overrideID, StartDate: startDate, DueDate: dueDate,
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
 		AllowDuplicate: input.AllowDuplicate, SourceContext: &capture,
 	}, service.IssueCreateOpts{

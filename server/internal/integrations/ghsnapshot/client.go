@@ -18,6 +18,7 @@
 package ghsnapshot
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +59,9 @@ func (e *InstallationGoneError) Error() string {
 // the X-RateLimit-Reset header, or a conservative default.
 type RateLimitError struct {
 	RetryAfter time.Duration
+	// Header is the throttling response's headers, unclamped. Nil when the
+	// error was not built from a response.
+	Header http.Header
 }
 
 func (e *RateLimitError) Error() string {
@@ -85,6 +90,8 @@ type Client struct {
 type cachedToken struct {
 	token  string
 	expiry time.Time
+	// permissions is what GitHub granted this token, e.g. {"checks": "read"}.
+	permissions map[string]string
 }
 
 // NewClientFromEnv builds a Client from GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY.
@@ -199,8 +206,9 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 		return "", fmt.Errorf("github installation token: unexpected status %d", resp.StatusCode)
 	}
 	var parsed struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expires_at"`
+		Token       string            `json:"token"`
+		ExpiresAt   string            `json:"expires_at"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", errors.New("github installation token: malformed response")
@@ -215,46 +223,97 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 		}
 	}
 	client.mu.Lock()
-	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
+	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry, permissions: parsed.Permissions}
 	client.mu.Unlock()
 	return parsed.Token, nil
+}
+
+// tokenCanRead reports whether the installation's cached token was granted at
+// least read access to permission. It answers false until a request on this
+// installation has minted a token, so callers ask after their first request.
+func (client *Client) tokenCanRead(installationID int64, permission string) bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	switch client.tokens[installationID].permissions[permission] {
+	case "read", "write", "admin":
+		return true
+	}
+	return false
+}
+
+// StatusError is a non-200 REST answer. Callers branch on Status (a missing
+// file is a 404) without reading the body.
+type StatusError struct{ Status int }
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("github REST: unexpected status %d", e.Status)
 }
 
 // restGet authenticates against a fixed API path. Response bodies and tokens
 // never appear in errors; permission failures must not pause an installation.
 func (client *Client) restGet(ctx context.Context, installationID int64, path string) (json.RawMessage, error) {
-	token, err := client.installationToken(ctx, installationID)
+	return client.restDo(ctx, installationID, http.MethodGet, path, nil, http.StatusOK)
+}
+
+// restPost sends a JSON body and expects 201 Created.
+func (client *Client) restPost(ctx context.Context, installationID int64, path string, payload any) (json.RawMessage, error) {
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	endpoint := strings.TrimRight(client.apiBase, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	return client.restDo(ctx, installationID, http.MethodPost, path, raw, http.StatusCreated)
+}
+
+func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, error) {
+	body, _, err := client.restDoFull(ctx, installationID, method, path, payload, okStatus...)
+	return body, err
+}
+
+// restDoHeader is restGet that also returns the response headers (pagination).
+func (client *Client) restDoHeader(ctx context.Context, installationID int64, path string) (json.RawMessage, http.Header, error) {
+	return client.restDoFull(ctx, installationID, http.MethodGet, path, nil, http.StatusOK)
+}
+
+func (client *Client) restDoFull(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, http.Header, error) {
+	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	endpoint := strings.TrimRight(client.apiBase, "/") + path
+	var reqBody io.Reader
+	if payload != nil {
+		reqBody = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reqBody)
+	if err != nil {
+		return nil, nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	const maxBody = 8 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return nil, errors.New("github REST: failed to read response")
+		return nil, nil, errors.New("github REST: failed to read response")
 	}
 	if isRateLimited(resp, body) {
-		return nil, rateLimitFromResponse(resp, client.now())
+		return nil, nil, rateLimitFromResponse(resp, client.now())
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github REST: unexpected status %d", resp.StatusCode)
+	if !slices.Contains(okStatus, resp.StatusCode) {
+		return nil, nil, &StatusError{Status: resp.StatusCode}
 	}
 	if len(body) > maxBody {
-		return nil, errors.New("github REST: response exceeds size limit")
+		return nil, nil, errors.New("github REST: response exceeds size limit")
 	}
-	return body, nil
+	return body, resp.Header, nil
 }
 
 func isRateLimited(resp *http.Response, body []byte) bool {
@@ -299,5 +358,5 @@ func rateLimitFromResponse(resp *http.Response, now time.Time) *RateLimitError {
 	if wait > 5*time.Minute {
 		wait = 5 * time.Minute
 	}
-	return &RateLimitError{RetryAfter: wait}
+	return &RateLimitError{RetryAfter: wait, Header: resp.Header.Clone()}
 }

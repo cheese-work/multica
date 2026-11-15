@@ -1,0 +1,37 @@
+{
+  "data": {
+    "repository": {
+      "mergeQueue": {
+        "entries": {
+          "totalCount": 150,
+          "nodes": [
+            {
+              "state": "AWAITING_CHECKS",
+              "enqueuedAt": "2026-11-03T05:50:00Z",
+              "position": 1,
+              "pullRequest": {
+                "number": 101,
+                "url": "https://github.com/cheese-work/multica/pull/101"
+              },
+              "headCommit": {
+                "oid": "g1",
+                "committedDate": "2026-11-03T05:50:00Z",
+                "statusCheckRollup": {
+                  "contexts": {
+                    "totalCount": 1,
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "build"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

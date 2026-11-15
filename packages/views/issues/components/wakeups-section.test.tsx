@@ -23,6 +23,8 @@ let settings: Record<string, unknown> = {};
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
+// The scoped defaults have their own tests and their own queries.
+vi.mock("./issue-wakeup-defaults", () => ({ IssueWakeupDefaults: () => null }));
 const settingsPush = vi.hoisted(() => vi.fn());
 vi.mock("../../navigation", () => ({ useNavigation: () => ({ push: settingsPush }) }));
 vi.mock("@multica/core/paths", () => ({

@@ -74,8 +74,11 @@ type UserResponse struct {
 	OnboardingQuestionnaire json.RawMessage `json:"onboarding_questionnaire"`
 	StarterContentState     *string         `json:"starter_content_state"`
 	ProfileDescription      string          `json:"profile_description"`
-	CreatedAt               string          `json:"created_at"`
-	UpdatedAt               string          `json:"updated_at"`
+	// Always serialized (null when unset): clients treat a missing key as
+	// "server cannot track What's new" and suppress the auto-opening card.
+	WhatsNewSeenVersion *string `json:"whats_new_seen_version"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
 }
 
 // MaxProfileDescriptionLen caps the user-supplied profile_description body.
@@ -103,6 +106,7 @@ func (h *Handler) userToResponse(u db.User) UserResponse {
 		OnboardingQuestionnaire: json.RawMessage(q),
 		StarterContentState:     textToPtr(u.StarterContentState),
 		ProfileDescription:      u.ProfileDescription,
+		WhatsNewSeenVersion:     textToPtr(u.WhatsNewSeenVersion),
 		CreatedAt:               timestampToString(u.CreatedAt),
 		UpdatedAt:               timestampToString(u.UpdatedAt),
 	}
@@ -768,18 +772,28 @@ func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, meth
 		return
 	}
 
-	user, err := h.Queries.GetUser(r.Context(), parseUUID(userID))
-	if err != nil {
+	// The token carries the stored generation, so it is read and signed under
+	// the same share lock that compares it with the caller's.
+	var tokenString string
+	err := h.withCurrentSession(r, userID, func(queries *db.Queries) error {
+		user, err := queries.GetUser(r.Context(), parseUUID(userID))
+		if err != nil {
+			return err
+		}
+		tokenString, err = h.issueJWT(user, method)
+		return err
+	})
+	switch {
+	case errors.Is(err, errSessionRevoked):
+		writeError(w, http.StatusUnauthorized, "session revoked")
+		return
+	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "user not found")
 		return
-	}
-
-	tokenString, err := h.issueJWT(user, method)
-	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-			return
-		}
+	case errors.Is(err, auth.ErrTemporarilyDisabledUser):
+		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		return
+	case err != nil:
 		slog.Warn("auth-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return

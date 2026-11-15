@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS decision_wake_receipt_event_recipient_uidx;

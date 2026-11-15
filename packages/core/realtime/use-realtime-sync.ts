@@ -11,15 +11,22 @@ import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
+import { invalidateIssueGraph } from "../issues/graph-queries";
+import { isSidebarTableRequest, type SidebarIssuesRequest } from "../issues/sidebar-list";
+import { refreshIssueUnread } from "../issues/unread";
+import { refreshSubscribedIssues, subscribedIssueKeys } from "../issues/subscribed";
 import { projectKeys } from "../projects/queries";
 import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
+import { vcsKeys } from "../vcs/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
 import { labelKeys } from "../labels/queries";
 import { propertyKeys } from "../properties/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
 import { issueWorkflowKeys } from "../issue-workflows/queries";
+import { issueViewKeys } from "../issue-views/queries";
+import { issueViewPrefKeys } from "../issue-views/preferences";
 import {
   agentTaskSnapshotKeys,
   workspaceWorkingAgentsKeys,
@@ -90,6 +97,7 @@ import type {
   IssueDeletedPayload,
   IssueAttachmentsChangedPayload,
   IssueLabelsChangedPayload,
+  IssueUnreadChangedPayload,
   IssueMetadataChangedPayload,
   IssuePropertiesChangedPayload,
   InboxNewPayload,
@@ -201,13 +209,31 @@ export function refreshRuntimesWhilePaused(qc: QueryClient, wsId: string) {
   if (paused) qc.invalidateQueries({ queryKey: runtimeKeys.list(wsId) });
 }
 
+/** Issue ids of every decision card a message carries. */
+function messageCardIssueIds(m: ChatMessage): string[] {
+  return [m.decision_ref, ...(m.decision_quotes ?? []), m.decision_request, ...(m.decision_requests ?? [])]
+    .flatMap((card) => (card ? [card.issue_id] : []));
+}
+
 /**
- * An issue run started. A decision card in a DM shows the run that picked its
- * answer up, and that run has no message of its own to push, so refresh them.
+ * Issue runs started. A decision card in a DM shows the run that picked its
+ * answer up, and that run has no message of its own to push. Every card names
+ * its issue, so refresh only the DMs whose cached messages hold a card for one
+ * of `issueIds`. A DM with no cache has nothing stale; it fetches on first open.
  */
-export function applyIssueRunStarted(qc: QueryClient) {
-  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
-  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+export function applyIssueRunStarted(qc: QueryClient, issueIds: ReadonlySet<string>) {
+  const hit = (messages: ChatMessage[] | undefined) =>
+    messages?.some((m) => messageCardIssueIds(m).some((id) => issueIds.has(id))) ?? false;
+  const refresh = (
+    all: readonly unknown[],
+    pick: (data: never) => ChatMessage[] | undefined,
+  ) => {
+    for (const [queryKey, data] of qc.getQueriesData({ queryKey: all })) {
+      if (data && hit(pick(data as never))) qc.invalidateQueries({ queryKey, exact: true });
+    }
+  };
+  refresh(chatKeys.messagesAll(), (d: ChatMessage[]) => d);
+  refresh(chatKeys.messagesPageAll(), (d: InfiniteData<ChatMessagesPage>) => d.pages.flatMap((p) => p.messages));
 }
 
 /**
@@ -704,6 +730,8 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   const wsId = getCurrentWsId();
   if (wsId) {
     qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+    void refreshIssueUnread(qc, wsId);
+    qc.invalidateQueries({ queryKey: subscribedIssueKeys.all(wsId) });
     // Through the inbox's own entry point, not a plain invalidate: a reconnect
     // can land during the list's first load, and a plain invalidate would be
     // answered by the request already on the wire (see refreshInboxQuery).
@@ -713,6 +741,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
     qc.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
     qc.invalidateQueries({ queryKey: workspaceKeys.invitations(wsId) });
+    qc.invalidateQueries({ queryKey: workspaceKeys.myInvitations() });
     qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
@@ -721,6 +750,15 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: agentActivityKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentRunCountsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: chatKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: pinKeys.workspace(wsId) });
+    qc.invalidateQueries({ queryKey: notificationPreferenceKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: githubKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: larkKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: slackKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: dingtalkKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: wecomKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: telegramKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: vcsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: labelKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
     // A catalog edit missed while disconnected would otherwise sit behind the
@@ -728,6 +766,8 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     // archived, or to keep painting its old name.
     qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: issueViewKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: issueViewPrefKeys.all(wsId) });
   }
   // Cross-workspace, so outside the wsId guard: a reconnect may have missed
   // inbox events from any workspace, so re-pull the switcher-dot summary.
@@ -740,6 +780,9 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   // get marked stale here and refetch on next mount; the one mounted issue
   // refetches immediately, same as its own useWSReconnect already does.
   qc.invalidateQueries({ queryKey: issueKeys.timelineAll() });
+  // Task lifecycle events refresh comment-trigger previews because their
+  // verdict depends on whether the target agent already has pending work.
+  qc.invalidateQueries({ queryKey: issueKeys.commentTriggerPreviewAll() });
   qc.invalidateQueries({ queryKey: issueKeys.reactionsAll() });
   qc.invalidateQueries({ queryKey: issueKeys.subscribersAll() });
   qc.invalidateQueries({ queryKey: issueKeys.usageAll() });
@@ -758,6 +801,8 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   // what the durable draft-restore rows exist for (#5219) — re-pull them so
   // a mounted composer recovers the prompt without a remount.
   qc.invalidateQueries({ queryKey: chatKeys.draftRestoresAll() });
+  // PR rows are keyed by issue rather than workspace and refresh on PR events.
+  qc.invalidateQueries({ queryKey: githubKeys.pullRequestsAll() });
   qc.invalidateQueries({ queryKey: workspaceKeys.list() });
 }
 
@@ -781,6 +826,13 @@ async function refreshWorkingAgentQueries(qc: QueryClient, wsId: string): Promis
         // depend on this membership, not only rows and group descriptors.
         return spec?.filters.working_only === true ||
           spec?.filters.working_issue_ids !== undefined;
+      },
+    },
+    {
+      queryKey: issueKeys.sidebarAll(wsId),
+      predicate: ({ queryKey }) => {
+        const request = queryKey[4] as SidebarIssuesRequest | undefined;
+        return !!request && isSidebarTableRequest(request) && request.table.filters.working_only === true;
       },
     },
   ];
@@ -897,6 +949,8 @@ export function useRealtimeSync(
           // against, and project writes are rare, so refresh the table
           // queries unconditionally rather than guess.
           qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
+          // Deleting a project deletes the saved views scoped to it.
+          qc.invalidateQueries({ queryKey: issueViewKeys.all(wsId) });
         }
       },
       squad: () => {
@@ -935,6 +989,9 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) {
           qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
+          // Creating or archiving a status also adds it to, or drops it from,
+          // the stored Default workflow.
+          qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
           // Status-group order is server-owned and depends on catalog positions.
           // Rows/facets and unrelated groupings do not change on catalog edits.
           qc.invalidateQueries({
@@ -956,6 +1013,22 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         const userId = authStore.getState().user?.id;
         if (wsId && userId) qc.invalidateQueries({ queryKey: pinKeys.all(wsId, userId) });
+      },
+      issue_view: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: issueViewKeys.all(wsId) });
+      },
+      // The member's own preferences, saved on another tab or device.
+      issue_view_preference: () => {
+        const wsId = getCurrentWsId();
+        if (!wsId) return;
+        // A document with a write still in flight here refetches when that
+        // write settles; refetching it now could paint an older copy over the
+        // optimistic one. Every other document refreshes now.
+        qc.invalidateQueries({
+          queryKey: issueViewPrefKeys.all(wsId),
+          predicate: (query) => qc.isMutating({ mutationKey: query.queryKey, exact: true }) === 0,
+        });
       },
       daemon: () => {
         const wsId = getCurrentWsId();
@@ -993,7 +1066,7 @@ export function useRealtimeSync(
       },
       vcs_connection: () => {
         const wsId = getCurrentWsId();
-        if (wsId) qc.invalidateQueries({ queryKey: ["vcs", wsId] });
+        if (wsId) qc.invalidateQueries({ queryKey: vcsKeys.all(wsId) });
       },
       wecom_installation: () => {
         const wsId = getCurrentWsId();
@@ -1006,7 +1079,7 @@ export function useRealtimeSync(
       pull_request: () => {
         // PR list is keyed by issue id, not workspace, so we invalidate all
         // PR queries — the open issue detail page will refetch its own list.
-        qc.invalidateQueries({ queryKey: ["github", "pull-requests"] });
+        qc.invalidateQueries({ queryKey: githubKeys.pullRequestsAll() });
       },
       // Powers the agent presence cache: any task lifecycle change
       // (dispatch / completed / failed / cancelled) refreshes the
@@ -1105,7 +1178,7 @@ export function useRealtimeSync(
     // Event types handled by specific handlers below -- skip generic refresh
     const specificEvents = new Set([
       "workspace:updated",
-      "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
+      "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_unread:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
       "comment:created", "comment:updated", "comment:deleted",
       "comment:resolved", "comment:unresolved", "decision_answer:updated",
       "activity:created",
@@ -1135,6 +1208,15 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) scheduleWorkingAgentRefresh(wsId);
       }
+      if (msg.type === "skill:deleted") {
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          // Agent lists and details embed skill summaries used by duplication.
+          debouncedRefresh("skill:deleted", () => {
+            qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+          });
+        }
+      }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
       // A category move is the one catalog edit that does reach issue caches:
@@ -1154,10 +1236,17 @@ export function useRealtimeSync(
     // Filtering by actor_id would block other tabs of the same user.
     // Instead, both mutations and WS handlers use dedup checks to be idempotent.
 
+    // Timeline and relations views refetch on any issue or activity change.
+    const refreshIssueGraph = () => {
+      const wsId = getCurrentWsId();
+      if (wsId) debouncedRefresh("issue_graph", () => void invalidateIssueGraph(qc, wsId));
+    };
+
     const unsubIssueUpdated = ws.on("issue:updated", (p) => {
       const payload = p as IssueUpdatedPayload;
       const { issue } = payload;
       if (!issue?.id) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueUpdated(qc, wsId, issue, {
@@ -1181,6 +1270,7 @@ export function useRealtimeSync(
     const unsubIssueCreated = ws.on("issue:created", (p) => {
       const { issue } = p as IssueCreatedPayload;
       if (!issue) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) onIssueCreated(qc, wsId, issue);
     });
@@ -1188,6 +1278,7 @@ export function useRealtimeSync(
     const unsubIssueDeleted = ws.on("issue:deleted", (p) => {
       const { issue_id } = p as IssueDeletedPayload;
       if (!issue_id) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueDeleted(qc, wsId, issue_id);
@@ -1200,6 +1291,12 @@ export function useRealtimeSync(
       if (!issue_id) return;
       const wsId = getCurrentWsId();
       if (wsId) onIssueLabelsChanged(qc, wsId, issue_id, labels ?? [], issue_revision);
+    });
+
+    // Personal; may belong to a workspace other than the open one.
+    const unsubIssueUnreadChanged = ws.on("issue_unread:changed", (p) => {
+      const { workspace_id } = p as IssueUnreadChangedPayload;
+      if (workspace_id) void refreshIssueUnread(qc, workspace_id);
     });
 
     const unsubIssueAttachmentsChanged = ws.on("issue_attachments:changed", (p) => {
@@ -1286,6 +1383,7 @@ export function useRealtimeSync(
       if (wsId) {
         if (comment.decision_request_id || comment.decision_answer_id) {
           qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+          qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(wsId) });
         }
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
@@ -1303,7 +1401,10 @@ export function useRealtimeSync(
     const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
       applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
       const wsId = getCurrentWsId();
-      if (wsId) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+      if (wsId) {
+        qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+        qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(wsId) });
+      }
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1350,7 +1451,10 @@ export function useRealtimeSync(
 
     const unsubActivityCreated = ws.on("activity:created", (p) => {
       const { issue_id } = p as ActivityCreatedPayload;
-      if (issue_id) invalidateTimeline(issue_id);
+      if (issue_id) {
+        invalidateTimeline(issue_id);
+        refreshIssueGraph();
+      }
     });
 
     const unsubReactionAdded = ws.on("reaction:added", (p) => {
@@ -1383,15 +1487,22 @@ export function useRealtimeSync(
       }
     });
 
-    const unsubSubscriberAdded = ws.on("subscriber:added", (p) => {
-      const { issue_id } = p as SubscriberAddedPayload;
-      if (issue_id) qc.invalidateQueries({ queryKey: issueKeys.subscribers(issue_id) });
-    });
-
-    const unsubSubscriberRemoved = ws.on("subscriber:removed", (p) => {
-      const { issue_id } = p as SubscriberRemovedPayload;
-      if (issue_id) qc.invalidateQueries({ queryKey: issueKeys.subscribers(issue_id) });
-    });
+    // The viewer's own subscription changing also moves issues in and out of
+    // views filtered by the "subscribed" relation.
+    const onSubscriberChanged = (p: SubscriberAddedPayload | SubscriberRemovedPayload) => {
+      if (!p.issue_id) return;
+      qc.invalidateQueries({ queryKey: issueKeys.subscribers(p.issue_id) });
+      const wsId = getCurrentWsId();
+      if (wsId && p.user_type === "member" && p.user_id === authStore.getState().user?.id) {
+        void refreshSubscribedIssues(qc, wsId);
+      }
+    };
+    const unsubSubscriberAdded = ws.on("subscriber:added", (p) =>
+      onSubscriberChanged(p as SubscriberAddedPayload),
+    );
+    const unsubSubscriberRemoved = ws.on("subscriber:removed", (p) =>
+      onSubscriberChanged(p as SubscriberRemovedPayload),
+    );
 
     // --- Side-effect handlers (toast, navigation) ---
 
@@ -1638,9 +1749,38 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const sessionsQuery = () => {
+      const wsId = getCurrentWsId();
+      return wsId ? qc.getQueryCache().find({ queryKey: chatKeys.sessions(wsId), exact: true }) : undefined;
+    };
+    const unsubSessionListCache = qc.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success" || sessionsQuery() !== event.query) return;
+
+      const sessions = event.query.state.data as ChatSession[] | undefined;
+      for (const session of sessions ?? []) {
+        const lastMessage = session.last_message;
+        if (!lastMessage?.id) continue;
+
+        const pageKey = chatKeys.messagesPage(session.id);
+        const page = qc.getQueryData<InfiniteData<ChatMessagesPage>>(pageKey);
+        if (page && !page.pages.some((item) => item.messages.some((message) => message.id === lastMessage.id))) {
+          qc.invalidateQueries({ queryKey: pageKey });
+        }
+
+        const pending = qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(session.id));
+        if ((pending?.status === "dispatched" || pending?.status === "running") &&
+          lastMessage.role !== "user" && lastMessage.task_id === pending.task_id && pending.created_at &&
+          Date.parse(lastMessage.created_at) > Date.parse(pending.created_at)) {
+          qc.invalidateQueries({ queryKey: chatKeys.pendingTask(session.id) });
+        }
+      }
+    });
     const invalidateOpenDecisions = () => {
       const id = getCurrentWsId();
-      if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+      if (id) {
+        qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+        qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(id) });
+      }
     };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
@@ -1764,10 +1904,17 @@ export function useRealtimeSync(
     // path is collapsed in the handler above, so this handler exists mainly to
     // clear a stale `waiting_local_directory` pill — without it, the pill
     // would stay parked even after the daemon resumed work.
+    const runStartedIssues = new Set<string>();
     const unsubTaskRunning = ws.on("task:running", (p) => {
       const payload = p as TaskRunningPayload;
       if (!payload.chat_session_id) {
-        if (payload.issue_id) applyIssueRunStarted(qc);
+        if (payload.issue_id) {
+          runStartedIssues.add(payload.issue_id);
+          debouncedRefresh("issue_run_started", () => {
+            applyIssueRunStarted(qc, new Set(runStartedIssues));
+            runStartedIssues.clear();
+          });
+        }
         return;
       }
       qc.setQueryData<ChatPendingTask>(
@@ -1940,6 +2087,7 @@ export function useRealtimeSync(
       unsubIssueDeleted();
       unsubIssueAttachmentsChanged();
       unsubIssueLabelsChanged();
+      unsubIssueUnreadChanged();
       unsubIssueMetadataChanged();
       unsubIssuePropertiesChanged();
       unsubPropertyChanged.forEach((unsub) => unsub());
@@ -1979,6 +2127,7 @@ export function useRealtimeSync(
       unsubTaskCompleted();
       unsubTaskFailed();
       unsubChatSessionRead();
+      unsubSessionListCache();
       unsubChatSessionCreated();
       unsubChatSessionDeleted();
       unsubChatSessionUpdated();

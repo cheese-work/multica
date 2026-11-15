@@ -39,6 +39,7 @@ import { WakeupControl } from "./wakeup-control";
 import { WakeupsPausedBanner } from "./wakeups-paused-banner";
 import { WakeupCreate } from "./wakeup-create";
 import { SystemWakeupRow } from "./system-wakeup-row";
+import { IssueWakeupDefaults } from "./issue-wakeup-defaults";
 import { TranscriptButton } from "../../common/task-transcript";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
@@ -364,9 +365,12 @@ export function WakeupsSection({
   issueId,
   closed = false,
   defaultAgentId,
+  projectId,
 }: {
   issueId: string;
   closed?: boolean;
+  /** The issue's project, when it has one: inherited project rules link to it. */
+  projectId?: string;
   /** Preselected target for a new wakeup: the issue's agent assignee. */
   defaultAgentId?: string;
 }) {
@@ -487,6 +491,7 @@ export function WakeupsSection({
               {historyOpen && history.map(row)}
             </>
           )}
+          {!closed && <IssueWakeupDefaults workspaceId={workspaceId} issueId={issueId} projectId={projectId} />}
         </div>
       )}
     </section>

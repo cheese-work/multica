@@ -3,8 +3,8 @@
 -- or status changes. Property identifiers are resolved from each workspace.
 SELECT i.* FROM issue i
 WHERE i.metadata ?| ARRAY['decision_wait_started_at', 'decision_wait_alert_id',
-                          'decision_wait_missing_request', 'decision_wait_route_error',
-                          'decision_park']
+                          'decision_wait_missing_request', 'decision_wait_route_error']
+   OR EXISTS (SELECT 1 FROM issue_decision_park dp WHERE dp.issue_id = i.id)
    OR (i.status NOT IN ('in_review', 'done', 'cancelled')
        AND NOT EXISTS (
          SELECT 1 FROM issue_status s

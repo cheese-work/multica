@@ -74,8 +74,7 @@ export type PRAutoCompleteState =
   | "at_target"
   | "waiting"
   | "not_merged"
-  | "all_merged"
-  | "workflow_owned";
+  | "all_merged";
 
 export interface PRAutoComplete {
   /** Unknown future states are kept as strings; the UI renders nothing for them. */

@@ -149,9 +149,14 @@ test("PR-only scanner runs in parallel and required backend-tests fails closed",
   assert.match(job("migration-prefix-check"), /persist-credentials: false/);
   assert.match(job("migration-prefix-check"), /pull-requests: read/);
   assert.match(job("migration-prefix-check"), /timeout 25s node scripts\/migration-prefix-check.mjs/);
-  assert.match(job("backend-tests"), /^    needs: \[changes, migration-prefix-check\]$/m);
-  assert.match(job("backend-tests"), /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_full == 'true' \}\}$/m);
-  const guard = job("backend-tests").match(/      - name: Require migration prefix result[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
+  // CHE-4268: the scanner result is checked by the shard jobs, before their expensive steps; the
+  // required aggregate also waits on the scanner and fails when any shard fails.
+  assert.match(job("backend-test-shards"), /^    needs: \[changes, migration-prefix-check\]$/m);
+  assert.match(job("backend-tests"), /^    needs: \[changes, migration-prefix-check, backend-test-shards\]$/m);
+  for (const name of ["backend-test-shards", "backend-tests"]) {
+    assert.match(job(name), /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_backend == 'true' \}\}$/m);
+  }
+  const guard = job("backend-test-shards").match(/      - name: Require migration prefix result[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
   assert.ok(guard, "required check must validate the scanner result before expensive steps");
   const command = guard.replace(/^          /gm, "");
   for (const expected of ["success", "skipped"]) {

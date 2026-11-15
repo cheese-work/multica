@@ -25,11 +25,13 @@ type wdKit struct {
 	issueID   string
 }
 
-// newWakeupDefinitionKit opens the activation gate, which is closed unless a
-// test asks, and removes every definition the test wrote.
+// newWakeupDefinitionKit completes the test's own activation, which opens the
+// gate, and removes every definition the test wrote.
 func newWakeupDefinitionKit(t *testing.T) *wdKit {
 	t.Helper()
-	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, true)
+	s := useWakeupActivation(t)
+	wipeWakeupDefinitions(t)
+	completeActivation(t, s)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
@@ -129,6 +131,18 @@ func asUser(userID string) wdAs {
 
 // asAgentRun speaks as an agent from inside one of its live runs, which the
 // owner's session header still backs: the actor is the agent.
+// asTaskTokenRun is a real agent run: the auth middleware stamps the task-token
+// source, agent, task and bound workspace from the token row.
+func (k *wdKit) asTaskTokenRun() wdAs {
+	agentID := dbfx.Agent(k.t, "wd token agent", handlerTestRuntimeID(k.t))
+	taskID := dbfx.Task(k.t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(k.t), "originator_user_id": testUserID, "accountable_user_id": testUserID})
+	return func(r *http.Request) *http.Request {
+		r.Header.Set("X-Actor-Source", "task_token")
+		r.Header.Set("X-Workspace-ID", testWorkspaceID)
+		return asRun(r, agentID, taskID)
+	}
+}
+
 func (k *wdKit) asAgentRun() wdAs {
 	agentID := dbfx.Agent(k.t, "wd actor agent", handlerTestRuntimeID(k.t))
 	taskID := dbfx.Task(k.t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(k.t), "originator_user_id": testUserID, "accountable_user_id": testUserID})
@@ -163,6 +177,7 @@ func configKeys(t *testing.T, raw json.RawMessage) map[string]json.RawMessage {
 // ---- activation gate -------------------------------------------------------
 
 func TestWakeupDefinitionWritesClosedByDefault(t *testing.T) {
+	useWakeupActivation(t)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
@@ -225,8 +240,8 @@ func TestWakeupDefinitionAccessMatrix(t *testing.T) {
 			}
 		}
 	}
-	// An agent can read what it may see but cannot create a root default.
-	k.workspace().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), agentRun).Want(http.StatusForbidden)
+	// An agent can read what it may see; its disabled-only create is covered by
+	// TestWakeupDefinitionAgentCreatesDisabledRule.
 	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), asUser(member)).Want(http.StatusForbidden)
 	k.workspace().list(agentRun)
 }
@@ -1175,6 +1190,13 @@ func TestWakeupDefinitionCustomTriggersAreAcceptedBehindTheGate(t *testing.T) {
 	if preview.AlreadySatisfied == nil || preview.AlreadySatisfied.Satisfied != 1 || preview.AlreadySatisfied.Examined != 1 || preview.AlreadySatisfied.Truncated {
 		t.Fatalf("already satisfied = %+v, want the project's one todo issue", preview.AlreadySatisfied)
 	}
+	// It names that issue, so an owner sees which issue the rule would act on.
+	var number int
+	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, k.issueID).Scan(&number)
+	got := preview.AlreadySatisfied.Issues
+	if len(got) != 1 || got[0].ID != k.issueID || got[0].Title != "wd issue" || !strings.HasSuffix(got[0].Identifier, "-"+strconv.Itoa(number)) {
+		t.Fatalf("preview issues = %+v, want %s (number %d) titled %q", got, k.issueID, number, "wd issue")
+	}
 	if n := wdCount(t); n != 0 {
 		t.Fatalf("a preview persisted %d definitions", n)
 	}
@@ -1254,5 +1276,72 @@ func TestWakeupListsExposeTheOriginOfADefaultDerivedInstance(t *testing.T) {
 	}
 	if !derived || !local {
 		t.Fatalf("workspace list: derived=%v local=%v, want the origin on the derived row and null on the local one: %s", derived, local, ws.Body.String())
+	}
+}
+
+// ---- agent-created rules are stored disabled -------------------------------
+
+// An agent may propose a workspace or project rule, but it is stored disabled
+// until a human admin enables it. The agent cannot enable, edit or delete any
+// rule, and issue scope stays human-only.
+func TestWakeupDefinitionAgentCreatesDisabledRule(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	agentRun := k.asAgentRun()
+	own := handlerTestAgentID(t)
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		// The agent asks for an enabled rule; the server stores it disabled.
+		body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": own}})
+		created := decodeDefinition(t, s.create(body, agentRun).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, created.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: agent-created rule enabled = %s, want false: %s", s.kind, enabled, created.Config)
+		}
+		var stored bool
+		dbfx.QueryRow(t, `SELECT (config->>'enabled')::boolean FROM issue_wakeup_definition WHERE workspace_id = $1 AND rule_key = $2`, testWorkspaceID, created.RuleKey).Scan(&stored)
+		if stored {
+			t.Fatalf("%s: stored rule is enabled", s.kind)
+		}
+		if eff := s.effective(created.RuleKey); eff.Enabled {
+			t.Fatalf("%s: effective rule is enabled", s.kind)
+		}
+		// The agent cannot enable, edit or delete it.
+		enable := cfg(map[string]any{"enabled": true})
+		s.put(created.RuleKey, created.Revision, enable, agentRun).Want(http.StatusForbidden)
+		s.del(created.RuleKey, strconv.FormatInt(int64(created.Revision), 10), agentRun).Want(http.StatusForbidden)
+		// A human admin still enables it.
+		enabled := decodeDefinition(t, s.put(created.RuleKey, created.Revision, body).Want(http.StatusOK))
+		if got := string(configKeys(t, enabled.Config)["enabled"]); got != "true" {
+			t.Fatalf("%s: human enable left enabled = %s", s.kind, got)
+		}
+	}
+	wipeWakeupDefinitions(t)
+	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), agentRun).Want(http.StatusForbidden)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by an agent at issue scope", n)
+	}
+}
+
+// A real agent run (task token) can create a disabled workspace or project
+// rule, and nothing else. A cloud-node PAT still cannot.
+func TestWakeupDefinitionTaskTokenAgentCreatesDisabledRule(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	run := k.asTaskTokenRun()
+	own := handlerTestAgentID(t)
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": own}})
+		created := decodeDefinition(t, s.create(body, run).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, created.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: task-token rule enabled = %s, want false", s.kind, enabled)
+		}
+		s.put(created.RuleKey, created.Revision, body, run).Want(http.StatusForbidden)
+		s.del(created.RuleKey, strconv.FormatInt(int64(created.Revision), 10), run).Want(http.StatusForbidden)
+		s.preview("", body, run).Want(http.StatusForbidden)
+		s.create(body, asActorSource("cloud_pat")).Want(http.StatusForbidden)
+	}
+	wipeWakeupDefinitions(t)
+	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), run).Want(http.StatusForbidden)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by a task-token agent outside create", n)
 	}
 }

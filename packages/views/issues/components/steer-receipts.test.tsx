@@ -115,6 +115,37 @@ describe("SteerReceipts", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(api.retryTaskSupplement).toHaveBeenCalledWith("issue", turn, "steer"));
   });
+
+  it("shows a queued replay as a neutral status, not the failure alert", () => {
+    render(<SteerReceipts issueId="issue" entry={entry({ supplements: [
+      { task_id: turn, agent_id: "lambda", status: "failed", failure_reason: "replay_queued" },
+    ] })} />, [task({ status: "completed" })]);
+    expect(screen.getByRole("status")).toHaveTextContent("Lambda will read it in the next run");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("says the retries ran out and resends to the same agent only", async () => {
+    vi.mocked(api.createComment).mockResolvedValue({ id: "resent" } as Comment);
+    vi.mocked(api.previewCommentTriggers).mockResolvedValue(recipients("lambda"));
+    render(<SteerReceipts issueId="issue" entry={entry({ supplements: [
+      { task_id: turn, agent_id: "lambda", status: "failed", failure_reason: "replay_exhausted" },
+    ] })} />, [task({ status: "completed" })]);
+    expect(screen.getByRole("alert")).toHaveTextContent("Lambda didn't get it · the retries ran out");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send as a new run" }));
+    await waitFor(() => expect(api.createComment).toHaveBeenCalledWith(
+      "issue", "Only fix web.", undefined, "thread", undefined, undefined, undefined,
+    ));
+  });
+
+  it("names a refused replay instead of calling it unknown", () => {
+    render(<SteerReceipts issueId="issue" entry={entry({ supplements: [
+      { task_id: turn, agent_id: "lambda", status: "failed", failure_reason: "run_budget_exhausted" },
+    ] })} />, [task({ status: "completed" })]);
+    expect(screen.getByRole("alert")).toHaveTextContent("Lambda didn't get it · the run budget is used up");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
 });
 
 describe("formatAgentNames", () => {

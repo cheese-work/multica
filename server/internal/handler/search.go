@@ -52,7 +52,7 @@ func scanSearchIssue(rows pgx.Rows) (searchResult, error) {
 		&result.issue.AcceptanceCriteria, &result.issue.ContextRefs, &result.issue.Position,
 		&result.issue.StartDate, &result.issue.DueDate, &result.issue.CreatedAt, &result.issue.UpdatedAt,
 		&result.issue.LastActivityAt, &result.issue.Number, &result.issue.ProjectID, &result.issue.Revision,
-		&result.issue.DuplicateOfIssueID, &result.matchSource, &result.matchedCommentContent,
+		&result.issue.DuplicateOfIssueID, &result.issue.DescriptionExternalRead, &result.matchSource, &result.matchedCommentContent,
 	)
 	return result, err
 }

@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"slices"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -43,6 +46,13 @@ import (
 // the requester (the admin doing the kick); for LeaveWorkspace it's the leaver
 // themselves.
 func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID, memberID, archivedBy pgtype.UUID) (revocationResult, error) {
+	return h.removeMemberAudited(ctx, nil, "", workspaceID, userID, memberID, archivedBy)
+}
+
+// removeMemberAudited is revokeAndRemoveMember plus the audit row for the
+// removal, written in the same tx before the commit. An empty auditKind skips
+// the row; a failed insert returns an auditWriteError and commits nothing.
+func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, auditKind string, workspaceID, userID, memberID, archivedBy pgtype.UUID) (revocationResult, error) {
 	var empty revocationResult
 
 	tx, err := h.TxStarter.Begin(ctx)
@@ -90,6 +100,13 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 			if rt.DaemonID.Valid && rt.DaemonID.String != "" {
 				daemonIDs = append(daemonIDs, rt.DaemonID.String)
 			}
+		}
+
+		// Sessions before agents (chat_session -> runtime -> agent -> task): chat enqueue
+		// holds a session while it locks the agent, so archiving the agents
+		// first would deadlock a concurrent send.
+		if _, err := qtx.LockChatSessionsForRuntimes(ctx, runtimeIDs); err != nil {
+			return empty, err
 		}
 
 		result.ArchivedAgents, err = qtx.ArchiveAgentsByRuntime(ctx, db.ArchiveAgentsByRuntimeParams{
@@ -257,6 +274,22 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		result.ReadyChats = append(result.ReadyChats, readyChats...)
 	}
 
+	if auditKind != "" {
+		member, err := qtx.GetMember(ctx, memberID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Already removed: nothing for this call to record.
+		case err != nil:
+			return empty, err
+		default:
+			if err := h.writeAudit(ctx, qtx, r, auditInput{
+				Kind: auditKind, WorkspaceID: workspaceID, TargetID: memberID,
+				Before: memberAuditFields(member),
+			}); err != nil {
+				return empty, auditWriteError{err}
+			}
+		}
+	}
 	if err := qtx.DeleteMember(ctx, memberID); err != nil {
 		return empty, err
 	}

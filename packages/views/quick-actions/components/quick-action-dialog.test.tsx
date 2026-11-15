@@ -8,10 +8,11 @@ vi.mock("@multica/core/permissions", () => ({ useCurrentMember: () => ({ role: s
 vi.mock("@multica/core/quick-actions", () => ({ useCreateQuickAction: () => ({ mutateAsync: state.create }) }));
 vi.mock("../../autopilots/components/pickers/agent-picker", () => ({ AgentPicker: () => null }));
 import type { QuickAction } from "@multica/core/types";
+import { useQuickActionDraftStore } from "@multica/core/quick-actions/draft-store";
 import { CreateQuickActionDialog, QuickActionDialog } from "./quick-action-dialog";
 
 describe("shared quick action creation", () => {
-  beforeEach(() => { state.role = "member"; state.create.mockReset(); state.create.mockResolvedValue({}); });
+  beforeEach(() => { useQuickActionDraftStore.setState({ drafts: {} }); state.role = "member"; state.create.mockReset(); state.create.mockResolvedValue({}); });
   function fill() {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Review" } });
     fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "Review this issue" } });
@@ -78,6 +79,37 @@ describe("shared quick action creation", () => {
     expect(screen.getByRole("button", { name: /Just me/ })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+  it("restores unsent name, prompt and visibility after an unmount and remount", () => {
+    state.role = "admin";
+    const first = renderWithI18n(<CreateQuickActionDialog onClose={vi.fn()} />);
+    fill();
+    fireEvent.click(screen.getByRole("button", { name: /Team/ }));
+    first.unmount();
+
+    renderWithI18n(<CreateQuickActionDialog onClose={vi.fn()} />);
+    expect(screen.getByLabelText("Name")).toHaveValue("Review");
+    expect(screen.getByLabelText("Prompt")).toHaveValue("Review this issue");
+    expect(screen.getByRole("button", { name: /Team/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("clears the draft only after a successful save", async () => {
+    state.create.mockRejectedValueOnce(new Error("Save failed"));
+    const first = renderWithI18n(<CreateQuickActionDialog onClose={vi.fn()} />);
+    fill();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    first.unmount();
+
+    const close = vi.fn();
+    const second = renderWithI18n(<CreateQuickActionDialog onClose={close} />);
+    expect(screen.getByLabelText("Name")).toHaveValue("Review");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+    second.unmount();
+
+    renderWithI18n(<CreateQuickActionDialog onClose={vi.fn()} />);
+    expect(screen.getByLabelText("Name")).toHaveValue("");
   });
 
 });

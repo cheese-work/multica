@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { ApiClient } from "../api/client";
 import { installFreezeWatchdog } from "../diagnostics/freeze-watchdog";
 import { setApiInstance, setSchemaLogger } from "../api";
@@ -151,23 +151,19 @@ export function CoreProvider({
   resources,
   localeAdapter,
   syncUserLocale = true,
+  onWSClientReady,
 }: CoreProviderProps) {
-  // Initialize singletons on first render only. Dependencies are read-once:
-  // apiBaseUrl, storage, and callbacks are set at app boot and never change at runtime.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useMemo(
-    () =>
-      initCore({
-        apiBaseUrl,
-        storage,
-        onLogin,
-        onLogout,
-        onSessionExpired,
-        cookieAuth,
-        identity,
-      }),
-    [],
-  );
+  // Initialize singletons on first render only: `initCore` is a no-op after the
+  // first call, so apiBaseUrl, storage, and callbacks are read once at app boot.
+  initCore({
+    apiBaseUrl,
+    storage,
+    onLogin,
+    onLogout,
+    onSessionExpired,
+    cookieAuth,
+    identity,
+  });
 
   // Client-only freeze watchdog — shared by web and desktop. No-op on the
   // server and idempotent, so mounting it here covers both apps in one place.
@@ -214,6 +210,7 @@ export function CoreProvider({
           storage={storage}
           cookieAuth={cookieAuth}
           identity={identity}
+          onClientReady={onWSClientReady}
         >
           {children}
         </WSProvider>

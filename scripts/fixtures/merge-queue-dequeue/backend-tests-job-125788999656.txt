@@ -1,0 +1,24 @@
+2026-11-03T07:45:11.3335934Z 2026/11/03 07:45:04 INFO composio integration disabled (COMPOSIO_API_KEY not set)
+2026-11-03T07:45:11.3336311Z 2026/11/03 07:45:04 INFO vcs integration disabled (MULTICA_VCS_SECRET_KEY not set)
+2026-11-03T07:45:11.3336723Z 2026/11/03 07:45:04 INFO Plugin secrets disabled (MULTICA_PLUGIN_SECRET_KEY not set)
+2026-11-03T07:45:11.3337414Z 2026/11/03 07:45:04 WARN plugins: MULTICA_PLUGIN_API_URL and MULTICA_PUBLIC_URL are not set; hook callbacks will carry no callback_url
+2026-11-03T07:45:11.3337771Z 2026/11/03 07:45:04 WARN auth rate limiting disabled: REDIS_URL not configured
+2026-11-03T07:45:11.3338476Z 2026/11/03 07:45:04 WARN daemon update: serving no daemon binaries dir=/app/daemon-binaries error="server build has no commit stamp"
+2026-11-03T07:45:11.3340449Z     route_write_scope_audit_test.go:192: write family api/agent-decisions has 2 routes, audited 1 (human-only route (RequireHumanActor) or an account/billing/auth surface a run token never holds): ["PUT /api/agent-decisions/jev" "PUT /api/agent-decisions/setting"]
+2026-11-03T07:45:11.3340861Z --- FAIL: TestRouterWriteRoutesAuditedAgainstTaskWriteScope (0.02s)
+2026-11-03T07:45:11.3341132Z === RUN   TestSeatCapacityAssemblyUsesCloudURLAlone
+2026-11-03T07:45:11.3341459Z --- PASS: TestSeatCapacityAssemblyUsesCloudURLAlone (0.00s)
+2026-11-03T07:45:11.3655236Z     --- PASS: TestParseTrustedProxies/empty_entries_skipped (0.00s)
+2026-11-03T07:45:11.3655713Z --- PASS: TestEveryWecomEnvVarIsDocumentedAndPassedIntoTheContainer (0.11s)
+2026-11-03T07:45:11.3655853Z FAIL
+2026-11-03T07:45:11.3656190Z FAIL	github.com/multica-ai/multica/server/cmd/server	43.111s
+2026-11-03T07:48:16.1979938Z 2026/11/03 07:47:41 WARN scheduler: handler failed component=scheduler runner_id=panic-runner job=panic_9a7521b6 scope=global/global plan_time=2026-11-03T07:45:00Z attempt=1 execution_id=01a1a060-cddb-7401-a099-90f93927627b duration_ms=0 error_code=handler_panic error="scheduler: handler panic: simulated handler boom" will_retry=true
+2026-11-03T07:51:47.5609718Z     --- PASS: TestClassifyRules/402_in_hex_id_not_quota (0.00s)
+2026-11-03T07:51:47.5609963Z     --- PASS: TestClassifyRules/5xx_in_hex_id_not_server_error (0.00s)
+2026-11-03T07:51:47.5610245Z     --- PASS: TestClassifyRules/model_name_500_suffix_not_server_error (0.00s)
+2026-11-03T07:51:47.5610507Z     --- PASS: TestClassifyRules/429_still_capacity_alongside_hex_ids (0.00s)
+2026-11-03T07:51:47.5610851Z     --- PASS: TestClassifyRules/503_still_server_error_alongside_letters (0.00s)
+2026-11-03T07:51:47.5610938Z PASS
+2026-11-03T07:51:47.5611127Z ok  	github.com/multica-ai/multica/server/pkg/taskfailure	1.722s
+2026-11-03T07:51:47.5611218Z FAIL
+2026-11-03T07:51:47.5622835Z ##[error]Process completed with exit code 1.

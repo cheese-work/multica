@@ -76,8 +76,14 @@ type workflowWrite struct {
 // the decision. An issue that lands in no project still gets a write: it
 // checks that no one moved the issue into a project in the meantime.
 func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, *workflowWrite, error) {
+	return h.decideIssueWorkflowWith(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+}
+
+// decideIssueWorkflowWith is decideIssueWorkflow reading through q, the
+// queries of a transaction the caller has open.
+func (h *Handler) decideIssueWorkflowWith(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, *workflowWrite, error) {
 	write := &workflowWrite{prev: prev, pre: *params, statusExplicit: statusExplicit, assigneeTouched: assigneeTouched, enterOn: enterOnMove, caller: caller}
-	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+	handoff, err := h.applyIssueWorkflow(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
 	if err != nil {
 		return handoff, nil, err
 	}

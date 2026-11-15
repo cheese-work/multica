@@ -16,7 +16,7 @@ date="${DATE:-unknown}"
 platforms="${DAEMON_PLATFORMS:-linux/amd64 linux/arm64 darwin/arm64 darwin/amd64}"
 
 full_version="${version}${build:+-$build}"
-ldflags="-s -w -X main.version=${full_version} -X main.commit=${commit} -X main.date=${date}"
+ldflags="-s -w -X main.version=${full_version} -X main.commit=${commit} -X main.buildCommit=${commit} -X main.date=${date}"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$out"

@@ -48,6 +48,7 @@ func TestClaimChatDecisionReadErrorKeepsTaskForRedelivery(t *testing.T) {
 	taskID := sendDirectChat(t, ctx, agentID, sessionID, "A")
 
 	h := New(db.New(decisionReadFailDBTX{inner: testPool}), testPool, testHandler.Hub, testHandler.Bus, testHandler.EmailService, nil, nil, analytics.NoopClient{}, Config{})
+	t.Cleanup(giveBackRunBudgetHooks)
 	claimForRuntimeExpecting(t, h, runtimeID, daemonID, http.StatusInternalServerError)
 
 	var status string

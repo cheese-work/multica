@@ -360,7 +360,7 @@ func TestChannelChatCommandE2ERotatesRouteAndFreezesTaskDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent for direct send: %v", err)
 	}
-	direct, err := testHandler.TaskService.SendDirectChatMessage(ctx, emptySession, agent, util.MustParseUUID(testUserID), "continue from the web client", nil, "member", util.MustParseUUID(testUserID), "interactive_jwt")
+	direct, err := testHandler.TaskService.SendDirectChatMessage(ctx, emptySession, agent, util.MustParseUUID(testUserID), "continue from the web client", nil, "member", util.MustParseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{})
 	if err != nil {
 		t.Fatalf("direct send to channel-created Chat: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestChannelChatCommandE2ERotatesRouteAndFreezesTaskDelivery(t *testing.T) {
 	}
 	attachmentSend, err := testHandler.TaskService.SendDirectChatMessage(
 		ctx, attachmentSession, agent, util.MustParseUUID(testUserID), "", []pgtype.UUID{attachmentID},
-		"member", util.MustParseUUID(testUserID), "interactive_jwt",
+		"member", util.MustParseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{},
 	)
 	if err != nil {
 		t.Fatalf("send attachment-only first message: %v", err)
@@ -706,7 +706,7 @@ func TestSlackNativeClearCommandKeepsChatAndAdvancesContextAtomically(t *testing
 	}
 	var title string
 	dbfx.QueryRow(t, `SELECT title FROM chat_session WHERE id = $1`, sessionID).Scan(&title)
-	if title != "/issue investigate native cle…" {
+	if title != "/issue investigate native clear" {
 		t.Fatalf("native /clear first-turn title = %q, want the literal command body", title)
 	}
 
@@ -747,7 +747,7 @@ func TestSlackNativeClearCommandKeepsChatAndAdvancesContextAtomically(t *testing
 		t.Fatalf("bare native /clear state: session=%s/%s context=%d pending=%t tasks=%d messages=%d routes=%d dedup=%t", currentSessionID, sessionID, currentContextRevision, currentBoundaryPending, currentTaskCount, currentMessageCount, currentRouteCount, bareDedupProcessed)
 	}
 	dbfx.QueryRow(t, `SELECT title FROM chat_session WHERE id = $1`, sessionID).Scan(&title)
-	if title != "/issue investigate native cle…" {
+	if title != "/issue investigate native clear" {
 		t.Fatalf("bare native /clear changed the existing title to %q", title)
 	}
 }

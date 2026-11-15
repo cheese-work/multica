@@ -63,6 +63,7 @@ func TestAgentCommentSteersAnAgentItMayInvoke(t *testing.T) {
 		name         string
 		body         func(f agentSteerFixture) map[string]any
 		noOriginator bool
+		rejected     bool
 		self         bool
 		wantSteered  bool
 	}{
@@ -75,7 +76,7 @@ func TestAgentCommentSteersAnAgentItMayInvoke(t *testing.T) {
 		{name: "no steer intent keeps the normal trigger", body: func(f agentSteerFixture) map[string]any {
 			return map[string]any{"content": agentMention("Target", f.agentID) + " only fix web"}
 		}},
-		{name: "chain that may not invoke the target", noOriginator: true, body: func(f agentSteerFixture) map[string]any {
+		{name: "chain that may not invoke the target is refused", noOriginator: true, rejected: true, body: func(f agentSteerFixture) map[string]any {
 			return map[string]any{"content": agentMention("Target", f.agentID) + " only fix web", "steer": true}
 		}},
 		{name: "own running turn", self: true, body: func(f agentSteerFixture) map[string]any {
@@ -86,6 +87,11 @@ func TestAgentCommentSteersAnAgentItMayInvoke(t *testing.T) {
 			f := newAgentSteerFixture(t)
 			if tc.noOriginator {
 				dbfx.Exec(t, `UPDATE agent_task_queue SET originator_user_id = NULL, accountable_user_id = NULL, originator_source = NULL WHERE id = $1`, f.callerTask)
+			}
+			if tc.rejected {
+				req := agentRequest(http.MethodPost, "/api/issues/"+f.issueID+"/comments", tc.body(f), f.callerAgent, f.callerTask)
+				testutil.Call(t, testHandler.CreateComment, withURLParam(req, "id", f.issueID)).Want(http.StatusUnprocessableEntity)
+				return
 			}
 			created := postAgentComment(t, f.issueID, f.callerAgent, f.callerTask, tc.body(f))
 			target, targetTask := f.agentID, f.taskID

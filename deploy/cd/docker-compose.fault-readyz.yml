@@ -1,0 +1,24 @@
+# Readiness fault overlay for the C00 rollback drill (CHE-4664 / CHE-4619).
+# NOT loaded by cutover.sh and never part of a normal deploy: cutover.sh's
+# overlay list is fixed (ab, flags, jev). deploy/cd/drill/docker (a `docker`
+# shim on PATH for one run, with DRILL_FAULT_READYZ=1) appends this file to the
+# candidate start only. See deploy/cd/README.md, "Readiness fault overlay".
+#
+# Do NOT layer it by hand on every call: it points the backend at a host that
+# does not resolve, so a migrator run with it would fail the migration after
+# the incumbent was drained.
+#
+# Fault: the candidate backend gets a database host in the reserved .invalid
+# TLD (RFC 2606), which never resolves. The server exits at startup ("unable to
+# connect to database" / "unable to ping database"), so /readyz never answers.
+#
+# Expected cutover.sh outcome: quiescence final-gate and migration pass, the
+# candidate starts and never turns ready, wait_ready_on_port gives up after
+# 180s, and recover_incumbent restarts the incumbent. The router never switches.
+
+services:
+  backend-blue: &fault_backend
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@fault-db.invalid:5432/${POSTGRES_DB:-multica}?sslmode=disable
+
+  backend-green: *fault_backend

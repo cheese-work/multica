@@ -34,12 +34,11 @@ func TestDecisionSessionRetention(test *testing.T) {
 				test.Cleanup(func() { dbfx.Exec(test, `DELETE FROM decision_request WHERE id = $1`, requestID) })
 				before := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, agentID)
 				wanted := http.StatusOK
-				if action == "continue" {
-					wanted = http.StatusCreated
-				} else if action == "delete" {
+				if action == "delete" {
 					wanted = http.StatusNoContent
 				}
-				if status == "open" {
+				// A compaction keeps the DM, so an open decision never blocks it.
+				if status == "open" && action != "continue" {
 					wanted = http.StatusConflict
 				}
 				var handler http.HandlerFunc = testHandler.SetChatSessionArchived
@@ -52,6 +51,11 @@ func TestDecisionSessionRetention(test *testing.T) {
 				var stored string
 				if err := testPool.QueryRow(context.Background(), `SELECT status FROM decision_request WHERE id = $1`, requestID).Scan(&stored); err != nil || stored != status {
 					test.Fatalf("baseline changed decision row: status=%q err=%v", stored, err)
+				}
+				if action == "continue" {
+					if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE id = $1 AND status = 'active' AND compaction_epoch = 1`, sessionID); count != 1 {
+						test.Fatal("compaction did not keep the decision's DM active at the next epoch")
+					}
 				}
 				if wanted == http.StatusConflict {
 					if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, agentID); count != before {
@@ -115,7 +119,11 @@ func TestDecisionSessionChecksDoNotLockDecisionRows(test *testing.T) {
 			} else if action == "delete" {
 				handler = testHandler.DeleteChatSession
 			}
-			testutil.Call(test, handler, request.WithContext(ctx)).Want(http.StatusConflict)
+			wanted := http.StatusConflict
+			if action == "continue" {
+				wanted = http.StatusOK
+			}
+			testutil.Call(test, handler, request.WithContext(ctx)).Want(wanted)
 		})
 	}
 }

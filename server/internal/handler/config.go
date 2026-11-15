@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -101,6 +102,12 @@ type AppConfig struct {
 	// replies unless it is declared.
 	CommentDeleteKeepRepliesSupported bool `json:"comment_delete_keep_replies_supported"`
 
+	// AutopilotDescriptionGuardSupported tells independently deployed clients
+	// that PATCH /api/autopilots/{id} enforces expected_description_sha256.
+	// Older handlers ignored the unknown JSON field and still overwrote the
+	// description, so clients must fail closed when this declaration is absent.
+	AutopilotDescriptionGuardSupported bool `json:"autopilot_description_guard_supported"`
+
 	// ServerVersion is the running API plain semver version, ServerBuild is the
 	// fork ICT build stamp (YYYYMMDD-hhmm), and ServerCommit is the 7-char short
 	// commit SHA. Only emitted on self-hosted deployments — omitted on the
@@ -108,6 +115,12 @@ type AppConfig struct {
 	ServerVersion string `json:"server_version,omitempty"`
 	ServerBuild   string `json:"server_build,omitempty"`
 	ServerCommit  string `json:"server_commit,omitempty"`
+
+	// DocsURL is the path where this deployment serves its docs, set only when
+	// the operator runs the docs service (DOCS_URL). A path, not an absolute URL,
+	// so each client resolves it against the origin it actually reached. Absent =
+	// clients link to the upstream docs site.
+	DocsURL string `json:"docs_url,omitempty"`
 }
 
 // GetConfig is mounted on the public (unauthenticated) route group because
@@ -122,6 +135,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		AgentConversationStartersSupported: true,
 		IssueCreatePropertiesSupported:     true,
 		CommentDeleteKeepRepliesSupported:  true,
+		AutopilotDescriptionGuardSupported: true,
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",
 		GoogleClientID:                     os.Getenv("GOOGLE_CLIENT_ID"),
 		WorkspaceCreationDisabled:          os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
@@ -134,6 +148,9 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
+	if servesDocs() {
+		config.DocsURL = "/docs"
+	}
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
 	// cloud is continuously deployed and its users can't choose the build, so
@@ -253,4 +270,32 @@ func canonicalURLHost(raw string) string {
 		host = u.Hostname()
 	}
 	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+// instanceDocs points upstream docs links in server-written text (stored
+// onboarding issues, agent instructions) at this deployment's docs. No request
+// origin exists there, so it uses the configured app URL. Unchanged when the
+// deployment serves no docs or the app URL is unknown or loopback (compose
+// defaults it to http://localhost:3000, which is wrong for every remote reader).
+func instanceDocs(s string) string {
+	appURL := resolveFrontendAppURL()
+	if !servesDocs() || appURL == "" || isLoopbackHost(canonicalURLHost(appURL)) {
+		return s
+	}
+	return strings.ReplaceAll(s, "https://multica.ai/docs", appURL+"/docs")
+}
+
+// servesDocs mirrors the frontend proxy (apps/web/config/runtime-urls.ts),
+// which forwards /docs only to an http(s) DOCS_URL.
+func servesDocs() bool {
+	u, err := url.Parse(strings.TrimSpace(os.Getenv("DOCS_URL")))
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

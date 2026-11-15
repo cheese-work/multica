@@ -290,13 +290,12 @@ func TestTheCloseRetryStopsWhenTheBudgetCannotCoverAnother(t *testing.T) {
 	// 50ms ack is 140ms, so a second attempt does not fit in 120ms.
 	budget, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
-	started := time.Now()
+	// Not asserted on wall-clock: how long the call takes to return after the
+	// first ack wait is scheduler time, and under load it passes 120ms with no
+	// second attempt. A second attempt always writes a second closing frame, so
+	// the frame count below is the exact check.
 	rig.answerWithContext(t, budget, "the agent reply", "task-1")
-	took := time.Since(started)
 
-	if took > 120*time.Millisecond {
-		t.Fatalf("the seal ran %s against a 120ms budget — it started an attempt it could not finish", took)
-	}
 	closing := 0
 	for _, f := range rig.conn.streamFrames(t) {
 		if f["finish"] == true {

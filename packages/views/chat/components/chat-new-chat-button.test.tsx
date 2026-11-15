@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { Agent } from "@multica/core/types";
+import type { Agent, ChatSession } from "@multica/core/types";
+import { useRecentAgentsSettingsStore } from "@multica/core/chat/recent-agents-settings-store";
 import enChat from "../../locales/en/chat.json";
 import enIssues from "../../locales/en/issues.json";
 
@@ -11,7 +12,7 @@ vi.mock("../../common/actor-avatar", () => ({
   ),
 }));
 
-import { NewChatButton } from "./new-chat-button";
+import { AgentPicker, NewChatButton } from "./new-chat-button";
 
 const TEST_RESOURCES = { en: { chat: enChat, issues: enIssues } };
 
@@ -53,10 +54,21 @@ const agents = [
 // The ⊕ button carries the localized "New chat" label as its accessible name.
 const NEW_CHAT_LABEL = enChat.window.new_chat_tooltip;
 
-function renderPicker(onStart = vi.fn()) {
+function makeSession(agentId: string, id = `s-${agentId}`): ChatSession {
+  return {
+    id,
+    agent_id: agentId,
+    creator_id: "user-1",
+    created_at: new Date().toISOString(),
+    continued_from_session_id: null,
+    forked_from_session_id: null,
+  } as unknown as ChatSession;
+}
+
+function renderPicker(onStart = vi.fn(), sessions: ChatSession[] = []) {
   render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <NewChatButton agents={agents} userId="user-1" onStart={onStart} />
+      <NewChatButton agents={agents} userId="user-1" onStart={onStart} sessions={sessions} />
     </I18nProvider>,
   );
   fireEvent.click(screen.getByRole("button", { name: NEW_CHAT_LABEL }));
@@ -138,5 +150,68 @@ describe("NewChatButton", () => {
 
     expect(onStart).toHaveBeenCalledWith(agents[0]);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  describe("Recent section", () => {
+    const sectionLabels = (dialog: HTMLElement) =>
+      within(dialog).queryAllByText(/^(Recent|My agents|Others)$/).map((e) => e.textContent);
+
+    it("lists Recent above My agents without repeating the agent below", async () => {
+      renderPicker(vi.fn(), [makeSession("other-beta"), makeSession("mine-zhang")]);
+      const dialog = await screen.findByRole("dialog");
+
+      expect(sectionLabels(dialog)).toEqual(["Recent", "My agents", "Others"]);
+      expect(within(dialog).getAllByText("Beta")).toHaveLength(1);
+      expect(within(dialog).getAllByText("张三")).toHaveLength(1);
+      expect(within(dialog).getAllByText("Alpha")).toHaveLength(1);
+    });
+
+    it("is hidden when the helper returns nothing", async () => {
+      renderPicker(vi.fn(), [{ ...makeSession("other-beta"), creator_id: "someone-else" }]);
+      const dialog = await screen.findByRole("dialog");
+
+      expect(sectionLabels(dialog)).toEqual(["My agents", "Others"]);
+    });
+
+    it("is hidden when the showRecentAgents setting is off", async () => {
+      useRecentAgentsSettingsStore.setState({ showRecentAgents: false });
+      try {
+        renderPicker(vi.fn(), [makeSession("other-beta")]);
+        const dialog = await screen.findByRole("dialog");
+
+        expect(sectionLabels(dialog)).toEqual(["My agents", "Others"]);
+      } finally {
+        useRecentAgentsSettingsStore.setState({ showRecentAgents: true });
+      }
+    });
+
+    it("keeps matching agents in Recent when searching", async () => {
+      renderPicker(vi.fn(), [makeSession("other-beta"), makeSession("mine-alpha")]);
+      const input = await screen.findByRole("textbox", { name: "Filter options" });
+      fireEvent.change(input, { target: { value: "ta" } });
+      const dialog = screen.getByRole("dialog");
+
+      expect(sectionLabels(dialog)).toEqual(["Recent"]);
+      expect(within(dialog).getAllByText("Beta")).toHaveLength(1);
+      expect(within(dialog).queryByText("Alpha")).not.toBeInTheDocument();
+    });
+
+    it("AgentPicker without recentAgentIds has no Recent section (quick-agent bar)", async () => {
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <AgentPicker
+            agents={agents}
+            userId="user-1"
+            onSelect={vi.fn()}
+            triggerRender={<button type="button" aria-label="open" />}
+            trigger="open"
+          />
+        </I18nProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "open" }));
+      const dialog = await screen.findByRole("dialog");
+
+      expect(sectionLabels(dialog)).toEqual(["My agents", "Others"]);
+    });
   });
 });

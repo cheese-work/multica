@@ -91,6 +91,33 @@ func (q *Queries) CreateElevatedOp(ctx context.Context, arg CreateElevatedOpPara
 	return i, err
 }
 
+const endTaskLaunchScopes = `-- name: EndTaskLaunchScopes :one
+UPDATE task_elevation SET launch_scopes_ended_at = COALESCE(launch_scopes_ended_at, clock_timestamp()), updated_at = clock_timestamp()
+WHERE task_id = $1 AND state IN ('fencing', 'restricted_final')
+RETURNING task_id, workspace_id, issue_id, grant_ids, scopes, epoch, state, launch_scopes_ended_at, created_at, updated_at
+`
+
+// The daemon reports that the processes holding docker or device: scopes exited.
+// Counts only during a fence: a report while elevated would let a later fence
+// finish without anything having stopped.
+func (q *Queries) EndTaskLaunchScopes(ctx context.Context, taskID pgtype.UUID) (TaskElevation, error) {
+	row := q.db.QueryRow(ctx, endTaskLaunchScopes, taskID)
+	var i TaskElevation
+	err := row.Scan(
+		&i.TaskID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.GrantIds,
+		&i.Scopes,
+		&i.Epoch,
+		&i.State,
+		&i.LaunchScopesEndedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const fenceIssueTaskElevations = `-- name: FenceIssueTaskElevations :many
 UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
 WHERE issue_id = $1 AND state = 'elevated'
@@ -99,7 +126,7 @@ RETURNING task_id
 
 // A member clearing the issue's taint fences every elevation still live on it
 // first, so the taint cannot vanish before the sweep saw it. Same update as the
-// sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+// sweep; it runs after the issue lock, as every path that touches a run does.
 func (q *Queries) FenceIssueTaskElevations(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, fenceIssueTaskElevations, issueID)
 	if err != nil {

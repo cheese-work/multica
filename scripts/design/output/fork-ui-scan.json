@@ -1,0 +1,725 @@
+{
+  "ref": "de59132eab6f4bd50e3ddc7d2654ecf3d9d27831",
+  "base": "250ecacf4ab17a4bdaa7bde3a3cec2ed14ce15bb",
+  "scope": "packages/views",
+  "forkOnlyFiles": 118,
+  "renamedFromUpstream": 4,
+  "withRawElements": 35,
+  "withHex": 0,
+  "scopeFiles": 628,
+  "scopeWithRawElements": 214,
+  "files": [
+    {
+      "path": "packages/views/agents/components/agent-auto-compact-section.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/agent-scheduling.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/create-agent-dialog.tsx",
+      "surface": "other",
+      "raw": 3,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/inspector/agent-presets-section.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/inspector/concurrency-picker.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/inspector/runtime-profile-field.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/inspector/skill-attach.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/inspector/visibility-picker.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/instructions-editor.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/runtime-machine-filter-dropdown.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/tabs/agent-mcp-tab.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/components/tabs/integrations-tab.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/create/ai-create-agent-page.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/agents/create/builder-setup-panel.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/autopilots/components/add-trigger-dialog.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/autopilots/components/autopilot-dialog-lazy.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/annotatable-answer.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-annotations.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-context-meter.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-preset-picker.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-search.tsx",
+      "surface": "chat/DM",
+      "raw": 5,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-session-mention-card.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-session-stats-dialog.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/chat-supplement-status.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/config-change-viewer.tsx",
+      "surface": "chat/DM",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/continuation-block.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/decision-answer-content.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/decision-artifacts.tsx",
+      "surface": "chat/DM",
+      "raw": 3,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/decision-dm-card.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/decision-recent-runs.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/decision-request-card.tsx",
+      "surface": "chat/DM",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/decision-withdrawal-card.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/deferred-content-editor.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/diff-hunks.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/interactive-login-banner.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/lazy-content-editor.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/needs-you-list.tsx",
+      "surface": "chat/DM",
+      "raw": 3,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/open-decisions-badge.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/predecessor-dms.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/quick-agent-bar.tsx",
+      "surface": "chat/DM",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/scheduled-wakeups-chip.tsx",
+      "surface": "wakeups",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/use-archived-send.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/use-chat-annotations.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/use-dm-session-surface.tsx",
+      "surface": "chat/DM",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/chat/components/wakeup-event-row.tsx",
+      "surface": "wakeups",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/common/decision-action-approval.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/common/expandable-description.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/common/task-transcript/run-preset-details.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/editor/extensions/preset-arg-suggestion.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/editor/html-viewer.tsx",
+      "surface": "other",
+      "raw": 4,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/editor/plan-revision-viewer.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/invite/invite-page.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/compact-issue-chips-context.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/attachment-list.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/attachment-revision-diff.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/batch-workflow-picker.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/comment-mention-card.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/decision-action-panel.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/decision-quote-card.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/description-disclosure.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/hierarchy/hierarchy-dialog.tsx",
+      "surface": "hierarchy",
+      "raw": 3,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/hierarchy/hierarchy-minimap.tsx",
+      "surface": "hierarchy",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/hierarchy/hierarchy-parts.tsx",
+      "surface": "hierarchy",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/issue-decision-banner.tsx",
+      "surface": "issues",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/issue-detail-lazy.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/issue-inbox-restore-button.tsx",
+      "renamedFrom": "packages/views/issues/actions/inbox-restore.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/issue-wakeup-defaults.tsx",
+      "surface": "wakeups",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/run-budget-chip.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/run-budget-meter.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/status-history-button.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/status-history-dialog.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/status-summary.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/supersession-links.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/wakeup-condition-params.tsx",
+      "surface": "wakeups",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/wakeup-fields.tsx",
+      "surface": "wakeups",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/wakeup-pickers.tsx",
+      "surface": "wakeups",
+      "raw": 5,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/wakeups-paused-banner.tsx",
+      "surface": "wakeups",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/issues/components/workflow-pill.tsx",
+      "surface": "issues",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/labels/resource-label-picker.tsx",
+      "surface": "other",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/layout/machine-pause-banner.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/layout/open-decisions-chip.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/layout/workspace-pause-banner.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/media/media-context.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/media/media-page.tsx",
+      "surface": "other",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/projects/components/github-ref-dialog.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/projects/components/local-directory-mode-dialog.tsx",
+      "renamedFrom": "packages/views/projects/components/local-directory-mode-options.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/projects/components/project-wakeups-section.tsx",
+      "surface": "wakeups",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/rich-content/next-self-mention.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/runtimes/components/machine-pause-card.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/search/delegate/delegate-group.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/search/lazy-search-command.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/agent-decisions-row.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/auto-compact-tokens-row.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/composio-tab.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/delegated-writes-section.tsx",
+      "surface": "settings",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/dingtalk-tab.tsx",
+      "surface": "settings",
+      "raw": 8,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/export-privacy-tab.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/github-review-mappings.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/idle-guard-rows.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/lark-tab.tsx",
+      "surface": "settings",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/passkeys-tab.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/provider-breakers-tab.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/routing-agent-rows.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/runtime-profile-row.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/slack-tab.tsx",
+      "surface": "settings",
+      "raw": 4,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/telegram-tab.tsx",
+      "surface": "settings",
+      "raw": 3,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/wakeups-tab.tsx",
+      "surface": "wakeups",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/wecom-scan-install-dialog.tsx",
+      "renamedFrom": "packages/views/settings/components/wecom-channel-authorization.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/wecom-tab.tsx",
+      "surface": "settings",
+      "raw": 2,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/workspace-scheduling-row.tsx",
+      "surface": "settings",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/settings/components/workspace-wakeup-rules.tsx",
+      "surface": "wakeups",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/batch-handoff-confirm-dialog.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/project-workflow-menu.tsx",
+      "renamedFrom": "packages/views/workflows/project-workflow-sheet.tsx",
+      "surface": "other",
+      "raw": 1,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/workflow-budget-request-banner.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/workflow-choice-pill.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/workflow-edge-editor.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/workflow-graph.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    },
+    {
+      "path": "packages/views/workflows/workflow-override-options.tsx",
+      "surface": "other",
+      "raw": 0,
+      "hex": 0
+    }
+  ]
+}

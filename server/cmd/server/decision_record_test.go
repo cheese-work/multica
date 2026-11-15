@@ -21,7 +21,7 @@ func TestDecisionRecordRouter(test *testing.T) {
 	fixture.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM issue_subscriber WHERE issue_id = $1`, issueID)
-	encoded, _ := json.Marshal(map[string]any{"decision_record": true, "message_ids": []string{messageID}, "escalation_class": "spend"})
+	encoded, _ := json.Marshal(map[string]any{"decision_record": true, "message_ids": []string{messageID}, "escalation_class": "reversible"})
 	call := func(token string, forged bool) *http.Response {
 		test.Helper()
 		request, _ := http.NewRequest(http.MethodPost, testServer.URL+"/api/issues/"+issueID+"/comments", bytes.NewReader(encoded))

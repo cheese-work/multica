@@ -1025,8 +1025,14 @@ func TestPreviewCommentTriggers_MalformedMentionIDDoesNotPanic(t *testing.T) {
 				t.Fatalf("blocked reason = %q, want %q", blocked.ReasonCode, tc.reason)
 			}
 
-			// The create path must survive the same input and enqueue nothing.
-			postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": tc.content})
+			// The create path must survive the same input and enqueue nothing: a
+			// malformed agent id is refused (422), a malformed squad id still saves.
+			if tc.targetType == "agent" {
+				req := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": tc.content}), "id", issueID)
+				testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusUnprocessableEntity)
+			} else {
+				postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": tc.content})
+			}
 			if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
 				t.Fatalf("assignee queued tasks = %d, want 0", got)
 			}

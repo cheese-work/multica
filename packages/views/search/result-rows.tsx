@@ -19,7 +19,7 @@ import type {
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../common/actor-avatar";
 import { availabilityConfig } from "../agents/presence";
-import { StatusIcon } from "../issues/components";
+import { StatusIcon } from "../issues/components/status-icon";
 import { ProjectIcon } from "../projects/components/project-icon";
 import { useProjectStatusLabels } from "../projects/components/labels";
 import { useT } from "../i18n";

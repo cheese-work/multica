@@ -10,3 +10,8 @@ export function formatChatTime(dateStr: string, locale: string): string {
   }
   return d.toLocaleDateString(locale);
 }
+
+// Clock time only. A row sits under a day header, so it never repeats the date.
+export function formatChatClock(date: string | number, locale: string): string {
+  return new Date(date).toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+}

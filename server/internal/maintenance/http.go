@@ -87,6 +87,7 @@ func NewHandler(s *Service) http.Handler {
 		j, err := s.Configure(r.Context(), r.PathValue("id"), *request.Revision, request.Options)
 		respond(w, j, err)
 	})
+	mux.HandleFunc("POST /maintenance/passkey-recovery", s.handlePasskeyRecovery)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()

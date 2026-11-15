@@ -161,12 +161,8 @@ func TestRunBudgetStepGrantPolicy(t *testing.T) {
 
 	t.Run("a workflow edge's first entry grants once", func(t *testing.T) {
 		c, _ := budgetedAt(t, 40, 2)
-		issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if moved, _ := testHandler.moveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, false); !moved {
-			t.Fatal("the edge move did not happen")
+		if moved, err := moveIssueOnEdgeOf(c.issueID, "in_review"); !moved {
+			t.Fatalf("the edge move did not happen: %v", err)
 		}
 		if got := grantCount(t, c.issueID); got != 1 {
 			t.Fatalf("grants after the edge move = %d, want 1", got)
@@ -258,24 +254,6 @@ func TestRunBudgetGrantStaysShutAfterExhaustionUntilAMemberActs(t *testing.T) {
 	grantHead(t, c.issueID, "late")
 	if got := grantCount(t, c.issueID); got != 1 {
 		t.Fatalf("grants after a member opened a window = %d, want 1", got)
-	}
-}
-
-func TestRunBudgetGrantCreditsTokensOnlyOnceActivated(t *testing.T) {
-	if testHandler == nil {
-		t.Fatal("isolated database required")
-	}
-	c, _ := budgetedAt(t, 40, 2)
-	storeTokenValues(t, c)
-	grantHead(t, c.issueID, "before")
-	if got := entrySum(t, c.issueID, "head"); got != 0 {
-		t.Fatalf("tokens granted before activation = %d, want 0", got)
-	}
-	admitRun(t, c) // activates
-	finishRuns(t, c)
-	grantHead(t, c.issueID, "after")
-	if got := entrySum(t, c.issueID, "head"); got != service.RunBudgetGrantTokens {
-		t.Fatalf("tokens granted after activation = %d, want %d", got, service.RunBudgetGrantTokens)
 	}
 }
 

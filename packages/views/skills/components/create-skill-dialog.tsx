@@ -24,6 +24,12 @@ import {
   type PreparedSkillArchive,
 } from "@multica/core/skills";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  CREATE_SKILL_DRAFT_KEY,
+  EMPTY_SKILL_CREATE_DRAFT,
+  useSkillCreateDraftStore,
+} from "@multica/core/skills/draft-stores";
 import { isImeComposing } from "@multica/core/utils";
 import {
   skillDetailOptions,
@@ -52,6 +58,8 @@ import { isNameConflictError } from "../lib/utils";
 
 type Method = "chooser" | "manual" | "local" | "url" | "runtime";
 
+export type CreateSkillMethod = Exclude<Method, "chooser">;
+
 function seedAfterCreate(
   qc: ReturnType<typeof useQueryClient>,
   wsId: string,
@@ -67,7 +75,7 @@ function seedAfterCreate(
 function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
   const { t } = useT("skills");
   const methods: {
-    key: Exclude<Method, "chooser">;
+    key: CreateSkillMethod;
     icon: typeof Plus;
   }[] = [
     { key: "manual", icon: Plus },
@@ -114,8 +122,12 @@ function ManualForm({
   const { t } = useT("skills");
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+  // Unsent input survives dialog close/reopen; cleared on a successful create.
+  const [{ name, description }, patchDraft, clearDraft] = usePersistedDraft(
+    useSkillCreateDraftStore,
+    CREATE_SKILL_DRAFT_KEY,
+    EMPTY_SKILL_CREATE_DRAFT,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -131,6 +143,7 @@ function ManualForm({
         name: trimmed,
         description: description.trim(),
       });
+      clearDraft();
       seedAfterCreate(qc, wsId, skill);
       toast.success(t(($) => $.create.manual.toast_created));
       onCreated(skill);
@@ -159,7 +172,7 @@ function ManualForm({
             autoFocus
             value={name}
             onChange={(e) => {
-              setName(e.target.value);
+              patchDraft({ name: e.target.value });
               setError("");
             }}
             placeholder={t(($) => $.create.manual.name_placeholder)}
@@ -184,7 +197,7 @@ function ManualForm({
           <Textarea
             id="create-skill-desc"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => patchDraft({ description: e.target.value })}
             placeholder={t(($) => $.create.manual.description_placeholder)}
             rows={3}
             className="resize-none"
@@ -599,14 +612,17 @@ function LocalForm({
 // Root dialog
 
 export function CreateSkillDialog({
+  initialMethod,
   onClose,
   onCreated,
 }: {
+  /** Opens straight on one method; without it the dialog starts on the chooser. */
+  initialMethod?: CreateSkillMethod;
   onClose: () => void;
   onCreated?: (skill: Skill) => void;
 }) {
   const { t } = useT("skills");
-  const [method, setMethod] = useState<Method>("chooser");
+  const [method, setMethod] = useState<Method>(initialMethod ?? "chooser");
   const [localPrepared, setLocalPrepared] = useState<PreparedSkillArchive | null>(
     null,
   );
@@ -693,6 +709,13 @@ export function CreateSkillDialog({
     setMethod("local");
     setLocalPreparing(false);
     setLocalPrepared(wrapExistingSkillArchive(file));
+  };
+
+  // Opened on a method, Cancel leaves the dialog: the chooser it would fall
+  // back to is a step the user never took.
+  const cancelForm = () => {
+    if (initialMethod) onClose();
+    else setMethod("chooser");
   };
 
   const wide = method === "runtime";
@@ -782,10 +805,7 @@ export function CreateSkillDialog({
         {/* Method body — each form owns its scroll middle + footer */}
         {method === "chooser" && <MethodChooser onChoose={handleChoose} />}
         {method === "manual" && (
-          <ManualForm
-            onCreated={handleCreated}
-            onCancel={() => setMethod("chooser")}
-          />
+          <ManualForm onCreated={handleCreated} onCancel={cancelForm} />
         )}
         {method === "local" && (
           <LocalForm
@@ -795,17 +815,14 @@ export function CreateSkillDialog({
             onCreated={handleCreated}
             onCancel={() => {
               resetLocal();
-              setMethod("chooser");
+              cancelForm();
             }}
             onChooseFolder={openFolderPicker}
             onChooseArchive={openArchivePicker}
           />
         )}
         {method === "url" && (
-          <UrlForm
-            onCreated={handleCreated}
-            onCancel={() => setMethod("chooser")}
-          />
+          <UrlForm onCreated={handleCreated} onCancel={cancelForm} />
         )}
         {method === "runtime" && (
           <RuntimeLocalSkillImportPanel

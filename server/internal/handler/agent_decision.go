@@ -21,17 +21,50 @@ import (
 )
 
 // Changes to this delegation/allowlist require a human instruction change.
-const agentDecisionAllowlistVersion = 1
+// Version 2 adds test_first_red. A record keeps the version it was made under,
+// so a version 1 record stays valid and never gains the new gate.
+const agentDecisionAllowlistVersion = 2
 const agentDecisionDelegation = "edc6e2c4-c682-4219-a864-7d11728f6f83"
 
+const (
+	agentDecisionGateTestFirstRed = "test_first_red"
+	// Display name of a decision Jev took for Cheese. It is an agent decision.
+	agentDecisionDeciderJev = "Jev for Cheese"
+	// The one class an agent or Jev decision may carry.
+	agentDecisionClassReversible = "reversible_gate"
+)
+
 func agentDecisionGateAllowed(gate string) bool {
+	return agentDecisionAllowedAt(agentDecisionAllowlistVersion, gate)
+}
+
+func agentDecisionAllowedAt(version int, gate string) bool {
 	switch gate {
 	case "screenshot_evidence", "design_lock_label", "unrelated_base_failing_check":
-		return true
+		return version == 1 || version == 2
+	case agentDecisionGateTestFirstRed:
+		return version == 2
 	default:
 		return false
 	}
 }
+
+// A waiver is WAIVED, never PASS.
+func agentDecisionOutcome(gate string) string {
+	if gate == agentDecisionGateTestFirstRed {
+		return "WAIVED"
+	}
+	return ""
+}
+
+// Classes that stay with Cheese, whoever the decider is.
+var agentDecisionExcludedClasses = []string{"irreversible", "design_direction", "architecture", "high_level"}
+
+func agentDecisionClassExcluded(class string) bool {
+	return slices.Contains(agentDecisionExcludedClasses, class)
+}
+
+var agentDecisionEvidenceKinds = []string{"characterization_test", "manual_repro", "static_check", "review_only"}
 
 type agentDecisionEvidence struct {
 	URL    string `json:"url"`
@@ -58,6 +91,18 @@ type agentDecisionProposal struct {
 	BaseSHA               string                  `json:"base_sha,omitempty"`
 	BaseFailedChecks      []string                `json:"base_failed_checks,omitempty"`
 	CandidateFailedChecks []string                `json:"candidate_failed_checks,omitempty"`
+	// test_first_red only.
+	ReviewerID          string `json:"reviewer_agent_id,omitempty"`
+	RedImpossibleReason string `json:"red_impossible_reason,omitempty"`
+	WeakerEvidenceKind  string `json:"weaker_evidence_kind,omitempty"`
+	FollowupCheck       string `json:"followup_check,omitempty"`
+	// Crashlytics issue id or signature of the crash or ANR the change fixes.
+	CrashSignature string `json:"crash_signature,omitempty"`
+	// Any gate. DecisionClass is the proposer's own class; Decider and
+	// Confidence label a decision Jev took for Cheese.
+	DecisionClass string   `json:"decision_class,omitempty"`
+	Decider       string   `json:"decider,omitempty"`
+	Confidence    *float64 `json:"confidence,omitempty"`
 }
 type agentDecisionIdentity struct {
 	AgentID, TaskID, Provider, Model, Lab string
@@ -226,7 +271,31 @@ func decodeAgentDecisionJSON(raw string, out any) error {
 
 func validateAgentDecisionProposal(p agentDecisionProposal, author string) error {
 	if !agentDecisionGateAllowed(p.WaivedGate) {
-		return agentDecisionExcluded("gate is not on allowlist version 1", "excluded category proposed: gate "+p.WaivedGate)
+		return agentDecisionExcluded("gate is not on the allowlist", "excluded category proposed: gate "+p.WaivedGate)
+	}
+	if agentDecisionClassExcluded(p.DecisionClass) {
+		return agentDecisionExcluded("class stays with Cheese", "excluded category proposed: class "+p.DecisionClass)
+	}
+	if p.DecisionClass != agentDecisionClassReversible {
+		return agentDecisionRefusal("decision_class must be " + agentDecisionClassReversible)
+	}
+	if (p.Decider != "" && p.Decider != agentDecisionDeciderJev) || (p.Decider == "") != (p.Confidence == nil) ||
+		(p.Confidence != nil && (*p.Confidence <= 0 || *p.Confidence > 1)) {
+		return agentDecisionRefusal(`decider must be "` + agentDecisionDeciderJev + `" with a confidence in (0, 1]`)
+	}
+	if p.WaivedGate == agentDecisionGateTestFirstRed {
+		if p.Route != "cosign" || p.ReviewerID == "" || strings.TrimSpace(p.RedImpossibleReason) == "" || strings.TrimSpace(p.FollowupCheck) == "" ||
+			!slices.Contains(agentDecisionEvidenceKinds, p.WeakerEvidenceKind) || !slices.Contains(p.Signers, p.ReviewerID) {
+			return agentDecisionRefusal("test_first_red needs a cosign route, a named signer as reviewer, the reason red is impossible, the weaker evidence kind and a follow-up check")
+		}
+		if len(p.FollowupCheck) > agentDecisionFollowupCheckMax {
+			return agentDecisionRefusal("followup_check is too long")
+		}
+		if p.CrashSignature != "" && !crashSignaturePattern.MatchString(p.CrashSignature) {
+			return agentDecisionRefusal("crash_signature must be 1-128 letters, digits, dots, colons, underscores or hyphens")
+		}
+	} else if p.ReviewerID != "" || p.RedImpossibleReason != "" || p.WeakerEvidenceKind != "" || p.FollowupCheck != "" || p.CrashSignature != "" {
+		return agentDecisionRefusal("test_first_red fields are only for the test_first_red gate")
 	}
 	if p.WorkAuthorID != author {
 		return agentDecisionRefusal("work author must be the proposer")
@@ -344,6 +413,28 @@ func agentDecisionDisputant(ctx context.Context, tx pgx.Tx, commentID, taskID, b
 	return identity, nil
 }
 
+// agentDecisionHeader reads the typed `Key: value` lines at the top of a signed
+// verdict, up to the first line that is not one. A repeated typed key (Gate,
+// Block-category) is ambiguous and reports false; other repeated keys are prose
+// and keep their first value.
+func agentDecisionHeader(body string) (map[string]string, bool) {
+	fields := map[string]string{}
+	for _, line := range strings.Split(body, "\n") {
+		key, value, ok := strings.Cut(line, ": ")
+		if !ok || key == "" || strings.ContainsAny(key, " \t") {
+			break
+		}
+		if _, dup := fields[key]; dup {
+			if key == "Gate" || key == "Block-category" {
+				return nil, false
+			}
+			continue
+		}
+		fields[key] = value
+	}
+	return fields, true
+}
+
 func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.CreateCommentParams, line agentDecisionLine, author agentDecisionIdentity) error {
 	raw, err := agentDecisionBlock(params.Content, "decision")
 	if err != nil {
@@ -355,6 +446,11 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 	}
 	if err := validateAgentDecisionProposal(proposal, author.AgentID); err != nil {
 		return err
+	}
+	if proposal.Decider != "" {
+		if err := requireAgentDecisionJev(ctx, tx, params.WorkspaceID, author.AgentID); err != nil {
+			return err
+		}
 	}
 	scope := agentDecisionScope{Proposal: proposal, Author: author}
 	names := proposal.Signers
@@ -375,6 +471,13 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 		if scope.Signers[0].Lab == scope.Signers[1].Lab || (scope.Signers[0].Lab == author.Lab && scope.Signers[1].Lab == author.Lab) {
 			return agentDecisionRefusal("signer labs must differ and include a non-author lab")
 		}
+		if proposal.WaivedGate == agentDecisionGateTestFirstRed {
+			// Validation placed the reviewer among the signers.
+			reviewer := scope.Signers[slices.IndexFunc(scope.Signers, func(s agentDecisionIdentity) bool { return s.AgentID == proposal.ReviewerID })]
+			if reviewer.Lab == author.Lab {
+				return agentDecisionRefusal("the reviewer must be from a different lab than the author")
+			}
+		}
 	} else {
 		dispute := proposal.Dispute
 		reviewer, err := agentDecisionDisputant(ctx, tx, dispute.ReviewerCommentID, dispute.ReviewerTaskID, dispute.ReviewerVerdict, params.WorkspaceID, params.IssueID)
@@ -386,22 +489,29 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 			return err
 		}
 		// A co-signer split is never an adjudication input. Both source bodies
-		// explicitly bind the same gate and disputed point; excluded BLOCKs fail closed.
+		// explicitly bind the same gate and disputed point; excluded BLOCKs fail closed
+		// from typed fields.
 		if rebuttal.AgentID != author.AgentID || reviewer.AgentID == author.AgentID || reviewer.Lab == author.Lab ||
 			scope.Signers[0].AgentID == reviewer.AgentID || scope.Signers[0].Lab == author.Lab || scope.Signers[0].Lab == reviewer.Lab {
 			return agentDecisionRefusal("adjudication needs a third lab and a genuine author/reviewer dispute")
 		}
+		if !strings.HasPrefix(dispute.ReviewerVerdict, "Verdict: BLOCK\n") {
+			return agentDecisionRefusal("reviewer BLOCK must be for this reversible gate")
+		}
+		// Exclusion reads the typed header fields only; prose is never read.
+		header, unambiguous := agentDecisionHeader(dispute.ReviewerVerdict)
+		if !unambiguous {
+			return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", "excluded BLOCK: repeated typed field")
+		}
+		if category := header["Block-category"]; category != "reversible_gate" {
+			return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", fmt.Sprintf("excluded BLOCK: Block-category %.64q", category))
+		}
+		if gate := header["Gate"]; !agentDecisionGateAllowed(gate) {
+			return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", fmt.Sprintf("excluded BLOCK: Gate %.64q", gate))
+		}
 		for _, body := range []string{dispute.ReviewerVerdict, dispute.AuthorRebuttal} {
 			if strings.Contains(body, "decision:") || !strings.Contains(body, "Disputed-point: "+dispute.Point+"\n") || !strings.Contains(body, "Gate: "+proposal.WaivedGate+"\n") {
 				return agentDecisionRefusal("dispute must bind the gate and point, not a co-signer split")
-			}
-		}
-		if !strings.HasPrefix(dispute.ReviewerVerdict, "Verdict: BLOCK\n") || !strings.Contains(dispute.ReviewerVerdict, "Block-category: reversible_gate\n") {
-			return agentDecisionRefusal("reviewer BLOCK must be for this reversible gate")
-		}
-		for _, excluded := range []string{"security", "test-first", "test_first", "merge approval", "deploy", "spend", "publication", "irreversible", "product direction", "missing evidence", "independently protected"} {
-			if strings.Contains(strings.ToLower(dispute.ReviewerVerdict), excluded) {
-				return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", "excluded category in adjudication: "+excluded)
 			}
 		}
 		scope.Disputants = []agentDecisionIdentity{rebuttal, reviewer}
@@ -484,7 +594,7 @@ func validateAgentDecisionOpinion(body string, line agentDecisionLine, scope age
 			continue
 		}
 		_, bound := required[key]
-		bound = bound || key == "signer_agent_id" || key == "evidence" || key == "verdict" || key == "nonce" || key == "upholds" || key == "disputed_point"
+		bound = bound || key == "signer_agent_id" || key == "evidence" || key == "verdict" || key == "nonce" || key == "upholds" || key == "disputed_point" || key == "red_impossible_reason"
 		if !header {
 			if bound {
 				return "", agentDecisionRefusal("bound field outside opinion header")
@@ -524,6 +634,12 @@ func validateAgentDecisionOpinion(body string, line agentDecisionLine, scope age
 		}
 	} else if fields["upholds"] != "" || fields["disputed_point"] != "" {
 		return "", agentDecisionRefusal("cosign cannot adjudicate")
+	}
+	// The reviewer's agreement names the exact reason red is impossible.
+	reason := fields["red_impossible_reason"]
+	isReviewer := scope.Proposal.WaivedGate == agentDecisionGateTestFirstRed && fields["signer_agent_id"] == scope.Proposal.ReviewerID
+	if (isReviewer && reason != scope.Proposal.RedImpossibleReason) || (!isReviewer && reason != "") {
+		return "", agentDecisionRefusal("only the reviewer states the reason, and it must match the proposal")
 	}
 	return fields["signer_agent_id"], nil
 }
@@ -573,7 +689,7 @@ func prepareAgentDecision(ctx context.Context, tx pgx.Tx, params db.CreateCommen
 	}
 	// Policy gates what may become effective or be relied on. A veto only
 	// takes effect away, so a record made under an older policy stays vetoable.
-	if line.kind != "veto" && (version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(scope.Proposal.WaivedGate)) {
+	if line.kind != "veto" && (!agentDecisionAllowedAt(version, scope.Proposal.WaivedGate) || delegation != agentDecisionDelegation) {
 		return nil, agentDecisionRefusal("delegation or allowlist no longer matches")
 	}
 	if line.kind != "retract" && line.digest != digest {

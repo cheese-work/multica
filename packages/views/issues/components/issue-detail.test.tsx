@@ -4,11 +4,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
+import { ApiClient } from "@multica/core/api/client";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { useIssueTitleDraftStore } from "@multica/core/issues/stores/unsent-edit-drafts";
+import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -26,6 +29,7 @@ import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
+const mockNavigation = vi.hoisted(() => ({ current: null as null | object }));
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
 const mockLocalDirectoryHint = vi.hoisted(() => vi.fn());
 // The banner has its own suite; here only its place in the page matters.
@@ -214,6 +218,7 @@ vi.mock("../../navigation", () => ({
     pathname: "/issues/issue-1",
     getShareableUrl: (p: string) => `https://app.multica.com${p}`,
   }),
+  useOptionalNavigation: () => mockNavigation.current,
   useBackOrReplace: () => vi.fn(),
   NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -480,6 +485,11 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ...(await vi.importActual<
     typeof import("@multica/core/issues/stores/issue-disclosure-store")
   >("@multica/core/issues/stores/issue-disclosure-store")),
+  // Real store: the title edit draft must survive the unmount/remount the
+  // "restores an unsaved title edit" test performs.
+  ...(await vi.importActual<
+    typeof import("@multica/core/issues/stores/unsent-edit-drafts")
+  >("@multica/core/issues/stores/unsent-edit-drafts")),
   useRecentIssuesStore: Object.assign(
     (selector?: any) => {
       const state = { byWorkspace: {}, recordVisit: mockRecordVisit, pruneWorkspaces: vi.fn() };
@@ -541,6 +551,8 @@ vi.mock("@multica/core/issues/stores", async () => ({
       return selector ? selector(state) : state;
     },
     {
+      // useClearOnDraftConsumed (CHE-4288) subscribes to draft transitions; this file never drives it.
+      subscribe: () => () => {},
       getState: () => ({
         drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,
@@ -593,14 +605,25 @@ const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
-    { data, itemContent, computeItemKey }: {
+    { data, itemContent, computeItemKey, initialTopMostItemIndex }: {
       data: unknown[];
+      initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
     },
     ref: any,
   ) {
-    const [firstIndex, setFirstIndex] = useState(virtualWindow.initialIndex);
+    const [firstIndex, setFirstIndex] = useState(
+      Number.isFinite(virtualWindow.size) && initialTopMostItemIndex
+        ? initialTopMostItemIndex.index
+        : virtualWindow.initialIndex,
+    );
+    // Real Virtuoso opens AT initialTopMostItemIndex; record it as the placement
+    // so deep-link tests can tell "list opened at the target" from "page scrolled".
+    useEffect(() => {
+      if (initialTopMostItemIndex) scrollToIndexSpy(initialTopMostItemIndex);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
@@ -624,6 +647,7 @@ vi.mock("react-virtuoso", () => ({
 // jsdom's HTMLElement.prototype.scrollIntoView is a no-op stub; replace it
 // with a spy so the deep-link effect's call can be observed.
 beforeEach(() => {
+  useIssueTitleDraftStore.setState({ drafts: {} });
   virtualWindow.size = Infinity;
   virtualWindow.initialIndex = 0;
   Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ width: 0, height: 0 }] });
@@ -1035,6 +1059,34 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Create sub-issue from here")).not.toBeInTheDocument();
   });
 
+  // A cold visit to /issues/:id?focus=wakeups: the sidebar and the Wakeups
+  // heading do not exist until the issue has loaded, so the deep link must
+  // survive the skeleton and be consumed only once the page can receive it.
+  it("keeps the wakeups deep link through the loading skeleton and consumes it once loaded", async () => {
+    const replace = vi.fn();
+    mockNavigation.current = {
+      push: vi.fn(),
+      replace,
+      back: vi.fn(),
+      pathname: "/acme/issues/issue-1",
+      searchParams: new URLSearchParams("focus=wakeups"),
+      hash: "",
+      getShareableUrl: (p: string) => p,
+    };
+    try {
+      let resolveIssue!: (issue: Issue) => void;
+      mockApiObj.getIssue.mockReturnValue(new Promise<Issue>((resolve) => { resolveIssue = resolve; }));
+      renderIssueDetail();
+      await Promise.resolve();
+      expect(replace).not.toHaveBeenCalled();
+
+      resolveIssue(mockIssue);
+      await waitFor(() => expect(replace).toHaveBeenCalledWith("/acme/issues/issue-1"));
+    } finally {
+      mockNavigation.current = null;
+    }
+  });
+
   it("shows loading skeleton while data is loading", () => {
     // Make the API hang to keep loading state
     mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
@@ -1043,6 +1095,18 @@ describe("IssueDetail (shared)", () => {
     expect(
       screen.getAllByRole("generic").some((el) => el.getAttribute("data-slot") === "skeleton"),
     ).toBe(true);
+  });
+
+  // The list is only a seed for rows another view already loaded. Opening an
+  // issue must not pay for a workspace-wide list request to read a cache.
+  it("does not request the workspace issue list", async () => {
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    expect(mockApiObj.listIssues).not.toHaveBeenCalled();
   });
 
   it("gives the skeleton the same horizontal gutters as the loaded column", async () => {
@@ -1359,6 +1423,30 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
   });
 
+  // CHE-3472: a card-parked issue carries an object in metadata.decision_park.
+  // The page must open it, not show "does not exist". getIssue runs the real
+  // client (fetch + schema parse) instead of the module mock.
+  it("opens an issue whose metadata carries the decision-park object", async () => {
+    const parked = {
+      ...mockIssue,
+      metadata: { decision_park: { status: "blocked", to: "need_decision", set: "opt" }, status_summary: "Blocked" },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(parked), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    })));
+    mockApiObj.getIssue.mockImplementation((id: string) => new ApiClient("https://api.example.test").getIssue(id));
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
   // The peek's close button lives in the host's trailing controls, so every
   // state the peek can show must carry them (review of #8886).
   function renderPeek(issueId = "issue-1") {
@@ -1386,7 +1474,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("keeps the peek's host controls when the issue cannot be loaded", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
     renderPeek("nonexistent-id");
     await waitFor(() => {
       expect(
@@ -2308,6 +2396,62 @@ describe("IssueDetail (shared)", () => {
       }
     });
 
+    it("CHE-5437: a real click on Collapse thread collapses a thread with no replies to its one-line header and hides the reply box", async () => {
+      const root = { ...mockTimeline[0]!, id: "lonely-root", content: "Lonely root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Lonely root body");
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      // A real pointer press focuses the button; the focus pin must not
+      // read the collapse control's own focus as "the user is interacting".
+      const button = within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
+      fireEvent.mouseDown(button);
+      act(() => button.focus());
+      fireEvent.click(button);
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
+      // One line: the summary stays in the header, the body block is gone.
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(rootWrapper().querySelector(`#comment-body-${root.id}`)).toBeNull();
+      expect(within(rootWrapper()).getByText("Lonely root body")).toBeInTheDocument();
+    });
+
+    it("CHE-5437: Collapse thread works while the reply box holds unsent text, and the text is still in the draft store", async () => {
+      const root = { ...mockTimeline[0]!, id: "draft-root", content: "Draft root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Draft root body");
+      const draftKey = `reply:issue-1:${root.id}`;
+      act(() => mockDraftStoreState.setDraft(draftKey, { content: "half-typed reply", attachments: [], updatedAt: 1 }));
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      fireEvent.click(within(rootWrapper()).getByRole("button", { name: "Collapse thread" }));
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(mockDraftStoreState.getDrafts()[draftKey]?.content).toBe("half-typed reply");
+    });
+
+    it("CHE-5437: withholds Show less while reply text forces the length open, so the button is never a dead click", async () => {
+      const root = mockTimeline[0]!;
+      const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+        ...mockTimeline[1]!,
+        id: `dead-reply-${i}`,
+        parent_id: root.id,
+        content: `Dead reply ${i}`,
+        created_at: `2026-01-16T00:0${i}:00Z`,
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+      renderIssueDetail();
+      await screen.findByText("Dead reply 3");
+
+      act(() => mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "typing a reply...", attachments: [], updatedAt: 1 }));
+      await screen.findByText("Dead reply 0");
+      expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
+    });
+
     it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
       mockApiObj.getIssue.mockResolvedValue({
         ...mockIssue,
@@ -2962,7 +3106,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("shows 'not found' message when issue does not exist", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -2973,8 +3117,23 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
+  it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+
+    renderIssueDetail("issue-1");
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    fireEvent.click(retry);
+    expect(await screen.findByText(mockIssue.title)).toBeInTheDocument();
+  });
+
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -3948,6 +4107,53 @@ describe("IssueDetail (shared)", () => {
       expect(hasHighlightedCommentBackground(reply)).toBe(false);
     });
 
+    it("lands on a run that left no comment by its task id", async () => {
+      const taskId = "7c1f3a9e-2b4d-4e8a-9f60-0a1b2c3d4e5f";
+      const task: AgentTask = {
+        id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+        status: "failed", priority: 0, created_at: "2026-01-18T00:00:00Z",
+        started_at: "2026-01-18T00:00:01Z", dispatched_at: "2026-01-18T00:00:01Z",
+        completed_at: "2026-01-18T00:05:00Z", result: null, error: "go test timed out",
+        delivered_comment_ids: [],
+      };
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+
+      renderIssueDetailWithHighlight(taskId);
+
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById(`comment-${taskId}`))).toBe(true);
+      });
+    });
+
+    it.each([
+      ["an open thread", "open"],
+      ["a thread whose root is resolved", "root"],
+      ["a thread a later reply resolved", "reply"],
+    ])("unfolds and lands on a run that left no comment in %s", async (_case, fold) => {
+      const taskId = "7c1f3a9e-2b4d-4e8a-9f60-0a1b2c3d4e5f";
+      const root = { ...mockTimeline[0]!, id: "run-thread-root", parent_id: null,
+        resolved_at: fold === "root" ? "2026-01-19T00:00:00Z" : null };
+      const trigger = { ...mockTimeline[0]!, id: "run-trigger", parent_id: root.id,
+        content: "Please run this check", created_at: "2026-01-18T00:00:00Z" };
+      const resolution = { ...trigger, id: "run-resolution", content: "Resolved",
+        resolved_at: "2026-01-19T00:00:00Z", created_at: "2026-01-19T00:00:00Z" };
+      const task: AgentTask = {
+        id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+        status: "failed", priority: 0, created_at: "2026-01-18T00:00:00Z",
+        started_at: "2026-01-18T00:00:01Z", dispatched_at: "2026-01-18T00:00:01Z",
+        completed_at: "2026-01-18T00:05:00Z", result: null, error: "go test timed out",
+        trigger_comment_id: trigger.id, delivered_comment_ids: [trigger.id],
+      };
+      mockApiObj.listTimeline.mockResolvedValue([root, trigger, ...(fold === "reply" ? [resolution] : [])]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+
+      renderIssueDetailWithHighlight(taskId);
+
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById(`comment-${taskId}`))).toBe(true);
+      });
+    });
+
     it("still scrolls when the timeline is ready before the issue (regression for inbox click)", async () => {
       // Reproduces the inbox-click race: timeline data is in the cache
       // before the issue resolves. While loading is true, IssueDetail
@@ -4776,6 +4982,88 @@ describe("IssueDetail (shared)", () => {
     expect(await screen.findByDisplayValue("Implement authentication")).toBeVisible();
     // Taking the server version is local-only: the server already holds it.
     expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(callsBeforeDiscard);
+  });
+
+  it("restores an unsaved title edit after the page unmounts and remounts", async () => {
+    mockApiObj.updateIssue.mockRejectedValueOnce(new Error("offline"));
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "Half-typed title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalled());
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("Half-typed title")).toBeVisible();
+  });
+
+  it("keeps a newer title edit when an earlier save succeeds while the user keeps typing", async () => {
+    let finishSave!: (issue: unknown) => void;
+    mockApiObj.updateIssue.mockImplementationOnce(
+      () => new Promise((resolve) => { finishSave = resolve; }),
+    );
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "First title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalled());
+    fireEvent.change(editor, { target: { value: "First title, then more" } });
+    finishSave({ ...mockIssue, title: "First title" });
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("First title, then more")).toBeVisible();
+  });
+
+  it("keeps a title edit that returns to the old title while another title save is in flight", async () => {
+    let finishSave!: (issue: unknown) => void;
+    mockApiObj.updateIssue.mockImplementationOnce(
+      () => new Promise((resolve) => { finishSave = resolve; }),
+    );
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "Saved title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
+    // The editor goes back to the title the server still holds, then the save lands.
+    fireEvent.change(editor, { target: { value: "Implement authentication" } });
+    finishSave({ ...mockIssue, title: "Saved title" });
+    await waitFor(() =>
+      expect(useIssueTitleDraftStore.getState().getDraft(mockIssue.id)?.value).toBe("Implement authentication"),
+    );
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("Implement authentication")).toBeVisible();
+  });
+
+  it("keeps a title edit that matches the in-flight title when that save then fails", async () => {
+    let failSave!: (error: unknown) => void;
+    mockApiObj.updateIssue.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { failSave = reject; }),
+    );
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "Saved title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
+    // The optimistic cache already shows "Saved title"; typing it again must not drop the draft.
+    fireEvent.change(editor, { target: { value: "Other" } });
+    fireEvent.change(editor, { target: { value: "Saved title" } });
+    fireEvent.blur(editor);
+    failSave(new Error("offline"));
+    await waitFor(() =>
+      expect(useIssueTitleDraftStore.getState().getDraft(mockIssue.id)?.value).toBe("Saved title"),
+    );
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("Saved title")).toBeVisible();
   });
 
   describe("sub-issues list", () => {

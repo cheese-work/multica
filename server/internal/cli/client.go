@@ -92,13 +92,19 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("%s %s returned %d: %s", e.Method, e.Path, e.StatusCode, strings.TrimSpace(e.Body))
 }
 
+// maxErrorBodyBytes caps how much of an error response is kept. It must hold
+// a whole structured error: a workflow's 409 status mapping plan lists one row
+// per status in use (up to 50) and runs past 4 KiB, and a truncated body no
+// longer parses as JSON. Only --debug prints the raw body.
+const maxErrorBodyBytes = 64 << 10
+
 // newHTTPError builds a *HTTPError from an error response (status >= 400),
 // reading a capped slice of the body. Every Multica API helper funnels its
 // >= 400 responses through this so the top-level FormatError / ExitCodeFor can
 // classify the failure via errors.As(err, **HTTPError) regardless of which
 // HTTP verb the command used.
 func newHTTPError(method, path string, resp *http.Response) *HTTPError {
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	return &HTTPError{
 		Method:     method,
 		Path:       path,
@@ -469,6 +475,8 @@ type AttachmentResponse struct {
 	ContentType string `json:"content_type"`
 	SizeBytes   int64  `json:"size_bytes"`
 	CreatedAt   string `json:"created_at"`
+	// Revision is 1 for a first upload, higher when it replaced an earlier file.
+	Revision int `json:"revision"`
 }
 
 // UploadFile uploads a file via multipart form to /api/upload-file.
@@ -487,6 +495,12 @@ func (c *APIClient) UploadFile(ctx context.Context, fileData []byte, filename st
 // issue exists, its `markdown_url` goes into the description, and the create
 // call binds it via `attachment_ids`.
 func (c *APIClient) UploadIssueAttachment(ctx context.Context, fileData []byte, filename string, issueID string) (AttachmentResponse, error) {
+	return c.UploadIssueAttachmentReplacing(ctx, fileData, filename, issueID, "")
+}
+
+// UploadIssueAttachmentReplacing uploads the file as the next revision of the
+// attachment `replaces` (CHE-5295). An empty `replaces` is a plain upload.
+func (c *APIClient) UploadIssueAttachmentReplacing(ctx context.Context, fileData []byte, filename, issueID, replaces string) (AttachmentResponse, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -501,6 +515,11 @@ func (c *APIClient) UploadIssueAttachment(ctx context.Context, fileData []byte, 
 	if issueID != "" {
 		if err := writer.WriteField("issue_id", issueID); err != nil {
 			return AttachmentResponse{}, fmt.Errorf("write issue_id field: %w", err)
+		}
+	}
+	if replaces != "" {
+		if err := writer.WriteField("replaces", replaces); err != nil {
+			return AttachmentResponse{}, fmt.Errorf("write replaces field: %w", err)
 		}
 	}
 

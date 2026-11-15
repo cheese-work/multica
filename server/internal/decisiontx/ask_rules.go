@@ -7,9 +7,11 @@ import (
 	"unicode"
 )
 
-// Blocking readability rules (CHE-2181 D1c). They are pattern checks, not
-// meaning checks: a free-prose multi-question ask can pass, and a false
-// refusal costs the agent one rewrite.
+// Blocking readability rules (CHE-2181 D1c) are structural: required fields,
+// option cardinality, bare IDs, inline lists and a character bound on
+// agent_did. One question per request is the single decision field plus typed
+// options[] and human_steps[]. Wording checks (question marks, "answer 1 to 5")
+// are advisory hints from LintAsk, because natural language never refuses an ask.
 var (
 	// manyAnswers: "answer 1 to 5", "answer 1-5", "answer per number/each/all", "decisions 5, 6, 7, 9".
 	manyAnswers = regexp.MustCompile(`(?i)\banswer\s+(?:\d+\s*(?:to|-|–)\s*\d+|per number|each|all)\b|\bdecisions\s+\d+\s*(?:,|-|–|and)\s*\d+`)
@@ -21,13 +23,25 @@ var (
 	hexPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{7,}\b`)
 )
 
-const minAgentDidWords = 4
+// minAgentDidChars counts letters, not space-separated words, so a language
+// written without spaces is measured fairly.
+const minAgentDidChars = 10
 
 type proseField struct{ path, text string }
 
 // proseFields lists every visible prose field with its indexed AskError path.
 // agent_did is excluded: it sits in the collapsed Details block (rule 4).
 func (ask Ask) proseFields() []proseField {
+	if ask.isAction() {
+		fields := []proseField{
+			{"ask.context_eli10", ask.ContextELI10}, {"ask.why_human", ask.WhyHuman},
+			{"ask.done_when", ask.DoneWhen}, {"ask.default_if_no_reply", ask.DefaultIfNoReply},
+		}
+		for index, step := range ask.Steps {
+			fields = append(fields, proseField{fmt.Sprintf("ask.steps[%d]", index), step})
+		}
+		return fields
+	}
 	fields := []proseField{
 		{"ask.context_eli10", ask.ContextELI10}, {"ask.decision", ask.Decision}, {"ask.stakes_if_wrong", ask.StakesIfWrong},
 		{"ask.recommendation", ask.Recommendation}, {"ask.default_if_no_reply", ask.DefaultIfNoReply},
@@ -46,9 +60,6 @@ func (ask Ask) proseFields() []proseField {
 }
 
 func (ask Ask) validateReadable() error {
-	if asksSeveral(ask) {
-		return &AskError{"ask.decision", "asks more than one question; split into one request per question"}
-	}
 	fields := ask.proseFields()
 	for _, field := range fields {
 		for _, line := range strings.Split(field.text, "\n") {
@@ -59,11 +70,16 @@ func (ask Ask) validateReadable() error {
 	}
 	for _, field := range fields {
 		// Only a Markdown link destination is exempt; link text and bare URLs are not.
-		if uuidPattern.MatchString(maskLinkDestinations(field.text)) {
+		// An action step is the exception: its code spans are exact commands.
+		text := maskLinkDestinations(field.text)
+		if strings.HasPrefix(field.path, "ask.steps[") {
+			text = maskCodeSpans(text) // an exact command may carry a literal ID
+		}
+		if uuidPattern.MatchString(text) {
 			return &AskError{field.path, "has a bare ID; link it as [what it is](link)"}
 		}
 	}
-	if plainWords(ask.AgentDid) < minAgentDidWords {
+	if plainLetters(ask.AgentDid) < minAgentDidChars {
 		return &AskError{"ask.agent_did", "must say in at least one plain sentence what the agent did; an ID alone is not enough"}
 	}
 	return nil
@@ -107,6 +123,50 @@ func maskLinkDestinations(text string) string {
 	return out.String()
 }
 
+// maskCodeSpans drops the content of each Markdown code span. A span opens at
+// a backtick run and closes at the next run of the same length; an escaped
+// backtick or an unclosed run is literal text.
+func maskCodeSpans(text string) string {
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		switch text[i] {
+		case '\\':
+			end := min(i+2, len(text))
+			out.WriteString(text[i:end])
+			i = end
+		case '`':
+			run := len(text[i:]) - len(strings.TrimLeft(text[i:], "`"))
+			if end := closingRun(text, i+run, run); end > 0 {
+				i = end + run
+				continue
+			}
+			out.WriteString(text[i : i+run])
+			i += run
+		default:
+			out.WriteByte(text[i])
+			i++
+		}
+	}
+	return out.String()
+}
+
+// closingRun returns the index of the first backtick run of exactly n backticks
+// at or after from, or -1.
+func closingRun(text string, from, n int) int {
+	for i := from; i < len(text); {
+		if text[i] != '`' {
+			i++
+			continue
+		}
+		run := len(text[i:]) - len(strings.TrimLeft(text[i:], "`"))
+		if run == n {
+			return i
+		}
+		i += run
+	}
+	return -1
+}
+
 // closingIndex returns the index of the delimiter that closes the one at text[start],
 // counting nested pairs and skipping backslash-escaped characters, or -1.
 func closingIndex(text string, start int, open, closer byte) int {
@@ -126,8 +186,9 @@ func closingIndex(text string, start int, open, closer byte) int {
 	return -1
 }
 
+// asksSeveral reports wording that looks like several questions. It is advisory.
 func asksSeveral(ask Ask) bool {
-	if manyAnswers.MatchString(ask.Decision) || strings.Count(ask.Decision, "?") >= 2 {
+	if manyAnswers.MatchString(ask.Decision) || strings.Count(ask.Decision, "?")+strings.Count(ask.Decision, "？") >= 2 {
 		return true
 	}
 	for _, option := range ask.Options {
@@ -138,14 +199,13 @@ func asksSeveral(ask Ask) bool {
 	return false
 }
 
-// plainWords counts words with letters once links, UUIDs and long hex values are removed.
-func plainWords(text string) int {
+// plainLetters counts letters once links, UUIDs and long hex values are removed.
+func plainLetters(text string) int {
 	text = hexPattern.ReplaceAllString(uuidPattern.ReplaceAllString(anyLink.ReplaceAllString(text, " "), " "), " ")
-	count := 0
-	for _, word := range strings.Fields(text) {
-		if strings.IndexFunc(word, unicode.IsLetter) >= 0 {
-			count++
+	return strings.Count(strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) {
+			return 'x'
 		}
-	}
-	return count
+		return -1
+	}, text), "x")
 }

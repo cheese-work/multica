@@ -7,6 +7,7 @@ package gateprobe
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,6 +86,18 @@ func probe(args []string) error {
 		}
 		c.Close()
 		return fmt.Errorf("REACHED %s without the proxy", target)
+	case "connect": // raw CONNECT to the proxy: connect <authority> [sni]
+		return probeConnect(target, args[2:])
+	case "absolute": // absolute-form request to the proxy instead of CONNECT
+		return probeAbsolute(target)
+	case "dns": // a name lookup with no proxy: must get no answer
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if addrs, err := net.DefaultResolver.LookupHost(ctx, target); err == nil {
+			return fmt.Errorf("RESOLVED %s to %v without the proxy", target, addrs)
+		}
+		fmt.Println("refused", target)
+		return nil
 	case "noproxy-http": // a client that ignores the proxy variables
 		client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 2 * time.Second}
 		resp, err := client.Get(target)
@@ -300,4 +313,73 @@ func FakeMCP(in io.Reader, out io.Writer) {
 		return
 	}
 	fmt.Fprintf(out, `{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fake-stdio-mcp:%s"}}}`+"\n", key)
+}
+
+// proxyConn opens the TCP connection to the proxy named by HTTPS_PROXY.
+func proxyConn() (net.Conn, error) {
+	u, err := url.Parse(os.Getenv("HTTPS_PROXY"))
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("HTTPS_PROXY unusable")
+	}
+	return net.DialTimeout("tcp", u.Host, 5*time.Second)
+}
+
+// probeConnect sends CONNECT authority exactly as given, with no client-side
+// normalization, and prints the status. Given an sni and a 200, it starts a
+// TLS handshake with that server name and prints whether it completed (the
+// handshake does not verify the peer: only the proxy's SNI check is under test).
+func probeConnect(authority string, sni []string) error {
+	c, err := proxyConn()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", authority, authority)
+	br := bufio.NewReader(c)
+	// Body stays unread and unclosed: after a 200 it is the live tunnel, and
+	// closing it would block on the socket. The deferred c.Close() ends it.
+	resp, err := http.ReadResponse(br, nil) //nolint:bodyclose // see above
+	if err != nil {
+		return fmt.Errorf("proxy answer: %w", err)
+	}
+	line := fmt.Sprintf("connect %s status=%d", authority, resp.StatusCode)
+	if resp.StatusCode == http.StatusOK && len(sni) > 0 {
+		t := tls.Client(&bufferedConn{Conn: c, r: br}, &tls.Config{ServerName: sni[0], InsecureSkipVerify: true})
+		if err := t.Handshake(); err != nil {
+			line += " tls=fail"
+		} else {
+			line += " tls=ok"
+		}
+	}
+	fmt.Println(line)
+	return nil
+}
+
+// bufferedConn reads through br so bytes read past the CONNECT reply are kept.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+func probeAbsolute(target string) error {
+	c, err := proxyConn()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	u, err := url.Parse(target)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, u.Host)
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil) //nolint:bodyclose // only the status line is used; the deferred c.Close() ends the socket
+	if err != nil {
+		return fmt.Errorf("proxy answer: %w", err)
+	}
+	fmt.Printf("absolute %s status=%d\n", target, resp.StatusCode)
+	return nil
 }

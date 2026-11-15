@@ -96,19 +96,25 @@ const CATEGORY_RANK = new Map<IssueStatusCategory, number>(ALL_STATUSES.map((c, 
  * `projectId` is three-valued:
  * - a project id: that project's workflow;
  * - `null`: an issue outside any project. It offers the workspace Default
- *   workflow's statuses, as a project on Default does, so statuses another
- *   project's workflow added stay out of its list. Default has no handoffs
+ *   workflow's statuses and nothing else, as a project on Default does and
+ *   as the server enforces. (MUL-8121, MUL-8250) Default has no handoffs
  *   here — the server applies none outside a project — so `workflow` stays
- *   null and `defaultScope` names the Default instead. The server still
- *   accepts any status, so `catalog` keeps the full set reachable by search,
- *   and `currentStatus` stays listed even when Default leaves it out.
- *   (MUL-8121)
+ *   null and `defaultScope` names the Default instead.
  * - `undefined`: a surface spanning projects; the whole catalog.
+ *
+ * `workflowId` is the issue's own override. When set, its workflow is the one
+ * listed, in a project or not.
+ *
+ * On Default, `currentStatus` stays listed even when Default leaves it out
+ * (the issue left a project whose workflow added it, or Default dropped it),
+ * so it can still be seen and moved off.
  */
 export function useIssueStatusOptions(
   wsId: string,
   projectId: string | null | undefined,
   currentStatus?: IssueStatus | null,
+  /** The issue's own workflow override; wins over the project's. (CHE-2822) */
+  workflowId?: string | null,
 ): {
   options: StatusOption[];
   workflow: IssueWorkflow | null;
@@ -117,13 +123,12 @@ export function useIssueStatusOptions(
   /** Reloads the workflow and project lists; absent from a caller that supplies none. */
   retry?: () => void;
   defaultScope: IssueWorkflow | null;
-  catalog: StatusOption[];
 } {
   const catalogOptions = useStatusOptions(wsId);
   const { categoryOf, colorOf, iconOf } = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
-  const { workflow, project, defaultWorkflow, resolved: workflowResolved, retry } = useProjectWithWorkflow(wsId, projectId);
-  const defaultScope = projectId === null && !workflow ? defaultWorkflow ?? null : null;
+  const { workflow, project, defaultWorkflow, resolved: workflowResolved, retry } = useProjectWithWorkflow(wsId, projectId, workflowId);
+  const defaultScope = projectId === null && !workflowId && !workflow ? defaultWorkflow ?? null : null;
   const options = useMemo<StatusOption[]>(() => {
     const listed = workflow ?? defaultScope;
     if (!listed) return catalogOptions;
@@ -137,10 +142,9 @@ export function useIssueStatusOptions(
         icon: iconOf(key),
       };
     const steps = listed.steps.map((step) => optionOf(step.status_key));
-    if (!defaultScope || !currentStatus || steps.some((o) => o.key === currentStatus)) return steps;
-    // The current status is outside Default (e.g. the issue left a project
-    // whose workflow added it): keep it visible and checked, after the last
-    // step of its category, so it can still be seen and moved off.
+    if (!listed.is_default || !currentStatus || steps.some((o) => o.key === currentStatus)) return steps;
+    // Keep a current status Default leaves out visible and checked, after the
+    // last step of its category.
     const current = optionOf(currentStatus);
     const rank = CATEGORY_RANK.get(current.category) ?? ALL_STATUSES.length;
     let at = steps.length;
@@ -149,5 +153,5 @@ export function useIssueStatusOptions(
   }, [catalogOptions, categoryOf, colorOf, currentStatus, defaultScope, iconOf, labelOf, workflow]);
   // Only an explicit `false` is unresolved: a caller that supplies no signal keeps
   // the earlier behavior. The real hook always supplies it.
-  return { options, workflow, project, defaultScope, catalog: catalogOptions, resolved: workflowResolved !== false, retry };
+  return { options, workflow, project, defaultScope, resolved: workflowResolved !== false, retry };
 }

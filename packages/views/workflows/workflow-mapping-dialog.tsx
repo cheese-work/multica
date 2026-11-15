@@ -72,7 +72,6 @@ export function WorkflowMappingDialog({
   useEffect(() => {
     if (!plan) return;
     setMapping(Object.fromEntries(plan.required.map((r) => [r.status_key, suggested(r)])));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
 
   // The destinations changed: keep a choice that is still valid, replace one that is not.

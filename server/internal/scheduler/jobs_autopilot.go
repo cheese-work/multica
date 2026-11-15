@@ -211,10 +211,35 @@ func autopilotScopes(
 				LastFiredAt:    lastFiredAt,
 			}
 			scopes = append(scopes, Scope{Kind: ScopeKindAutopilotTrigger, ID: id})
+			healStaleNextRunAt(ctx, queries, r, cron, tz, now)
 		}
 		cache.replace(next)
 		return scopes, nil
 	}
+}
+
+// healStaleNextRunAt re-points the display-only next_run_at at the future when it
+// is older than the dispatch-lateness window: no dispatch can still be pending for
+// that slot, so the value is a leftover (for example from a pause) that makes an
+// active trigger look overdue (CHE-5500). Best effort; the next tick retries.
+func healStaleNextRunAt(
+	ctx context.Context,
+	queries *db.Queries,
+	trigger db.ListSchedulableAutopilotTriggersRow,
+	cron, tz string,
+	now time.Time,
+) {
+	if !trigger.NextRunAt.Valid || !trigger.NextRunAt.Time.Before(now.Add(-maxAutopilotScheduleLateness)) {
+		return
+	}
+	next, err := service.NextOccurrenceAfterUTC(cron, tz, now)
+	if err != nil {
+		return
+	}
+	_, _ = queries.UpdateAutopilotTrigger(ctx, db.UpdateAutopilotTriggerParams{
+		ID:        trigger.ID,
+		NextRunAt: pgtype.Timestamptz{Time: next, Valid: true},
+	})
 }
 
 // autopilotPlansForScope returns the PlansForScope hook that computes

@@ -12,7 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
-import { AutopilotDialog } from "../autopilots/components/autopilot-dialog";
+import { AutopilotDialog } from "../autopilots/components/autopilot-dialog-lazy";
 import { TerminateTaskConfirmDialog } from "../issues/components/terminate-task-confirm-dialog";
 import { useT } from "../i18n";
 import type { PaletteHostDialog } from "./types";
@@ -96,9 +96,6 @@ function BatchDeleteDialog({
           <AlertDialogTitle>{t(($) => $.batch.delete_dialog_title, { count })}</AlertDialogTitle>
           <AlertDialogDescription>
             {t(($) => $.batch.delete_dialog_desc, { count })}
-            <span className="mt-2 block text-caption text-muted-foreground">
-              {t(($) => $.batch.delete_dialog_warning)}
-            </span>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

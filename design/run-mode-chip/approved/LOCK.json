@@ -1,0 +1,25 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:page1",
+  "screens": [
+    {
+      "screen": "run-mode-chip (direction C, one summary chip, hover popover with the modes inline in each agent row; desktop 1440 and iPhone 390; 1, 2, 3 and 5 recipients; steer, restart, skip, start tones; safe triangle; 48-character agent name with a blocked mention)",
+      "frame_id": "N4j_S11KaP",
+      "updatedAt": "2026-11-02T08:23:51.708Z",
+      "content_sha256": "a6d3fc373505b8fe0d4e18c10f134ed160f682943996a59a0b74817a658d85bf"
+    }
+  ],
+  "export_sha256": "b265f7bd4ee077f5bf7b4033187c0adee408569b2907bea394547fb528974a7e",
+  "export_sha256_method": "sha256 of the line '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "run-mode-chip-c.html": "a6d3fc373505b8fe0d4e18c10f134ed160f682943996a59a0b74817a658d85bf"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline; length 22769 characters equals htmlBytes from get_frame",
+  "exported_at": "2026-11-02 15:57 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-3066",
+  "selection_id": "01a19b78-92b6-73e0-a63d-56ad3461879d",
+  "ux_verdict_id": "01a19b65-38f7-75ea-bd5d-3418b783635e"
+}

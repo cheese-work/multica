@@ -11,6 +11,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteHostSampleBefore = `-- name: DeleteHostSampleBefore :execrows
+DELETE FROM host_sample WHERE sampled_at < $1::timestamptz
+`
+
+func (q *Queries) DeleteHostSampleBefore(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteHostSampleBefore, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteHostSampleHourlyBefore = `-- name: DeleteHostSampleHourlyBefore :execrows
+DELETE FROM host_sample_hourly WHERE bucket_ts < $1::timestamptz
+`
+
+func (q *Queries) DeleteHostSampleHourlyBefore(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteHostSampleHourlyBefore, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getLatestHostSampleAt = `-- name: GetLatestHostSampleAt :one
 SELECT sampled_at FROM host_sample WHERE daemon_id = $1 ORDER BY sampled_at DESC LIMIT 1
 `
@@ -69,4 +93,50 @@ func (q *Queries) InsertHostSampleDisk(ctx context.Context, arg InsertHostSample
 		arg.DiskPercent,
 	)
 	return err
+}
+
+const maxHostSampleHourlyBucket = `-- name: MaxHostSampleHourlyBucket :one
+SELECT max(bucket_ts)::timestamptz AS bucket_ts FROM host_sample_hourly
+`
+
+func (q *Queries) MaxHostSampleHourlyBucket(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, maxHostSampleHourlyBucket)
+	var bucket_ts pgtype.Timestamptz
+	err := row.Scan(&bucket_ts)
+	return bucket_ts, err
+}
+
+const rollupHostSampleHourly = `-- name: RollupHostSampleHourly :execrows
+INSERT INTO host_sample_hourly (daemon_id, bucket_ts, mount_path,
+    cpu_max, cpu_avg, ram_max, ram_avg, disk_max, disk_avg, sample_count, expected_count)
+SELECT daemon_id, date_trunc('hour', sampled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour_ts, mount_path,
+    max(cpu_percent), avg(cpu_percent)::real, max(ram_percent), avg(ram_percent)::real, max(disk_percent), avg(disk_percent)::real,
+    count(*)::int, 60
+FROM host_sample
+WHERE sampled_at >= $1::timestamptz AND sampled_at < $2::timestamptz
+GROUP BY daemon_id, hour_ts, mount_path
+ON CONFLICT (daemon_id, bucket_ts, mount_path) DO UPDATE SET
+    cpu_max = EXCLUDED.cpu_max,
+    cpu_avg = EXCLUDED.cpu_avg,
+    ram_max = EXCLUDED.ram_max,
+    ram_avg = EXCLUDED.ram_avg,
+    disk_max = EXCLUDED.disk_max,
+    disk_avg = EXCLUDED.disk_avg,
+    sample_count = EXCLUDED.sample_count
+`
+
+type RollupHostSampleHourlyParams struct {
+	FromTs pgtype.Timestamptz `json:"from_ts"`
+	ToTs   pgtype.Timestamptz `json:"to_ts"`
+}
+
+// Folds raw rows in [from_ts, to_ts) into hourly rows per (daemon, mount).
+// Idempotent: a rerun recomputes from the raw rows still present. Hours with
+// no raw row are not written (gap, not zero).
+func (q *Queries) RollupHostSampleHourly(ctx context.Context, arg RollupHostSampleHourlyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rollupHostSampleHourly, arg.FromTs, arg.ToTs)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -104,6 +104,11 @@ func TestAgentDecisionRejectsUntrustedAndMalformedActions(t *testing.T) {
 
 func newAdjudicationFixture(t *testing.T) agentDecisionFixture {
 	t.Helper()
+	return newAdjudicationFixtureWithReview(t, "Verdict: BLOCK\nGate: screenshot_evidence\nDisputed-point: screenshot coverage\nBlock-category: reversible_gate\nScreenshots are required for this gate.\n")
+}
+
+func newAdjudicationFixtureWithReview(t *testing.T, review string) agentDecisionFixture {
+	t.Helper()
 	f := newAgentDecisionFixture(t)
 	t.Setenv("MULTICA_VOTE_GATE_LABS", `{"claude/claude-test":"anthropic","codex/gpt-test":"openai","gemini/gemini-test":"google"}`)
 	rt := dbfx.Runtime(t, "adjudicator-runtime-"+safeTestName(t), testutil.Cols{"provider": "gemini"})
@@ -113,7 +118,6 @@ func newAdjudicationFixture(t *testing.T) agentDecisionFixture {
 	f.tasks[judge] = task
 	f.retask(t, judge, rt, "gemini-test")
 	point := "screenshot coverage"
-	review := "Verdict: BLOCK\nGate: screenshot_evidence\nDisputed-point: " + point + "\nBlock-category: reversible_gate\nScreenshots are required for this gate.\n"
 	rebuttal := "Rebuttal: screenshots add no evidence here\nGate: screenshot_evidence\nDisputed-point: " + point + "\n"
 	var reviewer, author map[string]any
 	if err := json.Unmarshal(f.post(t, f.leaderID, review, http.StatusCreated).Body.Bytes(), &reviewer); err != nil {

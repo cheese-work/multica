@@ -252,7 +252,7 @@ func TestDecisionAskBlockingRulesReturn400(test *testing.T) {
 	}{
 		{"CHE-2204 multi-question", func(ask map[string]any) {
 			ask["decision"] = "Answer 1 to 5. 1. Run budgets: close CHE-2164. 2. CHE-1532: add the secrets. 3. CHE-2007: run the packet. 4. CHE-2166: lane or waive. 5. Overnight queue."
-		}, "ask.decision asks more than one question; split into one request per question"},
+		}, "ask.decision has an inline numbered list; put each item on its own line as a Markdown list"},
 		{"inline list in a label", func(ask map[string]any) { option(ask, 0)["label"] = "1. KEEP 2. WAIVE" },
 			"ask.options[0].label has an inline numbered list; put each item on its own line as a Markdown list"},
 		{"bare UUID in cost_or_time", func(ask map[string]any) { option(ask, 1)["cost_or_time"] = "Wait for " + commentUUID },

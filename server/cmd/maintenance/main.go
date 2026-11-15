@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
 	"os"
 	"os/signal"
 	"strconv"
@@ -75,6 +76,39 @@ func (c client) once(ctx context.Context, path string, body any) (*maintenance.J
 		return nil, fmt.Errorf("HTTP %d: %s", code, p.Error)
 	}
 	return p.Job, nil
+}
+
+// recoverPasskeys runs the C00 passkey recovery for one person: every passkey
+// revoked, sessions ended, enrollment of two new keys required (CHE-2798 P6).
+func (c client) recoverPasskeys(ctx context.Context, email string) error {
+	if address, err := mail.ParseAddress(email); err != nil || address.Address != email {
+		return errors.New("recover-passkeys requires --email with a plain address")
+	}
+	data, err := json.Marshal(map[string]string{"email": email})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/maintenance/passkey-recovery", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	var payload struct {
+		Recovery *maintenance.PasskeyRecovery `json:"passkey_recovery"`
+		Error    string                       `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&payload); err != nil {
+		return fmt.Errorf("HTTP %d: %w", res.StatusCode, err)
+	}
+	if res.StatusCode != http.StatusOK || payload.Recovery == nil {
+		return fmt.Errorf("HTTP %d: %s", res.StatusCode, payload.Error)
+	}
+	return json.NewEncoder(c.out).Encode(payload.Recovery)
 }
 
 func sleep(ctx context.Context, delay time.Duration) error {
@@ -157,7 +191,7 @@ func (c client) drive(ctx context.Context, path string, batches, retries int, re
 
 func run(ctx context.Context, args []string, envPort string, out, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: maintenance {create|status|run|pause|resume|cancel|configure} [flags]; use COMMAND --help")
+		return errors.New("usage: maintenance {create|status|run|pause|resume|cancel|configure|recover-passkeys} [flags]; use COMMAND --help")
 	}
 	action := args[0]
 	f := flag.NewFlagSet("maintenance "+action, flag.ContinueOnError)
@@ -169,6 +203,7 @@ func run(ctx context.Context, args []string, envPort string, out, stderr io.Writ
 	maxSeconds := f.Int("max-seconds", 0, "required run wall-clock budget including requests/retries")
 	retries := f.Int("max-retries", 3, "retries per advance (0..10)")
 	resume := f.Bool("resume", false, "explicitly resume an initially paused job before running")
+	email := f.String("email", "", "recover-passkeys: the person's account email")
 	jobType := f.String("type", "issue_status_category", "registered processor type")
 	version := f.Int("version", 1, "processor version")
 	scope := f.String("scope", "database", "processor scope")
@@ -194,6 +229,7 @@ func run(ctx context.Context, args []string, envPort string, out, stderr io.Writ
 		"run":    "port job max-batches max-seconds max-retries resume",
 		"pause":  "port job revision", "resume": "port job revision", "cancel": "port job revision",
 		"configure": "port job revision batch-size delay-ms lock-timeout-ms statement-timeout-ms",
+		"recover-passkeys": "port email",
 	}
 	flags, ok := allowed[action]
 	if !ok {
@@ -212,7 +248,7 @@ func run(ctx context.Context, args []string, envPort string, out, stderr io.Writ
 	if err != nil || p < 1 || p > 65535 {
 		return errors.New("set --port or MAINTENANCE_PORT to 1..65535")
 	}
-	if action != "create" {
+	if action != "create" && action != "recover-passkeys" {
 		if _, err := uuid.Parse(*jobID); err != nil {
 			return errors.New("--job must be a UUID")
 		}
@@ -222,6 +258,9 @@ func run(ctx context.Context, args []string, envPort string, out, stderr io.Writ
 	defer transport.CloseIdleConnections()
 	c := client{base: "http://127.0.0.1:" + strconv.Itoa(p), http: &http.Client{Transport: transport, Timeout: 20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, out: out}
+	if action == "recover-passkeys" {
+		return c.recoverPasskeys(ctx, *email)
+	}
 	path := "/maintenance/jobs/" + *jobID
 	if action == "run" {
 		if *maxBatches < 1 || *maxSeconds < 1 || *maxSeconds > 86400 || *retries < 0 || *retries > 10 {

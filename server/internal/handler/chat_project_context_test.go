@@ -305,6 +305,7 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 
 	agentID := createHandlerTestAgent(t, "ChatProjectClaimAgent", []byte("[]"))
 	runtimeID := handlerTestRuntimeID(t)
+	refreshRuntimeHeartbeat(t, runtimeID)
 	sessionID := createChatSessionWithProjectForTest(t, agentID, projectID)
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO chat_message (chat_session_id, role, content)

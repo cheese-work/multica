@@ -152,10 +152,11 @@ export function ZoomCanvas({
 }) {
   // Stable identity: an inline ref callback is a new function every render, so
   // React would detach (setViewportNode(null)) and reattach on each one.
+  const { setViewportNode } = canvas;
   const setCanvasNode = useCallback(
     (node: HTMLDivElement | null) => {
       if (canvasRef) canvasRef.current = node;
-      canvas.setViewportNode(node);
+      setViewportNode(node);
       if (node && autoFocus) {
         // This focus is for the keyboard controls, not a reader tabbing in —
         // marked so the stylesheet drops the ring until focus leaves (see
@@ -165,7 +166,7 @@ export function ZoomCanvas({
         node.focus({ preventScroll: true });
       }
     },
-    [canvasRef, canvas.setViewportNode, autoFocus],
+    [canvasRef, setViewportNode, autoFocus],
   );
 
   return (

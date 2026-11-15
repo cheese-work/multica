@@ -90,7 +90,7 @@ func TestQoderIssueLifecycle(t *testing.T) {
 				t.Fatalf("completion status = %s, want %s", issue.Status, want)
 			}
 			var changes int
-			dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='status_changed' AND details->>'source'='qoder_cloud'`, issueID).Scan(&changes)
+			dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='status_changed' AND details->'trigger'->'cause'->>'kind'='qoder'`, issueID).Scan(&changes)
 			expected := 1
 			if scenario == "success" || scenario == "claim replay" {
 				expected = 2

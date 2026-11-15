@@ -22,6 +22,8 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
   enabled: boolean;
 }) {
   const { t } = useT("chat");
+  // Same labels as the issue page for the two controls that open and confirm a comment.
+  const { t: tIssues } = useT("issues");
   const active = enabled && !!sessionId;
   const draftKey: CommentDraftKey = `chat:${sessionId ?? ""}`;
   const annotations = useCommentDraftStore((state) => state.getAnnotations(draftKey));
@@ -56,8 +58,8 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
     selectionFailed: t(($) => $.annotations.selection_failed),
     quoteLimit: (count) => t(($) => $.annotations.quote_limit, { count }),
     countLimit: (count) => t(($) => $.annotations.count_limit, { count }),
-    add: t(($) => $.annotations.add),
-    confirmAdd: t(($) => $.annotations.confirm_add),
+    add: tIssues(($) => $.reply.annotations.add),
+    confirmAdd: tIssues(($) => $.reply.annotations.confirm_add),
     save: t(($) => $.annotations.save),
     noteLabel: (number) => t(($) => $.annotations.note_label, { number }),
     notePlaceholder: t(($) => $.annotations.note_placeholder),

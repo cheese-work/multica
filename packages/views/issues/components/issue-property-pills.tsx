@@ -40,6 +40,7 @@ export function IssuePropertyPills({
         triggerRender={<PillButton />}
         align="start"
         projectId={issue.project_id}
+        workflowId={issue.workflow_id}
         issue={issue}
         onMarkDuplicate={onMarkDuplicate}
         isDuplicate={isDuplicate}

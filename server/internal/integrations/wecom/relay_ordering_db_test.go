@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/multica-ai/multica/server/internal/events"
@@ -62,7 +63,7 @@ func wecomTestRedis(t *testing.T) *redis.Client {
 	if err != nil {
 		t.Fatalf("parse REDIS_TEST_URL: %v", err)
 	}
-	opts.DB = wecomRelayTestRedisDB
+	opts.DB = testutil.RedisTestDB(opts.DB, wecomRelayTestRedisDB)
 	rdb := redis.NewClient(opts)
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {

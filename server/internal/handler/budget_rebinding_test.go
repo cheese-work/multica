@@ -81,6 +81,9 @@ type rebindPath struct {
 	wantInteractive int
 	// state reads what the call changes.
 	state func(t *testing.T, f rebindFixture) string
+	// taskTokenCard: a task token's widening ask opens an approval card (202)
+	// and changes nothing, instead of the 403 refusal (CHE-5505).
+	taskTokenCard bool
 }
 
 func withActorSource(req *http.Request, source string) *http.Request {
@@ -136,7 +139,7 @@ func rebindPaths() []rebindPath {
 				req := withURLParam(withActorSource(newRequest("PUT", "/api/issues/"+f.c.issueID+"/workflow", map[string]any{"workflow_id": f.wide}), s), "id", f.c.issueID)
 				return testutil.Call(t, testHandler.SetIssueWorkflow, req)
 			},
-			wantInteractive: http.StatusOK, state: issueState,
+			wantInteractive: http.StatusOK, state: issueState, taskTokenCard: true,
 		},
 		{
 			name: "issue workflow clear",
@@ -148,7 +151,7 @@ func rebindPaths() []rebindPath {
 				req := withURLParam(withActorSource(newRequest("PUT", "/api/issues/"+f.c.issueID+"/workflow", map[string]any{"workflow_id": nil}), s), "id", f.c.issueID)
 				return testutil.Call(t, testHandler.SetIssueWorkflow, req)
 			},
-			wantInteractive: http.StatusOK, state: issueState,
+			wantInteractive: http.StatusOK, state: issueState, taskTokenCard: true,
 		},
 		{
 			name: "project workflow switch",
@@ -201,7 +204,9 @@ func TestBudgetRebindingWideningRefusedForNonInteractive(t *testing.T) {
 			before := p.state(t, f)
 			for _, source := range nonInteractive {
 				res := p.call(t, f, source)
-				if p.name == "issue batch project move" {
+				if p.taskTokenCard && source == "task_token" {
+					res.Want(http.StatusAccepted)
+				} else if p.name == "issue batch project move" {
 					// The batch reports a refused item; nothing else changes.
 					if !strings.Contains(res.Text(), "budget_rebinding_requires_interactive") {
 						t.Fatalf("batch as %s: refusal missing: %s", source, res.Text())
@@ -240,6 +245,7 @@ func TestBudgetRebindingNarrowingAllowedForNonInteractive(t *testing.T) {
 // mapped here.
 var budgetBindingQueries = map[string]string{
 	"UpdateIssue":                          "guarded: UpdateIssue project change (single, batch, move)",
+	"SetIssueProjectFromDecision":          "guarded: issue.project.set widens only through a spend-class owner approval",
 	"SetIssueWorkflow":                     "guarded: SetIssueWorkflow",
 	"SetProjectWorkflow":                   "guarded: SetProjectWorkflow",
 	"DeleteIssueWorkflow":                  "guarded: DeleteIssueWorkflow",
@@ -337,10 +343,11 @@ func TestBudgetRebindingNeutralProjectSwitchWithIssueOverride(t *testing.T) {
 // budgetGuardFor lists, per rewriting query, the guard its caller must invoke.
 // The query inventory above cannot see a second caller of the same query.
 var budgetGuardFor = map[string][]string{
-	"SetProjectWorkflow":  {"projectSwitchWidensBudget"},
-	"SetIssueWorkflow":    {"issueBinding"},
-	"DeleteIssueWorkflow": {"workflowDeleteWidensBudget"},
-	"UpdateIssue":         {"guardIssueProjectRebinding", "PreserveProject"},
+	"SetProjectWorkflow":          {"projectSwitchWidensBudget"},
+	"SetIssueWorkflow":            {"issueBinding"},
+	"DeleteIssueWorkflow":         {"workflowDeleteWidensBudget"},
+	"UpdateIssue":                 {"guardIssueProjectRebinding", "PreserveProject"},
+	"SetIssueProjectFromDecision": {"loadIssueProjectMove"},
 }
 
 // budgetGuardExempt names callers that cannot change a binding.

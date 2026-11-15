@@ -170,7 +170,7 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For DevEco Code: writes {workDir}/AGENTS.md  (skills discovered natively from .deveco/skills/)
 // For OpenClaw: writes {workDir}/AGENTS.md  (skills discovered natively from {workDir}/skills/ via per-task openclaw-config.json that pins agents.defaults.workspace)
 // For Hermes:   writes {workDir}/AGENTS.md  (skills discovered natively from a per-task HERMES_HOME/skills seeded by the daemon; see hermes_home.go)
-// For Pi:       writes {workDir}/AGENTS.md  (skills discovered natively from .pi/skills/)
+// For Pi:       writes {workDir}/AGENTS.md  (skills explicitly loaded from .pi/skills/ via --skill)
 // For Oh-My-Pi (omp): writes {workDir}/AGENTS.md  (omp is a pi fork; skills discovered from .omp/skills/)
 // For Cursor:   writes {workDir}/AGENTS.md  (skills discovered natively from .cursor/skills/)
 // For Kimi:        writes {workDir}/AGENTS.md  (Kimi Code CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
@@ -190,6 +190,25 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (strin
 		return content, nil
 	}
 	return content, writeRuntimeConfigFile(path, content)
+}
+
+// RuntimeBrief renders the runtime brief without writing it anywhere. The
+// managed harness profile ships it via --append-system-prompt-file.
+func RuntimeBrief(provider string, ctx TaskContextForEnv) string {
+	return buildMetaSkillContent(provider, ctx)
+}
+
+// SourceClaudeConfigDir is the user's Claude config dir a managed home seeds
+// credentials from: CLAUDE_CONFIG_DIR, else ~/.claude.
+func SourceClaudeConfigDir() string {
+	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".claude")
+	}
+	return filepath.Join(home, ".claude")
 }
 
 // runtimeConfigPath returns the absolute path to the runtime config file that
@@ -218,7 +237,7 @@ func runtimeConfigPath(workDir, provider string) string {
 		return filepath.Join(workDir, "CODEBUDDY.md")
 	case "qwen":
 		return filepath.Join(workDir, "QWEN.md")
-	case "codex", "copilot", "opencode", "codearts", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "muse", "dim", "zeroclaw", "devin":
+	case "codex", "copilot", "opencode", "codearts", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "muse", "dim", "zeroclaw", "devin", "zcode":
 		return filepath.Join(workDir, "AGENTS.md")
 	default:
 		return ""

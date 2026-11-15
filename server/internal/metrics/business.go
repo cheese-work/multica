@@ -20,6 +20,7 @@ const (
 	RuntimeSweepStageReconnectRetries         = "runtime_reconnect_retries"
 	RuntimeSweepStageStaleTasks               = "stale_tasks"
 	RuntimeSweepStageQueuedExpiry             = "queued_task_expiry"
+	RuntimeSweepStageBackgroundDeadlines      = "background_deadlines"
 	RuntimeSweepStageDelegatedFailureRecovery = "delegated_failure_recovery"
 	RuntimeSweepStageDeferredChatFinalization = "deferred_chat_finalize"
 	RuntimeSweepStageGC                       = "runtime_gc"
@@ -86,6 +87,7 @@ type BusinessMetrics struct {
 	// own, including daemon heartbeats, browser polling, and readiness gates.
 	// See labels.go for the closed enum.
 	agentRuntimeLookup            *prometheus.CounterVec
+	askGuardEvent                 *prometheus.CounterVec
 	issueMetadataMutation         *prometheus.CounterVec
 	issueMetadataMutationDuration *prometheus.HistogramVec
 
@@ -301,6 +303,10 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Namespace: "multica", Subsystem: "agent_runtime", Name: "lookup_total",
 			Help: "Total logical agent_runtime lookups by product source and outcome (one per requested id, not per SQL query).",
 		}, metricLabels("multica_agent_runtime_lookup_total")),
+		askGuardEvent: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "ask_guard", Name: "event_total",
+			Help: "Total ask guard hits by workspace mode and result (created, retry or error).",
+		}, metricLabels("multica_ask_guard_event_total")),
 		issueMetadataMutation: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "multica", Subsystem: "issue_metadata", Name: "mutation_total",
 			Help: "Total issue metadata mutation attempts by operation and bounded result.",
@@ -366,6 +372,7 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.entitlementVersionRegression,
 		m.autopilotQuotaDecision,
 		m.agentRuntimeLookup,
+		m.askGuardEvent,
 		m.issueMetadataMutation,
 		m.issueMetadataMutationDuration,
 	}, m.events.collectors()...)
@@ -449,6 +456,25 @@ func (m *BusinessMetrics) RecordAgentRuntimeLookup(source, result string) {
 	).Inc()
 }
 
+// RecordAskGuardEvent counts one ask guard hit. mode is the mode at the hit
+// (warn or block) and result is created, retry or error; any other value of
+// either lands on "other" so a call site cannot mint a series.
+func (m *BusinessMetrics) RecordAskGuardEvent(mode, result string) {
+	if m == nil {
+		return
+	}
+	m.askGuardEvent.WithLabelValues(oneOf(mode, "warn", "block"), oneOf(result, "created", "retry", "error")).Inc()
+}
+
+func oneOf(v string, allowed ...string) string {
+	for _, a := range allowed {
+		if v == a {
+			return v
+		}
+	}
+	return "other"
+}
+
 func (m *BusinessMetrics) RecordEntitlementVersionRegression() {
 	if m != nil {
 		m.entitlementVersionRegression.Inc()
@@ -524,6 +550,7 @@ func normalizeRuntimeSweepStage(stage string) string {
 		RuntimeSweepStageReconnectRetries,
 		RuntimeSweepStageStaleTasks,
 		RuntimeSweepStageQueuedExpiry,
+		RuntimeSweepStageBackgroundDeadlines,
 		RuntimeSweepStageDelegatedFailureRecovery,
 		RuntimeSweepStageDeferredChatFinalization,
 		RuntimeSweepStageGC:
@@ -666,7 +693,7 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 	}
 	source = NormalizeTaskSource(source)
 	runtimeMode = NormalizeRuntimeMode(runtimeMode)
-	price, priced := PriceForModelAlias(modelAlias)
+	price, priced := PriceForRuntimeModel(rawProvider, modelAlias)
 	if !priced {
 		provider := NormalizeRuntimeProvider(rawProvider)
 		alias := NormalizeModelAlias(modelAlias)
@@ -810,6 +837,7 @@ func claimDecisionSeries() []claimDecisionSeriesKey {
 	claimTaskOutcomes := []claimDecisionSeriesKey{
 		{"", "claimed", "claimed"},
 		{"", "no_capacity", "agent_concurrency_cap"},
+		{"", "runtime_no_capacity", "runtime_concurrency_cap"},
 		{"", "no_runtime", "agent_unbound"},
 		{"", "runtime_mismatch", "agent_rebound"},
 		{"", "error_get_agent", "error"},

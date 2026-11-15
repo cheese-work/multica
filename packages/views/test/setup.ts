@@ -1,40 +1,21 @@
 import "@testing-library/jest-dom/vitest";
+import { vi } from "vitest";
 
-function createMemoryStorage(): Storage {
-  const values = new Map<string, string>();
-
-  return {
-    get length() {
-      return values.size;
-    },
-    clear: () => values.clear(),
-    getItem: (key: string) => values.get(key) ?? null,
-    key: (index: number) => Array.from(values.keys())[index] ?? null,
-    removeItem: (key: string) => {
-      values.delete(key);
-    },
-    setItem: (key: string, value: string) => {
-      values.set(key, value);
-    },
-  };
-}
+// Production loads the chat composer's editor on demand; suites render it
+// synchronously instead of awaiting the lazy chunk or waiting for intent
+// (CHE-3018). deferred-content-editor.test.tsx covers the real wrapper.
+vi.mock("../chat/components/lazy-content-editor", async () => ({
+  LazyContentEditor: (await import("../editor/content-editor")).ContentEditor,
+}));
+vi.mock("../chat/components/deferred-content-editor", async () => ({
+  DeferredContentEditor: (await import("../editor/content-editor")).ContentEditor,
+}));
+import "@multica/vitest-setup/web-storage";
 
 // Everything below patches gaps in jsdom. Pure-logic suites opt out of jsdom
 // with `// @vitest-environment node` and share this file, so there is no DOM to
 // patch there — bail out rather than guard each stub.
 if (typeof window !== "undefined") {
-  if (typeof globalThis.localStorage?.clear !== "function") {
-    const storage = createMemoryStorage();
-    Object.defineProperty(globalThis, "localStorage", {
-      configurable: true,
-      value: storage,
-    });
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      value: storage,
-    });
-  }
-
   // jsdom doesn't provide matchMedia; useIsMobile() relies on it.
   if (typeof window.matchMedia !== "function") {
     window.matchMedia = (query: string) =>

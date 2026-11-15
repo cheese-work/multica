@@ -3,10 +3,11 @@ import { api } from "../api";
 
 export const githubKeys = {
   all: (wsId: string) => ["github", wsId] as const,
+  pullRequestsAll: () => ["github", "pull-requests"] as const,
   installations: (wsId: string) => [...githubKeys.all(wsId), "installations"] as const,
   repositories: (wsId: string, installationId: string) =>
     [...githubKeys.all(wsId), "installations", installationId, "repositories"] as const,
-  pullRequests: (issueId: string) => ["github", "pull-requests", issueId] as const,
+  pullRequests: (issueId: string) => [...githubKeys.pullRequestsAll(), issueId] as const,
 };
 
 export const githubInstallationsOptions = (wsId: string) =>

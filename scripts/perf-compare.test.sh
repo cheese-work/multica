@@ -84,6 +84,23 @@ if (args[0] === "exec" && args[1] === "playwright") {
     fixture: { version: "test", sha256: "fresh", bytes: 0 },
   };
   const mode = process.env.PERF_PLAYWRIGHT;
+  const project = (args.find((a) => a.startsWith("--project=")) ?? "").slice("--project=".length);
+  if (project) {
+    // The page-load scenario: one report per profile, one sample per route.
+    const kib = Number(process.env.PERF_PAGE_LOAD_KIB ?? 1000);
+    const sample = { ttfb_ms: 100, lcp_ms: 2000, long_task_total_ms: 500, js_transferred_bytes: kib * 1024 };
+    const routes = ["issues", "issue-detail", "chat", "inbox", "projects"];
+    // PERF_EVIDENCE: "missing" drops the profile evidence, "truncated" keeps it
+    // without the webpack runtime chunk (it fell out of the spec's top files).
+    const top = process.env.PERF_EVIDENCE === "truncated" ? [{ name: "main-app.js", ms: 300 }] : [{ name: "webpack-abc123.js", ms: 400 }];
+    const evidence = Object.fromEntries(routes.map((r) => [r, { script_ms: 900, top_files: top }]));
+    if (mode !== "fail-no-report") {
+      const report = { profile: project, samples: 1, profiles: { [project]: Object.fromEntries(routes.map((r) => [r, [sample]])) } };
+      if (process.env.PERF_EVIDENCE !== "missing") report.profile_evidence = evidence;
+      writeFileSync(`${process.env.PERF_REPORT_DIR}/page-load-${project}.json`, JSON.stringify(report));
+    }
+    process.exit(mode === "ok" ? 0 : 1);
+  }
   if (mode !== "fail-no-report") writeFileSync(process.env.PERF_REPORT_PATH, JSON.stringify(report));
   process.exit(mode === "ok" ? 0 : 1);
 }
@@ -108,7 +125,7 @@ run_case() {
   set +e
   (cd "$repo" && PATH="$bin:$PATH" TMPDIR="$work/tmp" PERF_STOP_GRACE_MS=300 \
     PERF_PLAYWRIGHT="$2" PERF_SERVER="$3" PERF_TEST_SERVER_LOG="$server_log" \
-    node "$compare" --base "${4:-HEAD}" --head HEAD --out "$out") >"$work/out.log" 2>&1
+    node "$compare" --base "${4:-HEAD}" --head HEAD --out "$out" ${SCENARIO_ARGS:-}) >"$work/out.log" 2>&1
   code=$?
   set -e
   comparison="$out/comparison.json"
@@ -158,5 +175,45 @@ SEED_STALE=1 run_case unknown-ref ok normal does-not-exist
 expect_exit 1
 [ ! -f "$work/out-unknown-ref/comparison.md" ] || fail "an aborted run left the previous summary in place"
 grep -q "comparison aborted\|error" "$comparison" || fail "the aborted run does not record why"
+
+# The route mode: five routes on two profiles, medians over several runs of the unchanged page-load spec.
+SCENARIO_ARGS="--scenario page-load --runs 3" run_case page-load-success ok normal
+expect_exit 0
+expect_status ok
+[ "$(field base.runs)" = 3 ] || fail "expected 3 runs per profile, got $(field base.runs)"
+[ "$(field 'head.profiles.phone.chat.length')" = 3 ] || fail "samples from the runs were not merged"
+grep -q "^### desktop" "$work/out-page-load-success/comparison.md" || fail "no desktop table"
+grep -q "^### phone" "$work/out-page-load-success/comparison.md" || fail "no phone table"
+grep -q "^| chat | 1000 | 1000 |" "$work/out-page-load-success/comparison.md" || fail "chat row missing or wrong"
+grep -q "webpack self" "$work/out-page-load-success/comparison.md" || fail "webpack self time not reported"
+
+# Without profiling evidence there is no webpack measurement: invalid, never zero.
+PERF_EVIDENCE=missing SCENARIO_ARGS="--scenario page-load --runs 2" run_case page-load-no-evidence ok normal
+expect_exit 1
+expect_status invalid
+grep -q "no profile evidence" "$comparison" || fail "missing evidence was not named"
+
+# A webpack chunk that fell out of the top files is unknown, not 0 ms.
+PERF_EVIDENCE=truncated SCENARIO_ARGS="--scenario page-load --runs 2" run_case page-load-truncated-evidence ok normal
+expect_exit 1
+expect_status invalid
+grep -q "webpack-\*.js is not among the top files" "$comparison" || fail "truncated evidence was not named"
+grep -q "| issues | 1000 | 1000 | +0 | — | — | — |" "$work/out-page-load-truncated-evidence/comparison.md" \
+  || fail "an unknown webpack time was printed as a number"
+
+SCENARIO_ARGS="--scenario page-load --runs 1" run_case page-load-no-report fail-no-report normal
+expect_exit 1
+expect_status invalid
+
+SCENARIO_ARGS="--scenario page-load --runs 1" run_case page-load-failure-after-report fail-after-report normal
+expect_exit 1
+expect_status invalid
+grep -q "process exited" "$comparison" || fail "the page-load verdict does not say the process failed"
+
+# A typo must not silently fall back to the typing scenario.
+if (cd "$repo" && PATH="$bin:$PATH" node "$compare" --base HEAD --scenario nope >"$work/out.log" 2>&1); then
+  case=unknown-scenario fail "an unknown scenario was accepted"
+fi
+grep -q "unknown scenario" "$work/out.log" || { case=unknown-scenario fail "no reason given"; }
 
 echo "perf-compare: all lifecycle and reporting cases passed"

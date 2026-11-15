@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -36,7 +38,7 @@ var errBudgetRebinding = errors.New(budgetRebindingCode)
 
 func writeBudgetRebindingRefused(w http.ResponseWriter) {
 	writeErrorCode(w, http.StatusForbidden, budgetRebindingCode,
-		"widening a run budget needs an interactive sign-in; do it from the web or desktop app")
+		"widening a run budget needs an interactive sign-in (web or desktop app) or an owner-approved issue.workflow decision; an agent run's `multica issue update <id> --workflow <workflow-id>` opens an approval card for the owners instead. For a decision, run `multica issue update <id> --workflow <workflow-id> --print-hash`, submit it with `multica decision request`, then repeat the command with --decision-id")
 }
 
 // writeBudgetRebindingError renders errBudgetRebinding and reports whether it
@@ -62,6 +64,28 @@ type budgetActorKey struct{}
 // the one place every UpdateIssue write passes through.
 func withBudgetActor(ctx context.Context, r *http.Request) context.Context {
 	return context.WithValue(ctx, budgetActorKey{}, isInteractiveRequest(r))
+}
+
+// verifyBoundRebinding admits a widening that a workspace owner approved for
+// the issue.workflow field (CHE-5228). Only an agent task token that names a
+// decision gets this far; anything else keeps the interactive-only refusal.
+// issueID is empty on a create. It records the single-use row in qtx's
+// transaction, so the caller commits it with the write.
+func (h *Handler) verifyBoundRebinding(ctx context.Context, qtx *db.Queries, r *http.Request, workspaceID pgtype.UUID, binding DecisionBindingFields, issueID, projectID, beforeWorkflowID, afterWorkflowID pgtype.UUID) error {
+	if r.Header.Get("X-Actor-Source") != "task_token" || strings.TrimSpace(binding.DecisionID) == "" {
+		return errBudgetRebinding
+	}
+	digest := func(workflowID pgtype.UUID) string {
+		return decisionaction.IssueWorkflowDigest(uuidToString(issueID), uuidToString(projectID), uuidToString(workflowID))
+	}
+	return h.verifyBoundDigests(ctx, qtx, r, workspaceID, binding, decisionaction.IssueWorkflowField, digest(beforeWorkflowID), digest(afterWorkflowID))
+}
+
+// writeBoundRebindingError renders the refusal verifyBoundRebinding returns.
+func writeBoundRebindingError(w http.ResponseWriter, err error) {
+	if !writeBudgetRebindingError(w, err) {
+		writeDecisionError(w, err, "issue workflow write")
+	}
 }
 
 // workflowBinding is the budget a workflow gives an issue with the given

@@ -198,9 +198,8 @@ func checkOrigin(r *http.Request) bool {
 }
 
 const (
-	writeWait  = 10 * time.Second
-	pongWait   = 60 * time.Second
-	pingPeriod = (pongWait * 9) / 10
+	writeWait = 10 * time.Second
+	pongWait  = 60 * time.Second
 
 	// inboundReadLimit caps a single inbound message. Every frame a client
 	// legitimately sends is tiny — the largest is the token auth frame, well
@@ -211,6 +210,9 @@ const (
 	// hub limit so both WebSocket surfaces answer this question the same way.
 	inboundReadLimit = 64 * 1024
 )
+
+// pingPeriod is a var so a test can shorten it.
+var pingPeriod = (pongWait * 9) / 10
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: checkOrigin,
@@ -232,8 +234,12 @@ type Client struct {
 	send        chan []byte
 	userID      string
 	workspaceID string
-	writeMu     sync.Mutex // serializes application writes and the final removal notice
-	stopped     atomic.Bool
+	// recheck re-reads the JWT's session generation; nil for a PAT. writePump
+	// runs it on every ping, so a revoked session loses its socket within one
+	// ping period (CHE-2798 P6). A failed read closes it too (fail closed).
+	recheck func(context.Context) error
+	writeMu sync.Mutex // serializes application writes and the final removal notice
+	stopped atomic.Bool
 
 	// sendMu guards sendClosed so a late inbound-response or fanout send
 	// can never write to the closed send channel. closeSend flips
@@ -700,18 +706,27 @@ func (h *Hub) Snapshot() map[string]any {
 
 // authenticateToken validates a JWT or PAT string and returns the user ID.
 func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (string, string) {
+	uid, _, errMsg := authenticateSession(tokenStr, pr, ctx)
+	return uid, errMsg
+}
+
+// authenticateSession is authenticateToken plus a recheck for a JWT whose
+// session can be revoked after the socket opens (passkey recovery bumps
+// user.session_generation). recheck is nil for a PAT, and for a resolver that
+// cannot read the generation.
+func authenticateSession(tokenStr string, pr PATResolver, ctx context.Context) (uid string, recheck func(context.Context) error, errMsg string) {
 	if strings.HasPrefix(tokenStr, "mul_") {
 		if pr == nil {
-			return "", `{"error":"invalid token"}`
+			return "", nil, `{"error":"invalid token"}`
 		}
 		uid, ok := pr.ResolveToken(ctx, tokenStr)
 		if !ok {
-			return "", `{"error":"invalid token"}`
+			return "", nil, `{"error":"invalid token"}`
 		}
 		if auth.IsTemporarilyDisabledUserID(uid) {
-			return "", `{"error":"account disabled"}`
+			return "", nil, `{"error":"account disabled"}`
 		}
-		return uid, ""
+		return uid, nil, ""
 	}
 
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
@@ -721,33 +736,37 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 		return auth.JWTSecret(), nil
 	})
 	if err != nil || !token.Valid {
-		return "", `{"error":"invalid token"}`
+		return "", nil, `{"error":"invalid token"}`
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", `{"error":"invalid claims"}`
+		return "", nil, `{"error":"invalid claims"}`
 	}
 
-	uid, ok := claims["sub"].(string)
+	uid, ok = claims["sub"].(string)
 	if !ok || strings.TrimSpace(uid) == "" {
-		return "", `{"error":"invalid claims"}`
+		return "", nil, `{"error":"invalid claims"}`
 	}
 	email, _ := claims["email"].(string)
 	if auth.IsTemporarilyDisabledUser(uid, email) {
-		return "", `{"error":"account disabled"}`
+		return "", nil, `{"error":"account disabled"}`
 	}
-	// A revoked JWT must not open a socket. Resolvers that cannot read the
+	// A revoked JWT must not open a socket, so the handshake reads the stored
+	// generation, not the 30 s cache. Resolvers that cannot read the
 	// generation (tests) skip the check; the production resolver reads it.
 	if reader, ok := pr.(auth.SessionGenerationReader); ok {
-		if err := auth.CheckSessionGeneration(ctx, reader, claims, true); err != nil {
+		recheck = func(ctx context.Context) error {
+			return auth.CheckSessionGeneration(ctx, reader, claims, false)
+		}
+		if err := recheck(ctx); err != nil {
 			if errors.Is(err, auth.ErrStaleSession) {
-				return "", `{"error":"session revoked"}`
+				return "", nil, `{"error":"session revoked"}`
 			}
-			return "", `{"error":"session check unavailable"}`
+			return "", nil, `{"error":"session check unavailable"}`
 		}
 	}
-	return uid, ""
+	return uid, recheck, ""
 }
 
 // firstMessageAuth reads the first WebSocket message expecting an auth payload.
@@ -823,8 +842,9 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 	}
 
 	var userID string
+	var recheck func(context.Context) error
 	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
-		uid, errMsg := authenticateToken(cookie.Value, pr, r.Context())
+		uid, cookieRecheck, errMsg := authenticateSession(cookie.Value, pr, r.Context())
 		if errMsg != "" {
 			status := http.StatusUnauthorized
 			switch errMsg {
@@ -846,6 +866,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			return
 		}
 		userID = uid
+		recheck = cookieRecheck
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -868,7 +889,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
 			return
 		}
-		uid, errMsg := authenticateToken(tokenStr, pr, r.Context())
+		uid, frameRecheck, errMsg := authenticateSession(tokenStr, pr, r.Context())
 		if errMsg != "" {
 			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
 			return
@@ -888,6 +909,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			return
 		}
 		userID = uid
+		recheck = frameRecheck
 
 		if !writeWSAuthFrame(
 			conn,
@@ -922,6 +944,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 		send:        make(chan []byte, 256),
 		userID:      userID,
 		workspaceID: workspaceID,
+		recheck:     recheck,
 	}
 	hub.register <- client
 
@@ -1114,6 +1137,24 @@ func (c *Client) sendJSON(v any) {
 	c.trySend(data)
 }
 
+// sessionRevoked reports whether the socket's JWT must lose its socket: it was
+// revoked after the socket connected, or the generation could not be read.
+// Failing closed means a storage outage cannot keep a revoked session alive;
+// the client reconnects once storage is back.
+func (c *Client) sessionRevoked() bool {
+	if c.recheck == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := c.recheck(ctx)
+	if err == nil {
+		return false
+	}
+	slog.Warn("ws: session closed", "user_id", c.userID, "workspace_id", c.workspaceID, "stale", errors.Is(err, auth.ErrStaleSession), "error", err)
+	return true
+}
+
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -1137,6 +1178,9 @@ func (c *Client) writePump() {
 				return
 			}
 		case <-ticker.C:
+			if c.sessionRevoked() {
+				return
+			}
 			c.writeMu.Lock()
 			if c.stopped.Load() {
 				c.writeMu.Unlock()

@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
-import type { ApiClient } from "@multica/core/api/client";
+import { ApiError, type ApiClient } from "@multica/core/api/client";
+import { SchemaValidationError } from "@multica/core/api/schema";
+import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
 import { IssueDetail } from "./issue-detail";
@@ -127,7 +129,7 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
     expect(vi.isMockFunction(IssueDetail)).toBe(false);
     replace.mockClear();
     push.mockClear();
-    const getIssue = vi.fn().mockRejectedValue(new Error("issue not found"));
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
     setApiInstance({ getIssue } as unknown as ApiClient);
     const qc = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
@@ -177,6 +179,81 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
 
     // A failed resolve must never rewrite the URL.
     expect(replace).not.toHaveBeenCalled();
+    qc.clear();
+  });
+});
+
+describe("IssueDetailRoute when the lookup fails for a reason other than 404", () => {
+  // Regression (CHE-3411): a 5xx opened as "does not exist or has been deleted".
+  it("offers a retry instead of claiming the issue is deleted", async () => {
+    const getIssue = vi
+      .fn()
+      .mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    const qc = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider
+          value={{
+            push,
+            replace,
+            back: vi.fn(),
+            pathname: "/acme/issues/ZZZ-134",
+            searchParams: new URLSearchParams(),
+            hash: "",
+            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+          }}
+        >
+          <IssueDetailRoute routeId="ZZZ-134" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.queryByText(/does not exist or has been deleted/)).not.toBeInTheDocument();
+    fireEvent.click(retry);
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
+    qc.clear();
+  });
+});
+
+describe("IssueDetailRoute when the issue fails schema validation", () => {
+  // A 200 with an unreadable field is a data problem, not a connection problem.
+  it("says the data is unreadable, names the issue key and offers a retry", async () => {
+    const getIssue = vi
+      .fn()
+      .mockRejectedValue(new SchemaValidationError("GET /api/issues/:id", ["metadata.decision_park"]));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    const qc = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider
+          value={{
+            push,
+            replace,
+            back: vi.fn(),
+            pathname: "/acme/issues/CHE-3680",
+            searchParams: new URLSearchParams(),
+            hash: "",
+            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+          }}
+        >
+          <IssueDetailRoute routeId="CHE-3680" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("This issue has data the app cannot read.")).toBeInTheDocument();
+    expect(screen.getByText("CHE-3680")).toBeInTheDocument();
+    expect(screen.queryByText(/connection/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
     qc.clear();
   });
 });

@@ -47,6 +47,7 @@ import {
 } from "./charts";
 import { CustomPricingDialog } from "./custom-pricing-dialog";
 import { useT } from "../../i18n";
+import { ObjectSectionEmpty } from "../../layout/object-page";
 
 // Single source of truth for the period selector. KPIs, the When-chart, the
 // Cost-by tabs, and the CSV export all read from the same `days` value so
@@ -359,7 +360,10 @@ function WhenChart({
   const pricings = useCustomPricingStore((s) => s.pricings);
 
   const { dailyCostStack, dailyTokens } = useMemo(
-    () => aggregateByDate(filtered),
+    () => {
+      void pricings;
+      return aggregateByDate(filtered);
+    },
     [filtered, pricings],
   );
   // Weekly aggregation builds exactly N trailing calendar weeks anchored at
@@ -369,7 +373,10 @@ function WhenChart({
   // aggregate surfaced old populated weeks instead of in-range empty ones.
   const weekCount = Math.max(1, Math.ceil(days / 7));
   const { weeklyTokens, weeklyCostStack } = useMemo(
-    () => aggregateByWeek(usage, tz, weekCount),
+    () => {
+      void pricings;
+      return aggregateByWeek(usage, tz, weekCount);
+    },
     [usage, tz, weekCount, pricings],
   );
 
@@ -675,11 +682,17 @@ function CostByBlock({
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
 
   const byAgent = useMemo(
-    () => aggregateCostByAgent(byAgentRows),
+    () => {
+      void pricings;
+      return aggregateCostByAgent(byAgentRows);
+    },
     [byAgentRows, pricings],
   );
   const byModel = useMemo(
-    () => aggregateCostByModel(usage),
+    () => {
+      void pricings;
+      return aggregateCostByModel(usage);
+    },
     [usage, pricings],
   );
 
@@ -882,12 +895,7 @@ function UsageSkeleton() {
 function UsageEmpty() {
   const { t } = useT("runtimes");
   return (
-    <div className="flex flex-col items-center rounded-lg border border-dashed py-8">
-      <BarChart3 className="h-5 w-5 text-faint-foreground" />
-      <p className="mt-2 text-caption text-muted-foreground">
-        {t(($) => $.usage.no_data)}
-      </p>
-    </div>
+    <ObjectSectionEmpty icon={BarChart3} description={t(($) => $.usage.no_data)} />
   );
 }
 
