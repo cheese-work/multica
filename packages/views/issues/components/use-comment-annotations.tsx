@@ -11,7 +11,7 @@ import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotatio
 import { useT } from "../../i18n";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
 import { CommentSelectionBubble } from "./comment-selection-bubble";
-import type { AnnotationReplyOptions } from "./annotation-composer";
+import type { AnnotationSendControls } from "./annotation-composer";
 
 // The composer embeds the Tiptap editor; chat shares this hook but never renders it, so the engine
 // stays out of the /chat route bundle (CHE-3018).
@@ -90,9 +90,11 @@ function AnnotationNoteEditor({ inputRef, initialNote, label, showLabel, placeho
 type CapturedSelection = NonNullable<ReturnType<typeof captureCommentSelection>>;
 type SourceAnchor = { id: string; range: Range; root: HTMLElement };
 
-export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onAdded, onRevealSource, editable = false, surface = "issue", labels, reply }: {
+export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onAdded, onOpen, onRevealSource, editable = false, surface = "issue", labels, slotAvailable = true }: {
   /** Issue threads post replies through the composer; the DM has no issue and keeps the plain note. */
   issueId?: string;
+  /** False when the host composer is not mounted (virtualized row): the editor renders inline without send controls. */
+  slotAvailable?: boolean;
   draftKey: CommentDraftKey;
   sources: { id: string; name: string; revision?: number }[];
   enabled: boolean;
@@ -103,7 +105,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   /** `chat` renders markers inside the message (reading order) and returns focus to them. */
   surface?: "issue" | "chat";
   labels?: AnnotationLabels;
-  reply?: AnnotationReplyOptions;
+  onOpen?: () => void;
 }) {
   const { t } = useT("issues");
   const chat = surface === "chat";
@@ -126,7 +128,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   const cardRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<ContentEditorRef>(null);
   const noteInputRef = useRef<HTMLTextAreaElement>(null);
-  const submittingRef = useRef(false);
+  const submittingRef = useRef<string | null>(null);
   const pendingFocusId = useRef<string | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
@@ -155,6 +157,8 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   annotationsRef.current = annotations;
   const sourcesRef = useRef(sources);
   sourcesRef.current = sources;
+  const onOpenRef = useRef(onOpen);
+  onOpenRef.current = onOpen;
   const onAddedRef = useRef(onAdded);
   onAddedRef.current = onAdded;
   const anchorKey = annotations.map((a) => a.id).join(",");
@@ -201,7 +205,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
-  useEffect(() => { setSelection(null); setEditor(null); setError(false); submittingRef.current = false; }, [draftKey, enabled]);
+  useEffect(() => { setSelection(null); setEditor(null); setError(false); submittingRef.current = null; }, [draftKey, enabled]);
 
   // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
   // a document-level pointerup; captureCommentSelection then decides from the selection alone.
@@ -363,6 +367,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       element?.scrollIntoView({ block: "center", behavior: "instant" });
     }
     claimEditor();
+    onOpenRef.current?.();
     pendingFocusId.current = id;
     setSelection({ ...annotation, range, root }); setEditor({ annotation, existing: true }); setError(false);
     return true;
@@ -385,6 +390,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     }
     pendingMarkerFocus.current = null;
     claimEditor();
+    onOpenRef.current?.();
     setSelection(captured);
     const next = duplicate ?? {
       id: crypto.randomUUID(), sourceCommentId, sourceActorName: source.name,
@@ -398,18 +404,18 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   }, [claimEditor]);
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
-  const confirmNote = (note: string) => {
-    if (!editing || !note.trim()) return;
+  const confirmNote = (note: string, dismiss = true): boolean => {
+    if (!editing || !note.trim()) return false;
     const store = useCommentDraftStore.getState();
-    if (editingExisting) store.updateAnnotation(draftKey, editing.id, note);
-    else if (!store.addAnnotation(draftKey, { ...editing, note })) {
-      setError(true);
-      return;
-    }
+    const id = editingExisting ? editing.id : store.addAnnotation(draftKey, { ...editing, note });
+    if (!id) { setError(true); return false; }
+    store.updateAnnotation(draftKey, id, note);
     useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
-    if (chat && !editingExisting) { pendingMarkerFocus.current = editing.id; close(false); }
+    if (!dismiss) setEditor({ annotation: { ...editing, id, note }, existing: true });
+    else if (chat && !editingExisting) { pendingMarkerFocus.current = id; close(false); }
     else close(true);
     if (!editingExisting) onAddedRef.current?.();
+    return true;
   };
 
   // Keep the pending quote identifiable without counting it as an annotation.
@@ -438,12 +444,61 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     ? { ...editing, note: noteDraft.value } : editing;
   const clearNoteDraft = (annotation: ReplyAnnotation) => useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(annotation));
 
+  // Issue threads send through the host composer (controls); the DM keeps its plain note editor.
+  const composed = !!editing && !!issueId && !chat;
+  const slotted = composed && slotAvailable;
+  const renderComposer = (controls?: AnnotationSendControls) => {
+    return enabled && selection ? <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
+        <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
+          {editing && composed ? <Suspense fallback={null}><AnnotationComposer key={editing.id} issueId={issueId!} owner={draftKey}
+            annotation={composerAnnotation!} existing={editingExisting}
+            number={annotations.findIndex((a) => a.id === editing.id) + 1}
+            editorRef={inputRef} controls={controls}
+            sourceMissing={!sources.some((source) => source.id === editing.sourceCommentId)}
+            sourceChanged={sources.some((source) => source.id === editing.sourceCommentId &&
+              source.revision !== undefined && editing.sourceRevision !== undefined && source.revision !== editing.sourceRevision)}
+            canSave={editingExisting || annotations.length < MAX_REPLY_ANNOTATIONS}
+            onChange={(note) => {
+              useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: savedNote });
+              setEditor({ annotation: { ...editing, note }, existing: editingExisting }); setError(false);
+            }}
+            onSave={confirmNote} onBusyChange={(busy) => {
+              if (busy && editingRef.current?.id === editing.id) submittingRef.current = editing.id;
+              else if (!busy && submittingRef.current === editing.id) submittingRef.current = null;
+            }}
+            onRemove={editingExisting ? () => {
+              clearNoteDraft(editing);
+              useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
+              close(true);
+            } : undefined} /></Suspense> : editing ? <AnnotationNoteEditor key={editing.id} inputRef={noteInputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
+              label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
+              confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
+              onEdit={(note) => { useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}
+              onCancel={() => { useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing)); close(true); }}
+              onRemove={() => {
+                useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
+                useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
+                close(true);
+              }} /> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"
+              onMouseDown={(event) => event.preventDefault()} onClick={() => add(selection)}>
+              <MessageSquarePlus />{L.add}
+            </Button>}
+        </div>
+        {error && <p role="alert" className="mt-1 max-w-72 rounded-lg bg-popover p-2 text-caption text-destructive shadow-[var(--menu-shadow)]">
+          {selection.quote.length > MAX_ANNOTATION_QUOTE_LENGTH
+            ? L.quoteLimit(MAX_ANNOTATION_QUOTE_LENGTH)
+            : L.countLimit(MAX_REPLY_ANNOTATIONS)}
+        </p>}
+      </CommentSelectionBubble> : null;
+  };
+
   return {
     cardRef,
     editAnnotation,
     activeId,
     setActiveId,
     addSelection,
+    composer: slotted ? { pending: editing, render: renderComposer } : undefined,
     captureProps: {
       "data-annotation-thread": draftKey,
       onPointerDown: (event: React.PointerEvent) => {
@@ -487,50 +542,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
             onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
         </CommentSelectionBubble>;
       })}
-      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
-        <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing && issueId && !chat ? <Suspense fallback={null}><AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey}
-            annotation={composerAnnotation!} existing={editingExisting}
-            number={annotations.findIndex((a) => a.id === editing.id) + 1}
-            editorRef={inputRef} parentId={editable ? undefined : editing.sourceCommentId} reply={reply}
-            sourceMissing={!sources.some((source) => source.id === editing.sourceCommentId)}
-            sourceChanged={sources.some((source) => source.id === editing.sourceCommentId &&
-              source.revision !== undefined && editing.sourceRevision !== undefined && source.revision !== editing.sourceRevision)}
-            canSave={editingExisting || annotations.length < MAX_REPLY_ANNOTATIONS}
-            isSourceAvailable={() => sourcesRef.current.some((source) => source.id === editing.sourceCommentId) &&
-              !!cardRef.current && !!findAnnotationSource(cardRef.current, editing.sourceCommentId)}
-            onChange={(note) => {
-              useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: savedNote });
-              setEditor({ annotation: { ...editing, note }, existing: editingExisting }); setError(false);
-            }}
-            onSave={confirmNote} onBusyChange={(busy) => {
-              if (editingRef.current?.id === editing.id) submittingRef.current = busy;
-            }}
-            onAccepted={() => { clearNoteDraft(editing); if (editingRef.current?.id === editing.id) close(); }}
-            onRemove={editingExisting ? () => {
-              clearNoteDraft(editing);
-              useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
-              close(true);
-            } : undefined} /></Suspense> : editing ? <AnnotationNoteEditor key={editing.id} inputRef={noteInputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
-              label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
-              confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
-              onEdit={(note) => { useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}
-              onCancel={() => { useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing)); close(true); }}
-              onRemove={() => {
-                useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
-                useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
-                close(true);
-              }} /> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"
-              onMouseDown={(event) => event.preventDefault()} onClick={() => add(selection)}>
-              <MessageSquarePlus />{L.add}
-            </Button>}
-        </div>
-        {error && <p role="alert" className="mt-1 max-w-72 rounded-lg bg-popover p-2 text-caption text-destructive shadow-[var(--menu-shadow)]">
-          {selection.quote.length > MAX_ANNOTATION_QUOTE_LENGTH
-            ? L.quoteLimit(MAX_ANNOTATION_QUOTE_LENGTH)
-            : L.countLimit(MAX_REPLY_ANNOTATIONS)}
-        </p>}
-      </CommentSelectionBubble>}
+      {!slotted && renderComposer()}
     </>,
   };
 }

@@ -51,6 +51,13 @@
     "mentions_more": "멘션 {{count}}개 이상",
     "mentions_unknown": "멘션을 불러올 수 없음"
   },
+  "web": {
+    "open_in_desktop": "데스크톱에서 열기"
+  },
+  "desktop": {
+    "link_other_instance": "데스크톱 앱이 다른 Multica 인스턴스에 연결되어 있습니다.",
+    "link_workspace_unavailable": "데스크톱 앱에서 이 워크스페이스를 사용할 수 없습니다."
+  },
   "inline_run": {
     "label": "{{name}} 실행",
     "stop": "중지",
@@ -848,14 +855,13 @@
     }
   },
   "reply": {
+    "recipients_changed": "답글 대상이 변경되었습니다. 받는 사람을 확인한 뒤 다시 보내 주세요.",
     "placeholder": "답글 남기기...",
     "annotations": {
-      "direct_reply": "답글",
-      "direct_comment": "댓글 게시",
-      "direct_target_deleted": "답글 대상이 삭제되었습니다. 다른 댓글을 선택하기 전에 의견을 복사하세요.",
-      "copy_note": "의견 복사",
-      "note_copied": "의견을 복사했습니다",
-      "note_copy_failed": "의견을 복사하지 못했습니다. 텍스트를 선택해 직접 복사하세요.",
+      "send_all": "모두 보내기",
+      "send_with_annotations_and_body": "저장된 주석 {{count}}개 및 초안 본문과 함께 보냅니다.",
+      "send_with_annotations": "저장된 주석 {{count}}개와 함께 보냅니다.",
+      "send_with_body": "초안 본문과 함께 보냅니다.",
       "confirm_add": "주석 추가",
       "save": "주석 저장",
       "add_comment": "댓글에 추가",

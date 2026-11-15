@@ -36,7 +36,8 @@
     "changelog": "Registro de cambios",
     "discord": "Discord",
     "feedback": "Comentarios",
-    "server_version": "Versión del servidor {{version}}"
+    "server_version": "Versión del servidor {{version}}",
+    "star_on_github": "Dar una estrella en GitHub"
   },
   "whats_new": {
     "trigger": "Novedades",
@@ -140,7 +141,8 @@
       "view_remove": "Quitar de la barra lateral",
       "view_rename": "Renombrar",
       "view_duplicate": "Duplicar",
-      "view_delete": "Eliminar vista"
+      "view_delete": "Eliminar vista",
+      "view_edit": "Editar vista"
     },
     "team": {
       "new_agent": "Nuevo agente",
@@ -221,5 +223,14 @@
     "detail": "Ningún agente toma nuevas ejecuciones. Las tareas en curso terminan; el trabajo en cola espera.",
     "resume": "Reanudar",
     "resume_failed": "No se ha podido reanudar el espacio de trabajo"
+  },
+  "star_prompt": {
+    "title_one": "{{agent}} ha completado {{count}} tarea",
+    "title_other": "{{agent}} ha completado {{count}} tareas",
+    "body": "Si Multica te resulta útil, una estrella en GitHub ayuda a que otros equipos lo descubran.",
+    "star": "Star",
+    "star_label": "Dar una Star a Multica en GitHub",
+    "later": "Ahora no",
+    "close": "Cerrar"
   }
 }

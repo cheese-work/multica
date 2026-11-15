@@ -55,6 +55,13 @@
     "mentions_more": "{{count}}+ mentions",
     "mentions_unknown": "Mentions unavailable"
   },
+  "web": {
+    "open_in_desktop": "Open in Desktop"
+  },
+  "desktop": {
+    "link_other_instance": "The desktop app is connected to a different Multica instance.",
+    "link_workspace_unavailable": "This workspace is unavailable in the desktop app."
+  },
   "inline_run": {
     "label": "{{name}} run",
     "stop": "Stop",
@@ -877,14 +884,13 @@
     }
   },
   "reply": {
+    "recipients_changed": "Reply target changed. Review the recipients before sending again.",
     "placeholder": "Leave a reply...",
     "annotations": {
-      "direct_reply": "Reply",
-      "direct_comment": "Post comment",
-      "direct_target_deleted": "The reply target was deleted. Copy your note before selecting another comment.",
-      "copy_note": "Copy note",
-      "note_copied": "Note copied",
-      "note_copy_failed": "Could not copy note. Select and copy the text manually.",
+      "send_all": "Send all",
+      "send_with_annotations_and_body": "Will send with saved annotations ({{count}}) and draft text.",
+      "send_with_annotations": "Will send with saved annotations ({{count}}).",
+      "send_with_body": "Will send with the draft text.",
       "confirm_add": "Add annotation",
       "save": "Save annotation",
       "add_comment": "Add to comment",

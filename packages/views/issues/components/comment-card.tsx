@@ -1135,25 +1135,25 @@ function CommentCardImpl({
   const replyTarget = useCommentDraftStore((s) => s.drafts[`reply:${issueId}:${entry.id}`]?.replyTarget);
   const replyTargetId = replyTarget?.commentId ?? entry.id;
   // A deleted target's tombstone is as gone as a removed row.
-  const replyTargetMissing = !!replyTarget && replyTargetId !== entry.id
-    && !replies.some((r) => r.id === replyTargetId && !isDeletedComment(r));
+  const isReplyTargetMissing = (id: string) => id !== entry.id
+    && !replies.some((r) => r.id === id && !isDeletedComment(r));
+  const replyTargetMissing = !!replyTarget && isReplyTargetMissing(replyTargetId);
   // A reply here goes into the running turn of a run that belongs to this
   // thread by default; another thread's turn is only reached by choice.
   const steerThreadRunByDefault = useCallback(
     (task: AgentTask) => runs.some((run) => run.task.id === task.id),
     [runs],
   );
+  const renderFooter = !virtualRow || virtualRow.kind === "footer" || (virtualRow.kind === "root" && virtualRow.last);
   const annotation = useCommentAnnotations({
     issueId,
-    reply: {
-      onSubmit: (sourceId, content, suppressAgentIds, steerTaskIds) => onReply(sourceId, content, undefined, suppressAgentIds, steerTaskIds),
-      onAccepted: onReplyAccepted, steerByDefault: steerThreadRunByDefault,
-    },
+    // A virtual row without the footer cannot host the send controls; the editor stays in the popup there.
+    slotAvailable: !!renderFooter,
     draftKey: `reply:${issueId}:${entry.id}`,
     sources: [entry, ...replies].filter((e) => e.type === "comment" && !isDeletedComment(e))
       .map((e) => ({ id: e.id, name: e.actor_name || getActorName(e.actor_type, e.actor_id), revision: e.revision })),
     enabled: !!currentUserId,
-    onAdded: () => { if (replyFolded) onResolvedExpandChange?.(entry.id, true); },
+    onOpen: () => { if (replyFolded) onResolvedExpandChange?.(entry.id, true); },
     onRevealSource: (saved) => onRevealAnnotation?.(entry.id, saved) ?? false,
   });
   const editAnnotation = annotation.editAnnotation;
@@ -1230,7 +1230,6 @@ function CommentCardImpl({
   );
   const renderRoot = !virtualRow || virtualRow.kind === "root";
   const renderControls = !virtualRow || virtualRow.kind === "controls";
-  const renderFooter = !virtualRow || virtualRow.kind === "footer" || (virtualRow.kind === "root" && virtualRow.last);
   const renderReply = (commentId: string) => !virtualRow || (virtualRow.kind === "reply" && virtualRow.id === commentId);
 
   // Pin the root comment's header to the timeline's scroll parent while the
@@ -1813,6 +1812,7 @@ function CommentCardImpl({
                   issueId={issueId}
                   parentId={replyTargetId}
                   targetMissing={replyTargetMissing}
+                  annotationComposer={annotation.composer}
                   placeholder={t(($) => $.reply.placeholder)}
                   size="sm"
                   avatarType="member"
@@ -1820,7 +1820,12 @@ function CommentCardImpl({
                   draftKey={`reply:${issueId}:${entry.id}`}
                   onEditAnnotation={(id) => annotation.editAnnotation(id, true)}
                   steerByDefault={steerThreadRunByDefault}
-                  onSubmit={(content, attachmentIds, suppressAgentIds, steerTaskIds) => replyTargetMissing ? Promise.resolve(false) : onReply(replyTargetId, content, attachmentIds, suppressAgentIds, steerTaskIds)}
+                  onSubmit={(content, attachmentIds, suppressAgentIds, steerTaskIds) => {
+                    // The popup can save the first annotation and submit in the same event.
+                    const targetId = useCommentDraftStore.getState().drafts[`reply:${issueId}:${entry.id}`]?.replyTarget?.commentId ?? entry.id;
+                    return isReplyTargetMissing(targetId) ? Promise.resolve(false)
+                      : onReply(targetId, content, attachmentIds, suppressAgentIds, steerTaskIds);
+                  }}
                   onAccepted={onReplyAccepted}
                 />
               </div>}
