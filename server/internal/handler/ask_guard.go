@@ -84,3 +84,37 @@ func (handler *Handler) refuseReversibleAsk(ctx context.Context, issue db.Issue,
 	}
 	return nil
 }
+
+const reversibleCommentFix = "Standing Delivery Authorization (CHE-584) lets agents decide and execute reversible work without asking: do it and record it. To ask a person for spend, deploy, publish, irreversible or product_direction run: multica decision request ...; add --notify-only to multica issue comment add if the comment needs no answer"
+
+// askGuardReversibleComment (CHE-5754) is the issue-comment path of the
+// reversible ask guard. A plain comment has no class, so no text is read. The
+// structural facts are an agent task, no typed kind (notify-only, decision
+// intent, record and veto never reach here) and an issue waiting on a person:
+// blocked or need_decision. block refuses with 422, warn logs, off allows. A
+// run with no task or in a chat lane only warns: it has no run to recover
+// through a refusal. Set the setting to off to revert; no data changes.
+func (handler *Handler) askGuardReversibleComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, task *db.AgentTaskQueue) bool {
+	if issue.Status != "blocked" && issue.Status != "need_decision" {
+		return true
+	}
+	workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
+	var mode askguard.Mode
+	if err == nil {
+		mode, err = askguard.ReversibleModeFromSettings(workspace.Settings)
+	}
+	if err != nil {
+		slog.Warn("reversible ask guard failed", "error", err, "issue_id", uuidToString(issue.ID))
+		writer.Header().Set("Retry-After", "5")
+		writeError(writer, http.StatusServiceUnavailable, "ask guard unavailable; retry the same request")
+		return false
+	}
+	switch {
+	case mode == askguard.ModeBlock && task != nil && !task.ChatSessionID.Valid:
+		writeError(writer, http.StatusUnprocessableEntity, "this plain comment on a "+issue.Status+" issue waits on a person for work Standing Delivery Authorization may already allow; "+reversibleCommentFix)
+		return false
+	case mode != askguard.ModeOff:
+		slog.Warn("ask guard: plain comment on a waiting issue", "issue_id", uuidToString(issue.ID), "status", issue.Status)
+	}
+	return true
+}
