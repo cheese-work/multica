@@ -2385,6 +2385,18 @@ type IssueStatus struct {
 	Icon        string             `json:"icon"`
 }
 
+type IssueStepAssignee struct {
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	StatusKey    string             `json:"status_key"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AssigneeType string             `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	SetByType    string             `json:"set_by_type"`
+	SetByID      pgtype.UUID        `json:"set_by_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
 type IssueSubscriber struct {
 	IssueID        pgtype.UUID        `json:"issue_id"`
 	UserType       string             `json:"user_type"`
