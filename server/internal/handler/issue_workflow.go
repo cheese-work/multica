@@ -1809,12 +1809,17 @@ type WorkflowHandoffRun struct {
 }
 
 type WorkflowHandoffPreviewResponse struct {
-	Handoff              bool                 `json:"handoff"`
-	WorkflowName         string               `json:"workflow_name,omitempty"`
-	FromStatus           string               `json:"from_status"`
-	ToStatus             string               `json:"to_status"`
-	HandlerType          string               `json:"handler_type,omitempty"`
-	HandlerID            string               `json:"handler_id,omitempty"`
+	Handoff      bool   `json:"handoff"`
+	WorkflowName string `json:"workflow_name,omitempty"`
+	FromStatus   string `json:"from_status"`
+	ToStatus     string `json:"to_status"`
+	HandlerType  string `json:"handler_type,omitempty"`
+	HandlerID    string `json:"handler_id,omitempty"`
+	// Override is true when the move names its own assignee; the step's own
+	// handler then rides in StepHandlerType and StepHandlerID.
+	Override             bool                 `json:"override,omitempty"`
+	StepHandlerType      string               `json:"step_handler_type,omitempty"`
+	StepHandlerID        string               `json:"step_handler_id,omitempty"`
 	PreviousAssigneeType *string              `json:"previous_assignee_type"`
 	PreviousAssigneeID   *string              `json:"previous_assignee_id"`
 	PreviousRuns         []WorkflowHandoffRun `json:"previous_runs"`
@@ -1859,13 +1864,28 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		params.ProjectID = projectID
 		enterOnMove = true
 	}
-	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{})
+	var override *HandoffAssigneeRequest
+	if t, id := r.URL.Query().Get("handoff_assignee_type"), r.URL.Query().Get("handoff_assignee_id"); t != "" || id != "" {
+		override = &HandoffAssigneeRequest{Type: t, ID: id}
+	}
+	handoffAssignee, ok := parseHandoffAssignee(w, override)
+	if !ok {
+		return
+	}
+	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{handoffAssignee: handoffAssignee})
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return
+	}
+	if hand != nil && hand.override {
+		// A named assignee is shown only when the write would accept it.
+		if code, msg := h.validateAssigneePair(r.Context(), r, uuidToString(issue.WorkspaceID), params.AssigneeType, params.AssigneeID); code != 0 {
+			writeHandoffAssigneeRefusal(w, hand, code, msg)
+			return
+		}
 	}
 	if params.Status.Valid {
 		status = params.Status.String
@@ -1887,6 +1907,11 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 	resp.Handoff = true
 	resp.HandlerType = params.AssigneeType.String
 	resp.HandlerID = uuidToString(params.AssigneeID)
+	if hand.override {
+		resp.Override = true
+		resp.StepHandlerType = hand.stepHandler.Type
+		resp.StepHandlerID = uuidToString(hand.stepHandler.ID)
+	}
 	next := issue
 	next.Status = status
 	next.ProjectID = params.ProjectID
