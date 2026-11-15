@@ -388,13 +388,9 @@ func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, ar
 
 const listConflictWatchedGitHubPRNumbersInRepo = `-- name: ListConflictWatchedGitHubPRNumbersInRepo :many
 SELECT DISTINCT pr.pr_number
-FROM issue_wakeup AS w
-JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
+FROM issue_pull_request AS ipr
 JOIN github_pull_request AS pr ON pr.id = ipr.pull_request_id
-WHERE w.enabled
-  AND w.condition->>'type' = 'pull_request'
-  AND w.condition->>'event' = 'conflicts'
-  AND pr.installation_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
+WHERE pr.installation_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
   AND pr.state IN ('open', 'draft')
   AND pr.pr_number <> $4
 ORDER BY pr.pr_number
@@ -696,14 +692,7 @@ WITH candidates AS (
     FROM github_pull_request AS pr
     WHERE pr.state IN ('open', 'draft')
       AND (pr.snapshot_fetched_at IS NULL OR pr.snapshot_fetched_at < $6)
-      AND pr.id IN (
-          SELECT ipr.pull_request_id
-          FROM issue_wakeup AS w
-          JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
-          WHERE w.enabled
-            AND w.condition->>'type' = 'pull_request'
-            AND w.condition->>'event' = 'conflicts'
-      )
+      AND pr.id IN (SELECT ipr.pull_request_id FROM issue_pull_request AS ipr)
     GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
 )
 SELECT installation_id, repo_owner, repo_name, pr_number
