@@ -86,16 +86,21 @@ func prGreenRoute(ctx context.Context, tx pgx.Tx, queries *db.Queries, issue db.
 	if !assignee.Agent.ID.Valid {
 		return true, false, nil
 	}
-	// ponytail: the head's push time is not stored; the earliest check-suite
-	// update on the head stands in for it. A reviewer who started between push
-	// and that first suite update still counts as having run after the push.
+	// Push time of the head: its latest head_changed event; a PR's first head
+	// has none, so the earliest check-suite update on it stands in.
 	var covered bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_task_queue t
 		WHERE t.issue_id=$1 AND t.agent_id=$2 AND (
 			t.status IN ('queued','dispatched','running','waiting_local_directory')
-			OR t.created_at > COALESCE((SELECT min(cs.updated_at) FROM github_pull_request_check_suite cs
-				JOIN github_pull_request p ON p.id=cs.pr_id
-				WHERE p.workspace_id=$3 AND p.repo_owner=$4 AND p.repo_name=$5 AND p.pr_number=$6 AND cs.head_sha=$7), 'infinity')))`,
+			OR t.created_at > COALESCE(
+				(SELECT max(e.observed_at) FROM issue_pr_event e
+					JOIN github_pull_request p ON p.id=e.pull_request_id
+					WHERE e.issue_id=$1 AND e.kind='head_changed' AND e.head_sha=$7
+						AND p.workspace_id=$3 AND p.repo_owner=$4 AND p.repo_name=$5 AND p.pr_number=$6),
+				(SELECT min(cs.updated_at) FROM github_pull_request_check_suite cs
+					JOIN github_pull_request p ON p.id=cs.pr_id
+					WHERE p.workspace_id=$3 AND p.repo_owner=$4 AND p.repo_name=$5 AND p.pr_number=$6 AND cs.head_sha=$7),
+				'infinity')))`,
 		issue.ID, assignee.Agent.ID, issue.WorkspaceID, in.RepoOwner, in.RepoName, in.Number, in.HeadSHA).Scan(&covered)
 	return true, !covered, err
 }
