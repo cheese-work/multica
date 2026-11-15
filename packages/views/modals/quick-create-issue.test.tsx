@@ -597,6 +597,39 @@ describe("AgentCreatePanel", () => {
     ).toHaveValue("Persisted draft prompt");
   });
 
+  it("keeps an unfinished draft when the opener hands in a different prompt", () => {
+    renderPanel({
+      onClose: vi.fn(),
+      isExpanded: false,
+      setIsExpanded: vi.fn(),
+      data: { prompt: "fix the Safari login callback 500" },
+    });
+
+    expect(
+      screen.getByPlaceholderText(
+        'Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness in the Web project"',
+      ),
+    ).toHaveValue("Persisted draft prompt");
+    expect(mockIssueDraftStore.draft.agent.prompt).toBe("Persisted draft prompt");
+  });
+
+  it("seeds a prompt handed in by the opener when the draft is empty and saves it to the draft", () => {
+    mockIssueDraftStore.draft.agent.prompt = "";
+    renderPanel({
+      onClose: vi.fn(),
+      isExpanded: false,
+      setIsExpanded: vi.fn(),
+      data: { prompt: "fix the Safari login callback 500" },
+    });
+
+    expect(
+      screen.getByPlaceholderText(
+        'Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness in the Web project"',
+      ),
+    ).toHaveValue("fix the Safari login callback 500");
+    expect(mockIssueDraftStore.draft.agent.prompt).toBe("fix the Safari login callback 500");
+  });
+
   it("restores unfinished actor, project, priority, and due-date selections after remount", async () => {
     mockSquadsData.list = [
       { id: "squad-1", name: "Frontend Squad", leader_id: "agent-1", archived_at: null },
