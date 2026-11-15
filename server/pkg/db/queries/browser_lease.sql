@@ -35,3 +35,32 @@ WHERE id = $1 AND workspace_id = $2;
 SELECT * FROM browser_lease
 WHERE instance_id = $1 AND workspace_id = $2
   AND state <> 'queued' AND cleanup_acked_at IS NULL;
+
+-- Browser instance registry (CHE-4781, W3-18). The host and class matrix is a CHECK on the table.
+
+-- name: RegisterBrowserInstance :one
+INSERT INTO browser_instance (workspace_id, name, host, gateway, allowed_classes)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (workspace_id, name) DO UPDATE
+SET host = EXCLUDED.host, gateway = EXCLUDED.gateway,
+    allowed_classes = EXCLUDED.allowed_classes, updated_at = clock_timestamp()
+RETURNING *;
+
+-- name: CreateBrowserGatewayCredential :one
+INSERT INTO browser_gateway_credential (workspace_id, gateway, credential_hash)
+VALUES ($1, $2, $3)
+RETURNING *;
+
+-- name: GetBrowserInstanceForGateway :one
+-- A gateway credential resolves only to its own gateway's instances: another gateway's instance
+-- returns no row, the same as a missing one.
+SELECT i.* FROM browser_instance i
+JOIN browser_gateway_credential c ON c.workspace_id = i.workspace_id AND c.gateway = i.gateway
+WHERE c.credential_hash = $1 AND c.revoked_at IS NULL
+  AND i.id = $2;
+
+-- name: ListBrowserInstancesForGateway :many
+SELECT i.* FROM browser_instance i
+JOIN browser_gateway_credential c ON c.workspace_id = i.workspace_id AND c.gateway = i.gateway
+WHERE c.credential_hash = $1 AND c.revoked_at IS NULL
+ORDER BY i.name;
