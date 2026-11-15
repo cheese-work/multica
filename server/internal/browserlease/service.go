@@ -191,10 +191,13 @@ func (s *Service) statusOf(ctx context.Context, id, ws, task pgtype.UUID, issueT
 	if !issueToken {
 		return res, nil
 	}
-	return s.issueToken(ctx, res)
+	return s.issueTokenEnding(ctx, res)
 }
 
-func (s *Service) issueToken(ctx context.Context, res Result) (Result, error) {
+// issueToken signs with the lease row it is given, so the caller must pass the persisted
+// deadline. A signer failure comes back as signFailure; the caller ends the lease outside any
+// transaction that already holds the lease row.
+func (s *Service) issueToken(ctx context.Context, q *db.Queries, res Result) (Result, error) {
 	l := res.Lease
 	instances, err := s.Registry.Instances(ctx, l.WorkspaceID, l.Class)
 	if err != nil {
@@ -226,11 +229,10 @@ func (s *Service) issueToken(ctx context.Context, res Result) (Result, error) {
 	}
 	token, err := s.Signer.Sign(claims)
 	if err != nil {
-		endErr := s.endActive(ctx, l, endSignFailed)
-		return res, errors.Join(fmt.Errorf("sign browser token: %w", err), endErr)
+		return res, signFailure{err}
 	}
 	sum := sha256.Sum256([]byte(jti))
-	if err := s.Queries.SetBrowserLeaseJTI(ctx, db.SetBrowserLeaseJTIParams{
+	if err := q.SetBrowserLeaseJTI(ctx, db.SetBrowserLeaseJTIParams{
 		ID: l.ID, WorkspaceID: l.WorkspaceID, JtiHash: pgtype.Text{String: hex.EncodeToString(sum[:]), Valid: true},
 	}); err != nil {
 		return res, err
@@ -238,6 +240,22 @@ func (s *Service) issueToken(ctx context.Context, res Result) (Result, error) {
 	res.Lease.JtiHash = pgtype.Text{String: hex.EncodeToString(sum[:]), Valid: true}
 	res.Host, res.Token, res.TokenExpires = host, token, exp
 	return res, nil
+}
+
+type signFailure struct{ err error }
+
+func (e signFailure) Error() string { return fmt.Sprintf("sign browser token: %v", e.err) }
+func (e signFailure) Unwrap() error { return e.err }
+
+// issueTokenEnding is issueToken for a caller outside any transaction: a signer failure ends
+// the lease.
+func (s *Service) issueTokenEnding(ctx context.Context, res Result) (Result, error) {
+	out, err := s.issueToken(ctx, s.Queries, res)
+	var sf signFailure
+	if errors.As(err, &sf) {
+		return out, errors.Join(err, s.endActive(ctx, res.Lease, endSignFailed))
+	}
+	return out, err
 }
 
 // endActive ends a granted lease. The instance stays held until cleanup-ack (W3-7).
@@ -289,16 +307,46 @@ func (s *Service) Renew(ctx context.Context, ws, task, lease pgtype.UUID) (Resul
 		}
 		return res, err
 	}
-	// A decision shortened since the grant caps the lease from now on; the limit never grows.
-	if limit.Before(l.ExpiresAt.Time) {
-		if err := s.Queries.ShortenBrowserLeaseExpiry(ctx, db.ShortenBrowserLeaseExpiryParams{
-			ID: l.ID, WorkspaceID: l.WorkspaceID, ExpiresAt: ts(limit),
-		}); err != nil {
-			return res, err
+	return s.renewToken(ctx, l, limit)
+}
+
+// renewToken persists the revalidated deadline and signs under one per-lease lock. Overlapping
+// renewals take turns: each one reads the persisted minimum back from its own UPDATE, so the
+// last token signed and recorded never outlives a deadline another renewal already shortened.
+func (s *Service) renewToken(ctx context.Context, l db.BrowserLease, limit time.Time) (Result, error) {
+	var res Result
+	errExpired := errors.New("lease expired")
+	err := s.inTx(ctx, func(q *db.Queries) error {
+		if err := lockKey(ctx, q, "browser-lease-renew:"+uuid.UUID(l.ID.Bytes).String()); err != nil {
+			return err
 		}
-		res.Lease.ExpiresAt = ts(limit)
+		// A decision shortened since the grant caps the lease from now on; the limit never grows.
+		cur, err := q.ShortenBrowserLeaseExpiry(ctx, db.ShortenBrowserLeaseExpiryParams{
+			ID: l.ID, WorkspaceID: l.WorkspaceID, ExpiresAt: ts(limit),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLeaseEnded // released or ended while this renewal was validating
+		}
+		if err != nil {
+			return err
+		}
+		if !s.now().Before(cur.ExpiresAt.Time) {
+			return errExpired
+		}
+		res, err = s.issueToken(ctx, q, Result{Lease: cur})
+		return err
+	})
+	var sf signFailure
+	switch {
+	case errors.Is(err, errExpired):
+		if endErr := s.endActive(ctx, l, endExpired); endErr != nil {
+			return res, endErr
+		}
+		return res, ErrLeaseEnded
+	case errors.As(err, &sf):
+		return res, errors.Join(err, s.endActive(ctx, l, endSignFailed))
 	}
-	return s.issueToken(ctx, res)
+	return res, err
 }
 
 func (s *Service) Release(ctx context.Context, ws, task, lease pgtype.UUID) error {

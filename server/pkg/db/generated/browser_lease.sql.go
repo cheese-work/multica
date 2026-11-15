@@ -762,9 +762,10 @@ func (q *Queries) SetBrowserLeaseJTI(ctx context.Context, arg SetBrowserLeaseJTI
 	return err
 }
 
-const shortenBrowserLeaseExpiry = `-- name: ShortenBrowserLeaseExpiry :exec
+const shortenBrowserLeaseExpiry = `-- name: ShortenBrowserLeaseExpiry :one
 UPDATE browser_lease SET expires_at = LEAST(expires_at, $3)
 WHERE id = $1 AND workspace_id = $2 AND state = 'active'
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
 `
 
 type ShortenBrowserLeaseExpiryParams struct {
@@ -773,9 +774,32 @@ type ShortenBrowserLeaseExpiryParams struct {
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 }
 
-// Renew revalidated a shorter decision: the limit only ever moves earlier, never past the
-// hard limit set at grant.
-func (q *Queries) ShortenBrowserLeaseExpiry(ctx context.Context, arg ShortenBrowserLeaseExpiryParams) error {
-	_, err := q.db.Exec(ctx, shortenBrowserLeaseExpiry, arg.ID, arg.WorkspaceID, arg.ExpiresAt)
-	return err
+// Renew revalidated a decision: the limit only ever moves earlier, never past the hard limit
+// set at grant. RETURNING gives the persisted minimum, which is the only deadline a token may
+// be signed with; no row means the lease is no longer active.
+func (q *Queries) ShortenBrowserLeaseExpiry(ctx context.Context, arg ShortenBrowserLeaseExpiryParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, shortenBrowserLeaseExpiry, arg.ID, arg.WorkspaceID, arg.ExpiresAt)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }

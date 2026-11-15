@@ -106,11 +106,13 @@ WHERE id = $1 AND workspace_id = $2 AND state = 'queued';
 UPDATE browser_lease SET jti_hash = $3
 WHERE id = $1 AND workspace_id = $2 AND state = 'active';
 
--- name: ShortenBrowserLeaseExpiry :exec
--- Renew revalidated a shorter decision: the limit only ever moves earlier, never past the
--- hard limit set at grant.
+-- name: ShortenBrowserLeaseExpiry :one
+-- Renew revalidated a decision: the limit only ever moves earlier, never past the hard limit
+-- set at grant. RETURNING gives the persisted minimum, which is the only deadline a token may
+-- be signed with; no row means the lease is no longer active.
 UPDATE browser_lease SET expires_at = LEAST(expires_at, $3)
-WHERE id = $1 AND workspace_id = $2 AND state = 'active';
+WHERE id = $1 AND workspace_id = $2 AND state = 'active'
+RETURNING *;
 
 -- name: EndBrowserLease :one
 -- The instance stays held until cleanup-ack (W3-7).

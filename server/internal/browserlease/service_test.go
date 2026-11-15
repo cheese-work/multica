@@ -2,6 +2,8 @@ package browserlease
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -54,6 +56,7 @@ type fakeHooks struct {
 	gateErr     map[string]error // by task id
 	decisionErr error
 	decisionExp *time.Time
+	blockNext   chan struct{} // the next Validate returns its expiry only after this closes
 }
 
 func (f *fakeHooks) Check(_ context.Context, s Subject) error {
@@ -68,7 +71,14 @@ func (f *fakeHooks) Validate(_ context.Context, s Subject) (*time.Time, error) {
 	if s.Profile.Class == ClassS2 && !s.DecisionID.Valid {
 		return nil, ErrDecisionRequired
 	}
-	return f.decisionExp, f.decisionErr
+	exp, err := f.decisionExp, f.decisionErr
+	if ch := f.blockNext; ch != nil {
+		f.blockNext = nil
+		f.mu.Unlock()
+		<-ch
+		f.mu.Lock()
+	}
+	return exp, err
 }
 
 type env struct {
@@ -318,6 +328,67 @@ func TestRenewPersistsAShortenedDecisionAndNeverExtendsTheHardLimit(t *testing.T
 	e.now = short.Add(time.Second)
 	if _, err := e.svc.Renew(context.Background(), e.ws, res.Lease.TaskID, res.Lease.ID); !errors.Is(err, ErrLeaseEnded) {
 		t.Fatalf("err = %v, want ErrLeaseEnded", err)
+	}
+}
+
+// Two renewals overlap: the longer one validated before the shortener and finishes after it.
+// The last token the platform signs and records must still honour the shortened deadline.
+func TestOverlappingRenewalNeverSignsPastAShortenedDeadline(t *testing.T) {
+	e := newEnv(t, "c00-1")
+	long := e.now.Add(90 * time.Minute)
+	e.hooks.decisionExp = &long
+	res, _ := e.mint(e.profile(ClassS2))
+	taskID, leaseID := res.Lease.TaskID, res.Lease.ID
+
+	// R2 reads the long decision, then stalls before it signs.
+	gate := make(chan struct{})
+	e.hooks.mu.Lock()
+	e.hooks.blockNext = gate
+	e.hooks.mu.Unlock()
+	r2 := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Renew(context.Background(), e.ws, taskID, leaseID)
+		r2 <- err
+	}()
+	// Wait until R2 sits inside Validate holding the long expiry.
+	for i := 0; ; i++ {
+		e.hooks.mu.Lock()
+		parked := e.hooks.blockNext == nil
+		e.hooks.mu.Unlock()
+		if parked {
+			break
+		}
+		if i > 500 {
+			t.Fatal("renewal never reached the decision check")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// R1 sees the shortened decision and completes first.
+	short := e.now.Add(10 * time.Minute)
+	e.hooks.mu.Lock()
+	e.hooks.decisionExp = &short
+	e.hooks.mu.Unlock()
+	if _, err := e.svc.Renew(context.Background(), e.ws, taskID, leaseID); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	if err := <-r2; err != nil {
+		t.Fatal(err)
+	}
+
+	e.signer.mu.Lock()
+	last := e.signer.claims[len(e.signer.claims)-1]
+	e.signer.mu.Unlock()
+	if last.Exp > short.Unix() {
+		t.Fatalf("last signed token exp = %v, want <= shortened deadline %v", time.Unix(last.Exp, 0).UTC(), short)
+	}
+	sum := sha256.Sum256([]byte(last.JTI))
+	if got := e.lease(leaseID); got.JtiHash.String != hex.EncodeToString(sum[:]) {
+		t.Fatalf("stored jti does not belong to the last signed token")
+	}
+	if l := e.lease(leaseID); !l.ExpiresAt.Time.Equal(short) {
+		t.Fatalf("stored limit = %v, want %v", l.ExpiresAt.Time, short)
 	}
 }
 
