@@ -29,11 +29,11 @@ func (q *Queries) CountRunBudgetTopUpsSince(ctx context.Context, arg CountRunBud
 }
 
 const listRunBudgetAutoDecisionsSince = `-- name: ListRunBudgetAutoDecisionsSince :many
-SELECT CASE WHEN action = 'run_budget_top_up' THEN 'approved' ELSE COALESCE(details->>'kind', 'unknown') END::text AS kind,
+SELECT CASE WHEN action IN ('run_budget_top_up', 'run_guard_auto_approved') THEN 'approved' ELSE COALESCE(details->>'kind', 'unknown') END::text AS kind,
        COUNT(*)::bigint AS n
 FROM activity_log
 WHERE workspace_id = $1::uuid AND created_at >= $2::timestamptz
-  AND ((action = 'run_budget_top_up' AND details ? 'auto') OR action = 'run_budget_auto_escalated')
+  AND ((action IN ('run_budget_top_up', 'run_guard_auto_approved') AND details ? 'auto') OR action = 'run_budget_auto_escalated')
 GROUP BY 1
 `
 
@@ -282,7 +282,7 @@ func (q *Queries) LockRunBudgetAutoEnvelope(ctx context.Context, workspaceID str
 
 const sumAutoApprovedRunsSince = `-- name: SumAutoApprovedRunsSince :one
 SELECT COALESCE(SUM((details->>'runs')::bigint), 0)::bigint FROM activity_log
-WHERE workspace_id = $1::uuid AND action = 'run_budget_top_up'
+WHERE workspace_id = $1::uuid AND action IN ('run_budget_top_up', 'run_guard_auto_approved')
   AND details ? 'auto' AND created_at >= $2::timestamptz
 `
 
@@ -291,7 +291,7 @@ type SumAutoApprovedRunsSinceParams struct {
 	Since       pgtype.Timestamptz `json:"since"`
 }
 
-// Extra runs the auto-approver granted in the workspace since a time.
+// Extra runs the auto-approver granted in the workspace since a time: budget top-ups and run-guard allowances.
 func (q *Queries) SumAutoApprovedRunsSince(ctx context.Context, arg SumAutoApprovedRunsSinceParams) (int64, error) {
 	row := q.db.QueryRow(ctx, sumAutoApprovedRunsSince, arg.WorkspaceID, arg.Since)
 	var column_1 int64

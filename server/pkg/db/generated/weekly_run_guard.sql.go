@@ -59,6 +59,44 @@ func (q *Queries) ClaimWeeklyRunGuardIncident(ctx context.Context, arg ClaimWeek
 	return id, err
 }
 
+const countIssueProgressEventsSince = `-- name: CountIssueProgressEventsSince :one
+WITH since AS (
+    SELECT GREATEST(
+        $2::timestamptz,
+        COALESCE((SELECT max(created_at) FROM agent_task_queue WHERE issue_id = $1::uuid AND agent_id = $3::uuid), '-infinity'::timestamptz)
+    ) AS at
+)
+SELECT (
+    (SELECT count(*) FROM issue_pr_event e, since
+      WHERE e.issue_id = $1::uuid AND e.kind IN ('head_changed', 'merged') AND e.observed_at > since.at)
+  + (SELECT count(*) FROM issue_pull_request l, since
+      WHERE l.issue_id = $1::uuid AND l.link_kind = 'closing' AND l.linked_at > since.at)
+  + (SELECT count(*) FROM activity_log a, since
+      WHERE a.issue_id = $1::uuid AND a.action IN ('review_passed', 'review_changes_requested') AND a.created_at > since.at)
+  + (SELECT count(*) FROM decision_answer da JOIN decision_request r ON r.id = da.decision_request_id, since
+      WHERE r.issue_id = $1::uuid AND da.disclaimed_at IS NULL AND da.effective_at > since.at
+        AND r.request_fingerprint NOT LIKE 'server:run_guard_allow:%')
+)::bigint
+`
+
+type CountIssueProgressEventsSinceParams struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WindowStart pgtype.Timestamptz `json:"window_start"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+}
+
+// Progress events on the issue newer than both the window start and the target
+// agent's last run on it (CHE-6175): a PR head change or merge, a signed review
+// verdict, a newly linked PR (its first snapshot emits no head_changed), an answered decision request (not the guard's own card: its approval
+// already adds allowance). Each event is older than the run it
+// admitted, so it admits one run per agent.
+func (q *Queries) CountIssueProgressEventsSince(ctx context.Context, arg CountIssueProgressEventsSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssueProgressEventsSince, arg.IssueID, arg.WindowStart, arg.AgentID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countOpenWeeklyRunGuardCards = `-- name: CountOpenWeeklyRunGuardCards :one
 SELECT count(*)::bigint FROM decision_request
 WHERE issue_id = $1 AND status = 'open' AND request_fingerprint = $2
@@ -149,6 +187,28 @@ func (q *Queries) GetWeeklyRunGuardRefusal(ctx context.Context, id pgtype.UUID) 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const hasRejectedWeeklyRunGuardCard = `-- name: HasRejectedWeeklyRunGuardCard :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    JOIN decision_action action ON action.decision_request_id = request.id
+    WHERE request.issue_id = $1 AND request.request_fingerprint = $2 AND action.state = 'rejected'
+)
+`
+
+type HasRejectedWeeklyRunGuardCardParams struct {
+	IssueID            pgtype.UUID `json:"issue_id"`
+	RequestFingerprint string      `json:"request_fingerprint"`
+}
+
+// CHE-6241: the refusal's card was declined. The refusal row keeps the trigger
+// it refused; a repeat of that trigger opens no new card.
+func (q *Queries) HasRejectedWeeklyRunGuardCard(ctx context.Context, arg HasRejectedWeeklyRunGuardCardParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasRejectedWeeklyRunGuardCard, arg.IssueID, arg.RequestFingerprint)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertWeeklyRunGuardRefusal = `-- name: InsertWeeklyRunGuardRefusal :one
@@ -278,10 +338,58 @@ func (q *Queries) ListIssueLastRunStatuses(ctx context.Context, arg ListIssueLas
 	return items, nil
 }
 
+const listOpenWeeklyRunGuardRefusals = `-- name: ListOpenWeeklyRunGuardRefusals :many
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal
+WHERE state = 'open' AND (created_at, id) > ($1::timestamptz, $2::uuid)
+ORDER BY created_at, id LIMIT 100
+`
+
+type ListOpenWeeklyRunGuardRefusalsParams struct {
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+}
+
+// One page of refusals still waiting for a card answer, oldest first, after the
+// (created_at, id) cursor, for the auto-approver pass.
+func (q *Queries) ListOpenWeeklyRunGuardRefusals(ctx context.Context, arg ListOpenWeeklyRunGuardRefusalsParams) ([]WeeklyRunGuardRefusal, error) {
+	rows, err := q.db.Query(ctx, listOpenWeeklyRunGuardRefusals, arg.AfterCreatedAt, arg.AfterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WeeklyRunGuardRefusal{}
+	for rows.Next() {
+		var i WeeklyRunGuardRefusal
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.ActorUserID,
+			&i.TriggerCommentID,
+			&i.SourceWakeupID,
+			&i.SourceTaskID,
+			&i.Runs,
+			&i.State,
+			&i.ActionID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWeeklyRunGuardIncidentsSince = `-- name: ListWeeklyRunGuardIncidentsSince :many
-SELECT i.number::bigint AS number, a.details
+SELECT i.number::bigint AS number, a.details, a.action
 FROM activity_log a JOIN issue i ON i.id = a.issue_id
-WHERE a.workspace_id = $1::uuid AND a.action = 'weekly_run_guard_tripped'
+WHERE a.workspace_id = $1::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned')
   AND a.created_at >= $2::timestamptz
 ORDER BY a.created_at DESC
 `
@@ -294,9 +402,10 @@ type ListWeeklyRunGuardIncidentsSinceParams struct {
 type ListWeeklyRunGuardIncidentsSinceRow struct {
 	Number  int64  `json:"number"`
 	Details []byte `json:"details"`
+	Action  string `json:"action"`
 }
 
-// The guard's incidents since a time, newest first, for the brief.
+// The guard's incidents since a time, newest first, for the brief: refusals and warn-mode would-be refusals.
 func (q *Queries) ListWeeklyRunGuardIncidentsSince(ctx context.Context, arg ListWeeklyRunGuardIncidentsSinceParams) ([]ListWeeklyRunGuardIncidentsSinceRow, error) {
 	rows, err := q.db.Query(ctx, listWeeklyRunGuardIncidentsSince, arg.WorkspaceID, arg.Since)
 	if err != nil {
@@ -306,7 +415,7 @@ func (q *Queries) ListWeeklyRunGuardIncidentsSince(ctx context.Context, arg List
 	items := []ListWeeklyRunGuardIncidentsSinceRow{}
 	for rows.Next() {
 		var i ListWeeklyRunGuardIncidentsSinceRow
-		if err := rows.Scan(&i.Number, &i.Details); err != nil {
+		if err := rows.Scan(&i.Number, &i.Details, &i.Action); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
