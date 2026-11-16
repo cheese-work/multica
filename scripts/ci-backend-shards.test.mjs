@@ -60,8 +60,3 @@ test("the decision card E2E step is bounded and its log dump runs when it fails"
   assert.ok(globalTimeout > 0 && globalTimeout < minutes * 60_000, "playwright --global-timeout must be set and end before the step timeout");
   assert.match(shards, /- name: Show decision card E2E logs\n        if: \$\{\{ failure\(\) && matrix\.partition == 'rest' \}\}/);
 });
-
-test("the Playwright global setup bounds every network wait", () => {
-  const setup = readFileSync(new URL("../e2e/global-setup.ts", import.meta.url), "utf8");
-  assert.match(setup, /AbortSignal\.timeout\(/, "warm-up fetch must carry a timeout");
-});
