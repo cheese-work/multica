@@ -108,6 +108,68 @@ func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREvent
 	return result.RowsAffected(), nil
 }
 
+const lastWorkingAgentOnIssue = `-- name: LastWorkingAgentOnIssue :one
+SELECT a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.custom_env_version, a.scheduling_paused_at, a.scheduling_paused_by, a.scheduling_paused_reason
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = $1
+  AND t.started_at IS NOT NULL
+  AND a.workspace_id = $2
+  AND a.archived_at IS NULL
+  AND a.runtime_id IS NOT NULL
+ORDER BY t.started_at DESC
+LIMIT 1
+`
+
+type LastWorkingAgentOnIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The agent that most recently ran on an issue and can still run: the PR-action
+// fallback when a member holds the issue and no PR author resolves, so the
+// notice reaches an agent rather than the member (CHE-5837).
+func (q *Queries) LastWorkingAgentOnIssue(ctx context.Context, arg LastWorkingAgentOnIssueParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, lastWorkingAgentOnIssue, arg.IssueID, arg.WorkspaceID)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+		&i.ConversationStarters,
+		&i.CustomEnvVersion,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+		&i.SchedulingPausedReason,
+	)
+	return i, err
+}
+
 const latestPRConflictBase = `-- name: LatestPRConflictBase :one
 SELECT e.base_sha
 FROM issue_pr_event e

@@ -37,7 +37,20 @@ func prResolverTarget(ctx context.Context, queries *db.Queries, issue db.Issue, 
 	if found {
 		return target, nil
 	}
-	return resolveWakeTarget(ctx, queries, issue)
+	assignee, err := resolveWakeTarget(ctx, queries, issue)
+	if err != nil || assignee.Type != "member" {
+		return assignee, err
+	}
+	// A member holds the issue and no PR author resolves: the last agent that
+	// worked on it takes the PR action, so the member is not the owner (CHE-5837).
+	last, err := queries.LastWorkingAgentOnIssue(ctx, db.LastWorkingAgentOnIssueParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return assignee, nil
+	}
+	if err != nil {
+		return wakeTarget{}, err
+	}
+	return wakeTarget{Type: "agent", ID: last.ID, Agent: last}, nil
 }
 
 // prAuthorTarget is the PR's author as a wake target; found is false when the
