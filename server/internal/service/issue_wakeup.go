@@ -1531,7 +1531,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		enabled = false
 		next = pgtype.Timestamptz{}
 	}
-	heartbeatFP, declaredFP := "", ""
+	heartbeatFP, declaredFP, watchdogFP := "", "", ""
 	// A firing the agent already knows about starts no run. One that a run of
 	// the agent waiting to start can take along keeps its inputs for that run
 	// (JoinWaitingWakeups).
@@ -1590,7 +1590,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		// CHE-4984: a scheduled conflict heartbeat over a PR that is as it was
 		// when the last heartbeat run started adds nothing, so it starts no run.
 		if scheduled && custom == nil && isConflictHeartbeat(w) {
-			if heartbeatFP, _, _, err = prStateFingerprint(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID)); err != nil {
+			if heartbeatFP, _, _, err = prStateFingerprint(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), false); err != nil {
 				return err
 			}
 			if heartbeatFP != "" {
@@ -1614,6 +1614,31 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 					}
 				}
 				if err := note(wakeupActivitySkipped, skippedUnchangedDetails("conflict_heartbeat", lastTask)); err != nil {
+					return err
+				}
+				return commit()
+			}
+		}
+		// CHE-6189: a continuation-watchdog fire over an issue that is as it was
+		// when the last watchdog run started adds nothing. Only a pure scheduled
+		// fire qualifies; any doubt (first fire, no stored snapshot, a run that did
+		// not complete) runs.
+		if scheduled && custom == nil && !timedOut && isContinuationWatchdog(w) {
+			if watchdogFP, _, _, err = prStateFingerprint(ctx, tx, issue.ID, w.AgentID, watchdogContextKey, watchdogContextValue, true); err != nil {
+				return err
+			}
+			lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, w.AgentID, watchdogContextKey, watchdogContextValue, watchdogFP)
+			if err != nil {
+				return err
+			}
+			if unchanged {
+				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+					return err
+				}
+				if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+					return err
+				}
+				if err := note(wakeupActivitySkipped, skippedUnchangedDetails("continuation_watchdog", lastTask)); err != nil {
 					return err
 				}
 				return commit()
@@ -1819,7 +1844,10 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if isMergeEligibilityCondition(w.Condition) {
 			taskContext["wakeup_merge"] = true // the candidate is judged again at claim and start
 		}
-		if heartbeatFP != "" {
+		if watchdogFP != "" {
+			taskContext[watchdogContextKey] = watchdogContextValue
+			taskContext[wakeupFingerprintKey] = watchdogFP
+		} else if heartbeatFP != "" {
 			taskContext[wakeupFingerprintKey] = heartbeatFP
 		} else if declaredFP != "" {
 			taskContext[wakeupFingerprintKey] = declaredFP
