@@ -701,34 +701,38 @@ UPDATE workspace SET
             ELSE h.v
         END
         FROM (SELECT CASE
-            WHEN $7::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $7::jsonb)
+            WHEN $7::jsonb IS NOT NULL THEN jsonb_set(k.v, '{ask_guard_mode}', $7::jsonb)
+            ELSE k.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $8::jsonb)
             ELSE t.v
         END AS v
         FROM (SELECT CASE
-            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $8::jsonb)
+            WHEN $9::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $9::jsonb)
             ELSE g.v
         END AS v
         FROM (SELECT CASE
-            WHEN $9::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $9::jsonb)
+            WHEN $10::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $10::jsonb)
             ELSE m.v
         END AS v
         FROM (SELECT CASE
-            WHEN $10::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $10::jsonb)
+            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $11::jsonb)
             ELSE a.v
         END AS v FROM (SELECT CASE
-            WHEN $11::bool THEN base.v - 'auto_compact'
-            WHEN $12::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $12::jsonb)
+            WHEN $12::bool THEN base.v - 'auto_compact'
+            WHEN $13::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $13::jsonb)
             ELSE base.v
         END AS v
         FROM (SELECT CASE
-            WHEN $13::bool THEN COALESCE($14::jsonb, settings) - 'compact_prompt'
-            WHEN $15::text IS NOT NULL THEN jsonb_set(COALESCE($14::jsonb, settings), '{compact_prompt}', to_jsonb($15::text))
-            ELSE COALESCE($14::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS h
+            WHEN $14::bool THEN COALESCE($15::jsonb, settings) - 'compact_prompt'
+            WHEN $16::text IS NOT NULL THEN jsonb_set(COALESCE($15::jsonb, settings), '{compact_prompt}', to_jsonb($16::text))
+            ELSE COALESCE($15::jsonb, settings)
+        END AS v) AS base) AS a) AS m) AS g) AS t) AS k) AS h
     ),
-    repos = COALESCE($16, repos),
-    issue_prefix = COALESCE($17, issue_prefix),
-    avatar_url = COALESCE($18, avatar_url),
+    repos = COALESCE($17, repos),
+    issue_prefix = COALESCE($18, issue_prefix),
+    avatar_url = COALESCE($19, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
@@ -741,6 +745,7 @@ type UpdateWorkspaceParams struct {
 	Context             pgtype.Text `json:"context"`
 	HarnessProfileReset pgtype.Bool `json:"harness_profile_reset"`
 	HarnessProfile      pgtype.Text `json:"harness_profile"`
+	AskGuardMode        []byte      `json:"ask_guard_mode"`
 	TimeWakeupSkip      []byte      `json:"time_wakeup_skip"`
 	IdleStartedGuard    []byte      `json:"idle_started_guard"`
 	GithubReviewAuthors []byte      `json:"github_review_authors"`
@@ -763,6 +768,7 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Context,
 		arg.HarnessProfileReset,
 		arg.HarnessProfile,
+		arg.AskGuardMode,
 		arg.TimeWakeupSkip,
 		arg.IdleStartedGuard,
 		arg.GithubReviewAuthors,

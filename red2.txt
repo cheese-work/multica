@@ -1,0 +1,8 @@
+    update_deadline_test.go:345: barrier must be released at the deadline
+--- FAIL: TestUpdateDeadline_StuckClaimDuringAcquisition (0.15s)
+    update_deadline_test.go:358: runUpdateFn must not run after the start cutoff
+    update_deadline_test.go:372: result "failed/late_delivery" not delivered within 1s; got [completed/]
+--- FAIL: TestUpdateDeadline_StartCutoffRecheckedAfterAcquisition (1.12s)
+FAIL
+FAIL	github.com/multica-ai/multica/server/internal/daemon	1.334s
+FAIL

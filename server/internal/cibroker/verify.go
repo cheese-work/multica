@@ -30,6 +30,10 @@ type KeySource interface {
 type Verifier struct {
 	Keys KeySource
 	Now  func() time.Time
+	// Audience is the aud claim a token must carry. Empty means the CI broker
+	// audience. A separate surface sets its own, so a token minted for one
+	// cannot be replayed on the other.
+	Audience string
 
 	mu   sync.Mutex
 	seen map[string]time.Time // jti -> exp
@@ -40,11 +44,15 @@ func NewVerifier(keys KeySource) *Verifier {
 }
 
 func (v *Verifier) Verify(ctx context.Context, token string) (*Claims, error) {
+	aud := v.Audience
+	if aud == "" {
+		aud = Audience
+	}
 	mc := jwt.MapClaims{}
 	_, err := jwt.NewParser(
 		jwt.WithValidMethods([]string{"RS256"}),
 		jwt.WithIssuer(Issuer),
-		jwt.WithAudience(Audience),
+		jwt.WithAudience(aud),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
 		jwt.WithLeeway(skew),

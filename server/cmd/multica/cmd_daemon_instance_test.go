@@ -96,6 +96,13 @@ func TestDaemonInstanceShutdownDrain(t *testing.T) {
 	}
 	for _, operation := range []string{"restart", "stop", "restart-already-draining", "stop-already-draining"} {
 		t.Run(operation, func(t *testing.T) {
+			clearDaemonTaskEnv(t)
+			t.Chdir(t.TempDir())
+			// This fixture models an unsupervised process, regardless of the
+			// service manager that happens to own the test runner.
+			previous := findDaemonRestartSupervisor
+			findDaemonRestartSupervisor = func(int) (daemonRestartSupervisor, error) { return nil, nil }
+			t.Cleanup(func() { findDaemonRestartSupervisor = previous })
 			root := t.TempDir()
 			t.Setenv("HOME", root)
 			t.Setenv(cli.TaskConfigRootEnv, "")

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -30,6 +31,22 @@ func (c *countingTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 // many search transactions the request opened.
 func searchIssueIDs(t *testing.T, rawQuery string) ([]string, int) {
 	t.Helper()
+	results, begun := searchIssueResultsCounted(t, rawQuery)
+	ids := make([]string, 0, len(results))
+	for _, issue := range results {
+		ids = append(ids, issue.ID)
+	}
+	return ids, begun
+}
+
+func searchIssueResults(t *testing.T, rawQuery string) []SearchIssueResponse {
+	t.Helper()
+	results, _ := searchIssueResultsCounted(t, rawQuery)
+	return results
+}
+
+func searchIssueResultsCounted(t *testing.T, rawQuery string) ([]SearchIssueResponse, int) {
+	t.Helper()
 
 	counter := &countingTxStarter{inner: testHandler.TxStarter}
 	h := *testHandler
@@ -47,11 +64,7 @@ func searchIssueIDs(t *testing.T, rawQuery string) ([]string, int) {
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("decode search response: %v", err)
 	}
-	ids := make([]string, 0, len(response.Issues))
-	for _, issue := range response.Issues {
-		ids = append(ids, issue.ID)
-	}
-	return ids, int(counter.begun.Load())
+	return response.Issues, int(counter.begun.Load())
 }
 
 func containsID(ids []string, id string) bool {
@@ -122,14 +135,76 @@ func TestSearchIssues_FuzzyFallbackKeepsClosedFilter(t *testing.T) {
 	}
 }
 
-func TestSearchIssues_FuzzyFallbackSkipsComments(t *testing.T) {
+func TestSearchIssues_FuzzyFallbackFindsTypoPastDescriptionWindow(t *testing.T) {
+	id := dbfx.Issue(t, "Plain heading", testutil.Cols{
+		"description": strings.Repeat("filler words here ", 20) + "the importer crashes on spreadsheet columns",
+	})
+
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("spreadsheat colums")) //nolint:misspell // intentional typo
+	if !containsID(ids, id) {
+		t.Fatalf("typo past char 200 of the description did not find the issue; got %v", ids)
+	}
+}
+
+func TestSearchIssues_FuzzyFallbackFindsTypoInComment(t *testing.T) {
 	id := dbfx.Issue(t, "Plain heading")
 	dbfx.Comment(t, id, "the importer crashes on duplicate columns")
 
-	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("importr crashs duplcate"))
-	if containsID(ids, id) {
-		t.Fatalf("comment text matched the fuzzy fallback; got %v", ids)
+	results := searchIssueResults(t, "q="+url.QueryEscape("importr crashs duplcate"))
+	for _, r := range results {
+		if r.ID == id {
+			if r.MatchSource != "comment" || r.MatchedCommentSnippet == nil {
+				t.Fatalf("match_source = %q, snippet = %v; want comment with snippet", r.MatchSource, r.MatchedCommentSnippet)
+			}
+			return
+		}
 	}
+	t.Fatalf("typo in comment did not find the issue; got %v", results)
+}
+
+// The fixtures below use the query "zebrafsh migraton plam". word_similarity of
+// that query: "zebrafish migration plan" 0.586, "zebrafish migration schedule"
+// 0.5. So the comment scores higher than the title, and a score-only ordering
+// would put the comment first.
+const fuzzyRankQuery = "zebrafsh migraton plam"
+
+func TestSearchIssues_FuzzyFallbackTitleOutranksStrongerCommentMatch(t *testing.T) {
+	comment := dbfx.Issue(t, "Plain heading")
+	dbfx.Comment(t, comment, "zebrafish migration plan")
+	title := dbfx.Issue(t, "zebrafish migration schedule")
+
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape(fuzzyRankQuery))
+	titleAt, commentAt := indexOfID(ids, title), indexOfID(ids, comment)
+	if titleAt < 0 || commentAt < 0 || titleAt > commentAt {
+		t.Fatalf("weaker title match must rank above stronger comment match: title at %d, comment at %d, ids %v", titleAt, commentAt, ids)
+	}
+}
+
+func TestSearchIssues_FuzzyFallbackStrongerCommentOutranksWeakerDescription(t *testing.T) {
+	desc := dbfx.Issue(t, "Plain heading", testutil.Cols{"description": "zebrafish migration schedule"})
+	comment := dbfx.Issue(t, "Other heading")
+	dbfx.Comment(t, comment, "zebrafish migration plan")
+
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape(fuzzyRankQuery))
+	descAt, commentAt := indexOfID(ids, desc), indexOfID(ids, comment)
+	if descAt < 0 || commentAt < 0 || commentAt > descAt {
+		t.Fatalf("stronger comment match must rank above weaker description match: comment at %d, description at %d, ids %v", commentAt, descAt, ids)
+	}
+}
+
+func TestSearchIssues_FuzzyFallbackReportsStrongerNonTitleSource(t *testing.T) {
+	id := dbfx.Issue(t, "Plain heading", testutil.Cols{"description": "zebrafish migration schedule"})
+	dbfx.Comment(t, id, "zebrafish migration plan")
+
+	for _, r := range searchIssueResults(t, "q="+url.QueryEscape(fuzzyRankQuery)) {
+		if r.ID == id {
+			if r.MatchSource != "comment" {
+				t.Fatalf("match_source = %q, want comment (higher score than the description)", r.MatchSource)
+			}
+			return
+		}
+	}
+	t.Fatal("issue not found")
 }
 
 func TestSearchIssues_FuzzyFallbackSkippedWhenNormalSearchHits(t *testing.T) {
