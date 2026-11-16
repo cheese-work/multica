@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -167,13 +168,22 @@ class BuildCacheTests(unittest.TestCase):
                 self.assertNotIn('github.sha', cache['key'])
                 self.assertIn("hashFiles('pnpm-lock.yaml')", cache['restore-keys'])
 
-    def test_compiler_caches_precede_version_invalidation(self):
+    def test_go_dependencies_compile_in_a_layer_keyed_on_the_import_set(self):
+        # The CD BuildKit builder is deleted after every job (CHE-4314), so a
+        # go-build cache mount is always cold; a layer can come from the registry cache.
         backend = (ROOT / 'Dockerfile').read_text()
-        self.assertIn('--mount=type=cache,target=/root/.cache/go-build', backend)
+        stage = lambda name: re.search(rf'^FROM .* AS {name}\n(.*?)(?=^FROM |\Z)', backend, re.S | re.M).group(1)
+        compiled = stage('deps-compiled')
+        self.assertIn('GOCACHE=/gocache/server', compiled)
+        self.assertIn('GOCACHE=/gocache/daemon', compiled)
+        self.assertNotIn('COPY server/', compiled, 'a source edit would invalidate the layer')
+        for name in ['builder', 'daemon-builder']:
+            with self.subTest(stage=name):
+                self.assertRegex(stage(name), r'COPY --from=deps-compiled /gocache/\w+ /gocache')
+                self.assertIn('ENV GOCACHE=/gocache', stage(name))
+                self.assertNotIn('target=/root/.cache/go-build', stage(name))
         for command in ['migrate', 'maintenance', 'backfill_task_usage_hourly', 'backfill_codex_usage_cache']:
             self.assertLess(backend.index(f'./cmd/{command}'), backend.index('ARG VERSION'))
-        build_steps = [line for line in backend.splitlines() if line.startswith('RUN ') and ('go build' in line or 'sh scripts/build-daemon-binaries.sh' in line)]
-        self.assertTrue(all('--mount=type=cache,target=/root/.cache/go-build' in line for line in build_steps))
         web = (ROOT / 'Dockerfile.web').read_text()
         self.assertIn('RUN --mount=type=cache,target=/app/apps/web/.next/cache', web)
         self.assertLess(web.index('pnpm install --frozen-lockfile --offline'), web.index('ARG NEXT_PUBLIC_APP_VERSION'))
@@ -299,7 +309,7 @@ echo bin > "$2"
         backend = (ROOT / 'Dockerfile').read_text()
         consumers = [line for line in backend.splitlines() if line.startswith('RUN ') and
                      any(command in line for command in ['go mod download', 'go build', 'sh scripts/build-daemon-binaries.sh'])]
-        self.assertEqual(len(consumers), 7)
+        self.assertEqual(len(consumers), 8)
         for command in consumers:
             with self.subTest(command=command):
                 self.assertIn('--mount=type=cache,target=/go/pkg/mod', command)
