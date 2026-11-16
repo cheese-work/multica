@@ -32,6 +32,14 @@ func weeklyCardCase(t *testing.T, installationID int64) (budgetCase, service.Wee
 // recipients are every workspace owner, and adds a second owner.
 func weeklyCardCaseFor(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
 	t.Helper()
+	c, e := weeklyRefusalCase(t, installationID, manyOwners)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	return c, e
+}
+
+// weeklyRefusalCase is weeklyCardCaseFor before the incident hook runs.
+func weeklyRefusalCase(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
 	c := weeklyCase(t, installationID)
 	var role string
 	dbfx.QueryRow(t, `SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID).Scan(&role)
@@ -51,9 +59,7 @@ func weeklyCardCaseFor(t *testing.T, installationID int64, manyOwners bool) (bud
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_allowance WHERE issue_id = $1`, c.issueID)
 	seedRuns(t, c, c.agentID, 30, 2*24*time.Hour)
-	e := c.weeklyTripped(t)
-	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
-	return c, e
+	return c, c.weeklyTripped(t)
 }
 
 func (c budgetCase) allowCards(t *testing.T) int {
@@ -389,5 +395,41 @@ func TestSystemCommentNeverRoutesToSquadLeader(t *testing.T) {
 	testHandler.triggerTasksForComment(ctx, issue, post("member", "please continue"), nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
 	if n := queued(); n != 1 {
 		t.Fatalf("runs enqueued for the leader by a member comment = %d, want 1 (fixture must reach dispatch)", n)
+	}
+}
+
+// CHE-6299: a refusal on a finished issue opens no card, no system comment and
+// no inbox ping, but the incident row for the brief is still written.
+func TestWeeklyRunGuardRefusalOnFinishedIssueOpensNothing(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentAccepted := createTestCustomStatus(t, "che6299_agent_accepted", "done")
+	for i, status := range []string{"done", "merged", agentAccepted.Key} {
+		t.Run(status, func(t *testing.T) {
+			c, e := weeklyRefusalCase(t, int64(6299001+i), false)
+			dbfx.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, c.issueID, status)
+			testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+			testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+
+			if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
+				t.Fatalf("decision requests = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID); n != 0 {
+				t.Fatalf("refusal rows = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID); n != 0 {
+				t.Fatalf("system comments = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE issue_id = $1`, c.issueID); n != 0 {
+				t.Fatalf("inbox items = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'weekly_run_guard_tripped'`, c.issueID); n != 1 {
+				t.Fatalf("incident rows = %d, want 1", n)
+			}
+			if n := c.queuedRuns(t); n != 0 {
+				t.Fatalf("queued runs = %d, want 0", n)
+			}
+		})
 	}
 }
