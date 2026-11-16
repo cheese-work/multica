@@ -93,9 +93,9 @@ SELECT COUNT(*)::bigint FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'run_budget_top_up' AND created_at > sqlc.arg('since')::timestamptz;
 
 -- name: SumAutoApprovedRunsSince :one
--- Extra runs the auto-approver granted in the workspace since a time.
+-- Extra runs the auto-approver granted in the workspace since a time: budget top-ups and run-guard allowances.
 SELECT COALESCE(SUM((details->>'runs')::bigint), 0)::bigint FROM activity_log
-WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND action = 'run_budget_top_up'
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND action IN ('run_budget_top_up', 'run_guard_auto_approved')
   AND details ? 'auto' AND created_at >= sqlc.arg('since')::timestamptz;
 
 -- name: LockRunBudgetAutoEnvelope :exec
@@ -104,11 +104,11 @@ SELECT pg_advisory_xact_lock(hashtextextended('run_budget_auto:' || sqlc.arg('wo
 
 -- name: ListRunBudgetAutoDecisionsSince :many
 -- Every auto decision since a time, for the brief: approved top-ups and escalations by anomaly kind.
-SELECT CASE WHEN action = 'run_budget_top_up' THEN 'approved' ELSE COALESCE(details->>'kind', 'unknown') END::text AS kind,
+SELECT CASE WHEN action IN ('run_budget_top_up', 'run_guard_auto_approved') THEN 'approved' ELSE COALESCE(details->>'kind', 'unknown') END::text AS kind,
        COUNT(*)::bigint AS n
 FROM activity_log
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND created_at >= sqlc.arg('since')::timestamptz
-  AND ((action = 'run_budget_top_up' AND details ? 'auto') OR action = 'run_budget_auto_escalated')
+  AND ((action IN ('run_budget_top_up', 'run_guard_auto_approved') AND details ? 'auto') OR action = 'run_budget_auto_escalated')
 GROUP BY 1;
 
 -- name: ListWorkspaceDecisionsByFingerprint :many
