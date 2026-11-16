@@ -31,6 +31,7 @@ import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-
 import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
 import { AttentionDock, AttentionDrawer } from "./components/attention-dock";
+import { useAttentionRefresh } from "./components/use-attention-refresh";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
@@ -412,6 +413,9 @@ export function ChatPage() {
   );
 
   const compactConversation = isCompact && (!!c.activeSessionId || composingNew);
+  // The compact conversation unmounts the thread list, the usual refresh owner,
+  // so the page keeps one running: a due `/later` reminder lands without navigation.
+  useAttentionRefresh(c.sessions, compactConversation);
   // Nothing to talk to and nothing to reread: the composer would only be a
   // disabled box, so the page explains the prerequisite instead.
   const noAgentPage = c.noAgent && c.sessions.length === 0;
