@@ -26,7 +26,7 @@ func str(s string) *string { return &s }
 func claims() Claims {
 	return Claims{
 		Sub: "agent-1", LeaseID: "lease-1", Epoch: 3, TaskID: "task-1", IssueID: "issue-1",
-		DecisionID: str("dec-1"), UserID: "user-1", Profile: "figma", Class: "S2", Instance: "inst-1",
+		DecisionID: str("dec-1"), UserID: "user-1", Profile: "figma", Class: "S2", Instance: "c00-1", Host: "c00",
 	}
 }
 
@@ -56,9 +56,15 @@ func fetchJWKS(t *testing.T, kr *Keyring) (map[string]ed25519.PublicKey, *httpte
 
 func verify(t *testing.T, tok string, keys map[string]ed25519.PublicKey, now time.Time) (jwt.MapClaims, *jwt.Token) {
 	t.Helper()
+	return verifyAud(t, tok, keys, now, "steel-gateway/c00")
+}
+
+// verifyAud mimics a gateway verifier: it accepts only the literal audience it is given.
+func verifyAud(t *testing.T, tok string, keys map[string]ed25519.PublicKey, now time.Time, aud string) (jwt.MapClaims, *jwt.Token) {
+	t.Helper()
 	mc := jwt.MapClaims{}
 	parsed, err := jwt.NewParser(
-		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithIssuer(Issuer), jwt.WithAudience(Audience),
+		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithIssuer(Issuer), jwt.WithAudience(aud),
 		jwt.WithExpirationRequired(), jwt.WithTimeFunc(func() time.Time { return now }),
 	).ParseWithClaims(tok, mc, func(tk *jwt.Token) (any, error) {
 		k, ok := keys[tk.Header["kid"].(string)]
@@ -92,9 +98,9 @@ func TestMintClaimsAndJWKS(t *testing.T) {
 		t.Fatalf("header %v", parsed.Header)
 	}
 	want := map[string]any{
-		"iss": Issuer, "aud": Audience, "sub": "agent-1", "lease_id": "lease-1", "epoch": float64(3),
+		"iss": Issuer, "aud": "steel-gateway/c00", "sub": "agent-1", "lease_id": "lease-1", "epoch": float64(3),
 		"task_id": "task-1", "issue_id": "issue-1", "decision_id": "dec-1", "user_id": "user-1",
-		"profile": "figma", "class": "S2", "instance": "inst-1", "jti": jti,
+		"profile": "figma", "class": "S2", "instance": "c00-1", "jti": jti,
 		"iat": float64(now.Unix()), "exp": float64(exp.Unix()),
 	}
 	if len(mc) != len(want) {
@@ -118,6 +124,39 @@ func TestMintClaimsAndJWKS(t *testing.T) {
 	}
 }
 
+// The gateway on each host accepts only its own audience (shared-browser steel-gateway/verify.go).
+func TestAudienceIsHostSpecific(t *testing.T) {
+	kr, _ := ParseKeyring("k1:" + seed(1))
+	keys, _ := fetchJWKS(t, kr)
+	now := time.Now()
+	for _, tc := range []struct{ host, class, inst, aud, other string }{
+		{"c00", "S2", "c00-1", "steel-gateway/c00", "steel-gateway/x99"},
+		{"x99", "S0", "x99-3", "steel-gateway/x99", "steel-gateway/c00"},
+	} {
+		c := claims()
+		c.Host, c.Class, c.Instance = tc.host, tc.class, tc.inst
+		if tc.class == "S0" {
+			c.DecisionID = nil
+		}
+		tok, _, _, err := kr.Mint(c, now)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.host, err)
+		}
+		mc, _ := verifyAud(t, tok, keys, now, tc.aud)
+		if mc["aud"] != tc.aud {
+			t.Errorf("%s: aud=%v want %s", tc.host, mc["aud"], tc.aud)
+		}
+		if _, err := jwt.NewParser(jwt.WithAudience(tc.other), jwt.WithTimeFunc(func() time.Time { return now })).
+			Parse(tok, func(*jwt.Token) (any, error) { return keys["k1"], nil }); err == nil {
+			t.Errorf("%s token accepted by %s verifier", tc.host, tc.other)
+		}
+		if _, err := jwt.NewParser(jwt.WithAudience("steel-gateway"), jwt.WithTimeFunc(func() time.Time { return now })).
+			Parse(tok, func(*jwt.Token) (any, error) { return keys["k1"], nil }); err == nil {
+			t.Errorf("%s token accepted with generic audience", tc.host)
+		}
+	}
+}
+
 func TestJTIUnique(t *testing.T) {
 	kr, _ := ParseKeyring("k1:" + seed(1))
 	_, a, _, _ := kr.Mint(claims(), time.Now())
@@ -132,12 +171,12 @@ func TestDecisionNullOnlyForS0(t *testing.T) {
 	keys, _ := fetchJWKS(t, kr)
 	now := time.Now()
 	c := claims()
-	c.Class, c.DecisionID = "S0", nil
+	c.Class, c.DecisionID, c.Instance, c.Host = "S0", nil, "x99-1", "x99"
 	tok, _, _, err := kr.Mint(c, now)
 	if err != nil {
 		t.Fatalf("S0 null decision: %v", err)
 	}
-	mc, _ := verify(t, tok, keys, now)
+	mc, _ := verifyAud(t, tok, keys, now, "steel-gateway/x99")
 	if v, ok := mc["decision_id"]; !ok || v != nil {
 		t.Fatalf("decision_id must be present and null, got %v (present=%v)", v, ok)
 	}
@@ -162,6 +201,9 @@ func TestMintRejectsBadClaims(t *testing.T) {
 		"empty user":     func(c *Claims) { c.UserID = "" },
 		"empty profile":  func(c *Claims) { c.Profile = "" },
 		"empty inst":     func(c *Claims) { c.Instance = "" },
+		"empty host":     func(c *Claims) { c.Host = "" },
+		"unknown host":   func(c *Claims) { c.Host = "mbp" },
+		"generic host":   func(c *Claims) { c.Host = "steel-gateway" },
 		"empty decision": func(c *Claims) { c.DecisionID = str("") },
 	}
 	for name, mut := range cases {

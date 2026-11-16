@@ -23,9 +23,12 @@ import (
 )
 
 const (
-	Issuer   = "multica"
-	Audience = "steel-gateway"
-	TokenTTL = 15 * time.Minute
+	Issuer = "multica"
+	// AudienceC00 and AudienceX99 are the literal `aud` values. Each host's gateway accepts only
+	// its own (plan W1 r5, "Token model"), so a token minted for one host fails on the other.
+	AudienceC00 = "steel-gateway/c00"
+	AudienceX99 = "steel-gateway/x99"
+	TokenTTL    = 15 * time.Minute
 	// SigningKeysEnv names the C00 secret: comma-separated `kid:base64(32-byte seed)`.
 	// The first entry signs; the rest stay in the JWKS so tokens signed before a rotation verify
 	// until they expire (drop an old entry after TokenTTL).
@@ -49,6 +52,18 @@ type Claims struct {
 	Profile    string  `json:"profile"`
 	Class      string  `json:"class"`
 	Instance   string  `json:"instance"`
+	// Host is the selected instance's host, "c00" or "x99". It sets `aud`; it is not a claim.
+	Host string `json:"-"`
+}
+
+func audienceFor(host string) (string, bool) {
+	switch host {
+	case "c00":
+		return AudienceC00, true
+	case "x99":
+		return AudienceX99, true
+	}
+	return "", false
 }
 
 func (c Claims) validate() error {
@@ -58,6 +73,9 @@ func (c Claims) validate() error {
 		return errors.New("browserlease: empty required claim")
 	case c.Epoch <= 0:
 		return errors.New("browserlease: epoch must be positive")
+	}
+	if _, ok := audienceFor(c.Host); !ok {
+		return fmt.Errorf("browserlease: host %q is not c00 or x99", c.Host)
 	}
 	switch c.Class {
 	case "S0":
@@ -170,10 +188,11 @@ func (kr *Keyring) Mint(c Claims, now time.Time) (token, jti string, exp time.Ti
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", "", time.Time{}, fmt.Errorf("browserlease: jti: %w", err)
 	}
+	aud, _ := audienceFor(c.Host) // validate checked it
 	jti = hex.EncodeToString(raw[:])
 	exp = now.Add(TokenTTL)
 	mc := jwt.MapClaims{
-		"iss": Issuer, "aud": Audience, "jti": jti, "sub": c.Sub, "lease_id": c.LeaseID,
+		"iss": Issuer, "aud": aud, "jti": jti, "sub": c.Sub, "lease_id": c.LeaseID,
 		"epoch": c.Epoch, "task_id": c.TaskID, "issue_id": c.IssueID, "decision_id": c.DecisionID,
 		"user_id": c.UserID, "profile": c.Profile, "class": c.Class, "instance": c.Instance,
 		"iat": now.Unix(), "exp": exp.Unix(),
