@@ -97,6 +97,10 @@ JOIN github_pull_request pr ON pr.id = e.pull_request_id
 WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
+       -- A member was told once (notified); an agent or squad holding the issue
+       -- takes the event now (CHE-5901).
+       OR (e.status = 'notified'
+           AND EXISTS (SELECT 1 FROM issue i WHERE i.id = e.issue_id AND i.assignee_type IN ('agent', 'squad')))
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t
@@ -137,6 +141,11 @@ FOR UPDATE OF e SKIP LOCKED;
 -- The fallback owns the event from here: typed delivery takes accepted ones only.
 UPDATE issue_pr_event SET status = 'next_turn' WHERE id = @id AND status = 'accepted';
 
+-- name: MarkPREventsNotified :execrows
+-- A member was told about these events once: the bridge selects them again only
+-- when an agent or squad holds the issue (CHE-5901).
+UPDATE issue_pr_event SET status = 'notified' WHERE id = ANY(@ids::uuid[]) AND status = 'next_turn';
+
 -- name: MarkStartedPREventsDelivered :execrows
 -- A wake that started carries its receipts' events: a next-turn pr.event
 -- receipt's, or the legacy rule's receipt for the same cause (CHE-2540).
@@ -144,7 +153,7 @@ UPDATE issue_pr_event e
 SET status = 'delivered'
 FROM github_pull_request pr
 WHERE pr.id = e.pull_request_id
-  AND e.status IN ('accepted', 'next_turn')
+  AND e.status IN ('accepted', 'next_turn', 'notified')
   AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR e.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
   AND (EXISTS (
       SELECT 1
