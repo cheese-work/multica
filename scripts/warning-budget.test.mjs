@@ -54,6 +54,11 @@ test("expected slog WARN lines from backend-agent-tests fixtures are not warning
   assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: slog, annotations: [] }]), {})
   assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: `${slog}\nWarning: compiler diagnostic`, annotations: [] }]), { "backend-agent-tests: Warning: compiler diagnostic": 1 })
   assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: slog, annotations: [] }])).length, 1)
+  // Only the two fixture messages are expected; any other slog WARN in the job is still a new warning.
+  const timedOut = 'time=2026-11-16T10:00:00.000Z level=WARN msg="script timed out" task_id=task-1 script=slow timeout=500ms'
+  assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: timedOut, annotations: [] }]), {})
+  const unrelated = 'time=2026-11-16T10:00:00.000Z level=WARN msg="new unexpected warning" task_id=task-1'
+  assert.equal(Object.keys(warningCounts([{ name: "backend-agent-tests", log: unrelated, annotations: [] }])).length, 1)
 })
 
 test("ANSI sequences are stripped before warning detection", () => {
