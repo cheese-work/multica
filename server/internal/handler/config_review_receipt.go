@@ -35,14 +35,25 @@ var (
 )
 
 // configReceiptVote is one `Vote:` line. Before is empty when the line has no
-// `from <before_sha256>` suffix.
-type configReceiptVote struct{ Verdict, Label, After, Before string }
+// `from <before_sha256>` suffix. Malformed is true when the line does not have
+// the receipt shape; its other fields are then empty and only Raw is set.
+type configReceiptVote struct {
+	Verdict, Label, After, Before string
+	Raw                           string
+	Malformed                     bool
+}
 
-// configReceiptRoute is one `Route:` line.
-type configReceiptRoute struct{ Mode, Label, After string }
+// configReceiptRoute is one `Route:` line. Malformed as for configReceiptVote.
+type configReceiptRoute struct {
+	Mode, Label, After string
+	Raw                string
+	Malformed          bool
+}
 
-// configReviewReceipt holds every well-formed line of each kind, in order. A
-// malformed line is dropped, so it never counts as a vote, route or risk.
+// configReviewReceipt holds every recognized line of each kind, in order. A
+// malformed or empty line is kept (Votes and Routes flag it Malformed; an empty
+// `Risk:` is the empty string), never dropped, so a repeated line stays visible
+// to the validator, which must see exactly one of each (S1b).
 type configReviewReceipt struct {
 	CommentID string
 	Votes     []configReceiptVote
@@ -76,20 +87,22 @@ func parseConfigReviewReceipt(voteLines, fullBody string) (configReviewReceipt, 
 		f := strings.Fields(rest)
 		switch {
 		case len(f) == 3:
-			r.Votes = append(r.Votes, configReceiptVote{Verdict: f[0], Label: f[1], After: f[2]})
+			r.Votes = append(r.Votes, configReceiptVote{Verdict: f[0], Label: f[1], After: f[2], Raw: line})
 		case len(f) == 5 && f[3] == "from":
-			r.Votes = append(r.Votes, configReceiptVote{Verdict: f[0], Label: f[1], After: f[2], Before: f[4]})
+			r.Votes = append(r.Votes, configReceiptVote{Verdict: f[0], Label: f[1], After: f[2], Before: f[4], Raw: line})
+		default:
+			r.Votes = append(r.Votes, configReceiptVote{Raw: line, Malformed: true})
 		}
 	}
 	for _, line := range configReceiptLines(fullBody) {
 		if rest, ok := strings.CutPrefix(line, "Route:"); ok {
 			if f := strings.Fields(rest); len(f) == 3 {
-				r.Routes = append(r.Routes, configReceiptRoute{Mode: f[0], Label: f[1], After: f[2]})
+				r.Routes = append(r.Routes, configReceiptRoute{Mode: f[0], Label: f[1], After: f[2], Raw: line})
+			} else {
+				r.Routes = append(r.Routes, configReceiptRoute{Raw: line, Malformed: true})
 			}
 		} else if rest, ok := strings.CutPrefix(line, "Risk:"); ok {
-			if risk := strings.TrimSpace(rest); risk != "" {
-				r.Risks = append(r.Risks, risk)
-			}
+			r.Risks = append(r.Risks, strings.TrimSpace(rest))
 		}
 	}
 	return r, nil

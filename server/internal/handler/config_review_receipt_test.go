@@ -43,8 +43,8 @@ func TestConfigReviewReceipt_ParsesRouteAndRiskFromFullBody(t *testing.T) {
 	}
 	want := configReviewReceipt{
 		CommentID: id,
-		Votes:     []configReceiptVote{{Verdict: "PASS", Label: cfgLabel, After: cfgAfter, Before: cfgBefore}},
-		Routes:    []configReceiptRoute{{Mode: "apply", Label: cfgLabel, After: cfgAfter}},
+		Votes:     []configReceiptVote{{Verdict: "PASS", Label: cfgLabel, After: cfgAfter, Before: cfgBefore, Raw: "Vote: PASS " + cfgLabel + " " + cfgAfter + " from " + cfgBefore}},
+		Routes:    []configReceiptRoute{{Mode: "apply", Label: cfgLabel, After: cfgAfter, Raw: "Route: apply " + cfgLabel + " " + cfgAfter}},
 		Risks:     []string{"Touches one agent's instructions only."},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -141,4 +141,47 @@ func TestConfigReviewReceipt_RouteInAnotherCommentDoesNotCount(t *testing.T) {
 func cfgIssue2(t *testing.T) string {
 	t.Helper()
 	return dbfx.Issue(t, "CHE-6619 receipt other "+safeTestName(t))
+}
+
+// Review P1 (PR 1773): every recognized Vote, Route and Risk line is kept,
+// malformed or empty ones included, so S1b can enforce exactly one of each.
+func TestConfigReviewReceipt_KeepsMalformedDuplicates(t *testing.T) {
+	goodVote := "Vote: PASS " + cfgLabel + " " + cfgAfter + " from " + cfgBefore
+	goodRoute := "Route: apply " + cfgLabel + " " + cfgAfter
+	cases := []struct {
+		name                 string
+		voteLines, body      string
+		votes, routes, risks int
+	}{
+		{"vote", goodVote + "\nVote: PASS", goodRoute + "\nRisk: ok.\n" + goodVote, 2, 1, 1},
+		{"route", goodVote, goodRoute + "\nRoute: apply\nRisk: ok.", 1, 2, 1},
+		{"risk", goodVote, goodRoute + "\nRisk: ok.\nRisk:", 1, 1, 2},
+		{"risk blank", goodVote, goodRoute + "\nRisk: ok.\nRisk:    ", 1, 1, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseConfigReviewReceipt(c.voteLines, c.body)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(got.Votes) != c.votes || len(got.Routes) != c.routes || len(got.Risks) != c.risks {
+				t.Fatalf("votes/routes/risks = %d/%d/%d, want %d/%d/%d: %+v", len(got.Votes), len(got.Routes), len(got.Risks), c.votes, c.routes, c.risks, got)
+			}
+			// The valid line stays well formed; the duplicate is flagged or empty.
+			switch c.name {
+			case "vote":
+				if got.Votes[0].Malformed || !got.Votes[1].Malformed || got.Votes[1].Raw != "Vote: PASS" {
+					t.Fatalf("votes = %+v", got.Votes)
+				}
+			case "route":
+				if got.Routes[0].Malformed || !got.Routes[1].Malformed || got.Routes[1].Raw != "Route: apply" {
+					t.Fatalf("routes = %+v", got.Routes)
+				}
+			default:
+				if got.Risks[0] != "ok." || got.Risks[1] != "" {
+					t.Fatalf("risks = %q", got.Risks)
+				}
+			}
+		})
+	}
 }
