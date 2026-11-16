@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1318,6 +1318,59 @@ func TestBuildWorkspaceUpdateBodyTimeWakeupSkipConflicts(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "--time-wakeup-skip-mode") || !strings.Contains(err.Error(), "--"+other.flag) {
 			t.Errorf("%s: err = %v, want a conflict naming both flags", other.flag, err)
 		}
+	}
+}
+
+// CHE-6123: --ask-guard-mode sends only ask_guard_mode.
+func TestBuildWorkspaceUpdateBodyAskGuardMode(t *testing.T) {
+	for _, mode := range []string{"off", "warn", "block"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "ask-guard-mode", mode)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if want := map[string]any{"ask_guard_mode": mode}; !reflect.DeepEqual(body, want) {
+			t.Errorf("%s: body = %#v, want %#v", mode, body, want)
+		}
+	}
+	for _, mode := range []string{"on", "", "BLOCK"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "ask-guard-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+}
+
+// CHE-6123: --ask-guard-mode patches one settings key, so combining it with
+// any other update flag, including the other single-key mode flag, is refused.
+func TestBuildWorkspaceUpdateBodyAskGuardModeConflicts(t *testing.T) {
+	for _, other := range []struct{ flag, value string }{
+		{"idle-guard-mode", "shadow"},
+		{"idle-guard-after-hours", "6"},
+		{"time-wakeup-skip-mode", "warn"},
+		{"name", "x"},
+		{"issue-prefix", "ABC"},
+		{"routing-agent", "a1"},
+	} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "ask-guard-mode", "warn")
+		setStringFlag(t, other.flag, other.value)
+		_, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "--ask-guard-mode") || !strings.Contains(err.Error(), "--"+other.flag) {
+			t.Errorf("%s: err = %v, want a conflict naming both flags", other.flag, err)
+		}
+	}
+}
+
+func TestWorkspaceUpdateDigestRejectsAskGuardMode(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "expected-before-digest", strings.Repeat("0", 64))
+	setStringFlag(t, "ask-guard-mode", "warn")
+	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "--ask-guard-mode") {
+		t.Fatalf("err = %v, want a conflict naming --ask-guard-mode", err)
 	}
 }
 

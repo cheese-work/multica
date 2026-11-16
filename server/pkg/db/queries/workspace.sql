@@ -104,6 +104,10 @@ UPDATE workspace SET
             ELSE h.v
         END
         FROM (SELECT CASE
+            WHEN sqlc.narg('ask_guard_mode')::jsonb IS NOT NULL THEN jsonb_set(k.v, '{ask_guard_mode}', sqlc.narg('ask_guard_mode')::jsonb)
+            ELSE k.v
+        END AS v
+        FROM (SELECT CASE
             WHEN sqlc.narg('time_wakeup_skip')::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', sqlc.narg('time_wakeup_skip')::jsonb)
             ELSE t.v
         END AS v
@@ -127,7 +131,7 @@ UPDATE workspace SET
             WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
             WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
             ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS h
+        END AS v) AS base) AS a) AS m) AS g) AS t) AS k) AS h
     ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),

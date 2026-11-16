@@ -1905,6 +1905,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// verification (MUL-4857).
 	var sourceTaskID pgtype.UUID
 	var actorTask *db.AgentTaskQueue
+	var handoffTask *db.AgentTaskQueue // set when the server derives the parent (CHE-6120)
 	if authorType == "agent" {
 		if task, ok := h.taskFromRequestHeader(r); ok {
 			actorTask = &task
@@ -1920,7 +1921,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			// Assignment-triggered tasks (no TriggerCommentID) are also
 			// unaffected.
 			if task.IssueID.Valid && uuidToString(task.IssueID) == uuidToString(issue.ID) {
-				if task.TriggerCommentID.Valid {
+				if statusHandoffDerivesParent(task, req) {
+					// The guard checks a parent the request sent. Here the server
+					// derives it inside the insert transaction.
+					handoffTask = &task
+				} else if task.TriggerCommentID.Valid {
 					if !taskCoversReplyParent(task, parentID) {
 						// Keep this error actionable for agents (MUL-4417 / GH #5266).
 						// The two rejections need different copy. A resumed
@@ -2009,6 +2014,16 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var intentTargets []pgtype.UUID
 	var decisionAnnotation *agentDecisionAnnotation
+	// The named human's reply directly under an open action ask answers it
+	// (CHE-2394 P5). bindsAction is decided under the locks, inside the loop.
+	actionAsk, err := h.actionReplyCandidate(r.Context(), issue, parentComment, authorType, createParams.AuthorID)
+	if err != nil {
+		slog.Warn("find action ask failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+		writeError(w, http.StatusInternalServerError, "failed to create comment")
+		return
+	}
+	bindsAction := false
+	decisionErrors := req.DecisionIntent || actionAsk.ID.Valid
 	// LockThreadForReplyAndClearResolution takes the thread lock and, still
 	// inside this transaction, clears any resolution held by the root or any
 	// reply in the thread — so a reply landing in a resolved thread reopens it
@@ -2021,6 +2036,18 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		qtx = h.Queries.WithTx(tx)
+		if handoffTask != nil {
+			// Before the thread lock, so the lock, the insert, the resolution
+			// clear and the response all see the same parent.
+			parentID, err = deriveStatusHandoffParent(r.Context(), qtx, *handoffTask, issue)
+			if err != nil {
+				_ = tx.Rollback(r.Context())
+				slog.Warn("derive status handoff parent failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+				writeError(w, http.StatusInternalServerError, "failed to create comment")
+				return
+			}
+			createParams.ParentID = parentID
+		}
 		decisionAnnotation, err = prepareAgentDecision(r.Context(), tx, createParams, r.Header.Get("X-Actor-Source") == "task_token")
 		if err == nil && decisionAnnotation != nil && req.DecisionIntent {
 			err = agentDecisionRefusal("a protocol action cannot open a human decision intent")
@@ -2056,8 +2083,14 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		if req.DecisionIntent {
 			_, err = qtx.LockWorkspaceForChatSessionCreate(r.Context(), issue.WorkspaceID)
 		}
+		if err == nil && actionAsk.ID.Valid {
+			err = lockActionReplySession(r.Context(), qtx, actionAsk)
+		}
 		if err == nil {
 			_, cleared, err = commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
+		}
+		if err == nil && actionAsk.ID.Valid {
+			actionAsk, bindsAction, err = lockActionReplyRequest(r.Context(), qtx, actionAsk)
 		}
 		if err == nil && req.DecisionIntent {
 			issue, intentTargets, err = h.prepareDecisionIntent(r, qtx, issue, authorType, createParams.AuthorID, req.Content)
@@ -2066,14 +2099,14 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		_ = tx.Rollback(r.Context())
-		if req.DecisionIntent && decisiontx.IsRetryable(err) && attempt < 2 {
+		if decisionErrors && decisiontx.IsRetryable(err) && attempt < 2 {
 			select {
 			case <-time.After(20 * time.Millisecond):
 				continue
 			case <-r.Context().Done():
 			}
 		}
-		if req.DecisionIntent {
+		if decisionErrors {
 			writeDecisionIntentError(w, err)
 		} else {
 			slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
@@ -2126,6 +2159,16 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if err == nil && answersNotice && authorType == "member" {
 		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
 	}
+	var actionAnswer decisionRecordResult
+	if err == nil && bindsAction {
+		actionAnswer, err = h.bindActionReply(r.Context(), qtx, issue, actionAsk, created.Comment())
+		var refusal decisionIntentRefusal
+		if errors.As(err, &refusal) {
+			// An answer after expires_at: the comment rolls back with it.
+			writeDecisionIntentError(w, err)
+			return
+		}
+	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment")
@@ -2137,8 +2180,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	comment := created.Comment()
-	if req.DecisionIntent {
+	if req.DecisionIntent || bindsAction {
 		h.DecisionWorker.Notify()
+	}
+	if bindsAction {
+		h.publishActionReplyAnswer(r.Context(), issue, actionAsk, actionAnswer)
 	}
 
 	// Fetch linked attachments so the response includes them.
@@ -2195,6 +2241,13 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A reply that answered the action request wakes the requester and the
+	// assignee through the answer's wake receipts; a trigger here would start a
+	// second run for the same answer.
+	if bindsAction {
+		writeJSON(w, http.StatusCreated, resp)
+		return
+	}
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial

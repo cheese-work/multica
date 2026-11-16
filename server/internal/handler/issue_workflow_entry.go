@@ -42,12 +42,19 @@ type workflowHandoff struct {
 	// when the move named another assignee, which the write assigns instead.
 	stepHandler issueworkflow.StepAssignee
 	override    bool
+	// kept is true when the issue's sticky assignee for the step won over the
+	// step handler (CHE-5490).
+	kept bool
 }
 
 // errHandoffAssigneeNotApplicable refuses a handoff_assignee on a write that
 // is not a status move into a step that hands off, or that also sets the
 // assignee itself.
 var errHandoffAssigneeNotApplicable = errors.New("handoff_assignee needs a status change into a step that hands off, and no assignee_id")
+
+// errKeepForStepNeedsAssignee refuses keep_for_step without the handoff_assignee
+// it would keep.
+var errKeepForStepNeedsAssignee = errors.New("keep_for_step needs handoff_assignee")
 
 // applyIssueWorkflow enforces prev's (possibly new) project workflow on one
 // prospective update and may rewrite params: the status of an issue moving
@@ -57,6 +64,9 @@ var errHandoffAssigneeNotApplicable = errors.New("handoff_assignee needs a statu
 // step it works on, and an agent only along its step's exits. It returns the
 // handoff that write triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
+	if caller.keepForStep && caller.handoffAssignee == nil {
+		return nil, errKeepForStepNeedsAssignee
+	}
 	hand, err := h.decideWorkflowHandoff(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
 	if err == nil && hand == nil && caller.handoffAssignee != nil {
 		return nil, errHandoffAssigneeNotApplicable
@@ -151,8 +161,13 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		return nil, err
 	}
 	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
-	// A step with nobody to resolve to hands off only when the move names one.
-	if !ok && caller.handoffAssignee == nil {
+	sticky, err := issueworkflow.StickyStepAssignee(ctx, q, prev.WorkspaceID, prev.ID, entering)
+	if err != nil {
+		return nil, err
+	}
+	// A step with nobody to resolve to hands off only when the move names one
+	// or the issue keeps one for the step.
+	if !ok && caller.handoffAssignee == nil && sticky == nil {
 		return nil, nil
 	}
 	if ok && step.KeepOtherAssignee {
@@ -168,10 +183,10 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		}
 	}
 	stepHandler := issueworkflow.StepAssignee{Type: assigneeType, ID: assigneeID}
-	assignee, overridden := issueworkflow.ResolveStepAssignee(stepHandler, caller.handoffAssignee)
+	assignee, overridden, kept := issueworkflow.ResolveStepAssignee(stepHandler, caller.handoffAssignee, sticky)
 	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
 	params.AssigneeID = assignee.ID
-	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden}, nil
+	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden, kept: kept}, nil
 }
 
 // keepsOtherAssignee reports whether a step flagged KeepOtherAssignee leaves
@@ -330,6 +345,10 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	if errors.Is(err, errKeepForStepNeedsAssignee) {
+		writeErrorCode(w, http.StatusBadRequest, "keep_for_step_needs_handoff_assignee", err.Error())
+		return true
+	}
 	if errors.Is(err, errHandoffAssigneeNotApplicable) {
 		writeErrorCode(w, http.StatusBadRequest, "handoff_assignee_not_applicable", err.Error())
 		return true
@@ -374,6 +393,8 @@ type workflowCaller struct {
 	// handoffAssignee is the assignee this move names for its handoff, in
 	// place of the step's handler (CHE-5487).
 	handoffAssignee *issueworkflow.StepAssignee
+	// keepForStep also keeps handoffAssignee for the entered step (CHE-5490).
+	keepForStep bool
 }
 
 // HandoffAssigneeRequest is the assignee a status move names for its handoff.
