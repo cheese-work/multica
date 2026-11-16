@@ -309,6 +309,8 @@ multica runtime usage <runtime-id>
 multica runtime activity <runtime-id>
 ```
 
+`daemon restart` conserve le service utilisateur systemd Linux existant, y compris une unité personnalisée et ses paramètres de lancement. Avant l’arrêt, la commande vérifie le PID du daemon auprès du gestionnaire de services. Elle utilise l’arrêt natif (avec `--maintenance-token` si une fenêtre de maintenance est active), puis attend le redémarrage automatique ou démarre le même service inactif. Le succès exige un nouveau PID de service et un profil sain correspondant sous 90 secondes. Une incohérence de propriétaire ou un arrêt non confirmé renvoie une erreur sans arrêt forcé ni lancement d’un processus enfant séparé. Les tâches gérées ne peuvent toujours pas redémarrer le daemon.
+
 ```bash
 multica daemon autostart enable
 multica runtime usage <runtime-id> --days 30
