@@ -76,7 +76,7 @@ ORDER BY r.created_at DESC LIMIT 1;
 -- name: CountIssueProgressEventsSince :one
 -- Progress events on the issue newer than both the window start and the target
 -- agent's last run on it (CHE-6175): a PR head change or merge, a signed review
--- verdict, an answered decision request (not the guard's own card: its approval
+-- verdict, a newly linked PR (its first snapshot emits no head_changed), an answered decision request (not the guard's own card: its approval
 -- already adds allowance). Each event is older than the run it
 -- admitted, so it admits one run per agent.
 WITH since AS (
@@ -88,6 +88,8 @@ WITH since AS (
 SELECT (
     (SELECT count(*) FROM issue_pr_event e, since
       WHERE e.issue_id = sqlc.arg('issue_id')::uuid AND e.kind IN ('head_changed', 'merged') AND e.observed_at > since.at)
+  + (SELECT count(*) FROM issue_pull_request l, since
+      WHERE l.issue_id = sqlc.arg('issue_id')::uuid AND l.link_kind = 'closing' AND l.linked_at > since.at)
   + (SELECT count(*) FROM activity_log a, since
       WHERE a.issue_id = sqlc.arg('issue_id')::uuid AND a.action IN ('review_passed', 'review_changes_requested') AND a.created_at > since.at)
   + (SELECT count(*) FROM decision_answer da JOIN decision_request r ON r.id = da.decision_request_id, since

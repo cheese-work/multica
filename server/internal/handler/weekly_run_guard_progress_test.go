@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -24,6 +25,14 @@ func prEvent(kind string) progressEvent {
 			"kind": kind, "head_sha": uuid.NewString(), "observed_at": at, "dedupe_key": uuid.NewString(),
 		})
 	}
+}
+
+// newlyLinkedPR links a new open PR through the production link query. The first
+// snapshot of a newly linked PR emits no head_changed event, so the link row
+// is the only record of its head.
+func newlyLinkedPR(t *testing.T, c budgetCase, _ time.Time) {
+	linkPR(t, c.issueID, int32(6175000+rand.Intn(900000)), uuid.NewString())
+	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE issue_id = $1`, c.issueID)
 }
 
 func verdict(action string) progressEvent {
@@ -55,6 +64,7 @@ func TestWeeklyRunGuardProgressEventAdmitsOneRun(t *testing.T) {
 		event progressEvent
 	}{
 		{"new PR head (AC1)", prEvent("head_changed")},
+		{"newly linked PR, no head_changed event (AC1)", newlyLinkedPR},
 		{"merged PR (AC2)", prEvent("merged")},
 		{"signed PASS verdict (AC3)", verdict("review_passed")},
 		{"signed CHANGES verdict (AC3)", verdict("review_changes_requested")},

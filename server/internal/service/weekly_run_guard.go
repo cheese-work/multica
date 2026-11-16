@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -106,6 +108,12 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	// Past the limit, a run that follows progress passes once (CHE-6175), up to
 	// the hard ceiling; the loop breaker has already judged it.
 	if runs < limit*WeeklyRunGuardCeilingFactor && target.AgentID.Valid {
+		// Serialize with the task insert: the issue row lock is held to the end of
+		// the enqueue transaction, so a concurrent trigger reads this run as the
+		// agent's last run and finds the event used.
+		if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("weekly run guard: %w", err)
+		}
 		events, err := q.CountIssueProgressEventsSince(ctx, db.CountIssueProgressEventsSinceParams{
 			IssueID: issueID, AgentID: target.AgentID,
 			WindowStart: pgtype.Timestamptz{Time: time.Now().Add(-WeeklyRunGuardWindow), Valid: true},
