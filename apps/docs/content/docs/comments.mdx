@@ -18,6 +18,8 @@ An `html` or `mermaid` code block renders in place as a chart or diagram, with a
 
 Replying to a comment starts a thread. Replies can nest further, but they all stay under the same top-level thread.
 
+When a status change starts an agent run with a handoff comment, the run's plain comment joins the thread of that handoff comment instead of opening a new one. A thread that already holds 30 comments is not extended; the comment starts a new thread.
+
 Once an issue has two or more threads, the issue page on Web and Desktop shows a column of ticks on the right: a long tick per thread and a short one per reply. Hover it to open an outline of every thread, and click any entry to jump to that comment, including comments inside folded, resolved threads.
 
 ## Annotate comments and descriptions
