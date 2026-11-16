@@ -869,7 +869,7 @@ func (q *Queries) ListBrowserInstancesForGateway(ctx context.Context, credential
 }
 
 const lockBrowserInstance = `-- name: LockBrowserInstance :one
-SELECT id, workspace_id, name, epoch, phase, created_at, updated_at FROM browser_instance
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE
 `
@@ -891,6 +891,9 @@ func (q *Queries) LockBrowserInstance(ctx context.Context, arg LockBrowserInstan
 		&i.Phase,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
 	)
 	return i, err
 }
