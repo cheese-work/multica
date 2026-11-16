@@ -723,7 +723,7 @@ func main() {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
 	// CHE-4746: gateway-facing control-plane routes live on this second listener only.
-	internalServer, internalErr := newInternalServer(port)
+	internalServer, internalErr := newInternalServer(port, internalMounts(h)...)
 	if internalErr != nil {
 		slog.Error("internal listener disabled", "error", internalErr)
 	}
