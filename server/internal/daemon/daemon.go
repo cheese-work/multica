@@ -9196,11 +9196,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	} else {
 		selfBin = agentEnv["MULTICA_CLI_PATH"]
 	}
-	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
-	// failure only costs the guard, never the run.
-	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
-		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
-	}
 	// Hand the guard the workspace's stored policy (CHE-5204); without one it
 	// keeps the compiled default.
 	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
@@ -9269,6 +9264,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, runIsolated, d.cfg.Broker, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
+	}
+	defer runBrk.Close()
+	// Front gh and git with the guard shims for every runtime (CHE-5194 T2).
+	// After applyRunBroker, so the guard hands over to the broker shims and
+	// never around them. A failure only costs the guard, never the run.
+	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
+		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -9536,6 +9542,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// execution window and always remove the credential afterwards.
 	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
 	checkoutTask.StableDir = stableCwd
+	checkoutTask.Broker = runBrk
 	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
