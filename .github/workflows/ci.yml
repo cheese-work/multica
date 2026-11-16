@@ -156,6 +156,65 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: timeout 25s node scripts/migration-prefix-check.mjs
 
+  # CHE-6563 (CHE-6210 A2c): migration order and fresh-install vs upgrade schema parity.
+  # `backend-tests` requires success on pull_request and merge_group, so a failed,
+  # missing or skipped run cannot pass the gate. The order check runs only when the
+  # change adds the renumber map; parity runs when the change touches migrations.
+  migration-checks:
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    runs-on: ${{ vars.RUNNER_MIGRATION_CHECKS || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # Hosted `services:` publish on the runner's loopback (see backend-test-shards).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Test the order check
+        run: node --test scripts/migration-order-check.test.mjs
+      - name: Fetch the base commit
+        run: git fetch --no-tags --depth=1 origin "$BASE"
+      - name: Migration order (only when the change adds the renumber map)
+        run: |
+          if git diff --name-only --diff-filter=A "$BASE" HEAD -- server/cmd/migrate/renumber-map.json | grep -q .; then
+            node scripts/migration-order-check.mjs
+          else
+            echo "no renumber map added; order check not needed"
+          fi
+      - name: Fresh install vs upgrade parity (when the change touches migrations)
+        run: |
+          if git diff --name-only "$BASE" HEAD -- server/migrations server/cmd/migrate | grep -q .; then
+            scripts/migration-parity.sh "$BASE"
+          else
+            echo "no migration change; parity not needed"
+          fi
+
   # CHE-2641: one update source. Fails on any non-test reference to upstream
   # release or install-script URLs in packages, apps and server. Not gated by
   # ci-scope: a TS-only change can reintroduce the URL.
@@ -886,7 +945,7 @@ jobs:
   # filtered run reports `skipped` exactly as before; a shard that is red,
   # cancelled or missing fails it.
   backend-tests:
-    needs: [changes, migration-prefix-check, backend-test-shards]
+    needs: [changes, migration-prefix-check, migration-checks, backend-test-shards]
     if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
     runs-on: ${{ vars.RUNNER_BACKEND_TESTS_GATE || 'ubuntu-24.04' }}
     steps:
@@ -896,6 +955,17 @@ jobs:
         run: |
           if [ "$SHARDS_RESULT" != "success" ]; then
             echo "::error::backend-test-shards expected success, got $SHARDS_RESULT"
+            exit 1
+          fi
+
+      - name: Require migration checks result
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MIGRATION_CHECKS_RESULT: ${{ needs.migration-checks.result }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ] || [ "$EVENT_NAME" = merge_group ]; then expected=success; else expected=skipped; fi
+          if [ "$MIGRATION_CHECKS_RESULT" != "$expected" ]; then
+            echo "::error::migration-checks expected $expected, got $MIGRATION_CHECKS_RESULT"
             exit 1
           fi
 
