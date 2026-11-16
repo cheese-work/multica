@@ -2541,6 +2541,16 @@ func (h *Handler) collapseIntoQueuedSibling(ctx context.Context, issue db.Issue,
 func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, triggerCommentID pgtype.UUID) (DispatchStatus, DispatchReasonCode) {
 	pending := trigger.AlreadyPending
 	lostRace := false
+	// internalError is the one exit for an internal_error outcome: it writes the
+	// cause with the issue, comment and target ids (CHE-4010).
+	internalError := func(branch string, err error) (DispatchStatus, DispatchReasonCode) {
+		targetType, targetID := "agent", uuidToString(trigger.Agent.ID)
+		if trigger.Squad != nil {
+			targetType, targetID = "squad", uuidToString(trigger.Squad.ID)
+		}
+		logCommentAdmissionInternalError(branch, issue.ID, triggerCommentID, targetType, targetID, err)
+		return DispatchBlocked, ReasonInternalError
+	}
 	// Resolve the reviewed HEAD lazily and at most once — the common
 	// non-pending path enqueues without ever needing it, so it stays off the
 	// hot path. It keys both the head-scoped merge and the planned-comment
@@ -2576,6 +2586,10 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 			if status, reason, terminal := commentMergeTerminalOutcome(
 				h.mergeCommentIntoPendingTask(ctx, issue, trigger, triggerCommentID, getHeadSha()),
 			); terminal {
+				if reason == ReasonInternalError {
+					// The merge helper logged the cause; this line adds the ids.
+					return internalError("merge_pending_task", nil)
+				}
 				return status, reason
 			}
 			// No same-head QUEUED row to fold into (merge missed). The two paths
@@ -2587,6 +2601,9 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				// the active task, or enqueue fresh if it has since finished.
 				active, activeErr := h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, trigger.Agent.ID, triggerCommentID)
 				if status, reason, enqueueFresh := decidePostMergeMiss(active, activeErr); !enqueueFresh {
+					if reason == ReasonInternalError {
+						return internalError("post_merge_active_check", activeErr)
+					}
 					return status, reason
 				}
 				// enqueueFresh → fall through to the enqueue below.
@@ -2602,9 +2619,7 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				// into a bounded follow-up (#5914, Elon round 2).
 				registered, err := h.registerPlannedCommentForActiveTask(ctx, issue, trigger.Agent.ID, triggerCommentID, getHeadSha())
 				if err != nil {
-					slog.Warn("register planned comment failed",
-						"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.Agent.ID), "error", err)
-					return DispatchBlocked, ReasonInternalError
+					return internalError("register_planned_comment", err)
 				}
 				if registered {
 					return DispatchDeferred, ReasonDeferred
@@ -2641,7 +2656,10 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				lostRace = true
 				continue
 			}
-			return DispatchBlocked, commentEnqueueFailureReason(err)
+			if reason := commentEnqueueFailureReason(err); reason != ReasonInternalError {
+				return DispatchBlocked, reason
+			}
+			return internalError("enqueue_trigger", err)
 		}
 		if h.collapseIntoQueuedSibling(ctx, issue, task) {
 			return DispatchCoalesced, ReasonCoalesced
@@ -2653,9 +2671,7 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 	// truthful non-success — NEVER a fabricated deferred/coalesced that would
 	// report the comment covered when no task provably covers it (#5914, Elon
 	// round 3). The comment row persists; a later trigger/edit can still cover it.
-	slog.Warn("comment trigger enqueue did not converge; reporting non-success",
-		"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.Agent.ID))
-	return DispatchBlocked, ReasonInternalError
+	return internalError("enqueue_not_converged", nil)
 }
 
 // commentTriggerOutcomes maps each target to its final outcome: a target that
@@ -2749,14 +2765,18 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 // logCommentAdmissionInternalError records why a comment admission branch
 // reported internal_error. trigger_outcomes carries only the reason code, so
 // this warning is the only place the cause is readable.
-func logCommentAdmissionInternalError(branch string, issueID pgtype.UUID, opts commentTriggerComputeOptions, targetType, targetID string, err error) {
-	slog.Warn("comment admission reported internal_error",
+func logCommentAdmissionInternalError(branch string, issueID, commentID pgtype.UUID, targetType, targetID string, err error) {
+	attrs := []any{
 		"branch", branch,
 		"issue_id", uuidToString(issueID),
-		"comment_id", uuidToString(opts.ExcludeTriggerCommentID),
+		"comment_id", uuidToString(commentID),
 		"target_type", targetType,
 		"target_id", targetID,
-		"error", err)
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	slog.Warn("comment admission reported internal_error", attrs...)
 }
 
 // hasActiveTaskForIssueAndAgent reports whether the (issue, agent) pair has any
@@ -2906,6 +2926,7 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		slog.Warn("merge comment into pending task failed",
 			"issue_id", uuidToString(issue.ID),
 			"agent_id", uuidToString(trigger.Agent.ID),
+			"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 			"error", err)
 		return commentMergeError
 	}
@@ -3272,7 +3293,7 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 			for index := range targets {
 				if targets[index].ReasonCode != ReasonInvocationNotAllowed {
 					if reason == ReasonInternalError {
-						logCommentAdmissionInternalError("project_active_check", issue.ID, opts, targets[index].TargetType, targets[index].TargetID, err)
+						logCommentAdmissionInternalError("project_active_check", issue.ID, opts.ExcludeTriggerCommentID, targets[index].TargetType, targets[index].TargetID, err)
 					}
 					targets[index].ExecAgentID = ""
 					targets[index].Status = DispatchBlocked
@@ -4017,7 +4038,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			}
 			hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts)
 			if err != nil {
-				logCommentAdmissionInternalError("squad_mention_pending_check", issue.ID, opts, "squad", m.ID, err)
+				logCommentAdmissionInternalError("squad_mention_pending_check", issue.ID, opts.ExcludeTriggerCommentID, "squad", m.ID, err)
 				blockTarget("squad", m.ID, ReasonInternalError)
 				continue
 			}
@@ -4077,7 +4098,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		}
 		hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, agentUUID, opts)
 		if err != nil {
-			logCommentAdmissionInternalError("agent_mention_pending_check", issue.ID, opts, "agent", m.ID, err)
+			logCommentAdmissionInternalError("agent_mention_pending_check", issue.ID, opts.ExcludeTriggerCommentID, "agent", m.ID, err)
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}
