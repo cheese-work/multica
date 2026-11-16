@@ -21,8 +21,6 @@ func seed(b byte) string {
 	return base64.StdEncoding.EncodeToString(s)
 }
 
-func str(s string) *string { return &s }
-
 const tNow = int64(1_800_000_000)
 
 // claims is what W3-3's Service hands the signer for a C00 S2 lease.
