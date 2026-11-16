@@ -179,7 +179,13 @@ placeholder in one is refused. A file is a relative path or a root file such as
 a git verb (`merge`, `rebase`, `checkout`, `switch`, `cherry-pick`, `pull`,
 `push`, `fetch`, `diff`, `reset`). A spaced `>` inside a command (the `command`
 field, a fenced block, a `$ ` line, text after `run`) is a shell redirection,
-not a UI path.
+not a UI path. A plain issue comment from an agent that mentions a person is
+already refused (ask guard S2). A plain comment with no member link that asks a
+person to act ("please", "you need to", "Cheese,", "steps for you", "vui lòng",
+"请") and cites a UI path, a repo file, a command or a placeholder is refused
+the same way, because a comment has no field for the evidence. The person is
+asked with a decision or action request, which carries this guard; a comment
+that needs no answer takes `--notify-only`.
 
 The server renders the fields and source links into the stored ask, issue
 comment and DM message. The stored request also retains `source_comment_id`
