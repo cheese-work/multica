@@ -13,30 +13,43 @@ import (
 
 func TestPRResolverAuthorRouting(t *testing.T) {
 	for _, scenario := range []struct {
-		name       string
-		rule       string
-		assignee   string
-		author     bool
-		configured bool
-		reason     string
-		mergeState string
-		binding    bool
-		archived   bool
-		target     bool
-		wantRun    bool
-		wantFYI    bool
+		name          string
+		rule          string
+		status        string
+		assignee      string
+		author        bool
+		configured    bool
+		reason        string
+		mergeState    string
+		binding       bool
+		archived      bool
+		own           bool
+		worked        bool
+		notOwner      bool
+		assigneeWakes bool
+		target        bool
+		wantRun       bool
+		wantFYI       bool
 	}{
 		{name: "member conflict wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, wantRun: true},
 		{name: "member failed checks wake author", rule: SystemRulePRChecksFailed, assignee: "member", author: true, wantRun: true},
 		{name: "agent fallback without author", rule: SystemRulePRAttention, assignee: "agent", wantRun: true},
 		{name: "member conflict without author gets FYI", rule: SystemRulePRAttention, assignee: "member", wantFYI: true},
 		{name: "member failed checks without author get FYI", rule: SystemRulePRChecksFailed, assignee: "member", wantFYI: true},
+		{name: "member conflict without author wakes last agent", rule: SystemRulePRAttention, assignee: "member", worked: true, wantRun: true},
+		{name: "member failed checks without author wake last agent", rule: SystemRulePRChecksFailed, assignee: "member", worked: true, wantRun: true},
 		{name: "member merged notification unchanged", rule: SystemRulePRMerged, assignee: "member", author: true},
-		{name: "member passed checks unchanged", rule: SystemRulePRChecksPassed, assignee: "member", author: true},
+		{name: "member passed checks drop for non-owner author", rule: SystemRulePRChecksPassed, assignee: "member", author: true, notOwner: true},
+		{name: "agent passed checks wake the assignee when the author does not hold the issue", rule: SystemRulePRChecksPassed, assignee: "agent", author: true, assigneeWakes: true},
+		{name: "assignee author passed checks wake", rule: SystemRulePRChecksPassed, assignee: "agent", author: true, own: true, wantRun: true},
+		{name: "non-owner author failed checks still wake", rule: SystemRulePRChecksFailed, assignee: "agent", author: true, wantRun: true},
+		{name: "member passed checks without author get FYI", rule: SystemRulePRChecksPassed, assignee: "member", wantFYI: true},
 		{name: "configured default still wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, configured: true, wantRun: true},
 		{name: "behind wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, mergeState: "BEHIND", wantRun: true},
 		{name: "returned to draft wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, reason: PRAttentionDraft, wantRun: true},
 		{name: "author takes precedence over agent assignee", rule: SystemRulePRAttention, assignee: "agent", author: true, wantRun: true},
+		// CHE-6111: the reviewer holds the issue in agent_review; the conflict wake still goes to the PR author.
+		{name: "agent_review conflict wakes author not reviewer", rule: SystemRulePRAttention, status: "agent_review", assignee: "agent", author: true, wantRun: true},
 		{name: "squad fallback without author", rule: SystemRulePRChecksFailed, assignee: "squad", wantRun: true},
 		{name: "workspace author binding", rule: SystemRulePRChecksFailed, assignee: "member", author: true, binding: true, wantRun: true},
 		{name: "unavailable author falls back to member FYI", rule: SystemRulePRAttention, assignee: "member", author: true, archived: true, wantFYI: true},
@@ -48,19 +61,35 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 			assigneeID := fixture.UserID
 			if scenario.assignee == "agent" {
 				assigneeID = env.agent
-				if scenario.author {
+				if scenario.author && !scenario.own {
 					assigneeID = fixture.privateAgentOwnedBy(t, fixture.UserID, "other-assignee")
 				}
 			} else if scenario.assignee == "squad" {
 				assigneeID = fixture.Squad(t, "resolver squad", env.agent)
 			}
-			fixture.Exec(t, `UPDATE issue SET status='in_review',assignee_type=$2,assignee_id=$3 WHERE id=$1`, env.issue, scenario.assignee, assigneeID)
+			status := scenario.status
+			if status == "" {
+				status = "in_review"
+			} else {
+				fixture.Insert(t, "issue_status", testutil.Cols{
+					"workspace_id": fixture.WorkspaceID, "key": status, "name": "Agent Review", "category": "started", "color": "#6366f1", "position": 9,
+				})
+			}
+			fixture.Exec(t, `UPDATE issue SET status=$4,assignee_type=$2,assignee_id=$3 WHERE id=$1`, env.issue, scenario.assignee, assigneeID, status)
 			fixture.Cleanup(t, "DELETE FROM inbox_item WHERE issue_id=$1", env.issue)
 			if scenario.configured {
 				env.define(t, WakeupScopeWorkspace, scenario.rule, `"enabled":true`)
 			}
 			if scenario.target {
 				env.define(t, WakeupScopeWorkspace, scenario.rule, `"target":{"type":"assignee"}`)
+			}
+			if scenario.worked {
+				var runtimeID string
+				if err := fixture.Pool.QueryRow(context.Background(), "SELECT runtime_id FROM agent WHERE id=$1", env.agent).Scan(&runtimeID); err != nil {
+					t.Fatal(err)
+				}
+				task := fixture.Task(t, env.agent, testutil.Cols{"issue_id": util.UUIDToString(env.issue), "runtime_id": runtimeID, "status": "completed"})
+				fixture.Exec(t, "UPDATE agent_task_queue SET started_at=now() WHERE id=$1", task)
 			}
 			if scenario.author {
 				var runtimeID string
@@ -92,6 +121,7 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 				Reason: PRAttentionMergeability, MergeState: "DIRTY", MergeCommit: "merge-head", Conclusion: "FAILURE",
 			}
 			if scenario.rule == SystemRulePRChecksPassed {
+				fixture.Exec(t, `UPDATE workspace SET settings=settings || '{"github_wake_on_ci_success":true}'::jsonb WHERE id=$1`, fixture.WorkspaceID)
 				input.Conclusion = "SUCCESS"
 			}
 			if scenario.mergeState != "" {
@@ -105,8 +135,16 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			runs := fixture.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, env.issue, scenario.rule)
-			if runs != map[bool]int{true: 1, false: 0}[scenario.wantRun] {
+			if runs != map[bool]int{true: 1, false: 0}[scenario.wantRun || scenario.assigneeWakes] {
 				t.Errorf("resolver runs = %d, want run = %t", runs, scenario.wantRun)
+			}
+			if scenario.assigneeWakes {
+				if count := fixture.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued' AND context->>'wakeup_system'=$3`, env.issue, assigneeID, scenario.rule); count != 1 {
+					t.Errorf("assignee runs = %d, want 1", count)
+				}
+				if count := fixture.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, env.issue, env.agent); count != 0 {
+					t.Errorf("non-owner author runs = %d, want 0", count)
+				}
 			}
 			if scenario.wantRun {
 				if count := fixture.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'=$3`, env.issue, env.agent, scenario.rule); count != 1 {
@@ -119,6 +157,9 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 				if count := fixture.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='wakeup_triggered' AND details->>'target_type'=$2 AND details->>'target_id'=$3 AND details->>'outcome'='woke'`, env.issue, activityType, activityID); count != 1 {
 					t.Errorf("timeline entries naming woken agent = %d, want 1", count)
 				}
+			}
+			if count := fixture.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='wakeup_triggered' AND details->>'outcome'='not_owner'`, env.issue); count != map[bool]int{true: 1, false: 0}[scenario.notOwner] {
+				t.Errorf("not_owner timeline entries = %d, want drop = %t", count, scenario.notOwner)
 			}
 			notifications := fixture.Count(t, "SELECT count(*) FROM inbox_item WHERE issue_id=$1", env.issue)
 			if notifications != map[bool]int{true: 1, false: 0}[scenario.wantFYI] {
@@ -188,4 +229,114 @@ func TestPRResolverKeepsDifferentAuthorsSeparate(t *testing.T) {
 		}
 		fixture.Exec(t, "UPDATE agent_task_queue SET status='completed',started_at=now(),completed_at=now() WHERE issue_id=$1 AND agent_id=$2", env.issue, author)
 	}
+}
+
+func TestPRChecksPassedWakesAssigneeOncePerHead(t *testing.T) {
+	setup := func(t *testing.T) (builtinEnv, string, PullRequestWakeupInput) {
+		env := newBuiltinEnv(t)
+		fixture := env.f
+		assignee := fixture.privateAgentOwnedBy(t, fixture.UserID, "reviewer")
+		fixture.Exec(t, `UPDATE issue SET status='in_review',assignee_type='agent',assignee_id=$2 WHERE id=$1`, env.issue, assignee)
+		var runtimeID string
+		if err := fixture.Pool.QueryRow(context.Background(), "SELECT runtime_id FROM agent WHERE id=$1", env.agent).Scan(&runtimeID); err != nil {
+			t.Fatal(err)
+		}
+		task := fixture.Task(t, env.agent, testutil.Cols{"issue_id": util.UUIDToString(env.issue), "runtime_id": runtimeID, "status": "completed"})
+		branch := "agent/pr-author/che-6070-" + strings.ReplaceAll(task, "-", "")[20:]
+		fixture.Exec(t, "UPDATE agent_task_queue SET branch_name=$2 WHERE id=$1", task, branch)
+		pull := fixture.Insert(t, "github_pull_request", testutil.Cols{
+			"workspace_id": fixture.WorkspaceID, "installation_id": 1,
+			"repo_owner": "acme", "repo_name": "widget", "pr_number": 6070,
+			"title": "Assignee wake", "state": "open", "html_url": "https://github.com/acme/widget/pull/6070",
+			"branch": branch, "head_sha": "head-1", "pr_created_at": "2030-01-01T00:00:00Z", "pr_updated_at": "2030-01-01T00:00:00Z",
+		})
+		fixture.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pull)
+		fixture.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", env.issue, pull)
+		fixture.Exec(t, `UPDATE workspace SET settings=settings || '{"github_wake_on_ci_success":true}'::jsonb WHERE id=$1`, fixture.WorkspaceID)
+		return env, assignee, PullRequestWakeupInput{
+			Rule: SystemRulePRChecksPassed, RepoOwner: "acme", RepoName: "widget", Number: 6070,
+			URL: "https://github.com/acme/widget/pull/6070", HeadSHA: "head-1", Conclusion: "SUCCESS",
+		}
+	}
+	t.Run("a second green on the same head adds no run", func(t *testing.T) {
+		env, assignee, in := setup(t)
+		for range 2 {
+			if err := env.s.TriggerPullRequestWakeup(context.Background(), env.issue, in); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := env.f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, env.issue, assignee); n != 1 {
+			t.Errorf("assignee queued runs = %d, want 1", n)
+		}
+		if n := env.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND details->>'outcome'='woke' AND details->>'target_id'=$2 AND details->>'head_sha'='head-1'`, env.issue, assignee); n != 1 {
+			t.Errorf("timeline entries naming assignee and head = %d, want 1", n)
+		}
+	})
+	t.Run("an active assignee run skips the wake", func(t *testing.T) {
+		env, assignee, in := setup(t)
+		env.f.Task(t, assignee, testutil.Cols{"issue_id": util.UUIDToString(env.issue), "runtime_id": runtimeOf(t, env, assignee), "status": "running"})
+		if err := env.s.TriggerPullRequestWakeup(context.Background(), env.issue, in); err != nil {
+			t.Fatal(err)
+		}
+		if n := env.f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, env.issue, assignee); n != 0 {
+			t.Errorf("assignee queued runs = %d, want 0", n)
+		}
+		if n := env.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND details->>'outcome'='not_owner'`, env.issue); n != 1 {
+			t.Errorf("not_owner entries = %d, want 1", n)
+		}
+	})
+	runOn := func(t *testing.T, ago string, firstHead bool) int {
+		env, assignee, in := setup(t)
+		if firstHead {
+			// A PR's first head has no head_changed event; the PR opened with it 3 h ago.
+			env.f.Exec(t, `UPDATE github_pull_request SET pr_created_at=now()-interval '3 hours' WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID)
+		} else {
+			env.f.Exec(t, `INSERT INTO issue_pr_event(workspace_id,issue_id,pull_request_id,kind,head_sha,observed_at,dedupe_key)
+				SELECT $1,$2,id,'head_changed','head-1',now()-interval '3 hours','push-head-1' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID, env.issue)
+		}
+		// The first check-suite update lands 30 min after the push.
+		env.f.Exec(t, `INSERT INTO github_pull_request_check_suite(pr_id,suite_id,head_sha,app_id,conclusion,status,updated_at)
+			SELECT id,1,'head-1',1,'success','completed',now()-interval '150 minutes' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID)
+		task := env.f.Task(t, assignee, testutil.Cols{"issue_id": util.UUIDToString(env.issue), "runtime_id": runtimeOf(t, env, assignee), "status": "completed"})
+		env.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-$2::interval WHERE id=$1`, task, ago)
+		if err := env.s.TriggerPullRequestWakeup(context.Background(), env.issue, in); err != nil {
+			t.Fatal(err)
+		}
+		return env.f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, env.issue, assignee)
+	}
+	run := func(t *testing.T, ago string) int { return runOn(t, ago, false) }
+	t.Run("a run after the head was pushed skips the wake", func(t *testing.T) {
+		if n := run(t, "100 minutes"); n != 0 {
+			t.Errorf("assignee queued runs = %d, want 0", n)
+		}
+	})
+	t.Run("a run between the push and the first check update skips the wake", func(t *testing.T) {
+		if n := run(t, "170 minutes"); n != 0 {
+			t.Errorf("assignee queued runs = %d, want 0", n)
+		}
+	})
+	t.Run("a run before the head was pushed still wakes", func(t *testing.T) {
+		if n := run(t, "4 hours"); n != 1 {
+			t.Errorf("assignee queued runs = %d, want 1", n)
+		}
+	})
+	t.Run("first head: a run between the PR opening and the first check update skips the wake", func(t *testing.T) {
+		if n := runOn(t, "170 minutes", true); n != 0 {
+			t.Errorf("assignee queued runs = %d, want 0", n)
+		}
+	})
+	t.Run("first head: a run before the PR opened still wakes", func(t *testing.T) {
+		if n := runOn(t, "4 hours", true); n != 1 {
+			t.Errorf("assignee queued runs = %d, want 1", n)
+		}
+	})
+}
+
+func runtimeOf(t *testing.T, env builtinEnv, agent string) string {
+	t.Helper()
+	var id string
+	if err := env.f.Pool.QueryRow(context.Background(), "SELECT runtime_id FROM agent WHERE id=$1", agent).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }

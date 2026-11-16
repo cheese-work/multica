@@ -38,6 +38,8 @@ var chatRouteClasses = map[string]chatRouteClass{
 
 	"GET /api/chat/sessions/{sessionId}/messages":       chatRouteDeny,
 	"GET /api/chat/sessions/{sessionId}/messages/page":  chatRouteDeny,
+	"GET /api/chat/sessions/{sessionId}/segments":       chatRouteContent,
+	"GET /api/chat/sessions/{sessionId}/segment":        chatRouteContent,
 	"GET /api/chat/sessions/{sessionId}/pending-task":   chatRouteDeny,
 	"GET /api/chat/sessions/{sessionId}/draft-restores": chatRouteDeny,
 	"GET /api/chat/search":                              chatRouteDeny,

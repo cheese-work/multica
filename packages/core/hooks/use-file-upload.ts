@@ -21,6 +21,8 @@ export interface UploadContext {
   issueId?: string;
   commentId?: string;
   chatSessionId?: string;
+  /** Aborts the request; an aborted `uploadWithToast` resolves null without the failure toast. */
+  signal?: AbortSignal;
 }
 
 // pickMarkdownLink prefers the server's durable URL. Older responses fall back
@@ -72,11 +74,15 @@ export function useFileUpload(
 
       setInFlight((n) => n + 1);
       try {
-        const att: Attachment = await api.uploadFile(file, {
-          issueId: ctx?.issueId,
-          commentId: ctx?.commentId,
-          chatSessionId: ctx?.chatSessionId,
-        });
+        const att: Attachment = await api.uploadFile(
+          file,
+          {
+            issueId: ctx?.issueId,
+            commentId: ctx?.commentId,
+            chatSessionId: ctx?.chatSessionId,
+          },
+          ctx?.signal,
+        );
         return toUploadResult(att);
       } finally {
         setInFlight((n) => n - 1);
@@ -90,6 +96,7 @@ export function useFileUpload(
       try {
         return await upload(file, ctx);
       } catch (err) {
+        if (ctx?.signal?.aborted) return null;
         onError?.(err instanceof Error ? err : new Error("Upload failed"), file);
         return null;
       }

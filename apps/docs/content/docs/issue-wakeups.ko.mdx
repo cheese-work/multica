@@ -60,7 +60,7 @@ import { WakeupDemo } from "@/components/demos/wakeup-demo";
 | 연결 | 다른 태스크의 상태 | 다른 태스크가 완료, 완료 또는 취소, 검토 중이 되었을 때. |
 | | 사용자 지정 이벤트 | 반응, 첨부 파일, 댓글 수정, 스레드 해결 등 25가지 원본 이벤트 중에서 고릅니다. |
 
-필드, 하위 태스크, PR, 다른 태스크 조건은 Multica가 직접 확인합니다. 만들 때 이미 조건이 맞는다면 다음 확인(약 30초 이내)에서 깨웁니다. CI만 예외로, 이전 푸시에서 끝난 검사는 무시하지만 PR의 현재 head에서 이미 끝난 검사는 약 30초 이내에 깨웁니다.
+필드, 하위 태스크, PR, 다른 태스크 조건은 Multica가 직접 확인합니다. 만들 때 이미 조건이 맞는다면 다음 확인(약 30초 이내)에서 깨웁니다. CI만 예외로, 이전 푸시에서 끝난 검사는 무시하지만 PR의 현재 head에서 이미 끝난 검사는 약 30초 이내에 깨웁니다. 같은 에이전트의 이전 「CI 종료」 규칙이 이미 실행된 PR head에는 두 번째 「CI 종료」 규칙을 만들 수 없습니다. 요청은 `409`(`wakeup_head_unchanged`)와 `head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`를 반환합니다. 새 head를 푸시하거나 대신 상태를 기다리세요.
 
 시간 외의 조건은 "어떤 일이 생기기를 기다리는" 규칙이며, 설정이 세 가지 더 있습니다.
 
@@ -141,7 +141,9 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "결�
 - **시간**: `--kind at`에 `--after 10m` 또는 `--at <RFC3339 시간>`. `--kind every --every 1h`는 고정 간격(최소 1분). `--kind cron --cron "<5개 필드 표현식>"`에는 `--timezone`을 붙입니다(기본 UTC).
 - **이벤트**: `--event` 뒤에 이벤트 이름을 쉼표로 구분해 씁니다. `multica issue wakeup events`가 모든 이벤트와 필터를 보여 줍니다. `--mode continuous`는 반복 깨우기로 만듭니다.
 - **조건**: `--until-status`, `--until-assignee`, `--until-label`, `--until-property`, `--until-children-done [--stage N]`, `--until-pr checks|merged|conflicts`, `--until-issue <태스크> --until-issue-state done|ended|in_review|blocked`. 깨우기 하나에 `--until-*`는 하나만 쓸 수 있고 `--event`와 함께 쓸 수 없습니다.
+- **열린 PR의 타이머**: 서버가 GitHub 체크를 갱신하는 동안 에이전트는 열린 PR이 연결된 태스크에 `at`, `every`, `cron` 깨우기를 추가할 수 없습니다. `--until-pr checks|conflicts` 또는 `--until-gh-run`을 안내하는 422가 반환됩니다. 사람, 초안 또는 병합된 PR, PR이 없는 태스크는 해당되지 않습니다.
 - **끝내는 방법**: CLI는 대기 기한을 자동으로 붙이지 않습니다. `--expires-in 72h`나 `--expires-at <RFC3339 시간>`으로 끝을 정하세요. `--on-timeout wake`를 붙이면 이벤트 규칙이 기한이 되었을 때 한 번 더 깨웁니다. `--max-fires N`(1–1000)은 반복 규칙의 실행 횟수에 상한을 둡니다.
+- **감시할 입력**: 시간 웨이크업(`at`, `every`, `cron`)에서는 `--watch <입력>`을 반복해서 지정해 감시 대상을 선언합니다. 값은 `issue`, `pr`, `children`, `thread:<comment-uuid>`입니다. 선언한 입력이 모두 마지막으로 완료된 실행 이후 바뀌지 않았다면 서버는 그 실행을 건너뛸 수 있습니다. 선언하지 않으면 항상 실행합니다. 지금은 서버가 선언을 기록만 하고 건너뛰지는 않습니다. 이벤트 규칙과 조건 규칙은 `--watch`를 받지 않습니다.
 - **답이 남는 곳**: `--parent <댓글 ID>`를 붙이면 깨운 뒤의 답글이 원래 스레드에 남습니다.
 
 기존 규칙 관리:
@@ -224,9 +226,21 @@ curl -X DELETE "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged?r
 
 - 워크스페이스의 기존 깨우기 설정 변환이 끝날 때까지 쓰기는 닫혀 있습니다(`403`, 코드 `wakeup_definition_writes_closed`). 그동안 앱은 편집 기능을 숨깁니다. 읽기와 미리보기는 사용할 수 있습니다.
 - 에이전트는 워크스페이스 또는 프로젝트 규칙을 제안만 할 수 있습니다. 실행 중에 `multica wakeup-definition create --config-file rule.json`(프로젝트 규칙은 `--project <project>` 추가)을 쓰거나, 실행 토큰으로 `POST /api/wakeup-definitions`와 `POST /api/projects/{id}/wakeup-definitions`를 호출합니다. 서버는 요청 내용과 관계없이 규칙을 `enabled: false`로 저장하며, 워크스페이스 소유자나 관리자가 켤 때까지 그 아래 어느 범위에서도, 멤버의 이슈 덮어쓰기가 있어도 실행되지 않습니다. 에이전트는 정의를 수정·삭제·미리보기하거나 이슈 범위에 쓸 수 없습니다(`403`). 그 외 머신 자격 증명은 아예 쓸 수 없습니다(`403`, 아무것도 저장되지 않음).
-- CLI에서는 `multica wakeup-definition get pr_merged`로 워크스페이스 규칙의 최종 적용 값을 읽을 수 있습니다. 프로젝트 규칙은 `--project <project>`, 이슈는 `--issue <issue>`를 추가하세요. API와 같은 `effective` JSON을 출력하며, `--output table`은 한 줄로 보여 줍니다. 쓰기와 초기화는 API와 앱에서 합니다(에이전트는 `create`로 규칙을 제안할 수도 있습니다). `multica issue wakeup list`와 `get`은 규칙의 실행 중 인스턴스(일시 중지 포함)를 보여 줍니다.
+- CLI에서는 `multica wakeup-definition get pr_merged`로 워크스페이스 규칙의 최종 적용 값을 읽을 수 있습니다. 프로젝트 규칙은 `--project <project>`, 이슈는 `--issue <issue>`를 추가하세요. API와 같은 `effective` JSON을 출력하며, `--output table`은 한 줄로 보여 줍니다. 워크스페이스·프로젝트 규칙은 CLI의 `list`, `update`, `delete`, `preview`로도 다룰 수 있습니다([CLI 페이지](/cli) 참고). 이슈 범위 쓰기는 API와 앱에서 합니다(에이전트는 `create`로 규칙을 제안할 수도 있습니다). `multica issue wakeup list`와 `get`은 규칙의 실행 중 인스턴스(일시 중지 포함)를 보여 줍니다.
 - 규칙의 대상은 규칙을 작성하는 사람이 호출할 수 있는 에이전트 또는 스쿼드여야 합니다. 대상 에이전트를 볼 수 없는 사용자에게는 대상과 지침이 없는 규칙이 보입니다.
 - 새 사용자 지정 규칙은 시간당 12회 깨우기 제한으로 시작합니다. 편집기의 **미리보기**는 저장 전에 이미 조건에 맞는 열린 이슈 수를 보여 줍니다.
+
+## PR 병합 깨우기 [#pr-merged]
+
+`pr_merged` 규칙은 연결된 GitHub PR이 병합되면 그 태스크를 맡은 에이전트를 깨웁니다([기본 깨우기](#defaults) 참고). 깨우기만 하고 태스크의 상태는 바꾸지 않습니다. 상태를 바꾸는 것은 워크스페이스 설정 **설정 → 코드 → PR 병합 후 태스크 상태**이며, [GitHub 연동](/github-integration)에 설명이 있습니다.
+
+같은 병합으로 태스크가 담당자가 있는 워크플로 단계로 이동하면, 그 이동이 이미 담당자의 실행을 시작합니다. 이동은 그 병합의 대기 중인 깨우기를 이 실행에 예약하므로, 병합 한 번에 실행은 두 번이 아니라 한 번 시작됩니다.
+
+- 담당자의 실행이 시작됨: 깨우기는 처리된 것으로 간주되어 두 번째 실행을 시작하지 않습니다.
+- 실행이 시작되기 전에 끝남(취소 또는 실패): 깨우기가 자체 실행을 한 번 시작합니다.
+- 실행이 거부됨(예: 실행 예산이나 가득 찬 단계 대기열): 상태는 그래도 바뀌고, 예약되는 것은 없으며, 깨우기는 평소 제한을 따릅니다.
+
+PR 이벤트 때문에 상태 이동이 필요할 수 있을 때, Multica는 그 태스크에 내부 재시도 깨우기 `pr_merge_owed`도 하나 보관합니다. 에이전트 실행은 시작하지 않습니다. 판단이 끝날 때까지 상태 판단을 반복하고, 끝나면 스스로 삭제됩니다. [판단이 끝나지 못할 때](/github-integration)를 참고하세요.
 
 ## 오토파일럿과의 차이 [#vs-autopilots]
 

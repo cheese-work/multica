@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useMarkMentionsReadOnOpen } from "@multica/core/inbox";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -116,6 +117,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   if (approveId) keep.set("approve", approveId);
 
   useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, keep.size ? `?${keep.toString()}` : "");
+  useMarkMentionsReadOnOpen(canonicalId);
 
   if (isResolving) return <IssueDetailSkeleton />;
 

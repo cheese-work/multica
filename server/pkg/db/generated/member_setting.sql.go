@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteMemberSetting = `-- name: DeleteMemberSetting :exec
+DELETE FROM member_setting
+WHERE workspace_id = $1 AND user_id = $2 AND key = $3
+`
+
+type DeleteMemberSettingParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	Key         string      `json:"key"`
+}
+
+func (q *Queries) DeleteMemberSetting(ctx context.Context, arg DeleteMemberSettingParams) error {
+	_, err := q.db.Exec(ctx, deleteMemberSetting, arg.WorkspaceID, arg.UserID, arg.Key)
+	return err
+}
+
 const getMemberSetting = `-- name: GetMemberSetting :one
 SELECT workspace_id, user_id, key, value, updated_at FROM member_setting
 WHERE workspace_id = $1 AND user_id = $2 AND key = $3
@@ -33,4 +49,27 @@ func (q *Queries) GetMemberSetting(ctx context.Context, arg GetMemberSettingPara
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const upsertMemberSetting = `-- name: UpsertMemberSetting :exec
+INSERT INTO member_setting (workspace_id, user_id, key, value)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workspace_id, user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+`
+
+type UpsertMemberSettingParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	Key         string      `json:"key"`
+	Value       []byte      `json:"value"`
+}
+
+func (q *Queries) UpsertMemberSetting(ctx context.Context, arg UpsertMemberSettingParams) error {
+	_, err := q.db.Exec(ctx, upsertMemberSetting,
+		arg.WorkspaceID,
+		arg.UserID,
+		arg.Key,
+		arg.Value,
+	)
+	return err
 }

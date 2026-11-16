@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -410,5 +411,47 @@ func TestDrainTickRetriesTransientLockTimeout(t *testing.T) {
 	<-released
 	if n := wakeRuns(t, f, w.ID); n != 1 {
 		t.Fatalf("reviewer runs after the lock cleared = %d, want 1", n)
+	}
+}
+
+// CHE-5252: a one-shot "at" rule is created with a fresh updated_at, so it sorts
+// behind every older due rule in the scan order. With more due rules than a
+// pass can dispatch before its budget runs out, the new rule waited for the
+// whole backlog to rotate (6-23 min in production). A due "at" rule must be
+// dispatched in the first pass whatever the backlog.
+func TestWakeupTickFiresDueAtRuleBehindFullBatchOfRecurringRules(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	ws := parseTestUUID(t, f.WorkspaceID)
+	idleConditionRules(t, f, s, agent, 3*wakeupTickBatch)
+
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "at", AfterSeconds: 600, Instruction: "one-shot"})
+	// Due now, with the fresh updated_at a rule gets on creation.
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second', updated_at=now() WHERE id=$1", w.ID)
+
+	// A pass that can only dispatch a few rules before its budget ends.
+	err := s.tickWith(context.Background(), []pgtype.UUID{ws}, tickLimits{
+		budget:         400 * time.Millisecond,
+		beforeDispatch: func(db.IssueWakeup) { time.Sleep(20 * time.Millisecond) },
+	})
+	if err != nil && !isLockTimeout(err) {
+		t.Fatal(err)
+	}
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("one-shot runs after one short pass = %d, want 1", n)
+	}
+}
+
+// A due "at" rule that is held (here: its own run is already claimed) must say
+// so on the rule, so lateness is visible.
+func TestWakeupDueAtRuleHeldByClaimedRunRecordsReason(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "at", AfterSeconds: 600, Instruction: "one-shot"})
+	f.Task(t, agent, testutil.Cols{"issue_id": issue, "status": "dispatched", "dispatched_at": testutil.Raw("now()"),
+		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agent + "')"),
+		"context":    testutil.Raw("jsonb_build_object('wakeup_id','" + util.UUIDToString(w.ID) + "')")})
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", w.ID)
+	got := wakeTick(t, f, s, w.ID)
+	if !got.LastError.Valid || got.LastError.String == "" {
+		t.Fatalf("held due rule records no reason: enabled=%v last_error=%v", got.Enabled, got.LastError)
 	}
 }

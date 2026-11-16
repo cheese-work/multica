@@ -30,6 +30,8 @@ export const DecisionActionViewSchema = z.object({
   params: z.record(z.string(), z.unknown()),
   payload_sha256: z.string(),
   state: z.string(),
+  /** The chat that holds the action's card; older servers omit it. */
+  chat_session_id: z.string().optional(),
 });
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),
@@ -38,6 +40,9 @@ export const PasskeyDecisionOutcomeSchema = z.object({
   error_code: z.string().optional(),
   error_message: z.string().optional(),
 });
+/** The batch card's read after approve: one outcome per item. */
+export const PasskeyBatchOutcomeSchema = z.object({ batch_id: z.string(), items: z.array(PasskeyDecisionOutcomeSchema) });
+export type PasskeyBatchOutcome = z.infer<typeof PasskeyBatchOutcomeSchema>;
 
 /** What the server verifies for revoke and approve: the challenge it answers plus the WebAuthn credential. */
 export type PasskeyAssertionEnvelope = { challenge_id: string; credential: unknown };

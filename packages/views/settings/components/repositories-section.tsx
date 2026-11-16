@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   FolderGit2,
@@ -73,6 +73,7 @@ import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsSection } from "./settings-layout";
 import { GitHubMark } from "./github-mark";
+import { CIWatcherPanel } from "./ci-watcher-panel";
 
 const EMPTY_REPOSITORIES: WorkspaceRepo[] = [];
 
@@ -144,6 +145,7 @@ export function RepositoriesSection() {
   const [draft, setDraft] = useState<RepositoryDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [pendingRemovalIndex, setPendingRemovalIndex] = useState<number | null>(null);
+  const [ciWatchOpen, setCIWatchOpen] = useState<ReadonlySet<string>>(new Set());
   const [connectingGitHub, setConnectingGitHub] = useState(false);
   const [githubPickerOpen, setGitHubPickerOpen] = useState(false);
   const [selectedInstallationID, setSelectedInstallationID] = useState("");
@@ -450,11 +452,12 @@ export function RepositoriesSection() {
           repositories.map((repository, index) => {
             const identity = repositoryIdentity(repository.url);
             const onGitHub = identity?.startsWith("github.com/") ?? false;
+            const ciRepo = onGitHub ? (identity?.slice("github.com/".length) ?? "") : "";
+            const ciWatchable = canManageWorkspace && /^[^/]+\/[^/]+$/.test(ciRepo);
+            const ciOpen = ciWatchable && ciWatchOpen.has(ciRepo);
             return (
-              <div
-                key={`${index}:${repository.url}`}
-                className="flex min-h-14 items-center gap-3 px-4 py-2.5"
-              >
+              <Fragment key={`${index}:${repository.url}`}>
+              <div className="flex min-h-14 items-center gap-3 px-4 py-2.5">
                 <span
                   aria-hidden="true"
                   className="flex size-5 shrink-0 items-center justify-center text-muted-foreground"
@@ -477,6 +480,22 @@ export function RepositoriesSection() {
                     </p>
                   ) : null}
                 </div>
+                {ciWatchable ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-expanded={ciOpen}
+                    onClick={() =>
+                      setCIWatchOpen((open) => {
+                        const next = new Set(open);
+                        if (!next.delete(ciRepo)) next.add(ciRepo);
+                        return next;
+                      })
+                    }
+                  >
+                    {t(($) => $.ci_watch.title)}
+                  </Button>
+                ) : null}
                 {canManageWorkspace ? (
                   <DropdownMenu>
                     <DropdownMenuTrigger
@@ -516,6 +535,12 @@ export function RepositoriesSection() {
                   </DropdownMenu>
                 ) : null}
               </div>
+              {ciOpen ? (
+                <div className="space-y-3 px-4 pb-4">
+                  <CIWatcherPanel wsId={wsId} repo={ciRepo} />
+                </div>
+              ) : null}
+              </Fragment>
             );
           })
         )}

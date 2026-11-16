@@ -224,7 +224,7 @@ func TestEnqueueSquadLeaderRunInTxRollsBackWithTheCaller(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	tq := testHandler.Queries.WithTx(tx)
-	if _, err := testHandler.onQueries(tq).enqueueSquadLeaderRunInTx(ctx, tq, issue); err != nil {
+	if _, _, err := testHandler.onQueries(tq).enqueueSquadLeaderRunInTx(ctx, tq, issue); err != nil {
 		t.Fatalf("enqueueSquadLeaderRunInTx: %v", err)
 	}
 	if _, runs := edgeTxRows(t, tx, c.issueID); runs != 1 {

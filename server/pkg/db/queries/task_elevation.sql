@@ -42,6 +42,7 @@ WHERE te.state = 'fencing'
   AND NOT EXISTS (SELECT 1 FROM elevated_op o WHERE o.task_id = te.task_id AND o.state IN ('authorized', 'unknown'))
   AND (te.launch_scopes_ended_at IS NOT NULL
        OR NOT EXISTS (SELECT 1 FROM unnest(te.scopes) s WHERE s = 'docker' OR s LIKE 'device:%'))
+  AND (sqlc.narg('task_id')::uuid IS NULL OR te.task_id = sqlc.narg('task_id')::uuid)
 RETURNING te.task_id;
 
 -- name: FenceTaintedTaskElevations :many
@@ -58,7 +59,7 @@ RETURNING te.task_id;
 -- name: FenceIssueTaskElevations :many
 -- A member clearing the issue's taint fences every elevation still live on it
 -- first, so the taint cannot vanish before the sweep saw it. Same update as the
--- sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+-- sweep; it runs after the issue lock, as every path that touches a run does.
 UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
 WHERE issue_id = $1 AND state = 'elevated'
 RETURNING task_id;
@@ -75,3 +76,17 @@ SELECT taint_ids FROM agent_task_queue WHERE id = $1 FOR SHARE;
 UPDATE task_elevation SET launch_scopes_ended_at = COALESCE(launch_scopes_ended_at, clock_timestamp()), updated_at = clock_timestamp()
 WHERE task_id = $1 AND state IN ('fencing', 'restricted_final')
 RETURNING *;
+
+-- name: FenceTaskElevation :one
+-- A downgrade request fences its own task at once: epoch + 1, so authorize
+-- refuses from this statement on. Only an elevated row moves.
+UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
+WHERE task_id = $1 AND state = 'elevated'
+RETURNING *;
+
+-- name: TaintTaskForDowngrade :exec
+-- Bytes left the proxy for this task: it carries the taint ID for good. The
+-- agent_task_issue_taint_upd trigger notes it on the issue in the same statement.
+UPDATE agent_task_queue
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || ARRAY[sqlc.arg('taint_id')::text]) AS t ORDER BY t)
+WHERE id = sqlc.arg('task_id') AND NOT taint_ids @> ARRAY[sqlc.arg('taint_id')::text];

@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# merge-review-pack (CHE-5577, plan CHE-5574 step 2). Rule: docs/fork/UPSTREAM-MERGE-REVIEW.md.
+#
+# Builds the review pack for a PR whose change is `git merge` of upstream into
+# the fork. Pins P (fork parent), U (upstream parent) and M (merge result) as
+# full SHAs, rebuilds the baseline B = `git merge-tree --write-tree P U`, and
+# prints (1) the resolution edits `git diff B M` and (2) the whole incoming
+# delta `git diff $(git merge-base P U) U` with the minimum class checks.
+#
+# Usage: merge-review-pack --fork-parent P --upstream-parent U --merge M
+#          [--upstream-ref TAG_OR_BRANCH [--upstream-url URL]]
+#          [--github-repo OWNER/REPO]
+# Run inside a clone that has P, U and M.
+# Exit: 0 pack printed; 2 pins rejected; 3 no trustworthy baseline;
+#       4 provenance failed; 5 checks on M not green; 64 usage.
+set -euo pipefail
+
+die() { local rc="$1"; shift; echo "merge-review-pack: $*" >&2; exit "$rc"; }
+
+P="" U="" M="" up_ref="" up_url="https://github.com/multica-ai/multica.git" gh_repo=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fork-parent) P="${2:-}"; shift 2 ;;
+    --upstream-parent) U="${2:-}"; shift 2 ;;
+    --merge) M="${2:-}"; shift 2 ;;
+    --upstream-ref) up_ref="${2:-}"; shift 2 ;;
+    --upstream-url) up_url="${2:-}"; shift 2 ;;
+    --github-repo) gh_repo="${2:-}"; shift 2 ;;
+    *) die 64 "unknown argument: $1" ;;
+  esac
+done
+[ -n "$P" ] && [ -n "$U" ] && [ -n "$M" ] || die 64 "need --fork-parent, --upstream-parent and --merge"
+
+# --- Pins -----------------------------------------------------------------
+for pin in "P:$P" "U:$U" "M:$M"; do
+  [[ "${pin#*:}" =~ ^[0-9a-f]{40}$ ]] || die 2 "${pin%%:*} must be a full 40-hex SHA, got '${pin#*:}'"
+  git rev-parse --verify -q "${pin#*:}^{commit}" >/dev/null || die 2 "${pin%%:*} ${pin#*:} is not a commit in this clone"
+done
+parents="$(git rev-list --parents -n 1 "$M" | cut -d' ' -f2- | tr ' ' '\n' | sort | tr '\n' ' ')"
+expected="$(printf '%s\n%s\n' "$P" "$U" | sort | tr '\n' ' ')"
+[ "$parents" = "$expected" ] || die 2 "M has parents other than exactly P and U (got: ${parents:-none})"
+
+# --- Provenance (U against a fetched upstream ref; ls-remote is not proof) ---
+provenance="NOT CHECKED (pass --upstream-ref to fetch and verify U)"
+if [ -n "$up_ref" ]; then
+  scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  git init -q --bare "$scratch/up"
+  mode=""
+  if git -C "$scratch/up" fetch -q --no-tags "$up_url" "+refs/tags/$up_ref:refs/pin/ref" 2>/dev/null; then mode=tag
+  elif git -C "$scratch/up" fetch -q --no-tags "$up_url" "+refs/heads/$up_ref:refs/pin/ref" 2>/dev/null; then mode=branch
+  else die 4 "cannot fetch $up_ref from $up_url"; fi
+  tip="$(git -C "$scratch/up" rev-parse "refs/pin/ref^{commit}")"
+  if [ "$mode" = tag ]; then
+    [ "$tip" = "$U" ] || die 4 "U $U is not tag $up_ref ($tip)"
+    provenance="OK: U equals tag $up_ref ($tip) fetched from $up_url"
+  else
+    git -C "$scratch/up" cat-file -e "$U^{commit}" 2>/dev/null \
+      && git -C "$scratch/up" merge-base --is-ancestor "$U" "$tip" \
+      || die 4 "U $U is not an ancestor of fetched $up_ref ($tip)"
+    provenance="OK: U is an ancestor of $up_ref ($tip) fetched from $up_url"
+  fi
+fi
+
+# --- Baseline B (deterministic; stop without a trustworthy one) --------------
+baseline() { git merge-tree --write-tree --name-only "$P" "$U" 2>&1; }
+set +e; out1="$(baseline)"; rc1=$?; out2="$(baseline)"; rc2=$?; set -e
+{ [ "$rc1" -le 1 ] && [ "$rc1" = "$rc2" ] && [ "$out1" = "$out2" ]; } \
+  || die 3 "no trustworthy baseline: git merge-tree exit $rc1/$rc2 or unstable output: ${out1%%$'\n'*}"
+B="${out1%%$'\n'*}"
+[[ "$B" =~ ^[0-9a-f]{40}$ ]] || die 3 "no trustworthy baseline: merge-tree printed '$B', not a tree id"
+git cat-file -e "$B^{tree}" || die 3 "no trustworthy baseline: tree $B missing"
+# Body: conflicted names up to the first blank line, then informational messages.
+rest="${out1#*$'\n'}"; [ "$rest" = "$out1" ] && rest=""
+conflicted="$(sed '/^$/q' <<<"$rest" | sed '/^$/d' | sort -u)"
+messages="$(sed '1,/^$/d' <<<"$rest")"
+[ "$rc1" = 1 ] || conflicted=""
+nontext="$(grep -E '^CONFLICT \(' <<<"$messages" | grep -vE '^CONFLICT \((content|add/add)\)' || true)"
+binary="$(grep -E 'Cannot merge binary files' <<<"$messages" || true)"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work" ${scratch:+"$scratch"}' EXIT
+MB="$(git merge-base "$P" "$U")" || die 3 "no merge base of P and U"
+nbases="$(git merge-base --all "$P" "$U" | wc -l)"
+git diff --no-color --no-ext-diff --no-renames -U0 "$MB" "$U" >"$work/incoming.patch"
+git diff --no-renames --name-status "$MB" "$U" | sort -k2 >"$work/incoming.files"
+cut -f2- "$work/incoming.files" >"$work/incoming.names"
+awk '/^\+\+\+ b\//{f=substr($0,7);next} /^\+\+\+ /{f="";next} /^\+/{print f ": " substr($0,2)}' \
+  "$work/incoming.patch" | cut -c1-240 >"$work/added.lines"
+
+section() { printf '\n## %s\n\n' "$1"; }
+list() { if [ -n "$1" ]; then sed 's/^/- /' <<<"$1"; else echo "- none"; fi; }
+
+echo "# Merge review pack"
+section "Pins"
+printf 'P %s (fork parent)\nU %s (upstream parent)\nM %s (merge result)\nMerge base of P and U: %s%s\n' \
+  "$P" "$U" "$M" "$MB" "$([ "$nbases" -gt 1 ] && echo " ($nbases merge bases: criss-cross, review the baseline with extra care)")"
+printf 'Provenance: %s\n' "$provenance"
+printf 'Baseline B %s = git merge-tree --write-tree --name-only P U (exit %s, stable across two runs)\n' "$B" "$rc1"
+
+section "Conflicts in B"
+list "$conflicted"
+if [ -n "$nontext$binary" ]; then
+  printf '\nNON-TEXT CONFLICT: B holds one side of these paths with no conflict markers. Review each path whole, not as a diff against B.\n'
+  list "$(printf '%s\n%s' "$nontext" "$binary" | sed '/^$/d')"
+fi
+
+section "Resolution edits: git diff B M"
+git diff --no-renames --name-status "$B" "$M" >"$work/res.files"
+if [ ! -s "$work/res.files" ]; then
+  echo "Resolution edits: none (M equals B)."
+  outside=0
+else
+  outside=0
+  while IFS=$'\t' read -r st path; do
+    if grep -qxF -- "$path" <<<"$conflicted"; then tag="in conflicted file"; else tag="OUTSIDE CONFLICT: reviewer must affirm it resolves the merge"; outside=1; fi
+    printf -- '- %s %s (%s)\n' "$st" "$path" "$tag"
+  done <"$work/res.files"
+  printf '\nNecessary check for the waiver (not proof): %s\n\n~~~~~~diff\n' \
+    "$([ "$outside" = 0 ] && echo "every edit sits in a conflicted file" || echo "FAILED, an edit sits outside the conflicted files")"
+  git diff --no-color --no-ext-diff --no-renames "$B" "$M"
+  printf '~~~~~~\n'
+fi
+
+section "Incoming delta: git diff \$(git merge-base P U) U"
+printf '%s files changed upstream since the merge base. Review the whole delta for behavioural and security impact, clean merge or not.\n\n' \
+  "$(wc -l <"$work/incoming.names" | tr -d ' ')"
+sed 's/^\(.\)\t/- \1 /' "$work/incoming.files"
+
+section "New endpoints (added route registrations)"
+list "$(grep -E '\.(Get|Post|Put|Patch|Delete|Head|Options|Connect|Handle|HandleFunc|Method|Route|Mount)\(\s*"' "$work/added.lines" | grep -vE '(_test\.go|\.test\.[a-z]+):' || true)"
+section "New config or permission"
+list "$( { grep -E '(os\.Getenv|os\.LookupEnv|process\.env\.|viper\.|flag\.(String|Bool|Int|Duration)\()' "$work/added.lines"
+           grep -iE '\b(permissions?|rbac|requireRole|authorize)\b' "$work/added.lines"
+           grep -E '^[^:]*(\.env[^:]*|docker-compose[^:]*\.ya?ml|(deploy|docker)/[^:]*\.ya?ml): ' "$work/added.lines"; } | grep -vE '(_test\.go|\.test\.[a-z]+):' | sort -u || true)"
+section "New dependency"
+list "$( { grep -E '(^|/)go\.mod: +[^ ]+ v[0-9]' "$work/added.lines"
+           grep -E '(^|/)package\.json: +"[^"]+": +"[^"]+",?$' "$work/added.lines" \
+             | grep -vE ': +"(name|version|description|license|main|type|private|module|types|packageManager|homepage)":' ; } || true)"
+
+section "Class checks (minimum, never the limit: an unclassified change that affects the fork is still a finding)"
+echo "### Migrations (server/migrations)"
+mig_added="$(grep -E '^A'$'\t''server/migrations/' "$work/incoming.files" | cut -f2 || true)"
+list "$(grep -E 'server/migrations/' "$work/incoming.names" || true)"
+stem() { basename "$1" | sed -E 's/\.(up|down)\.sql$//'; }
+num() { sed -E 's/^([0-9]+).*/\1/' <<<"$1"; }
+collide=0
+if [ -n "$mig_added" ]; then
+  git ls-tree --name-only "$P" server/migrations/ | sed 's|.*/||' | sed -E 's/\.(up|down)\.sql$//' | sort -u >"$work/p.stems"
+  git ls-tree --name-only "$M" server/migrations/ | sed 's|.*/||' | sed -E 's/\.(up|down)\.sql$//' | sort -u >"$work/m.stems"
+  while read -r f; do
+    s="$(stem "$f")"; n="$(num "$s")"
+    other="$(awk -v n="$n" -v s="$s" '{x=$0; sub(/[^0-9].*/,"",x); if (x==n && $0!=s) print}' "$work/p.stems")"
+    [ -z "$other" ] || { printf 'COLLISION (U vs P): %s has number %s, fork already has %s\n' "$s" "$n" "$(tr '\n' ' ' <<<"$other")"; collide=1; }
+    inm="$(awk -v n="$n" '{x=$0; sub(/[^0-9].*/,"",x); if (x==n) print}' "$work/m.stems")"
+    [ "$(wc -l <<<"$inm")" -le 1 ] || printf 'COLLISION IN M (unresolved): number %s is used by %s\n' "$n" "$(tr '\n' ' ' <<<"$inm")"
+  done < <(sort -u <<<"$mig_added")
+  [ "$collide" = 1 ] || echo "No number collision between U and P."
+fi
+echo; echo "### Workflow and CI files (.github)"
+list "$(grep -E '^\.github/' "$work/incoming.names" || true)"
+echo; echo "### Trust-boundary paths (auth, tokens, daemon exec, permissions)"
+list "$(grep -iE '(^|/)(auth|oauth|tokens?|secrets?|credentials?|permissions?|rbac|sessions?|middleware|jwt|crypto|exec|sandbox)([/._-]|$)|daemon[^/]*/.*(exec|runner|sandbox)' "$work/incoming.names" || true)"
+echo; echo "### Fork overlap (changed by both sides since the merge base)"
+git diff --no-renames --name-only "$MB" "$P" | sort >"$work/fork.names"
+overlap="$(comm -12 "$work/fork.names" <(sort "$work/incoming.names"))"
+list "$overlap"
+if [ -n "$overlap" ]; then
+  echo; echo "Run the fork's existing tests for these directories on M (a clean merge can still break fork behaviour):"
+  list "$(sed 's|/[^/]*$||' <<<"$overlap" | sort -u)"
+fi
+
+section "Checks on the exact head M"
+echo "- Migration lint: CI job migration-prefix-check (node scripts/migration-prefix-check.mjs) must be green on M."
+echo "- Cross-lab PASS is separate: the reviewer affirms each resolution edit above."
+status=0
+if [ -n "$gh_repo" ]; then
+  if runs="$(gh api "repos/$gh_repo/commits/$M/check-runs?per_page=100" --paginate \
+      --jq '.check_runs[] | [.name,.status,.conclusion] | @tsv' 2>&1)"; then
+    bad="$(awk -F'\t' '!($2=="completed" && ($3=="success"||$3=="skipped"||$3=="neutral"))' <<<"$runs")"
+    if [ -z "$runs" ]; then echo "- Required checks: NONE REPORTED for M"; status=5
+    elif [ -n "$bad" ]; then echo "- Required checks: NOT GREEN (compare with the required list):"; sed 's/^/  - /' <<<"$bad"; status=5
+    else echo "- Required checks: all $(wc -l <<<"$runs" | tr -d ' ') check runs green on M."; fi
+  else
+    echo "- Required checks: NOT CHECKED (gh failed: ${runs%%$'\n'*})"; status=5
+  fi
+else
+  echo "- Required checks: NOT CHECKED (pass --github-repo OWNER/REPO to read the check runs of M)."
+fi
+exit "$status"

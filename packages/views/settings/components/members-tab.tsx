@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -15,6 +15,7 @@ import {
   Trash2,
   User,
   UserMinus,
+  Users,
   X,
 } from "@multica/ui/icons";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -90,6 +91,7 @@ import {
 } from "@multica/core/workspace/queries";
 import { api, errorCode } from "@multica/core/api";
 import { useLocale, useT } from "../../i18n";
+import { ObjectSectionEmpty } from "../../layout/object-page";
 import {
   SettingsCard,
   SettingsReadOnlyNotice,
@@ -1002,9 +1004,10 @@ export function MembersTab() {
               ))}
             </SettingsCard>
           ) : (
-            <EmptyList>
-              {needle ? t(($) => $.members.no_results) : t(($) => $.members.no_members)}
-            </EmptyList>
+            <ObjectSectionEmpty
+              icon={needle ? Search : Users}
+              description={needle ? t(($) => $.members.no_results) : t(($) => $.members.no_members)}
+            />
           )
         ) : activeView === "invitations" ? (
           invitations.length > 0 ? (
@@ -1021,7 +1024,7 @@ export function MembersTab() {
               ))}
             </SettingsCard>
           ) : (
-            <EmptyList>{t(($) => $.members.no_invitations)}</EmptyList>
+            <ObjectSectionEmpty icon={Mail} description={t(($) => $.members.no_invitations)} />
           )
         ) : shareLinks.length > 0 ? (
           <SettingsCard>
@@ -1037,7 +1040,7 @@ export function MembersTab() {
             ))}
           </SettingsCard>
         ) : (
-          <EmptyList>{t(($) => $.members.no_share_links)}</EmptyList>
+          <ObjectSectionEmpty icon={Link} description={t(($) => $.members.no_share_links)} />
         )}
       </section>
 
@@ -1328,13 +1331,5 @@ export function MembersTab() {
         </AlertDialogContent>
       </AlertDialog>
     </SettingsTab>
-  );
-}
-
-function EmptyList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-xl border border-dashed border-surface-border px-4 py-10 text-center text-body text-muted-foreground">
-      {children}
-    </div>
   );
 }

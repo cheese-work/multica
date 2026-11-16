@@ -32,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/internal/selfexec"
@@ -40,6 +41,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/awakeclock"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -200,6 +202,14 @@ func taskMulticaEnvironment(task Task, provider, agentName, token, configRoot, w
 		"TMP":                  tempDir,
 		"TEMP":                 tempDir,
 	}
+	if task.QuickCreatePrompt != "" {
+		assigneeType, assigneeID := "agent", task.AgentID
+		if task.SquadID != "" {
+			assigneeType, assigneeID = "squad", task.SquadID
+		}
+		env["MULTICA_QUICK_CREATE_DEFAULT_ASSIGNEE_TYPE"] = assigneeType
+		env["MULTICA_QUICK_CREATE_DEFAULT_ASSIGNEE_ID"] = assigneeID
+	}
 	if runtime.GOOS != "windows" {
 		return env
 	}
@@ -284,6 +294,8 @@ type terminalTaskReport struct {
 	// contextTokens / contextWindow: see TaskResult. Complete reports only.
 	contextTokens int64
 	contextWindow int64
+	// initContext: see TaskResult. Complete reports only.
+	initContext *initctx.Report
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -594,8 +606,10 @@ type Daemon struct {
 	// login-shell probe + version detection instead of one per task (MUL-4486).
 	healGroup singleflight.Group
 
-	wsHBMu      sync.RWMutex         // guards wsHBLastAck
-	wsHBLastAck map[string]time.Time // runtime_id -> last successful WS heartbeat ack timestamp
+	wsHBMu      sync.RWMutex            // guards wsHBLastAck
+	wsHBLastAck map[string]time.Time    // runtime_id -> last successful WS heartbeat ack timestamp
+	wsHBSent    map[string][]wsSentBeat // runtime_id -> queued WS heartbeats not yet acked (guarded by wsHBMu)
+	wsHBSeq     atomic.Uint64
 
 	// reconcile fans out a "re-check server state now" signal to subscribers
 	// (watchTaskCancellation, workspaceSyncLoop) so the WS connect/reconnect
@@ -645,8 +659,9 @@ type Daemon struct {
 	pendingWorkInflight map[string]struct{}  // runtime_id -> hint-driven heartbeat in flight
 	pendingWorkLastRun  map[string]time.Time // runtime_id -> when the last hint-driven heartbeat started
 
-	cancelFunc context.CancelFunc // set by Run(); called by triggerRestart
-	rootCtx    context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
+	cancelFunc   context.CancelFunc // set by Run(); called by triggerRestart
+	updateOutbox sync.WaitGroup     // in-flight update result deliveries (enqueueUpdateResult)
+	rootCtx      context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -673,6 +688,9 @@ type Daemon struct {
 	// Sticky for this process: a finished task can leave independent processes
 	// behind even after activeTasks reaches zero.
 	cleanupUnconfirmed atomic.Bool
+	// startedAt is when this process built the Daemon. Its uptime rides on the
+	// heartbeat so the server can tell a restart from a long-lived daemon.
+	startedAt time.Time
 	// runningTasks counts live provider execution sessions, beginning only after
 	// backend.Execute returns. It can briefly lag the server-side running state,
 	// which starts during preparation before provider launch. resourceWaitTasks
@@ -702,6 +720,9 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+	// reloadKick wakes autoUpdateLoop the moment a pending reload finds the
+	// daemon idle. See kickReloadIfIdle.
+	reloadKick chan struct{} // cap 1; created in New
 
 	// pause is the server-reported machine pause, refreshed by every heartbeat
 	// ack (see pause.go). nil when the machine is not paused.
@@ -778,7 +799,7 @@ type Daemon struct {
 	// runUpdateFn executes the brew-or-download upgrade. Set to d.runUpdate by
 	// New() and overridable in tests so the auto-update poller can be exercised
 	// without touching the real network or the brew CLI.
-	runUpdateFn func(targetVersion string) (string, error)
+	runUpdateFn func(ctx context.Context, targetVersion string) (string, error)
 
 	// updateProgress is set while a server-triggered update runs, so the fork
 	// download can report its progress. Nil for auto-updates.
@@ -802,6 +823,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
+		startedAt:                   time.Now(),
 		hostSampler:                 newHostSampler(newProcHostCollector()),
 		client:                      client,
 		repoCache:                   repocache.New(cacheRoot, logger),
@@ -809,6 +831,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		logger:                      logger,
 		terminalReports:             newTerminalReportStore(cfg),
 		terminalReportWakeup:        make(chan struct{}, 1),
+		reloadKick:                  make(chan struct{}, 1),
 		terminalReportNow:           time.Now,
 		terminalReportFlight:        make(map[string]struct{}),
 		workspaces:                  make(map[string]*workspaceState),
@@ -2078,6 +2101,49 @@ func (d *Daemon) wsHeartbeatRecentlyAcked(runtimeID string) bool {
 	return time.Since(last) < d.wsHeartbeatFreshness()
 }
 
+// wsSentBeat is a queued WS heartbeat frame and when it was queued.
+type wsSentBeat struct {
+	seq uint64
+	at  time.Time
+}
+
+// wsMaxUnacked caps the unacked frames kept per runtime; the oldest is dropped.
+const wsMaxUnacked = 64
+
+// noteWSHeartbeatSent remembers a queued frame so its ack can be anchored.
+func (d *Daemon) noteWSHeartbeatSent(runtimeID string, seq uint64, at time.Time) {
+	d.wsHBMu.Lock()
+	defer d.wsHBMu.Unlock()
+	if d.wsHBSent == nil {
+		d.wsHBSent = make(map[string][]wsSentBeat)
+	}
+	d.wsHBSent[runtimeID] = append(d.wsHBSent[runtimeID], wsSentBeat{seq, at})
+	if s := d.wsHBSent[runtimeID]; len(s) > wsMaxUnacked {
+		d.wsHBSent[runtimeID] = s[1:]
+	}
+}
+
+// wsHeartbeatAnchor returns the send time of the frame an ack answers: the
+// frame whose sequence it echoes, or, from a server that does not echo, the
+// oldest frame not yet acknowledged. Frames up to it are forgotten. With no
+// match it falls back to now, which counts the ack's own travel for free.
+func (d *Daemon) wsHeartbeatAnchor(runtimeID string, seq uint64) time.Time {
+	d.wsHBMu.Lock()
+	defer d.wsHBMu.Unlock()
+	s := d.wsHBSent[runtimeID]
+	i := 0
+	if seq != 0 {
+		for i < len(s) && s[i].seq != seq {
+			i++
+		}
+	}
+	if i >= len(s) {
+		return time.Now()
+	}
+	d.wsHBSent[runtimeID] = s[i+1:]
+	return s[i].at
+}
+
 // clearWSHeartbeatAcks drops all WS heartbeat freshness records. Called on
 // WS disconnect so HTTP heartbeats resume on the next tick.
 func (d *Daemon) clearWSHeartbeatAcks() {
@@ -2085,6 +2151,7 @@ func (d *Daemon) clearWSHeartbeatAcks() {
 	for k := range d.wsHBLastAck {
 		delete(d.wsHBLastAck, k)
 	}
+	clear(d.wsHBSent)
 	d.wsHBMu.Unlock()
 }
 
@@ -2143,6 +2210,12 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		logFields = append(logFields, "profile", d.cfg.Profile)
 	}
 	d.logger.Info("starting daemon", logFields...)
+	// Sweep orphaned ZCode provider credential snapshots left by a prior
+	// crash/SIGKILL (prepareZcodeRuntimeEnv writes 0600 files under
+	// $TMPDIR/multica-zcode-providers-*; normal exits remove them in defer).
+	if n := agent.CleanupStaleZcodeProviderSnapshots(); n > 0 {
+		d.logger.Info("removed stale ZCode provider credential snapshots", "count", n)
+	}
 	d.logger.Debug("daemon config resolved",
 		"daemon_id", d.cfg.DaemonID,
 		"device_name", d.cfg.DeviceName,
@@ -3330,6 +3403,17 @@ func (d *Daemon) repoBarePathIsLive(barePath string) bool {
 		}
 	}
 	return false
+}
+
+// workspaceSettings returns the cached workspace settings JSON (nil when the
+// workspace is unknown), kept fresh by refreshWorkspaceRepos.
+func (d *Daemon) workspaceSettings(workspaceID string) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		return ws.settings
+	}
+	return nil
 }
 
 // workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
@@ -4552,6 +4636,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
+	anchor := time.Now()
 	resp, err := d.client.SendHeartbeat(ctx, d.heartbeatRequest(rid))
 	if err != nil {
 		if ctx.Err() == nil {
@@ -4575,7 +4660,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		go d.handleRuntimeGone(rid)
 		return false
 	}
-	d.handleHeartbeatActions(ctx, rid, resp)
+	d.handleHeartbeatActions(ctx, rid, resp, anchor)
 	return false
 }
 
@@ -4583,11 +4668,14 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 // transport (HTTP POST /api/daemon/heartbeat or WS daemon:heartbeat_ack).
 // Each action is dispatched in its own goroutine so a slow handler cannot
 // block subsequent heartbeats.
-func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse) {
+//
+// anchor is the monotonic send time of the heartbeat that produced resp; the
+// server's relative deadlines count from it.
+func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse, anchor time.Time) {
 	if resp == nil {
 		return
 	}
-	d.applyHeartbeatPause(resp.Paused)
+	d.applyHeartbeatPause(resp.Paused, anchor)
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
@@ -4598,7 +4686,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 		)
 	}
 	if resp.PendingUpdate != nil {
-		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
+		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate, anchor)
 	}
 	if resp.PendingModelList != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
@@ -4698,6 +4786,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
+	anchor := time.Now()
 	resp, err := d.client.SendHeartbeat(hbCtx, d.heartbeatRequest(runtimeID))
 	cancel()
 	if err != nil {
@@ -4716,7 +4805,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	d.logger.Debug("pending work hint served", "runtime_id", runtimeID, "kind", kind)
-	d.handleHeartbeatActions(ctx, runtimeID, resp)
+	d.handleHeartbeatActions(ctx, runtimeID, resp, anchor)
 }
 
 // handleModelList resolves the provider's supported models (via static
@@ -5024,49 +5113,132 @@ func (d *Daemon) reportRuntimeResultWithRetry(ctx context.Context, kind, runtime
 		"kind", kind, "runtime_id", runtimeID, "request_id", requestID, "error", lastErr)
 }
 
+// Typed reasons on a `failed` update result. The error text for people stays.
+const (
+	updateReasonBusy         = "busy"
+	updateReasonLateDelivery = "late_delivery"
+	updateReasonDeadline     = "deadline"
+	updateReasonError        = "error"
+)
+
+func failedUpdate(reason, text string) map[string]any {
+	return map[string]any{"status": "failed", "reason": reason, "error": text}
+}
+
+// updateDeadline is when a server-initiated update must stop holding claims:
+// the server's finish_within_ms from the heartbeat send time, less a margin.
+// A request without it (the Update button) keeps today's bound.
+func updateDeadline(update *PendingUpdate, anchor time.Time) time.Time {
+	if update.FinishWithinMs == nil {
+		return time.Now().Add(manualUpdateBound)
+	}
+	return anchor.Add(time.Duration(*update.FinishWithinMs)*time.Millisecond - updateDeadlineMargin)
+}
+
+// Phases of one server-initiated update, guarded by updateWatch.mu.
+const (
+	updateInstalling = iota // runUpdateFn is running
+	updateInstalled         // installed, waiting for the `completed` delivery
+	updateExpired           // the deadline passed first; the barrier is already released
+)
+
+type updateWatch struct {
+	mu    sync.Mutex
+	phase int
+}
+
 // handleUpdate performs the CLI update when triggered by the server via heartbeat.
-func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *PendingUpdate) {
+// anchor is the send time of the heartbeat that carried the request.
+func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *PendingUpdate, anchor time.Time) {
+	if update.StartWithinMs != nil && time.Since(anchor) >= time.Duration(*update.StartWithinMs)*time.Millisecond {
+		d.logger.Warn("update not started: delivery was late", "runtime_id", runtimeID, "update_id", update.ID)
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonLateDelivery,
+			"the update request reached the daemon after its start window"))
+		return
+	}
+
 	// Desktop-managed daemons share their CLI binary with the Electron app,
 	// which is responsible for shipping and replacing it. Letting the daemon
 	// self-update would just get overwritten on the next Desktop launch and
 	// could brick the embedded binary mid-update. Refuse cleanly.
 	if d.cfg.LaunchedBy == "desktop" {
 		d.logger.Info("refusing CLI self-update: daemon is managed by Desktop", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  "CLI is managed by Multica Desktop — update the Desktop app to upgrade the CLI",
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonError,
+			"CLI is managed by Multica Desktop — update the Desktop app to upgrade the CLI"))
 		return
 	}
 
-	switch d.tryBeginServerUpdate(ctx) {
+	deadline := updateDeadline(update, anchor)
+	// Reports and acquisition share the deadline: a claim stuck in flight cannot
+	// hold the barrier past it (tryBeginServerUpdate releases it on ctx.Done).
+	reportCtx, cancelReports := context.WithDeadline(ctx, deadline)
+	defer cancelReports()
+	switch d.tryBeginServerUpdate(reportCtx) {
 	case serverUpdateAlreadyRunning:
 		d.logger.Warn("update deferred: another update is already in progress", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  "another runtime update is already in progress on this machine",
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonBusy,
+			"another runtime update is already in progress on this machine"))
 		return
 	case serverUpdateRuntimeBusy:
+		if !time.Now().Before(deadline) {
+			d.logger.Warn("update not started: deadline passed while waiting for claims to drain", "runtime_id", runtimeID, "update_id", update.ID)
+			d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonDeadline,
+				"the update did not finish before its deadline"))
+			return
+		}
 		d.logger.Info("update deferred: task or claim in progress", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  "runtime update deferred because agent work is starting or still active; retry when the machine is idle",
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonBusy,
+			"runtime update deferred because agent work is starting or still active; retry when the machine is idle"))
 		return
 	}
 	restarting := false
+	releaseBarrier := sync.OnceFunc(d.releaseClaimBarrier)
 	defer func() {
 		if !restarting {
-			d.releaseClaimBarrier()
+			releaseBarrier()
 			d.updating.Store(false)
 		}
 	}()
 
+	// Acquisition may have waited for claims to drain: recheck the start cutoff.
+	if update.StartWithinMs != nil && time.Since(anchor) >= time.Duration(*update.StartWithinMs)*time.Millisecond {
+		d.logger.Warn("update not started: start window passed while waiting for claims to drain", "runtime_id", runtimeID, "update_id", update.ID)
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonLateDelivery,
+			"the update could not start within its start window"))
+		return
+	}
+
+	// The watchdog frees claims at the deadline whatever runUpdateFn or the
+	// report endpoint are doing. The deadline result goes through the outbox, on
+	// the root context, so the expired deadline cannot swallow it.
+	var w updateWatch
+	expire := func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		prev := w.phase
+		if prev == updateExpired {
+			return
+		}
+		w.phase = updateExpired
+		releaseBarrier()
+		d.logger.Warn("CLI update passed its deadline; claims allowed", "runtime_id", runtimeID, "update_id", update.ID)
+		if prev == updateInstalling {
+			d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonDeadline,
+				"the update did not finish before its deadline"))
+		}
+	}
+	timer := time.AfterFunc(time.Until(deadline), expire)
+	defer timer.Stop()
+
+	// The install context stays off the heartbeat context, which ends when
+	// the runtime set changes.
+	installCtx, cancelInstall := context.WithDeadline(context.Background(), deadline)
+	defer cancelInstall()
+
 	d.logger.Info("CLI update requested", "runtime_id", runtimeID, "update_id", update.ID, "target_version", update.TargetVersion)
 
 	// Report running status.
-	d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+	d.reportUpdateResult(reportCtx, runtimeID, update.ID, map[string]any{
 		"status": "running",
 	})
 
@@ -5074,14 +5246,27 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		return d.client.ReportUpdateResult(ctx, runtimeID, update.ID, payload)
 	})
 	d.updateProgress.Store(rep)
-	output, err := d.runUpdateFn(update.TargetVersion)
+	output, err := d.runUpdateFn(installCtx, update.TargetVersion)
 	d.updateProgress.Store(nil)
-	rep.wait() // a late progress report must not land after the terminal one
+	rep.flush() // the last bytes_done and phase land before the terminal report, and no late one after
+
+	if !time.Now().Before(deadline) {
+		expire() // a no-op when the watchdog already ran; a late return sends no second result
+		return
+	}
+	w.mu.Lock()
+	if w.phase == updateExpired {
+		w.mu.Unlock()
+		return
+	}
+	w.phase = updateInstalled
+	w.mu.Unlock()
+
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
 		d.logger.Info("CLI already on the server build; no restart", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "completed",
 			"output": "Already on the server build",
 		})
@@ -5089,18 +5274,33 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	}
 	if err != nil {
 		d.logger.Error("CLI update failed", "error", err, "output", output)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  err.Error(),
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonError, err.Error()))
 		return
 	}
 
 	d.logger.Info("CLI update completed successfully", "output", output)
-	d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+	delivered := d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 		"status": "completed",
 		"output": fmt.Sprintf("Updated to %s", update.TargetVersion),
 	})
+	// The restart waits for the `completed` delivery, but never longer than
+	// updateCompletedWait and never past the deadline.
+	select {
+	case <-delivered:
+	case <-time.After(min(updateCompletedWait, time.Until(deadline))):
+	}
+
+	// Restart only while the deadline has not passed and the barrier is ours.
+	// Otherwise the new binary waits for the idle restart (self-reload).
+	w.mu.Lock()
+	if w.phase == updateExpired || !time.Now().Before(deadline) {
+		w.phase = updateExpired
+		releaseBarrier()
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	timer.Stop()
 
 	// Trigger daemon restart with the new binary.
 	d.triggerRestart()
@@ -5165,14 +5365,14 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 // `updating` CAS guard and for reporting status back to the server / triggering
 // the restart — extracted so the server-triggered path (handleUpdate) and the
 // auto-update poller (autoUpdateLoop) share the exact same execution body.
-func (d *Daemon) runUpdate(targetVersion string) (string, error) {
+func (d *Daemon) runUpdate(ctx context.Context, targetVersion string) (string, error) {
 	if err := cli.CheckUpdateFreeze(); err != nil {
 		return "", err
 	}
-	if cli.ForkUpdateSupported(runtime.GOOS) {
+	if forkUpdateSource() {
 		// targetVersion is an upstream release tag from the server or poller; the
 		// fork source ignores it and takes the build its own server carries.
-		return d.runForkUpdate()
+		return d.runForkUpdate(ctx)
 	}
 	if cli.IsBrewInstall() {
 		d.logger.Info("updating CLI via Homebrew...")
@@ -5183,7 +5383,11 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 		return out, nil
 	}
 	d.logger.Info("updating CLI via direct download...", "target_version", targetVersion)
-	out, err := cli.UpdateViaDownload(targetVersion)
+	opts := cli.DownloadOptions{Timeout: cli.DefaultUpdateDownloadTimeout}
+	if rep := d.updateProgress.Load(); rep != nil { // set only by a server-triggered update; the poller stays quiet
+		opts.Progress = rep.progress()
+	}
+	out, err := cli.UpdateViaDownloadWithOptions(targetVersion, opts)
 	if err != nil {
 		return out, fmt.Errorf("download update failed: %w", err)
 	}
@@ -5203,6 +5407,91 @@ func (d *Daemon) reportUpdateResult(ctx context.Context, runtimeID, updateID str
 	d.reportUpdateResultWithRetry(ctx, runtimeID, updateID, func(ctx context.Context) error {
 		return d.client.ReportUpdateResult(ctx, runtimeID, updateID, payload)
 	})
+}
+
+// Result outbox timings (overridable for tests): each send has its own
+// timeout, retries follow updateReportBackoffs and then every
+// updateRetryInterval, and a result is dropped updateOutboxMaxAge after it was
+// queued. updateCompletedWait bounds how long a successful install waits for
+// its `completed` delivery before restarting.
+var (
+	updateSendTimeout   = 10 * time.Second
+	updateRetryInterval = 15 * time.Second
+	updateOutboxMaxAge  = 5 * time.Minute
+	updateCompletedWait = 10 * time.Second
+)
+
+// updateDeadlineMargin is kept off the server's finish_within_ms so the daemon
+// stops, and reports, before the server's own deadline (overridable for tests).
+var updateDeadlineMargin = 60 * time.Second
+
+// enqueueUpdateResult delivers a terminal update result on the daemon root
+// context, so a cancelled heartbeat context, an expired update deadline or a
+// slow report endpoint can neither lose it nor hold the claim barrier. The
+// returned channel closes when delivery ends (2xx, 4xx, bound or shutdown).
+// No disk persistence: if the process dies first, the server ends the cycle
+// as failed with no daemon result.
+func (d *Daemon) enqueueUpdateResult(runtimeID, updateID string, payload map[string]any) <-chan struct{} {
+	done := make(chan struct{})
+	ctx, cancel := context.WithTimeout(d.recoveryContext(), updateOutboxMaxAge)
+	d.updateOutbox.Add(1)
+	go func() {
+		defer d.updateOutbox.Done()
+		defer close(done)
+		defer cancel()
+		d.sendUpdateResult(ctx, runtimeID, updateID, payload)
+	}()
+	return done
+}
+
+func (d *Daemon) sendUpdateResult(ctx context.Context, runtimeID, updateID string, payload map[string]any) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		wait := updateRetryInterval
+		if attempt < len(updateReportBackoffs) {
+			wait = updateReportBackoffs[attempt]
+		}
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				d.logUpdateOutboxStop(ctx, runtimeID, updateID, attempt, lastErr)
+				return
+			case <-time.After(wait):
+			}
+		}
+
+		sendCtx, cancel := context.WithTimeout(ctx, updateSendTimeout)
+		err := d.client.ReportUpdateResult(sendCtx, runtimeID, updateID, payload)
+		cancel()
+		if err == nil {
+			if attempt > 0 {
+				d.logger.Info("CLI update result delivered after retry",
+					"runtime_id", runtimeID, "update_id", updateID, "attempt", attempt+1)
+			}
+			return
+		}
+		lastErr = err
+
+		var reqErr *requestError
+		if errors.As(err, &reqErr) && reqErr.StatusCode >= 400 && reqErr.StatusCode < 500 {
+			d.logger.Error("CLI update result rejected — not retrying",
+				"runtime_id", runtimeID, "update_id", updateID,
+				"status", reqErr.StatusCode, "error", err)
+			return
+		}
+		if ctx.Err() != nil {
+			d.logUpdateOutboxStop(ctx, runtimeID, updateID, attempt+1, lastErr)
+			return
+		}
+		d.logger.Warn("CLI update result failed — will retry",
+			"runtime_id", runtimeID, "update_id", updateID, "attempt", attempt+1, "error", err)
+	}
+}
+
+func (d *Daemon) logUpdateOutboxStop(ctx context.Context, runtimeID, updateID string, attempts int, lastErr error) {
+	d.logger.Error("CLI update result not delivered — outbox stopped",
+		"runtime_id", runtimeID, "update_id", updateID,
+		"attempts", attempts, "reason", ctx.Err(), "last_error", lastErr)
 }
 
 func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, updateID string, fn func(context.Context) error) {
@@ -5264,8 +5553,9 @@ func (d *Daemon) tryEnterClaim() bool {
 // exitClaim releases the in-flight claim recorded by tryEnterClaim.
 func (d *Daemon) exitClaim() {
 	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
 	d.claimsInFlight--
+	d.claimMu.Unlock()
+	d.kickReloadIfIdle()
 }
 
 // trySetClaimBarrier atomically pauses new ClaimTask calls if the daemon is
@@ -5537,7 +5827,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			go func(t Task, slot int, claim *inflightClaim) {
 				defer taskWG.Done()
-				defer d.activeTasks.Add(-1)
+				defer d.taskDone()
 				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
@@ -5898,13 +6188,18 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		err = nil // Cleanup uncertainty must outrank worktree-finalization errors.
 	}
 
+	// Shutdown cancels ctx before the runner returns. Keep the final usage,
+	// server-cancellation check and acknowledgement deliverable during cleanup.
+	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), terminalTaskReportTimeout)
+	defer finalCancel()
+
 	// Report usage before any early return — the agent accumulates tokens
 	// whether the task completes, errors, or is cancelled mid-run by the poll
 	// goroutine. Both claude.go and codex.go populate result.Usage even when
 	// runCtx is cancelled, so dropping this on the cancelled path silently
 	// under-reports billing.
 	if len(result.Usage) > 0 {
-		if usageErr := d.client.ReportTaskUsage(ctx, task.ID, result.Usage); usageErr != nil {
+		if usageErr := d.client.ReportTaskUsage(finalCtx, task.ID, result.Usage); usageErr != nil {
 			taskLog.Warn("report task usage failed", "error", usageErr)
 		}
 	}
@@ -5929,7 +6224,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// pointer (MUL-8188).
 		ack := taskCancelAcknowledgement(result, err, provider)
 		ack.CancelAckProof = task.CancelAckProof
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
+		if ackErr := d.client.AckTaskCancelled(finalCtx, task.ID, ack); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
 		return
@@ -5960,14 +6255,14 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		return
 	}
 
-	_ = d.client.ReportProgress(ctx, task.ID, "Finishing task", 2, 2)
+	_ = d.client.ReportProgress(finalCtx, task.ID, "Finishing task", 2, 2)
 
 	// Final pre-completion check: if the server already moved the task to a
 	// terminal state (completed/failed/cancelled) or deleted the row
 	// outright, skip reporting — the complete/fail callbacks would fail
 	// anyway. Reuse shouldInterruptAgent so this guard honors the same
 	// signals as the in-flight watcher.
-	if status, err := d.client.GetTaskStatus(ctx, task.ID); shouldInterruptAgent(status, err) {
+	if status, err := d.client.GetTaskStatus(finalCtx, task.ID); shouldInterruptAgent(status, err) {
 		taskLog.Info("task cancelled during execution, discarding result",
 			"status", status, "error", err, "branch_name", result.BranchName)
 		// Same contract as the poll-cancelled path above: the transcript is
@@ -5981,10 +6276,20 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// them.
 		ack := taskCancelAcknowledgement(result, nil, provider)
 		ack.CancelAckProof = task.CancelAckProof
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
+		if ackErr := d.client.AckTaskCancelled(finalCtx, task.ID, ack); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
 		return
+	}
+
+	// Only the parent (daemon) context identifies shutdown. A cancelled agent
+	// with a live parent remains a deliberate cancellation; server terminal
+	// states and poll cancellation have already taken precedence above.
+	// Infrastructure interruptions carry a diagnostic, matching server-side orphan
+	// recovery; deliberate cancellation relies on its localized reason label.
+	if result.Status == "cancelled" && result.FailureReason == "" && errors.Is(ctx.Err(), context.Canceled) {
+		result.FailureReason = taskfailure.ReasonRuntimeRecovery.String()
+		result.Comment = "daemon shut down while task was in flight"
 	}
 
 	d.reportTaskResult(ctx, task.ID, result, taskLog)
@@ -6339,13 +6644,26 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		}
 		taskLog.Error("local_directory: lock acquire failed", "error", err)
 		failureReason := "local_directory_error"
+		errorMessage := fmt.Sprintf("local_directory wait cancelled: %s", err.Error())
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			failureReason = "cancelled"
+			if errors.Is(ctx.Err(), context.Canceled) {
+				// Shutdown can stop the wait poller before it observes a user
+				// cancellation. Honor server terminal state before enabling retry.
+				finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), terminalTaskReportTimeout)
+				defer finalCancel()
+				if status, statusErr := d.client.GetTaskStatus(finalCtx, task.ID); shouldInterruptAgent(status, statusErr) {
+					taskLog.Info("local_directory: wait aborted by server-side terminal state", "status", status, "error", statusErr)
+					return nil, true
+				}
+				failureReason = taskfailure.ReasonRuntimeRecovery.String()
+				errorMessage = "daemon shut down while task was waiting for its local directory lock"
+			}
 		}
 		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
 			kind:          terminalTaskReportFail,
 			taskID:        task.ID,
-			errorMessage:  fmt.Sprintf("local_directory wait cancelled: %s", err.Error()),
+			errorMessage:  errorMessage,
 			failureReason: failureReason,
 		}); failErr != nil {
 			taskLog.Error("fail task after local_directory lock cancel", "error", failErr)
@@ -6382,6 +6700,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			retiredSessionID:      result.RetiredSessionID,
 			contextTokens:         result.ContextTokens,
 			contextWindow:         result.ContextWindow,
+			initContext:           result.InitContext,
 		})
 		if err == nil {
 			return
@@ -6525,7 +6844,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, report.initContext, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -6544,6 +6863,11 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
 	switch {
+	case task.BackgroundJob != "":
+		// No issue, chat or autopilot parent: the task row alone says when
+		// the dir is done, as for quick-create.
+		meta.Kind = execenv.GCKindBackground
+		meta.TaskID = task.ID
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
 		meta.ChatSessionID = task.ChatSessionID
@@ -6592,6 +6916,7 @@ var runtimeDisplayNameOverrides = map[string]string{
 	"qwenpaw":    "QwenPaw",
 	"mcode":      "MiniMax Code",
 	"muse":       "Muse Code",
+	"zcode":      "ZCode",
 	"zeroclaw":   "ZeroClaw",
 }
 
@@ -6668,6 +6993,10 @@ func providerNeedsInlineSystemPrompt(provider string) bool {
 // Codex also has a conversation-scoped store for local_directory tasks. A
 // continued worktree may use a new cwd while retaining its branch and rollout.
 // Managed Codex tasks still require the same existing directory.
+// Claude is cwd-keyed and has no conversation-scoped store, but a continued
+// worktree can bring the prior transcript with it: when the transcript has
+// been migrated into this run's encoded projects directory (#9731), the same
+// relaxed rule applies. Everywhere else Claude keeps the strict rule.
 // sameExistingDir reports whether two paths name the same existing directory.
 // False when either cannot be stat'd, which is the safe answer for cwd-keyed
 // providers: an absent prior workdir means there is nothing to resume from.
@@ -6694,13 +7023,91 @@ func codexWorktreeResumeEligible(env *execenv.Environment, store string) bool {
 	return env != nil && env.LocalWorktree != nil && env.LocalWorktree.Continued && env.CodexHome != "" && store != ""
 }
 
-func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv, provider, envWorkDir string, sessionHomeReachable, refusesMissingSessionCwd, codexWorktreeResumeEligible bool, taskLog *slog.Logger) bool {
+// encodeClaudeCwd mirrors Claude Code's on-disk projects directory naming: it
+// flattens the task's cwd by replacing every non-alphanumeric character with a
+// dash, so /home/u/repo resolves to ~/.claude/projects/-home-u-repo. The
+// mapping is lossy (two cwds can flatten to the same name), which is fine —
+// the CLI resolves sessions through the same mapping.
+// Long-path truncation/hashing and Windows drive-letter normalization are not
+// modeled here; paths requiring them may fall back to a fresh session.
+func encodeClaudeCwd(cwd string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, cwd)
+}
+
+// migrateClaudeWorktreeTranscript copies the prior session's transcript into
+// this run's encoded projects directory so Claude Code can resolve it from the
+// continued worktree's new cwd (#9731). Claude Code looks sessions up under
+// <config-dir>/projects/<encoded-cwd>/ and only falls back to a global search
+// when the local directory misses; copying the transcript in makes the resume
+// take the primary path instead of depending on that fallback. Idempotent: a
+// transcript already present from an earlier migration is left as-is. Reports
+// whether this run's directory now holds the transcript — anything else
+// (changed cwd outside a continued worktree, missing source, unwritable
+// destination) reports false and the gate keeps the strict same-directory
+// rule. The copy left behind in the prior task's directory is orphaned until
+// the operator or a future GC pass reclaims it.
+func migrateClaudeWorktreeTranscript(env *execenv.Environment, sessionID, envWorkDir, priorWorkDir string, childEnv map[string]string, taskLog *slog.Logger) bool {
+	if env == nil || env.LocalWorktree == nil || !env.LocalWorktree.Continued {
+		return false
+	}
+	if sessionID == "" || priorWorkDir == "" || envWorkDir == "" || priorWorkDir == envWorkDir {
+		return false
+	}
+	if sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, "/\\:\x00") {
+		taskLog.Debug("claude: invalid session id for transcript migration")
+		return false
+	}
+	priorConfigDir, err := agent.ClaudeConfigDir(childEnv, priorWorkDir)
+	if err != nil {
+		taskLog.Debug("claude: cannot resolve prior transcript config directory", "error", err)
+		return false
+	}
+	configDir, err := agent.ClaudeConfigDir(childEnv, envWorkDir)
+	if err != nil {
+		taskLog.Debug("claude: cannot resolve transcript config directory", "error", err)
+		return false
+	}
+	src := filepath.Join(priorConfigDir, "projects", encodeClaudeCwd(priorWorkDir), sessionID+".jsonl")
+	dstDir := filepath.Join(configDir, "projects", encodeClaudeCwd(envWorkDir))
+	dst := filepath.Join(dstDir, sessionID+".jsonl")
+	if info, err := os.Stat(dst); err == nil && info.Mode().IsRegular() {
+		return true
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		taskLog.Debug("claude: cannot read prior session transcript", "path", src, "error", err)
+		return false
+	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		taskLog.Debug("claude: cannot create transcript directory", "path", dstDir, "error", err)
+		return false
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		taskLog.Debug("claude: cannot write migrated transcript", "path", dst, "error", err)
+		return false
+	}
+	taskLog.Info("claude: migrated prior session transcript into the continued worktree cwd",
+		"session_id", sessionID,
+		"prior_workdir", priorWorkDir,
+		"workdir", envWorkDir,
+	)
+	return true
+}
+
+func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv, provider, envWorkDir string, sessionHomeReachable, refusesMissingSessionCwd, codexWorktreeResumeEligible, claudeResumeReady bool, taskLog *slog.Logger) bool {
 	var reachable bool
 	if providerUsesPiSessionFile(provider) {
 		reachable = piSessionResumable(task.PriorSessionID, refusesMissingSessionCwd)
 	} else if provider == "hermes" {
 		reachable = sessionHomeReachable
 	} else if provider == "codex" && codexWorktreeResumeEligible {
+		reachable = sessionHomeReachable
+	} else if provider == "claude" && claudeResumeReady {
 		reachable = sessionHomeReachable
 	} else {
 		// Compare the directories, not the spelling. Reuse runs in the canonical
@@ -7849,6 +8256,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+	// CHE-4101: an output_only background task never enters the full pipeline.
+	if task.BackgroundJob != "" {
+		return d.runBackgroundTask(ctx, task, provider, taskLog)
+	}
+
+	// Script mode (CHE-4678 S9 P4): no model session, no execution env.
+	if task.Script != nil {
+		return d.runScriptTask(ctx, task, taskLog)
+	}
 
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
 	prepareCtx, cancelPrepare := context.WithTimeoutCause(ctx, prepareTimeout, errTaskPrepareTimeout)
@@ -7943,10 +8359,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		return TaskResult{}, err
 	}
+	// A status handoff comment is context, so the runtime brief gets no reply target.
+	triggerCommentID, triggerThreadID := task.TriggerCommentID, task.TriggerThreadID
+	if task.isStatusHandoff() {
+		triggerCommentID, triggerThreadID = "", ""
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
-		TriggerCommentID:    task.TriggerCommentID,
-		TriggerThreadID:     task.TriggerThreadID,
+		TriggerCommentID:    triggerCommentID,
+		TriggerThreadID:     triggerThreadID,
 		CommentReplyTargets: commentReplyThreads(task),
 		NewCommentCount:     task.NewCommentCount,
 		NewCommentsSince:    task.NewCommentsSince,
@@ -7976,6 +8397,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		BackgroundJob:                    task.BackgroundJob,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
@@ -8644,15 +9066,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	cancelPrepare()
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
+	taskCtx = execenv.ApplyPreparedSkillNames(taskCtx, env.PreparedSkillNames)
 	// usesCustomProfileCommand is the same provenance the backend receives as
 	// agent.Config.BuiltinRuntime: it separates the provider's own discovered
 	// binary from an arbitrary command speaking its protocol. Reused here so
 	// the gate and the backend cannot disagree about which one is running.
+	// Claude's config lookup needs only the inherited environment plus allowed
+	// custom_env; taskMulticaEnvironment below does not override its config or
+	// home variables. Apply the same blocklist as the eventual child env.
+	claudeResumeReady := provider == "claude" && migrateClaudeWorktreeTranscript(
+		env, task.PriorSessionID, env.WorkDir, task.PriorWorkDir, sanitizeAgentEnv(agentEnvOverrides), taskLog,
+	)
 	resumeReachable := gateResumeToReachableSession(
 		&task, &taskCtx, provider, env.WorkDir,
 		sessionHomeReachable(provider, env, envReused),
 		providerRefusesMissingSessionCwd(provider, !usesCustomProfileCommand),
 		provider == "codex" && codexWorktreeResumeEligible(env, execenv.CodexSessionStorePath(d.cfg.Profile, taskCtx)),
+		claudeResumeReady,
 		taskLog,
 	)
 	// A reachable workdir or continued local worktree is not sufficient for a
@@ -8710,6 +9140,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// the daemon cannot record either (#9404).
 	if env.LocalWorktree != nil {
 		promptOptions = append(promptOptions, WithWorktreeBranch(env.LocalWorktree.Branch, env.LocalWorktree.BaseCommit))
+		// The branch block's rule for uncommitted files has one exception,
+		// decided by the same predicate Finalize uses (#9788 review).
+		if env.LocalWorktree.CommitsAllLeftovers() {
+			promptOptions = append(promptOptions, WithWorktreeCommitsAllLeftovers())
+		}
 	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
 
@@ -8750,13 +9185,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
-	if selfBin, err := resolveSelfExecutable(); err == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	// Ensure the multica CLI is on PATH inside the agent's environment and pin
+	// its path in MULTICA_CLI_PATH (MUL-8603). Some runtimes (e.g. Codex) run in
+	// an isolated sandbox that may not inherit the daemon's PATH, and login
+	// shells can reorder it. A failure only costs the pin and the guard shims,
+	// never the run (fork behaviour).
+	selfBin := ""
+	if err := configureTaskCLIEnvironment(agentEnv); err != nil {
+		taskLog.Warn("task CLI path not pinned; run continues without it", "error", err)
+	} else {
+		selfBin = agentEnv["MULTICA_CLI_PATH"]
+	}
+	// Hand the guard the workspace's stored policy (CHE-5204); without one it
+	// keeps the compiled default.
+	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
+		taskLog.Warn("guard policy not delivered; guard refuses every git and gh call for this run", "error", err)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
@@ -8821,6 +9264,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, runIsolated, d.cfg.Broker, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
+	}
+	defer runBrk.Close()
+	// The elevated run's read proxy sits beside the broker (CHE-2512 B4c). Its
+	// agent turns run under runProxy.Ctx(ctx), which a launch-scope fence stops.
+	runProxy, err := startRunReadProxy(d.client, task, runBrk, agentEnv, restrictedSuccessorLaunch, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare read proxy: %w", err)
+	}
+	defer runProxy.Close()
+	// Front gh and git with the guard shims for every runtime (CHE-5194 T2).
+	// After applyRunBroker, so the guard hands over to the broker shims and
+	// never around them. A failure only costs the guard, never the run.
+	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
+		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -8835,6 +9296,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
+	}
+	// Reserve the trusted name in the exact shell allowlist. The backend assigns
+	// a fresh opaque ID per launch attempt before it starts the process.
+	if provider == "codex" {
+		agentEnv["MULTICA_RUN_BINDING_ID"] = ""
 	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, agent.BaseEnviron(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
@@ -8871,6 +9337,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
 	}
+	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
+		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
+	}
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can
 		// execute tools with the preceding task's frozen environment.
@@ -8902,6 +9371,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		runtimeBrief = freshBrief
 		prompt = BuildPrompt(task, provider, promptOptions...)
 	}
+	// Built after the clock-guard rebuild so the byte counts describe the
+	// brief and prompt actually launched.
+	initContext := buildInitContext(runtimeBrief, prompt)
 	backend, err := agent.ResolveBackend(provider, backendConfig)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
@@ -8989,9 +9461,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
 		Cwd:                        env.WorkDir,
+		PiSkillPaths:               env.PiSkillPaths,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.agentTimeoutFor(provider),
+		Timeout:                    taskRunTimeout(d.cfg.agentTimeoutFor(provider), task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
@@ -9076,6 +9549,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// execution window and always remove the credential afterwards.
 	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
 	checkoutTask.StableDir = stableCwd
+	checkoutTask.Broker = runBrk
 	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
@@ -9099,7 +9573,20 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	outputObserver := &taskOutputObserver{}
 	ctx = withTaskOutputObserver(ctx, outputObserver)
 	ctx = withTaskPREvents(ctx, negotiation.PREvent)
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+	// STOE-30: mirror the agent's cumulative token counters into task_usage
+	// while the run is live, so a long run's cost moves on the board instead of
+	// appearing only after it ends. The backend calls OnUsage from its protocol
+	// reader goroutine, so this records the latest snapshot only; the flush
+	// goroutine owns the HTTP call and its cadence.
+	var liveUsage atomic.Value // []TaskUsageEntry
+	execOpts.OnUsage = func(usage map[string]agent.TokenUsage) {
+		if entries := taskUsageEntries(provider, usage); len(entries) > 0 {
+			liveUsage.Store(entries)
+		}
+	}
+	stopUsageFlush := d.startUsageFlush(ctx, task.ID, &liveUsage, taskLog)
+	defer stopUsageFlush()
+	result, tools, err := d.executeWithDowngrade(ctx, runProxy, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -9155,7 +9642,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+		retryResult, retryTools, retryErr := d.executeWithDowngrade(ctx, runProxy, backend, freshPrompt, withPriorTaskUsage(execOpts, firstUsage), taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
@@ -9180,7 +9667,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// pass the very same check in Finalize.
 	if env.LocalWorktree != nil && result.Status == "completed" {
 		if problem := env.LocalWorktree.CheckDelivery(); problem != nil {
-			result, tools = d.repairWorktreeDelivery(ctx, backend, execOpts, result, tools, problem, env, taskLog, task.ID, &msgSeq)
+			result, tools = d.repairWorktreeDelivery(runProxy.Ctx(ctx), backend, execOpts, result, tools, problem, env, taskLog, task.ID, &msgSeq)
 		}
 	}
 	phaseRecorder.Mark(taskPhaseTurnCompleted)
@@ -9214,22 +9701,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"agent_error", result.Error,
 	)
 
-	// Convert agent usage map to task usage entries.
-	var usageEntries []TaskUsageEntry
-	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.CostUSDTicks <= 0 {
-			continue
-		}
-		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
-		})
-	}
+	// Convert agent usage map to task usage entries. Same conversion the live
+	// flush above uses, so both reports write the same rows.
+	usageEntries := taskUsageEntries(provider, result.Usage)
 
 	// MUL-5305: withhold a Codex session whose rollout never reached the per-issue
 	// store, for ANY terminal state — including `completed`, since a completed
@@ -9254,6 +9728,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer func() {
 		taskResult.SessionRolloutMissing = sessionRolloutMissing
 		taskResult.ContextTokens, taskResult.ContextWindow = result.ContextTokens, result.ContextWindow
+		taskResult.InitContext = initContext
 	}()
 
 	switch result.Status {
@@ -9354,21 +9829,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Usage:         usageEntries,
 		}, nil
 	case "cancelled":
-		// The daemon's own context was cancelled (server cancel or daemon
-		// shutdown): the parent context cancellation propagates here as
-		// context.Canceled and the fail callback runs. A user cancel or issue
-		// reassignment is discarded earlier by handleTask's cancelledByPoll
-		// branch, so this case is mainly defensive — and preserves the
-		// "cancelled" status string for the "agent finished" log line so
-		// operators can distinguish a server cancellation from a real timeout.
-		//
-		// Comment stays empty on purpose. reportTaskResult forwards it as the
-		// task's `error`, which the UI shows verbatim under "Technical
-		// details", so a sentence written here would reach the reader
-		// untranslated. The status alone already yields failure_reason
-		// "cancelled", whose label is localized in every shipped locale, and
-		// it says the same thing — an English sentence beside it would only
-		// be a worse copy of it.
+		// handleTask distinguishes daemon shutdown from explicit cancellation
+		// using its parent context, after checking the server's terminal state.
+		// Keep deliberate cancellation's comment empty: its localized reason
+		// already explains the outcome without untranslated duplicate prose.
 		return TaskResult{
 			Status:    "cancelled",
 			SessionID: result.SessionID,
@@ -9630,7 +10094,7 @@ func (d *Daemon) repairWorktreeDelivery(ctx context.Context, backend agent.Backe
 	taskLog.Warn("local_directory: worktree delivery would be refused; asking the agent to repair it",
 		"branch", problem.Branch, "base", problem.BaseCommit, "tip", problem.Tip, "reason", problem.Reason)
 
-	opts := execOpts
+	opts := withPriorTaskUsage(execOpts, result.Usage)
 	// Continue the conversation when there is one, so the agent knows what it
 	// just did; the prompt is self-contained for the backends that cannot.
 	opts.ResumeSessionID = result.SessionID
@@ -9723,6 +10187,106 @@ func freshSessionMayHelp(errText string) bool {
 	}
 }
 
+// withPriorTaskUsage keeps retries and repair turns on the same task-wide total
+// as the terminal report, even though each backend execution starts at zero.
+func withPriorTaskUsage(opts agent.ExecOptions, prior map[string]agent.TokenUsage) agent.ExecOptions {
+	if report := opts.OnUsage; report != nil && len(prior) > 0 {
+		opts.OnUsage = func(usage map[string]agent.TokenUsage) { report(mergeUsage(prior, usage)) }
+	}
+	return opts
+}
+
+// taskUsageEntries converts a backend's per-model usage map into the rows the
+// server upserts. A model whose buckets are all zero is skipped rather than
+// written as 0: an unreported run keeps its cost NULL server-side, which is what
+// makes the board render it as unknown instead of $0.
+func taskUsageEntries(provider string, usage map[string]agent.TokenUsage) []TaskUsageEntry {
+	var entries []TaskUsageEntry
+	for model, u := range usage {
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.CostUSDTicks <= 0 {
+			continue
+		}
+		entries = append(entries, TaskUsageEntry{
+			Provider:         provider,
+			Model:            model,
+			InputTokens:      u.InputTokens,
+			OutputTokens:     u.OutputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CostUSDTicks:     u.CostUSDTicks,
+		})
+	}
+	// Stable ordering lets the flush compare snapshots across map iterations.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Model < entries[j].Model })
+	return entries
+}
+
+// liveUsageFlushEvery bounds how often a running task's cumulative counters are
+// POSTed. The agent emits them per model call; this only bounds the traffic.
+var liveUsageFlushEvery = 30 * time.Second
+
+// startUsageFlush POSTs the newest snapshot held in `live` until the returned
+// stop func runs, so a long run's cost is visible before it ends (STOE-30).
+// Repeating it is safe by construction: UpsertTaskUsage overwrites absolutely
+// per (task_id, provider, model) and bumps updated_at, which is what makes the
+// hourly rollup re-aggregate those rows, so cumulative snapshots cannot add up
+// twice. It is sent as a snapshot so the server keeps its additive metrics
+// counter on the terminal report (see Client.ReportTaskUsageSnapshot). That
+// report stays the authoritative final value, so the caller stops this flush
+// before the terminal report is made.
+func (d *Daemon) startUsageFlush(ctx context.Context, taskID string, live *atomic.Value, taskLog *slog.Logger) (stop func()) {
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(liveUsageFlushEvery)
+		defer ticker.Stop()
+		var reported string
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				select {
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				default:
+				}
+				entries, _ := live.Load().([]TaskUsageEntry)
+				if len(entries) == 0 {
+					continue
+				}
+				// An idle agent costs nothing: re-posting the numbers the server
+				// already has is traffic, not information.
+				key := fmt.Sprintf("%v", entries)
+				if key == reported {
+					continue
+				}
+				// Preserve ordering with the terminal report even when the run is
+				// cancelled. The HTTP timeout still bounds an in-flight request.
+				if err := d.client.ReportTaskUsageSnapshot(context.WithoutCancel(ctx), taskID, entries); err != nil {
+					// Not fatal — the terminal report carries the run's usage
+					// again if a flush is lost.
+					taskLog.Warn("live usage flush failed", "error", err)
+					continue
+				}
+				reported = key
+			}
+		}
+	}()
+	return sync.OnceFunc(func() {
+		close(done)
+		// Let an in-flight POST finish before the terminal overwrite. Cancelling
+		// only the client request can return before the server finishes writing.
+		// The control-plane HTTP client's timeout bounds this wait.
+		<-stopped
+	})
+}
+
 // executeAndDrain runs a backend, drains its message stream (forwarding to the
 // server), and waits for the final result. msgSeq numbers the reported task
 // messages and is owned by the caller so a same-task retry continues the
@@ -9734,6 +10298,8 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			d.cleanupUnconfirmed.Store(true)
 		}
 	}()
+	// A fence stops the run by waiting for this process to exit (run_tracker.go).
+	defer enterRun(ctx)()
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
@@ -10037,6 +10603,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					// preserved), while a session whose rollout never lands is never
 					// pinned. The terminal report is the authoritative writer.
 					// Non-Codex providers (codexHome == "") pin immediately.
+					noteRunSession(ctx, msg.SessionID)
 					if msg.SessionID != "" && !sessionPinned.Swap(true) {
 						sid := msg.SessionID
 						wd := opts.Cwd

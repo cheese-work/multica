@@ -45,14 +45,23 @@ for (const [name, files, selected] of [
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
   ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
   ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
+  ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
+  ["decision card browser contract", ["e2e/decision-dm-card-renders.spec.ts"], ["backend"]],
+  ["decision card preview list", ["packages/core/issues/decision-action-preview.ts"], ["frontend", "backend", "quality"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
   ["radius policy", ["scripts/check-ui-radius-tokens.mjs"], ["quality"]],
+  ["pattern ledger", ["design/patterns.yml"], ["quality"]],
+  ["pattern validator", ["scripts/design/validate-patterns.mjs"], ["quality"]],
+  ["design record", ["DESIGN.md"], ["quality"]],
   ["shared quality action", [".github/actions/frontend-quality/action.yml"], ["frontend", "quality"]],
   ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality", "images"]],
   ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "backend", "sqlc"]],
   ["CI configuration", [".github/ci-paths.json"], Object.keys(filters)],
+  ["another workflow runs the wait-policy scan", [".github/workflows/release.yml"], ["deploy_cd"]],
+  ["wait policy script", [".github/scripts/ci-wait-policy.py"], ["deploy_cd"]],
+  ["wait policy exceptions", [".github/ci-policy.yml"], ["deploy_cd"]],
 ]) {
   test(`PR, main and merge groups select only affected scopes: ${name}`, () => {
     for (const event of ["pull_request", "push", "merge_group"]) {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
 
@@ -85,9 +86,17 @@ func (h *Handler) ApprovePluginMCPTools(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	hookKey := chi.URLParam(r, "hookKey")
+	audit := h.pluginAudit(r, installation.WorkspaceID, "plugin.mcp_tools.approve", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return map[string]any{"tools": pluginApprovedTools(c.Before.McpApprovals, hookKey)},
+			map[string]any{"hook": hookKey, "tools": pluginApprovedTools(c.After.McpApprovals, hookKey)}
+	})
 	updated, err := h.PluginService.ApproveMCPHookTools(
-		r.Context(), installation, chi.URLParam(r, "hookKey"), req.Tools, parsedUserID)
+		r.Context(), installation, hookKey, req.Tools, parsedUserID, audit)
 	if err != nil {
+		if failedAudit(w, r, err, "plugin.mcp_tools.approve") {
+			return
+		}
 		writePluginError(w, err, "failed to approve the MCP tools")
 		return
 	}

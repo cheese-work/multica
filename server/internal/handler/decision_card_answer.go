@@ -119,10 +119,10 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if located.HumanUserID != userID {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can answer"}
 	}
-	if input.Option != "" && located.AskJson == nil {
+	if input.Option != "" && located.AskJson == nil && located.Kind != "action" {
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "this request has no options to click; type an answer"}
 	}
-	content, err := cardAnswerContent(located, input)
+	content, quote, label, err := cardAnswerText(located, input)
 	if err != nil {
 		return empty, err
 	}
@@ -212,7 +212,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}, AnsweredLabel: pgtype.Text{String: label, Valid: label != ""}})
 	if err != nil {
 		return empty, err
 	}
@@ -224,7 +224,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 		}
 	}
 	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(session.ID), uuidToString(decision.PingMessageID))
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(cardAnswerQuoteText(input)) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
+	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(quote) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -236,7 +236,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
 		return empty, err
 	}
-	decision, err = markDecisionRequestAnswered(ctx, queries, decision, answer)
+	decision, err = handler.markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}
@@ -252,6 +252,42 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	}
 	handler.DecisionWorker.Notify()
 	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared, Covered: covered}, nil
+}
+
+// Labels of a kind=action answer (CHE-2394 P5). The card offers Done and Can't
+// do; free text alone is "replied". None of them verifies completion.
+const (
+	actionAnswerDone   = "done"
+	actionAnswerCantDo = "cant_do"
+	actionAnswerReply  = "replied"
+)
+
+// actionAnswerWords maps the two card buttons to the words the answer shows.
+var actionAnswerWords = map[string]string{actionAnswerDone: "Done", actionAnswerCantDo: "Can't do"}
+
+// cardAnswerText is the answer snapshot, the issue quote text and the answer
+// label for one card answer. A kind=action request takes done, cant_do or text.
+func cardAnswerText(decision db.DecisionRequest, input decisionCardAnswerInput) (content, quote, label string, err error) {
+	if decision.Kind != "action" {
+		content, err = cardAnswerContent(decision, input)
+		return content, cardAnswerQuoteText(input), "", err
+	}
+	text := strings.TrimSpace(input.Text)
+	if len(text) > maxDecisionCardTextBytes {
+		return "", "", "", decisionIntentRefusal{http.StatusBadRequest, "answer text is too long"}
+	}
+	words, ok := actionAnswerWords[input.Option]
+	switch {
+	case input.Option != "" && !ok:
+		return "", "", "", decisionIntentRefusal{http.StatusBadRequest, "an action card is answered with done, cant_do or text"}
+	case ok && text != "":
+		return words + "\n\n" + text, words + "\n\nNote: " + text, input.Option, nil
+	case ok:
+		return words, words, input.Option, nil
+	case text != "":
+		return text, text, actionAnswerReply, nil
+	}
+	return "", "", "", decisionIntentRefusal{http.StatusBadRequest, "an answer needs done, cant_do or text"}
 }
 
 // cardAnswerContent joins the chosen option label and the free text into the
@@ -297,7 +333,7 @@ func cardAnswerQuoteText(input decisionCardAnswerInput) string {
 // cardOptionIndex is the 0-based position of the chosen option on the card, or
 // NULL for a text-only answer.
 func cardOptionIndex(decision db.DecisionRequest, input decisionCardAnswerInput) (pgtype.Int4, error) {
-	if input.Option == "" {
+	if input.Option == "" || decision.Kind == "action" {
 		return pgtype.Int4{}, nil
 	}
 	var options []decisiontx.AskOption

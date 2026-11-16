@@ -45,9 +45,9 @@ type authorizeElevatedOpRequest struct {
 // AuthorizeElevatedOp records one operation the caller is about to run with the
 // exact input it hashed. One transaction under the task's row lock checks grant
 // liveness, scope, state and epoch, so a fence either precedes the check or
-// waits for it. Task and issue taint also refuse, read under share locks (task
-// row, then issue row, the order a taint writer takes through its trigger) so a
-// writer serializes with it.
+// waits for it. Task and issue taint also refuse, read under share locks so a
+// writer serializes with them. The issue row is locked first, before any task
+// row: the one lock order of every path that touches a run of an issue.
 func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
 	if !ok {
@@ -73,6 +73,15 @@ func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if !task.IssueID.Valid {
+		writeError(w, http.StatusForbidden, "task is not elevated")
+		return
+	}
+	issueTaint, err := lockedIssueTaint(r.Context(), qtx, task.IssueID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to authorize")
+		return
+	}
 	te, err := qtx.LockTaskElevation(r.Context(), task.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusForbidden, "task is not elevated")
@@ -83,11 +92,6 @@ func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taint, err := qtx.LockTaskTaintIDs(r.Context(), task.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to authorize")
-		return
-	}
-	issueTaint, err := lockedIssueTaint(r.Context(), qtx, te.IssueID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return
@@ -217,7 +221,7 @@ func (h *Handler) fenceRound(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	done, err := q.FinishDrainedTaskFences(ctx)
+	done, err := q.FinishDrainedTaskFences(ctx, pgtype.UUID{})
 	if err != nil {
 		return err
 	}
@@ -273,4 +277,142 @@ func (h *Handler) EndTaskLaunchScopes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ended": true})
+}
+
+// Downgrade handshake (plan 3.4 and 3.8, slice B4c). The read proxy asks to
+// deliver withheld bytes; the server fences the task at once, and only when
+// every epoch-N operation has ended and the launch scopes are gone does it taint
+// the task and the issue and tell the proxy it may deliver. Taint comes first:
+// the bytes leave the proxy only after the deliver call returned 200.
+
+type downgradeRequest struct {
+	Epoch int64 `json:"epoch"`
+}
+
+func downgradeTaintID(taskID pgtype.UUID) string { return "downgrade:" + uuidToString(taskID) }
+
+// StartTaskDowngrade fences the task for a downgrade. A task already fencing
+// or final answers with its state: the proxy may repeat the call. An epoch the
+// run never held is refused.
+func (h *Handler) StartTaskDowngrade(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	var req downgradeRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	if !task.IssueID.Valid {
+		writeError(w, http.StatusForbidden, "task is not elevated")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start the downgrade")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.LockIssueForTaint(r.Context(), task.IssueID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start the downgrade")
+		return
+	}
+	te, err := qtx.LockTaskElevation(r.Context(), task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusForbidden, "task is not elevated")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start the downgrade")
+		return
+	}
+	if req.Epoch < 1 || req.Epoch > te.Epoch {
+		writeError(w, http.StatusForbidden, "stale epoch")
+		return
+	}
+	if te.State == elevationElevated {
+		if req.Epoch != te.Epoch {
+			writeError(w, http.StatusForbidden, "stale epoch")
+			return
+		}
+		if te, err = qtx.FenceTaskElevation(r.Context(), task.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start the downgrade")
+			return
+		}
+		slog.Info("elevation fence started", "task_id", uuidToString(task.ID), "reason", "downgrade")
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start the downgrade")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"state": te.State, "epoch": te.Epoch})
+}
+
+// DeliverTaskDowngrade confirms that the proxy may deliver. It finishes the
+// task's own fence when nothing is left to drain, then taints the task, and
+// through it the issue, in the same transaction. Any operation still
+// authorized or unknown, or a launch scope still live, answers 409: no taint,
+// no bytes. Repeating it after success changes nothing.
+func (h *Handler) DeliverTaskDowngrade(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	var req struct{}
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	if !task.IssueID.Valid {
+		writeError(w, http.StatusForbidden, "task is not elevated")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to deliver the downgrade")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// The issue row first, as a taint writer takes it: issue_taint_note locks it
+	// for update, so a share lock taken first would deadlock against it.
+	if err := qtx.LockIssueForTaintClear(r.Context(), task.IssueID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to deliver the downgrade")
+		return
+	}
+	te, err := qtx.LockTaskElevation(r.Context(), task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusForbidden, "task is not elevated")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to deliver the downgrade")
+		return
+	}
+	switch te.State {
+	case elevationElevated:
+		writeError(w, http.StatusConflict, "downgrade not started")
+		return
+	case "fencing":
+		done, err := qtx.FinishDrainedTaskFences(r.Context(), task.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to deliver the downgrade")
+			return
+		}
+		if len(done) == 0 {
+			writeError(w, http.StatusConflict, "fence not complete")
+			return
+		}
+		te.State = "restricted_final"
+	}
+	if err := qtx.TaintTaskForDowngrade(r.Context(), db.TaintTaskForDowngradeParams{TaskID: task.ID, TaintID: downgradeTaintID(task.ID)}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to deliver the downgrade")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to deliver the downgrade")
+		return
+	}
+	slog.Info("downgrade delivery confirmed", "task_id", uuidToString(task.ID), "taint_id", downgradeTaintID(task.ID))
+	writeJSON(w, http.StatusOK, map[string]any{"state": te.State, "epoch": te.Epoch, "taint_id": downgradeTaintID(task.ID)})
 }

@@ -304,6 +304,34 @@ describe("InboxFilterMenu", () => {
     ).toBe(true);
   });
 
+  it("toggles mentions me and counts only mention rows", async () => {
+    renderMenu({
+      items: [
+        item("todo-high", "todo", "high", { details: { mention_source: "direct" } }),
+        item("done-low", "done", "low", { details: { mention_source: "all" } }),
+        item("squad", "todo", "low", { details: { mention_source: "squad" } }),
+        item("comment", "todo", "low", { type: "new_comment" }),
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter inbox" }));
+    fireEvent.click(
+      await screen.findByRole("menuitemcheckbox", { name: /Mentions me.*2 notifications/ }),
+    );
+
+    expect(
+      useInboxFilterStore.getState().filtersByWorkspace["ws-1"]?.mentionsOnly,
+    ).toBe(true);
+  });
+
+  it("hides mentions me in the archive", async () => {
+    renderMenu({ archived: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter inbox" }));
+    await screen.findByRole("menuitemcheckbox", { name: /Unread only/ });
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Mentions me/ })).toBeNull();
+  });
+
   it("hides no agents working in the archive and ignores a carried-over selection", async () => {
     useInboxFilterStore.getState().toggleIdleOnly("ws-1");
     renderMenu({ archived: true });

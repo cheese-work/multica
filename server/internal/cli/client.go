@@ -475,6 +475,8 @@ type AttachmentResponse struct {
 	ContentType string `json:"content_type"`
 	SizeBytes   int64  `json:"size_bytes"`
 	CreatedAt   string `json:"created_at"`
+	// Revision is 1 for a first upload, higher when it replaced an earlier file.
+	Revision int `json:"revision"`
 }
 
 // UploadFile uploads a file via multipart form to /api/upload-file.
@@ -493,6 +495,12 @@ func (c *APIClient) UploadFile(ctx context.Context, fileData []byte, filename st
 // issue exists, its `markdown_url` goes into the description, and the create
 // call binds it via `attachment_ids`.
 func (c *APIClient) UploadIssueAttachment(ctx context.Context, fileData []byte, filename string, issueID string) (AttachmentResponse, error) {
+	return c.UploadIssueAttachmentReplacing(ctx, fileData, filename, issueID, "")
+}
+
+// UploadIssueAttachmentReplacing uploads the file as the next revision of the
+// attachment `replaces` (CHE-5295). An empty `replaces` is a plain upload.
+func (c *APIClient) UploadIssueAttachmentReplacing(ctx context.Context, fileData []byte, filename, issueID, replaces string) (AttachmentResponse, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -507,6 +515,11 @@ func (c *APIClient) UploadIssueAttachment(ctx context.Context, fileData []byte, 
 	if issueID != "" {
 		if err := writer.WriteField("issue_id", issueID); err != nil {
 			return AttachmentResponse{}, fmt.Errorf("write issue_id field: %w", err)
+		}
+	}
+	if replaces != "" {
+		if err := writer.WriteField("replaces", replaces); err != nil {
+			return AttachmentResponse{}, fmt.Errorf("write replaces field: %w", err)
 		}
 	}
 

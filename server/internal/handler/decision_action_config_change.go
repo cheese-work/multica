@@ -72,6 +72,11 @@ type configChange struct {
 	// StaleBaseCode, when set, turns drift at approval into a failed action with
 	// this code (HTTP 200) instead of the 409 precondition_drift refusal.
 	StaleBaseCode string
+	// AfterMismatchIsDrift makes an after-digest mismatch at approval answer
+	// precondition_drift: the claim matched at request time, so the server's
+	// own after value moving since is a changed target, not a wrong claim.
+	// The request still refuses a mismatch as after_digest_mismatch.
+	AfterMismatchIsDrift bool
 	// CatalogLock makes an approval take the status catalog lock before any other
 	// lock, in the order a workflow save does, because the change validates against
 	// the catalog.
@@ -147,6 +152,8 @@ type configChangeClaim struct {
 }
 
 // configChangeWant is the field, target and live digest the change was built on.
+const afterDigestMismatchCode = "after_digest_mismatch"
+
 type configChangeWant struct{ Field, TargetID, Before string }
 
 // checkConfigChange applies the rules shared by the request and the approval,
@@ -174,7 +181,7 @@ func checkConfigChange(fields []string, read configChangeRead, claim configChang
 		return errPreconditionDrift
 	}
 	if read.AfterSHA256 != claim.AfterSHA256 {
-		return decisionIntentRefusal{status, "after_digest_mismatch: after_sha256 is not the digest of the change the server computes"}
+		return decisionIntentRefusal{status, afterDigestMismatchCode + ": after_sha256 is not the digest of the change the server computes"}
 	}
 	return nil
 }
@@ -240,6 +247,16 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	}, nil
 }
 
+type configApprovalKey struct{}
+
+// configChangeAtApproval tells an Authorize hook which phase it runs in: at
+// approval a proposer who lost a grant was allowed once and is now revoked,
+// which is a different refusal from never having been allowed.
+func configChangeAtApproval(ctx context.Context) bool {
+	at, _ := ctx.Value(configApprovalKey{}).(bool)
+	return at
+}
+
 // authorizeConfigChange runs the action's proposer policy, if it has one. The
 // proposer is the stored asking agent, never a value from params. An action
 // with a policy and no valid proposer fails closed.
@@ -290,18 +307,46 @@ func configChangeDiff(read configChangeRead) (string, []decisiontx.DiffHunk, err
 	return kind, hunks, err
 }
 
-// previewMeta is the read's Meta plus whitespace_only: the diff splits lines
-// and drops line-ending and final-newline differences, so a text that changed
-// only there has digests that differ but no changed line to show.
+// previewMeta is the read's Meta plus two flags for what the line diff cannot
+// show, because it splits lines and drops line-ending and final-newline
+// differences: line_endings_changed when the two texts differ there (hunks or
+// not), and whitespace_only when that is the only change, so the digests
+// differ but no changed line exists.
 func previewMeta(read configChangeRead, kind string, hunks []decisiontx.DiffHunk) map[string]any {
 	meta := maps.Clone(read.Meta)
-	if kind == diffKindText && len(hunks) == 0 && *read.BeforeText != *read.AfterText {
-		if meta == nil {
-			meta = map[string]any{}
-		}
+	if kind != diffKindText || *read.BeforeText == *read.AfterText {
+		return meta
+	}
+	before, after := *read.BeforeText, *read.AfterText
+	endingsChanged := strings.HasSuffix(before, "\n") != strings.HasSuffix(after, "\n") || lineEndingStyleChanged(before, after)
+	if !endingsChanged && len(hunks) > 0 {
+		return meta
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if endingsChanged {
+		meta["line_endings_changed"] = true
+	}
+	if len(hunks) == 0 {
 		meta["whitespace_only"] = true
 	}
 	return meta
+}
+
+// lineEndingStyleChanged compares the style (CRLF, bare LF or both), never the
+// count: adding or removing a line in a CRLF file changes no line ending. A text
+// with no line ending has no style, so it never counts as a change.
+func lineEndingStyleChanged(before, after string) bool {
+	style := func(text string) (crlf, lf bool) {
+		return strings.Contains(text, "\r\n"), strings.Contains(strings.ReplaceAll(text, "\r\n", ""), "\n")
+	}
+	beforeCRLF, beforeLF := style(before)
+	afterCRLF, afterLF := style(after)
+	if !beforeCRLF && !beforeLF || !afterCRLF && !afterLF {
+		return false
+	}
+	return beforeCRLF != afterCRLF || beforeLF != afterLF
 }
 
 // executeConfigChange runs in the approval savepoint. It takes the try-lock and
@@ -309,6 +354,7 @@ func previewMeta(read configChangeRead, kind string, hunks []decisiontx.DiffHunk
 // transaction and writes the audit row. A readback that is not the approved
 // value fails the action, which undoes the write.
 func executeConfigChange(ctx context.Context, change configChange, execution decisionActionExecution) (json.RawMessage, error) {
+	ctx = context.WithValue(ctx, configApprovalKey{}, true)
 	action, queries := execution.Action, execution.Queries
 	var stored struct {
 		Field        string `json:"field"`
@@ -324,7 +370,7 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 		return nil, err
 	}
 	if !locked {
-		return nil, errBusyRetry
+		return nil, atStep("config_change", errBusyRetry)
 	}
 	// The row lock comes before the first read: an ordinary edit holds the row
 	// until it commits, so it cannot land between this read and Apply.
@@ -343,6 +389,10 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 		claim.AfterSHA256 = read.AfterSHA256
 	}
 	if err := checkConfigChange(change.Fields, read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict, change.StaleBaseCode != ""); err != nil {
+		var refusal decisionIntentRefusal
+		if change.AfterMismatchIsDrift && errors.As(err, &refusal) && strings.HasPrefix(refusal.message, afterDigestMismatchCode+":") {
+			err = errPreconditionDrift
+		}
 		return nil, change.staleBase(err)
 	}
 	if err := authorizeConfigChange(ctx, change, queries, action.WorkspaceID, action.RequestedByAgentID, action.Params, read); err != nil {

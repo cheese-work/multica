@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useTheme } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import type { ChatSession } from "@multica/core/types";
+import { ChatAttentionRow } from "@/components/chat/chat-attention-row";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { IconButton } from "@/components/ui/icon-button";
 import { Text } from "@/components/ui/text";
@@ -100,8 +101,8 @@ export default function ChatSessionsRoute() {
               {active.map((session) => {
                 const selected = session.id === activeSessionId;
                 return (
+                  <View key={session.id}>
                   <Pressable
-                    key={session.id}
                     testID="mobile-chat-session-row"
                     onPress={() => {
                       requestSelect(session.id);
@@ -149,6 +150,8 @@ export default function ChatSessionsRoute() {
                       </Text>
                     ) : null}
                   </Pressable>
+                  <ChatAttentionRow session={session} />
+                  </View>
                 );
               })}
             </View>

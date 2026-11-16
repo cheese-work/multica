@@ -86,22 +86,35 @@ func (handler *Handler) ChallengeDecisionAction(writer http.ResponseWriter, requ
 }
 
 func (handler *Handler) issueApprovalChallenge(ctx context.Context, caller decisionActionCaller) (passkey.Issued, error) {
-	preview, located, err := handler.locateDecisionAction(ctx, caller)
+	preview, err := handler.checkApprovable(ctx, caller)
 	if err != nil {
 		return passkey.Issued{}, err
 	}
+	return handler.issueApproval(ctx, caller.userID, preview.ID, preview.PayloadSha256)
+}
+
+// checkApprovable refuses an action the human cannot approve now.
+func (handler *Handler) checkApprovable(ctx context.Context, caller decisionActionCaller) (db.DecisionAction, error) {
+	preview, located, err := handler.locateDecisionAction(ctx, caller)
+	if err != nil {
+		return preview, err
+	}
 	if handler.Passkeys == nil {
-		return passkey.Issued{}, errApprovalUnavailable
+		return preview, errApprovalUnavailable
 	}
 	if located.Status != "open" || preview.State != "pending" {
-		return passkey.Issued{}, errNotPending
+		return preview, errNotPending
 	}
 	if expired, err := handler.Queries.DecisionActionExpired(ctx, db.DecisionActionExpiredParams{ID: preview.ID, WorkspaceID: caller.workspaceID}); err != nil {
-		return passkey.Issued{}, err
+		return preview, err
 	} else if expired {
-		return passkey.Issued{}, errActionExpired
+		return preview, errActionExpired
 	}
-	issued, err := handler.Passkeys.IssueApproval(ctx, caller.userID, preview.ID, preview.PayloadSha256)
+	return preview, nil
+}
+
+func (handler *Handler) issueApproval(ctx context.Context, userID, actionID pgtype.UUID, payloadSHA256 string) (passkey.Issued, error) {
+	issued, err := handler.Passkeys.IssueApproval(ctx, userID, actionID, payloadSHA256)
 	switch {
 	case errors.Is(err, passkey.ErrNoPasskey):
 		return passkey.Issued{}, errNoPasskey

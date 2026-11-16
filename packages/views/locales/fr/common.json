@@ -142,8 +142,8 @@
     "reject_error": "Le refus n'a pas abouti. Réessayez.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
-      "executed": "Exécutée",
-      "failed": "Échec",
+      "executed": "Appliquée",
+      "failed": "Non appliquée",
       "rejected": "Rejetée",
       "expired": "Expirée",
       "cancelled": "Annulée"
@@ -172,13 +172,19 @@
     "error": "L'approbation par clé d'accès n'a pas abouti. Réessayez.",
     "lost": "La réponse a été perdue. L'action n'est pas approuvée une seconde fois. Vérifiez le résultat.",
     "check": "Vérifier le résultat",
-    "outcome": { "cap_applied": "Plafond appliqué", "run_queued": "Exécution en file d’attente", "still_blocked": "Toujours bloqué : {{reason}}" },
+    "outcome": {
+      "cap_applied": "Plafond appliqué",
+      "run_queued": "Exécution en file d’attente",
+      "still_blocked": "Toujours bloqué : {{reason}}"
+    },
     "panel": {
       "title": "Demande de budget d'exécutions",
       "raise_cap": "Porter le plafond d'exécutions de {{issue}} à {{cap}} pour cette fenêtre.",
       "top_up": "Recharger le budget d'exécutions de {{issue}} pour cette fenêtre.",
-      "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche ; elle ne peut pas être approuvée ici.",
-      "unreadable": "Cette approbation ne vous est pas accessible, ou elle n'existe plus."
+      "settled": "Cette approbation est déjà : {{state}}. Si vous en avez encore besoin, demandez à l'agent de la proposer à nouveau.",
+      "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche. Ouvrez la carte dans votre DM ou votre boîte de réception pour en décider.",
+      "open_card": "Ouvrir la carte",
+      "unreadable": "Cette approbation n'est pas disponible pour vous ou n'existe plus. Demandez à l'agent de la proposer à nouveau."
     }
   }
 }

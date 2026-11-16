@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { createKeyedDraftStore } from "./create-keyed-draft-store";
 import { usePersistedDraft } from "./use-persisted-draft";
@@ -187,6 +187,177 @@ describe("usePersistedDraft", () => {
         setCurrentWorkspace("ws-a", "id-a");
         await settle();
         expect(store.getState().getDraft("create")).toBeUndefined();
+      });
+
+      // Another tab is a second copy of the module sharing this page's localStorage. Its logout is the real
+      // one: end the session, then clear the stored drafts. `duringGap` runs between those two steps.
+      const loadTabB = async (storageKey: string) => {
+        vi.resetModules();
+        const tabB = await import("./cleanup-registry");
+        tabB.registerDraftCleanup({ storageKey, workspaceScoped: true, resetInMemory: () => {} });
+        return tabB;
+      };
+      const logoutIn = (tabB: Awaited<ReturnType<typeof loadTabB>>, values: Map<string, string>, duringGap?: () => void) => {
+        tabB.resetAllRegisteredDrafts();
+        let gapDone = false;
+        tabB.clearRegisteredWorkspaceDrafts(
+          {
+            ...adapterOf(values),
+            removeItem: (k) => {
+              if (!gapDone) {
+                gapDone = true;
+                duringGap?.();
+              }
+              values.delete(k);
+            },
+          },
+          "ws-a",
+        );
+      };
+      const otherTabLogsOut = async (values: Map<string, string>, duringGap?: () => void) =>
+        logoutIn(await loadTabB("h_late"), values, duringGap);
+
+      it("another tab logout gap: a tab that mounts and writes in the gap cannot bring the old note back", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        await otherTabLogsOut(values, () => {
+          const fresh = renderHook(() => usePersistedDraft(store, "other", EMPTY));
+          act(() => fresh.result.current[1]({ text: "gap write" }));
+        });
+        store.getState().setDraft("third", { text: "later edit" }); // after the clear, a different key
+        await settle();
+        const persisted = JSON.stringify([...values.entries()].filter(([k]) => k.startsWith("h_late")));
+        expect(persisted).not.toContain("private");
+      });
+
+      it("another tab deletes the workspace: a write in the gap cannot bring the old note back", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        vi.resetModules();
+        const tabB = await import("./cleanup-registry");
+        tabB.registerDraftCleanup({ storageKey: "h_late", workspaceScoped: true, resetInMemory: () => {} });
+        let gapDone = false;
+        tabB.clearRegisteredWorkspaceDrafts( // workspace delete only: no logout
+          {
+            ...adapterOf(values),
+            removeItem: (k) => {
+              if (!gapDone) {
+                gapDone = true;
+                const fresh = renderHook(() => usePersistedDraft(store, "other", EMPTY));
+                act(() => fresh.result.current[1]({ text: "gap write" }));
+              }
+              values.delete(k);
+            },
+          },
+          "ws-a",
+        );
+        store.getState().setDraft("third", { text: "later edit" });
+        await settle();
+        const persisted = JSON.stringify([...values.entries()].filter(([k]) => k.startsWith("h_late")));
+        expect(persisted).not.toContain("private");
+      });
+
+      // A write decided under the old session lands after the other tab's whole logout. The next user
+      // signs in on the same profile and may already have saved a draft under the same key.
+      const lateLandingSetup = async () => {
+        const values = new Map<string, string>();
+        const tabB = await loadTabB("h_land");
+        let armed = false;
+        let newUserWrites: (() => void) | undefined;
+        const make = (storage: ReturnType<typeof adapterOf>) =>
+          createKeyedDraftStore<Sample>({
+            storageKey: "h_land",
+            emptyData: EMPTY,
+            hasMeaningful: (d) => d.text.length > 0,
+            storage,
+          });
+        const store = make({
+          ...adapterOf(values),
+          setItem: (k, v) => {
+            if (armed) {
+              armed = false;
+              logoutIn(tabB, values);
+              newUserWrites?.();
+            }
+            values.set(k, v);
+          },
+        });
+        setCurrentWorkspace("ws-a", "id-a");
+        await act(async () => { await new Promise((r) => queueMicrotask(() => r(null))); });
+        const lateWrite = (onLogout?: () => void) => {
+          newUserWrites = onLogout;
+          armed = true;
+          store.getState().setDraft("create", { text: "user one note" });
+        };
+        const rawStorage = () => JSON.stringify([...values.entries()].filter(([k]) => k.startsWith("h_land")));
+        const storageEvent = () => window.dispatchEvent(new Event("storage")); // another tab wrote a key
+        return { make, lateWrite, rawStorage, storageEvent, values };
+      };
+
+      it("a write that lands after another tab's logout cleared storage is not read, and is swept from storage", async () => {
+        const { make, lateWrite, rawStorage, storageEvent, values } = await lateLandingSetup();
+        lateWrite();
+        // the next user signs in on the same profile: a page load reads storage
+        expect(make(adapterOf(values)).getState().getDraft("create")).toBeUndefined();
+        storageEvent();
+        expect(rawStorage()).not.toContain("user one note");
+      });
+
+      it("a write that lands after another tab's logout does not replace the next user's draft", async () => {
+        const { make, lateWrite, rawStorage, storageEvent, values } = await lateLandingSetup();
+        lateWrite(() => {
+          const next = make(adapterOf(values));
+          next.getState().setDraft("create", { text: "user two note" });
+        });
+        storageEvent();
+        expect(make(adapterOf(values)).getState().getDraft("create")).toEqual({ text: "user two note" });
+        expect(rawStorage()).not.toContain("user one note");
+      });
+
+      it("another tab logged out: a pending flush from this tab is dropped, even after a re-render", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        await otherTabLogsOut(values);
+        hookA.rerender(); // a render before the unmount must not adopt the new session
+        act(() => hookA.result.current[1]({ text: "private, late" }));
+        hookA.unmount();
+        await settle();
+
+        expect([...values.keys()].filter((k) => k.startsWith("h_late"))).toEqual([]);
+        expect(store.getState().getDraft("create")?.text).not.toBe("private, late");
+      });
+
+      it("another tab logged out: a late clear is dropped too", async () => {
+        const { store, hookA, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        await otherTabLogsOut(values);
+        act(() => hookA.result.current[2]());
+        // The map is the old session's, so reads hide it; the dropped clear leaves it untouched.
+        expect(store.getState().drafts.create?.data).toEqual({ text: "private" });
+      });
+
+      it("another tab logged out: a card mounted afterwards does not write the old drafts back", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        await otherTabLogsOut(values);
+        // This tab has not heard of the logout. A fresh mount must not adopt the old session's map.
+        const fresh = renderHook(() => usePersistedDraft(store, "other", EMPTY));
+        expect(store.getState().getDraft("create")).toBeUndefined();
+        act(() => fresh.result.current[1]({ text: "new" }));
+        await settle();
+        const persisted = [...values.entries()].filter(([k]) => k.startsWith("h_late"));
+        expect(JSON.stringify(persisted)).not.toContain("private");
+        expect(JSON.stringify(persisted)).toContain("new");
+      });
+
+      it("this tab's own logout and re-login keeps a mounted hook writing", async () => {
+        const { store, hookA, settle, values } = await setup();
+        resetAllRegisteredDrafts();
+        clearRegisteredWorkspaceDrafts(adapterOf(values), "ws-a");
+        hookA.rerender();
+        act(() => hookA.result.current[1]({ text: "new session" }));
+        await settle();
+        expect(store.getState().getDraft("create")).toEqual({ text: "new session" });
       });
 
       it("a late clear after cleanup is a no-op and a fresh render writes again", async () => {

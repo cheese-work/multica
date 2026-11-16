@@ -23,6 +23,11 @@ import (
 // SettingKey is the workspace.settings key that holds the mode.
 const SettingKey = "ask_guard_mode"
 
+// ReversibleSettingKey holds the mode of the reversible-ask guard (CHE-5754):
+// a plain agent question to a person about work Standing Delivery Authorization
+// already allows. Its own key, so it reverts without touching SettingKey.
+const ReversibleSettingKey = "reversible_ask_guard"
+
 type Mode string
 
 const (
@@ -43,7 +48,14 @@ func ParseMode(s string) (Mode, error) {
 // ModeFromSettings reads the mode from a workspace.settings value. A missing
 // key is the upstream default, off. A malformed value is an error: callers
 // must not guess a mode.
-func ModeFromSettings(raw []byte) (Mode, error) {
+func ModeFromSettings(raw []byte) (Mode, error) { return modeFromSettings(raw, SettingKey) }
+
+// ReversibleModeFromSettings reads ReversibleSettingKey the same way.
+func ReversibleModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, ReversibleSettingKey)
+}
+
+func modeFromSettings(raw []byte, key string) (Mode, error) {
 	if len(raw) == 0 {
 		return ModeOff, nil
 	}
@@ -51,7 +63,7 @@ func ModeFromSettings(raw []byte) (Mode, error) {
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		return "", fmt.Errorf("workspace settings: %w", err)
 	}
-	v, ok := settings[SettingKey]
+	v, ok := settings[key]
 	if !ok {
 		return ModeOff, nil
 	}
@@ -70,11 +82,17 @@ func ModeFromSettings(raw []byte) (Mode, error) {
 // WarnOnly records the event as warn even when the workspace is in block mode,
 // for operations that must never be refused or recovered (a chat-lane task, or
 // an agent call with no task).
+//
+// MemberID is the one member the operation asks, when it names exactly one. A
+// request created with --recovers clears the event only for that member.
 type Op struct {
-	IssueID, TaskID pgtype.UUID
-	Kind            string
-	Payload         []byte
-	WarnOnly        bool
+	IssueID, TaskID, MemberID pgtype.UUID
+	Kind                      string
+	Payload                   []byte
+	WarnOnly                  bool
+	// Source is the text a recovery notice quotes verbatim. Empty when the
+	// operation has no ask text (a wakeup), which sends the event to repair.
+	Source string
 }
 
 // Guard writes events through Queries. Queries must not be bound to the
@@ -124,7 +142,8 @@ func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, o
 	digest := hex.EncodeToString(sum[:])
 	ev, err := g.Queries.InsertAskGuardEvent(ctx, db.InsertAskGuardEventParams{
 		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: op.IssueID, TaskID: op.TaskID,
-		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode),
+		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode), MemberID: op.MemberID,
+		SourceText: pgtype.Text{String: op.Source, Valid: op.Source != ""},
 	})
 	if err == nil {
 		return ev, "created", nil
