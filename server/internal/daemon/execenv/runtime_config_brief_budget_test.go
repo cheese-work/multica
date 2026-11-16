@@ -34,8 +34,11 @@ func TestIssueBriefStaysInsideByteBudget(t *testing.T) {
 // issues reference; the brief must keep the pointer when that skill is installed.
 func TestWorkflowPointsAtMovedProcedure(t *testing.T) {
 	t.Parallel()
+	// Upstream v0.9.0 finds the platform skill by BuiltinName, not Name; a
+	// fixture with Name alone drops the pointer and dumps the whole brief into
+	// the CI log, which the warning budget counts (CHE-6039).
 	ctx := TaskContextForEnv{IssueID: "issue-1", AgentID: "a-1", AgentName: "Eve",
-		AgentSkills: []SkillContextForEnv{{Name: platformSkillName}}}
+		AgentSkills: []SkillContextForEnv{{Name: platformSkillName, BuiltinName: platformSkillName}}}
 	brief := buildMetaSkillContent("claude", ctx)
 	if !strings.Contains(brief, "references/issue-turn.md") {
 		t.Errorf("workflow lost the pointer to the moved procedure\n---\n%s", brief)
