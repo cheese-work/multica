@@ -39,3 +39,14 @@ export const useWakeupRuleDraftStore = createKeyedDraftStore<SettingsFieldsDraft
   emptyData: {},
   hasMeaningful: anyField,
 });
+
+/**
+ * Key: `workspace:<plugin name>`. Fields: action, message, and `base`, the JSON of the
+ * policy version (policy + sha256) the edit started from, frozen so the passkey
+ * signs against it and a concurrent change surfaces as a 409, never an overwrite.
+ */
+export const useGuardEditDraftStore = createKeyedDraftStore<SettingsFieldsDraft>({
+  storageKey: "multica_guard_edit_drafts",
+  emptyData: {},
+  hasMeaningful: anyField,
+});

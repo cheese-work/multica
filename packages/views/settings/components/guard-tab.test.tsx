@@ -1,9 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, ApiError } from "@multica/core/api";
 import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { renderWithI18n } from "../../test/i18n";
+import { useGuardEditDraftStore } from "@multica/core/settings/draft-stores";
 import { GuardTab } from "./guard-tab";
 
 vi.mock("@multica/core/api", async (importOriginal) => ({
@@ -41,8 +42,9 @@ const POLICY = {
   ],
 };
 
+let client: QueryClient;
 function mount() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderWithI18n(
     <QueryClientProvider client={client}>
       <GuardTab />
@@ -51,6 +53,7 @@ function mount() {
 }
 
 beforeEach(() => {
+  useGuardEditDraftStore.setState({ drafts: {} });
   role = "owner";
   settings = { guard_policy: POLICY };
   getPolicy.mockReset().mockResolvedValue({ policy: POLICY, sha256: "1111aaaa" + "0".repeat(56) });
@@ -136,11 +139,12 @@ it("points a member at the CLI instead of an editor", async () => {
   expect(screen.queryByRole("combobox", { name: "Action" })).toBeNull();
 });
 
-async function openEditor(name = "ci-wait") {
-  mount();
+async function openEditor(name = "ci-wait", view = mount()) {
   fireEvent.click(within(await screen.findByRole("list", { name: "Guard plugins" })).getByText(name));
   fireEvent.click(screen.getByRole("button", { name: "Edit with passkey" }));
-  return screen.findByRole("combobox", { name: "Action" });
+  const action = await screen.findByRole("combobox", { name: "Action" });
+  await waitFor(() => expect(action).toBeEnabled()); // the form unlocks once the base policy is loaded
+  return { action, view };
 }
 
 const NEW_POLICY = {
@@ -149,7 +153,7 @@ const NEW_POLICY = {
 };
 
 it("lets an owner change a rule: challenge names the base, the passkey signs, the write follows", async () => {
-  const action = await openEditor();
+  const { action } = await openEditor();
   fireEvent.change(action, { target: { value: "pass" } });
   fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
   expect(await screen.findByText("Saved. Policy 2222bbbb is live.")).toBeVisible();
@@ -161,7 +165,7 @@ it("lets an owner change a rule: challenge names the base, the passkey signs, th
 
 it("keeps the edit open with one line when the passkey prompt is cancelled", async () => {
   sign.mockRejectedValueOnce(new Error("cancelled"));
-  const action = await openEditor();
+  const { action } = await openEditor();
   fireEvent.change(action, { target: { value: "pass" } });
   fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
   expect(await screen.findByText("Passkey cancelled or timed out. Nothing was saved.")).toBeVisible();
@@ -179,7 +183,7 @@ function conflict() {
 it("shows the Reapply screen on a 409 and re-applies the change on the current policy", async () => {
   const { current, error } = conflict();
   challenge.mockRejectedValueOnce(error);
-  const action = await openEditor();
+  const { action } = await openEditor();
   fireEvent.change(action, { target: { value: "pass" } });
   fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Not saved. The guard policy changed while you edited: 1111aaaa → 3333cccc.");
@@ -195,7 +199,7 @@ it("shows the Reapply screen on a 409 and re-applies the change on the current p
 it("drops the pending change on Discard and reloads the current values on Reload", async () => {
   const { error } = conflict();
   challenge.mockRejectedValue(error);
-  const action = await openEditor();
+  const { action } = await openEditor();
   fireEvent.change(action, { target: { value: "pass" } });
   fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
   fireEvent.click(await screen.findByRole("button", { name: "Reload current" }));
@@ -268,4 +272,48 @@ it("shows review rules from a layer", async () => {
   mount();
   expect(await screen.findByText("tevo-studio/*")).toBeVisible();
   expect(screen.getByText(/^Organization tevo-studio/)).toBeVisible();
+});
+
+const OTHER_OWNER_SHA = "4444dddd" + "0".repeat(56);
+const OTHER_OWNER_POLICY = { ...POLICY, plugins: POLICY.plugins.map((p) => (p.name === "ci-wait" ? { ...p, action: "shadow" } : p)) };
+
+it("keeps the signed base while a draft is open: a refresh does not turn another owner's change into a silent overwrite", async () => {
+  const { action } = await openEditor();
+  fireEvent.change(action, { target: { value: "pass" } });
+  getPolicy.mockResolvedValue({ policy: OTHER_OWNER_POLICY, sha256: OTHER_OWNER_SHA });
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ["guard", "ws", "policy"] });
+  });
+  await waitFor(() => expect(getPolicy).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  await waitFor(() => expect(challenge).toHaveBeenCalledTimes(1));
+  expect(challenge).toHaveBeenCalledWith("ws", { policy: NEW_POLICY, base_sha256: "1111aaaa" + "0".repeat(56) });
+});
+
+it("keeps the unsent edit and its base when the editor closes and opens again", async () => {
+  const { action, view } = await openEditor();
+  fireEvent.change(action, { target: { value: "pass" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Message to agent" }), { target: { value: "kept" } });
+  view.unmount();
+  getPolicy.mockResolvedValue({ policy: OTHER_OWNER_POLICY, sha256: OTHER_OWNER_SHA });
+  const again = await openEditor("ci-wait", mount());
+  expect(again.action).toHaveValue("pass");
+  expect(screen.getByRole("textbox", { name: "Message to agent" })).toHaveValue("kept");
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  await waitFor(() => expect(challenge).toHaveBeenCalledTimes(1));
+  expect(challenge.mock.calls[0]?.[1]).toMatchObject({ base_sha256: "1111aaaa" + "0".repeat(56) });
+});
+
+it("clears the unsent edit after a save and after Cancel", async () => {
+  const first = await openEditor();
+  fireEvent.change(first.action, { target: { value: "pass" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  await screen.findByText("Saved. Policy 2222bbbb is live.");
+  expect(useGuardEditDraftStore.getState().drafts).toEqual({});
+  first.view.unmount();
+  const second = await openEditor("ci-wait", mount());
+  fireEvent.change(second.action, { target: { value: "shadow" } });
+  expect(Object.keys(useGuardEditDraftStore.getState().drafts)).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(useGuardEditDraftStore.getState().drafts).toEqual({});
 });
