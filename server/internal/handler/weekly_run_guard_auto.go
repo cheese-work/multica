@@ -56,6 +56,14 @@ func (h *Handler) autoApproveRunGuard(ctx context.Context, issue db.Issue, e *se
 		open, err := q.LockOpenWeeklyRunGuardRefusal(ctx, issue.ID)
 		switch {
 		case err == nil:
+			// CHE-6241: a person declined this refusal's card; that answer stands.
+			declined, err := q.HasRejectedWeeklyRunGuardCard(ctx, db.HasRejectedWeeklyRunGuardCardParams{IssueID: issue.ID, RequestFingerprint: weeklyCardFingerprint + uuidToString(open.ID)})
+			if err != nil {
+				return err
+			}
+			if declined {
+				return errAutoNotApproved
+			}
 			refusalID = open.ID
 		case errors.Is(err, pgx.ErrNoRows) && e != nil:
 			row, err := q.InsertWeeklyRunGuardRefusal(ctx, db.InsertWeeklyRunGuardRefusalParams{

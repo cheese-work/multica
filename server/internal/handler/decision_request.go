@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,11 +24,14 @@ import (
 )
 
 type decisionRequestInput struct {
-	SessionID       pgtype.UUID
-	NewDM           bool
-	HumanUserID     pgtype.UUID
-	Ask             string
-	Footer          string
+	SessionID   pgtype.UUID
+	NewDM       bool
+	HumanUserID pgtype.UUID
+	Ask         string
+	Footer      string
+	// CardLintMode is the workspace decision_card_lint_mode for a lint-eligible
+	// ask; off or empty leaves the comment as written. Out of the fingerprint.
+	CardLintMode    string `json:"-"`
 	ParentID        pgtype.UUID
 	EscalationClass string
 	SourceCommentID pgtype.UUID
@@ -586,11 +590,22 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
+	content := decisionAskContent(input)
+	if input.CardLintMode != "" && input.CardLintMode != "off" {
+		human, err := queries.GetUser(ctx, session.CreatorID)
+		if err != nil {
+			return empty, err
+		}
+		var added bool
+		if content, added = decisiontx.MentionHuman(content, human.Name, uuidToString(session.CreatorID)); added {
+			slog.Info("decision card lint", "code", "mention_missing", "issue_id", uuidToString(issue.ID), "request_id", uuidToString(created.ID))
+		}
+	}
 	var comment db.Comment
 	if attach {
-		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: decisionAskContent(input)})
+		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: content})
 	} else {
-		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: decisionAskContent(input), Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
+		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: content, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
 		if tag == nil {
 			commentParams.DecisionIntentID = intent.ID
 		}

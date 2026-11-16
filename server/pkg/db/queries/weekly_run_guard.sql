@@ -79,3 +79,12 @@ ORDER BY r.created_at DESC LIMIT 1;
 SELECT * FROM weekly_run_guard_refusal
 WHERE state = 'open' AND (created_at, id) > (@after_created_at::timestamptz, @after_id::uuid)
 ORDER BY created_at, id LIMIT 100;
+
+-- name: HasRejectedWeeklyRunGuardCard :one
+-- CHE-6241: the refusal's card was declined. The refusal row keeps the trigger
+-- it refused; a repeat of that trigger opens no new card.
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    JOIN decision_action action ON action.decision_request_id = request.id
+    WHERE request.issue_id = $1 AND request.request_fingerprint = $2 AND action.state = 'rejected'
+);

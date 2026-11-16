@@ -202,6 +202,29 @@ func TestRunGuardAutoSweepReachesCardsBehindARetainedPage(t *testing.T) {
 	}
 }
 
+// CHE-6241: a card a person declined stays declined; the auto-approver does
+// not grant the allowance the person refused, on the sweep or on a repeat trip.
+func TestRunGuardAutoRespectsADeclinedCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":false}}`)
+	c, e := guardAutoCase(t, 6248010, 10, 0)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true}}`)
+	testHandler.sweepRunGuardAuto(context.Background())
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+
+	if n := c.allowanceRuns(t); n != 0 {
+		t.Fatalf("allowance = %d runs, want 0 for a declined card", n)
+	}
+	if n := c.autoApprovals(t); n != 0 {
+		t.Fatalf("auto-approvals = %d, want 0", n)
+	}
+}
+
 func TestRunGuardAutoSweepLeavesALoopCardOpen(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

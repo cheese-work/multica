@@ -2303,6 +2303,13 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	if isNoteComment(comment.Content) || comment.Type == "jev_route" {
 		return nil
 	}
+	// CHE-6241: the platform's own comments (a decision answer, the run guard
+	// notice) report state and start nothing. Without this, an untagged one on a
+	// squad-assigned issue fell back to the squad leader and the run the guard
+	// had just refused came back through the comment.
+	if comment.AuthorType == "system" {
+		return nil
+	}
 	// Shared comment-trigger seam: refresh the issue snapshot from DB so evaluation
 	// uses the true post-insert revision and state across all entry points (CreateComment,
 	// RunQuickAction, etc.) without stamping stale snapshots (CHE-1708).

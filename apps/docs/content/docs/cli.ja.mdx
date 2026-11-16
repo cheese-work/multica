@@ -309,6 +309,8 @@ multica runtime usage <runtime-id>
 multica runtime activity <runtime-id>
 ```
 
+`daemon restart` は、カスタムユニットと起動設定を含む既存の Linux systemd ユーザーサービスを維持します。停止前に、サービスマネージャーで対象 daemon の PID を確認します。ネイティブの停止判定（メンテナンス保持中は `--maintenance-token` が必要）を使用し、自動再起動を待つか、停止済みの同じサービスを起動します。成功には、90 秒以内にサービスの PID が変わり、稼働中のプロファイルが一致することが必要です。所有関係の不一致や停止結果が不明な場合は、強制終了や別の子プロセスの起動をせずにエラーを返します。管理対象タスクからの daemon 再起動は引き続き禁止されます。
+
 ```bash
 multica daemon autostart enable
 multica runtime usage <runtime-id> --days 30
@@ -371,6 +373,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 ```
 
 `decision` カードの各選択肢は、選ばれた後に誰が動くかを示せます。`after_choice` に `agent_run`、`human_steps`、`record_only` のいずれかを設定します。`agent_run` の選択肢は `agent_commands` を列挙します。1 つ以上の argv 配列で、例は `["$MULTICA_CLI_PATH", "daemon", "restart"]` です。1 つの文字列で渡したコマンドは、サーバーがシェル文を解析しないため、フィールド名付きで拒否されます。コンソール専用の画面を使う選択肢は、代わりに `agent_surface` にカタログのキーを設定します。この検査は型付きフィールドだけを読み、`what_happens` は読みません。各コマンドをツール名と先頭の語に正規化し(パス、`.exe`、グローバルフラグ `--profile`、`--server-url`、`--workspace-id`、`--debug` は除去)、ワークスペース設定 `agent_cannot_do` と比較します。これはエージェントの実行ではできないことの `{key, tool, subcommand, human_step}` 一覧です。この設定がない場合、エントリは `multica` の `daemon restart` と `daemon stop` です。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` などのラッパーは実際のコマンドを隠すため、コマンド自体を argv で渡してください。ワークスペース設定 `agent_cannot_do_mode`(`off`、`warn`、`block`。既定は `off`)が結果を決めます。`warn` ではカードを作成し、応答にヒントを付けます。`block` ではサーバーが `400` を返し、選択肢のラベル、カタログのキー、`human_steps` に書く人の手順を示し、カードは作成しません。`warn` と `block` では、`after_choice` のない選択肢はヒントが 1 件付くか、フィールド名付きで拒否されます。アクションカードと免除トピックのカードは検査しません。
+
+ワークスペース設定 `decision_card_lint_mode`(`off`、`warn`、`block`。既定は `off`)は、選択肢カードの文面を検査します。`warn` ではカードを作成し、指摘ごとに 1 件のヒントを応答に付けます。`block` ではサーバーが理由コードとフィールドパスを付けて `400` を返し、カードは作成しません。コードは次のとおりです。`weak_cons` は、選択肢のデメリットがすべて「あなたの時間」(「takes 1 minute of your time」)または確認・レビューをもう 1 回行うことだけの場合。`option_markdown` は、`label`、`what_happens`、`pros`、`cons` に表、見出し、画像、HTML、コードブロック、Mermaid ブロックがある場合(太字、斜体、インラインコード、リスト、リンクは使えます)。`option_leak` は、選択肢の文面が推奨を示す場合(「recommended」、「(rec)」、または 1 つのラベルだけの太字)。`default_leak` は、クラス `spend`、`deploy`、`publish`、`irreversible`、`product_direction` で `default_if_no_reply` が選択肢を名指しする場合(「No action until you pick.」と書いてください)。英語とベトナム語の言い回しを照合します。アクションカードと免除トピックのカードは検査しません。 カードの issue コメントに質問先の人へのメンションがない場合、サーバーがメンションを追加し `mention_missing` をログに記録します。拒否はされません。
 
 ## コマンド概要
 
