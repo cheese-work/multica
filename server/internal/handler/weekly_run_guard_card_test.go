@@ -260,3 +260,81 @@ func TestWeeklyRunGuardRefusedMemberTriggerAfterRejectOpensOneCard(t *testing.T)
 		t.Fatalf("open cards after a member trigger = %d, want 1", n)
 	}
 }
+
+// CHE-6241: the declined card is remembered with the trigger it refused. The
+// same trigger refused again, as a retry or a repeat would, opens no card.
+func TestWeeklyRunGuardRejectedTriggerRefusedAgainOpensNoCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241003)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	for i := 0; i < 3; i++ {
+		testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	}
+	if n := c.allowCards(t); n != 0 {
+		t.Fatalf("open cards after the declined trigger was refused again = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID); n != 1 {
+		t.Fatalf("refusal rows = %d, want 1", n)
+	}
+}
+
+// CHE-6241: a different trigger than the declined one opens one new card even
+// when it is the same agent and kind, and the declined one stays quiet after.
+func TestWeeklyRunGuardNewTriggerAfterRejectOpensOneCardAndDeclinedStaysQuiet(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241004)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	fresh := e
+	dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		SELECT id, workspace_id, 'member', $2, 'one more try', 'comment' FROM issue WHERE id = $1 RETURNING id`, c.issueID, testUserID).Scan(&fresh.Target.TriggerCommentID)
+	fresh.Target.Trigger = "comment"
+	testHandler.onWeeklyRunGuardTripped(context.Background(), fresh)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), fresh)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open cards after a new trigger = %d, want 1", n)
+	}
+}
+
+// CHE-6241: the real path. The reject comment goes through the comment trigger
+// seam and the decision worker; no run is queued and no card reopens.
+func TestWeeklyRunGuardRejectCommentDispatchesNothingThroughTheCommentSeam(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	resetDecisionLease(t)
+	c, _ := weeklyCardCase(t, 6241005)
+	service.SetOnWeeklyRunGuardTripped(testHandler.onWeeklyRunGuardTripped)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	_, runner := newDecisionRunnerFixture(t)
+	decisionPass(t, runner)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejectID pgtype.UUID
+	dbfx.QueryRow(t, `SELECT id FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE 'Rejected%'`, c.issueID).Scan(&rejectID)
+	reject, err := testHandler.Queries.GetComment(context.Background(), rejectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent *db.Comment
+	if reject.ParentID.Valid {
+		p, err := testHandler.Queries.GetComment(context.Background(), reject.ParentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent = &p
+	}
+	testHandler.triggerTasksForComment(context.Background(), issue, reject, parent, "system", "", "", nil, commentSteerRequest{})
+	time.Sleep(time.Second) // the incident hook runs on its own goroutine
+	if n := c.queuedRuns(t); n != 0 {
+		t.Fatalf("queued runs after the reject comment = %d, want 0", n)
+	}
+	if n := c.allowCards(t); n != 0 {
+		t.Fatalf("open cards after the reject comment = %d, want 0", n)
+	}
+}

@@ -71,6 +71,15 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 			if err != nil || standing > 0 {
 				return err
 			}
+			// CHE-6241: a declined card stays declined for its trigger. The same
+			// trigger refused again inside the guard window opens no card; a new
+			// trigger from a member or an agent does.
+			if open.CreatedAt.Time.After(time.Now().Add(-7*24*time.Hour)) && sameWeeklyRefusedTrigger(open, e) {
+				declined, err := q.HasRejectedWeeklyRunGuardCard(ctx, db.HasRejectedWeeklyRunGuardCardParams{IssueID: issue.ID, RequestFingerprint: weeklyCardFingerprint + uuidToString(open.ID)})
+				if err != nil || declined {
+					return err
+				}
+			}
 			if err := q.SetWeeklyRunGuardRefusalState(ctx, db.SetWeeklyRunGuardRefusalStateParams{ID: open.ID, State: "superseded"}); err != nil {
 				return err
 			}
@@ -358,4 +367,12 @@ func (h *Handler) addWeeklyRunGuard(ctx context.Context, issue db.Issue, view *r
 	}
 	view.NextCommand = "Wait for the approval card " + view.OpenCard.URL + ". Do not open another."
 	return nil
+}
+
+// sameWeeklyRefusedTrigger reports whether the event refuses the very trigger
+// the open refusal recorded: the same agent, kind, comment, wakeup and task.
+func sameWeeklyRefusedTrigger(open db.WeeklyRunGuardRefusal, e service.WeeklyRunGuardTripped) bool {
+	return open.AgentID == e.Target.AgentID && open.Trigger == e.Target.Trigger &&
+		open.TriggerCommentID == e.Target.TriggerCommentID &&
+		open.SourceWakeupID == e.Target.SourceWakeupID && open.SourceTaskID == e.Target.SourceTaskID
 }
