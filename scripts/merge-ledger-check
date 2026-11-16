@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# merge-ledger-check (CHE-6562, plan CHE-6210 A2b). Rule: docs/fork/UPSTREAM-MERGE-REVIEW.md.
+#
+# Fail-closed coverage check for the path ledger of an upstream merge. The
+# ledger path set must equal the set computed at the pinned SHAs, every row
+# needs an allowed disposition, and every path the fork touched or that
+# FORK-FEATURES names needs preservation evidence.
+#
+# Usage: merge-ledger-check --ledger FILE --fork-parent P --upstream-parent U
+#          [--fork-features PATH]   (path inside P, default docs/fork/FORK-FEATURES.md)
+#
+# Ledger: tab-separated, one header row, then one row per path, 8 columns:
+#   path group change conflict fork_touched fork_features disposition evidence
+# Only path, disposition and evidence are checked. fork_touched and
+# fork_features are informational: git and FORK-FEATURES at P decide.
+#
+# Computed set = every path in `git diff --no-renames --name-status MB U`
+# (MB = merge base of P and U; a rename is its old path plus its new path)
+# plus every path in the conflict list of `git merge-tree --write-tree P U`.
+# Fork-touched = path in `git diff --no-renames --name-only MB P`.
+# FORK-FEATURES names a path when the file at P contains the path as text.
+#
+# Exit: 0 ledger covers the merge; 2 pins rejected; 3 no trustworthy computed
+#       set; 6 ledger path set differs (missing, extra or duplicate row);
+#       7 malformed ledger, a row with no or an unknown disposition;
+#       8 a fork-touched or FORK-FEATURES path has no preservation evidence;
+#       64 usage. With several faults, every one is printed and the exit code
+#       is the lowest of 6, 7 and 8 that applies.
+set -euo pipefail
+
+die() { local rc="$1"; shift; echo "merge-ledger-check: $*" >&2; exit "$rc"; }
+
+ledger="" P="" U="" features="docs/fork/FORK-FEATURES.md"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ledger) ledger="${2:-}"; shift 2 ;;
+    --fork-parent) P="${2:-}"; shift 2 ;;
+    --upstream-parent) U="${2:-}"; shift 2 ;;
+    --fork-features) features="${2:-}"; shift 2 ;;
+    *) die 64 "unknown argument: $1" ;;
+  esac
+done
+[ -n "$ledger" ] && [ -n "$P" ] && [ -n "$U" ] || die 64 "need --ledger, --fork-parent and --upstream-parent"
+[ -f "$ledger" ] || die 64 "ledger file not found: $ledger"
+
+# --- Pins -----------------------------------------------------------------
+for pin in "P:$P" "U:$U"; do
+  [[ "${pin#*:}" =~ ^[0-9a-f]{40}$ ]] || die 2 "${pin%%:*} must be a full 40-hex SHA, got '${pin#*:}'"
+  git rev-parse --verify -q "${pin#*:}^{commit}" >/dev/null || die 2 "${pin%%:*} ${pin#*:} is not a commit in this clone"
+done
+
+# --- Computed set ----------------------------------------------------------
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+g() { git -c core.quotepath=off "$@"; }
+
+MB="$(git merge-base "$P" "$U")" || die 3 "no merge base of P and U"
+set +e; mt="$(git merge-tree --write-tree --name-only "$P" "$U" 2>&1)"; rc=$?; set -e
+[ "$rc" -le 1 ] || die 3 "no trustworthy computed set: git merge-tree exit $rc: ${mt%%$'\n'*}"
+[[ "${mt%%$'\n'*}" =~ ^[0-9a-f]{40}$ ]] || die 3 "no trustworthy computed set: merge-tree printed '${mt%%$'\n'*}', not a tree id"
+rest="${mt#*$'\n'}"; [ "$rest" = "$mt" ] && rest=""
+conflicted=""
+[ "$rc" = 0 ] || conflicted="$(sed '/^$/q' <<<"$rest" | sed '/^$/d')"
+
+{ g diff --no-renames --name-only "$MB" "$U"; printf '%s\n' "$conflicted"; } | sed '/^$/d' | LC_ALL=C sort -u >"$work/computed"
+g diff --no-renames --name-only "$MB" "$P" | LC_ALL=C sort -u >"$work/forktouched"
+# A path git has to quote (tab, newline, quote, backslash) cannot be a TSV key: stop, do not guess.
+if grep -q '^"' "$work/computed" "$work/forktouched"; then
+  die 3 "no trustworthy computed set: a path needs quoting (tab, newline or quote in the name); not supported"
+fi
+[ -s "$work/computed" ] || die 3 "no trustworthy computed set: no path differs between the merge base and U"
+git cat-file -e "$P:$features" 2>/dev/null || die 3 "no trustworthy computed set: $features not found at P"
+git show "$P:$features" >"$work/features"
+
+# --- Ledger ----------------------------------------------------------------
+HDR=$'path\tgroup\tchange\tconflict\tfork_touched\tfork_features\tdisposition\tevidence'
+IFS= read -r first <"$ledger" || true
+first="${first%$'\r'}"
+[ "$first" = "$HDR" ] || die 7 "bad ledger header; want tab-separated: path group change conflict fork_touched fork_features disposition evidence"
+
+faults6="" faults7="" faults8=""
+add() { # add CODE MESSAGE
+  case "$1" in
+    6) faults6+="$2"$'\n' ;;
+    7) faults7+="$2"$'\n' ;;
+    8) faults8+="$2"$'\n' ;;
+  esac
+}
+TAB=$'\t'
+ALLOWED=" resolved clean-both upstream-only fork-kept regenerated deleted "
+: >"$work/ledger.paths"
+lineno=1
+while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno + 1))
+  line="${line%$'\r'}"
+  [ -n "$line" ] || continue
+  f=(); rem="$line"   # split on tab by hand: read collapses empty fields
+  while [[ "$rem" == *"$TAB"* ]]; do f+=("${rem%%"$TAB"*}"); rem="${rem#*"$TAB"}"; done
+  f+=("$rem")
+  if [ "${#f[@]}" -ne 8 ]; then
+    add 7 "line $lineno: ${#f[@]} columns, want 8: ${f[0]:-?}"; continue
+  fi
+  path="${f[0]}" disp="${f[6]}" evid="${f[7]}"
+  printf '%s\n' "$path" >>"$work/ledger.paths"
+  if [ -z "$disp" ]; then
+    add 7 "no disposition: $path"
+  elif [[ "$ALLOWED" != *" $disp "* ]]; then
+    add 7 "unknown disposition '$disp': $path"
+  fi
+  # Evidence is required from git and FORK-FEATURES, never from the ledger's own columns.
+  need=""
+  grep -qxF -- "$path" "$work/forktouched" && need="fork-touched"
+  grep -qF -- "$path" "$work/features" && need="${need:+$need and }named in FORK-FEATURES"
+  if [ -n "$need" ]; then
+    e="$(tr '[:upper:]' '[:lower:]' <<<"$evid" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    case "$e" in
+      ""|"-"|"n/a"|"na"|"none"|"todo"|"tbd") add 8 "no preservation evidence ($need): $path" ;;
+    esac
+  fi
+done < <(tail -n +2 "$ledger")
+
+LC_ALL=C sort "$work/ledger.paths" >"$work/ledger.sorted"
+LC_ALL=C sort -u "$work/ledger.paths" >"$work/ledger.uniq"
+while IFS= read -r p; do add 6 "missing from ledger: $p"; done < <(comm -13 "$work/ledger.uniq" "$work/computed")
+while IFS= read -r p; do add 6 "not in the computed set: $p"; done < <(comm -23 "$work/ledger.uniq" "$work/computed")
+while IFS= read -r p; do add 6 "duplicate row: $p"; done < <(uniq -d "$work/ledger.sorted")
+
+rc=0
+for c in 6 7 8; do
+  case "$c" in 6) v="$faults6" ;; 7) v="$faults7" ;; 8) v="$faults8" ;; esac
+  if [ -n "$v" ]; then
+    [ "$rc" != 0 ] || rc="$c"
+    printf '%s' "$v" | sed "s/^/merge-ledger-check: [exit $c] /" >&2
+  fi
+done
+if [ "$rc" != 0 ]; then
+  echo "merge-ledger-check: FAIL: ledger does not cover the merge of $P and $U" >&2
+  exit "$rc"
+fi
+echo "merge-ledger-check: ok: $(wc -l <"$work/computed" | tr -d ' ') paths covered (P $P, U $U, merge base $MB)"

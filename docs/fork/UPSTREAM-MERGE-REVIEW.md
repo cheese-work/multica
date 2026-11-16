@@ -36,6 +36,30 @@ Paste the output, or a link to it, in the review. The script is read-only apart 
    - Fork overlap: files both sides changed. The reviewer runs the fork's existing tests for each listed directory. A clean merge can still break fork behaviour.
 7. **Checks on the exact head `M`.** All required check runs green (the script reads the check runs of `M` with `gh`; compare with the required list), CI job `migration-prefix-check` green, fork tests for every overlap directory. Cross-lab PASS as usual.
 
+## Path ledger coverage check
+
+CHE-6210 approach A writes one ledger row per path before the merge. `scripts/merge-ledger-check` proves the ledger covers the merge. It fails closed. Run it on X99 in a clone that holds `P` and `U`; A4, A5e and A6 run it on the exact head:
+
+```bash
+scripts/merge-ledger-check --ledger <ledger.tsv> --fork-parent <P> --upstream-parent <U>
+```
+
+Ledger: tab-separated, a header row, then 8 columns: `path group change conflict fork_touched fork_features disposition evidence`. `disposition` is one of `resolved`, `clean-both`, `upstream-only`, `fork-kept`, `regenerated`, `deleted`.
+
+Computed set: every path in `git diff --no-renames --name-status <merge-base> U` (a rename is its old and its new path) plus every conflicted path of `git merge-tree --write-tree P U`. Fork-touched: the path is in `git diff --name-only <merge-base> P`. FORK-FEATURES names a path when `docs/fork/FORK-FEATURES.md` at `P` contains it as text (a substring match, so it can over-require evidence, never under-require). Git and that file decide; the ledger's own `fork_touched` and `fork_features` columns are not trusted.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Ledger path set equals the computed set, every row has an allowed disposition, every fork-touched or FORK-FEATURES path has evidence |
+| 2 | Pin rejected (not a 40-hex SHA, or unknown commit) |
+| 3 | No trustworthy computed set (no merge base, `git merge-tree` failed, a path needs quoting, FORK-FEATURES missing at `P`) |
+| 6 | Path set differs: a missing, extra or duplicate row |
+| 7 | Bad header or column count, or a row with no or an unknown disposition |
+| 8 | A fork-touched or FORK-FEATURES path has empty or placeholder evidence (`-`, `n/a`, `none`, `todo`, `tbd`) |
+| 64 | Usage error or unreadable ledger |
+
+Every fault is printed. The exit code is the lowest of 6, 7 and 8 that applies. The check proves coverage, not truth: a reviewer still reads the evidence. It does not use `M`; a merge-up head with new pins needs a new ledger run.
+
 ## Limits
 
 - The script reports; it does not decide. The waiver verdict is the reviewer's.
