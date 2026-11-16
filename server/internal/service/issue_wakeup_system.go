@@ -1713,6 +1713,23 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return commit()
 		}
 	}
+	// CHE-6299: a weekly-guard refusal rolls this pass back and leaves the
+	// receipts pending, so the scheduler would refuse the same facts on every
+	// pass. A finished issue has nothing to resume: consume them. Checked before
+	// the aggregate admission so no cap slot is reserved for a run that never
+	// starts. Which PR rules fire on a finished issue is unchanged (CHE-1417).
+	if len(receipts) > 0 && IsFinishedStatus(ctx, q, issue.WorkspaceID, issue.Status) {
+		err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup", SourceWakeupID: w.ID})
+		if errors.Is(err, ErrWeeklyRunGuard) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(receipts)}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivityTriggered, map[string]any{"rule": w.SystemRule.String, "outcome": wakeupOutcomeGuardRefused, "dropped": len(receipts)}); err != nil {
+				return err
+			}
+			return commit()
+		}
+	}
 	// A new paid start counts against every aggregate cap that applies. A full
 	// counter delays the instance: its facts stay pending and it is looked at
 	// again when the counter may have room.
