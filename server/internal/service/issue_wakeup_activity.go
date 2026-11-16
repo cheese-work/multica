@@ -283,15 +283,36 @@ func (s *IssueWakeupService) disableGuardBlocked(ctx context.Context, w db.Issue
 	return true, nil
 }
 
+// weeklyGuardResumePageSize bounds one resume pass.
+var weeklyGuardResumePageSize = 100
+
 // resumeWeeklyGuardWakeups re-enables the rules the weekly guard paused once it
 // would admit their run again: the 7-day count fell below the limit, or a
 // progress event is pending. A budget raise does not (CHE-6193).
 func (s *IssueWakeupService) resumeWeeklyGuardWakeups(ctx context.Context, workspaceIDs []pgtype.UUID) error {
 	q := s.Tasks.Queries
-	rows, err := q.ListWeeklyGuardPausedWakeups(ctx, workspaceIDs)
+	// One page per pass, resuming after the last rule the previous pass read, so
+	// rules the guard still refuses cannot pin the page. A short page wraps the
+	// walk to the start.
+	s.weeklyResume.Lock()
+	cursor := s.weeklyResume.after
+	s.weeklyResume.Unlock()
+	params := db.ListWeeklyGuardPausedWakeupsParams{WorkspaceIds: workspaceIDs, PageSize: int32(weeklyGuardResumePageSize)}
+	if cursor != nil {
+		params.AfterUpdatedAt, params.AfterID = cursor.updatedAt, cursor.id
+	}
+	rows, err := q.ListWeeklyGuardPausedWakeups(ctx, params)
 	if err != nil {
 		return err
 	}
+	next := (*weeklyResumeCursor)(nil)
+	if len(rows) >= weeklyGuardResumePageSize {
+		last := rows[len(rows)-1]
+		next = &weeklyResumeCursor{updatedAt: last.UpdatedAt, id: last.ID}
+	}
+	s.weeklyResume.Lock()
+	s.weeklyResume.after = next
+	s.weeklyResume.Unlock()
 	var errs []error
 	for _, w := range rows {
 		admits, err := weeklyGuardAdmits(ctx, q, w.IssueID, w.AgentID)
@@ -303,4 +324,10 @@ func (s *IssueWakeupService) resumeWeeklyGuardWakeups(ctx context.Context, works
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// weeklyResumeCursor is the last weekly-guard-paused rule a resume pass read.
+type weeklyResumeCursor struct {
+	updatedAt pgtype.Timestamptz
+	id        pgtype.UUID
 }

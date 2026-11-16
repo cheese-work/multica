@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -156,6 +157,11 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// weeklyResume holds where the weekly-guard resume sweep stopped (CHE-6193).
+	weeklyResume struct {
+		sync.Mutex
+		after *weeklyResumeCursor
+	}
 	// AuditDefinition, when set, runs inside the definition write's transaction
 	// just before it commits; an error rolls the write back (CHE-5647).
 	AuditDefinition WakeupDefinitionAuditFn

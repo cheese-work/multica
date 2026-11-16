@@ -335,10 +335,12 @@ WHERE id= @id AND NOT enabled AND paused_reason= @paused_reason;
 
 -- name: ListWeeklyGuardPausedWakeups :many
 -- Rules the weekly run guard paused, oldest pause first, for the resume sweep.
+-- One page per call: the caller walks the set across passes (CHE-6193).
 SELECT * FROM issue_wakeup
 WHERE NOT enabled AND paused_reason='weekly_run_guard'
  AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
-ORDER BY updated_at LIMIT 100;
+ AND (sqlc.narg('after_updated_at')::timestamptz IS NULL OR (updated_at,id) > (sqlc.narg('after_updated_at')::timestamptz, sqlc.narg('after_id')::uuid))
+ORDER BY updated_at,id LIMIT @page_size::int;
 
 -- name: ResumeRateLimitedSystemWakeup :execrows
 -- The only way out of a rate pause: one statement clears the pause and its

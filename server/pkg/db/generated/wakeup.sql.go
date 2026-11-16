@@ -2023,12 +2023,26 @@ const listWeeklyGuardPausedWakeups = `-- name: ListWeeklyGuardPausedWakeups :man
 SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, purpose, decision_request_id, followup_instance_id, watch_inputs FROM issue_wakeup
 WHERE NOT enabled AND paused_reason='weekly_run_guard'
  AND ($1::uuid[] IS NULL OR workspace_id = ANY($1::uuid[]))
-ORDER BY updated_at LIMIT 100
+ AND ($2::timestamptz IS NULL OR (updated_at,id) > ($2::timestamptz, $3::uuid))
+ORDER BY updated_at,id LIMIT $4::int
 `
 
+type ListWeeklyGuardPausedWakeupsParams struct {
+	WorkspaceIds   []pgtype.UUID      `json:"workspace_ids"`
+	AfterUpdatedAt pgtype.Timestamptz `json:"after_updated_at"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+	PageSize       int32              `json:"page_size"`
+}
+
 // Rules the weekly run guard paused, oldest pause first, for the resume sweep.
-func (q *Queries) ListWeeklyGuardPausedWakeups(ctx context.Context, workspaceIds []pgtype.UUID) ([]IssueWakeup, error) {
-	rows, err := q.db.Query(ctx, listWeeklyGuardPausedWakeups, workspaceIds)
+// One page per call: the caller walks the set across passes (CHE-6193).
+func (q *Queries) ListWeeklyGuardPausedWakeups(ctx context.Context, arg ListWeeklyGuardPausedWakeupsParams) ([]IssueWakeup, error) {
+	rows, err := q.db.Query(ctx, listWeeklyGuardPausedWakeups,
+		arg.WorkspaceIds,
+		arg.AfterUpdatedAt,
+		arg.AfterID,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}

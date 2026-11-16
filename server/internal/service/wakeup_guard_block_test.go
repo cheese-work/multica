@@ -171,3 +171,40 @@ func TestProgressEventAdmitsExactlyOneRunThroughADisabledWeeklyWakeup(t *testing
 		t.Fatalf("after the duplicate: enabled=%v reason=%q, want disabled", w.Enabled, w.PausedReason.String)
 	}
 }
+
+// CHE-6193 review P1: the resume sweep reads one bounded page per pass. Rules
+// the guard still refuses must not pin the page, or an eligible rule behind
+// them never resumes.
+func TestWeeklyGuardResumeSweepReachesAnEligibleRuleBehindIneligibleOnes(t *testing.T) {
+	t.Setenv("MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS", "1")
+	old := weeklyGuardResumePageSize
+	weeklyGuardResumePageSize = 2
+	t.Cleanup(func() { weeklyGuardResumePageSize = old })
+
+	envs := []guardBlockEnv{newGuardBlockEnv(t), newGuardBlockEnv(t), newGuardBlockEnv(t)}
+	var workspaces []pgtype.UUID
+	for _, e := range envs {
+		e.budget(t)
+		if w := e.tick(t); w.Enabled || w.PausedReason.String != "weekly_run_guard" {
+			t.Fatalf("setup: enabled=%v reason=%q, want weekly_run_guard pause", w.Enabled, w.PausedReason.String)
+		}
+		workspaces = append(workspaces, parseTestUUID(t, e.f.WorkspaceID))
+	}
+	// Only the newest pause is eligible: its run left the 7-day window.
+	last := envs[2]
+	last.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '8 days' WHERE issue_id=$1`, last.issue)
+
+	for pass := 1; pass <= 3; pass++ {
+		if err := last.s.resumeWeeklyGuardWakeups(context.Background(), workspaces); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w, _ := last.f.q.LocklessWakeup(context.Background(), last.wakeup.ID); !w.Enabled || w.PausedReason.Valid {
+		t.Fatalf("eligible rule behind ineligible ones: enabled=%v reason=%v, want re-enabled", w.Enabled, w.PausedReason)
+	}
+	for _, e := range envs[:2] {
+		if w, _ := e.f.q.LocklessWakeup(context.Background(), e.wakeup.ID); w.Enabled {
+			t.Fatal("an ineligible rule was re-enabled")
+		}
+	}
+}
