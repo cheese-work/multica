@@ -13,8 +13,8 @@ import (
 // "conversation" (default) keeps the implicit routing: last agent in the
 // thread, thread owners, assignee or squad leader, blocked-assignee add.
 // "mentioned_only" starts runs only for the agents and squads the comment names.
-// Scope: issue metadata overrides the workspace setting. Projects have no
-// settings store yet, so there is no project scope.
+// Scope: issue metadata overrides the project settings, which override the
+// workspace settings.
 const (
 	commentWakeSetting       = "comment_wake"
 	commentWakeConversation  = "conversation"
@@ -44,6 +44,14 @@ func validateCommentWakeSetting(raw any) error {
 func (h *Handler) commentWakeMentionedOnlyFor(ctx context.Context, issue db.Issue) bool {
 	if mode := commentWakeFrom(issue.Metadata); mode != "" {
 		return mode == commentWakeMentionedOnly
+	}
+	if issue.ProjectID.Valid {
+		project, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			slog.WarnContext(ctx, "comment_wake project read failed; using workspace", "project_id", uuidToString(issue.ProjectID), "error", err)
+		} else if mode := commentWakeFrom(project.Settings); mode != "" {
+			return mode == commentWakeMentionedOnly
+		}
 	}
 	workspace, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {

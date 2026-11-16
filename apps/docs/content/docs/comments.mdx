@@ -137,7 +137,7 @@ The workspace setting `comment_wake` decides what a comment from a person starts
 - `conversation` (default): the agent that spoke last in the thread, the thread owners, or the issue assignee or squad leader run. On a blocked issue the assignee also runs.
 - `mentioned_only`: only the agents and squads the comment @-mentions run. A comment with no @-mention starts no run.
 
-An @-mention works the same in both modes. To set the mode for one issue, write the issue metadata key `comment_wake` (`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`); it overrides the workspace setting.
+An @-mention works the same in both modes. To set the mode for one issue, write the issue metadata key `comment_wake` (`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`); it overrides the workspace setting. To set the mode for a whole project, send `PUT /api/projects/<project-id>/comment-wake` with `{"comment_wake": "mentioned_only"}` (`null` clears it). The order is issue, then project, then workspace.
 
 ## Next steps
 

@@ -137,7 +137,7 @@ Web과 Desktop에서는 게시된 댓글(본인 댓글 포함)의 텍스트를 �
 - `conversation`(기본값): 스레드에서 마지막으로 발언한 에이전트, 스레드 소유자, 또는 태스크의 담당자나 스쿼드 리더가 실행됩니다. 차단된 태스크에서는 담당자도 실행됩니다.
 - `mentioned_only`: 댓글이 @멘션한 에이전트와 스쿼드만 실행됩니다. @멘션이 없는 댓글은 실행을 시작하지 않습니다.
 
-@멘션은 두 모드에서 동일하게 동작합니다. 태스크 하나의 모드만 바꾸려면 태스크 메타데이터 키 `comment_wake`를 기록하세요(`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`). 워크스페이스 설정보다 우선합니다.
+@멘션은 두 모드에서 동일하게 동작합니다. 태스크 하나의 모드만 바꾸려면 태스크 메타데이터 키 `comment_wake`를 기록하세요(`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`). 워크스페이스 설정보다 우선합니다. 프로젝트 전체의 모드를 설정하려면 `PUT /api/projects/<project-id>/comment-wake`에 `{"comment_wake": "mentioned_only"}`를 보냅니다(`null`이면 해제). 우선순위는 태스크, 프로젝트, 워크스페이스 순입니다.
 
 ## 다음 단계
 

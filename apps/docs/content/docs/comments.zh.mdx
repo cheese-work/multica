@@ -137,7 +137,7 @@ import { ResolveThreadDemo } from "@/components/demos/resolve-thread-demo";
 - `conversation`（默认）：运行讨论串中最后发言的智能体、讨论串负责人，或任务的负责人或小队组长。任务处于阻塞状态时，负责人也会运行。
 - `mentioned_only`：只运行评论 @提及的智能体和小队。没有 @提及的评论不会启动任何运行。
 
-两种模式下 @提及的行为相同。要为单个任务设置模式，写入任务元数据键 `comment_wake`（`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`），它会覆盖工作区设置。
+两种模式下 @提及的行为相同。要为单个任务设置模式，写入任务元数据键 `comment_wake`（`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`），它会覆盖工作区设置。 要为整个项目设置模式，发送 `PUT /api/projects/<project-id>/comment-wake`，请求体为 `{"comment_wake": "mentioned_only"}`（`null` 表示清除）。优先级依次为：任务、项目、工作区。
 
 ## 接下来
 

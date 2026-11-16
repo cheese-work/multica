@@ -137,7 +137,7 @@ Web と Desktop では、投稿済みのコメント（自分のコメントを�
 - `conversation`（デフォルト）：スレッドで最後に発言したエージェント、スレッドの所有者、またはタスクの担当者やスクワッドリーダーが実行されます。ブロック中のタスクでは担当者も実行されます。
 - `mentioned_only`：コメントが@メンションしたエージェントとスクワッドだけが実行されます。@メンションのないコメントは実行を起動しません。
 
-@メンションの動作はどちらのモードでも同じです。1つのタスクだけモードを変えるには、タスクのメタデータキー `comment_wake` を書き込みます（`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`）。ワークスペース設定より優先されます。
+@メンションの動作はどちらのモードでも同じです。1つのタスクだけモードを変えるには、タスクのメタデータキー `comment_wake` を書き込みます（`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`）。ワークスペース設定より優先されます。 プロジェクト全体のモードを設定するには、`PUT /api/projects/<project-id>/comment-wake` に `{"comment_wake": "mentioned_only"}` を送ります（`null` で解除）。優先順位は、タスク、プロジェクト、ワークスペースの順です。
 
 ## 次のステップ
 

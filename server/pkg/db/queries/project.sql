@@ -108,3 +108,12 @@ GROUP BY project_id;
 UPDATE project SET workflow_split = sqlc.narg('workflow_split')::jsonb, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
+
+-- name: SetProjectCommentWake :one
+-- NULL removes the project's comment_wake key (CHE-5907); other settings keys stay.
+UPDATE project SET
+    settings = CASE WHEN sqlc.narg('comment_wake')::text IS NULL THEN settings - 'comment_wake'
+                    ELSE jsonb_set(settings, '{comment_wake}', to_jsonb(sqlc.narg('comment_wake')::text)) END,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;

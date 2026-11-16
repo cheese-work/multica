@@ -137,7 +137,7 @@ Le paramètre d'espace de travail `comment_wake` décide ce que démarre un comm
 - `conversation` (par défaut) : l'agent qui a parlé en dernier dans le fil, les propriétaires du fil, ou l'assigné ou le chef d'escouade de la tâche s'exécutent. Sur une tâche bloquée, l'assigné s'exécute aussi.
 - `mentioned_only` : seuls les agents et escouades @mentionnés par le commentaire s'exécutent. Un commentaire sans @mention ne démarre aucune exécution.
 
-Une @mention fonctionne de la même façon dans les deux modes. Pour définir le mode d'une seule tâche, écrivez la clé de métadonnées `comment_wake` (`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`) ; elle remplace le paramètre de l'espace de travail.
+Une @mention fonctionne de la même façon dans les deux modes. Pour définir le mode d'une seule tâche, écrivez la clé de métadonnées `comment_wake` (`multica issue metadata set <issue-id> --key comment_wake --value mentioned_only --type string`) ; elle remplace le paramètre de l'espace de travail. Pour définir le mode d'un projet entier, envoyez `PUT /api/projects/<project-id>/comment-wake` avec `{"comment_wake": "mentioned_only"}` (`null` l'efface). L'ordre de priorité est : tâche, puis projet, puis espace de travail.
 
 ## Étapes suivantes
 
