@@ -5,7 +5,7 @@
 // after all of them. The numeric suggestion of migration-prefix-check.mjs does not:
 // 9999919_ sorts before 999j_.
 //
-// Map: JSON array of { from, to } in upstream order. `to` is the stem on this tree.
+// Map: JSON array of { from, to } in upstream order. `from` is the upstream stem, `to` the stem on this tree.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -20,6 +20,8 @@ export function registryKeys(source) {
 
 export function checkOrder({ map, upFiles, downFiles, registryKeys: keys }) {
   const errors = [];
+  const bad = map.findIndex((m) => typeof m?.from !== "string" || typeof m?.to !== "string");
+  if (bad !== -1) return [`entry ${bad} needs string from and to`];
   const mapped = new Set(map.map((m) => m.to));
   const stems = new Set(upFiles.map((f) => f.replace(/\.up\.sql$/, "")));
   const last = upFiles.filter((f) => !mapped.has(f.replace(/\.up\.sql$/, ""))).sort().at(-1) ?? "";
@@ -30,6 +32,10 @@ export function checkOrder({ map, upFiles, downFiles, registryKeys: keys }) {
   }
   for (let i = 1; i < map.length; i++) {
     if (map[i].to <= map[i - 1].to) errors.push(`${map[i].to} is out of order: it must sort after ${map[i - 1].to} (upstream order)`);
+  }
+  // Upstream order is the byte order of the source stems; ascending-only also rejects a duplicate source.
+  for (let i = 1; i < map.length; i++) {
+    if (map[i].from <= map[i - 1].from) errors.push(`${map[i].from} (source) is out of upstream order: it must sort after ${map[i - 1].from}`);
   }
   for (const key of keys) {
     if (!stems.has(key)) errors.push(`registry key ${key} names no existing migration`);

@@ -45,3 +45,19 @@ test("a registry key that names no existing stem fails", () => {
   t.registryKeys = [...t.registryKeys, "618_a"];
   assert.match(checkOrder({ map: good, ...t }).join("\n"), /618_a.*no existing migration/);
 });
+
+// Upstream order is the byte order of the source stems (the upstream runner sorts file names too).
+test("source stems in reverse upstream order fail even when the target stems ascend", () => {
+  const map = [{ from: "619_b", to: "999k_b" }, { from: "618_a", to: "999l_a" }];
+  assert.match(checkOrder({ map, ...tree(map) }).join("\n"), /618_a.*source.*out of upstream order/);
+});
+
+test("a duplicate source stem fails", () => {
+  const map = [{ from: "618_a", to: "999k_a" }, { from: "618_a", to: "999l_a" }];
+  assert.match(checkOrder({ map, ...tree(map) }).join("\n"), /618_a.*source.*out of upstream order/);
+});
+
+test("a missing from or to stem fails", () => {
+  const map = [{ from: "618_a" }];
+  assert.match(checkOrder({ map, ...tree([]) }).join("\n"), /entry 0 needs string from and to/);
+});
