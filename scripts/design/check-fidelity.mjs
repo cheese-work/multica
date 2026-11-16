@@ -89,9 +89,11 @@ function readSide({ mode, state, blocks }) {
     root = document.querySelector("[data-fidelity-root]");
   }
   if (!root) return { error: mode === "lock" ? `the lock has no state ${state}` : "the harness page has no [data-fidelity-root]" };
+  // The state root itself can be a block (the lock puts data-state on .card / .cc).
+  const all = (sel) => [...(root.matches(sel) ? [root] : []), ...root.querySelectorAll(sel)];
   const found = blocks.map((b) => ({
     id: b.id,
-    els: [...root.querySelectorAll(mode === "lock" ? b.selector : `[data-testid="${b.id}"]`)],
+    els: all(mode === "lock" ? b.selector : `[data-testid="${b.id}"]`),
     repeat: b.repeat === true,
   })).filter((b) => b.els.length > 0);
   const mapped = new Set(found.flatMap((b) => b.els));

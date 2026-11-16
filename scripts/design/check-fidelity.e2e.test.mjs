@@ -37,11 +37,11 @@ test("result JSON lists one instance per rule x block x case; rule 6 carries the
 });
 
 test("a case whose fixture the harness does not have fails missing-render, naming the fixture", () => {
-  const { r, result } = run("--case", "s7");
+  const { r, result } = run("--case", "s24");
   assert.equal(r.status, 1);
-  const v = result.violations.filter((x) => x.rule === "missing-render" && x.state === "s7");
+  const v = result.violations.filter((x) => x.rule === "missing-render" && x.state === "s24");
   assert.equal(v.length, 1);
-  assert.match(v[0].reason, /batch-run-budget/);
+  assert.match(v[0].reason, /run-budget-top-up-issue-block/);
 });
 
 test("cases render their own state: s1, s2 and s4 give three different code renders", () => {
@@ -57,4 +57,34 @@ test("a state the harness cannot draw fails missing-render and is not drawn as a
   const reasons = (state) => result.violations.filter((x) => x.rule === "missing-render" && x.state === state).map((x) => x.reason);
   assert.match(reasons("s3").join("\n"), /run-budget-top-up-answered/, "s3 names its own fixture");
   assert.match(reasons("s1b").join("\n"), /step .*Details/, "s1b names the step the code cannot do");
+});
+
+// Every state the real card can draw has a harness fixture. s3 (in-card conversation), s24 (issue block) and s26 (DM
+// grouped by issue) have no component yet: they fail missing-render, which is the gap, not a harness shortfall.
+const DRAWABLE = ["s5", "s7", "s7b", "s8", "s9", "s11", "s12", "s13", "s14", "s15", "s16", "s17", "s18", "s19", "s20", "s21", "s23", "s25"];
+test("every state the card can draw renders; each reaches its own state", () => {
+  const { result } = run(...DRAWABLE.flatMap((s) => ["--case", s]));
+  const failed = result.violations.filter((v) => v.rule === "missing-render").map((v) => `${v.state}: ${v.reason}`);
+  assert.deepEqual(failed, [], "no drawable state fails to render");
+  const hash = (s) => result.renders.find((x) => x.state === s).code_root_sha256;
+  // same fixture family, different state => different render
+  assert.notEqual(hash("s8"), hash("s9"), "approved vs rejected");
+  assert.notEqual(hash("s14"), hash("s15"), "applied vs not applied");
+  assert.notEqual(hash("s7"), hash("s7b"), "all chosen vs unchosen batch");
+  assert.notEqual(hash("s12"), hash("s13"), "diff only vs Show full");
+  assert.notEqual(hash("s20"), hash("s8"), "clicking the collapsed block opens the full card");
+  // The code effect line shows the state the case names (read from the rule 6 instance, which quotes the code text).
+  const codeText = (s, block) => result.violations.find((v) => v.state === s && v.rule === "text" && v.block === block)?.reason ?? "";
+  assert.match(codeText("s8", "decision-request-effect"), /code "Applied\./);
+  assert.match(codeText("s9", "decision-request-effect"), /code "Not applied\. You rejected it/);
+  assert.match(codeText("s15", "decision-request-effect"), /code "Not applied/);
+  assert.match(codeText("s17", "decision-request-effect"), /code "Expired\./);
+  assert.match(codeText("s19", "decision-request-effect"), /code "Revoked\./);
+});
+
+test("s3, s24 and s26 have no component and fail missing-render", () => {
+  const { result } = run("--case", "s3", "--case", "s24", "--case", "s26");
+  for (const s of ["s3", "s24", "s26"]) {
+    assert.ok(result.violations.some((v) => v.rule === "missing-render" && v.state === s), `${s} fails missing-render`);
+  }
 });

@@ -2,6 +2,7 @@
 # One case per state the lock draws (its numbered label): lock file, state id, profile id, fixture.
 # State id s<N> is the lock label number N. Block ids are data-testid values the code carries today;
 # blocks the lock draws that the code does not yet tag (options, composer, buttons) join in step 5.
+# A block's selector may list the open-card and the decided-card (.cc) form of the same block.
 # A case names the fixture that draws its data. `steps` (click / type, run in order) bring the real component to the
 # lock's interaction state. A case whose fixture the harness lacks fails `missing-render`; it is never drawn as another state.
 topic: decision-card
@@ -51,10 +52,16 @@ cases:
     state: s7
     profile: card-540
     fixture: batch-run-budget
+    steps:
+      - click: "[aria-label='Decision for CHE-3459'] >> role=radio[name='Approve']"
+      - click: "[aria-label='Decision for CHE-3460'] >> role=radio[name='Approve']"
+      - click: "[aria-label='Decision for CHE-3461'] >> role=radio[name='Reject']"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s7b
     profile: card-540
     fixture: batch-run-budget
+    steps:
+      - click: "[aria-label='Decision for CHE-3459'] >> role=radio[name='Approve']"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s8
     profile: card-540
@@ -81,14 +88,17 @@ cases:
     state: s13
     profile: card-540
     fixture: text-change-workflow
+    steps:
+      - click: "text=Details"
+      - click: "text=Show full"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s14
     profile: card-540
-    fixture: config-change-agent-disable
+    fixture: config-change-applied
   - lock_file: design/decision-card/approved/direction-b.html
     state: s15
     profile: card-540
-    fixture: config-change-agent-disable
+    fixture: config-change-not-applied
   - lock_file: design/decision-card/approved/direction-b.html
     state: s16
     profile: card-540
@@ -104,11 +114,13 @@ cases:
   - lock_file: design/decision-card/approved/direction-b.html
     state: s19
     profile: card-540
-    fixture: config-change-agent-disable
+    fixture: config-change-revoked
   - lock_file: design/decision-card/approved/direction-b.html
     state: s20
     profile: card-540
-    fixture: run-budget-approved-expanded
+    fixture: run-budget-approved
+    steps:
+      - click: "[data-testid=decision-request-fold-toggle]"
   - lock_file: design/decision-card/approved/direction-b.html
     state: s21
     profile: phone-358
@@ -116,7 +128,7 @@ cases:
   - lock_file: design/decision-card/approved/direction-b.html
     state: s23
     profile: dm-card-520
-    fixture: run-budget-top-up-dm
+    fixture: run-budget-top-up
   - lock_file: design/decision-card/approved/direction-b.html
     state: s24
     profile: dm-card-520
@@ -124,7 +136,7 @@ cases:
   - lock_file: design/decision-card/approved/direction-b.html
     state: s25
     profile: dm-card-520
-    fixture: run-budget-approved-dm
+    fixture: run-budget-approved
   - lock_file: design/decision-card/approved/direction-b.html
     state: s26
     profile: dm-card-520
@@ -137,15 +149,15 @@ blocks:
   decision-request-details:
     selector: ".card .det"
   decision-request-card:
-    selector: ".card"
+    selector: ".card, .cc"
   decision-request-asker:
     selector: ".card .hd"
   decision-request-ask:
     selector: ".card .ask"
   decision-request-effect:
-    selector: ".card .sum"
+    selector: ".card .sum, .cc .cc-eff"
   decision-request-meta:
-    selector: ".card .kv"
+    selector: ".card .kv, .cc .cc-g"
   decision-request-action-preview:
     selector: ".card .fcs"
   decision-request-folded:
