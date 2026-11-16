@@ -189,6 +189,28 @@ func (q *Queries) GetWeeklyRunGuardRefusal(ctx context.Context, id pgtype.UUID) 
 	return i, err
 }
 
+const hasRejectedWeeklyRunGuardCard = `-- name: HasRejectedWeeklyRunGuardCard :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    JOIN decision_action action ON action.decision_request_id = request.id
+    WHERE request.issue_id = $1 AND request.request_fingerprint = $2 AND action.state = 'rejected'
+)
+`
+
+type HasRejectedWeeklyRunGuardCardParams struct {
+	IssueID            pgtype.UUID `json:"issue_id"`
+	RequestFingerprint string      `json:"request_fingerprint"`
+}
+
+// CHE-6241: the refusal's card was declined. The refusal row keeps the trigger
+// it refused; a repeat of that trigger opens no new card.
+func (q *Queries) HasRejectedWeeklyRunGuardCard(ctx context.Context, arg HasRejectedWeeklyRunGuardCardParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasRejectedWeeklyRunGuardCard, arg.IssueID, arg.RequestFingerprint)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertWeeklyRunGuardRefusal = `-- name: InsertWeeklyRunGuardRefusal :one
 INSERT INTO weekly_run_guard_refusal (id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)

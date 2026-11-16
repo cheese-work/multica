@@ -719,6 +719,19 @@ describe("DecisionRequestCard answering", () => {
       expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
     });
 
+    it.each([
+      ["issue.run_guard.allow", "Weekly run limit", "100", "110"],
+      ["agent.pause", "Scheduling", "Running", "Paused"],
+      ["agent.resume", "Scheduling", "Paused", "Running"],
+    ])("shows the server preview of %s and enables Approve", async (action_type, label, current, proposed) => {
+      show({ ...action, action_type, preview: { fields: [{ label, current, proposed }], sha256: "d".repeat(64) } });
+      const region = await screen.findByTestId("decision-request-action-preview");
+      expect(region).toHaveTextContent(label);
+      expect(region).toHaveTextContent(proposed);
+      expect(await screen.findByRole("radio", { name: "Approve" })).toBeEnabled();
+      expect(screen.queryByText("Details unavailable")).toBeNull();
+    });
+
     it("keeps Approve disabled and Reject for an action type this client does not know, even with fields", async () => {
       show({ ...action, action_type: "future.thing" });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();

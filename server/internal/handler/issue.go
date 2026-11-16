@@ -319,6 +319,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, nil
 }
 
@@ -1509,8 +1510,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	// runSearch fills results from one search statement and writes the error
 	// response itself, returning false when the request is already answered.
-	runSearch := func(sqlQuery string, args []any) bool {
-		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+	runSearch := func(setup []string, sqlQuery string, args []any) bool {
+		err := runSearchQueryWithSetup(ctx, h.TxStarter, setup, sqlQuery, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
 				if err != nil {
@@ -1544,7 +1545,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	if !runSearch(sqlQuery, args) {
+	if !runSearch(nil, sqlQuery, args) {
 		return
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
@@ -1553,7 +1554,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
-		if !runSearch(fuzzyQuery, fuzzyArgs) {
+		if !runSearch(fuzzySearchSetup, fuzzyQuery, fuzzyArgs) {
 			return
 		}
 	}
@@ -4600,6 +4601,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, current, attachmentsChanged, nil
 }
 

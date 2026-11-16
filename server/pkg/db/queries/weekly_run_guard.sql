@@ -96,3 +96,12 @@ SELECT (
       WHERE r.issue_id = sqlc.arg('issue_id')::uuid AND da.disclaimed_at IS NULL AND da.effective_at > since.at
         AND r.request_fingerprint NOT LIKE 'server:run_guard_allow:%')
 )::bigint;
+
+-- name: HasRejectedWeeklyRunGuardCard :one
+-- CHE-6241: the refusal's card was declined. The refusal row keeps the trigger
+-- it refused; a repeat of that trigger opens no new card.
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    JOIN decision_action action ON action.decision_request_id = request.id
+    WHERE request.issue_id = $1 AND request.request_fingerprint = $2 AND action.state = 'rejected'
+);

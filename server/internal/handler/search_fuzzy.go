@@ -5,27 +5,25 @@ import (
 	"unicode/utf8"
 )
 
-// Typo-tolerant fallback for issue search (CHE-2944). It runs only when the
-// normal LIKE query finds nothing on the first page, so the common path pays
-// nothing. Comments are left out: scanning every comment with trigram scoring
-// costs far more than the title/description pass.
+// Typo-tolerant fallback for issue search (CHE-2944, CHE-5869). It runs only
+// when the normal LIKE query finds nothing on the first page, so the common path
+// pays nothing. It searches the title, the whole description and comments through
+// the GIN trigram indexes of migrations 893-895: the index-backed operator
+// `$1 <% column` picks candidates, and word_similarity() scores only those.
 
 // fuzzySearchThreshold is the minimum pg_trgm word_similarity for a match.
 // Lower values admit unrelated words; higher values reject one-letter typos in
 // short words.
 const fuzzySearchThreshold = 0.4
 
+// fuzzySearchSetup is run with SET LOCAL in the fallback's transaction: the
+// operator `<%` compares against pg_trgm.word_similarity_threshold, which has
+// no per-call argument. The value is a package constant, never user input.
+var fuzzySearchSetup = []string{fmt.Sprintf("SET LOCAL pg_trgm.word_similarity_threshold = %v", fuzzySearchThreshold)}
+
 // fuzzySearchMinRunes is the shortest folded query that gets a fallback. Two
 // letters share too few trigrams to score meaningfully.
 const fuzzySearchMinRunes = 3
-
-// fuzzyDescriptionRunes is how much of each description the fallback scores:
-// the first 200 runes. A typo in text past that window is not found by the
-// fallback; the normal query still searches the whole description. Scoring
-// whole descriptions took 4.6-10 s over 8,003 issues averaging 2,970 characters
-// (GIN trigram index included); the 200-rune window took 684-703 ms over 8,000
-// issues averaging 2,104 characters (CHE-2944). Widen it only with a new measurement.
-const fuzzyDescriptionRunes = 200
 
 // shouldRunFuzzyFallback reports whether a search that found nothing should be
 // retried with typo tolerance.
@@ -34,52 +32,66 @@ func shouldRunFuzzyFallback(query string, hasNum bool, offset, normalResults int
 		utf8.RuneCountInString(foldDiacritics(query)) >= fuzzySearchMinRunes
 }
 
-// buildFuzzySearchQuery scores folded title and description against the folded
-// query with word_similarity and returns the same columns as buildSearchQuery,
-// so the caller scans both with scanSearchIssue. Args: $1 folded query,
-// $2 workspace_id (filled by the caller), $3 threshold, [$4 terminal status
-// keys], then limit and offset (the last two, filled by the caller).
+// buildFuzzySearchQuery matches the folded query against title, description and
+// comment text and returns the same columns as buildSearchQuery, so the caller
+// scans both with scanSearchIssue. Run it with fuzzySearchSetup. Ranking: a title
+// match ranks above a description or comment match; inside that split by score,
+// updated_at, id. match_source is the best-scoring field of the issue, kept
+// apart from the ranking. Args: $1 folded query, $2 workspace_id (filled by the caller), [$3
+// terminal status keys], then limit and offset (the last two, filled by the caller).
 func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
-	args := []any{foldedQuery, nil, fuzzySearchThreshold}
+	args := []any{foldedQuery, nil}
 	nextArg := func(value any) string {
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
 	}
 
-	where := "i.workspace_id = $2"
+	openIssue := ""
 	if !includeClosed {
-		where += fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", nextArg(terminalStatusKeys))
+		openIssue = fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", nextArg(terminalStatusKeys))
 	}
 	limitParam := nextArg(nil)
 	offsetParam := nextArg(nil)
 
-	query := fmt.Sprintf(`WITH scored AS (
-		SELECT i.id, i.updated_at,
-			word_similarity($1, %[1]s) AS title_score,
-			word_similarity($1, %[2]s) AS description_score
-		FROM issue i
-		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
-		WHERE %[3]s
+	query := fmt.Sprintf(`WITH hits AS (
+		SELECT i.id, i.updated_at, 0 AS class, 0 AS src, word_similarity($1, ist.title_folded) AS score, NULL::uuid AS comment_id
+		FROM issue_search_text ist
+		JOIN issue i ON i.id = ist.issue_id AND i.workspace_id = ist.workspace_id
+		WHERE ist.workspace_id = $2 AND $1 <%% ist.title_folded%[1]s
+		UNION ALL
+		SELECT i.id, i.updated_at, 1, 1, word_similarity($1, ist.description_folded), NULL::uuid
+		FROM issue_search_text ist
+		JOIN issue i ON i.id = ist.issue_id AND i.workspace_id = ist.workspace_id
+		WHERE ist.workspace_id = $2 AND $1 <%% ist.description_folded%[1]s
+		UNION ALL
+		SELECT i.id, i.updated_at, 1, 2, word_similarity($1, cst.content_folded), cst.comment_id
+		FROM comment_search_text cst
+		JOIN issue i ON i.id = cst.issue_id AND i.workspace_id = cst.workspace_id
+		WHERE cst.workspace_id = $2 AND $1 <%% cst.content_folded%[1]s
+	),
+	best AS (
+		SELECT DISTINCT ON (id) id, updated_at, class, src, score, comment_id
+		FROM hits
+		ORDER BY id, class, score DESC, src, comment_id
 	),
 	page_candidates AS MATERIALIZED (
-		SELECT id, updated_at, title_score, description_score,
-			GREATEST(title_score, description_score) AS score
-		FROM scored
-		WHERE title_score >= $3 OR description_score >= $3
-		ORDER BY score DESC, updated_at DESC, id ASC
-		LIMIT %[4]s OFFSET %[5]s
+		SELECT id, updated_at, class, src, score, comment_id
+		FROM best
+		ORDER BY class, score DESC, updated_at DESC, id ASC
+		LIMIT %[2]s OFFSET %[3]s
 	)
 	SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
 		i.revision, i.duplicate_of_issue_id, i.description_external_read,
-		CASE WHEN pc.title_score >= $3 THEN 'title' ELSE 'description' END AS match_source,
-		'' AS matched_comment_content
+		(ARRAY['title', 'description', 'comment'])[pc.src + 1] AS match_source,
+		COALESCE(c.content, '') AS matched_comment_content
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.id AND i.workspace_id = $2
-	ORDER BY pc.score DESC, pc.updated_at DESC, pc.id ASC`,
-		"ist.title_folded", fmt.Sprintf("left(ist.description_folded, %d)", fuzzyDescriptionRunes), where, limitParam, offsetParam)
+	LEFT JOIN comment c ON c.id = pc.comment_id AND c.workspace_id = $2
+	ORDER BY pc.class, pc.score DESC, pc.updated_at DESC, pc.id ASC`,
+		openIssue, limitParam, offsetParam)
 
 	return query, args
 }
