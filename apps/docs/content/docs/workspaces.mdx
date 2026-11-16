@@ -62,6 +62,18 @@ The guard also covers an agent registering a wakeup that a person can trigger. B
 
 The page is read-only. **Edit with passkey** shows the CLI steps: an agent creates the policy change with `multica guard plugin set`, and a person approves it on the decision card with a passkey. Without a saved policy, the page shows the built-in defaults.
 
+### Held-setting ask guard
+
+The workspace setting `held_setting_ask_mode` (`off` by default, `warn` or `block`) controls what happens when a decision or action request asks a person for a workspace setting the workspace settings already hold. The request names the keys in the typed field `settings_needed`; the server never reads the prose. A key counts as held when its stored value is not null, not an empty string, list or object. Key names compare without case.
+
+| Value | Effect |
+| --- | --- |
+| `off` (default) | The guard does nothing. |
+| `warn` | The request is created and the response carries one hint per held key. |
+| `block` | The request is refused with `400` and no request row. The message names the key and never the stored value. |
+
+To revert, set `held_setting_ask_mode` to `off`. No data changes.
+
 ### Delegated governed writes
 
 The workspace setting `delegated_governed_writes` decides which agents may write governed fields, and whether each write still needs a person's decision. Find it in workspace settings under **Delegated governed writes**.

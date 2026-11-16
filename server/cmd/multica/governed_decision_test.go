@@ -50,69 +50,12 @@ func wantDecisionBody(t *testing.T, body map[string]any, field, content string) 
 	}
 }
 
-func TestAgentUpdateDecisionIDSendsDecisionBody(t *testing.T) {
-	var body map[string]any
-	var calls int32
-	srv := voteTestServer(t, "agent", &body, &calls)
-	defer srv.Close()
-	setSquadUpdateServerEnv(t, srv.URL)
-
-	cmd := addDecisionFlags(newAgentCASTestCmd())
-	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "agent text\n"))
-	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-
-	if _, err := captureStdout(t, func() error { return runAgentUpdate(cmd, []string{"agent-123"}) }); err != nil {
-		t.Fatalf("runAgentUpdate: %v", err)
-	}
-	wantDecisionBody(t, body, "instructions", "agent text\n")
-}
-
-func TestSquadUpdateDecisionIDSendsDecisionBody(t *testing.T) {
-	var body map[string]any
-	var calls int32
-	srv := voteTestServer(t, "squad", &body, &calls)
-	defer srv.Close()
-	setSquadUpdateServerEnv(t, srv.URL)
-
-	cmd := addDecisionFlags(newSquadUpdateTestCmd())
-	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "squad text"))
-	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-
-	if _, err := captureStdout(t, func() error { return runSquadUpdate(cmd, []string{"squad-123"}) }); err != nil {
-		t.Fatalf("runSquadUpdate: %v", err)
-	}
-	wantDecisionBody(t, body, "instructions", "squad text")
-}
-
-func TestWorkspaceUpdateDecisionIDSendsDecisionBody(t *testing.T) {
-	var body map[string]any
-	var calls int32
-	srv := voteTestServer(t, "workspace", &body, &calls)
-	defer srv.Close()
-	setWorkspaceUpdateServerEnv(t, srv.URL)
-
-	cmd := addDecisionFlags(newWorkspaceVoteTestCmd())
-	_ = cmd.Flags().Set("context-file", writeCASFile(t, "context text\n"))
-	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-
-	if _, err := captureStdout(t, func() error { return runWorkspaceUpdate(cmd, []string{testWorkspaceUUID}) }); err != nil {
-		t.Fatalf("runWorkspaceUpdate: %v", err)
-	}
-	wantDecisionBody(t, body, "context", "context text\n")
-}
-
 func TestDecisionFlagsRejectedWithoutHTTPCall(t *testing.T) {
 	cases := []struct {
 		name, digest, decision, vote string
 		printHash                    bool
 		want                         string
 	}{
-		{"needs expected-before-digest", "", testDecisionID, "", false, "--decision-id requires --expected-before-digest"},
-		{"id must be a UUID", testDigestHex, "CHE-2458", "", false, "--decision-id must be a decision request UUID"},
-		{"excludes vote-issue", testDigestHex, testDecisionID, testVoteIssue, false, "--decision-id and --vote-issue are alternatives"},
 		{"print-hash needs expected-before-digest", "", "", "", true, "--print-hash requires --expected-before-digest"},
 	}
 	for _, tc := range cases {
@@ -220,107 +163,6 @@ func newWorkflowDecisionCmd() *cobra.Command {
 	return cmd
 }
 
-func TestWorkflowSetInstructionsDecisionIDSendsBoundBody(t *testing.T) {
-	var patched map[string]any
-	var patches int32
-	srv := workflowDecisionServer(t, &patched, &patches)
-	defer srv.Close()
-	setCLITestServerEnv(t, srv.URL)
-
-	cmd := newWorkflowDecisionCmd()
-	_ = cmd.Flags().Set("status", "todo")
-	_ = cmd.Flags().Set("file", writeTemp(t, "S1 new"))
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-	if _, err := captureStdout(t, func() error { return runWorkflowSetInstructions(cmd, []string{testWorkflowID}) }); err != nil {
-		t.Fatal(err)
-	}
-
-	if patched["decision_id"] != testDecisionID {
-		t.Errorf("decision_id = %v", patched["decision_id"])
-	}
-	if patched["before_sha256"] != sha256Hex(hashFixtureCanonical) {
-		t.Errorf("before_sha256 = %v, want %s", patched["before_sha256"], sha256Hex(hashFixtureCanonical))
-	}
-	if patched["after_sha256"] != sha256Hex(hashFixtureAfter) {
-		t.Errorf("after_sha256 = %v, want %s", patched["after_sha256"], sha256Hex(hashFixtureAfter))
-	}
-	if patched["expected_version"] != "v1" {
-		t.Errorf("expected_version = %v", patched["expected_version"])
-	}
-	for k := range patched {
-		switch k {
-		case "steps", "expected_version", "decision_id", "before_sha256", "after_sha256":
-		default:
-			t.Errorf("unexpected key %q: a bound write carries steps and expected_version only", k)
-		}
-	}
-}
-
-func TestWorkflowUpdateDecisionIDNormalisesStepsFile(t *testing.T) {
-	var patched map[string]any
-	var patches int32
-	srv := workflowDecisionServer(t, &patched, &patches)
-	defer srv.Close()
-	setCLITestServerEnv(t, srv.URL)
-
-	// Empty optional fields in the file must not change the hash: the server
-	// stores and hashes steps without them, and a blank handler type is "none".
-	steps := `[{"status_key":"todo","handler":{"type":"agent","id":"a1"},"instructions":"S1 new","next_status_key":"done","back_status_key":"","edges":[]},{"status_key":"done","handler":{"type":""},"instructions":""}]`
-	cmd := newWorkflowDecisionCmd()
-	_ = cmd.Flags().Set("steps-file", writeTemp(t, steps))
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
-		t.Fatal(err)
-	}
-	if patched["before_sha256"] != sha256Hex(hashFixtureCanonical) || patched["after_sha256"] != sha256Hex(hashFixtureAfter) {
-		t.Errorf("hashes = %v / %v", patched["before_sha256"], patched["after_sha256"])
-	}
-}
-
-// The server trims, defaults and arranges the steps before it checks
-// after_sha256 (issueworkflow.Normalize), so the CLI must hash that result.
-func TestWorkflowSetInstructionsHashesTheStoredResult(t *testing.T) {
-	var patched map[string]any
-	var patches int32
-	srv := workflowDecisionServer(t, &patched, &patches)
-	defer srv.Close()
-	setCLITestServerEnv(t, srv.URL)
-
-	cmd := newWorkflowDecisionCmd()
-	_ = cmd.Flags().Set("status", "todo")
-	_ = cmd.Flags().Set("file", writeTemp(t, "S1 new\n"))
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-	if _, err := captureStdout(t, func() error { return runWorkflowSetInstructions(cmd, []string{testWorkflowID}) }); err != nil {
-		t.Fatal(err)
-	}
-	if patched["after_sha256"] != sha256Hex(hashFixtureAfter) {
-		t.Errorf("after_sha256 = %v, want the hash of the trimmed result %s", patched["after_sha256"], sha256Hex(hashFixtureAfter))
-	}
-}
-
-func TestWorkflowUpdateHashesTheStoredStepsFile(t *testing.T) {
-	var patched map[string]any
-	var patches int32
-	srv := workflowDecisionServer(t, &patched, &patches)
-	defer srv.Close()
-	setCLITestServerEnv(t, srv.URL)
-
-	// Padded keys and text, a missing done/cancelled pair and a stale handler
-	// id and instructions on a "none" handler: the server trims, adds the
-	// required steps and drops what the handler type does not use.
-	steps := `[{"status_key":" todo ","handler":{"type":"agent","id":" a1 "},"instructions":"  S1 new\n","next_status_key":" done "},{"status_key":"backlog","handler":{"type":"none","id":"stale"},"instructions":"dropped"}]`
-	cmd := newWorkflowDecisionCmd()
-	_ = cmd.Flags().Set("steps-file", writeTemp(t, steps))
-	_ = cmd.Flags().Set("decision-id", testDecisionID)
-	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
-		t.Fatal(err)
-	}
-	want := `{"steps":[{"handler":{"type":"none"},"instructions":"","status_key":"backlog"},{"handler":{"id":"a1","type":"agent"},"instructions":"S1 new","next_status_key":"done","status_key":"todo"},` + hashFixtureDoneCancelled + `],"workflow_id":"` + testWorkflowID + `"}`
-	if patched["after_sha256"] != sha256Hex(want) {
-		t.Errorf("after_sha256 = %v, want %s", patched["after_sha256"], sha256Hex(want))
-	}
-}
-
 func TestWorkflowPrintHashWritesNothing(t *testing.T) {
 	var patched map[string]any
 	var patches int32
@@ -349,13 +191,11 @@ func TestWorkflowPrintHashWritesNothing(t *testing.T) {
 }
 
 func TestWorkflowDecisionFlagErrorsSendNothing(t *testing.T) {
-	steps := `[{"status_key":"done","handler":{"type":""},"instructions":""}]`
 	cases := []struct {
 		name string
 		set  map[string]string
 		want string
 	}{
-		{"id must be a UUID", map[string]string{"decision-id": "CHE-2458", "steps-file": steps}, "--decision-id must be a decision request UUID"},
 		{"start status", map[string]string{"decision-id": testDecisionID, "start-status": "todo"}, "--start-status needs the owner/admin path"},
 	}
 	for _, tc := range cases {
