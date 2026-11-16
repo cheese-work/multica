@@ -274,10 +274,15 @@ func TestPRChecksPassedWakesAssigneeOncePerHead(t *testing.T) {
 			t.Errorf("not_owner entries = %d, want 1", n)
 		}
 	})
-	run := func(t *testing.T, ago string) int {
+	runOn := func(t *testing.T, ago string, firstHead bool) int {
 		env, assignee, in := setup(t)
-		env.f.Exec(t, `INSERT INTO issue_pr_event(workspace_id,issue_id,pull_request_id,kind,head_sha,observed_at,dedupe_key)
-			SELECT $1,$2,id,'head_changed','head-1',now()-interval '3 hours','push-head-1' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID, env.issue)
+		if firstHead {
+			// A PR's first head has no head_changed event; the PR opened with it 3 h ago.
+			env.f.Exec(t, `UPDATE github_pull_request SET pr_created_at=now()-interval '3 hours' WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID)
+		} else {
+			env.f.Exec(t, `INSERT INTO issue_pr_event(workspace_id,issue_id,pull_request_id,kind,head_sha,observed_at,dedupe_key)
+				SELECT $1,$2,id,'head_changed','head-1',now()-interval '3 hours','push-head-1' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID, env.issue)
+		}
 		// The first check-suite update lands 30 min after the push.
 		env.f.Exec(t, `INSERT INTO github_pull_request_check_suite(pr_id,suite_id,head_sha,app_id,conclusion,status,updated_at)
 			SELECT id,1,'head-1',1,'success','completed',now()-interval '150 minutes' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=6070`, env.f.WorkspaceID)
@@ -288,6 +293,7 @@ func TestPRChecksPassedWakesAssigneeOncePerHead(t *testing.T) {
 		}
 		return env.f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, env.issue, assignee)
 	}
+	run := func(t *testing.T, ago string) int { return runOn(t, ago, false) }
 	t.Run("a run after the head was pushed skips the wake", func(t *testing.T) {
 		if n := run(t, "100 minutes"); n != 0 {
 			t.Errorf("assignee queued runs = %d, want 0", n)
@@ -300,6 +306,16 @@ func TestPRChecksPassedWakesAssigneeOncePerHead(t *testing.T) {
 	})
 	t.Run("a run before the head was pushed still wakes", func(t *testing.T) {
 		if n := run(t, "4 hours"); n != 1 {
+			t.Errorf("assignee queued runs = %d, want 1", n)
+		}
+	})
+	t.Run("first head: a run between the PR opening and the first check update skips the wake", func(t *testing.T) {
+		if n := runOn(t, "170 minutes", true); n != 0 {
+			t.Errorf("assignee queued runs = %d, want 0", n)
+		}
+	})
+	t.Run("first head: a run before the PR opened still wakes", func(t *testing.T) {
+		if n := runOn(t, "4 hours", true); n != 1 {
 			t.Errorf("assignee queued runs = %d, want 1", n)
 		}
 	})
