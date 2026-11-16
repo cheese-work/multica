@@ -41,14 +41,14 @@ func runAgentDecisionBrief(command *cobra.Command, _ []string) error {
 	if !explicit {
 		logPath = defaultJevShadowLog()
 	}
-	var shadow *jevShadowLog
+	shadow := &jevShadowLog{}
 	path := "/api/agent-decisions/brief"
 	if _, statErr := os.Stat(logPath); explicit || statErr == nil {
 		rows, err := readJevShadowLog(logPath)
 		if err != nil {
 			return err
 		}
-		shadow = &jevShadowLog{Rows: rows}
+		shadow.Rows = rows
 		ids := shadow.jevIDs()
 		if len(ids) > jevMaxAsks {
 			return fmt.Errorf("shadow log has %d Jev asks, the brief reads at most %d: pass a shorter log", len(ids), jevMaxAsks)
@@ -61,7 +61,7 @@ func runAgentDecisionBrief(command *cobra.Command, _ []string) error {
 			path += "?" + enc
 		}
 	} else {
-		shadow = &jevShadowLog{Missing: logPath}
+		shadow.Missing = logPath
 	}
 	var out map[string]any
 	if err := client.GetJSON(ctx, path, &out); err != nil {
@@ -70,7 +70,7 @@ func runAgentDecisionBrief(command *cobra.Command, _ []string) error {
 	format, _ := command.Flags().GetString("format")
 	switch format {
 	case "json":
-		if shadow != nil {
+		if shadow.Missing == "" {
 			out["jev_shadow"] = jevShadowStats(shadow.Rows, jevAsksOf(out), jevWindowOf(out))
 		}
 		return cli.PrintJSON(os.Stdout, out)
@@ -93,7 +93,7 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any, shadow *jevSha
 	// earlier stay vetoable, so they and a stop or failed notice still print.
 	waivers, _ := feed["waivers"].([]any)
 	jev, _ := feed["jev"].(map[string]any)
-	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && len(askFailures) == 0 && !isStopped && len(waivers) == 0 && jevNumber(jev["decisions"]) == 0 && shadow == nil {
+	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && len(askFailures) == 0 && !isStopped && len(waivers) == 0 && jevNumber(jev["decisions"]) == 0 && (shadow == nil || shadow.Missing != "") {
 		return nil
 	}
 	var b strings.Builder
@@ -203,7 +203,7 @@ func defaultJevShadowLog() string {
 	dir := os.Getenv("JEV_STATE_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".local/state/jev-decider")
+		dir = filepath.Join(home, ".local", "state", "jev-decider")
 	}
 	return filepath.Join(dir, "shadow.jsonl")
 }
