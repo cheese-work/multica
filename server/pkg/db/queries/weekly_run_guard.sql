@@ -72,3 +72,12 @@ SELECT r.id AS request_id, a.id AS action_id
 FROM decision_request r JOIN decision_action a ON a.decision_request_id = r.id
 WHERE r.workspace_id = $1 AND r.issue_id = $2 AND r.status = 'open' AND a.action_type = 'issue.run_guard.allow'
 ORDER BY r.created_at DESC LIMIT 1;
+
+-- name: HasRejectedWeeklyRunGuardCard :one
+-- CHE-6241: the refusal's card was declined. The refusal row keeps the trigger
+-- it refused; a repeat of that trigger opens no new card.
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    JOIN decision_action action ON action.decision_request_id = request.id
+    WHERE request.issue_id = $1 AND request.request_fingerprint = $2 AND action.state = 'rejected'
+);

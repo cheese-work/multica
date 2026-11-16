@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -211,5 +212,182 @@ func TestWeeklyRunGuardWithManyOwnersOpensOneCardAndGrantsOnce(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT coalesce(sum(runs),0) FROM weekly_run_guard_allowance WHERE issue_id = $1`, c.issueID); n != 10 {
 		t.Fatalf("allowance = %d runs, want 10 for one refusal", n)
+	}
+}
+
+// CHE-6241: the reject comment is a system comment. A run it triggers is
+// refused by the guard, and that refusal opens no card: a declined card stays
+// declined.
+func TestWeeklyRunGuardRejectCommentTriggerOpensNoNewCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241001)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	var rejectComment pgtype.UUID
+	dbfx.QueryRow(t, `SELECT id FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE 'Rejected%'`, c.issueID).Scan(&rejectComment)
+	if !rejectComment.Valid {
+		t.Fatal("no system reject comment")
+	}
+	e.Target.TriggerCommentID = rejectComment
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	if n := c.allowCards(t); n != 0 {
+		t.Fatalf("open cards after the reject comment's own trigger = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID); n != 1 {
+		t.Fatalf("refusal rows = %d, want 1", n)
+	}
+	if n := c.queuedRuns(t); n != 0 {
+		t.Fatalf("queued runs = %d, want 0", n)
+	}
+}
+
+// CHE-6241: after a reject, a refused trigger from a person opens exactly one
+// new card, however often the same trigger is refused.
+func TestWeeklyRunGuardRefusedMemberTriggerAfterRejectOpensOneCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241002)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	var memberComment pgtype.UUID
+	dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		SELECT id, workspace_id, 'member', $2, 'please continue', 'comment' FROM issue WHERE id = $1 RETURNING id`, c.issueID, testUserID).Scan(&memberComment)
+	e.Target.TriggerCommentID = memberComment
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open cards after a member trigger = %d, want 1", n)
+	}
+}
+
+// CHE-6241: the declined card is remembered with the trigger it refused. The
+// same trigger refused again, as a retry or a repeat would, opens no card.
+func TestWeeklyRunGuardRejectedTriggerRefusedAgainOpensNoCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241003)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	for i := 0; i < 3; i++ {
+		testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	}
+	if n := c.allowCards(t); n != 0 {
+		t.Fatalf("open cards after the declined trigger was refused again = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID); n != 1 {
+		t.Fatalf("refusal rows = %d, want 1", n)
+	}
+}
+
+// CHE-6241: a different trigger than the declined one opens one new card even
+// when it is the same agent and kind, and the declined one stays quiet after.
+func TestWeeklyRunGuardNewTriggerAfterRejectOpensOneCardAndDeclinedStaysQuiet(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241004)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	fresh := e
+	dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		SELECT id, workspace_id, 'member', $2, 'one more try', 'comment' FROM issue WHERE id = $1 RETURNING id`, c.issueID, testUserID).Scan(&fresh.Target.TriggerCommentID)
+	fresh.Target.Trigger = "comment"
+	testHandler.onWeeklyRunGuardTripped(context.Background(), fresh)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), fresh)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open cards after a new trigger = %d, want 1", n)
+	}
+}
+
+// CHE-6241: the real path. The reject comment goes through the comment trigger
+// seam and the decision worker; no run is queued and no card reopens.
+func TestWeeklyRunGuardRejectCommentDispatchesNothingThroughTheCommentSeam(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	resetDecisionLease(t)
+	c, _ := weeklyCardCase(t, 6241005)
+	service.SetOnWeeklyRunGuardTripped(testHandler.onWeeklyRunGuardTripped)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	_, runner := newDecisionRunnerFixture(t)
+	decisionPass(t, runner)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejectID pgtype.UUID
+	dbfx.QueryRow(t, `SELECT id FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE 'Rejected%'`, c.issueID).Scan(&rejectID)
+	reject, err := testHandler.Queries.GetComment(context.Background(), rejectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent *db.Comment
+	if reject.ParentID.Valid {
+		p, err := testHandler.Queries.GetComment(context.Background(), reject.ParentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent = &p
+	}
+	testHandler.triggerTasksForComment(context.Background(), issue, reject, parent, "system", "", "", nil, commentSteerRequest{})
+	time.Sleep(time.Second) // the incident hook runs on its own goroutine
+	if n := c.queuedRuns(t); n != 0 {
+		t.Fatalf("queued runs after the reject comment = %d, want 0", n)
+	}
+	if n := c.allowCards(t); n != 0 {
+		t.Fatalf("open cards after the reject comment = %d, want 0", n)
+	}
+}
+
+// CHE-6241: a system comment (the decision answer or a guard notice) never
+// routes to an agent, even on a squad-assigned issue where an untagged comment
+// falls back to the squad leader. A member comment on the same issue does, so
+// the fixture reaches dispatch.
+func TestSystemCommentNeverRoutesToSquadLeader(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	squadID, leaderID := newAuditSquad(t, "che6241-squad")
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID) })
+	var issueID string
+	dbfx.QueryRow(t, `INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id, number)
+		VALUES ($1, 'member', $2, 'CHE-6241 squad routing', 'squad', $3, $4) RETURNING id`,
+		testWorkspaceID, testUserID, squadID, nextWorkspaceIssueNumber(t)).Scan(&issueID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(authorType, content string) db.Comment {
+		var id pgtype.UUID
+		authorID := testUserID
+		if authorType == "system" {
+			dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+				VALUES ($1, $2, 'system', gen_random_uuid(), $3, 'comment') RETURNING id`, issueID, testWorkspaceID, content).Scan(&id)
+		} else {
+			dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+				VALUES ($1, $2, $3, $4, $5, 'comment') RETURNING id`, issueID, testWorkspaceID, authorType, authorID, content).Scan(&id)
+		}
+		comment, err := testHandler.Queries.GetComment(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return comment
+	}
+	queued := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, leaderID)
+	}
+	testHandler.triggerTasksForComment(ctx, issue, post("system", "Rejected issue.run_guard.allow."), nil, "system", "", "", nil, commentSteerRequest{})
+	if n := queued(); n != 0 {
+		t.Fatalf("runs enqueued for the leader by a system comment = %d, want 0", n)
+	}
+	testHandler.triggerTasksForComment(ctx, issue, post("member", "please continue"), nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
+	if n := queued(); n != 1 {
+		t.Fatalf("runs enqueued for the leader by a member comment = %d, want 1 (fixture must reach dispatch)", n)
 	}
 }
