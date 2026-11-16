@@ -2235,10 +2235,10 @@ export class ApiClient {
   }
 
   /**
-   * Returns the plaintext `custom_env` map for an agent. Admits the
-   * agent's owner or a workspace owner/admin (MUL-5438); calls from
-   * agent-actor sessions get a 403. Every successful call writes an
-   * `agent_env_revealed` activity_log row server-side. MUL-2600.
+   * Returns env metadata for an agent: every `custom_env` value is the
+   * masked `"****"` marker, never plaintext. Admits the agent's owner or
+   * a workspace owner/admin (MUL-5438); calls from agent-actor sessions
+   * get a 403. MUL-2600.
    */
   async getAgentEnv(id: string): Promise<AgentEnvResponse> {
     return this.fetch(`/api/agents/${id}/env`);

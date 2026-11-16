@@ -42,6 +42,7 @@ Describe the work, pick an agent or squad under **Created by**, and click **Crea
 - The project, priority, and due date you set in the dialog are used as-is; the agent does not infer different ones from the text. Project shows by default, and priority and due date are under the **⋯** menu. Choose which fields always show in **Settings → Preferences → Fields shown when creating issues**.
 - With **Create another** on, the dialog stays open after each submission so you can write the next one.
 - **Created by** lists only the agents and squads you are allowed to assign. If the agent's runtime has a multica CLI that is too old, the dialog asks you to upgrade the daemon or switch to manual create.
+- The server records how each new issue was made in `created_via`: `dialog` (this dialog), `agent` (an agent run created it on its own) or `cli` (a person used the CLI). The issue's **Details** panel shows it as **Created via**, and `multica issue get --output json` returns it. Issues made before this field existed, and issues made from a web or desktop form, have an empty value. You cannot set it.
 
 ## Choose an assignee
 

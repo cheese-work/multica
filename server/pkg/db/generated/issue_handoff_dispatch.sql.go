@@ -102,6 +102,44 @@ func (q *Queries) GetHandoffDispatch(ctx context.Context, id pgtype.UUID) (Issue
 	return i, err
 }
 
+const getNewestHandoffChainComment = `-- name: GetNewestHandoffChainComment :one
+WITH RECURSIVE chain(task_id) AS (
+    SELECT $3::uuid
+    UNION
+    SELECT CASE WHEN d.source_task_id = c.task_id THEN d.task_id ELSE d.source_task_id END
+    FROM chain c
+    JOIN issue_handoff_dispatch d
+      ON d.issue_id = $1 AND d.workspace_id = $2
+     AND d.source_task_id IS NOT NULL AND d.task_id IS NOT NULL
+     AND (d.source_task_id = c.task_id OR d.task_id = c.task_id)
+)
+SELECT cm.id FROM comment cm
+WHERE cm.issue_id = $1 AND cm.workspace_id = $2
+  AND cm.source_task_id IN (SELECT task_id FROM chain)
+  AND (SELECT count(*) FROM chain) > 1
+  AND cm.type = 'comment' AND cm.deleted_at IS NULL
+  AND cm.decision_request_id IS NULL AND cm.decision_comment_kind IS NULL
+ORDER BY cm.created_at DESC, cm.id DESC
+LIMIT 1
+`
+
+type GetNewestHandoffChainCommentParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+// The newest chain comment of a task on the issue. The chain is the task plus
+// every task reached through handoff edges (a dispatch row with both a mover and
+// a started run), in either direction. No row when the chain is only the task,
+// or when it has no eligible comment: a deleted or decision comment is skipped.
+func (q *Queries) GetNewestHandoffChainComment(ctx context.Context, arg GetNewestHandoffChainCommentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getNewestHandoffChainComment, arg.IssueID, arg.WorkspaceID, arg.TaskID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getTaskByHandoffDispatch = `-- name: GetTaskByHandoffDispatch :one
 SELECT id FROM agent_task_queue WHERE handoff_dispatch_id = $1
 `
@@ -155,6 +193,30 @@ func (q *Queries) LockHandoffDispatch(ctx context.Context, id pgtype.UUID) (Issu
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const lockHandoffThread = `-- name: LockHandoffThread :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':handoff_thread', 0))
+WHERE EXISTS (
+    SELECT 1 FROM issue_handoff_dispatch d
+    WHERE d.issue_id = $1 AND d.workspace_id = $2
+      AND d.source_task_id IS NOT NULL AND d.task_id IS NOT NULL
+      AND (d.source_task_id = $3 OR d.task_id = $3)
+)
+`
+
+type LockHandoffThreadParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+// Takes the issue's handoff lock until commit, only for a task that has a
+// handoff edge on the issue: two first posts of one chain take turns (CHE-6121).
+// Lock order: this lock, then the thread lock (LockCommentThread).
+func (q *Queries) LockHandoffThread(ctx context.Context, arg LockHandoffThreadParams) error {
+	_, err := q.db.Exec(ctx, lockHandoffThread, arg.IssueID, arg.WorkspaceID, arg.TaskID)
+	return err
 }
 
 const settleHandoffDispatch = `-- name: SettleHandoffDispatch :one

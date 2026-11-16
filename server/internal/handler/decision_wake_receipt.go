@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"slices"
 
@@ -81,9 +82,14 @@ func (handler *Handler) recordDecisionWakeEvent(ctx context.Context, queries *db
 
 // markDecisionRequestAnswered is the one place a request becomes answered.
 // kind=action also gets its durable answered event; kind=decision keeps the
-// legacy answer-row wake.
+// legacy answer-row wake. A kind=action request is answered only before its
+// expires_at, in this same guarded update; an answer that arrives later gets a
+// 409 and the caller's transaction rolls back whole.
 func (handler *Handler) markDecisionRequestAnswered(ctx context.Context, queries *db.Queries, decision db.DecisionRequest, answer db.DecisionAnswer) (db.DecisionRequest, error) {
 	marked, err := queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: decision.WorkspaceID, ID: decision.ID})
+	if errors.Is(err, pgx.ErrNoRows) && decision.Kind == "action" {
+		return marked, decisionIntentRefusal{http.StatusConflict, "this action request has expired and cannot take an answer"}
+	}
 	if err != nil || marked.Kind != "action" {
 		return marked, err
 	}

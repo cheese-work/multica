@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/bgagents"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
@@ -252,8 +253,10 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	PluginService          *service.PluginService
-	IssueService           *service.IssueService
-	AutopilotService       *service.AutopilotService
+	// BrowserLeases serves the browser lease API (CHE-4732); nil answers 503.
+	BrowserLeases    *browserlease.Service
+	IssueService     *service.IssueService
+	AutopilotService *service.AutopilotService
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider

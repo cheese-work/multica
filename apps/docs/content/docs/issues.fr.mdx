@@ -42,6 +42,7 @@ Décrivez le travail, choisissez un agent ou un squad dans **Créé par** et cli
 - Le projet, la priorité et la date d'échéance choisis dans la fenêtre sont repris tels quels ; l'agent n'en déduit pas d'autres du texte. Le projet est visible par défaut, la priorité et l'échéance sont dans le menu **⋯**. Les champs toujours affichés se règlent dans **Paramètres → Préférences → Champs affichés à la création de tâches**.
 - Avec **En créer un autre** activé, la fenêtre reste ouverte après chaque envoi pour enchaîner la demande suivante.
 - **Créé par** ne liste que les agents et squads que vous avez le droit d'assigner. Si la CLI multica du runtime de l'agent est trop ancienne, la fenêtre propose de mettre à jour le daemon ou de passer en création manuelle.
+- Le serveur enregistre dans `created_via` comment chaque nouvelle issue a été créée : `dialog` (cette fenêtre), `agent` (un agent l'a créée de lui-même) ou `cli` (une personne a utilisé la CLI). Le panneau **Détails** de l'issue l'affiche comme **Créé via**, et `multica issue get --output json` le renvoie. Les issues créées avant ce champ, et celles créées depuis un formulaire web ou desktop, ont une valeur vide. Vous ne pouvez pas le définir.
 
 ## Choisir l'assigné
 

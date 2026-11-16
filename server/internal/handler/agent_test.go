@@ -1006,11 +1006,10 @@ func TestListAgents_ResponseHasNoCustomEnv(t *testing.T) {
 	}
 }
 
-// TestGetAgentEnv_OwnerSucceedsAndAudits exercises the happy path: an
-// agent owner reveals env, and the response carries the plaintext map.
-// The activity_log row is checked at the end so the audit trail is
-// proven to land in the same transaction window.
-func TestGetAgentEnv_OwnerSucceedsAndAudits(t *testing.T) {
+// TestGetAgentEnv_OwnerGetsMetadataOnly: an agent owner reads key names and
+// masked values; no plaintext leaves and no reveal row is written (the
+// agent_env_revealed action is retired).
+func TestGetAgentEnv_OwnerGetsMetadataOnly(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -1037,26 +1036,20 @@ func TestGetAgentEnv_OwnerSucceedsAndAudits(t *testing.T) {
 	if resp.AgentID != agentID {
 		t.Errorf("agent_id mismatch: got %q", resp.AgentID)
 	}
-	expected := map[string]string{"KEY_ONE": "v1", "KEY_TWO": "v2"}
+	expected := map[string]string{"KEY_ONE": envSentinel, "KEY_TWO": envSentinel}
 	if !reflect.DeepEqual(resp.CustomEnv, expected) {
 		t.Errorf("CustomEnv mismatch: got %v, want %v", resp.CustomEnv, expected)
 	}
 
-	// Audit row must exist; keys but not values must be recorded.
-	var revealedKeysJSON string
+	var revealed int
 	if err := testPool.QueryRow(ctx, `
-		SELECT details::text FROM activity_log
-		WHERE workspace_id = $1 AND action = 'agent_env_revealed'
-		  AND details->>'agent_id' = $2
-		ORDER BY created_at DESC LIMIT 1
-	`, testWorkspaceID, agentID).Scan(&revealedKeysJSON); err != nil {
-		t.Fatalf("no agent_env_revealed activity row found: %v", err)
+		SELECT count(*) FROM activity_log
+		WHERE workspace_id = $1 AND action = 'agent_env_revealed' AND details->>'agent_id' = $2
+	`, testWorkspaceID, agentID).Scan(&revealed); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(revealedKeysJSON, `"KEY_ONE"`) || !strings.Contains(revealedKeysJSON, `"KEY_TWO"`) {
-		t.Errorf("expected revealed_keys to contain KEY_ONE and KEY_TWO, got: %s", revealedKeysJSON)
-	}
-	if strings.Contains(revealedKeysJSON, `"v1"`) || strings.Contains(revealedKeysJSON, `"v2"`) {
-		t.Errorf("activity details must NOT contain env values, got: %s", revealedKeysJSON)
+	if revealed != 0 {
+		t.Errorf("GET wrote %d agent_env_revealed rows; the action is retired", revealed)
 	}
 }
 
@@ -1160,13 +1153,12 @@ func TestUpdateAgentEnv_PreservesSentinelValues(t *testing.T) {
 	}
 
 	// Client sends one key with a real new value, one with **** (should
-	// be preserved), and one new key that isn't in the existing map but
-	// arrives as **** (must be dropped, never written as literal).
+	// be preserved), and one new key with a real value. A **** for a key
+	// that is not stored is rejected (see the PHANTOM check below).
 	body := map[string]any{
 		"custom_env": map[string]string{
 			"KEEP_ME":   "****",
 			"ALSO":      "rotated",
-			"PHANTOM":   "****",
 			"BRAND_NEW": "fresh",
 		},
 	}
@@ -1191,11 +1183,28 @@ func TestUpdateAgentEnv_PreservesSentinelValues(t *testing.T) {
 		"KEEP_ME":   "real-secret", // **** must preserve the existing value
 		"ALSO":      "rotated",     // explicit overwrite
 		"BRAND_NEW": "fresh",       // new addition
-		// PHANTOM is intentionally absent — **** for a non-existent key
-		// is dropped, never persisted as literal `****`.
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("stored custom_env mismatch:\n got:  %v\n want: %v", got, want)
+	}
+
+	// **** for a key that is not stored cannot be honoured and must never be
+	// persisted as a literal; the whole write is rejected and nothing changes.
+	req = newRequest(http.MethodPut, "/api/agents/"+agentID+"/env",
+		map[string]any{"custom_env": map[string]string{"KEEP_ME": "****", "PHANTOM": "****"}})
+	req = withURLParam(req, "id", agentID)
+	w = httptest.NewRecorder()
+	testHandler.UpdateAgentEnv(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PHANTOM: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var after string
+	if err := testPool.QueryRow(ctx, `SELECT custom_env::text FROM agent WHERE id = $1`, agentID).Scan(&after); err != nil {
+		t.Fatalf("failed to read back custom_env: %v", err)
+	}
+	var afterMap map[string]string
+	if err := json.Unmarshal([]byte(after), &afterMap); err != nil || !reflect.DeepEqual(afterMap, want) {
+		t.Errorf("rejected write changed custom_env: %v (err %v)", afterMap, err)
 	}
 
 	// Audit row should reflect the diff. We decode the jsonb back into a
