@@ -1,5 +1,4 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 71367f0f2e..3923f0cc7f 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
 @@ -1,6 +1,8 @@
@@ -11,8 +10,8 @@ index 71367f0f2e..3923f0cc7f 100644
    pull_request:
      branches: [main]
    merge_group:
-@@ -10,8 +12,8 @@ on:
-   workflow_dispatch:
+@@ -15,8 +17,8 @@
+         required: false
  
  concurrency:
 -  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,4 +20,4 @@ index 71367f0f2e..3923f0cc7f 100644
 +  cancel-in-progress: ${{ github.event_name != 'push' }}
  
  jobs:
-   warning-budget:
+   namespace-qualification:

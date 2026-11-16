@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -69,7 +70,8 @@ func TestValidAsksPassAllRules(test *testing.T) {
 "recommendation":"KEEP GATES. Get the missing proof first; the current checks do not cover the Android screens.",
 "default_if_no_reply":"KEEP GATES. The feature stays blocked and the three pull requests stay draft.",
 "agent_did":"Stale sweep on 27 Oct 2026: PRs 340, 343 and 347 are OPEN and draft at heads 554b9fc4244aaf9fd0bd464f5840975f5f17f086, 638c4502097d49525e9ee5260d173c873698da36 and b75b8a325b3efdd37f3cd233b84b13d7fbde7c5d. No gate was waived.",
-"source_issue_id":"` + testIssueID + `","source_comment_id":"` + testCommentID + `"}`
+"source_issue_id":"` + testIssueID + `","source_comment_id":"` + testCommentID + `",
+"state_claims":[{"claim":"PRs 340, 343 and 347 are open drafts","readback_command":"gh pr view 340 --json isDraft,state","observed_at":"` + time.Now().Format(time.RFC3339) + `"}]}`
 	if _, err := DecodeAsk([]byte(raw)); err != nil {
 		test.Fatalf("CHE-1755 draft refused: %v", err)
 	}

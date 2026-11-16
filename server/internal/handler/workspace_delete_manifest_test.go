@@ -208,6 +208,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_search_text":                  workspaceDelete, // CHE-2943 derived; the issue delete trigger removes it, no FK.
 	"issue_status":                       workspaceDelete,
 	"issue_workflow":                     workspaceDelete,
+	"issue_workflow_lint_override":       workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
 	"issue_unread":                       workspaceDelete,
@@ -316,6 +317,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"ci_watch_action":                    workspaceDelete,     // CHE-4273
 	"ci_signature_owner":                 workspaceDelete,     // CHE-4273
 	"ci_flake_increment":                 workspaceDelete,     // CHE-4280 flake counter; no FK.
+	"ci_watch_event":                     workspaceDelete,     // CHE-4279 storm-breaker event log; no FK.
 	"gh_installation_budget":             workspaceDeleteKeep, // CHE-4273 per GitHub App installation, shared across workspaces; no workspace_id.
 	"gh_budget_reservation":              workspaceDeleteKeep, // CHE-4273 same; no workspace_id.
 	"workspace_invitation":               workspaceDelete,

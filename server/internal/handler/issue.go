@@ -81,6 +81,10 @@ type IssueResponse struct {
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// CreatedVia is how the issue was made: dialog, agent or cli. The server
+	// sets it at create; it is empty for issues made before it existed and
+	// for creates from web or desktop forms.
+	CreatedVia    string  `json:"created_via"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -315,6 +319,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, nil
 }
 
@@ -352,7 +357,10 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err != nil {
 		return issue, nil, err
 	}
-	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
+	if err := wf.recordVerdict(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -400,6 +408,13 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		}
 		rec.activity = &row
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
+	}
+	// The intent to run the handler is written with the write that hands the
+	// issue to it, so a crash after the commit leaves it behind to find.
+	if rec != nil && rec.intent != nil {
+		if err := writeHandoffIntent(ctx, q, rec, issue); err != nil {
+			return db.Issue{}, nil, err
+		}
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
@@ -687,6 +702,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		CreatedVia:         i.CreatedVia.String,
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -1494,8 +1510,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	// runSearch fills results from one search statement and writes the error
 	// response itself, returning false when the request is already answered.
-	runSearch := func(sqlQuery string, args []any) bool {
-		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+	runSearch := func(setup []string, sqlQuery string, args []any) bool {
+		err := runSearchQueryWithSetup(ctx, h.TxStarter, setup, sqlQuery, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
 				if err != nil {
@@ -1529,7 +1545,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	if !runSearch(sqlQuery, args) {
+	if !runSearch(nil, sqlQuery, args) {
 		return
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
@@ -1538,7 +1554,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
-		if !runSearch(fuzzyQuery, fuzzyArgs) {
+		if !runSearch(fuzzySearchSetup, fuzzyQuery, fuzzyArgs) {
 			return
 		}
 	}
@@ -1614,7 +1630,7 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.description_external_read`
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read`
 
 var narrowColumns = strings.NewReplacer(
 	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
@@ -1640,7 +1656,7 @@ func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
 			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
 			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
 			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
-			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.WorkflowID, &row.RequestedByID, &row.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}
@@ -1728,6 +1744,14 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		creatorFilter = id
 	}
+	var requestedByFilter pgtype.UUID
+	if c := r.URL.Query().Get("requested_by_id"); c != "" {
+		id, ok := parseUUIDOrBadRequest(w, c, "requested_by_id")
+		if !ok {
+			return
+		}
+		requestedByFilter = id
+	}
 	var projectFilter pgtype.UUID
 	if p := r.URL.Query().Get("project_id"); p != "" {
 		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
@@ -1788,6 +1812,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			AssigneeID:         assigneeFilter,
 			AssigneeIds:        assigneeIdsFilter,
 			CreatorID:          creatorFilter,
+			RequestedByID:      requestedByFilter,
 			ProjectID:          projectFilter,
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
@@ -1989,6 +2014,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if creatorFilter.Valid {
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
 	}
+	if requestedByFilter.Valid {
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(requestedByFilter)))
+	}
 	if projectFilter.Valid {
 		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
 	}
@@ -2169,7 +2197,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id, i.description_external_read
+	   i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -2541,6 +2569,13 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(id)))
+	}
+	if raw := r.URL.Query().Get("requested_by_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "requested_by_id")
+		if !ok {
+			return
+		}
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(id)))
 	}
 	if raw := r.URL.Query().Get("project_id"); raw != "" {
 		id, ok := parseUUIDOrBadRequest(w, raw, "project_id")
@@ -3865,6 +3900,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+		return
+	}
+	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
 
 	if req.ProjectID != nil {
 		id, ok := parseUUIDOrBadRequest(w, *req.ProjectID, "project_id")
@@ -3935,6 +3978,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				assigneeID = id
 				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
 					writeError(w, status, msg)
+					return
+				}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 					return
 				}
 			}
@@ -4031,6 +4077,19 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// created_via is server-set and has no request field. A quick_create origin
+	// is the "create with agents" dialog: IssueService.Create rejects it unless
+	// the origin task is a quick-create task of the creating agent.
+	var createdVia pgtype.Text
+	switch {
+	case originType.String == "quick_create":
+		createdVia = pgtype.Text{String: "dialog", Valid: true}
+	case creatorType == "agent":
+		createdVia = pgtype.Text{String: "agent", Valid: true}
+	case statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel == "cli":
+		createdVia = pgtype.Text{String: "cli", Valid: true}
 	}
 
 	// Prefix is workspace-level; pre-compute once so both the broadcast
@@ -4139,6 +4198,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		DueDate:         dueDate,
 		OriginType:      originType,
 		OriginID:        originID,
+		CreatedVia:      createdVia,
 		Stage:           ptrToInt4(req.Stage),
 		AttachmentIDs:   attachmentIDs,
 		LabelIDs:        labelIDs,
@@ -4267,6 +4327,13 @@ type UpdateIssueRequest struct {
 	// HandoffCommentID names the comment that explains a status move. The
 	// status history keeps it only when the comment belongs to the issue.
 	HandoffCommentID *string `json:"handoff_comment_id,omitempty"`
+	// HandoffAssignee hands this one status move to the named assignee instead
+	// of the step's handler. Valid only with a status change into a step that
+	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
+	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
+	// KeepForStep keeps HandoffAssignee for the target step on this issue:
+	// later entries of the step go to it. Needs HandoffAssignee. (CHE-5490)
+	KeepForStep bool `json:"keep_for_step,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -4290,7 +4357,7 @@ type UpdateIssueRequest struct {
 	// (MUL-7420)
 	StopPreviousAssigneeRuns bool `json:"stop_previous_assignee_runs,omitempty"`
 	// HandoffPreview is what the handoff confirmation showed. When the write
-	// hands off, it is refused with 409 handoff_preview_stale unless the issue's
+	// hands off, it is refused with 409 stale_preview unless the issue's
 	// assignee and the resolved handler still match it. A binding with a null
 	// handler records a preview that found no handoff, so a handler that became
 	// resolvable since is refused too. Optional; single updates only. Omitted,
@@ -4504,6 +4571,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
 	}
+	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)
+	}
 
 	attachmentsChanged := false
 	if len(attachmentIDs) > 0 {
@@ -4531,6 +4601,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, current, attachmentsChanged, nil
 }
 
@@ -4788,7 +4859,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		req.EntryGateOverrideReason = &reason
 	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings})
+	handoffAssignee, ok := parseHandoffAssignee(w, req.HandoffAssignee)
+	if !ok {
+		return
+	}
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee, keepForStep: req.KeepForStep})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4811,8 +4886,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
-			writeError(w, status, msg)
+			writeHandoffAssigneeRefusal(w, handoff, status, msg)
 			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
+			return
+		}
+		if handoff == nil && (touchedType || touchedID) {
+			if status, msg := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
 		}
 	}
 
@@ -4832,6 +4917,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// refuses a comment that is not a live comment of this issue; a move that
 	// starts no run keeps the lenient drop-and-mark of the status history.
 	dispatchCtx := h.actingTaskContext(r)
+	var intentComment string
 	if req.HandoffCommentID != nil && !suppressRun {
 		ok, err := service.HandoffCommentBelongsTo(r.Context(), h.Queries, prevIssue, *req.HandoffCommentID)
 		if err != nil {
@@ -4841,6 +4927,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case ok:
 			dispatchCtx = service.WithStatusHandoffComment(dispatchCtx, parseUUID(*req.HandoffCommentID))
+			intentComment = *req.HandoffCommentID
 		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
 			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
 			return
@@ -4876,10 +4963,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		if handoff != nil {
-			statusRec.handoffWorkflow = handoff.def.Name
+			statusRec.enterHandoff(handoff)
 		}
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
+		}
+		if handoff != nil && handed.agent != "" {
+			armHandoffIntent(statusRec, r, actorType, actorID, intentComment, req.HandoffNote, handed.write)
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
 		// Status-only fallback label (CHE-4439 decision 14): an agent run
@@ -5087,9 +5177,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(dispatchCtx, issue, trigger, actorType, actorID, handoffNote) {
+		intentID := recIntentID(statusRec)
+		if h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote) && !intentID.Valid {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
+	} else if statusRec != nil {
+		h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 	}
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
@@ -5126,6 +5219,37 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
 		return h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID)
 	})
+}
+
+// errAgentAssignsMember refuses an agent's attempt to hand an issue to a
+// member (CHE-5516). A member-owned issue starts no run, so the work stops
+// unseen; the human step goes on a decision card instead.
+const errAgentAssignsMember = "agent_assign_member: an agent never assigns an issue to a member. Assign an agent, and open a decision request (multica decision request) for the human-only step; assigning to the member is allowed while that request is open on this issue"
+
+// refuseAgentAssignToMember returns a non-zero status when an agent actor
+// assigns to a member that is not already the assignee and the issue has no open
+// human decision request. issueID is invalid on create: no card can exist yet.
+func (h *Handler) refuseAgentAssignToMember(ctx context.Context, actorType, workspaceID string, issueID pgtype.UUID, current db.Issue, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
+	if actorType != "agent" || assigneeType.String != "member" || !assigneeType.Valid {
+		return 0, ""
+	}
+	if current.AssigneeType.String == "member" && current.AssigneeID == assigneeID {
+		return 0, ""
+	}
+	if issueID.Valid {
+		wsUUID, err := util.ParseUUID(workspaceID)
+		if err != nil {
+			return http.StatusBadRequest, "invalid workspace_id"
+		}
+		open, err := h.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{WorkspaceID: wsUUID, IssueID: issueID})
+		if err != nil {
+			return http.StatusInternalServerError, "failed to check open decision requests"
+		}
+		if open {
+			return 0, ""
+		}
+	}
+	return http.StatusForbidden, errAgentAssignsMember
 }
 
 // errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
@@ -5605,6 +5729,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "handoff_preview in a batch update must bind no handoff (null handler)")
 		return
 	}
+	if req.Updates.HandoffAssignee != nil {
+		writeErrorCode(w, http.StatusBadRequest, "handoff_assignee_not_applicable", "handoff_assignee is not accepted in a batch update")
+		return
+	}
 
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
@@ -5840,6 +5968,15 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 				continue
 			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
+				continue
+			}
+			if handoff == nil {
+				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+					continue
+				}
+			}
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
@@ -5878,7 +6015,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
 			if handoff != nil {
-				statusRec.handoffWorkflow = handoff.def.Name
+				statusRec.enterHandoff(handoff)
+				if handed.agent != "" {
+					armHandoffIntent(statusRec, r, actorType, actorID, "", req.Updates.HandoffNote, handed.write)
+				}
 			}
 			writeCtx = withStatusRecord(writeCtx, statusRec)
 		}
@@ -5998,9 +6138,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
-			if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, batchHandoffNote) {
+			intentID := recIntentID(statusRec)
+			if h.dispatchIssueRun(withHandoffIntent(h.actingTaskContext(r), intentID), issue, trigger, actorType, actorID, batchHandoffNote) && !intentID.Valid {
 				h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 			}
+		} else if statusRec != nil {
+			h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 		}
 
 		if statusChanged && issue.ParentIssueID.Valid {

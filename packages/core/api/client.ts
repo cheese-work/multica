@@ -286,6 +286,13 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
+  CIWatchConfigSchema,
+  CIWatchEventsSchema,
+  EMPTY_CI_WATCH_EVENTS,
+  type CIWatchConfig,
+  type CIWatchEvent,
+} from "../ci-watch/schema";
+import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyBatchOutcomeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
   type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
@@ -294,8 +301,9 @@ import {
   RuntimeProfileSchema,
   AgentDecisionSettingSchema,
   type AgentDecisionSetting,
-  RoutingAgentSettingSchema,
-  type RoutingAgentSetting,
+  BackgroundAgentsSchema,
+  type BackgroundAgents,
+  type BackgroundAgentsRead,
   DelegatedWritesSchema,
   type DelegatedWrites,
   OpenDecisionRequestListSchema,
@@ -623,6 +631,13 @@ export interface ClientUsageRequest {
 export interface LoginResponse {
   token: string;
   user: User;
+}
+
+function parseBackgroundAgentsRead(raw: unknown, etag: string | null, method: "GET" | "PUT"): BackgroundAgentsRead | null {
+  const value = parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+    endpoint: `${method} /api/workspaces/{id}/background-agents`,
+  });
+  return value ? { value, etag } : null;
 }
 
 function parseSearchIndexResponse<T>(raw: unknown, schema: ZodType, endpoint: string): T {
@@ -2225,10 +2240,10 @@ export class ApiClient {
   }
 
   /**
-   * Returns the plaintext `custom_env` map for an agent. Admits the
-   * agent's owner or a workspace owner/admin (MUL-5438); calls from
-   * agent-actor sessions get a 403. Every successful call writes an
-   * `agent_env_revealed` activity_log row server-side. MUL-2600.
+   * Returns env metadata for an agent: every `custom_env` value is the
+   * masked `"****"` marker, never plaintext. Admits the agent's owner or
+   * a workspace owner/admin (MUL-5438); calls from agent-actor sessions
+   * get a 403. MUL-2600.
    */
   async getAgentEnv(id: string): Promise<AgentEnvResponse> {
     return this.fetch(`/api/agents/${id}/env`);
@@ -3468,21 +3483,31 @@ export class ApiClient {
     });
   }
 
-  // CHE-3627: null when the response is malformed, so a guessed value is never
-  // shown or saved back over the real one.
-  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
-    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
-      endpoint: "GET /api/workspaces/{id}/routing-agent",
+  // CHE-4123: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one. `etag` is the version the next save
+  // must present (null from a server that sends none).
+  async getBackgroundAgents(workspaceId: string): Promise<BackgroundAgentsRead | null> {
+    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
+      extraHeaders: { "Content-Type": "application/json" },
     });
+    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "GET");
   }
 
-  // Owner/admin + human-actor only; replaces the whole setting.
-  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
-    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+  // Owner/admin + human-actor only; replaces the whole value. An unset slot is
+  // sent as null. With `etag` the server refuses with 409 `background_agents_conflict`
+  // (body: `current`, `etag`) when someone saved since that read. Null result:
+  // the response was malformed, so re-read.
+  async updateBackgroundAgents(
+    workspaceId: string,
+    value: Record<string, unknown>,
+    etag?: string | null,
+  ): Promise<BackgroundAgentsRead | null> {
+    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
       method: "PUT",
-      body: JSON.stringify(config),
+      body: JSON.stringify(value),
+      extraHeaders: { "Content-Type": "application/json", ...(etag ? { "If-Match": etag } : {}) },
     });
+    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "PUT");
   }
 
   // CHE-4617: null when the response is malformed, so a guessed rule is never
@@ -5793,6 +5818,42 @@ export class ApiClient {
       EMPTY_GITHUB_CONNECT_RESPONSE,
       { endpoint: "GET /api/workspaces/:id/github/connect" },
     );
+  }
+
+  private ciWatchPath(workspaceId: string, repo: string): string {
+    return `/api/workspaces/${workspaceId}/ci-watch/repos/${encodeURIComponent(repo)}`;
+  }
+
+  /** Owner/admin only. A flag-off server answers 403 `ci_watcher_disabled`. */
+  async getCIWatchConfig(workspaceId: string, repo: string): Promise<CIWatchConfig> {
+    const raw = await this.fetch<unknown>(this.ciWatchPath(workspaceId, repo));
+    return parseOrThrow<CIWatchConfig>(raw, CIWatchConfigSchema, {
+      endpoint: "GET /api/workspaces/:id/ci-watch/repos/:repo",
+    });
+  }
+
+  /** Partial update: only the fields in `patch` change. Answers the saved config. */
+  async updateCIWatchConfig(
+    workspaceId: string,
+    repo: string,
+    patch: Record<string, unknown>,
+  ): Promise<CIWatchConfig> {
+    const raw = await this.fetch<{ config?: unknown }>(this.ciWatchPath(workspaceId, repo), {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseOrThrow<CIWatchConfig>(raw?.config, CIWatchConfigSchema, {
+      endpoint: "PUT /api/workspaces/:id/ci-watch/repos/:repo",
+    });
+  }
+
+  async listCIWatchEvents(workspaceId: string, repo: string, limit = 50): Promise<CIWatchEvent[]> {
+    const raw = await this.fetch<unknown>(
+      `${this.ciWatchPath(workspaceId, repo)}/events?limit=${limit}`,
+    );
+    return parseWithFallback(raw, CIWatchEventsSchema, EMPTY_CI_WATCH_EVENTS, {
+      endpoint: "GET /api/workspaces/:id/ci-watch/repos/:repo/events",
+    });
   }
 
   async listGitHubInstallations(workspaceId: string): Promise<ListGitHubInstallationsResponse> {

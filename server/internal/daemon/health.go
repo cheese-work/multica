@@ -87,9 +87,6 @@ type HealthResponse struct {
 	// the last barrier check and will retry when idle. Omitted when empty, so
 	// older consumers see no change. Diagnostic only: nothing keys off it.
 	ReloadPendingReason string `json:"reload_pending_reason,omitempty"`
-	// DrainingForReload is true while the daemon claims nothing new so a
-	// pending reload can run once the running tasks finish (CHE-5453).
-	DrainingForReload bool `json:"draining_for_reload,omitempty"`
 	// MaintenanceHeld is true while an owner maintenance window holds update
 	// ownership and the claim barrier; MaintenanceExpiresAt is its lease
 	// expiry (RFC 3339). The window token is never reported. See maintenance.go.
@@ -156,6 +153,8 @@ type activeRepoCheckoutTask struct {
 	Elevated      bool
 	PinnedBaseSHA string
 	PinnedHeadSHA string
+	// Broker, when set, is pinned to the run's first successful checkout.
+	Broker *runBroker
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -390,7 +389,6 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			SkippedAgents:         d.skippedAgentsSnapshot(),
 
 			ReloadPendingReason: d.reloadPending(),
-			DrainingForReload:   d.isDraining(),
 			Workspaces:          wsList,
 		}
 		if held, expires := d.maintenanceStatus(); held {
@@ -636,6 +634,8 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		d.startRunBroker(activeTask, req, result)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)

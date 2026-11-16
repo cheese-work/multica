@@ -311,3 +311,46 @@ func noRows(err error) error {
 	}
 	return err
 }
+
+// History is the HistoryLoader: same-signature counts (this run excluded), the
+// last 10 conclusions of the run's workflow and branch, and whether an open
+// owner issue holds the signature. FlakeCount7d stays with FlakeCount7d.
+func (l *Labeler) History(ctx context.Context, run Run, signature string) (History, error) {
+	var h History
+	now := l.now()
+	err := l.pool.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE created_at > $6::timestamptz - interval '24 hours'),
+		count(*) FILTER (WHERE created_at > $6::timestamptz - interval '7 days')
+		FROM ci_failure_event
+		WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4
+		  AND NOT (run_id=$5 AND run_attempt=$7)`,
+		run.WorkspaceID, run.RepoOwner, run.RepoName, signature, run.RunID, now, run.RunAttempt).Scan(&h.SameSignature24h, &h.SameSignature7d)
+	if err != nil {
+		return h, err
+	}
+	rows, err := l.pool.Query(ctx, `SELECT conclusion FROM github_workflow_run
+		WHERE workspace_id=$1 AND repo_owner=lower($2) AND repo_name=lower($3) AND workflow_path=$4 AND head_branch=$5
+		  AND status_rank = 2
+		ORDER BY created_at DESC, run_id DESC LIMIT 10`,
+		run.WorkspaceID, run.RepoOwner, run.RepoName, run.WorkflowPath, run.HeadBranch)
+	if err != nil {
+		return h, err
+	}
+	defer rows.Close()
+	h.Last10 = []string{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return h, err
+		}
+		h.Last10 = append(h.Last10, c)
+	}
+	if err := rows.Err(); err != nil {
+		return h, err
+	}
+	rows.Close()
+	err = l.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ci_signature_owner
+		WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4 AND state='open')`,
+		run.WorkspaceID, run.RepoOwner, run.RepoName, signature).Scan(&h.OwnerIssueOpen)
+	return h, err
+}

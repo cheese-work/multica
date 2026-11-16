@@ -108,6 +108,68 @@ func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREvent
 	return result.RowsAffected(), nil
 }
 
+const lastWorkingAgentOnIssue = `-- name: LastWorkingAgentOnIssue :one
+SELECT a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.custom_env_version, a.scheduling_paused_at, a.scheduling_paused_by, a.scheduling_paused_reason
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = $1
+  AND t.started_at IS NOT NULL
+  AND a.workspace_id = $2
+  AND a.archived_at IS NULL
+  AND a.runtime_id IS NOT NULL
+ORDER BY t.started_at DESC
+LIMIT 1
+`
+
+type LastWorkingAgentOnIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The agent that most recently ran on an issue and can still run: the PR-action
+// fallback when a member holds the issue and no PR author resolves, so the
+// notice reaches an agent rather than the member (CHE-5837).
+func (q *Queries) LastWorkingAgentOnIssue(ctx context.Context, arg LastWorkingAgentOnIssueParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, lastWorkingAgentOnIssue, arg.IssueID, arg.WorkspaceID)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+		&i.ConversationStarters,
+		&i.CustomEnvVersion,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+		&i.SchedulingPausedReason,
+	)
+	return i, err
+}
+
 const latestPRConflictBase = `-- name: LatestPRConflictBase :one
 SELECT e.base_sha
 FROM issue_pr_event e
@@ -195,6 +257,10 @@ JOIN github_pull_request pr ON pr.id = e.pull_request_id
 WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
+       -- A member was told once (notified); an agent or squad holding the issue
+       -- takes the event now (CHE-5901).
+       OR (e.status = 'notified'
+           AND EXISTS (SELECT 1 FROM issue i WHERE i.id = e.issue_id AND i.assignee_type IN ('agent', 'squad')))
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t
@@ -365,12 +431,26 @@ func (q *Queries) MarkPREventNextTurn(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const markPREventsNotified = `-- name: MarkPREventsNotified :execrows
+UPDATE issue_pr_event SET status = 'notified' WHERE id = ANY($1::uuid[]) AND status = 'next_turn'
+`
+
+// A member was told about these events once: the bridge selects them again only
+// when an agent or squad holds the issue (CHE-5901).
+func (q *Queries) MarkPREventsNotified(ctx context.Context, ids []pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPREventsNotified, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markStartedPREventsDelivered = `-- name: MarkStartedPREventsDelivered :execrows
 UPDATE issue_pr_event e
 SET status = 'delivered'
 FROM github_pull_request pr
 WHERE pr.id = e.pull_request_id
-  AND e.status IN ('accepted', 'next_turn')
+  AND e.status IN ('accepted', 'next_turn', 'notified')
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
   AND (EXISTS (
       SELECT 1

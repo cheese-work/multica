@@ -1,6 +1,9 @@
 package issueworkflow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const (
 	designWF = "8394690d-632a-4b15-a333-c9f0247b0985"
@@ -62,6 +65,49 @@ func TestWorkflowForTitleDuplicateKeysAreDeterministic(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		if got, _ := WorkflowForTitle(settings, "design: x"); got != first {
 			t.Fatalf("run %d picked %v, first pick %v", i, got, first)
+		}
+	}
+}
+
+func TestQuickCreateSettings(t *testing.T) {
+	for settings, want := range map[string]bool{
+		``: true, `{}`: true, `{"quick_create_fill":"on"}`: true, `{"quick_create_fill":"off"}`: false, `not json`: true,
+	} {
+		if got := QuickCreateFill([]byte(settings)); got != want {
+			t.Errorf("QuickCreateFill(%q) = %v, want %v", settings, got, want)
+		}
+	}
+	got := WorkflowTypeKeys([]byte(`{"workflow_by_type":{"Plan":"x","fix":"y","design":"z"}}`))
+	if strings.Join(got, ",") != "design,fix,plan" {
+		t.Errorf("WorkflowTypeKeys = %v", got)
+	}
+	if len(WorkflowTypeKeys([]byte(`{}`))) != 0 {
+		t.Error("expected no keys")
+	}
+}
+
+// CHE-5946: the decision-action patch validates workflow_by_type before it is stored.
+func TestValidateWorkflowByType(t *testing.T) {
+	for name, raw := range map[string]string{
+		"critic to gate": `{"critic":"7328545d-f16f-4bdb-9deb-27f5d70b1210"}`,
+		"two types":      `{"design":"` + designWF + `","fix":"` + bugWF + `"}`,
+	} {
+		if err := ValidateWorkflowByType([]byte(raw)); err != nil {
+			t.Errorf("%s: valid map refused: %v", name, err)
+		}
+	}
+	for name, raw := range map[string]string{
+		"not an object":    `"critic"`,
+		"array":            `["critic"]`,
+		"empty map":        `{}`,
+		"value not a uuid": `{"critic":"gate"}`,
+		"value not string": `{"critic":7}`,
+		"empty key":        `{"":"` + designWF + `"}`,
+		"key with space":   `{"a b":"` + designWF + `"}`,
+		"uppercase key":    `{"Critic":"` + designWF + `"}`,
+	} {
+		if err := ValidateWorkflowByType([]byte(raw)); err == nil {
+			t.Errorf("%s: invalid map accepted", name)
 		}
 	}
 }

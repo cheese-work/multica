@@ -37,6 +37,10 @@ type issueWorkflowCols struct {
 	IncludeChildPrs  bool               `json:"include_child_prs"`
 	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
 	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+
+	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings       []byte             `json:"lint_findings"`
 }
 
 func (c issueWorkflowCols) model() IssueWorkflow {
@@ -45,6 +49,7 @@ func (c issueWorkflowCols) model() IssueWorkflow {
 		InitialStatusKey: c.InitialStatusKey, Steps: c.Steps, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 		IsDefault: c.IsDefault, OwnerID: c.OwnerID, MaxRunsPerIssue: c.MaxRunsPerIssue,
 		IncludeChildPrs: c.IncludeChildPrs, RunBudgetSince: c.RunBudgetSince, StartStatusKey: c.StartStatusKey,
+		LintOverrideReason: c.LintOverrideReason, LintOverriddenAt: c.LintOverriddenAt, LintFindings: c.LintFindings,
 	}
 }
 

@@ -249,6 +249,7 @@ type AgentTaskQueue struct {
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 	TriggerKind               pgtype.Text        `json:"trigger_kind"`
+	HandoffDispatchID         pgtype.UUID        `json:"handoff_dispatch_id"`
 }
 
 type AgentToLabel struct {
@@ -447,14 +448,26 @@ type AutopilotTrigger struct {
 	CreatedByID pgtype.UUID `json:"created_by_id"`
 }
 
+type BrowserGatewayCredential struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Gateway        string             `json:"gateway"`
+	CredentialHash string             `json:"credential_hash"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type BrowserInstance struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Name        string             `json:"name"`
-	Epoch       int64              `json:"epoch"`
-	Phase       string             `json:"phase"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Name           string             `json:"name"`
+	Epoch          int64              `json:"epoch"`
+	Phase          string             `json:"phase"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Host           string             `json:"host"`
+	Gateway        string             `json:"gateway"`
+	AllowedClasses []string           `json:"allowed_classes"`
 }
 
 type BrowserLease struct {
@@ -888,6 +901,12 @@ type CiSignatureOwner struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	State         string             `json:"state"`
 	ClosedAt      pgtype.Timestamptz `json:"closed_at"`
+	Kind          string             `json:"kind"`
+	FailCount     int32              `json:"fail_count"`
+	LastRunUrl    string             `json:"last_run_url"`
+	DigestClass   string             `json:"digest_class"`
+	LastDigestAt  pgtype.Timestamptz `json:"last_digest_at"`
+	CheckKey      string             `json:"check_key"`
 }
 
 type CiWatchAction struct {
@@ -939,6 +958,8 @@ type CiWatchConfig struct {
 	MaxOwnerWakesPerHour    int32              `json:"max_owner_wakes_per_hour"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	AuthorizedByMemberID    pgtype.UUID        `json:"authorized_by_member_id"`
+	AuthorizedAt            pgtype.Timestamptz `json:"authorized_at"`
 }
 
 type CiWatchConfigAudit struct {
@@ -951,6 +972,20 @@ type CiWatchConfigAudit struct {
 	OldValue    pgtype.Text        `json:"old_value"`
 	NewValue    pgtype.Text        `json:"new_value"`
 	ChangedAt   pgtype.Timestamptz `json:"changed_at"`
+}
+
+type CiWatchEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	Kind          string             `json:"kind"`
+	RunID         int64              `json:"run_id"`
+	Day           pgtype.Date        `json:"day"`
+	PausedUntil   pgtype.Timestamptz `json:"paused_until"`
+	Detail        string             `json:"detail"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type ClientUsageDaily struct {
@@ -1016,6 +1051,11 @@ type Comment struct {
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
 	ExternalRead        bool               `json:"external_read"`
+}
+
+type CommentContentEdit struct {
+	CommentID pgtype.UUID        `json:"comment_id"`
+	EditedAt  pgtype.Timestamptz `json:"edited_at"`
 }
 
 type CommentReaction struct {
@@ -2141,6 +2181,7 @@ type Issue struct {
 	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
 	MaxRunsOverride         pgtype.Int4        `json:"max_runs_override"`
 	DescriptionExternalRead bool               `json:"description_external_read"`
+	CreatedVia              pgtype.Text        `json:"created_via"`
 }
 
 type IssueCheckpoint struct {
@@ -2205,6 +2246,26 @@ type IssueDescriptionRevision struct {
 	ActorType   pgtype.Text        `json:"actor_type"`
 	ActorID     pgtype.UUID        `json:"actor_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type IssueHandoffDispatch struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	StatusHistoryID   pgtype.UUID        `json:"status_history_id"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	ContextCommentIds []pgtype.UUID      `json:"context_comment_ids"`
+	HandoffWrite      string             `json:"handoff_write"`
+	State             string             `json:"state"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	SkipReason        pgtype.Text        `json:"skip_reason"`
+	Attempts          int32              `json:"attempts"`
+	NextAttemptAt     pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueIdleGuard struct {
@@ -2383,6 +2444,18 @@ type IssueStatus struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	Icon        string             `json:"icon"`
+}
+
+type IssueStepAssignee struct {
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	StatusKey    string             `json:"status_key"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AssigneeType string             `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	SetByType    string             `json:"set_by_type"`
+	SetByID      pgtype.UUID        `json:"set_by_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type IssueSubscriber struct {
@@ -2576,6 +2649,19 @@ type IssueWorkflow struct {
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
 	StartStatusKey          pgtype.Text        `json:"start_status_key"`
+	LintOverrideReason      pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt        pgtype.Timestamptz `json:"lint_overridden_at"`
+	LintFindings            []byte             `json:"lint_findings"`
+}
+
+type IssueWorkflowLintOverride struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Version     pgtype.Timestamptz `json:"version"`
+	Reason      string             `json:"reason"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type LarkBindingToken struct {
@@ -2708,6 +2794,36 @@ type MergePauseState struct {
 	IsSet        pgtype.Bool        `json:"is_set"`
 	FetchedAt    pgtype.Timestamptz `json:"fetched_at"`
 	Error        pgtype.Text        `json:"error"`
+}
+
+type MergeReceiptFact struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RepoOwner         string             `json:"repo_owner"`
+	RepoName          string             `json:"repo_name"`
+	PrNumber          int32              `json:"pr_number"`
+	HeadSha           string             `json:"head_sha"`
+	BaseRef           string             `json:"base_ref"`
+	Tier              pgtype.Int4        `json:"tier"`
+	ClassifierTrusted pgtype.Bool        `json:"classifier_trusted"`
+	CoverageComplete  pgtype.Bool        `json:"coverage_complete"`
+	PrBound           pgtype.Bool        `json:"pr_bound"`
+	SecurityGate      string             `json:"security_gate"`
+	ScopeClassified   pgtype.Bool        `json:"scope_classified"`
+	GateVetoed        pgtype.Bool        `json:"gate_vetoed"`
+	Paths             []string           `json:"paths"`
+	Labels            []string           `json:"labels"`
+	Evidence          string             `json:"evidence"`
+	ObservedAt        pgtype.Timestamptz `json:"observed_at"`
+}
+
+type MergeVeto struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	VetoedBy    pgtype.UUID        `json:"vetoed_by"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type MergeVetoDeadline struct {
@@ -3846,6 +3962,32 @@ type WecomInstallSession struct {
 	ErrorMessage       pgtype.Text        `json:"error_message"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WeeklyRunGuardAllowance struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Runs        int32              `json:"runs"`
+	ActionID    pgtype.UUID        `json:"action_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type WeeklyRunGuardRefusal struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID   pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID     pgtype.UUID        `json:"source_task_id"`
+	Runs             int64              `json:"runs"`
+	State            string             `json:"state"`
+	ActionID         pgtype.UUID        `json:"action_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkflowWebhookEndpoint struct {

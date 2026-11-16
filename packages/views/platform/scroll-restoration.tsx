@@ -84,6 +84,13 @@ export interface ScrollRestorationAdapter {
   getViewState?(entryKey: string): string | undefined;
   /** Write (string) or clear (undefined) an entry for the current route. */
   setViewState?(entryKey: string, value: string | undefined): void;
+  /**
+   * A writer pinned to the tab and route that exist NOW. Use it for writes
+   * that may land after the view has left (throttled or flushed on unmount):
+   * `setViewState` resolves the active tab/route at call time, so a late write
+   * would be dropped (tab switched) or filed under the new route (navigated).
+   */
+  bindViewStateWriter?(): ((entryKey: string, value: string | undefined) => void) | undefined;
 }
 
 const ScrollRestorationContext = createContext<ScrollRestorationAdapter | null>(
@@ -179,6 +186,24 @@ export function useViewStateWriter(): (
     (entryKey: string, value: string | undefined) => {
       adapter?.setViewState?.(entryKey, value);
     },
+    [adapter],
+  );
+}
+
+/**
+ * Like `useViewStateWriter`, but each call returns a writer pinned to the
+ * tab and route current at that moment, so a write that lands after the view
+ * left (throttle timer, unmount flush) still reaches the entry it belongs to.
+ */
+export function useBindViewStateWriter(): () => (
+  entryKey: string,
+  value: string | undefined,
+) => void {
+  const adapter = useContext(ScrollRestorationContext);
+  return useCallback(
+    () =>
+      adapter?.bindViewStateWriter?.() ??
+      ((entryKey, value) => adapter?.setViewState?.(entryKey, value)),
     [adapter],
   );
 }

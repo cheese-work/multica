@@ -618,6 +618,18 @@ export const IssueWorkflowSchema = z.lazy(() => z.object({
   // Full-precision updated_at; a save names the version it edited. Absent from
   // an older server, which then keeps last-writer-wins.
   version: z.string().default(""),
+  lint_override_reason: z.string().nullable().default(null),
+  lint_overridden_at: z.string().nullable().default(null),
+  // Findings of the last save (warnings, info, waived errors); absent from an older server.
+  lint_findings: z.array(z.object({
+    rule: z.string(),
+    level: z.enum(["error", "warning", "info"]).catch("info"),
+    step: z.string().optional(),
+    message: z.string().default(""),
+    hint: z.string().optional(),
+    waived: z.boolean().optional(),
+    waive_reason: z.string().optional(),
+  }).loose()).default([]),
 }).loose());
 
 export const ListIssueWorkflowsResponseSchema = z.lazy(() => z.object({
@@ -639,6 +651,8 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   created_at: "",
   updated_at: "",
   version: "",
+  lint_override_reason: null,
+  lint_overridden_at: null,
 };
 
 export const IssueWorkflowMappingPlanSchema = z.lazy(() => z.object({
@@ -1846,6 +1860,7 @@ export const IssueSchema = z.lazy(() => z.object({
   creator_id: z.string(),
   // Additive: older backends do not send it, and nothing breaks without it.
   requested_by_id: z.string().nullable().optional().catch(undefined),
+  created_via: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
   // status_name above, and older backends do not send it at all.
@@ -4755,15 +4770,21 @@ export const AgentDecisionSettingSchema = z.lazy(() => z.object({
 }).loose());
 export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
 
-// CHE-3627: GET/PUT /api/workspaces/{id}/routing-agent. The server sends null
-// for an empty list or map, so both default to empty here.
-export const RoutingAgentSettingSchema = z.lazy(() => z.object({
-  agent_id: z.string().catch(""),
-  fallback_agent_id: z.string().catch(""),
-  statuses: z.array(z.string()).nullish().transform((v) => v ?? []),
-  overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
+// CHE-4123: GET/PUT /api/workspaces/{id}/background-agents. One object keyed
+// by job (dm_title, quick_actions, compact, routing); a job is a two-slot chain.
+// An unset slot is absent or null and reads as "". `routing` also carries
+// statuses and overrides, and an unknown field passes through, so a save that
+// echoes the whole value keeps what this form does not edit.
+export const BackgroundAgentChainSchema = z.lazy(() => z.object({
+  agent_id: z.string().nullish().transform((v) => v ?? ""),
+  fallback_agent_id: z.string().nullish().transform((v) => v ?? ""),
 }).loose());
-export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+export type BackgroundAgentChain = z.infer<typeof BackgroundAgentChainSchema>;
+
+export const BackgroundAgentsSchema = z.lazy(() => z.record(z.string(), BackgroundAgentChainSchema));
+export type BackgroundAgents = z.infer<typeof BackgroundAgentsSchema>;
+// A read plus the ETag a save must present so a concurrent save is refused.
+export type BackgroundAgentsRead = { value: BackgroundAgents; etag: string | null };
 
 // CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
 // empty; a malformed requires_human_decision reads as true, the fail-closed

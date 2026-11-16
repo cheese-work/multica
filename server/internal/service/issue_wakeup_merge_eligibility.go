@@ -45,6 +45,7 @@ type MergeFacts struct {
 // MergeCandidate is the exact PR state the facts must describe.
 type MergeCandidate struct {
 	WorkspaceID   pgtype.UUID
+	IssueID       pgtype.UUID
 	Owner, Repo   string
 	Number        int32
 	HeadSHA       string
@@ -275,7 +276,7 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 			pending = errMergeFactsUnavailable
 			continue
 		}
-		facts, err := source.MergeFacts(ctx, MergeCandidate{WorkspaceID: w.WorkspaceID, Owner: l.owner, Repo: l.repo, Number: l.number, HeadSHA: l.head, BaseRef: l.base, MergerAgentID: w.AgentID})
+		facts, err := source.MergeFacts(ctx, MergeCandidate{WorkspaceID: w.WorkspaceID, IssueID: w.IssueID, Owner: l.owner, Repo: l.repo, Number: l.number, HeadSHA: l.head, BaseRef: l.base, MergerAgentID: w.AgentID})
 		if err != nil {
 			pending = errMergeFactsUnavailable
 			continue

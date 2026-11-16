@@ -392,7 +392,12 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	if len(wakeups) > 0 {
 		wakeup = wakeups[0]
 	}
-	return &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	// CHE-5594: without a facts source every merge_eligibility rule stays pending.
+	if tx != nil {
+		svc.MergeFacts = &StoredMergeFacts{Tx: tx, Queries: q}
+	}
+	return svc
 }
 
 var trivialDoneMarkers = []string{
@@ -833,6 +838,20 @@ func isDuplicatePendingTaskErr(err error) bool {
 	default:
 		return false
 	}
+}
+
+// errChatDMBusy is the claim losing the one-active-task-per-DM race: another
+// claimer's task for the same DM became active first, so the unique index
+// rejected ours. The aborted transaction rolls back and the candidate stays
+// queued.
+var errChatDMBusy = errors.New("chat DM already has an active task")
+
+// isChatDMBusyErr reports whether err is the one-active-task-per-DM unique
+// violation (CHE-2894 atomic admission).
+func isChatDMBusyErr(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "idx_agent_task_queue_one_active_per_chat"
 }
 
 // pendingSlotTakenErr reports whether err means "the (issue, agent) pending slot
@@ -1861,12 +1880,30 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	return task, nil
 }
 
+// EnqueueIssueTaskInTx enqueues the assignee's run for a just-created issue inside the
+// caller's transaction. The caller calls PublishTaskEnqueued only after commit.
+func (s *TaskService) EnqueueIssueTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue) (db.AgentTaskQueue, error) {
+	return s.EnqueueIssueTaskInTxAs(ctx, queries, issue, pgtype.UUID{})
+}
+
+// EnqueueIssueTaskInTxAs is EnqueueIssueTaskInTx with an explicit acting member: a
+// valid actor is both originator and accountable human, ahead of the issue creator.
+func (s *TaskService) EnqueueIssueTaskInTxAs(ctx context.Context, queries *db.Queries, issue db.Issue, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return task, err
+}
+
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	return s.EnqueueDecisionTaskInTxAs(ctx, queries, issue, agentID, squadID, triggerCommentID, commentIDs, handoff, pgtype.UUID{})
+}
+
+// EnqueueDecisionTaskInTxAs is EnqueueDecisionTaskInTx with an explicit acting member.
+func (s *TaskService) EnqueueDecisionTaskInTxAs(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
-		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, actorUserID, pgtype.UUID{}, OriginDerived)
 		return task, err
 	}
-	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 	return task, err
 }
 
@@ -4695,6 +4732,12 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 				}
 				return nil
 			}
+			if isChatDMBusyErr(err) {
+				// The statement aborted this transaction; return the sentinel so
+				// it rolls back instead of committing.
+				outcome = "chat_dm_busy"
+				return errChatDMBusy
+			}
 			outcome = "error_claim"
 			return fmt.Errorf("claim task: %w", err)
 		}
@@ -4762,6 +4805,9 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	})
 	if errors.Is(err, errProviderBreakerCanaryTaken) {
 		return nil, nil // another claim owns the canary; the rollback left this task queued
+	}
+	if errors.Is(err, errChatDMBusy) {
+		return nil, nil // no task this poll; the rollback left the candidate queued
 	}
 	if err != nil {
 		if outcome == "unknown" {

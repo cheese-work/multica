@@ -30,8 +30,8 @@ func TestIssueWorkflowWritesRejectTaskToken(t *testing.T) {
 
 	var workflowID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue_workflow (workspace_id, name, initial_status_key, owner_id)
-		VALUES ($1, 'task-token-guard', 'backlog', $2) RETURNING id::text
+		INSERT INTO issue_workflow (workspace_id, name, initial_status_key, owner_id, steps)
+		VALUES ($1, 'task-token-guard', 'backlog', $2, '[{"status_key":"backlog","handler":{"type":"none"}},{"status_key":"todo","handler":{"type":"none"},"dynamic_assignment":true,"edges":[{"to":"done","guard":"agent_done"}]}]'::jsonb) RETURNING id::text
 	`, testWorkspaceID, testUserID).Scan(&workflowID); err != nil {
 		t.Fatalf("insert workflow: %v", err)
 	}

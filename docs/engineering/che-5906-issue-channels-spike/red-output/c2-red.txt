@@ -1,0 +1,25 @@
+EmailService: DEV mode — codes printed to stdout (set MULTICA_DEV_VERIFICATION_CODE in .env for a fixed local code)
+2026/11/15 21:25:19 INFO S3_BUCKET not set, cloud upload disabled
+2026/11/15 21:25:19 INFO local storage initialized dir=./data/uploads baseURL=""
+2026/11/15 21:25:19 INFO CLOUDFRONT_KEY_PAIR_ID not set, signed cookies disabled
+2026/11/15 21:25:19 INFO llm retry policy max_retries=2 source=default request_timeout=1m0s enabled=false disable_thinking=false
+2026/11/15 21:25:19 INFO channel engine: lease backend configured backend=postgres ttl=3m0s renew_interval=1m0s poll_interval=30s
+2026/11/15 21:25:19 INFO lark integration disabled (MULTICA_LARK_SECRET_KEY not set)
+2026/11/15 21:25:19 INFO slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)
+2026/11/15 21:25:19 INFO dingtalk integration disabled (MULTICA_DINGTALK_SECRET_KEY not set)
+2026/11/15 21:25:19 INFO wecom integration disabled (MULTICA_WECOM_SECRET_KEY not set)
+2026/11/15 21:25:19 INFO telegram integration disabled (MULTICA_TELEGRAM_SECRET_KEY not set)
+2026/11/15 21:25:19 INFO composio integration disabled (COMPOSIO_API_KEY not set)
+2026/11/15 21:25:19 INFO vcs integration disabled (MULTICA_VCS_SECRET_KEY not set)
+2026/11/15 21:25:19 INFO Plugin secrets disabled (MULTICA_PLUGIN_SECRET_KEY not set)
+2026/11/15 21:25:19 WARN plugins: MULTICA_PLUGIN_API_URL and MULTICA_PUBLIC_URL are not set; hook callbacks will carry no callback_url
+2026/11/15 21:25:19 WARN auth rate limiting disabled: REDIS_URL not configured
+2026/11/15 21:25:19 WARN daemon update: serving no daemon binaries dir=/app/daemon-binaries error="server build has no commit stamp"
+Integration suite: database connected; running tests
+=== RUN   TestChannelListC2
+2026/11/15 21:25:19 WARN http request method=GET path=/api/channels status=404 duration=100µs request_id=congvc-X99/d8RqdUjFxC-000001
+    channel_list_c2_red_test.go:114: GET /api/channels = 404, want 200
+--- FAIL: TestChannelListC2 (0.17s)
+FAIL
+FAIL	github.com/multica-ai/multica/server/cmd/server	0.278s
+FAIL
