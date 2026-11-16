@@ -57,8 +57,8 @@ func runAgentDecisionBrief(command *cobra.Command, _ []string) error {
 		if since, ok := shadow.since(); ok {
 			q.Set("since", since.UTC().Format(time.RFC3339))
 		}
-		if len(q) > 0 {
-			path += "?" + q.Encode()
+		if enc := q.Encode(); enc != "" {
+			path += "?" + enc
 		}
 	} else {
 		shadow = &jevShadowLog{Missing: logPath}
