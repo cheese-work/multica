@@ -59,3 +59,4 @@ func runBudgetSnapshot(t *testing.T, issueID string) service.RunBudgetSnapshot {
 	}
 	return snap
 }
+
