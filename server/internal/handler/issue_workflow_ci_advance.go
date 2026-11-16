@@ -117,27 +117,14 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 			slog.Warn("ci advance: release claim failed", "err", err, "issue_id", uuidToString(issueID))
 		}
 	}
-	if moved {
-		h.clearReadyMarker(ctx, issue)
-	}
 	return ranHandler
 }
 
 // readyForReviewMetadataKey is the issue metadata marker the author sets (true)
-// when a draft PR is ready for the CI-green advance (CHE-5741).
+// when a draft PR is ready for the CI-green advance (CHE-5741). A trigger on
+// issue.status spends it on any status change (migration 999k), so each fix
+// round needs a fresh marker.
 const readyForReviewMetadataKey = "ready_for_review"
-
-// clearReadyMarker spends the marker: it covers one handoff, and a fix round
-// sets it again. It runs after the move, because the move's revision check
-// would lose to this write.
-func (h *Handler) clearReadyMarker(ctx context.Context, issue db.Issue) {
-	if !issueReadyForReview(issue) {
-		return
-	}
-	if _, err := h.Queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: readyForReviewMetadataKey}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("workflow edge: clear ready marker failed", "err", err, "issue_id", uuidToString(issue.ID))
-	}
-}
 
 func issueReadyForReview(issue db.Issue) bool {
 	ready, _ := parseIssueMetadata(issue.Metadata)[readyForReviewMetadataKey].(bool)

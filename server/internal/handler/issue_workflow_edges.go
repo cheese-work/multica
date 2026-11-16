@@ -127,9 +127,6 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		}
 	}
 	moved, _ := h.moveIssueOnEdge(ctx, issue, decision.To, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": decision.Reason}, true)
-	if moved && decision.Guard == issueworkflow.GuardPRChecksGreen {
-		h.clearReadyMarker(ctx, issue)
-	}
 	if !moved {
 		if claimed != "" {
 			if err := h.Queries.ReleaseIssueCIAdvance(ctx, db.ReleaseIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: claimed}); err != nil {
