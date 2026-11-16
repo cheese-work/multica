@@ -83,6 +83,16 @@ func unchangedSinceLastRun(ctx context.Context, db rowQuerier, issueID, agentID 
 	return id, status == "completed" && fresh && prev != nil && *prev == fingerprint, nil
 }
 
+// newestRunID is the agent's newest run on the issue, whatever started it.
+func newestRunID(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	err := db.QueryRow(ctx, `SELECT id FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 ORDER BY created_at DESC LIMIT 1`, issueID, agentID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil
+	}
+	return id, err
+}
+
 // holdsDraftReturn reports whether any pending fact is a returned-to-draft event.
 func holdsDraftReturn(receipts []db.IssueWakeupReceipt) bool {
 	for _, r := range receipts {

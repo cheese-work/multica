@@ -1631,6 +1631,15 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			if err != nil {
 				return err
 			}
+			// The snapshot must be that of the agent's last run of any kind: a later
+			// ordinary run may have seen another state and left it.
+			if unchanged {
+				if newest, err := newestRunID(ctx, tx, issue.ID, w.AgentID); err != nil {
+					return err
+				} else if newest != lastTask {
+					unchanged = false
+				}
+			}
 			if unchanged {
 				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 					return err

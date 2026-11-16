@@ -153,3 +153,21 @@ func TestWatchdogWakeNowByAPersonIsNeverSkipped(t *testing.T) {
 		t.Fatalf("watchdog runs after wake now = %d, want 2", got)
 	}
 }
+
+// CHE-6189 review round 1: the comparison is to the agent's last completed run,
+// not only to its last watchdog run. A later ordinary run may have seen another
+// state and left it, so an older watchdog snapshot cannot vouch for now.
+func TestWatchdogFireRunsWhenAnOrdinaryRunCameAfterTheLastWatchdogRun(t *testing.T) {
+	e := newSkipEnv(t, true)
+	wakeTick(t, e.f, e.s, e.watchdog(t))
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, context, completed_at)
+		SELECT agent_id, runtime_id, issue_id, 'completed', priority, '{}'::jsonb, clock_timestamp() FROM agent_task_queue WHERE issue_id=$1 LIMIT 1`, e.issue)
+	wakeTick(t, e.f, e.s, e.watchdog(t))
+	if got := e.watchdogRuns(t); got != 2 {
+		t.Fatalf("watchdog runs after a later ordinary run = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities = %d, want 0", got)
+	}
+}
