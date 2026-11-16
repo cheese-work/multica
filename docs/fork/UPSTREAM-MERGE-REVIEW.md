@@ -46,13 +46,13 @@ scripts/merge-ledger-check --ledger <ledger.tsv> --fork-parent <P> --upstream-pa
 
 Ledger: tab-separated, a header row, then 8 columns: `path group change conflict fork_touched fork_features disposition evidence`. `disposition` is one of `resolved`, `clean-both`, `upstream-only`, `fork-kept`, `regenerated`, `deleted`.
 
-Computed set: every path in `git diff --no-renames --name-status <merge-base> U` (a rename is its old and its new path) plus every conflicted path of `git merge-tree --write-tree P U`. Fork-touched: the path is in `git diff --name-only <merge-base> P`. FORK-FEATURES names a path when `docs/fork/FORK-FEATURES.md` at `P` contains it as text (a substring match, so it can over-require evidence, never under-require). Git and that file decide; the ledger's own `fork_touched` and `fork_features` columns are not trusted.
+Computed set: every path in `git diff --no-renames --name-status <merge-base> U` (a rename is its old and its new path) plus every conflicted path of `git merge-tree --write-tree P U`. Fork-touched: the path is in `git diff --name-only <merge-base> P`. FORK-FEATURES names a path when a `Source:` pointer of `docs/fork/FORK-FEATURES.md` at `P` covers it, read with the fork-sync guard's parser (`scripts/fork-sync-guard.mjs`): a directory pointer `dir/` covers every descendant, `*` matches within one filename, and an abbreviated filename after a full path uses that path's directory. The path also counts when the file contains it as text (this can over-require evidence, never under-require). Git and that file decide; the ledger's own `fork_touched` and `fork_features` columns are not trusted.
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | Ledger path set equals the computed set, every row has an allowed disposition, every fork-touched or FORK-FEATURES path has evidence |
 | 2 | Pin rejected (not a 40-hex SHA, or unknown commit) |
-| 3 | No trustworthy computed set (no merge base, `git merge-tree` failed, a path needs quoting, FORK-FEATURES missing at `P`) |
+| 3 | No trustworthy computed set (no merge base, `git merge-tree` failed, a path needs quoting, FORK-FEATURES missing at `P`, or a `Source:` entry that is not a plain path, which may cover paths nobody can name; fix the entry in the ledger) |
 | 6 | Path set differs: a missing, extra or duplicate row |
 | 7 | Bad header or column count, or a row with no or an unknown disposition |
 | 8 | A fork-touched or FORK-FEATURES path has empty or placeholder evidence (`-`, `n/a`, `none`, `todo`, `tbd`) |

@@ -35,7 +35,14 @@ git checkout -q -b fork
 printf 'a\nFORK\nc\n' >shared.txt
 printf 'FORK\n2\n3\n4\n5\n6\n7\n8\n' >both-clean.txt
 printf 'fork edit\n' >deleted-upstream.txt
-printf '| C99 Named feature | Keep ours. Source: `named-only.txt:1` |\n' >docs/fork/FORK-FEATURES.md
+# Source pointers as the fork-sync guard reads them: a full path, a directory
+# pointer, a filename wildcard and an abbreviated filename after a full path.
+{
+  printf '| C99 Named feature | Keep ours. Source: `named-only.txt` |\n'
+  printf '| C98 Directory feature | Keep ours. Source: `dir-ptr/` |\n'
+  printf '| C97 Wildcard feature | Keep ours. Source: `wild/*.cfg` |\n'
+  printf '| C96 Abbreviated feature | Keep ours. Source: `abbr/full.txt`, `second.txt` |\n'
+} >docs/fork/FORK-FEATURES.md
 git add -A; git commit -qm fork
 P="$(git rev-parse HEAD)"
 
@@ -47,6 +54,10 @@ printf 'u2\n' >keep-up.txt
 printf 'n2\n' >named-only.txt
 git rm -q deleted-upstream.txt
 printf 'new\n' >new-file.txt
+mkdir -p dir-ptr/deep wild/sub abbr
+printf 'd\n' >dir-ptr/check.py; printf 'd\n' >dir-ptr/deep/more.py
+printf 'w\n' >wild/a.cfg; printf 'w\n' >wild/sub/b.cfg; printf 'w\n' >wild/a.txt
+printf 'b\n' >abbr/second.txt; printf 'b\n' >abbr/other.txt
 git add -A; git commit -qm upstream
 U="$(git rev-parse HEAD)"
 git checkout -q fork
@@ -56,6 +67,13 @@ git checkout -q fork
 # Named in FORK-FEATURES at P: named-only.txt.
 HDR=$'path\tgroup\tchange\tconflict\tfork_touched\tfork_features\tdisposition\tevidence'
 rows=(
+  $'abbr/other.txt\tA3d\tA\tclean\tno\t\tupstream-only\t'
+  $'abbr/second.txt\tA3d\tA\tclean\tno\tC96\tclean-both\ttest: C96 preservation test passes on M'
+  $'dir-ptr/check.py\tA3d\tA\tclean\tno\tC98\tclean-both\ttest: C98 preservation test passes on M'
+  $'dir-ptr/deep/more.py\tA3d\tA\tclean\tno\tC98\tclean-both\ttest: C98 preservation test passes on M'
+  $'wild/a.cfg\tA3d\tA\tclean\tno\tC97\tclean-both\ttest: C97 preservation test passes on M'
+  $'wild/a.txt\tA3d\tA\tclean\tno\t\tupstream-only\t'
+  $'wild/sub/b.cfg\tA3d\tA\tclean\tno\t\tupstream-only\t'
   $'both-clean.txt\tA3d\tM\tclean\tyes\t\tclean-both\ttest: both-clean merged hunks read against both parents'
   $'deleted-upstream.txt\tA3d\tD\tmodify/delete\tyes\t\tfork-kept\ttest: fork callers kept, deferred to 5a row'
   $'keep-up.txt\tA3d\tM\tclean\tno\t\tupstream-only\t'
@@ -105,7 +123,7 @@ expect 6 "ledger has an extra path"
 has "$out" "stray.txt" "extra path named"
 
 # A duplicate row fails.
-{ cat "$work/ok.tsv"; printf '%s\n' "${rows[4]}"; } >"$work/dup.tsv"
+{ cat "$work/ok.tsv"; grep '^new-file.txt' "$work/ok.tsv"; } >"$work/dup.tsv"
 run "$work/dup.tsv"
 expect 6 "duplicate row"
 has "$out" "new-file.txt" "duplicate path named"
@@ -149,6 +167,33 @@ cmp -s "$work/ok.tsv" "$work/noevid-named.tsv" && fail "fixture: noevid-named ed
 run "$work/noevid-named.tsv"
 expect 8 "FORK-FEATURES path without evidence"
 has "$out" "named-only.txt" "FORK-FEATURES path named"
+
+# Source pointers count: directory, wildcard and abbreviated filename need evidence.
+for hit in dir-ptr/check.py dir-ptr/deep/more.py wild/a.cfg abbr/second.txt; do
+  sed "s|^\($hit\t.*\)\ttest: C9[0-9] preservation test passes on M\$|\1\t|" "$work/ok.tsv" >"$work/noevid-src.tsv"
+  cmp -s "$work/ok.tsv" "$work/noevid-src.tsv" && fail "fixture: noevid-src edit did not apply for $hit"
+  run "$work/noevid-src.tsv"
+  expect 8 "Source pointer path $hit without evidence"
+  has "$out" "$hit" "Source pointer path named"
+done
+# A wildcard stays inside one filename, and an abbreviated name stays in its directory.
+for free in wild/a.txt wild/sub/b.cfg abbr/other.txt; do
+  grep -q "^$free	" "$work/ok.tsv" || fail "fixture: $free missing"
+done
+run "$work/ok.tsv"
+expect 0 "paths outside every Source pointer need no evidence"
+
+# An unresolvable FORK-FEATURES entry fails closed (exit 3): it may cover paths no one can name.
+git checkout -q -b fork-bad "$P"
+printf '| C95 Prose feature | Keep ours. Source: `see the chat page` |\n' >>docs/fork/FORK-FEATURES.md
+git add -A; git commit -qm bad-features
+PBAD="$(git rev-parse HEAD)"
+git checkout -q fork
+set +e
+out="$(bash "$check" --ledger "$work/ok.tsv" --fork-parent "$PBAD" --upstream-parent "$U" 2>&1)"; rc=$?
+set -e
+expect 3 "unresolvable Source entry"
+has "$out" "see the chat page" "unresolvable entry named"
 
 # The ledger's own fork_touched column is not trusted: git decides.
 sed -e 's/^both-clean.txt\tA3d\tM\tclean\tyes/both-clean.txt\tA3d\tM\tclean\tno/' \

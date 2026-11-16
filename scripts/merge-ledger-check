@@ -18,7 +18,11 @@
 # (MB = merge base of P and U; a rename is its old path plus its new path)
 # plus every path in the conflict list of `git merge-tree --write-tree P U`.
 # Fork-touched = path in `git diff --no-renames --name-only MB P`.
-# FORK-FEATURES names a path when the file at P contains the path as text.
+# FORK-FEATURES names a path when a Source pointer of the file at P covers it
+# (the fork-sync guard's rules: directory pointer `dir/` covers every
+# descendant, `*` matches within one filename, an abbreviated filename uses the
+# directory of the preceding path) or the file contains the path as text. An
+# entry that is not a plain path exits 3.
 #
 # Exit: 0 ledger covers the merge; 2 pins rejected; 3 no trustworthy computed
 #       set; 6 ledger path set differs (missing, extra or duplicate row);
@@ -71,6 +75,14 @@ fi
 [ -s "$work/computed" ] || die 3 "no trustworthy computed set: no path differs between the merge base and U"
 git cat-file -e "$P:$features" 2>/dev/null || die 3 "no trustworthy computed set: $features not found at P"
 git show "$P:$features" >"$work/features"
+# Paths the Source pointers protect (directory pointers, filename wildcards,
+# abbreviated filenames), read with the fork-sync guard's parser. An entry that
+# is not a plain path stops the check: it may cover paths nobody can name.
+command -v node >/dev/null || die 3 "no trustworthy computed set: node is needed to read the FORK-FEATURES Source pointers"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+node "$here/merge-ledger-check-sources.mjs" "$work/features" "$work/computed" >"$work/pointer-hits" \
+  || die 3 "no trustworthy computed set: FORK-FEATURES Source pointers are unresolvable (see above)"
+cut -f1 "$work/pointer-hits" | LC_ALL=C sort -u >"$work/pointer-paths"
 
 # --- Ledger ----------------------------------------------------------------
 HDR=$'path\tgroup\tchange\tconflict\tfork_touched\tfork_features\tdisposition\tevidence'
@@ -110,7 +122,9 @@ while IFS= read -r line || [ -n "$line" ]; do
   # Evidence is required from git and FORK-FEATURES, never from the ledger's own columns.
   need=""
   grep -qxF -- "$path" "$work/forktouched" && need="fork-touched"
-  grep -qF -- "$path" "$work/features" && need="${need:+$need and }named in FORK-FEATURES"
+  if grep -qxF -- "$path" "$work/pointer-paths" || grep -qF -- "$path" "$work/features"; then
+    need="${need:+$need and }named in FORK-FEATURES"
+  fi
   if [ -n "$need" ]; then
     e="$(tr '[:upper:]' '[:lower:]' <<<"$evid" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
     case "$e" in
