@@ -476,7 +476,8 @@
       "channels": "Mensajería",
       "apps": "Apps conectadas",
       "workflows": "Flujos de trabajo",
-      "provider_breakers": "Disyuntores de proveedores"
+      "provider_breakers": "Disyuntores de proveedores",
+      "background_agents": "Agentes en segundo plano"
     },
     "groups": {
       "personal": "Personal",
@@ -905,12 +906,6 @@
     "idle_guard_hours_label": "Después de (horas)",
     "idle_guard_hours_invalid": "Introduce un número entero del 1 al 72.",
     "idle_guard_readonly": "{{mode}}, después de {{hours}} h",
-    "routing_agent_label": "Agente de enrutamiento",
-    "routing_agent_hint": "Gestiona los pasos del flujo de trabajo que solo enrutan: todo, blocked, merged y need decision. Sin definir, cada paso conserva su propio agente.",
-    "routing_fallback_label": "Agente de respaldo",
-    "routing_fallback_hint": "Asume un paso de enrutamiento cuando el agente de enrutamiento falla con un error del proveedor.",
-    "routing_agent_none": "Ninguno",
-    "routing_agent_unknown": "Agente desconocido",
     "slug_hint": "Forma parte de cada URL del espacio de trabajo. No se puede cambiar.",
     "copy_slug": "Copiar slug",
     "copy_failed": "No se ha podido copiar al portapapeles",
@@ -1735,5 +1730,46 @@
     "not_saved": "No guardado. No ha cambiado nada.",
     "load_failed": "No se ha podido cargar la regla.",
     "save_failed": "No se ha podido guardar la regla."
+  },
+  "background_agents": {
+    "title": "Agentes en segundo plano",
+    "description": "Tareas pequeñas que los agentes hacen en segundo plano para todos en este espacio de trabajo. Una tarea sin agente usa su alternativa simple. Nunca llama a un modelo directamente.",
+    "personal_note_before": "Los miembros pueden elegir su propio agente para el título de los DM y las Acciones rápidas en",
+    "personal_link": "Personal → Agentes en segundo plano",
+    "personal_note_after": ". Una elección personal prevalece sobre esta pestaña para ese miembro. El enrutamiento solo se define aquí.",
+    "agent_label": "Agente",
+    "fallback_label": "Agente de respaldo",
+    "fallback_hint": "Asume la tarea cuando el agente falla con un error del proveedor.",
+    "pick_agent_first": "Elige primero un agente.",
+    "none": "Sin agente",
+    "unknown_agent": "Agente desconocido",
+    "access_narrowed": "Acceso: no todos",
+    "toast_save_failed": "No se pudieron guardar los agentes en segundo plano.",
+    "load_error": "No se pudieron cargar los agentes en segundo plano.",
+    "retry": "Reintentar",
+    "loading": "Cargando ajustes…",
+    "conflict_title": "Otro propietario guardó un cambio mientras editabas.",
+    "conflict_body": "Tu cambio no se guardó. Compara y conserva el suyo o aplica el tuyo de nuevo.",
+    "conflict_mine": "Tu cambio (sin guardar)",
+    "conflict_theirs": "Guardado ahora",
+    "conflict_keep": "Conservar su versión",
+    "conflict_apply": "Aplicar mi cambio de nuevo",
+    "jobs": {
+      "dm_title": {
+        "label": "Título del DM",
+        "hint": "Pone nombre a un DM a partir de su primer mensaje.",
+        "no_agent": "Sin agente: usa el título recortado (primeros 60 caracteres)."
+      },
+      "quick_actions": {
+        "label": "Acciones rápidas",
+        "hint": "Sugiere botones de seguimiento bajo una respuesta.",
+        "no_agent": "Sin agente: sin botones."
+      },
+      "routing": {
+        "label": "Enrutamiento",
+        "hint": "Gestiona los pasos del flujo de trabajo que solo enrutan: todo, blocked, merged y need decision.",
+        "no_agent": "Sin agente: cada paso conserva su propio agente."
+      }
+    }
   }
 }

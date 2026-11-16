@@ -332,3 +332,11 @@ Si le problème persiste, consultez [Dépannage](/troubleshooting).
 - [Installer les outils de codage IA](/install-agent-runtime) — installer et vérifier un outil de codage IA pris en charge.
 - [Comparatif des outils de codage IA](/providers) — comparer les modèles, la reprise de session, MCP et la prise en charge des skills.
 - [Exécutions](/tasks) — file d'attente, arrêt et relances.
+
+## Liaisons locales des exécutions gérées
+
+`MULTICA_RUN_BINDINGS_DIR` est désactivé par défaut. Sous Linux, le propriétaire peut choisir un répertoire existant en mode 0700 hors des chemins modifiables par les tâches. Après le lancement de Codex, un fichier 0600 `<binding_id>.json` est publié. Seul `MULTICA_RUN_BINDING_ID` est transmis aux outils shell. Chaque tentative utilise un nouvel identifiant. La fin du processus, une annulation ou un échec invalide la liaison.
+
+Le schéma version 1 contient `binding_id`, `agent_id`, `principal` (identifiant de l’agent), `task_id`, `issue_id`, le `pid` hôte, `process_start`, `boot_id` et `pid_namespace`. Le courtier doit partager l’espace de noms PID du lanceur, vérifier les identités et contrôler lui-même le processus. Un wrapper exec conserve le PID ; un wrapper en attente ne vaut que tant qu’il vit. Un enfant détaché ne prolonge pas la liaison.
+
+Ce contrat coopératif entre processus du même UID ne protège pas contre le propriétaire hôte. L’isolation des identifiants refuse cette route locale ; R1 reste soumis à ses propres autorisations. Aucun accès aux appareils n’est accordé. Configuration et déploiement restent séparés.

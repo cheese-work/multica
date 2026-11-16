@@ -87,6 +87,8 @@ type IssueCreateParams struct {
 	StartDate     pgtype.Date
 	DueDate       pgtype.Date
 	OriginType    pgtype.Text
+	// CreatedVia is how the issue was made (dialog, agent, cli); server-set.
+	CreatedVia    pgtype.Text
 	OriginID      pgtype.UUID
 	AttachmentIDs []pgtype.UUID
 	// LabelIDs are the issue-scoped labels to attach to the new issue. They
@@ -555,6 +557,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
 			RequestedByID: p.RequestedByID,
+			CreatedVia:    p.CreatedVia,
 			OriginType:    p.OriginType,
 			OriginID:      p.OriginID,
 			Stage:         p.Stage,
@@ -580,6 +583,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
 			RequestedByID: p.RequestedByID,
+			CreatedVia:    p.CreatedVia,
 			Stage:         p.Stage,
 			Properties:    properties,
 		})

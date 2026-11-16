@@ -51,6 +51,7 @@ func TestHandleUpdateReportsWhyItWasDeferred(t *testing.T) {
 				ID:            "update-1",
 				TargetVersion: "v0.4.14",
 			})
+			d.updateOutbox.Wait()
 
 			if got := atomic.LoadInt32(reportCalls); got != 1 {
 				t.Fatalf("update reports = %d, want 1", got)
@@ -92,6 +93,7 @@ func TestHandleUpdateWaitsForEmptyClaimInsteadOfStarving(t *testing.T) {
 			ID:            "update-1",
 			TargetVersion: "v0.4.14",
 		})
+		d.updateOutbox.Wait()
 		close(done)
 	}()
 
@@ -134,6 +136,7 @@ func TestHandleUpdateReportsBusyWhenClaimBecomesTask(t *testing.T) {
 			ID:            "update-1",
 			TargetVersion: "v0.4.14",
 		})
+		d.updateOutbox.Wait()
 		close(done)
 	}()
 
@@ -224,6 +227,7 @@ func TestHandleUpdateKeepsBarrierOnlyWhenRestartWasScheduled(t *testing.T) {
 				ID:            "update-1",
 				TargetVersion: "v0.4.14",
 			})
+			d.updateOutbox.Wait()
 
 			if got := d.updating.Load(); got != tt.wantUpdating {
 				t.Fatalf("updating = %v, want %v", got, tt.wantUpdating)

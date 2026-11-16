@@ -41,6 +41,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/awakeclock"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -656,8 +657,9 @@ type Daemon struct {
 	pendingWorkInflight map[string]struct{}  // runtime_id -> hint-driven heartbeat in flight
 	pendingWorkLastRun  map[string]time.Time // runtime_id -> when the last hint-driven heartbeat started
 
-	cancelFunc context.CancelFunc // set by Run(); called by triggerRestart
-	rootCtx    context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
+	cancelFunc   context.CancelFunc // set by Run(); called by triggerRestart
+	updateOutbox sync.WaitGroup     // in-flight update result deliveries (enqueueUpdateResult)
+	rootCtx      context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -5072,7 +5074,7 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	// could brick the embedded binary mid-update. Refuse cleanly.
 	if d.cfg.LaunchedBy == "desktop" {
 		d.logger.Info("refusing CLI self-update: daemon is managed by Desktop", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "failed",
 			"error":  "CLI is managed by Multica Desktop — update the Desktop app to upgrade the CLI",
 		})
@@ -5082,14 +5084,14 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	switch d.tryBeginServerUpdate(ctx) {
 	case serverUpdateAlreadyRunning:
 		d.logger.Warn("update deferred: another update is already in progress", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "failed",
 			"error":  "another runtime update is already in progress on this machine",
 		})
 		return
 	case serverUpdateRuntimeBusy:
 		d.logger.Info("update deferred: task or claim in progress", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "failed",
 			"error":  "runtime update deferred because agent work is starting or still active; retry when the machine is idle",
 		})
@@ -5121,7 +5123,7 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
 		d.logger.Info("CLI already on the server build; no restart", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "completed",
 			"output": "Already on the server build",
 		})
@@ -5129,7 +5131,7 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	}
 	if err != nil {
 		d.logger.Error("CLI update failed", "error", err, "output", output)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "failed",
 			"error":  err.Error(),
 		})
@@ -5137,10 +5139,16 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	}
 
 	d.logger.Info("CLI update completed successfully", "output", output)
-	d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+	delivered := d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 		"status": "completed",
 		"output": fmt.Sprintf("Updated to %s", update.TargetVersion),
 	})
+	// The restart waits for the `completed` delivery, but never longer than
+	// updateCompletedWait.
+	select {
+	case <-delivered:
+	case <-time.After(updateCompletedWait):
+	}
 
 	// Trigger daemon restart with the new binary.
 	d.triggerRestart()
@@ -5247,6 +5255,87 @@ func (d *Daemon) reportUpdateResult(ctx context.Context, runtimeID, updateID str
 	d.reportUpdateResultWithRetry(ctx, runtimeID, updateID, func(ctx context.Context) error {
 		return d.client.ReportUpdateResult(ctx, runtimeID, updateID, payload)
 	})
+}
+
+// Result outbox timings (overridable for tests): each send has its own
+// timeout, retries follow updateReportBackoffs and then every
+// updateRetryInterval, and a result is dropped updateOutboxMaxAge after it was
+// queued. updateCompletedWait bounds how long a successful install waits for
+// its `completed` delivery before restarting.
+var (
+	updateSendTimeout   = 10 * time.Second
+	updateRetryInterval = 15 * time.Second
+	updateOutboxMaxAge  = 5 * time.Minute
+	updateCompletedWait = 10 * time.Second
+)
+
+// enqueueUpdateResult delivers a terminal update result on the daemon root
+// context, so a cancelled heartbeat context, an expired update deadline or a
+// slow report endpoint can neither lose it nor hold the claim barrier. The
+// returned channel closes when delivery ends (2xx, 4xx, bound or shutdown).
+// No disk persistence: if the process dies first, the server ends the cycle
+// as failed with no daemon result.
+func (d *Daemon) enqueueUpdateResult(runtimeID, updateID string, payload map[string]any) <-chan struct{} {
+	done := make(chan struct{})
+	ctx, cancel := context.WithTimeout(d.recoveryContext(), updateOutboxMaxAge)
+	d.updateOutbox.Add(1)
+	go func() {
+		defer d.updateOutbox.Done()
+		defer close(done)
+		defer cancel()
+		d.sendUpdateResult(ctx, runtimeID, updateID, payload)
+	}()
+	return done
+}
+
+func (d *Daemon) sendUpdateResult(ctx context.Context, runtimeID, updateID string, payload map[string]any) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		wait := updateRetryInterval
+		if attempt < len(updateReportBackoffs) {
+			wait = updateReportBackoffs[attempt]
+		}
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				d.logUpdateOutboxStop(ctx, runtimeID, updateID, attempt, lastErr)
+				return
+			case <-time.After(wait):
+			}
+		}
+
+		sendCtx, cancel := context.WithTimeout(ctx, updateSendTimeout)
+		err := d.client.ReportUpdateResult(sendCtx, runtimeID, updateID, payload)
+		cancel()
+		if err == nil {
+			if attempt > 0 {
+				d.logger.Info("CLI update result delivered after retry",
+					"runtime_id", runtimeID, "update_id", updateID, "attempt", attempt+1)
+			}
+			return
+		}
+		lastErr = err
+
+		var reqErr *requestError
+		if errors.As(err, &reqErr) && reqErr.StatusCode >= 400 && reqErr.StatusCode < 500 {
+			d.logger.Error("CLI update result rejected — not retrying",
+				"runtime_id", runtimeID, "update_id", updateID,
+				"status", reqErr.StatusCode, "error", err)
+			return
+		}
+		if ctx.Err() != nil {
+			d.logUpdateOutboxStop(ctx, runtimeID, updateID, attempt+1, lastErr)
+			return
+		}
+		d.logger.Warn("CLI update result failed — will retry",
+			"runtime_id", runtimeID, "update_id", updateID, "attempt", attempt+1, "error", err)
+	}
+}
+
+func (d *Daemon) logUpdateOutboxStop(ctx context.Context, runtimeID, updateID string, attempts int, lastErr error) {
+	d.logger.Error("CLI update result not delivered — outbox stopped",
+		"runtime_id", runtimeID, "update_id", updateID,
+		"attempts", attempts, "reason", ctx.Err(), "last_error", lastErr)
 }
 
 func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, updateID string, fn func(context.Context) error) {
@@ -9034,6 +9123,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
+	// Reserve the trusted name in the exact shell allowlist. The backend assigns
+	// a fresh opaque ID per launch attempt before it starts the process.
+	if provider == "codex" {
+		agentEnv["MULTICA_RUN_BINDING_ID"] = ""
+	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, agent.BaseEnviron(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
@@ -9068,6 +9162,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+	}
+	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
+		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
 	}
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can

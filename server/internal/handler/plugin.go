@@ -337,6 +337,9 @@ func (h *Handler) setPluginEnabled(w http.ResponseWriter, r *http.Request, enabl
 		writePluginError(w, err, "failed to update the Plugin")
 		return
 	}
+	if !enabled {
+		h.revokeLeasesOfDisabledPlugin(r, updated)
+	}
 	payload, err := h.pluginInstallationPayload(r.Context(), updated)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update the Plugin")
@@ -361,6 +364,7 @@ func (h *Handler) UninstallPlugin(w http.ResponseWriter, r *http.Request) {
 		writePluginError(w, err, "failed to uninstall the Plugin")
 		return
 	}
+	h.revokeLeasesOfDisabledPlugin(r, installation)
 	w.WriteHeader(http.StatusNoContent)
 }
 
