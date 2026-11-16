@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/controlplane"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -64,5 +68,63 @@ func TestInternalListenerAddrFromEnv(t *testing.T) {
 	t.Setenv("MULTICA_INTERNAL_LISTEN_ADDR", "172.30.0.2:9000")
 	if srv, err := newInternalServer("8080"); srv == nil || err != nil {
 		t.Fatalf("explicit env: got (%v, %v), want a server", srv, err)
+	}
+}
+
+// CHE-4736 (W3-7): cleanup-ack and quarantine are served on the internal listener, behind the
+// install-token authenticator, and nowhere else.
+func ackListener(t *testing.T) *http.Server {
+	t.Helper()
+	ws := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	auth := installTokenAuthenticator(func(_ context.Context, token string) (pgtype.UUID, error) {
+		if token != "mpi_good" {
+			return pgtype.UUID{}, errors.New("unknown token")
+		}
+		return ws, nil
+	})
+	t.Setenv("MULTICA_INTERNAL_LISTEN_ADDR", "172.30.0.2:9000")
+	srv, err := newInternalServer("8080", browserlease.NewAckService(nil).Mount(auth))
+	if err != nil || srv == nil {
+		t.Fatalf("newInternalServer: (%v, %v)", srv, err)
+	}
+	return srv
+}
+
+func TestInternalListenerServesCleanupAckBehindTheInstallToken(t *testing.T) {
+	srv := ackListener(t)
+	const inst = "6f1d3b8e-1b6e-4f0e-9d0a-0c1c2b3a4d5e"
+	for _, route := range []string{"cleanup-ack", "quarantine"} {
+		path := controlplane.Prefix + "/instances/" + inst + "/" + route
+		cases := []struct {
+			name, auth string
+			want       int
+		}{
+			{"no header", "", http.StatusUnauthorized},
+			{"wrong scheme", "Basic mpi_good", http.StatusUnauthorized},
+			{"unknown token", "Bearer mpi_bad", http.StatusUnauthorized},
+			{"good token reaches the handler", "Bearer mpi_good", http.StatusBadRequest}, // empty body: epoch missing
+		}
+		for _, c := range cases {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			if c.auth != "" {
+				req.Header.Set("Authorization", c.auth)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Errorf("%s %s: status %d, want %d", route, c.name, rec.Code, c.want)
+			}
+		}
+	}
+}
+
+func TestPublicRouterDoesNotServeCleanupAckOrQuarantine(t *testing.T) {
+	router := NewRouter(nil, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil)
+	for _, route := range []string{"cleanup-ack", "quarantine"} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, controlplane.Prefix+"/instances/inst-1/"+route, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("public POST %s = %d, want 404", route, rec.Code)
+		}
 	}
 }

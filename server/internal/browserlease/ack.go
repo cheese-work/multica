@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -23,9 +24,11 @@ import (
 // the next queued lease be granted. A gateway that cannot prove the instance empty reports
 // quarantine instead, and Multica grants nothing until a later ack clears it.
 //
-// W3-3 (mint and queue) must call CanGrant before every grant. W3-17 mounts Routes on the
-// internal listener with the install-token authenticator; the public and tailnet routers do
-// not mount it.
+// W3-3 (mint and queue) must call CanGrant before every grant. Mount registers the routes on
+// the internal listener (cmd/server) with the install-token authenticator; the public and
+// tailnet routers do not mount it.
+const internalPrefix = "/internal/browser" // controlplane.Prefix
+
 const (
 	CleanupAckPath = "/internal/browser/instances/{instance_id}/cleanup-ack"
 	QuarantinePath = "/internal/browser/instances/{instance_id}/quarantine"
@@ -53,7 +56,16 @@ type AckResult struct {
 	Phase      string
 }
 
-type AckService struct{ pool *pgxpool.Pool }
+// QueueAdvancer grants waiting leases once an instance is clean; *Service implements it.
+type QueueAdvancer interface {
+	AdvanceQueue(ctx context.Context, ws pgtype.UUID, class string) error
+}
+
+type AckService struct {
+	pool *pgxpool.Pool
+	// Queue, when set, is advanced after every successful cleanup-ack.
+	Queue QueueAdvancer
+}
 
 func NewAckService(pool *pgxpool.Pool) *AckService { return &AckService{pool: pool} }
 
@@ -96,8 +108,13 @@ func (s *AckService) withLockedInstance(ctx context.Context, ws, instance pgtype
 // the ended lease holding the instance and sets the phase idle_clean, which also clears a
 // quarantine. A repeat for an already acked epoch succeeds. An ack for a lease that has not
 // ended, or for a quarantined instance with nothing waiting, is refused.
+//
+// After the ack commits it advances the class queue, so the next waiter takes the instance at
+// once. If the advance fails the ack stays committed and the error is returned: the gateway
+// retries, and the retry (an ack that already landed) advances again.
 func (s *AckService) CleanupAck(ctx context.Context, ws, instance pgtype.UUID, epoch int64) (AckResult, error) {
-	return s.withLockedInstance(ctx, ws, instance, epoch, func(q *db.Queries, inst db.BrowserInstance) (string, error) {
+	var class string // the ended lease's class; empty on a retry, when no holder is left
+	res, err := s.withLockedInstance(ctx, ws, instance, epoch, func(q *db.Queries, inst db.BrowserInstance) (string, error) {
 		holder, err := q.GetBrowserInstanceHolder(ctx, db.GetBrowserInstanceHolderParams{InstanceID: inst.ID, WorkspaceID: inst.WorkspaceID})
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -116,8 +133,22 @@ func (s *AckService) CleanupAck(ctx context.Context, ws, instance pgtype.UUID, e
 		if _, err := q.AckBrowserLeaseCleanup(ctx, db.AckBrowserLeaseCleanupParams{InstanceID: inst.ID, WorkspaceID: inst.WorkspaceID, Epoch: pgtype.Int8{Int64: epoch, Valid: true}}); err != nil {
 			return "", err // the holder is ended and unacked at this epoch under the row lock
 		}
+		class = holder.Class
 		return phaseIdleClean, nil
 	})
+	if err != nil || s.Queue == nil {
+		return res, err
+	}
+	classes := []string{class}
+	if class == "" {
+		classes = []string{ClassS0, ClassS2, ClassH}
+	}
+	for _, c := range classes {
+		if err := s.Queue.AdvanceQueue(ctx, ws, c); err != nil {
+			return AckResult{}, err
+		}
+	}
+	return res, nil
 }
 
 // Quarantine records that the gateway could not prove instance empty for epoch (failed step,
@@ -153,15 +184,23 @@ func (s *AckService) CanGrant(ctx context.Context, ws, instance pgtype.UUID) (bo
 	return false, err
 }
 
-// Routes serves the two gateway-facing POST routes. auth is required: a state-changing route is
-// never served unauthenticated.
-func (s *AckService) Routes(auth Authenticator) http.Handler {
+// Mount registers the two gateway-facing POST routes on r, which serves internalPrefix (the
+// control-plane listener's router). auth is required: a state-changing route is never served
+// unauthenticated.
+func (s *AckService) Mount(auth Authenticator) func(chi.Router) {
 	if auth == nil {
-		panic("browserlease: Routes needs an Authenticator")
+		panic("browserlease: Mount needs an Authenticator")
 	}
+	return func(r chi.Router) {
+		r.Post(strings.TrimPrefix(CleanupAckPath, internalPrefix), s.handle(auth, s.CleanupAck))
+		r.Post(strings.TrimPrefix(QuarantinePath, internalPrefix), s.handle(auth, s.Quarantine))
+	}
+}
+
+// Routes serves the same routes at their full paths, for a handler under test.
+func (s *AckService) Routes(auth Authenticator) http.Handler {
 	r := chi.NewRouter()
-	r.Post(CleanupAckPath, s.handle(auth, s.CleanupAck))
-	r.Post(QuarantinePath, s.handle(auth, s.Quarantine))
+	r.Route(internalPrefix, s.Mount(auth))
 	return r
 }
 

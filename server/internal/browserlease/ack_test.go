@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -355,4 +356,72 @@ func TestRoutesNeedAnAuthenticator(t *testing.T) {
 		}
 	}()
 	NewAckService(nil).Routes(nil)
+}
+
+// ---- queue advance (F2) ----
+
+// handover mints a on the only instance, queues b behind it, and ends a. The instance now
+// waits for cleanup-ack(1).
+func handover(t *testing.T) (e *env, ack *AckService, a, b Result) {
+	t.Helper()
+	e = newEnv(t, "x99-1")
+	ack = &AckService{pool: testPool, Queue: e.svc}
+	p := e.profile(ClassS0)
+	a, _ = e.mint(p)
+	e.now = e.now.Add(time.Second)
+	b, _ = e.mint(p)
+	if b.Lease.State != "queued" {
+		t.Fatalf("b = %s, want queued", b.Lease.State)
+	}
+	if err := e.svc.Release(context.Background(), e.ws, a.Lease.TaskID, a.Lease.ID); err != nil {
+		t.Fatal(err)
+	}
+	return e, ack, a, b
+}
+
+func TestCleanupAckGrantsTheWaiterAfterTheCurrentEpochAck(t *testing.T) {
+	e, ack, a, b := handover(t)
+	if l := e.lease(b.Lease.ID); l.State != "queued" {
+		t.Fatalf("b = %s before the ack, want queued", l.State)
+	}
+	if _, err := ack.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+		t.Fatalf("CleanupAck: %v", err)
+	}
+	if l := e.lease(b.Lease.ID); l.State != "active" || l.Epoch.Int64 != 2 {
+		t.Fatalf("b = %s epoch %d after the ack, want active epoch 2", l.State, l.Epoch.Int64)
+	}
+}
+
+func TestStaleAckAndQuarantineGrantNothing(t *testing.T) {
+	e, ack, a, b := handover(t)
+	if _, err := ack.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 2); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("stale ack: err = %v, want ErrStaleEpoch", err)
+	}
+	if _, err := ack.Quarantine(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.AdvanceQueue(context.Background(), e.ws, ClassS0); err != nil {
+		t.Fatal(err)
+	}
+	if l := e.lease(b.Lease.ID); l.State != "queued" {
+		t.Fatalf("b = %s, want queued: a stale ack or a quarantine granted it", l.State)
+	}
+}
+
+func TestRetriedAckAdvancesAQueueThatTheFirstAckLeftWaiting(t *testing.T) {
+	e, _, a, b := handover(t)
+	first := &AckService{pool: testPool} // the advance did not run (or failed) after the first ack
+	if _, err := first.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if l := e.lease(b.Lease.ID); l.State != "queued" {
+		t.Fatalf("b = %s, want queued", l.State)
+	}
+	retry := &AckService{pool: testPool, Queue: e.svc}
+	if _, err := retry.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if l := e.lease(b.Lease.ID); l.State != "active" {
+		t.Fatalf("b = %s after the retried ack, want active", l.State)
+	}
 }
