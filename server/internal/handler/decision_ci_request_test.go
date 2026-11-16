@@ -1,10 +1,14 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,4 +216,62 @@ func TestCIDecisionConcurrentCandidatesLeaveOneOpenCard(test *testing.T) {
 	if got := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1 AND status = 'open' AND request_fingerprint LIKE $2`, fixture.issueID, "%:"+ciAt(4)); got != 1 {
 		test.Fatalf("the open card is not the newest candidate")
 	}
+}
+
+// TestCIDecisionCardLintAddsMissingMention (CHE-5993 F3): the CI route runs the
+// same mention_missing correction as RequestDecision when lint is warn or block.
+func TestCIDecisionCardLintAddsMissingMention(test *testing.T) {
+	askComment := func(test *testing.T, fixture singleCallFixture) string {
+		test.Helper()
+		var content string
+		if err := testPool.QueryRow(context.Background(), `SELECT content FROM comment WHERE issue_id = $1 AND decision_request_id IS NOT NULL`, fixture.issueID).Scan(&content); err != nil {
+			test.Fatalf("read ask comment: %v", err)
+		}
+		return content
+	}
+	post := func(test *testing.T, fixture singleCallFixture) {
+		test.Helper()
+		ask := fixture.details
+		ask.DefaultIfNoReply = "No action until you pick." // class deploy: a default that names no option
+		response := ciCardCall(test, ciCard, fixture, func(body map[string]any) { body["ask"] = ask })
+		if response.Code != http.StatusCreated {
+			test.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+		}
+	}
+	mention := "mention://member/" + testUserID + ")"
+	for _, mode := range []string{"warn", "block"} {
+		test.Run(mode+" adds the human mention and logs it", func(test *testing.T) {
+			setCardLint(test, mode)
+			logs := captureInfo(test)
+			fixture := newSingleCallFixture(test)
+			post(test, fixture)
+			if got := askComment(test, fixture); !strings.Contains(got, mention) {
+				test.Errorf("ask comment lacks the human mention: %s", got)
+			}
+			if !strings.Contains(logs.String(), "mention_missing") {
+				test.Errorf("no mention_missing log: %s", logs.String())
+			}
+		})
+	}
+	test.Run("off leaves the comment as written", func(test *testing.T) {
+		setCardLint(test, "off")
+		logs := captureInfo(test)
+		fixture := newSingleCallFixture(test)
+		post(test, fixture)
+		if got := askComment(test, fixture); strings.Contains(got, mention) {
+			test.Errorf("off must not add a mention: %s", got)
+		}
+		if strings.Contains(logs.String(), "mention_missing") {
+			test.Errorf("off must not log mention_missing: %s", logs.String())
+		}
+	})
+}
+
+func captureInfo(test *testing.T) *bytes.Buffer {
+	test.Helper()
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	test.Cleanup(func() { slog.SetDefault(prev) })
+	return &logs
 }

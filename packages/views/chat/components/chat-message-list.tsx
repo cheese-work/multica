@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -54,7 +54,7 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-follow";
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
 import { chatAnchorKey, parseChatAnchor, serializeChatAnchor, type ChatAnchor } from "./chat-anchor";
-import { useRestoredViewState, useViewStateWriter } from "../../platform";
+import { useBindViewStateWriter, useRestoredViewState } from "../../platform";
 import { formatElapsedMs } from "../lib/format";
 import {
   canonicalAnswerText,
@@ -151,6 +151,8 @@ const FLASH_MS = 1500;
 const JUMP_AIM_MS = 1000;
 /** How long a restored list keeps its saved position as the target while Virtuoso lands it. */
 const RESTORE_SETTLE_MS = 1000;
+/** Min gap between persisted scroll-anchor writes; the in-memory anchor stays per-frame (CHE-3234). */
+const ANCHOR_PERSIST_MS = 500;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -828,7 +830,7 @@ export function ChatMessageList({
   // is loaded; every other case opens at the newest message as before.
   const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
   const savedAnchorRaw = useRestoredViewState(anchorKey ?? "");
-  const writeViewState = useViewStateWriter();
+  const bindViewStateWriter = useBindViewStateWriter();
   const [restore] = useState(() => {
     const saved = anchorKey ? parseChatAnchor(savedAnchorRaw) : null;
     if (!saved || saved.atLiveEnd) return null;
@@ -857,13 +859,60 @@ export function ChatMessageList({
   const anchorReady = restoring || jumped || hasReachedLiveEnd;
   const atBottomRef = useRef(!restoring);
   const lastAnchorRef = useRef<ChatAnchor | null>(null);
+  // The in-memory anchor is current on every call; the persisted copy goes to the
+  // platform (desktop: tab store → JSON of all tabs) at most once per
+  // ANCHOR_PERSIST_MS — leading edge, then a trailing write — and is flushed on
+  // unmount and pagehide so the last position is never lost (CHE-3234).
+  // Each pending write carries a writer pinned to the tab and route it was
+  // scrolled on, so a flush after the view left (tab switch, navigation) still
+  // lands on the right entry.
+  const pendingAnchorWrite = useRef<{
+    key: string;
+    value: string;
+    write: (key: string, value: string | undefined) => void;
+  } | null>(null);
+  const lastAnchorWriteAt = useRef(0);
+  const anchorWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bindViewStateWriterRef = useRef(bindViewStateWriter);
+  bindViewStateWriterRef.current = bindViewStateWriter;
+  const flushAnchor = useCallback(() => {
+    if (anchorWriteTimer.current) clearTimeout(anchorWriteTimer.current);
+    anchorWriteTimer.current = null;
+    const pending = pendingAnchorWrite.current;
+    if (!pending) return;
+    pendingAnchorWrite.current = null;
+    lastAnchorWriteAt.current = Date.now();
+    pending.write(pending.key, pending.value);
+  }, []);
   const saveAnchor = useCallback(
-    (anchor: ChatAnchor) => {
+    (anchor: ChatAnchor, write = bindViewStateWriterRef.current()) => {
       lastAnchorRef.current = anchor;
-      if (anchorKey) writeViewState(anchorKey, serializeChatAnchor(anchor));
+      if (!anchorKey) return;
+      pendingAnchorWrite.current = {
+        key: anchorKey,
+        value: serializeChatAnchor(anchor),
+        write,
+      };
+      const wait = ANCHOR_PERSIST_MS - (Date.now() - lastAnchorWriteAt.current);
+      if (wait <= 0) flushAnchor();
+      else anchorWriteTimer.current ??= setTimeout(flushAnchor, wait);
     },
-    [anchorKey, writeViewState],
+    [anchorKey, flushAnchor],
   );
+  // Runs the measurement a queued scroll frame would have run. Set by the scroll
+  // effect below; a layout effect so unmount drains it while the rows are attached.
+  const drainScrollFrameRef = useRef<() => void>(() => {});
+  useLayoutEffect(() => {
+    const flushNow = () => {
+      drainScrollFrameRef.current();
+      flushAnchor();
+    };
+    window.addEventListener("pagehide", flushNow);
+    return () => {
+      window.removeEventListener("pagehide", flushNow);
+      flushNow();
+    };
+  }, [flushAnchor]);
   const measureOffset = useCallback(
     (messageId: string) => {
       const row = scrollContainerEl?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
@@ -886,19 +935,43 @@ export function ChatMessageList({
   // endpoints, so Virtuoso reports nothing. Re-measure the recorded item.
   useEffect(() => {
     if (!anchorReady || !scrollContainerEl) return;
-    const onScroll = () => {
+    // Measure once per frame, not once per scroll event.
+    let frame = 0;
+    // Bound when the frame is queued: a frame drained after navigation already
+    // moved the tab's route must still file under the route it was scrolled on.
+    let frameWriter = bindViewStateWriterRef.current();
+    const measure = () => {
+      frame = 0;
       const last = lastAnchorRef.current;
-      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) });
+      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) }, frameWriter);
     };
+    const onScroll = () => {
+      if (frame) return;
+      frameWriter = bindViewStateWriterRef.current();
+      frame = requestAnimationFrame(measure);
+    };
+    // A queued frame holds the reader's final offset: run it now rather than drop it.
+    const drain = () => {
+      if (!frame) return;
+      cancelAnimationFrame(frame);
+      measure();
+    };
+    drainScrollFrameRef.current = drain;
     scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => scrollContainerEl.removeEventListener("scroll", onScroll);
+    return () => {
+      scrollContainerEl.removeEventListener("scroll", onScroll);
+      drain();
+      if (drainScrollFrameRef.current === drain) drainScrollFrameRef.current = () => {};
+    };
   }, [anchorReady, scrollContainerEl, saveAnchor, measureOffset]);
   const onAtBottomStateChange = useCallback(
     (atBottom: boolean) => {
       atBottomRef.current = atBottom;
-      if (anchorReady && lastAnchorRef.current) saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+      if (!anchorReady || !lastAnchorRef.current) return;
+      saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+      flushAnchor(); // a rare transition, not scroll spam: persist now
     },
-    [anchorReady, saveAnchor],
+    [anchorReady, saveAnchor, flushAnchor],
   );
 
   const forkSource = forkedFromSessionId && sessions

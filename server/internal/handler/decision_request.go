@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,11 +24,14 @@ import (
 )
 
 type decisionRequestInput struct {
-	SessionID       pgtype.UUID
-	NewDM           bool
-	HumanUserID     pgtype.UUID
-	Ask             string
-	Footer          string
+	SessionID   pgtype.UUID
+	NewDM       bool
+	HumanUserID pgtype.UUID
+	Ask         string
+	Footer      string
+	// CardLintMode is the workspace decision_card_lint_mode for a lint-eligible
+	// ask; off or empty leaves the comment as written. Out of the fingerprint.
+	CardLintMode    string `json:"-"`
 	ParentID        pgtype.UUID
 	EscalationClass string
 	SourceCommentID pgtype.UUID
@@ -119,7 +123,8 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	if err != nil || !result.Replayed {
 		return result, err
 	}
-	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID)
+	taskID, _ := util.ParseUUID(request.Header.Get("X-Task-ID")) // createDecisionRequestOnce already required it
+	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID, taskID)
 }
 
 func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -143,6 +148,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 	case "reversible", "spend", "deploy", "publish", "irreversible", "product_direction":
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
+	}
+	if err := handler.refuseReversibleAsk(request.Context(), issue, input); err != nil {
+		return empty, err
 	}
 	if input.HumanUserID.Valid {
 		var err error
@@ -564,7 +572,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
 		return empty, err
 	}
-	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID); err != nil {
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID, intent.TaskID); err != nil {
 		return empty, err
 	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
@@ -585,11 +593,22 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
+	content := decisionAskContent(input)
+	if input.CardLintMode != "" && input.CardLintMode != "off" {
+		human, err := queries.GetUser(ctx, session.CreatorID)
+		if err != nil {
+			return empty, err
+		}
+		var added bool
+		if content, added = decisiontx.MentionHuman(content, human.Name, uuidToString(session.CreatorID)); added {
+			slog.Info("decision card lint", "code", "mention_missing", "issue_id", uuidToString(issue.ID), "request_id", uuidToString(created.ID))
+		}
+	}
 	var comment db.Comment
 	if attach {
-		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: decisionAskContent(input)})
+		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: content})
 	} else {
-		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: decisionAskContent(input), Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
+		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: content, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
 		if tag == nil {
 			commentParams.DecisionIntentID = intent.ID
 		}
@@ -710,7 +729,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	if err != nil {
 		return empty, err
 	}
-	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession)
+	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession, input.Proposal != nil && input.Action != nil && input.Action.Type == runBudgetRaiseType)
 	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
 		// A stopped task, a removed recipient or a lane that is gone cannot ask
 		// again, but an open proposal of this identity is reported as

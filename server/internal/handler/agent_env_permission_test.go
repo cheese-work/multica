@@ -70,10 +70,10 @@ func agentEnvOwnerFixture(t *testing.T, agentName, email string) (agentID, owner
 }
 
 // TestAgentEnv_AgentOwnerMemberCanRevealAndUpdate is the MUL-5438 fix:
-// the human who owns an agent can reveal and rotate its env even with a
-// plain `member` workspace role. The audit assertions come along because
-// the reveal/update trail must keep naming the real human operator and
-// must still never carry values.
+// the human who owns an agent can read env metadata and rotate its env even
+// with a plain `member` workspace role. The audit assertions come along because
+// the update trail must keep naming the real human operator and must still
+// never carry values.
 func TestAgentEnv_AgentOwnerMemberCanRevealAndUpdate(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -92,8 +92,8 @@ func TestAgentEnv_AgentOwnerMemberCanRevealAndUpdate(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode reveal response: %v", err)
 	}
-	if resp.CustomEnv["API_KEY"] != "secret-value" {
-		t.Fatalf("expected plaintext API_KEY, got %v", resp.CustomEnv)
+	if resp.CustomEnv["API_KEY"] != envSentinel {
+		t.Fatalf("expected masked API_KEY, got %v", resp.CustomEnv)
 	}
 
 	body := map[string]any{"custom_env": map[string]string{"API_KEY": "rotated-value"}}

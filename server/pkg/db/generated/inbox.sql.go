@@ -300,15 +300,22 @@ INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details, id,
-    chat_session_id, chat_message_id
+    chat_session_id, chat_message_id, dedupe_key
 )
 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::uuid, gen_random_uuid()),
-    $13::uuid, $14::uuid
+    $13::uuid, $14::uuid, $15::text
 WHERE ($2::text = 'member' AND EXISTS (
     SELECT 1 FROM member WHERE workspace_id = $1 AND user_id = $3
 )) OR ($2::text = 'agent' AND EXISTS (
     SELECT 1 FROM agent WHERE workspace_id = $1 AND id = $3
 ))
+ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
+DO UPDATE SET
+    title = EXCLUDED.title,
+    body = EXCLUDED.body,
+    details = EXCLUDED.details,
+    archived = false,
+    updated_at = now()
 RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section
 `
 
@@ -327,10 +334,13 @@ type CreateInboxItemParams struct {
 	ID            pgtype.UUID `json:"id"`
 	ChatSessionID pgtype.UUID `json:"chat_session_id"`
 	ChatMessageID pgtype.UUID `json:"chat_message_id"`
+	DedupeKey     pgtype.Text `json:"dedupe_key"`
 }
 
 // A missing recipient is a quiet skip (pgx.ErrNoRows), not a delivery failure.
 // Check the insertion snapshot without adding recipient row locks.
+// A row with a dedupe_key is one unread record per (recipient, key): a later
+// insert updates it in place and revives it from the archive (CHE-5901).
 func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams) (InboxItem, error) {
 	row := q.db.QueryRow(ctx, createInboxItem,
 		arg.WorkspaceID,
@@ -347,6 +357,7 @@ func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams
 		arg.ID,
 		arg.ChatSessionID,
 		arg.ChatMessageID,
+		arg.DedupeKey,
 	)
 	var i InboxItem
 	err := row.Scan(

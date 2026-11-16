@@ -1,0 +1,15 @@
+# CHE-3707 section 2: Available Commands
+- persist an event, condition or time wakeup on this issue, then finish the current run
+- so no run starts before it holds
+- `--until-status`
+- `--until-pr checks|conflicts`
+- `--until-children-done`
+- `--until-issue`
+- `--until-gh-run owner/repo:RUN_ID --until-gh-run-state completed|waiting`
+- `--until-gh-run` sees only GitHub events received after the GitHub App subscribed, so add `--expires-in D --on-timeout wake`.
+- the multica-platform issues reference
+- Do not merge them (`2>&1`)
+- `--no-start` records the change without starting another run
+- Agent-authored bodies MUST use `--content-file`
+- `--fresh` discards uncommitted and untracked files
+- never change the global identity

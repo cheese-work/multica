@@ -494,6 +494,8 @@ func TestDaemonStartBackgroundReportsEarlyChildExit(t *testing.T) {
 // and only then discovers it cannot start a replacement, leaving the user
 // with no daemon at all.
 func TestDaemonRestartUnauthenticatedFailsBeforeStopping(t *testing.T) {
+	clearDaemonTaskEnv(t)
+	t.Chdir(t.TempDir())
 	redirectTestHome(t, t.TempDir())
 
 	const profile = "restart-authtest"
@@ -557,6 +559,8 @@ func newRestartTestCmd(t *testing.T, profile string) *cobra.Command {
 // running daemon is stopped. Otherwise restart kills the working daemon and
 // the replacement child dies in preflight, leaving no daemon at all (#5165).
 func TestDaemonRestartRejectedTokenFailsBeforeStopping(t *testing.T) {
+	clearDaemonTaskEnv(t)
+	t.Chdir(t.TempDir())
 	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", "")
 
@@ -592,6 +596,8 @@ func TestDaemonRestartRejectedTokenFailsBeforeStopping(t *testing.T) {
 // restart must abort before stopping the running daemon, because the
 // replacement child would die in preflight against the same dead server.
 func TestDaemonRestartUnreachableServerFailsBeforeStopping(t *testing.T) {
+	clearDaemonTaskEnv(t)
+	t.Chdir(t.TempDir())
 	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", "")
 

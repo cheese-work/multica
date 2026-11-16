@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/internal/cibroker"
 	"log/slog"
 	"math"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/bgagents"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
@@ -230,6 +232,11 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
+	// that writes merge receipts (CHE-5594). Nil leaves the route off.
+	MergeReceiptBroker *cibroker.Broker
+	// MergeReceiptWorkspaceID is the one workspace that route writes to.
+	MergeReceiptWorkspaceID string
 	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
 	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
@@ -252,8 +259,10 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	PluginService          *service.PluginService
-	IssueService           *service.IssueService
-	AutopilotService       *service.AutopilotService
+	// BrowserLeases serves the browser lease API (CHE-4732); nil answers 503.
+	BrowserLeases    *browserlease.Service
+	IssueService     *service.IssueService
+	AutopilotService *service.AutopilotService
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
@@ -643,6 +652,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
+	service.SetOnWeeklyRunGuardTripped(h.onWeeklyRunGuardTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {

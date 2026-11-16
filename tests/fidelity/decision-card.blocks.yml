@@ -1,0 +1,166 @@
+# Blocks map for the decision-card lock, B v9 (CHE-5793 C2).
+# One case per state the lock draws (its numbered label): lock file, state id, profile id, fixture.
+# State id s<N> is the lock label number N. Block ids are data-testid values the code carries today;
+# blocks the lock draws that the code does not yet tag (options, composer, buttons) join in step 5.
+# A block's selector may list the open-card and the decided-card (.cc) form of the same block.
+# A case names the fixture that draws its data. `steps` (click / type, run in order) bring the real component to the
+# lock's interaction state. A case whose fixture the harness lacks fails `missing-render`; it is never drawn as another state.
+topic: decision-card
+cases:
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s1
+    profile: card-540
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s1b
+    profile: card-540
+    fixture: run-budget-top-up
+    steps:
+      - click: "text=Details"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s2
+    profile: card-540
+    fixture: run-budget-top-up
+    steps:
+      - type: "[role=textbox]"
+        text: "Is CI on main green yet?"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s3
+    profile: card-540
+    fixture: run-budget-top-up-answered
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s4
+    profile: card-540
+    fixture: run-budget-top-up
+    steps:
+      - click: "role=radio[name='Approve']"
+      - type: "[role=textbox]"
+        text: "ok, go ahead"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s5
+    profile: card-540
+    fixture: status-change-backlog
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s6
+    profile: card-540
+    fixture: run-budget-top-up
+    steps:
+      - click: "role=radio[name='Reject']"
+      - type: "[role=textbox]"
+        text: "Not until CI on main is green."
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s7
+    profile: card-540
+    fixture: batch-run-budget
+    steps:
+      - click: "[aria-label='Decision for CHE-3459'] >> role=radio[name='Approve']"
+      - click: "[aria-label='Decision for CHE-3460'] >> role=radio[name='Approve']"
+      - click: "[aria-label='Decision for CHE-3461'] >> role=radio[name='Reject']"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s7b
+    profile: card-540
+    fixture: batch-run-budget
+    steps:
+      - click: "[aria-label='Decision for CHE-3459'] >> role=radio[name='Approve']"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s8
+    profile: card-540
+    fixture: run-budget-approved
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s9
+    profile: card-540
+    fixture: run-budget-rejected
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s10
+    profile: phone-358
+    fixture: run-budget-top-up
+    steps:
+      - click: "role=radio[name='Approve']"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s11
+    profile: card-540
+    fixture: config-change-agent-disable
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s12
+    profile: card-540
+    fixture: text-change-workflow
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s13
+    profile: card-540
+    fixture: text-change-workflow
+    steps:
+      - click: "text=Details"
+      - click: "text=Show full"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s14
+    profile: card-540
+    fixture: config-change-applied
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s15
+    profile: card-540
+    fixture: config-change-not-applied
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s16
+    profile: card-540
+    fixture: question-answered
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s17
+    profile: card-540
+    fixture: expired-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s18
+    profile: card-540
+    fixture: delegate-approved
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s19
+    profile: card-540
+    fixture: config-change-revoked
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s20
+    profile: card-540
+    fixture: run-budget-approved
+    steps:
+      - click: "[data-testid=decision-request-fold-toggle]"
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s21
+    profile: phone-358
+    fixture: run-budget-approved
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s23
+    profile: dm-card-520
+    fixture: run-budget-top-up
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s24
+    profile: dm-card-520
+    fixture: run-budget-top-up-issue-block
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s25
+    profile: dm-card-520
+    fixture: run-budget-approved
+  - lock_file: design/decision-card/approved/direction-b.html
+    state: s26
+    profile: dm-card-520
+    fixture: dm-multi-issue
+blocks:
+  decision-request-title:
+    selector: ".card .hd b"
+  decision-request-choice:
+    selector: ".card .seg"
+  decision-request-details:
+    selector: ".card .det"
+  decision-request-card:
+    selector: ".card, .cc"
+  decision-request-asker:
+    selector: ".card .hd"
+  decision-request-ask:
+    selector: ".card .ask"
+  decision-request-effect:
+    selector: ".card .sum, .cc .cc-eff"
+  decision-request-meta:
+    selector: ".card .kv, .cc .cc-g"
+  decision-request-action-preview:
+    selector: ".card .fcs"
+  decision-request-folded:
+    selector: ".cc"
+  decision-request-fold-toggle:
+    selector: ".cc .cc-h"

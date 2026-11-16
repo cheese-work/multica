@@ -23,6 +23,11 @@ import (
 // SettingKey is the workspace.settings key that holds the mode.
 const SettingKey = "ask_guard_mode"
 
+// ReversibleSettingKey holds the mode of the reversible-ask guard (CHE-5754):
+// a plain agent question to a person about work Standing Delivery Authorization
+// already allows. Its own key, so it reverts without touching SettingKey.
+const ReversibleSettingKey = "reversible_ask_guard"
+
 type Mode string
 
 const (
@@ -43,7 +48,14 @@ func ParseMode(s string) (Mode, error) {
 // ModeFromSettings reads the mode from a workspace.settings value. A missing
 // key is the upstream default, off. A malformed value is an error: callers
 // must not guess a mode.
-func ModeFromSettings(raw []byte) (Mode, error) {
+func ModeFromSettings(raw []byte) (Mode, error) { return modeFromSettings(raw, SettingKey) }
+
+// ReversibleModeFromSettings reads ReversibleSettingKey the same way.
+func ReversibleModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, ReversibleSettingKey)
+}
+
+func modeFromSettings(raw []byte, key string) (Mode, error) {
 	if len(raw) == 0 {
 		return ModeOff, nil
 	}
@@ -51,7 +63,7 @@ func ModeFromSettings(raw []byte) (Mode, error) {
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		return "", fmt.Errorf("workspace settings: %w", err)
 	}
-	v, ok := settings[SettingKey]
+	v, ok := settings[key]
 	if !ok {
 		return ModeOff, nil
 	}

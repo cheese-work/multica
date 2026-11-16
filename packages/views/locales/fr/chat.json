@@ -430,6 +430,10 @@
         "unpin": "Désépingler",
         "archive": "Archiver",
         "unarchive": "Désarchiver"
+      },
+      "short": {
+        "seen": "Vu",
+        "unseen": "Non vu"
       }
     }
   },
@@ -572,6 +576,12 @@
     "send_discuss": "Discuter davantage ({{shortcut}})",
     "send_approve": "Approuver avec une clé d'accès ({{shortcut}})",
     "send_reject": "Confirmer le rejet ({{shortcut}})",
+    "choice_item": "Décision pour {{issue}}",
+    "batch_choose_one": "Choisissez encore {{count}} élément",
+    "batch_choose_other": "Choisissez encore {{count}} éléments",
+    "batch_send_mixed": "Approuver {{approve}}, rejeter {{reject}} avec la clé d'accès ({{shortcut}})",
+    "batch_send_approve": "Approuver {{approve}} avec la clé d'accès ({{shortcut}})",
+    "batch_send_reject": "Confirmer le rejet de {{reject}} ({{shortcut}})",
     "details": "Détails",
     "effect_applied": "Appliqué.",
     "effect_not_applied": "Non appliqué. Approuvé, mais le changement n'a pas abouti.",
@@ -664,27 +674,6 @@
       "file_missing": "Ce fichier a été supprimé après l'envoi de la demande.",
       "list_failed": "Impossible de charger les fichiers que cette demande approuve."
     }
-  },
-  "search": {
-    "label": "Rechercher dans les discussions",
-    "placeholder": "Rechercher dans les discussions",
-    "shortcut_hint": "/",
-    "clear": "Effacer la recherche",
-    "results_label": "Résultats de recherche",
-    "count_one": "{{count}} résultat",
-    "count_other": "{{count}} résultats",
-    "searching": "Recherche…",
-    "empty": "Aucune discussion ne correspond à « {{query}} »",
-    "failed": "La recherche a échoué. Réessayez.",
-    "timed_out": "La recherche a pris trop de temps. Essayez une requête plus courte ou plus précise.",
-    "disconnected": "Vous êtes hors ligne. La recherche nécessite une connexion.",
-    "retry": "Réessayer",
-    "too_long": "La recherche est limitée à {{max}} caractères.",
-    "show_more": "Afficher plus",
-    "loading_more": "Chargement…",
-    "archived_badge": "Archivée",
-    "title_match": "Titre correspondant",
-    "actions_aria": "Actions pour {{title}}"
   },
   "wakeup": {
     "node_label": "Réveil programmé déclenché",

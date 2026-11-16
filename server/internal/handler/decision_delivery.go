@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -611,6 +613,13 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 func (handler *Handler) dispatchDecisionInputs(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot, trigger db.Comment, commentIDs []pgtype.UUID, summary string) (string, db.AgentTaskQueue, error) {
 	var empty db.AgentTaskQueue
 	if !snapshot.task.ID.Valid {
+		// An undelivered answer is a progress event, so the weekly run guard
+		// lets its run through (CHE-6239). A re-ask, a retraction and an
+		// episode without a live answer (an agent withdrawal) are not: an
+		// agent can produce those in a loop. The wake is acknowledged once.
+		if (snapshot.kind == "" || snapshot.kind == "episode") && slices.ContainsFunc(snapshot.answers, episodeLiveAnswer) {
+			ctx = service.WithProgressEvent(ctx)
+		}
 		task, err := handler.TaskService.EnqueueDecisionTaskInTx(ctx, queries, snapshot.issue, snapshot.recipient.ID, snapshot.squadID, trigger.ID, commentIDs, summary)
 		return "run_enqueued", task, err
 	}

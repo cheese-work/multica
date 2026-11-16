@@ -1,5 +1,5 @@
 # Pattern ledger (CHE-5420 S1). Schema and rules: scripts/design/validate-patterns.mjs. DESIGN.md links here.
-# frame.state: pending (seed, warns) | locked (needs a DESIGN.md approved-revisions row) | patterns (needs a frame URL).
+# frame.state: pending (deprecated entries only; fails on active) | locked (needs a DESIGN.md approved-revisions row) | patterns (needs a frame URL).
 - id: inline-retry
   intent: "One error line plus one retry action."
   origin: fork

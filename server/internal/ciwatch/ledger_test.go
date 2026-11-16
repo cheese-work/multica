@@ -56,14 +56,18 @@ func newLedgerEnv(t *testing.T) *actEnv {
 	e.ledger = NewLedger(pool, func(context.Context, pgx.Tx, Action) (Verdict, error) {
 		return e.verdict.Load().(Verdict), nil
 	}, WithLedgerClock(e.clock.Now))
-	_, err = pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS ci_test_effect (kind text NOT NULL, ref text NOT NULL)`)
+	// A private schema: the workspace-deletion manifest test classifies every public table.
+	if _, err = pool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS ciwatch_test`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS ciwatch_test.effect (kind text NOT NULL, ref text NOT NULL)`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM ci_watch_action WHERE workspace_id=$1`, e.ws)
 		_, _ = pool.Exec(ctx, `DELETE FROM ci_signature_owner WHERE workspace_id=$1`, e.ws)
-		_, _ = pool.Exec(ctx, `DELETE FROM ci_test_effect WHERE ref LIKE $1`, e.ws+"%")
+		_, _ = pool.Exec(ctx, `DELETE FROM ciwatch_test.effect WHERE ref LIKE $1`, e.ws+"%")
 		pool.Close()
 	})
 	return e
@@ -78,7 +82,7 @@ func (e *actEnv) count(t *testing.T, kind string) int {
 	t.Helper()
 	var n int
 	if err := e.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM ci_test_effect WHERE kind=$1 AND ref LIKE $2`, kind, e.ws+"%").Scan(&n); err != nil {
+		`SELECT count(*) FROM ciwatch_test.effect WHERE kind=$1 AND ref LIKE $2`, kind, e.ws+"%").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -99,11 +103,11 @@ func (e *actEnv) insertEffect(kind string) LocalEffect {
 	return func(ctx context.Context, tx pgx.Tx, a Action) (string, error) {
 		e.effects.Add(1)
 		dest := uuid.NewString()
-		if _, err := tx.Exec(ctx, `INSERT INTO ci_test_effect (kind, ref) VALUES ($1, $2)`, kind, e.ws+"/"+dest); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO ciwatch_test.effect (kind, ref) VALUES ($1, $2)`, kind, e.ws+"/"+dest); err != nil {
 			return "", err
 		}
 		if kind == "issue" {
-			if _, err := tx.Exec(ctx, `INSERT INTO ci_test_effect (kind, ref) VALUES ('wake', $1)`, e.ws+"/"+dest); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO ciwatch_test.effect (kind, ref) VALUES ('wake', $1)`, e.ws+"/"+dest); err != nil {
 				return "", err
 			}
 		}

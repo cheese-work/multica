@@ -141,6 +141,7 @@ type Task struct {
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
 	TriggerCommentID              string                 `json:"trigger_comment_id,omitempty"`               // comment that triggered this task
+	TriggerKind                   string                 `json:"trigger_kind,omitempty"`                     // CHE-5485: "status_handoff" marks trigger_comment_id as handoff context for an assignment-style run, not a comment to answer
 	CoalescedCommentIDs           []string               `json:"coalesced_comment_ids,omitempty"`            // MUL-4195: earlier comments folded into this run while it was still queued; the agent must address these in addition to the (newest) triggering comment. Empty for old servers / non-merged runs
 	CoalescedComments             []CoalescedCommentData `json:"coalesced_comments,omitempty"`               // MUL-4195: full detail of the folded comments (thread_id/author/created_at/content) so the prompt can address each without assuming a shared thread. Empty for old servers / non-merged runs
 	TriggerThreadID               string                 `json:"trigger_thread_id,omitempty"`                // root comment ID for the triggering thread; falls back to trigger_comment_id on old servers
@@ -179,6 +180,8 @@ type Task struct {
 	QuickCreatePrompt             string                 `json:"quick_create_prompt,omitempty"`              // user's natural-language input for quick-create tasks
 	QuickCreatePriority           string                 `json:"quick_create_priority,omitempty"`            // explicit priority selected in quick-create
 	QuickCreateDueDate            string                 `json:"quick_create_due_date,omitempty"`            // explicit calendar due date selected in quick-create
+	QuickCreateFill               bool                   `json:"quick_create_fill,omitempty"`                // CHE-6090: workspace setting quick_create_fill is on; the agent fills every field the modal left empty
+	QuickCreateTitleTypes         []string               `json:"quick_create_title_types,omitempty"`         // CHE-6090: type keys of the workspace workflow_by_type map
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
 	BackgroundJob                 string                 `json:"background_job,omitempty"`                   // non-empty for an output_only background task (CHE-4100): the job name, e.g. dm_title
@@ -425,3 +428,7 @@ func (t Task) EffectiveProfile() string {
 func (t Task) DisableProviderWebTools() bool {
 	return t.EffectiveProfile() == "elevated"
 }
+
+// isStatusHandoff reports a run whose trigger comment is handoff context from a
+// status move (CHE-5485), not a comment the run must answer.
+func (t Task) isStatusHandoff() bool { return t.TriggerKind == "status_handoff" }

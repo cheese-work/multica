@@ -415,6 +415,10 @@
         "unpin": "고정 해제",
         "archive": "보관",
         "unarchive": "보관 해제"
+      },
+      "short": {
+        "seen": "읽음",
+        "unseen": "읽지 않음"
       }
     }
   },
@@ -554,6 +558,11 @@
     "send_discuss": "더 논의 ({{shortcut}})",
     "send_approve": "패스키로 승인 ({{shortcut}})",
     "send_reject": "거절 확정 ({{shortcut}})",
+    "choice_item": "{{issue}} 결정",
+    "batch_choose_other": "{{count}}건 더 선택",
+    "batch_send_mixed": "{{approve}}건 승인, {{reject}}건 거절 (패스키, {{shortcut}})",
+    "batch_send_approve": "패스키로 {{approve}}건 승인 ({{shortcut}})",
+    "batch_send_reject": "{{reject}}건 거절 확정 ({{shortcut}})",
     "details": "세부 정보",
     "effect_applied": "적용됨.",
     "effect_not_applied": "적용되지 않음. 승인되었지만 변경이 적용되지 않았습니다.",
@@ -646,26 +655,6 @@
       "file_missing": "요청을 보낸 뒤 이 파일이 삭제되었습니다.",
       "list_failed": "이 요청이 승인하는 파일을 불러올 수 없습니다."
     }
-  },
-  "search": {
-    "label": "채팅 검색",
-    "placeholder": "채팅 검색",
-    "shortcut_hint": "/",
-    "clear": "검색 지우기",
-    "results_label": "검색 결과",
-    "count_other": "결과 {{count}}개",
-    "searching": "검색 중…",
-    "empty": "“{{query}}”와(과) 일치하는 채팅이 없습니다",
-    "failed": "검색에 실패했습니다. 다시 시도해 주세요.",
-    "timed_out": "검색 시간이 너무 오래 걸렸습니다. 더 짧거나 구체적인 검색어를 사용해 보세요.",
-    "disconnected": "오프라인입니다. 검색하려면 연결이 필요합니다.",
-    "retry": "다시 시도",
-    "too_long": "검색은 {{max}}자까지 가능합니다.",
-    "show_more": "더 보기",
-    "loading_more": "불러오는 중…",
-    "archived_badge": "보관됨",
-    "title_match": "제목 일치",
-    "actions_aria": "{{title}} 작업"
   },
   "wakeup": {
     "node_label": "예약된 깨우기가 실행되었습니다",

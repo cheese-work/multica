@@ -567,6 +567,7 @@ type AgentTaskResponse struct {
 	// partial work, and that is when the pointer matters most.
 	BranchName            string                 `json:"branch_name,omitempty"`
 	TriggerCommentID      *string                `json:"trigger_comment_id,omitempty"`    // comment that triggered this task
+	TriggerKind           string                 `json:"trigger_kind,omitempty"`          // CHE-5485: "status_handoff" marks trigger_comment_id as handoff context, not a comment to answer
 	CoalescedCommentIDs   []string               `json:"coalesced_comment_ids,omitempty"` // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
 	CoalescedComments     []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
 	DeliveredCommentIDs   []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
@@ -636,6 +637,8 @@ type AgentTaskResponse struct {
 	QuickCreatePrompt        string               `json:"quick_create_prompt,omitempty"`         // user's natural-language input for quick-create tasks
 	QuickCreatePriority      string               `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
 	QuickCreateDueDate       string               `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
+	QuickCreateFill          bool                 `json:"quick_create_fill,omitempty"`           // CHE-6090: workspace setting quick_create_fill is on
+	QuickCreateTitleTypes    []string             `json:"quick_create_title_types,omitempty"`    // CHE-6090: type keys of workflow_by_type
 	QuickCreateAttachmentIDs []string             `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
 	QuickCreateSourceContext json.RawMessage      `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
 	BackgroundJob            string               `json:"background_job,omitempty"`              // output_only background task (CHE-4100): job name
@@ -1027,6 +1030,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		IsLeaderTask:           t.IsLeaderTask,
 		CreatedAt:              timestampToString(t.CreatedAt),
 		TriggerCommentID:       uuidToPtr(t.TriggerCommentID),
+		TriggerKind:            t.TriggerKind.String,
 		CoalescedCommentIDs:    uuidsToStrings(t.CoalescedCommentIds),
 		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:         textToPtr(t.TriggerSummary),
@@ -1222,7 +1226,7 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 	if uuidToString(t.IssueID) == "" {
 		return "quick_create"
 	}
-	if uuidToString(t.TriggerCommentID) != "" {
+	if uuidToString(t.TriggerCommentID) != "" && t.TriggerKind.String != service.TriggerKindStatusHandoff {
 		return "comment"
 	}
 	return "direct"
@@ -3028,13 +3032,15 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-		ID:         agent.ID,
-		ArchivedBy: parseUUID(userID),
-	})
+	var archived db.Agent
+	err := h.applyAgentChange(r, agent, "agent.archive", agentLifecycleAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) (err error) {
+			archived, err = q.ArchiveAgent(ctx, db.ArchiveAgentParams{ID: agent.ID, ArchivedBy: parseUUID(userID)})
+			return err
+		})
 	if err != nil {
 		slog.Warn("archive agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to archive agent")
+		writeAgentChangeError(w, r, err, "agent.archive", "agent not found", "failed to archive agent")
 		return
 	}
 
@@ -3075,10 +3081,15 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	restored, err := h.Queries.RestoreAgent(r.Context(), agent.ID)
+	var restored db.Agent
+	err := h.applyAgentChange(r, agent, "agent.restore", agentLifecycleAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) (err error) {
+			restored, err = q.RestoreAgent(ctx, agent.ID)
+			return err
+		})
 	if err != nil {
 		slog.Warn("restore agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to restore agent")
+		writeAgentChangeError(w, r, err, "agent.restore", "agent not found", "failed to restore agent")
 		return
 	}
 
@@ -3123,10 +3134,19 @@ func (h *Handler) CancelAgentTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cancelled, err := h.TaskService.CancelTasksForAgent(r.Context(), parseUUID(id))
+	cancelled, err := h.TaskService.CancelTasksForAgentInTx(r.Context(), agent.ID,
+		func(ctx context.Context, q *db.Queries, tasks []db.AgentTaskQueue) error {
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "agent.tasks.cancel", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+				Before: map[string]any{"active_tasks": len(tasks)}, After: map[string]any{"active_tasks": 0},
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
 	if err != nil {
 		slog.Warn("cancel agent tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to cancel tasks")
+		writeAgentChangeError(w, r, err, "agent.tasks.cancel", "agent not found", "failed to cancel tasks")
 		return
 	}
 
@@ -3307,9 +3327,9 @@ func (h *Handler) ListWorkspaceWorkingAgents(w http.ResponseWriter, r *http.Requ
 			mineRelation = "any"
 		}
 		switch mineRelation {
-		case "assigned", "created", "involved", "any":
+		case "assigned", "created", "requested", "involved", "any":
 		default:
-			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, involved, or any")
+			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, requested, involved, or any")
 			return
 		}
 		userID, ok := requireUserID(w, r)

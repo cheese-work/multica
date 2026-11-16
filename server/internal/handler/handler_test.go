@@ -107,6 +107,8 @@ func TestMain(m *testing.M) {
 	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
 	// The run-budget suites spend many runs in seconds; the loop breaker has its own tests.
 	os.Setenv("MULTICA_LOOP_BREAKER_MAX_RUNS", "0")
+	// Budget tests spend more than 30 runs on one issue; the weekly guard tests set their own limit (CHE-5720).
+	os.Setenv("MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS", "0")
 	code := m.Run()
 	stopHeartbeat()
 	if lost := statusEventsWithoutActivityID(); len(lost) > 0 {

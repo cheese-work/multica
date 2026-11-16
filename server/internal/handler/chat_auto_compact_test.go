@@ -408,7 +408,7 @@ func TestClaimedAutoCompactionRunsTheCompactPromptWithoutUserInput(t *testing.T)
 	if response.Task == nil || response.Task.ID != tasks[0].ID {
 		t.Fatalf("claim = %+v, want the compaction task %s", response.Task, tasks[0].ID)
 	}
-	for _, required := range []string{"multica chat continue --summary-file", "Keep exact candidate SHAs.", "Do not invent facts"} {
+	for _, required := range []string{"multica chat compact --summary-file", "Keep exact candidate SHAs.", "Do not invent facts"} {
 		if !strings.Contains(response.Task.ChatMessage, required) {
 			t.Errorf("prompt does not contain %q: %s", required, response.Task.ChatMessage)
 		}

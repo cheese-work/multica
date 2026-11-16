@@ -27,9 +27,11 @@ in its image, so manifest assembly cannot hash a different download.
 
 Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
 `multica-cd-web-v1` builders. They use `docker-container` for provenance and
-SBOM generation. A bounded stop releases builder memory after the job;
-the builder and its cache volume remain for later trusted main pushes.
-BuildKit GC targets at most 4 GB per builder, reserves 1 GB, and targets
+SBOM generation. `cleanup: false` keeps the builder container and its cache
+volume for later trusted main pushes; a fresh container per run emptied every
+cache mount (CHE-6218). The `Remove a broken persistent Buildx builder` step
+still replaces an unhealthy builder.
+BuildKit GC targets at most 8 GB per builder, reserves 1 GB, and targets
 10 GB free. Each builder admits at most two build vertices at once.
 No registry cache or untrusted PR cache is imported.
 
@@ -716,6 +718,10 @@ workspace owner with the `decisions:ci_request` scope. The server keeps one open
 card per SHA, withdraws the older open card when a newer candidate arrives and
 refuses a stale one with 409 (the job treats 200 and 409 as delivered). The job
 runs in the `c00-approval-notice` concurrency group so notices do not overlap.
+A lift decision (`doop.deploy_lift` v1, params `marker_value` and `repo`) is read
+back with `GET /api/decisions/{id}/state` using a PAT that holds only the
+`decisions:read` scope (CHE-5553). The `doop-lift` environment secret that holds
+that token is provisioned only after Cheese decides on it (CHE-5474).
 With no route configured or delivered the job fails
 (CHE-4879). The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
