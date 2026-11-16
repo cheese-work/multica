@@ -2375,6 +2375,16 @@ SELECT count(*) FROM activity_log
 WHERE issue_id = $1 AND action = 'review_changes_requested'
   AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
 
+-- name: CountReviewEntriesSinceLastVerdict :one
+-- Entries into agent_review since the issue last passed review or hit the
+-- round cap (CHE-6192). Counts every way back into review, not only CHANGES.
+SELECT count(*) FROM activity_log a
+WHERE a.issue_id = $1 AND a.action = 'status_changed' AND a.details->>'to' = 'agent_review'
+  AND a.created_at > COALESCE((
+    SELECT max(m.created_at) FROM activity_log m
+    WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
+  ), '-infinity'::timestamptz);
+
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 -- assignment-level runs of one agent stamped for a step the issue has left.

@@ -3368,6 +3368,24 @@ func (q *Queries) CountDelegatedFailureRecoveryTasks(ctx context.Context, failed
 	return count, err
 }
 
+const countReviewEntriesSinceLastVerdict = `-- name: CountReviewEntriesSinceLastVerdict :one
+SELECT count(*) FROM activity_log a
+WHERE a.issue_id = $1 AND a.action = 'status_changed' AND a.details->>'to' = 'agent_review'
+  AND a.created_at > COALESCE((
+    SELECT max(m.created_at) FROM activity_log m
+    WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
+  ), '-infinity'::timestamptz)
+`
+
+// Entries into agent_review since the issue last passed review or hit the
+// round cap (CHE-6192). Counts every way back into review, not only CHANGES.
+func (q *Queries) CountReviewEntriesSinceLastVerdict(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countReviewEntriesSinceLastVerdict, issueID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRunningTasks = `-- name: CountRunningTasks :one
 SELECT count(*) FROM agent_task_queue
 WHERE agent_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')

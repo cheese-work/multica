@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 
@@ -23,6 +24,8 @@ const (
 
 	activityChangesRequested = "review_changes_requested"
 	activityPassed           = "review_passed"
+	activityRoundsCapped     = "review_rounds_capped"
+	statusAgentReview        = "agent_review"
 	statusNeedDecision       = "need_decision"
 )
 
@@ -93,6 +96,9 @@ func runReviewHead(run *db.AgentTaskQueue) (prID, head string) {
 // need_decision. Any other move passes untouched. It runs again under the
 // issue row lock, so concurrent verdicts count one after the other.
 func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition, caller workflowCaller) error {
+	if capped, err := h.reviewRoundsCapped(ctx, q, prev, params, def, caller); err != nil || capped {
+		return err
+	}
 	verdict := verdictOf(def, prev.Status, params.Status, caller)
 	if verdict == "" {
 		return nil
@@ -117,6 +123,44 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	return nil
 }
 
+// reviewRoundsCapped sends an agent's entry into agent_review to need_decision
+// once the issue has had maxChangesRounds reviews without a PASS (CHE-6192). It
+// counts entries, not CHANGES verdicts, so a reviewer who leaves through Blocked
+// or a wakeup cannot keep the loop going unseen.
+func (h *Handler) reviewRoundsCapped(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition, caller workflowCaller) (bool, error) {
+	if !caller.agent || !params.Status.Valid || params.Status.String != statusAgentReview || prev.Status == statusAgentReview ||
+		!def.Has(statusAgentReview) || !def.Has(statusNeedDecision) {
+		return false, nil
+	}
+	rounds, err := q.CountReviewEntriesSinceLastVerdict(ctx, prev.ID)
+	if err != nil || rounds < maxChangesRounds {
+		return false, err
+	}
+	params.Status = pgtype.Text{String: statusNeedDecision, Valid: true}
+	return true, nil
+}
+
+// recordRoundsCapped stores the cap, which restarts the count, and tells the
+// need_decision handler why the issue arrived (CHE-6192).
+func (w *workflowWrite) recordRoundsCapped(ctx context.Context, q *db.Queries, moved db.Issue) error {
+	rounds, err := q.CountReviewEntriesSinceLastVerdict(ctx, moved.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: moved.WorkspaceID, IssueID: moved.ID, ActorType: strToText("agent"),
+		ActorID: w.caller.run.AgentID, Action: activityRoundsCapped, Details: []byte(`{}`),
+	}); err != nil {
+		return err
+	}
+	_, err = q.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: moved.ID, WorkspaceID: moved.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
+		Content: fmt.Sprintf("Review round limit: this issue has had %d review rounds without a PASS. The platform did not start another review and moved the issue to need_decision. Open one decision request: split the work, or accept the current head. Include the round count (%d).", rounds, rounds),
+	})
+	return err
+}
+
 // recordVerdict stores an accepted verdict with its findings, PR and head, in
 // the transaction that moves the issue: a CHANGES round is counted exactly when
 // the move commits, and the head of the last verdict, PASS or CHANGES, is what
@@ -124,6 +168,9 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved db.Issue) error {
 	if w == nil || !w.statusExplicit || moved.Status == w.prev.Status {
 		return nil
+	}
+	if w.caller.run != nil && w.pre.Status.String == statusAgentReview && moved.Status == statusNeedDecision {
+		return w.recordRoundsCapped(ctx, q, moved)
 	}
 	prev := w.prev
 	def, _, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, w.pre.ProjectID)
