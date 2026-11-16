@@ -2,6 +2,8 @@ import "./env";
 
 import { devices, expect, test } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createTestApi } from "./helpers";
 import type { TestApiClient } from "./fixtures";
 import {
@@ -96,6 +98,16 @@ test.afterEach(async () => {
   });
   await removeSeed(seed);
   await api.cleanup();
+});
+
+// A type added to the client list without a case above would silently skip browser coverage.
+// This one test seeds nothing, so it needs no database, but the hooks above run for it too.
+test("every previewed client type has a browser case", () => {
+  const source = readFileSync(resolve(process.cwd(), "packages/core/issues/decision-action-preview.ts"), "utf8");
+  const list = /PREVIEWED_ACTION_TYPES = \[(.*?)\] as const/s.exec(source)?.[1] ?? "";
+  const previewed = [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+  expect(previewed.length).toBeGreaterThan(0);
+  expect(Object.keys(TYPES).sort()).toEqual(previewed);
 });
 
 for (const [type, params] of Object.entries(TYPES)) {
