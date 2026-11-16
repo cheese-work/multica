@@ -104,12 +104,19 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	hints = append(hints, heldHints...)
+	lintMode := "off"
 	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
 		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
 		if !ok {
 			return
 		}
 		hints = append(hints, cannotDoHints...)
+		lintHints, ok := checkCardLint(writer, parsed, input.EscalationClass, workspace.Settings)
+		if !ok {
+			return
+		}
+		hints = append(hints, lintHints...)
+		lintMode, _ = decisiontx.CardLintModeFromSettings(workspace.Settings) // checkCardLint read it
 	}
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
@@ -181,7 +188,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return

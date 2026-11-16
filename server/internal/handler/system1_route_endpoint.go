@@ -38,6 +38,9 @@ type routeIssueRequest struct {
 	// HandoffAssignee hands this move to the named assignee instead of the
 	// step's handler. Not with owner_type and owner_id. (CHE-5487)
 	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
+	// KeepForStep keeps HandoffAssignee for the target step on this issue.
+	// Needs HandoffAssignee. (CHE-5490)
+	KeepForStep bool `json:"keep_for_step,omitempty"`
 }
 
 type routeRunOutcome struct {
@@ -151,7 +154,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	caller := workflowCaller{run: callerRun, agent: actorType == "agent", handoffAssignee: handoffAssignee}
+	caller := workflowCaller{run: callerRun, agent: actorType == "agent", handoffAssignee: handoffAssignee, keepForStep: req.KeepForStep}
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prev, &params, true, ownerGiven, false, caller)
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {

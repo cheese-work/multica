@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -4259,6 +4260,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.QuickCreatePrompt = qc.Prompt
 			resp.QuickCreatePriority = qc.Priority
 			resp.QuickCreateDueDate = qc.DueDate
+			if ws, wsErr := h.Queries.GetWorkspace(r.Context(), parseUUID(qc.WorkspaceID)); wsErr == nil {
+				resp.QuickCreateFill = issueworkflow.QuickCreateFill(ws.Settings)
+				resp.QuickCreateTitleTypes = issueworkflow.WorkflowTypeKeys(ws.Settings)
+			}
 			resp.QuickCreateAttachmentIDs = append([]string(nil), qc.AttachmentIDs...)
 			resp.ThreadName = qc.Prompt
 			resp.WorkspaceID = qc.WorkspaceID

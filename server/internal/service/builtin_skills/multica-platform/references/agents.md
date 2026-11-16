@@ -21,7 +21,7 @@ These commands read state and have no side effects:
 ```bash
 multica agent get <agent-id> --output json      # full persisted agent record
 multica agent skills list <agent-id> --output json   # current skill bindings
-multica agent env get <agent-id> --output json  # plaintext env (agent owner or ws owner/admin; agents denied)
+multica agent env get <agent-id> --output json  # key names + source, values masked (agent owner or ws owner/admin; agents denied)
 ```
 
 An agent can also be **unbound**: `runtime_id` is `NULL` (served as `""` with
@@ -255,11 +255,10 @@ Read-side facts (these are the wrong assumptions to avoid):
 - Agent resources never expose plaintext `custom_env`. `agent
   list/get/create/update` and WS events return only `has_custom_env` (bool) and
   `custom_env_key_count` (int).
-- Reading plaintext values requires the dedicated `GET /api/agents/{id}/env`
-  endpoint (`multica agent env get`). It is gated to the **agent's own human
-  owner** or a workspace **owner/admin**, and **agent actors are denied**
-  regardless of the backing member's role — a running agent cannot read another
-  agent's secrets, not even one its own human owns.
+- `GET /api/agents/{id}/env` (`multica agent env get`) is write-only: it returns
+  key names, a `source` per key and `****` for every value, never plaintext. It
+  is gated to the **agent's own human owner** or a workspace **owner/admin**,
+  and **agent actors are denied** regardless of the backing member's role.
 - Writing values after creation does NOT go through `agent update`. The generic
   update path rejects any `custom_env` field with a 400 ("use PUT
   /api/agents/{id}/env"). Plaintext env writes are handled by
@@ -270,7 +269,7 @@ Read-side facts (these are the wrong assumptions to avoid):
   `{"set": {K: V}, "unset": [K], "if_revision": "<rev>"}`. Read, optional
   condition, merge, write and audit run in one transaction under a row lock, so
   concurrent additions to other keys survive; a stale `if_revision` is a 412 and
-  writes nothing. `revision` is a content hash returned by `env get`/`set`/
+  writes nothing. `revision` is an opaque write counter (`v<n>`) returned by `env get`/`set`/
   `patch`. The response masks every value as `****`; the `****` marker is
   rejected as an input value. A concurrent `PUT` is serialized with it but still
   replaces the whole map by contract (omitted keys are removed). Same gate as
