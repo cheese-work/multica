@@ -279,12 +279,20 @@ func (q *Queries) ListIssueLastRunStatuses(ctx context.Context, arg ListIssueLas
 }
 
 const listOpenWeeklyRunGuardRefusals = `-- name: ListOpenWeeklyRunGuardRefusals :many
-SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE state = 'open' ORDER BY created_at LIMIT 100
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal
+WHERE state = 'open' AND (created_at, id) > ($1::timestamptz, $2::uuid)
+ORDER BY created_at, id LIMIT 100
 `
 
-// Refusals still waiting for a card answer, oldest first, for the auto-approver pass.
-func (q *Queries) ListOpenWeeklyRunGuardRefusals(ctx context.Context) ([]WeeklyRunGuardRefusal, error) {
-	rows, err := q.db.Query(ctx, listOpenWeeklyRunGuardRefusals)
+type ListOpenWeeklyRunGuardRefusalsParams struct {
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+}
+
+// One page of refusals still waiting for a card answer, oldest first, after the
+// (created_at, id) cursor, for the auto-approver pass.
+func (q *Queries) ListOpenWeeklyRunGuardRefusals(ctx context.Context, arg ListOpenWeeklyRunGuardRefusalsParams) ([]WeeklyRunGuardRefusal, error) {
+	rows, err := q.db.Query(ctx, listOpenWeeklyRunGuardRefusals, arg.AfterCreatedAt, arg.AfterID)
 	if err != nil {
 		return nil, err
 	}

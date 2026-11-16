@@ -167,17 +167,27 @@ func (h *Handler) closeRunGuardCard(ctx context.Context, q *db.Queries, issue db
 // the auto-approver was off, or whose window has since made progress, is
 // approved and closed. Rules that do not approve leave the card as it is.
 func (h *Handler) sweepRunGuardAuto(ctx context.Context) {
-	rows, err := h.Queries.ListOpenWeeklyRunGuardRefusals(ctx)
-	if err != nil {
-		slog.Warn("run guard auto: list open refusals failed", "err", err)
-		return
-	}
-	for _, row := range rows {
-		issue, err := h.Queries.GetIssue(ctx, row.IssueID)
+	// Walk every page: refusals the rules keep never leave the open set, so a
+	// fixed first page would hide the cards behind them.
+	cursor := db.ListOpenWeeklyRunGuardRefusalsParams{AfterCreatedAt: pgtype.Timestamptz{Time: time.Unix(0, 0), Valid: true}, AfterID: pgtype.UUID{Valid: true}}
+	for {
+		rows, err := h.Queries.ListOpenWeeklyRunGuardRefusals(ctx, cursor)
 		if err != nil {
-			continue
+			slog.Warn("run guard auto: list open refusals failed", "err", err)
+			return
 		}
-		h.autoApproveRunGuard(ctx, issue, nil)
+		for _, row := range rows {
+			issue, err := h.Queries.GetIssue(ctx, row.IssueID)
+			if err != nil {
+				continue
+			}
+			h.autoApproveRunGuard(ctx, issue, nil)
+		}
+		if len(rows) < 100 {
+			return
+		}
+		last := rows[len(rows)-1]
+		cursor = db.ListOpenWeeklyRunGuardRefusalsParams{AfterCreatedAt: last.CreatedAt, AfterID: last.ID}
 	}
 }
 

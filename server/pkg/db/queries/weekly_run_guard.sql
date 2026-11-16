@@ -74,5 +74,8 @@ WHERE r.workspace_id = $1 AND r.issue_id = $2 AND r.status = 'open' AND a.action
 ORDER BY r.created_at DESC LIMIT 1;
 
 -- name: ListOpenWeeklyRunGuardRefusals :many
--- Refusals still waiting for a card answer, oldest first, for the auto-approver pass.
-SELECT * FROM weekly_run_guard_refusal WHERE state = 'open' ORDER BY created_at LIMIT 100;
+-- One page of refusals still waiting for a card answer, oldest first, after the
+-- (created_at, id) cursor, for the auto-approver pass.
+SELECT * FROM weekly_run_guard_refusal
+WHERE state = 'open' AND (created_at, id) > (@after_created_at::timestamptz, @after_id::uuid)
+ORDER BY created_at, id LIMIT 100;

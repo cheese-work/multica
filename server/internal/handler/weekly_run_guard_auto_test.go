@@ -163,10 +163,42 @@ func TestRunGuardAutoSweepApprovesOpenCardsWithProgress(t *testing.T) {
 	if n := c.queuedRuns(t); n != 1 {
 		t.Fatalf("queued runs = %d, want the refused trigger once", n)
 	}
+	// The outcome is the approval, not a bare cancel: the refusal is approved or
+	// resumed, one auto-approval is logged, and one audit comment says so.
+	if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1 AND state IN ('approved', 'resumed')`, c.issueID); n != 1 {
+		t.Fatalf("approved refusals = %d, want 1", n)
+	}
+	if n := c.autoApprovals(t); n != 1 {
+		t.Fatalf("auto-approvals logged = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE 'Weekly run guard: % approved 10 more runs%'`, c.issueID); n != 1 {
+		t.Fatalf("approval comments = %d, want 1", n)
+	}
 	// A second pass grants nothing more.
 	testHandler.sweepRunGuardAuto(context.Background())
 	if n := c.allowanceRuns(t); n != 10 {
 		t.Fatalf("allowance after a second pass = %d runs, want 10", n)
+	}
+}
+
+// A pass walks every open refusal: 100 older cards the auto-approver keeps
+// (here: no such issue) must not hide a newer card that qualifies.
+func TestRunGuardAutoSweepReachesCardsBehindARetainedPage(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":false}}`)
+	c, e := guardAutoCase(t, 6248009, 10, 0)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_refusal WHERE trigger = 'che6248-retained'`)
+	dbfx.Exec(t, `INSERT INTO weekly_run_guard_refusal (id, workspace_id, issue_id, trigger, runs, state, created_at)
+		SELECT gen_random_uuid(), $1, gen_random_uuid(), 'che6248-retained', 30, 'open', now() - interval '30 days' + n * interval '1 second'
+		FROM generate_series(1, 101) AS n`, testWorkspaceID)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true}}`)
+	testHandler.sweepRunGuardAuto(context.Background())
+
+	if n := c.allowanceRuns(t); n != 10 {
+		t.Fatalf("allowance = %d runs, want 10 for the card behind 101 retained ones", n)
 	}
 }
 
