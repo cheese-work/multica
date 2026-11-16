@@ -115,3 +115,13 @@ multica chat wakeup cancel <wakeup-id>
 
 `multica chat sessions --issue <issue> --for <user-id>` lists the DM lanes a
 decision request can use. See [decisions.md](decisions.md).
+
+## Waiting DMs and snooze
+
+- `multica chat attention [--stale] [--output json]` lists the DMs that wait
+  for you, oldest first. `--stale` keeps only those past 4 h (yellow) or 24 h
+  (red).
+- `multica chat later <session> [duration|time] [--request-id <uuid>]` snoozes
+  a DM. A duration is `90m`, `2h`, `1d12h` or seconds; a time is RFC3339. The
+  server rejects values outside 1 s to 168 h. Retry a failed call with the same
+  `--request-id` so the retry does not extend the time.

@@ -151,3 +151,17 @@ multica github intake list --since <RFC3339> [--limit 50]  # read-only webhook d
 - `--scope` is `*` (org-wide, the default), an owner, or `owner/repo`.
 - `on` and `off` change dispatch for the whole scope. Run them only when a
   person asked for it.
+
+## Attachment revisions
+
+- `multica attachment history <attachment-id> [--output json]` lists every
+  revision of an attachment: time, actor, SHA-256.
+- `multica attachment diff <attachment-id> --from N --to M` prints a unified
+  diff between two revisions of a text attachment (md, html, json, yaml, code).
+  A binary file prints "binary, sizes and SHA differ".
+
+## Saved views
+
+`multica view get <view> [--output json]` reads one saved issue view's
+definition. `<view>` is a view ID, an ID prefix or an exact name
+(case-insensitive). Read-only.

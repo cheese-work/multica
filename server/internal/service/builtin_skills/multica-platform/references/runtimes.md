@@ -302,3 +302,19 @@ that is running you. If the work seems to need one, report it and stop.
 
 Never terminate a `multica` process by name: a matching process may be the
 daemon. Compare a PID with `multica daemon status --output json` first.
+
+## Provider circuit breakers
+
+- `multica runtime breaker list [--output json]` lists the provider circuit
+  breakers in the workspace.
+- `multica runtime breaker reset <provider>` closes one breaker now instead of
+  waiting for its probe. The reset is audited with who ran it and the previous
+  state. Reset only when a person asked for it or the provider is confirmed
+  healthy.
+
+## Restricted-run git token
+
+`multica git read-token` is called by the `gh` wrapper in a restricted run. The
+broker holds the token in memory, replaces it near expiry and revokes the
+previous one; nothing is written to disk. Do not call it by hand or copy its
+output anywhere.
