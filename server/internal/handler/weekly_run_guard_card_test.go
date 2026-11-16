@@ -9,6 +9,8 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // CHE-6172: a weekly run guard refusal opens one spend card for the owner, an
@@ -22,6 +24,13 @@ const weeklyAllowType = "issue.run_guard.allow"
 // goes to them.
 func weeklyCardCase(t *testing.T, installationID int64) (budgetCase, service.WeeklyRunGuardTripped) {
 	t.Helper()
+	return weeklyCardCaseFor(t, installationID, false)
+}
+
+// weeklyCardCaseFor with manyOwners leaves the issue without a requester, so the
+// recipients are every workspace owner, and adds a second owner.
+func weeklyCardCaseFor(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
 	c := weeklyCase(t, installationID)
 	var role string
 	dbfx.QueryRow(t, `SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID).Scan(&role)
@@ -29,7 +38,13 @@ func weeklyCardCase(t *testing.T, installationID int64) (budgetCase, service.Wee
 	t.Cleanup(func() {
 		dbfx.Exec(t, `UPDATE member SET role = $3 WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID, role)
 	})
-	dbfx.Exec(t, `UPDATE issue SET requested_by_id = $2 WHERE id = $1`, c.issueID, testUserID)
+	if manyOwners {
+		second := seedSecurityTestOwner(t, "weekly-owner")
+		dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, second)
+		dbfx.Exec(t, `UPDATE issue SET requested_by_id = NULL, creator_type = 'agent', creator_id = $2 WHERE id = $1`, c.issueID, c.agentID)
+	} else {
+		dbfx.Exec(t, `UPDATE issue SET requested_by_id = $2 WHERE id = $1`, c.issueID, testUserID)
+	}
 	dbfx.Cleanup(t, `DELETE FROM decision_answer WHERE decision_request_id IN (SELECT id FROM decision_request WHERE issue_id = $1)`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM decision_request WHERE issue_id = $1`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID)
@@ -171,5 +186,30 @@ func TestWeeklyRunGuardDefaultLimitIsStillThirty(t *testing.T) {
 	t.Setenv("MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS", "")
 	if got := service.WeeklyRunGuardMaxRuns(); got != 30 {
 		t.Fatalf("default limit = %d, want 30", got)
+	}
+}
+
+// CHE-6172 review P1: several owners get one card, and the allowance is granted
+// once per refusal however many times an approval runs.
+func TestWeeklyRunGuardWithManyOwnersOpensOneCardAndGrantsOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseFor(t, 6172005, true)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open allow cards with two owners = %d, want 1", n)
+	}
+	action := c.pendingAllow(t)
+	action.approve(t, withVerifier(acceptingVerifier), action.claim(t, map[string]string{}), http.StatusOK)
+
+	// A second approval of the same refusal, from any card, grants nothing more.
+	var params []byte
+	dbfx.QueryRow(t, `SELECT params FROM decision_action WHERE id = $1`, action.actionID).Scan(&params)
+	second := db.DecisionAction{ID: dbid.NewV7(), WorkspaceID: parseUUID(testWorkspaceID), Params: params}
+	if _, err := executeRunGuardAllowAction(context.Background(), decisionActionExecution{Queries: testHandler.Queries, Action: second}); err == nil {
+		t.Fatal("second approval of one refusal was accepted, want it refused")
+	}
+	if n := dbfx.Count(t, `SELECT coalesce(sum(runs),0) FROM weekly_run_guard_allowance WHERE issue_id = $1`, c.issueID); n != 10 {
+		t.Fatalf("allowance = %d runs, want 10 for one refusal", n)
 	}
 }

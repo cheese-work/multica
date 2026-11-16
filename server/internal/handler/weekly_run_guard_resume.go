@@ -102,7 +102,8 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 		if err != nil {
 			return err
 		}
-		for _, lane := range plan.lanes {
+		// One card per issue: the first owner gets it, and any owner may answer it.
+		for _, lane := range plan.lanes[:1] {
 			input.HumanUserID = lane.human
 			result, err := h.openRunBudgetDecision(ctx, q, issue, plan, lane, input)
 			if err != nil {
@@ -139,9 +140,9 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 	return nil
 }
 
-// executeRunGuardAllowAction grants the allowance and marks the refusal
-// approved for the post-commit resume. The grant stands even when the refusal
-// no longer waits: the person approved more runs for this issue.
+// executeRunGuardAllowAction marks the refusal approved for the post-commit
+// resume and grants the allowance in the same transaction. A refusal that no
+// longer waits grants nothing.
 func executeRunGuardAllowAction(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error) {
 	var params decisionaction.RunGuardAllowParams
 	if err := json.Unmarshal(execution.Action.Params, &params); err != nil {
@@ -163,12 +164,17 @@ func executeRunGuardAllowAction(ctx context.Context, execution decisionActionExe
 	if err != nil {
 		return nil, err
 	}
+	// The refusal moves from open to approved once; only that move grants runs.
+	moved, err := q.ApproveWeeklyRunGuardRefusal(ctx, db.ApproveWeeklyRunGuardRefusalParams{ID: refusalID, IssueID: issueID, ActionID: execution.Action.ID})
+	if err != nil {
+		return nil, err
+	}
+	if moved == 0 {
+		return nil, actionFailure{Code: "refusal_closed", Message: "this refusal was already approved or is no longer open"}
+	}
 	if err := q.CreateWeeklyRunGuardAllowance(ctx, db.CreateWeeklyRunGuardAllowanceParams{
 		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(params.Runs), ActionID: execution.Action.ID,
 	}); err != nil {
-		return nil, err
-	}
-	if _, err := q.ApproveWeeklyRunGuardRefusal(ctx, db.ApproveWeeklyRunGuardRefusalParams{ID: refusalID, IssueID: issueID, ActionID: execution.Action.ID}); err != nil {
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"issue_id": params.IssueID, "runs": params.Runs})
