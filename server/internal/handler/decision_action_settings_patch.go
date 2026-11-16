@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -113,6 +114,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 	case key == askguard.SettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
+	case key == decisiontx.SettingHeldMode:
+		err = validateHeldSettingModeSetting(map[string]any{key: value})
 	case key == "compact_prompt":
 		err = validateCompactPromptConfig(map[string]any{key: value})
 		if _, isString := value.(string); !isString && err == nil {
@@ -133,6 +136,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		if text, _ := value.(string); text != "auto" && text != "author" {
 			err = fmt.Errorf("mermaid_orientation must be auto or author")
 		}
+	case key == issueworkflow.SettingsKeyWorkflowByType:
+		err = issueworkflow.ValidateWorkflowByType(raw)
 	case key == "pr_event_capture":
 		flags, isObject := value.(map[string]any)
 		if !isObject {

@@ -54,7 +54,7 @@ var (
 	// while the server was down drain without waiting a whole interval.
 	defaultRecheckTTL = time.Hour
 	defaultCatchUp    = time.Minute
-	// PRs watched by a "wake on merge conflict" rule stay in the sweep even
+	// Open PRs linked to an issue stay in the sweep even
 	// when decided, re-fetched once their snapshot is older than this.
 	defaultWatchTTL = 5 * time.Minute
 	// A PR a checks_finished rule waits on is re-fetched after a minute, and
@@ -871,8 +871,8 @@ func (manager *Manager) sweepRecheck(ctx context.Context) {
 	slog.Info("ghsnapshot: re-checking decided snapshots", "count", len(rows), "oldest_snapshot_age", now.Sub(oldest).Round(time.Second).String())
 }
 
-// sweepConflictWatched keeps the PRs a "wake on merge conflict" rule watches
-// fresh. A decided snapshot leaves the undecided sweep, yet a direct push to
+// sweepConflictWatched keeps every open PR linked to an issue fresh (CHE-6111;
+// before, only PRs of an issue with a "wake on merge conflict" rule). A decided snapshot leaves the undecided sweep, yet a direct push to
 // the base branch can make it conflicting with no event for the PR itself.
 func (manager *Manager) sweepConflictWatched(ctx context.Context) {
 	manager.mu.Lock()
@@ -953,7 +953,7 @@ func (manager *Manager) sweepChecksWatched(ctx context.Context) {
 }
 
 // RefreshConflictWatchers schedules refreshes for the open PRs in a repository
-// that a "wake on merge conflict" rule watches, after the PR numbered merged
+// that are linked to an issue (CHE-6111), after the PR numbered merged
 // merged there. That can move their base, which sends no event for them.
 func (manager *Manager) RefreshConflictWatchers(ctx context.Context, installationID int64, owner, repo string, merged int32) {
 	if !manager.Enabled() {

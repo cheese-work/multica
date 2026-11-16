@@ -45,7 +45,7 @@ func TestSteeredMessageDecisionRecord(test *testing.T) {
 	}
 	test.Run("other_task", func(test *testing.T) {
 		fixture := newAskedRecordFixture(test)
-		otherTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"status": "running", "chat_session_id": fixture.sessionID, "runtime_id": handlerTestRuntimeID(test)})
+		otherTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"status": "completed", "chat_session_id": fixture.sessionID, "runtime_id": handlerTestRuntimeID(test)})
 		fixture.steerMessage(test, fixture.messageID, otherTask, "delivered")
 		var refusal decisionIntentRefusal
 		if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); !errors.As(err, &refusal) || refusal.status != http.StatusBadRequest {
@@ -91,5 +91,33 @@ func TestDecisionContextBlockListsDeliveredSteeredMessages(test *testing.T) {
 	}
 	if strings.Contains(block, uncertainID) {
 		test.Fatalf("block lists a steered message the agent may not have seen:\n%s", block)
+	}
+}
+
+// A turn whose inputs are all bound to decisions has no unbound message to
+// anchor the ask list on, but a delivered steered message the agent has not
+// recorded is still owed to it.
+func TestDecisionContextBlockListsSteeredWhenEveryInputIsBound(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	deliveredID := fixture.messageID
+	fixture.steerMessage(test, deliveredID, fixture.chatTaskID, "delivered")
+	bound := recordDecision(test, fixture.agentID, fixture.sessionID, "bound input", "Already decided.", true)
+	inputID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": "Already decided.", "sent_via": "interactive_jwt", "decision_answer_id": bound.answerID, "created_at": testutil.Raw("clock_timestamp() + interval '1 minute'")})
+
+	ctx := context.Background()
+	session, err := testHandler.Queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: fixture.issue.WorkspaceID, ID: parseUUID(fixture.sessionID)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	input, err := testHandler.Queries.GetChatMessage(ctx, parseUUID(inputID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	block, err := testHandler.decisionContextBlock(ctx, session, parseUUID(fixture.chatTaskID), []db.ChatMessage{input})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.Contains(block, deliveredID+" (steered)") {
+		test.Fatalf("block omits the delivered steered message when every input is bound:\n%s", block)
 	}
 }

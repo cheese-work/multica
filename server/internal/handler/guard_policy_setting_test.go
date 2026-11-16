@@ -29,3 +29,20 @@ func TestGuardPolicySettingValidation(t *testing.T) {
 		t.Errorf("settings without the key refused: %v", err)
 	}
 }
+
+// CHE-5946: workflow_by_type goes through the settings patch with its own validator.
+func TestWorkflowByTypeSettingValidation(t *testing.T) {
+	good := `{"critic":"7328545d-f16f-4bdb-9deb-27f5d70b1210"}`
+	if err := validateSettingsPatchValue("workflow_by_type", json.RawMessage(good)); err != nil {
+		t.Fatalf("valid map refused: %v", err)
+	}
+	for name, raw := range map[string]string{
+		"not an object":    `"critic"`,
+		"value not a uuid": `{"critic":"gate"}`,
+		"empty map":        `{}`,
+	} {
+		if err := validateSettingsPatchValue("workflow_by_type", json.RawMessage(raw)); err == nil {
+			t.Errorf("%s: invalid map accepted", name)
+		}
+	}
+}

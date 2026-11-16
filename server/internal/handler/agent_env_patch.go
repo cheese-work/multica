@@ -21,7 +21,7 @@ type PatchAgentEnvRequest struct {
 	Set   map[string]string `json:"set"`
 	Unset []string          `json:"unset"`
 	// IfRevision, when present, makes the patch conditional: it applies only
-	// if the stored env still hashes to this revision (see envRevision, as
+	// if the stored env version still equals this revision (see envRevision, as
 	// returned by GET/PUT/PATCH). A mismatch is 412 and nothing is written.
 	IfRevision *string `json:"if_revision"`
 }
@@ -119,15 +119,8 @@ func (h *Handler) PatchAgentEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	masked := make(map[string]string, len(next))
-	for k := range next {
-		masked[k] = envSentinel
-	}
-	writeJSON(w, http.StatusOK, AgentEnvResponse{
-		AgentID:   uuidToString(updated.ID),
-		CustomEnv: masked,
-		Revision:  envRevision(next),
-	})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, newAgentEnvResponse(updated, next))
 }
 
 // verifiedApprover is the human behind an env change. DecisionActionID is set
@@ -148,7 +141,7 @@ var errEnvRevisionMismatch = errors.New("env changed since if_revision")
 // endpoint share one write path. An audit failure fails the whole patch.
 func applyAgentEnvPatch(ctx context.Context, queries *db.Queries, locked db.Agent, req PatchAgentEnvRequest, approver verifiedApprover) (db.Agent, map[string]string, error) {
 	existing := unmarshalCustomEnv(locked)
-	if req.IfRevision != nil && *req.IfRevision != envRevision(existing) {
+	if req.IfRevision != nil && *req.IfRevision != envRevision(locked.CustomEnvVersion) {
 		return db.Agent{}, nil, errEnvRevisionMismatch
 	}
 	next := make(map[string]string, len(existing)+len(req.Set))

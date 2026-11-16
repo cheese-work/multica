@@ -835,6 +835,20 @@ func isDuplicatePendingTaskErr(err error) bool {
 	}
 }
 
+// errChatDMBusy is the claim losing the one-active-task-per-DM race: another
+// claimer's task for the same DM became active first, so the unique index
+// rejected ours. The aborted transaction rolls back and the candidate stays
+// queued.
+var errChatDMBusy = errors.New("chat DM already has an active task")
+
+// isChatDMBusyErr reports whether err is the one-active-task-per-DM unique
+// violation (CHE-2894 atomic admission).
+func isChatDMBusyErr(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "idx_agent_task_queue_one_active_per_chat"
+}
+
 // pendingSlotTakenErr reports whether err means "the (issue, agent) pending slot
 // was already occupied when we tried to enqueue".
 //
@@ -4695,6 +4709,12 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 				}
 				return nil
 			}
+			if isChatDMBusyErr(err) {
+				// The statement aborted this transaction; return the sentinel so
+				// it rolls back instead of committing.
+				outcome = "chat_dm_busy"
+				return errChatDMBusy
+			}
 			outcome = "error_claim"
 			return fmt.Errorf("claim task: %w", err)
 		}
@@ -4762,6 +4782,9 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	})
 	if errors.Is(err, errProviderBreakerCanaryTaken) {
 		return nil, nil // another claim owns the canary; the rollback left this task queued
+	}
+	if errors.Is(err, errChatDMBusy) {
+		return nil, nil // no task this poll; the rollback left the candidate queued
 	}
 	if err != nil {
 		if outcome == "unknown" {

@@ -81,6 +81,10 @@ type IssueResponse struct {
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// CreatedVia is how the issue was made: dialog, agent or cli. The server
+	// sets it at create; it is empty for issues made before it existed and
+	// for creates from web or desktop forms.
+	CreatedVia    string  `json:"created_via"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -352,7 +356,10 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err != nil {
 		return issue, nil, err
 	}
-	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
+	if err := wf.recordVerdict(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -694,6 +701,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		CreatedVia:         i.CreatedVia.String,
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -3872,6 +3880,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+		return
+	}
+	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
 
 	if req.ProjectID != nil {
 		id, ok := parseUUIDOrBadRequest(w, *req.ProjectID, "project_id")
@@ -3942,6 +3958,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				assigneeID = id
 				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
 					writeError(w, status, msg)
+					return
+				}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 					return
 				}
 			}
@@ -4038,6 +4057,19 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// created_via is server-set and has no request field. A quick_create origin
+	// is the "create with agents" dialog: IssueService.Create rejects it unless
+	// the origin task is a quick-create task of the creating agent.
+	var createdVia pgtype.Text
+	switch {
+	case originType.String == "quick_create":
+		createdVia = pgtype.Text{String: "dialog", Valid: true}
+	case creatorType == "agent":
+		createdVia = pgtype.Text{String: "agent", Valid: true}
+	case statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel == "cli":
+		createdVia = pgtype.Text{String: "cli", Valid: true}
 	}
 
 	// Prefix is workspace-level; pre-compute once so both the broadcast
@@ -4146,6 +4178,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		DueDate:         dueDate,
 		OriginType:      originType,
 		OriginID:        originID,
+		CreatedVia:      createdVia,
 		Stage:           ptrToInt4(req.Stage),
 		AttachmentIDs:   attachmentIDs,
 		LabelIDs:        labelIDs,
@@ -4278,6 +4311,9 @@ type UpdateIssueRequest struct {
 	// of the step's handler. Valid only with a status change into a step that
 	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
 	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
+	// KeepForStep keeps HandoffAssignee for the target step on this issue:
+	// later entries of the step go to it. Needs HandoffAssignee. (CHE-5490)
+	KeepForStep bool `json:"keep_for_step,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -4514,6 +4550,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	}
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
+	}
+	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)
 	}
 
 	attachmentsChanged := false
@@ -4803,7 +4842,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee})
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee, keepForStep: req.KeepForStep})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4828,6 +4867,16 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeHandoffAssigneeRefusal(w, handoff, status, msg)
 			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
+			return
+		}
+		if handoff == nil && (touchedType || touchedID) {
+			if status, msg := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
 		}
 	}
 
@@ -5149,6 +5198,37 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
 		return h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID)
 	})
+}
+
+// errAgentAssignsMember refuses an agent's attempt to hand an issue to a
+// member (CHE-5516). A member-owned issue starts no run, so the work stops
+// unseen; the human step goes on a decision card instead.
+const errAgentAssignsMember = "agent_assign_member: an agent never assigns an issue to a member. Assign an agent, and open a decision request (multica decision request) for the human-only step; assigning to the member is allowed while that request is open on this issue"
+
+// refuseAgentAssignToMember returns a non-zero status when an agent actor
+// assigns to a member that is not already the assignee and the issue has no open
+// human decision request. issueID is invalid on create: no card can exist yet.
+func (h *Handler) refuseAgentAssignToMember(ctx context.Context, actorType, workspaceID string, issueID pgtype.UUID, current db.Issue, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
+	if actorType != "agent" || assigneeType.String != "member" || !assigneeType.Valid {
+		return 0, ""
+	}
+	if current.AssigneeType.String == "member" && current.AssigneeID == assigneeID {
+		return 0, ""
+	}
+	if issueID.Valid {
+		wsUUID, err := util.ParseUUID(workspaceID)
+		if err != nil {
+			return http.StatusBadRequest, "invalid workspace_id"
+		}
+		open, err := h.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{WorkspaceID: wsUUID, IssueID: issueID})
+		if err != nil {
+			return http.StatusInternalServerError, "failed to check open decision requests"
+		}
+		if open {
+			return 0, ""
+		}
+	}
+	return http.StatusForbidden, errAgentAssignsMember
 }
 
 // errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
@@ -5866,6 +5946,15 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if batchTouchedType || batchTouchedID || handoff != nil {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 				continue
+			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
+				continue
+			}
+			if handoff == nil {
+				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+					continue
+				}
 			}
 		}
 

@@ -691,6 +691,13 @@ function TimelineSkeleton() {
 // recent N entries — a single block of 50 status flips drowns the comment area
 // as badly as N blocks of 1 would. Older entries fold behind a "Show N more
 // activities" line that expands in place.
+// Median comment row height for the timeline's Virtuoso, measured on the
+// scroll-stability D1 fixture (45 comments, prose plus one code block; median
+// 610 px, range 588-610). Virtuoso sizes rows it has not measured from this,
+// so rows mounting above the reader no longer start at the wrong height and
+// shift the offset (CHE-3235). Real measurements replace it per row.
+const TIMELINE_ROW_ESTIMATED_HEIGHT = 610;
+
 const LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT = 8;
 
 // Collapsible wrapper for an activity block. Older blocks default to a single
@@ -3962,6 +3969,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <span className="cursor-pointer truncate">{getActorName("member", issue.requested_by_id)}</span>
             </PropRow>
           )}
+          {(issue.created_via === "dialog" || issue.created_via === "agent" || issue.created_via === "cli") && (
+            <PropRow label={t(($) => $.detail.prop_created_via)}>
+              <span className="truncate">
+                {issue.created_via === "dialog"
+                  ? t(($) => $.detail.created_via_dialog)
+                  : issue.created_via === "agent"
+                    ? t(($) => $.detail.created_via_agent)
+                    : t(($) => $.detail.created_via_cli)}
+              </span>
+            </PropRow>
+          )}
           <PropRow label={t(($) => $.detail.prop_created)}>
             <span className="text-muted-foreground">{shortDate(issue.created_at, locale)}</span>
           </PropRow>
@@ -4924,6 +4942,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                           ? { initialTopMostItemIndex: { index: openAtLandingIndex, align: "start" as const, offset: -16 } }
                           : {})}
                       initialScrollTop={scrollAnchorIndex >= 0 || openAtLandingIndex >= 0 ? undefined : restoredScrollTop}
+                      defaultItemHeight={TIMELINE_ROW_ESTIMATED_HEIGHT}
                       increaseViewportBy={{ top: 800, bottom: 800 }}
                       computeItemKey={(_i, item) => timelineItemKey(item)}
                       skipAnimationFrameInResizeObserver
