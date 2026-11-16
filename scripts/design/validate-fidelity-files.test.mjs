@@ -31,7 +31,7 @@ const map = (over = {}) => ({
   blocks: { "decision-request-ask": { selector: ".card .ask" } },
   ...over,
 });
-const ctx = { profileIds: new Set(["phone-358"]), lockLabels: new Set(["1"]), testIds: new Set(["decision-request-ask"]) };
+const ctx = { profileIds: new Set(["phone-358"]), lockLabels: new Set(["1"]) };
 
 test("repo files exist and pass (C1, C2)", () => {
   const r = validateRepoFiles({ read: (p) => readFileSync(p, "utf8") });
@@ -76,9 +76,10 @@ test("blocks: unknown profile, unknown state label, duplicate state x profile", 
   assert.match(validateBlocksMap(map({ cases: [kase({ state: "s99" })] }), ctx).errors.join(), /s99/);
   assert.match(validateBlocksMap(map({ cases: [kase(), kase()] }), ctx).errors.join(), /duplicate/);
 });
-test("blocks: block id must be a data-testid in the code", () => {
+test("blocks: block id is kebab-case; a block the code does not tag yet is allowed (check-fidelity reports it)", () => {
   const m = map({ blocks: { "decision-card.facts": { selector: ".facts" } } });
-  assert.match(validateBlocksMap(m, ctx).errors.join(), /decision-card\.facts.*data-testid/);
+  assert.match(validateBlocksMap(m, ctx).errors.join(), /decision-card\.facts.*kebab-case/);
+  assert.deepEqual(validateBlocksMap(map({ blocks: { "decision-request-title": { selector: ".hd b" } } }), ctx).errors, []);
 });
 test("blocks: annotation field is not allowed; repeat must be boolean", () => {
   assert.match(validateBlocksMap(map({ annotations: [] }), ctx).errors.join(), /annotation/);
@@ -86,6 +87,15 @@ test("blocks: annotation field is not allowed; repeat must be boolean", () => {
   assert.match(validateBlocksMap(m, ctx).errors.join(), /annotation/);
   const r = map({ blocks: { "decision-request-ask": { selector: ".ask", repeat: "yes" } } });
   assert.match(validateBlocksMap(r, ctx).errors.join(), /repeat/);
+});
+
+test("a case may carry interaction steps; a malformed step is an error", () => {
+  const ok = [{ click: "text=Details" }, { type: "[role=textbox]", text: "hi" }];
+  assert.deepEqual(validateBlocksMap(map({ cases: [kase({ steps: ok })] }), ctx).errors, []);
+  for (const bad of [{ click: 1 }, { type: "x" }, { drag: "x" }, "click"]) {
+    assert.match(validateBlocksMap(map({ cases: [kase({ steps: [bad] })] }), ctx).errors.join(), /steps\[0\]/, JSON.stringify(bad));
+  }
+  assert.match(validateBlocksMap(map({ cases: [kase({ steps: "x" })] }), ctx).errors.join(), /steps must be a list/);
 });
 
 test("lockLabelWidths reads a label that carries a data-annotation mark (CHE-5845)", () => {
