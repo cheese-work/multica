@@ -637,6 +637,8 @@ type AgentTaskResponse struct {
 	QuickCreatePrompt        string               `json:"quick_create_prompt,omitempty"`         // user's natural-language input for quick-create tasks
 	QuickCreatePriority      string               `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
 	QuickCreateDueDate       string               `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
+	QuickCreateFill          bool                 `json:"quick_create_fill,omitempty"`           // CHE-6090: workspace setting quick_create_fill is on
+	QuickCreateTitleTypes    []string             `json:"quick_create_title_types,omitempty"`    // CHE-6090: type keys of workflow_by_type
 	QuickCreateAttachmentIDs []string             `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
 	QuickCreateSourceContext json.RawMessage      `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
 	BackgroundJob            string               `json:"background_job,omitempty"`              // output_only background task (CHE-4100): job name
@@ -3325,9 +3327,9 @@ func (h *Handler) ListWorkspaceWorkingAgents(w http.ResponseWriter, r *http.Requ
 			mineRelation = "any"
 		}
 		switch mineRelation {
-		case "assigned", "created", "involved", "any":
+		case "assigned", "created", "requested", "involved", "any":
 		default:
-			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, involved, or any")
+			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, requested, involved, or any")
 			return
 		}
 		userID, ok := requireUserID(w, r)

@@ -204,3 +204,24 @@ func TestBudgetTopUpIsHiddenFromAgentHelp(t *testing.T) {
 		}
 	}
 }
+
+// CHE-6172: a tripped weekly run guard shows in the table too, with or without a run budget.
+func TestRunIssueBudgetGetShowsATrippedWeeklyGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"budgeted": false, "blocking": []string{"weekly_run_guard"}, "weekly_runs": 30, "weekly_limit": 30,
+			"next_command": "Wait for the approval card /acme/issues/x?approve=a. Do not open another.",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := &cobra.Command{Use: "get"}
+	cmd.Flags().String("output", "table", "")
+	out, err := captureStdout(t, func() error { return runIssueBudgetGet(cmd, []string{testIssueUUID}) })
+	if err != nil || !strings.Contains(out, "weekly run guard: 30/30") || !strings.Contains(out, "Wait for the approval card") {
+		t.Fatalf("out = %q err = %v", out, err)
+	}
+}

@@ -471,7 +471,9 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID           string `json:"runtime_id"`
+	RuntimeID string `json:"runtime_id"`
+	// Seq numbers a WebSocket heartbeat frame; the ack echoes it. Zero over HTTP.
+	Seq                 uint64 `json:"seq,omitempty"`
 	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
 	// InFlightTasks is the number of tasks the whole daemon is running or
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
@@ -558,6 +560,9 @@ type DaemonHeartbeatAckPayload struct {
 	// Paused is the machine's live pause (CHE-2673). Absent when the machine
 	// takes work. The server claim gate holds either way; the daemon mirrors it.
 	Paused *DaemonHeartbeatPaused `json:"paused,omitempty"`
+	// Seq echoes DaemonHeartbeatRequestPayload.Seq of the heartbeat this ack
+	// answers (WebSocket). Zero from a server that does not echo it.
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // DaemonHeartbeatPaused is the desired pause state a heartbeat ack carries.
@@ -565,6 +570,10 @@ type DaemonHeartbeatPaused struct {
 	Reason    string `json:"reason"`
 	PausedAt  string `json:"paused_at"`
 	ExpiresAt string `json:"expires_at"`
+	// ExpiresInMs ends the pause that many ms after the heartbeat that carried
+	// it was sent, on the daemon's monotonic clock, so host clock skew cannot
+	// stretch it. Nil from a server that does not send it.
+	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
@@ -576,6 +585,11 @@ const HeartbeatStatusRuntimeGone = "runtime_gone"
 type DaemonHeartbeatPendingUpdate struct {
 	ID            string `json:"id"`
 	TargetVersion string `json:"target_version"`
+	// StartWithinMs and FinishWithinMs are measured from the send time of the
+	// heartbeat whose ack carried them, on the daemon's monotonic clock. Nil
+	// from a server that does not send them (and from a manual update).
+	StartWithinMs  *int64 `json:"start_within_ms,omitempty"`
+	FinishWithinMs *int64 `json:"finish_within_ms,omitempty"`
 }
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to

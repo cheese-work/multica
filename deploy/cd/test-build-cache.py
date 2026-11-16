@@ -116,14 +116,21 @@ class BuildCacheTests(unittest.TestCase):
                 step['name'],
             )
 
-    def test_builder_is_ephemeral_and_uses_github_cache(self):
+    def test_builder_is_persistent_and_uses_github_cache(self):
+        # CHE-3983 / CHE-6218: a fresh BuildKit container per run starts every Go, pnpm and
+        # .next cache mount empty (0 of 195 runs hit the compile layers). Keep the named
+        # builder so the cache mounts survive, and keep the remove-if-broken guard.
         steps = self.workflow['jobs']['build-images']['steps']
         setup = next(step for step in steps if step.get('id') == 'buildx')['with']
         self.assertEqual(setup['driver'], 'docker-container')
-        self.assertTrue(setup.get('cleanup', True))
+        self.assertEqual(setup['name'], 'multica-cd-${{ matrix.image }}-v1')
+        self.assertIs(setup.get('cleanup'), False)
+        guard = next(step for step in steps if step.get('name') == 'Remove a broken persistent Buildx builder')
+        self.assertEqual(guard['env']['BUILDX_NAME'], setup['name'])
         config = setup['buildkitd-config-inline']
         self.assertIn('max-parallelism = 2', config)
-        self.assertIn('maxUsedSpace = "4GB"', config)
+        self.assertIn('maxUsedSpace = "8GB"', config)
+        self.assertIn('minFreeSpace = "10GB"', config)
         self.assertFalse(any('docker container stop' in step.get('run', '') for step in steps))
         commands = [step['run'] for step in steps if 'docker buildx build' in step.get('run', '')]
         for command in commands:

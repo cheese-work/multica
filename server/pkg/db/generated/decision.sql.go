@@ -704,7 +704,7 @@ func (q *Queries) DecisionOpenLaneExists(ctx context.Context, arg DecisionOpenLa
 }
 
 const decisionRecordEffectiveAt = `-- name: DecisionRecordEffectiveAt :one
-SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
+SELECT (clock_timestamp() + CASE WHEN kind = 'action' OR escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
 FROM decision_request WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 `
 
@@ -718,6 +718,76 @@ func (q *Queries) DecisionRecordEffectiveAt(ctx context.Context, arg DecisionRec
 	var effective_at pgtype.Timestamptz
 	err := row.Scan(&effective_at)
 	return effective_at, err
+}
+
+const findOpenActionRequestByAsk = `-- name: FindOpenActionRequestByAsk :one
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id FROM decision_request
+WHERE authority = 'human' AND kind = 'action' AND status = 'open' AND origin = 'asked'
+  AND workspace_id = $1 AND issue_id = $2
+  AND issue_comment_id = $3 AND human_user_id = $4
+LIMIT 1
+`
+
+type FindOpenActionRequestByAskParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
+	HumanUserID    pgtype.UUID `json:"human_user_id"`
+}
+
+// The open kind=action request that this ask comment opened for this human. It
+// does not look at expires_at: a late answer is refused by MarkDecisionRequestAnswered.
+func (q *Queries) FindOpenActionRequestByAsk(ctx context.Context, arg FindOpenActionRequestByAskParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, findOpenActionRequestByAsk,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.IssueCommentID,
+		arg.HumanUserID,
+	)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.SourceContentSnapshot,
+		&i.RequestFingerprint,
+		&i.WithdrawReason,
+		&i.WithdrawnAt,
+		&i.WithdrawnByTaskID,
+		&i.WithdrawnByUserID,
+		&i.Options,
+		&i.AskIdentity,
+		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
+		&i.Kind,
+		&i.ExpiresAt,
+		&i.ProposalFingerprint,
+		&i.AnswerRevision,
+		&i.WakeSeq,
+		&i.BatchID,
+		&i.PingOutcome,
+		&i.CoversRequestIds,
+		&i.AnsweredByBatchRequestID,
+	)
+	return i, err
 }
 
 const findOpenProposal = `-- name: FindOpenProposal :one
@@ -3070,6 +3140,7 @@ func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecision
 const markDecisionRequestAnswered = `-- name: MarkDecisionRequestAnswered :one
 UPDATE decision_request SET status = 'answered'
 WHERE authority = 'human' AND workspace_id = $1 AND id = $2 AND status = 'open'
+  AND (kind <> 'action' OR clock_timestamp() < expires_at)
 RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id
 `
 

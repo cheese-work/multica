@@ -484,12 +484,12 @@ func (s *IssueWakeupService) capturePRWakeupTx(ctx context.Context, tx pgx.Tx, i
 	}
 	if in.Rule == SystemRulePRChecksPassed && (config == nil || !config.Eff.Config.Target.Set) {
 		// A green is the author's to act on only while the author holds the
-		// issue; otherwise the assignee owns the next step (CHE-5697).
-		notOwner, err := prAuthorNotOwner(ctx, q, issue, in.RepoOwner, in.RepoName, in.Number)
+		// issue; otherwise the assignee owns the next step (CHE-5697, CHE-6070).
+		notOwner, wakeAssignee, err := prGreenRoute(ctx, tx, q, issue, in)
 		if err != nil {
 			return c, err
 		}
-		if notOwner {
+		if notOwner && !wakeAssignee {
 			a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
 				"rule": in.Rule, "repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number, "outcome": wakeupOutcomeNotOwner,
 			})
@@ -1507,27 +1507,45 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			facts["outcome"] = current.Refused
 		}
 		if current.Type == "member" && (!isPRWakeup || usesPRResolver(config, w)) {
-			facts["outcome"] = "notified"
 			kind := "children_done"
 			var body pgtype.Text
+			notices := []prNotice{{Receipts: receipts}}
 			if isPRWakeup {
 				kind = "agent_blocked"
 				body = pgtype.Text{String: "No resolver agent was found for the linked pull request. This is an FYI; no action is requested from you.", Valid: true}
 				facts["note"] = body.String
+				if notices, err = prNotices(ctx, q, issue, receipts); err != nil {
+					return err
+				}
 			}
-			details, _ := json.Marshal(facts)
-			item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
-				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
-				Type: kind, Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: body,
-				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
-			})
-			if err != nil {
-				return err
-			}
-			if inserted {
-				inbox = append(inbox, item)
-			} else {
-				facts["outcome"] = "none"
+			// One notice per pull request: two pull requests batched in one
+			// wake are never settled by one row (CHE-5901).
+			facts["outcome"] = "none"
+			for _, n := range notices {
+				details := systemWakeupFacts(w, n.Receipts)
+				if current.Type != "none" {
+					details["target_type"], details["target_id"] = current.Type, util.UUIDToString(current.ID)
+				}
+				details["outcome"] = "notified"
+				if body.Valid {
+					details["note"] = body.String
+				}
+				raw, _ := json.Marshal(details)
+				item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
+					ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
+					Type: kind, Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: body,
+					ActorType: pgtype.Text{String: "system", Valid: true}, Details: raw, DedupeKey: n.Key,
+				})
+				if err != nil {
+					return err
+				}
+				if _, err := q.MarkPREventsNotified(ctx, n.Events); err != nil {
+					return err
+				}
+				if inserted {
+					facts["outcome"] = "notified"
+					inbox = append(inbox, item)
+				}
 			}
 		}
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
@@ -1639,8 +1657,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	commentFingerprint := ""
 	// Returning to draft is an event, not a state: each conversion is new, and
 	// the skip consumes the whole batch, not only its newest fact.
-	if !holdsDraftReturn(receipts) &&
-		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
+	// A green after a red of the same head carries the :after-red key: the red
+	// is a transition the snapshot cannot show, so that green always runs.
+	if !holdsDraftReturn(receipts) && !holdsRecovery(receipts) &&
+		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention || w.SystemRule.String == SystemRulePRChecksPassed) {
 		if inputFingerprint, prStates, commentFingerprint, err = prStateFingerprint(ctx, tx, issue.ID, agent.ID, "wakeup_system", w.SystemRule.String); err != nil {
 			return err
 		}

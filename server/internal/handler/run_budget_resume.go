@@ -609,6 +609,7 @@ func (h *Handler) notifyRunBudgetResume(ctx context.Context, actionID pgtype.UUI
 
 // sweepRunBudgetResumes resumes the linked refusals a crashed or missed notify left behind.
 func (h *Handler) sweepRunBudgetResumes(ctx context.Context, before time.Time) {
+	h.sweepWeeklyRunGuardResumes(ctx, before)
 	ids, err := h.Queries.ListResumePendingRunBudgetRefusals(ctx, pgtype.Timestamptz{Time: before, Valid: true})
 	if err != nil {
 		slog.Warn("run budget: list pending resumes failed", "err", err)

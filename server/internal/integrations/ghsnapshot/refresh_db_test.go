@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -393,9 +394,12 @@ func TestConflictWatchedGitHubPRQueries(t *testing.T) {
 			swept = append(swept, r.PrNumber)
 		}
 	}
-	// Decided snapshots stay in this sweep; only stale, open, watched PRs.
-	if fmt.Sprint(swept) != "[1 2]" && fmt.Sprint(swept) != "[2 1]" {
-		t.Fatalf("watched sweep = %v, want PRs 1 and 2", swept)
+	// Decided snapshots stay in this sweep; every stale, open, linked PR, with
+	// or without an enabled conflicts rule (CHE-6111): a base-branch move sends
+	// no event, and the assignee wake needs a fresh snapshot to see DIRTY.
+	slices.Sort(swept)
+	if fmt.Sprint(swept) != "[1 2 4 5]" {
+		t.Fatalf("watched sweep = %v, want stale open linked PRs 1, 2, 4 and 5", swept)
 	}
 
 	numbers, err := q.ListConflictWatchedGitHubPRNumbersInRepo(ctx, db.ListConflictWatchedGitHubPRNumbersInRepoParams{
@@ -404,9 +408,9 @@ func TestConflictWatchedGitHubPRQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// After PR 2 merges: every other open watched PR, fresh or not.
-	if fmt.Sprint(numbers) != "[1 3]" {
-		t.Fatalf("watched PRs after a merge = %v, want [1 3]", numbers)
+	// After PR 2 merges: every other open linked PR, fresh or not.
+	if fmt.Sprint(numbers) != "[1 3 4 5]" {
+		t.Fatalf("watched PRs after a merge = %v, want [1 3 4 5]", numbers)
 	}
 	other, err := q.ListConflictWatchedGitHubPRNumbersInRepo(ctx, db.ListConflictWatchedGitHubPRNumbersInRepoParams{
 		InstallationID: installationID, RepoOwner: "o", RepoName: repo + "-other", PrNumber: 0,
@@ -437,12 +441,16 @@ func TestConflictWatchedGitHubPRQueries(t *testing.T) {
 	}
 	m.RefreshConflictWatchers(ctx, installationID, "o", repo, 2)
 	time.Sleep(50 * time.Millisecond)
-	if got := queued(); fmt.Sprint(got) != "[1 3]" && fmt.Sprint(got) != "[3 1]" {
-		t.Fatalf("merge refreshed %v, want PRs 1 and 3 once each", got)
+	got := queued()
+	slices.Sort(got)
+	if fmt.Sprint(got) != "[1 3 4 5]" {
+		t.Fatalf("merge refreshed %v, want PRs 1, 3, 4 and 5 once each", got)
 	}
 	m.sweepConflictWatched(ctx)
-	if got := queued(); fmt.Sprint(got) != "[1 2]" && fmt.Sprint(got) != "[2 1]" {
-		t.Fatalf("sweep refreshed %v, want stale watched PRs 1 and 2", got)
+	got = queued()
+	slices.Sort(got)
+	if fmt.Sprint(got) != "[1 2 4 5]" {
+		t.Fatalf("sweep refreshed %v, want stale linked PRs 1, 2, 4 and 5", got)
 	}
 }
 

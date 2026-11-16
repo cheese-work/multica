@@ -39,7 +39,7 @@ func prStateFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgt
 	var fp, commentFingerprint string
 	var prStates json.RawMessage
 	err := db.QueryRow(ctx, `WITH linked_prs AS (
-			SELECT string_agg(jsonb_build_array(p.id, p.state, p.head_sha, p.mergeable_state, p.api_mergeable, p.api_merge_state_status, p.checks_rollup_state, p.review_state, p.review_head_sha, p.review_id, p.review_at)::text, ';' ORDER BY p.id) AS value,
+			SELECT string_agg(jsonb_build_array(p.id, p.state, p.head_sha, p.mergeable_state, p.api_mergeable, p.api_merge_state_status, p.checks_rollup_state, p.review_state, p.review_head_sha, p.review_id, p.review_at)::text, ';' ORDER BY p.id) || '|' || (SELECT jsonb_build_array(i.status, i.assignee_type, i.assignee_id)::text FROM issue i WHERE i.id = $1) AS value,
 				jsonb_agg(jsonb_build_object('repo_owner', p.repo_owner, 'repo_name', p.repo_name, 'pr_number', p.pr_number, 'head_sha', p.head_sha, 'checks_rollup_state', p.checks_rollup_state, 'review_state', p.review_state, 'review_head_sha', p.review_head_sha) ORDER BY p.id) AS snapshot
 			FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id WHERE ip.issue_id = $1
 		), own_completed_tasks AS (
@@ -87,6 +87,16 @@ func holdsDraftReturn(receipts []db.IssueWakeupReceipt) bool {
 			Reason string `json:"reason"`
 		}
 		if json.Unmarshal(r.Payload, &p) == nil && p.Reason == PRAttentionDraft {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsRecovery reports a green that follows a red on the same head (CHE-4938).
+func holdsRecovery(receipts []db.IssueWakeupReceipt) bool {
+	for _, r := range receipts {
+		if strings.HasSuffix(r.EventKey, ":after-red") {
 			return true
 		}
 	}
