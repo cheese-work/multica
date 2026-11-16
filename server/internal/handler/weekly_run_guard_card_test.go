@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -211,5 +212,51 @@ func TestWeeklyRunGuardWithManyOwnersOpensOneCardAndGrantsOnce(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT coalesce(sum(runs),0) FROM weekly_run_guard_allowance WHERE issue_id = $1`, c.issueID); n != 10 {
 		t.Fatalf("allowance = %d runs, want 10 for one refusal", n)
+	}
+}
+
+// CHE-6241: the reject comment is a system comment. A run it triggers is
+// refused by the guard, and that refusal opens no card: a declined card stays
+// declined.
+func TestWeeklyRunGuardRejectCommentTriggerOpensNoNewCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241001)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	var rejectComment pgtype.UUID
+	dbfx.QueryRow(t, `SELECT id FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE 'Rejected%'`, c.issueID).Scan(&rejectComment)
+	if !rejectComment.Valid {
+		t.Fatal("no system reject comment")
+	}
+	e.Target.TriggerCommentID = rejectComment
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	if n := c.allowCards(t); n != 0 {
+		t.Fatalf("open cards after the reject comment's own trigger = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID); n != 1 {
+		t.Fatalf("refusal rows = %d, want 1", n)
+	}
+	if n := c.queuedRuns(t); n != 0 {
+		t.Fatalf("queued runs = %d, want 0", n)
+	}
+}
+
+// CHE-6241: after a reject, a refused trigger from a person opens exactly one
+// new card, however often the same trigger is refused.
+func TestWeeklyRunGuardRefusedMemberTriggerAfterRejectOpensOneCard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, e := weeklyCardCase(t, 6241002)
+	c.pendingAllow(t).reject(t, testHandler, http.StatusOK)
+	var memberComment pgtype.UUID
+	dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		SELECT id, workspace_id, 'member', $2, 'please continue', 'comment' FROM issue WHERE id = $1 RETURNING id`, c.issueID, testUserID).Scan(&memberComment)
+	e.Target.TriggerCommentID = memberComment
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open cards after a member trigger = %d, want 1", n)
 	}
 }

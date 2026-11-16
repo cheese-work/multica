@@ -32,6 +32,19 @@ const (
 // inbox ping in one transaction. An issue with a card still open gets nothing
 // more; a refusal whose card was answered is superseded by the new one.
 func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e service.WeeklyRunGuardTripped) error {
+	// CHE-6241: a refusal whose trigger is a system comment (the reject or
+	// approve note, the guard's own notice) is the platform echoing itself, not
+	// a person or agent asking for a run. It opens no card, so a declined card
+	// stays declined until a new member or agent trigger is refused.
+	if e.Target.TriggerCommentID.Valid {
+		trigger, err := h.Queries.GetComment(ctx, e.Target.TriggerCommentID)
+		if err == nil && trigger.AuthorType == "system" {
+			return nil
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
 	var results []decisionRequestResult
 	var comment db.Comment
 	var revision int64
