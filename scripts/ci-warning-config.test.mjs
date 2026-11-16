@@ -4,9 +4,12 @@ import { test } from "node:test"
 
 const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8")
 
+// CHE-3604/CHE-4385: the light security-gate jobs run on the free GitHub-hosted `ubuntu-latest` (scripts/ci-runners.test.mjs requires it).
+const hostedLatest = new Set(["mechanical-tier.yml", "security-gate.yml", "security-gate-queue.yml", "security-gate-sweep.yml"])
+
 test("workflow Ubuntu labels are pinned instead of silently migrating", () => {
   for (const name of readdirSync(new URL("../.github/workflows/", import.meta.url))) {
-    if (name.endsWith(".yml")) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
+    if (name.endsWith(".yml") && !hostedLatest.has(name)) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
   }
 })
 
@@ -20,13 +23,11 @@ test("CD uses Node 24 actions and never asks setup-node to infer a package cache
   }
 })
 
-test("qualification stops only its persistent builder without removing cache state, even after build failure", () => {
+test("qualification uses a disposable Buildx builder and keeps no persistent builder to stop", () => {
   const source = workflow("cd-qualification.yml")
   assert.match(source, /id: buildx\n        uses: docker\/setup-buildx-action@v4/)
-  assert.match(source, /if: \$\{\{ always\(\) && steps\.buildx\.outputs\.name != '' \}\}/)
-  assert.match(source, /docker container stop --time 120 "buildx_buildkit_\$\{BUILDER_NAME\}0"/)
-  assert.match(source, /cleanup: false/)
-  assert.doesNotMatch(source, /docker buildx rm/)
+  assert.match(source, /cleanup: true/)
+  assert.doesNotMatch(source, /docker container stop/)
 })
 
 test("the warning gate waits for build, test and lint jobs and has read-only permissions", () => {

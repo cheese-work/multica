@@ -86,7 +86,8 @@
     "toast_move_issue_failed": "No se ha podido mover la tarea",
     "not_found_description": "Puede haberse eliminado o puede que no tengas acceso.",
     "back_to_list": "Todos los proyectos",
-    "empty_issues_add_existing": "Añadir tarea existente"
+    "empty_issues_add_existing": "Añadir tarea existente",
+    "section_wakeups": "Wakeups"
   },
   "resources": {
     "section_header": "Recursos",

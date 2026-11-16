@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -141,6 +141,8 @@ function AnnotationHost() {
 
 async function openAnnotationNote() {
   const source = document.querySelector<HTMLElement>("[data-comment-content]")!;
+  // The fork arms selection capture on a press inside the message, then reads it on pointerup.
+  fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
   const range = document.createRange();
   range.selectNodeContents(source);
   act(() => {
@@ -155,6 +157,8 @@ async function openAnnotationNote() {
 }
 
 describe("NativeContextMenu inside an overlay", () => {
+  // The annotation composer is lazy-loaded (CHE-3018); a cold first import outlasts findBy's 1 s default.
+  beforeAll(() => import("../../../../../../packages/views/issues/components/annotation-composer"), 30_000);
   it("keeps a comment annotation's note open while its own menu pastes", async () => {
     renderHost(<AnnotationHost />);
     const note = await openAnnotationNote();

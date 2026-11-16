@@ -20,7 +20,8 @@
     "workspaces": "Рабочие пространства",
     "new": "Создать",
     "best_match": "Лучшее совпадение",
-    "actions": "Действия"
+    "actions": "Действия",
+    "messages": "Messages"
   },
   "context": {
     "current_issue": "Текущая задача",
@@ -139,7 +140,9 @@
     "no_results": "Ничего не найдено.",
     "no_labels": "Нет меток",
     "type_to_find_issue": "Введите текст для поиска задачи",
-    "type_to_find_people": "Введите текст для поиска участников и агентов"
+    "type_to_find_people": "Введите текст для поиска участников и агентов",
+    "no_results_for": "No results for “{{query}}”",
+    "no_results_hint": "Try a different keyword."
   },
   "delegate": {
     "row": "Передать агенту: «{{prompt}}»",
@@ -165,9 +168,29 @@
     "back": "Назад",
     "prefix_commands": "Команды",
     "prefix_issues": "Задачи",
-    "prefix_people": "Участники и агенты"
+    "prefix_people": "Участники и агенты",
+    "add_filter": "Add filter",
+    "remove_filter": "Remove filter"
   },
   "trigger": {
     "label": "Поиск..."
+  },
+  "messages": {
+    "untitled": "Untitled chat",
+    "searching": "Searching messages…",
+    "error_title": "Couldn't search message content",
+    "error_failed": "The server returned an error. Chats still filter by title.",
+    "error_timed_out": "The search took too long. Chats still filter by title.",
+    "retry": "Retry",
+    "offline_title": "You're offline",
+    "offline_body_one": "Searching only {{count}} saved chat by title, not message content.",
+    "offline_body_few": "Searching only {{count}} saved chats by title, not message content.",
+    "offline_body_many": "Searching only {{count}} saved chats by title, not message content.",
+    "offline_body_other": "Searching only {{count}} saved chats by title, not message content."
+  },
+  "chips": {
+    "agent": "Agent: {{name}}",
+    "active": "Filters on: {{names}}",
+    "none": "No filters on"
   }
 }
