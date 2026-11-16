@@ -17,11 +17,14 @@ const askGuardCommentFix = "multica decision request ... to ask the person, or a
 // mentions a member must be a typed kind. The typed kinds (ask comment,
 // decision intent, record, veto, --notify-only) never reach it. It writes the
 // response when the comment may not be posted.
-func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, content string) bool {
-	if authorType != "agent" || len(askguard.MentionedMembers(content)) == 0 {
+func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, parent *db.Comment, content string) bool {
+	if authorType != "agent" {
 		return true
 	}
-	return h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix)
+	if len(askguard.MentionedMembers(content)) > 0 && !h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix) {
+		return false
+	}
+	return h.askGuardReversibleComment(w, r, issue, task, parent, content)
 }
 
 // askGuardAllowsCommentEdit is S2 for an edit. A plain edit has no typed kind,
