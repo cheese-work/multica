@@ -282,6 +282,40 @@ func TestEdgesGreenEdgeAdvancesOncePerHead(t *testing.T) {
 	}
 }
 
+// The edge watcher reads the same ready marker: a green draft PR holds the
+// issue until the author sets it, and the move spends it (CHE-5741).
+func TestEdgesGreenDraftPRNeedsReadyMarker(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 2152020
+	c := newEdgeCase(t, installationID, []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h", "on_timeout": "todo"},
+		}},
+		{"status_key": "in_review"},
+		{"status_key": "todo"},
+		{"status_key": "blocked"},
+	})
+	linkedPRForWakeup(t, c.fx, installationID, 215220, "edge-draft")
+	testPool.Exec(context.Background(), `UPDATE github_pull_request SET state='draft', checks_rollup_state='SUCCESS', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=215220`, testWorkspaceID)
+	c.enter(t, "in_progress")
+	tickEdges(t)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("green draft PR without the ready marker left the issue at %s, want in_progress", got)
+	}
+	testPool.Exec(context.Background(), `UPDATE issue SET metadata='{"ready_for_review": true}'::jsonb WHERE id=$1`, c.issueID)
+	testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
+	tickEdges(t)
+	if got := c.status(t); got != "in_review" {
+		t.Fatalf("green draft PR with the ready marker left the issue at %s, want in_review", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id=$1 AND metadata ? 'ready_for_review'`, c.issueID); n != 0 {
+		t.Fatal("the move left ready_for_review set")
+	}
+}
+
 // Hand-made wakeups on an issue in a watched step are not the engine's.
 func TestEdgesLeaveHandMadeWakeupsAlone(t *testing.T) {
 	if testHandler == nil {

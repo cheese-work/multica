@@ -72,6 +72,10 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	// the first edge that fact satisfies, in list order, is the move.
 	edge, ok := issueworkflow.FirstMatch(def.EdgesOf(issue.Status), issueworkflow.Facts{
 		PRs: []issueworkflow.PRFact{{State: prState, ChecksRollup: "SUCCESS", HeadFresh: true}},
+		// A draft PR is the author's early push (workflow step 2): its green
+		// checks move the issue only once the author set the ready marker. A
+		// head refused here is not claimed, so the next snapshot tries again.
+		ReadyForReview: issueReadyForReview(issue),
 	})
 	if !ok {
 		return false
@@ -113,7 +117,31 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 			slog.Warn("ci advance: release claim failed", "err", err, "issue_id", uuidToString(issueID))
 		}
 	}
+	if moved {
+		h.clearReadyMarker(ctx, issue)
+	}
 	return ranHandler
+}
+
+// readyForReviewMetadataKey is the issue metadata marker the author sets (true)
+// when a draft PR is ready for the CI-green advance (CHE-5741).
+const readyForReviewMetadataKey = "ready_for_review"
+
+// clearReadyMarker spends the marker: it covers one handoff, and a fix round
+// sets it again. It runs after the move, because the move's revision check
+// would lose to this write.
+func (h *Handler) clearReadyMarker(ctx context.Context, issue db.Issue) {
+	if !issueReadyForReview(issue) {
+		return
+	}
+	if _, err := h.Queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: readyForReviewMetadataKey}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("workflow edge: clear ready marker failed", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+}
+
+func issueReadyForReview(issue db.Issue) bool {
+	ready, _ := parseIssueMetadata(issue.Metadata)[readyForReviewMetadataKey].(bool)
+	return ready
 }
 
 // hasOpenChildren reports whether any direct child of issue is not yet in a
