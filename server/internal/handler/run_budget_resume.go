@@ -594,22 +594,22 @@ func (h *Handler) failResume(ctx context.Context, row db.RunBudgetRefusal, state
 	}
 }
 
-// notifyRunBudgetResume starts the resume of the refusal an approved action
-// linked, once the approval committed. No linked refusal: nothing to do.
-func (h *Handler) notifyRunBudgetResume(ctx context.Context, actionID pgtype.UUID) {
-	row, err := h.Queries.GetRunBudgetRefusalByAction(ctx, actionID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return
-	}
+// notifyRunBudgetResume starts the resume of every refusal an approved action
+// linked, once the approval committed. None linked: nothing to do.
+func (h *Handler) notifyRunBudgetResume(ctx context.Context, actionID pgtype.UUID) error {
+	ids, err := h.Queries.ListRunBudgetRefusalIDsByAction(ctx, actionID)
 	if err != nil {
-		slog.Warn("run budget: find linked refusal failed", "err", err, "action_id", uuidToString(actionID))
-		return
+		return err
 	}
-	h.resumeRefusal(ctx, row.ID)
+	for _, id := range ids {
+		h.resumeRefusal(ctx, id)
+	}
+	return nil
 }
 
 // sweepRunBudgetResumes resumes the linked refusals a crashed or missed notify left behind.
 func (h *Handler) sweepRunBudgetResumes(ctx context.Context, before time.Time) {
+	h.sweepWeeklyRunGuardResumes(ctx, before)
 	ids, err := h.Queries.ListResumePendingRunBudgetRefusals(ctx, pgtype.Timestamptz{Time: before, Valid: true})
 	if err != nil {
 		slog.Warn("run budget: list pending resumes failed", "err", err)

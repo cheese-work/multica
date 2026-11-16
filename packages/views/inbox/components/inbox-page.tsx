@@ -839,6 +839,9 @@ export function InboxPage() {
           layoutId="multica_inbox_issue_detail_layout"
           highlightCommentId={detailItem.details?.comment_id ?? undefined}
           highlightRequestToken={highlightRequestToken}
+          // The inbox reads the row it selected itself (see the auto-read
+          // effect above), and must keep a row marked unread while it is open.
+          readsInbox={false}
           // The split layout already has a nav trigger in the list header.
           // Explicit false suppresses the detail header's fallback trigger,
           // which is the way back once the list column is collapsed.
@@ -1033,7 +1036,7 @@ export function InboxPage() {
   if (viewLoading) {
     return (
       <div className="flex min-h-0 flex-1">
-        <ListColumn collapsed={listCollapsed}>
+        <ListColumn collapsed={listCollapsed} width="list">
           <div className="flex h-12 shrink-0 items-center pl-5 pr-2">
             <Skeleton className="h-5 w-16" />
           </div>
@@ -1059,7 +1062,7 @@ export function InboxPage() {
 
   return (
     <div className="flex min-h-0 flex-1">
-      <ListColumn collapsed={listCollapsed}>{listPanel}</ListColumn>
+      <ListColumn collapsed={listCollapsed} width="list">{listPanel}</ListColumn>
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         {detailContent ?? (
           <>

@@ -12,6 +12,7 @@ const ENTER = createShortcutChord("Enter");
 const OPEN_IN_TAB = createShortcutChord("Enter", { primary: true });
 const SHIFT_ENTER = createShortcutChord("Enter", { shift: true });
 const BACKSPACE = createShortcutChord("Backspace");
+const TAB = createShortcutChord("Tab");
 
 function Hint({ keys, children }: { keys: ReactNode; children: ReactNode }) {
   return (
@@ -77,6 +78,12 @@ export function PaletteFooter({
               <Hint keys={<ShortcutKeycaps shortcut={OPEN_IN_TAB} decorative />}>
                 {t(($) => $.footer.open_in_new_tab)}
               </Hint>
+            )}
+            {mode === "root" && (
+              <>
+                <Hint keys={<ShortcutKeycaps shortcut={TAB} decorative />}>{t(($) => $.footer.add_filter)}</Hint>
+                <Hint keys={<ShortcutKeycaps shortcut={BACKSPACE} decorative />}>{t(($) => $.footer.remove_filter)}</Hint>
+              </>
             )}
           </>
         )}

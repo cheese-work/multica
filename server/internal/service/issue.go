@@ -87,6 +87,8 @@ type IssueCreateParams struct {
 	StartDate     pgtype.Date
 	DueDate       pgtype.Date
 	OriginType    pgtype.Text
+	// CreatedVia is how the issue was made (dialog, agent, cli); server-set.
+	CreatedVia    pgtype.Text
 	OriginID      pgtype.UUID
 	AttachmentIDs []pgtype.UUID
 	// LabelIDs are the issue-scoped labels to attach to the new issue. They
@@ -137,7 +139,9 @@ type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, pr
 
 // CreatePropertyGate refuses a create whose properties the workflow's gates
 // cannot accept. properties is the canonical JSONB bag, keyed by property id.
-type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte) error
+// projectID and title are the new issue's, for a gate scoped to a project or a
+// title type.
+type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte, projectID pgtype.UUID, title string) error
 
 // CreateEntryGate refuses a create the landing step's block entry gates stop.
 // It may return a recorder for the new row (warn gates), which Create runs in
@@ -483,7 +487,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	}
 
 	if p.PropertyGate != nil && def != nil {
-		if err := p.PropertyGate(ctx, qtx, def, properties); err != nil {
+		if err := p.PropertyGate(ctx, qtx, def, properties, projectID, p.Title); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}
@@ -551,6 +555,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
 			RequestedByID: p.RequestedByID,
+			CreatedVia:    p.CreatedVia,
 			OriginType:    p.OriginType,
 			OriginID:      p.OriginID,
 			Stage:         p.Stage,
@@ -576,6 +581,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
 			RequestedByID: p.RequestedByID,
+			CreatedVia:    p.CreatedVia,
 			Stage:         p.Stage,
 			Properties:    properties,
 		})

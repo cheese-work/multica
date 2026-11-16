@@ -1,0 +1,26 @@
+# Settings > Workspace > Background agents tab (step 26 of CHE-4013 plan r4).
+# Design gate: CHE-4122 design v2, approved by Cheese 13 Nov 2026 (CHE-4122 comment 01a1d38a-7f8b-74fb-87b9-00947319496a).
+# Frames used: A2 (workspace tab), D2 (states, including frame 6 conflict). Compact row (C2) waits for CHE-4121.
+# Element ids are `data-settings-anchor` values (the settings page deep-link attribute), not data-testid.
+issue: CHE-4123
+design: design/background-agents/approved/a2-workspace-tab.html @ c21875f6b7d10a038382617356bcb0720949a57f
+frames:   # doop canvas mRAnnjvGod, page1; before and after at 1440 px and 390 px; static HTML from the real component strings, sample data, not live captures; visual diff NOT-RUN; page placement waived by Cheese (CHE-5944)
+  - Owner, jobs set: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Zt_bl0gp5Q
+  - Member, read-only: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=AANjzgIILw
+  - Owner, stale-save conflict (D2): https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=rFkg36BRkp
+  - Load error with Retry: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=BJiQzD9LHI
+pages:
+  - id: settings-workspace-background-agents
+    url: /<workspace-slug>/settings?tab=background-agents   # 1440 px and 390 px
+    keep:
+      - workspace-tab-other-sections   # no other Workspace settings page changes
+    change:
+      - background-agents-dm_title: "new section: DM title, no-agent note, Agent and Fallback agent selects"
+      - background-agents-quick_actions: "new section: Quick actions, same two selects"
+      - background-agents-routing: "new section: Routing, Workspace only badge, replaces the old routing-agent rows"
+      - background-agents-dm_title-fallback: "fallback select is disabled until an Agent is picked; clearing the Agent clears it"
+      - background-agents-conflict: "new compare panel when another owner saved first: Your change (not saved) beside Saved now, Keep their version, Apply my change again"
+      - background-agents-load-error: "new alert with Retry when the response is unreadable; no selects are shown"
+      - background-agents-member-read-only: "members see the picks as text with the read-only notice and a link to Personal"
+    remove:
+      - routing-agent-rows: "old Routing agent rows in the Workspace tab; replaced by the Routing section above"

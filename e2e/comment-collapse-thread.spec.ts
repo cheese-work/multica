@@ -17,6 +17,14 @@ async function clickOnce(page: Page, name: string) {
   await button.click();
 }
 
+/** CHE-5568: the toggle's offset from the thread card's top-right corner. */
+async function toggleOffset(page: Page, name: string) {
+  const box = await page.getByRole("button", { name, exact: true }).boundingBox();
+  const card = await page.locator("[data-thread-root]").first().boundingBox();
+  if (!box || !card) throw new Error("toggle or card not laid out");
+  return { x: card.x + card.width - (box.x + box.width), y: box.y - card.y };
+}
+
 test.describe("Collapse thread, one click", () => {
   let api: TestApiClient;
   let issueId: string;
@@ -66,4 +74,20 @@ test.describe("Collapse thread, one click", () => {
     await clickOnce(page, "Collapse thread");
     await expect(page.getByRole("button", { name: "Expand thread", exact: true })).toBeVisible();
   });
+
+  for (const replies of [0, 1]) {
+    test(`the toggle keeps its position across collapse and expand (${replies} replies)`, async ({ page }) => {
+      for (let i = 0; i < replies; i++) await api.createComment(issueId, `reply ${i}`, rootId);
+      await openIssue(page, workspaceSlug, issueId);
+      await waitForPageText(page, ROOT);
+
+      const expanded = await toggleOffset(page, "Collapse thread");
+      await clickOnce(page, "Collapse thread");
+      await expect(page.getByRole("button", { name: "Expand thread", exact: true })).toBeVisible();
+      const collapsed = await toggleOffset(page, "Expand thread");
+
+      expect(Math.abs(collapsed.x - expanded.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(collapsed.y - expanded.y)).toBeLessThanOrEqual(1);
+    });
+  }
 });

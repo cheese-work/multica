@@ -7,6 +7,7 @@ import { myIssuesRelationFromScope } from "@multica/core/issues/stores/my-issues
 import { CollectionPageState } from "../../layout/collection-page";
 import { PageHeader } from "../../layout/page-header";
 import { IssueSurface } from "../../issues/surface/issue-surface";
+import { MY_ISSUE_MODES } from "../../issues/surface/modes";
 import { IssueViewHeader } from "../../issue-views/view-header";
 import { useT } from "../../i18n";
 import { useMyIssuesScope } from "../use-my-issues-scope";
@@ -28,7 +29,7 @@ export function MyIssuesPage() {
             userId: user.id,
             relation: myIssuesRelationFromScope(scope),
           }}
-          modes={["board", "list", "table", "swimlane"]}
+          modes={MY_ISSUE_MODES}
           batchToolbar="list"
           renderHeader={({ controller }) => <IssueViewHeader controller={controller} base={MY_BASE} />}
           renderEmpty={({ controller }) => (

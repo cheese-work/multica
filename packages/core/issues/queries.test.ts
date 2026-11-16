@@ -707,6 +707,23 @@ describe("issueIdentifierOptions", () => {
     },
   );
 
+  it("preserves an existing detail entry's refresh obligation", async () => {
+    const stale = makeIssue(7, { title: "Old title" });
+    const fresh = makeIssue(7, { title: "New title" });
+    const getIssue = vi
+      .fn<(id: string) => Promise<Issue>>()
+      .mockResolvedValue(fresh);
+    installFakeIssueApi(getIssue);
+    const detailKey = issueKeys.detail(WS_ID, stale.id);
+    qc.setQueryData(detailKey, stale);
+    await qc.invalidateQueries({ queryKey: detailKey, exact: true });
+
+    await qc.fetchQuery(issueIdentifierOptions(WS_ID, "MUL-7"));
+
+    expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true);
+    expect(qc.getQueryData<Issue>(detailKey)?.title).toBe("Old title");
+  });
+
   it("keys the query by workspace and identifier", () => {
     expect(issueKeys.identifier(WS_ID, "MUL-7")).toEqual([
       "issues",

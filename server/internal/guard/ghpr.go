@@ -451,6 +451,9 @@ func ghAPI(args []string) decision {
 			method = strings.ToUpper(f.value)
 		}
 	}
+	if len(pos) >= 2 && strings.TrimPrefix(pos[1], "/") == "graphql" && graphqlWrite(flags) {
+		return refuse(2, "gh api graphql mutations, queries from a file and --input bodies are not allowed; use gh pr create, edit or ready, or gh issue")
+	}
 	if method == "GET" || method == "HEAD" || len(pos) < 2 {
 		return pass(args)
 	}

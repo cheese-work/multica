@@ -239,3 +239,18 @@ SELECT EXISTS (
     SELECT 1 FROM activity_log
     WHERE issue_id = @issue_id AND details->>'event_id' = @event_id::text
 )::boolean;
+
+-- name: LastWorkingAgentOnIssue :one
+-- The agent that most recently ran on an issue and can still run: the PR-action
+-- fallback when a member holds the issue and no PR author resolves, so the
+-- notice reaches an agent rather than the member (CHE-5837).
+SELECT a.*
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = @issue_id
+  AND t.started_at IS NOT NULL
+  AND a.workspace_id = @workspace_id
+  AND a.archived_at IS NULL
+  AND a.runtime_id IS NOT NULL
+ORDER BY t.started_at DESC
+LIMIT 1;

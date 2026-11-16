@@ -37,6 +37,10 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryFn: () => Promise.resolve([{ user_id: "user-1", role: "member", name: "Ada", email: "ada@example.com", avatar_url: null }]),
   }),
   selectSkillAssignments: () => new Map(),
+  skillVersionsOptions: (wsId: string, id: string) => ({
+    queryKey: ["skill-versions", wsId, id],
+    queryFn: () => Promise.resolve([]),
+  }),
   workspaceKeys: { skills: (wsId: string) => ["skills", wsId], agents: (wsId: string) => ["agents", wsId] },
 }));
 vi.mock("@multica/core/runtimes", () => ({

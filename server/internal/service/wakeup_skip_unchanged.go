@@ -97,6 +97,24 @@ func skippedUnchangedDetails(rule string, lastTask pgtype.UUID) map[string]any {
 	return map[string]any{"rule": rule, "reason": wakeupOutcomeUnchanged, "last_task_id": util.UUIDToString(lastTask)}
 }
 
+// timeWakeupSkipMode reads workspace settings.time_wakeup_skip.mode (CHE-5457).
+// Missing or invalid is "off", so a bad value never skips a run.
+func timeWakeupSkipMode(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) string {
+	workspace, err := q.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return "off"
+	}
+	var settings struct {
+		Skip struct {
+			Mode string `json:"mode"`
+		} `json:"time_wakeup_skip"`
+	}
+	if json.Unmarshal(workspace.Settings, &settings) != nil || (settings.Skip.Mode != "warn" && settings.Skip.Mode != "block") {
+		return "off"
+	}
+	return settings.Skip.Mode
+}
+
 var (
 	heartbeatReadsMergeability = regexp.MustCompile(`mergeable|mergeStateStatus`)
 	heartbeatActsOnConflict    = regexp.MustCompile(`CONFLICTING|DIRTY`)

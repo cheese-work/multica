@@ -45,6 +45,8 @@ const (
 var builtinFlags = map[string][]string{
 	"gh-pr":  {"--draft", "--reviewer", "--add-reviewer", "--title"},
 	"gh-api": {},
+	// ci-wait only refuses.
+	"ci-wait": {},
 	// multica-wakeup only logs.
 	"multica-wakeup": {},
 }
@@ -102,10 +104,14 @@ func (p *Policy) Lockdown() bool { return p != nil && p.lockdown }
 
 func (p *Policy) verify() bool { return p == nil || p.Verify == nil || *p.Verify }
 
-// DefaultPolicy is the compiled policy: plugin 1 (PR tag, draft, reviewers) and
-// the `gh api` write refusal, with no review rules.
+// DefaultPolicy is the compiled policy: plugin 1 (PR tag, draft, reviewers),
+// plugin 2 (CI-wait refusal) and the `gh api` write refusal, with no review rules.
 func DefaultPolicy() *Policy {
 	return &Policy{Version: 1, Plugins: []Plugin{
+		// ci-wait comes first and answers only for a CI wait, so the plugins
+		// after it still see every other call.
+		{Name: "ci-wait", Match: Match{Tool: "gh"}, Action: ActionDeny, Builtin: "ci-wait"},
+		{Name: "ci-wait-sleep", Match: Match{Tool: "sleep"}, Action: ActionDeny, Builtin: "ci-wait"},
 		{Name: "gh-pr", Match: Match{Tool: "gh", Subcommand: []string{"pr"}}, Action: ActionFix, Builtin: "gh-pr"},
 		{Name: "gh-api", Match: Match{Tool: "gh", Subcommand: []string{"api"}}, Action: ActionDeny, Builtin: "gh-api"},
 		{Name: "wakeup-create", Match: Match{Tool: "multica", Subcommand: []string{"issue", "wakeup", "create"}}, Action: ActionShadow, Builtin: "multica-wakeup"},

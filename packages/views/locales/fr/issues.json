@@ -23,7 +23,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "Canevas de la hiérarchie, vue éloignée",
     "canvas_cards": "Canevas de la hiérarchie, vue rapprochée",
-    "dialog_description": "Déplacez et zoomez la hiérarchie. Ouvrez une tâche pour y accéder.",
+    "dialog_description": "Parcourez la hiérarchie niveau par niveau. Ouvrez une tâche pour y accéder.",
+    "step_in": "Descendre",
+    "step_out": "Remonter",
+    "depth": "Niveau {{depth}} / {{max}}",
+    "depth_announce": "Niveau {{depth}} sur {{max}}, {{count}} cartes, dont {{withChildren}} avec des sous-tâches",
+    "more_cards": "+{{count}} de plus",
+    "more_cards_pending": "+{{count}}… de plus en cours de chargement",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − change de niveau · flèches pour se déplacer · Entrée ouvre · Espace descend ou remonte · Échap remonte",
+    "canvas_focus": "Canevas de la hiérarchie, niveau {{depth}}",
     "zoom_in": "Zoom avant",
     "zoom_out": "Zoom arrière",
     "zoom_level": "Zoom {{percent}} %",
@@ -90,10 +99,17 @@
   "working_filter_error": {
     "title": "Impossible de charger les tâches en cours de traitement par les agents"
   },
+  "unread_filter_error": {
+    "title": "Impossible de charger vos tâches non lues"
+  },
   "status_catalog_error": {
     "title": "Impossible de charger la liste des états",
     "hint": "Les tâches ne peuvent pas s’afficher tant que les statuts ne sont pas chargés.",
     "retry": "Réessayer"
+  },
+  "relation_filter_error": {
+    "title": "Impossible de charger le filtre « Lien avec moi »",
+    "hint": "Les tâches filtrées par « Auxquels je suis abonné » ou « Assignés à mes agents » s'affichent une fois vos abonnements et agents chargés."
   },
   "source_context": {
     "create_action": "Créer une sous-tâche à partir d'ici",
@@ -233,8 +249,11 @@
     "relation_assigned": "Qui me sont assignés",
     "relation_created": "Créés par moi",
     "relation_my_agents": "Assignés à mes agents",
+    "relation_subscribed": "Auxquels je suis abonné",
     "section_agent_status": "Statut de l'agent",
     "agent_status_running": "En cours d'exécution",
+    "section_read_state": "État de lecture",
+    "read_state_unread": "Non lu",
     "operator_label": "Condition",
     "operator_is": "est",
     "operator_is_not": "n'est pas",
@@ -370,7 +389,8 @@
     "list": "Liste",
     "table": "Grille",
     "gantt": "Gantt",
-    "swimlane": "Couloirs"
+    "swimlane": "Couloirs",
+    "swimlane2": "Couloirs 2.0"
   },
   "table": {
     "select_all": "Sélectionner toutes les tâches visibles",
@@ -457,13 +477,22 @@
     "more_issues": "D'autres tickets ne sont pas chargés.",
     "retry": "Réessayer",
     "load_more": "Charger plus",
-    "no_lane": "Aucune valeur"
+    "no_lane": "Aucune valeur",
+    "timeline_failed": "Impossible de charger la chronologie.",
+    "loading": "Chargement de la chronologie…"
   },
   "gantt2": {
     "clipped_start": "Commencé avant cette fenêtre",
     "now": "Maintenant",
+    "start_marker": "Date de début",
+    "due_marker": "Échéance",
+    "no_history": "Aucun historique enregistré",
+    "before_records": "Avant les enregistrements",
     "collapse": "Réduire",
-    "expand": "Développer"
+    "expand": "Développer",
+    "wakeup_cross": "Réveil",
+    "wakeup_children_done": "Enfants terminés",
+    "target_inside": "Cible à l'intérieur (masquée par le repli)"
   },
   "actor_issues": {
     "scope": {
@@ -600,6 +629,10 @@
     "add_property_action": "Ajouter une propriété",
     "prop_created_by": "Créé par",
     "prop_requested_by": "Demandé par",
+    "prop_created_via": "Créé via",
+    "created_via_dialog": "Dialogue de création",
+    "created_via_agent": "Agent",
+    "created_via_cli": "CLI",
     "prop_created": "Création",
     "prop_updated": "Mise à jour",
     "activity_section": "Activité",
@@ -619,7 +652,6 @@
     "agents_group": "Agents",
     "mark_done_tooltip": "Marquer comme terminé",
     "archive_tooltip": "Archiver",
-    "restore_to_inbox_tooltip": "Restaurer dans la boîte de réception",
     "pin_tooltip": "Épingler à la barre latérale",
     "unpin_tooltip": "Détacher de la barre latérale",
     "quick_jump_label": "Navigation rapide",
@@ -894,6 +926,7 @@
   },
   "filtered_empty": {
     "title": "Aucune tâche ne correspond à ces filtres",
+    "unread_title": "Aucune tâche non lue",
     "clear_button": "Effacer les filtres"
   },
   "agent_live": {
@@ -1038,6 +1071,7 @@
     "confirm": "Arrêter l'exécution"
   },
   "batch": {
+    "delete_restricted": "Vous pouvez supprimer les tâches créées par vous ou par vos agents. Les propriétaires et administrateurs peuvent supprimer toute tâche.",
     "selected": "{{count}} sélectionnés",
     "status": "Statut",
     "priority": "Priorité",
@@ -1062,7 +1096,6 @@
     "delete_dialog_title_other": "Supprimer {{count}} tâches ?",
     "delete_dialog_desc_one": "Cette action est irréversible. La tâche sélectionnée et toutes ses données associées seront définitivement supprimées.",
     "delete_dialog_desc_other": "Cette action est irréversible. Les tâches sélectionnées et toutes leurs données associées seront définitivement supprimées.",
-    "delete_dialog_warning": "Tout membre de l'espace de travail peut supprimer des tâches.",
     "cancel": "Annuler"
   },
   "card": {
@@ -1088,6 +1121,7 @@
     "open_in_new_tab": "Ouvrir dans un nouvel onglet",
     "pin_to_sidebar": "Épingler à la barre latérale",
     "unpin_from_sidebar": "Détacher de la barre latérale",
+    "restore_to_inbox": "Restaurer dans la boîte de réception",
     "mark_read": "Marquer comme lu",
     "mark_unread": "Marquer comme non lu",
     "copy_link": "Copier le lien",
@@ -1631,7 +1665,6 @@
     "not_merged": "{{prs}} fermée sans fusion",
     "not_merged_action": "Retirer",
     "all_merged_to": "Toutes les PR sont fusionnées. La prochaine PR fusionnée fera passer la tâche à {{status}}.",
-    "workflow_owned": "Le workflow déplace la tâche quand sa PR est fusionnée",
     "issue_disabled": "Les fusions de PR ne changent pas cette tâche",
     "issue_disabled_action": "Réactiver"
   },
@@ -2043,7 +2076,8 @@
     "builtin": {
       "my_issues": "Mes tâches",
       "my_agents": "Travail de mes agents",
-      "all_issues": "Toutes les tâches"
+      "all_issues": "Toutes les tâches",
+      "unread": "Non lues"
     },
     "untitled": "Vue sans titre",
     "copy_name": "{{name}} (copie)",
@@ -2076,6 +2110,9 @@
     "save_as_new": "Enregistrer comme nouvelle vue",
     "save_as_new_hint": "« {{name}} » reste inchangée",
     "save_as_view": "Enregistrer comme vue",
+    "save_view": "Enregistrer la vue",
+    "add_filter": "Ajouter un filtre",
+    "setup_hint": "Aucune condition pour l'instant : cette vue affiche toutes les tâches",
     "set_by_view": "Défini par cette vue",
     "new_issue": "Nouvelle tâche",
     "unavailable": "Cette vue n'est plus disponible",

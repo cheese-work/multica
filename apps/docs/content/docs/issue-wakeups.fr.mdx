@@ -230,6 +230,18 @@ La réponse `effective` correspond à ce que montrent les applications. `sources
 - La cible d'une règle doit être un agent ou une équipe que la personne qui écrit la règle peut invoquer. Un lecteur qui ne voit pas l'agent cible voit la règle sans cible ni instruction.
 - Une nouvelle règle personnalisée démarre avec une limite de 12 réveils par heure. L'**aperçu** de l'éditeur indique combien de tickets ouverts correspondent déjà avant l'enregistrement.
 
+## Réveils « PR fusionnée » [#pr-merged]
+
+La règle `pr_merged` réveille l'agent qui traite une tâche lorsqu'une PR GitHub liée est fusionnée (voir [Réveils par défaut](#defaults)). Elle ne fait que réveiller l'agent. Elle ne change jamais le statut de la tâche : c'est le rôle du réglage de l'espace de travail **Paramètres → Code → Après la fusion des PR, passer la tâche à**, décrit dans [Intégration GitHub](/github-integration).
+
+Quand la même fusion fait aussi passer la tâche à une étape de workflow qui a un responsable, ce déplacement démarre déjà l'exécution du responsable. Le déplacement réserve à cette exécution le réveil en attente de la fusion : une fusion démarre donc une seule exécution, pas deux :
+
+- L'exécution du responsable démarre : le réveil est considéré comme traité et ne démarre pas de seconde exécution.
+- L'exécution se termine avant d'avoir démarré (annulée ou en échec) : le réveil démarre une exécution à lui.
+- L'exécution est refusée (par exemple par le budget d'exécutions ou une file d'étape pleine) : le statut change quand même, rien n'est réservé et le réveil suit ses limites habituelles.
+
+Quand un événement de PR peut devoir un changement de statut à une tâche, Multica garde aussi un réveil interne de nouvelle tentative pour cette tâche, `pr_merge_owed`. Il ne démarre aucune exécution d'agent. Il répète la vérification du statut jusqu'à ce qu'elle aboutisse, puis se supprime. Voir [Quand une vérification ne peut pas aboutir](/github-integration).
+
 ## Réveils et automatisations [#vs-autopilots]
 
 Une [automatisation](/autopilots) lance du travail nouveau, encore et encore, à partir d'un calendrier ou d'un webhook, et peut créer une tâche à chaque fois. Un réveil appartient à une tâche existante : il ramène un agent vers cette tâche après une heure ou un événement donnés, et se termine avec elle.

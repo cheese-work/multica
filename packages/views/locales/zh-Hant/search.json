@@ -14,6 +14,7 @@
     "issues": "任務",
     "autopilots": "自動化",
     "chats": "對話",
+    "messages": "訊息",
     "skills": "Skills",
     "cancelled": "已取消",
     "recent": "最近",
@@ -130,7 +131,9 @@
     "no_results": "未找到結果。",
     "no_labels": "沒有標籤",
     "type_to_find_issue": "輸入關鍵詞查找任務",
-    "type_to_find_people": "輸入關鍵詞查找成員和 AI 代理"
+    "type_to_find_people": "輸入關鍵詞查找成員和 AI 代理",
+    "no_results_for": "沒有「{{query}}」的結果",
+    "no_results_hint": "試試其他關鍵字。"
   },
   "delegate": {
     "heading": "交給 AI 代理",
@@ -164,9 +167,26 @@
     "back": "返回",
     "prefix_commands": "命令",
     "prefix_issues": "任務",
-    "prefix_people": "人和 AI 代理"
+    "prefix_people": "人和 AI 代理",
+    "add_filter": "新增篩選",
+    "remove_filter": "移除篩選"
   },
   "trigger": {
     "label": "搜尋..."
+  },
+  "messages": {
+    "untitled": "未命名對話",
+    "searching": "正在搜尋訊息…",
+    "error_title": "無法搜尋訊息內容",
+    "error_failed": "伺服器回傳錯誤。仍可依標題篩選對話。",
+    "error_timed_out": "搜尋耗時過長。仍可依標題篩選對話。",
+    "retry": "重試",
+    "offline_title": "你已離線",
+    "offline_body_other": "僅依標題搜尋已儲存的 {{count}} 個對話，不搜尋訊息內容。"
+  },
+  "chips": {
+    "agent": "智慧體：{{name}}",
+    "active": "已啟用篩選：{{names}}",
+    "none": "未啟用篩選"
   }
 }

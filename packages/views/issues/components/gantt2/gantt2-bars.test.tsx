@@ -120,6 +120,80 @@ describe("Gantt2Bars actual bar (T1–T3)", () => {
   });
 });
 
+const leftOf = (el: HTMLElement) => parseFloat(el.style.left);
+
+describe("Gantt2Bars markers and incomplete history (T4, T6, T7)", () => {
+  it("T4: markers only, no started row: start_date and due_date draw as markers, no bar", () => {
+    const { container } = renderBars([row("t4", { history: "none", start_known: false, start_date: ago(10), due_date: ago(5) })]);
+    expect(container.querySelector("[data-gantt-bar]")).toBeNull();
+    const start = screen.getByTestId("gantt-marker-start");
+    const due = screen.getByTestId("gantt-marker-due");
+    expect(leftOf(start)).toBeCloseTo((20 / 30) * 100, 1);
+    expect(leftOf(due)).toBeCloseTo((25 / 30) * 100, 1);
+    // each marker is named for assistive tech, so shape is never the only signal
+    expect(start.getAttribute("aria-label")).toBe("Start date");
+    expect(due.getAttribute("aria-label")).toBe("Due date");
+    expect(screen.getByTestId("gantt-marker-span")).toBeTruthy();
+  });
+
+  it("T4: a marker outside the window is not drawn", () => {
+    renderBars([row("t4", { history: "none", start_known: false, due_date: ago(45) })]);
+    expect(screen.queryByTestId("gantt-marker-due")).toBeNull();
+  });
+
+  it("T4: markers also draw on a row that has a bar", () => {
+    const { container } = renderBars([row("t4", { actual_start: ago(20), segments: [seg("in_progress", "started", ago(20), null)], due_date: ago(5) })]);
+    expect(barOf(container)).toBeTruthy();
+    expect(screen.getByTestId("gantt-marker-due")).toBeTruthy();
+    expect(screen.queryByTestId("gantt-marker-span")).toBeNull();
+  });
+
+  it("T6: a standalone issue with no history rows shows no bar and says there is no recorded history", () => {
+    const { container } = renderBars([row("t6", { history: "none", start_known: false, presence_from: ago(90), presence_to: new Date(AS_OF).toISOString(), segments: [] })]);
+    expect(container.querySelector("[data-gantt-bar]")).toBeNull();
+    // presence is a selection bound, never drawn
+    expect(container.querySelector("[data-gantt-presence]")).toBeNull();
+    expect(screen.getByText("No recorded history")).toBeTruthy();
+    expect(screen.queryByTestId("gantt-marker-start")).toBeNull();
+  });
+
+  it("T7: an old partial-history issue draws a hatched 'before records' segment and no actual start", () => {
+    const { container } = renderBars([
+      row("t7", {
+        status: "in_review",
+        history: "partial",
+        start_known: false,
+        actual_start: null,
+        presence_from: ago(70),
+        presence_to: new Date(AS_OF).toISOString(),
+        segments: [seg("in_progress", "started", null, ago(50)), seg("in_review", "started", ago(50), null)],
+      }),
+    ]);
+    const bar = barOf(container);
+    expect(bar.dataset.startKnown).toBe("false");
+    // hatched from max(presence_from, window from): presence_from is 70 days ago, so the window edge
+    expect(bar.style.left).toBe("0%");
+    expect(bar.style.width).toBe("100%");
+    const [before, after] = within(bar).getAllByTestId("gantt-segment");
+    expect(before!.dataset.beforeRecords).toBe("true");
+    expect(after!.dataset.beforeRecords).toBeUndefined();
+    expect(within(before!).getByText("Before records")).toBeTruthy();
+    expect(screen.queryByText("No recorded history")).toBeNull();
+  });
+
+  it("T7: the hatched segment starts at presence_from when that is inside the window", () => {
+    const { container } = renderBars([
+      row("t7b", {
+        history: "partial",
+        start_known: false,
+        presence_from: ago(20),
+        segments: [seg("in_progress", "started", null, ago(10)), seg("in_review", "started", ago(10), null)],
+      }),
+    ]);
+    expect(parseFloat(barOf(container).style.left)).toBeCloseTo((10 / 30) * 100, 1);
+  });
+});
+
 describe("Gantt2Bars parent/child rows (G3)", () => {
   const node = (id: string, parentId: string | null) => ({ ...row(id, {}), parentId, timeline: { ...row(id, {}).timeline, issue_id: id } });
   const tree = [node("p", null), node("c1", "p"), node("c2", "p"), node("g", "c1"), node("q", null)];
@@ -149,5 +223,64 @@ describe("Gantt2Bars parent/child rows (G3)", () => {
   it("a leaf has no toggle", () => {
     renderWithI18n(<Gantt2Bars rows={[node("q", null)]} window={window} asOf={new Date(AS_OF).toISOString()} collapsed={new Set()} onToggleCollapse={vi.fn()} />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+describe("Gantt2Bars wakeup arrows (G4)", () => {
+  type Wakeup = IssueTimelineResponse["wakeup_events"][number];
+  const node = (id: string, parentId: string | null) => ({ ...row(id, {}), parentId, timeline: { ...row(id, {}).timeline, issue_id: id } });
+  // p > c1 > g ; p > c2 ; q > k1 ; r
+  const rows = [node("p", null), node("c1", "p"), node("g", "c1"), node("c2", "p"), node("q", null), node("k1", "q"), node("r", null)];
+  const event = (id: string, cls: Wakeup["class"], source: string | null, target: string, extra: Partial<Wakeup> = {}): Wakeup => ({
+    id, at: ago(5), target_issue_id: target, rule_id: "w", rule_kind: "condition", condition_type: "other_issue",
+    source_issue_id: source, class: cls, run_id: "t", ...extra,
+  });
+  const show = (events: Wakeup[], collapsed: ReadonlySet<string> = new Set()) =>
+    renderWithI18n(<Gantt2Bars rows={rows} window={window} asOf={new Date(AS_OF).toISOString()} wakeupEvents={events} collapsed={collapsed} />);
+  const arrows = () => screen.queryAllByTestId("gantt-arrow").map((a) => `${a.dataset.class}:${a.dataset.source}>${a.dataset.target}`);
+
+  it("cross: draws one arrow from the source row to the target row", () => {
+    show([event("e1", "cross", "r", "g")]);
+    expect(arrows()).toEqual(["cross:r>g"]);
+    expect(screen.queryByTestId("gantt-target-inside")).toBeNull();
+  });
+
+  it("aggregate_children: one arrow from the target's child group, none per child", () => {
+    show([event("e2", "aggregate_children", null, "p", { condition_type: "children_done", stage: 2 })]);
+    expect(arrows()).toEqual(["aggregate_children:c2>p"]);
+  });
+
+  it("both endpoints hidden: the arrow retargets to both visible parents and flags both ends", () => {
+    show([event("e3", "cross", "k1", "g")], new Set(["p", "q"]));
+    expect(arrows()).toEqual(["cross:q>p"]);
+    expect(screen.getAllByTestId("gantt-target-inside")).toHaveLength(2);
+  });
+
+  it("one hidden endpoint: the arrow ends at the visible parent with a 'target inside' indicator", () => {
+    show([event("e4", "cross", "r", "g")], new Set(["p"]));
+    expect(arrows()).toEqual(["cross:r>p"]);
+    const flag = screen.getByTestId("gantt-target-inside");
+    expect(flag.getAttribute("aria-label")).toMatch(/inside/i);
+  });
+
+  it("two firings of one rule draw two separate arrows", () => {
+    show([event("e5", "cross", "r", "g"), event("e6", "cross", "r", "g", { at: ago(2) })]);
+    expect(arrows()).toEqual(["cross:r>g", "cross:r>g"]);
+  });
+
+  it("draws nothing for self, external, unknown_source, an endpoint outside the rows, or a firing outside the window", () => {
+    show([
+      event("a", "self", null, "g"),
+      event("b", "external", null, "g"),
+      event("c", "unknown_source", null, "g"),
+      event("d", "cross", "not-a-row", "g"),
+      event("e", "cross", "r", "g", { at: ago(90) }),
+    ]);
+    expect(arrows()).toEqual([]);
+  });
+
+  it("an aggregate firing whose group is collapsed into its target draws nothing", () => {
+    show([event("e7", "aggregate_children", null, "p", { condition_type: "children_done" })], new Set(["p"]));
+    expect(arrows()).toEqual([]);
   });
 });

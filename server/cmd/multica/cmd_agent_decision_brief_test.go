@@ -133,3 +133,19 @@ func TestAgentDecisionBriefMarkdownLabelsJevAndWaiver(t *testing.T) {
 		t.Errorf("an existing-gate record must print unchanged:\n%s", out)
 	}
 }
+
+func TestAgentDecisionBriefMarkdownListsAskFailures(t *testing.T) {
+	feed := map[string]any{"enabled": false, "ask_failures": []any{
+		map[string]any{"identifier": "CHE-9", "agent": "x99-codex", "reason": "no_matching_request", "failed_at": "2026-11-03T10:00:00Z", "excerpt": "please pick the plan"},
+	}}
+	var b strings.Builder
+	if err := writeAgentDecisionMarkdown(&b, feed, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"Asks that never reached a person", "CHE-9", "owner x99-codex", "no_matching_request", "please pick the plan"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, out)
+		}
+	}
+}

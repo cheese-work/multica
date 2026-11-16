@@ -56,7 +56,6 @@ const (
 	prAutoCompleteWaiting           = "waiting"            // some PRs still open / draft
 	prAutoCompleteNotMerged         = "not_merged"         // some PRs closed without merging
 	prAutoCompleteAllMerged         = "all_merged"         // every linked PR merged
-	prAutoCompleteWorkflowOwned     = "workflow_owned"     // the issue's workflow step routes the merge
 )
 
 // Workspace settings keys. pr_auto_complete_enabled is the switch desktop
@@ -229,30 +228,8 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteAtTarget
 		return d, nil
 	}
-	// A step with a pr.merged edge is routed by the workflow, which also hands
-	// the issue to the target step's handler (CHE-2398). Moving it here would
-	// skip that handoff and leave the edge nothing to do.
-	owned, err := h.workflowRoutesPRMerge(ctx, issue)
-	if err != nil {
-		return prAutoCompleteDecision{}, err
-	}
-	if owned {
-		d.State = prAutoCompleteWorkflowOwned
-		return d, nil
-	}
 	d.State, d.PRs = classifyDeliveryPRs(prs, include)
 	return d, nil
-}
-
-// workflowRoutesPRMerge reports whether the workflow step the issue sits on has
-// a pr.merged edge.
-func (h *Handler) workflowRoutesPRMerge(ctx context.Context, issue db.Issue) (bool, error) {
-	def, err := h.issueWorkflowDef(ctx, issue)
-	if err != nil || def == nil {
-		return false, err
-	}
-	step, ok := def.Step(issue.Status)
-	return ok && step.HasGuard(issueworkflow.GuardPRMerged), nil
 }
 
 // issueWorkflowDef is the workflow the issue follows: its own, else its

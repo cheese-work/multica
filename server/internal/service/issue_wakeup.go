@@ -24,6 +24,7 @@ import (
 )
 
 var ErrWakeupInput = errors.New("invalid wakeup")
+
 // ErrWakeupWatchInput marks a watch_inputs value or placement the API refuses
 // with 422 (CHE-5455).
 var ErrWakeupWatchInput = errors.New("invalid watch_inputs")
@@ -51,7 +52,7 @@ type WakeupAskGuard struct {
 
 // WakeupEventTypes is independent of plugin availability. These facts have
 // transactional capture into matching receipts, including non-HTTP writers.
-var WakeupEventTypes = eventcontract.WakeupTypes
+var WakeupEventTypes = slices.Concat(eventcontract.WakeupTypes, eventcontract.SystemTypes)
 
 type WakeupInput struct {
 	AgentID         string     `json:"agent_id"`
@@ -152,6 +153,9 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// AuditDefinition, when set, runs inside the definition write's transaction
+	// just before it commits; an error rolls the write back (CHE-5647).
+	AuditDefinition WakeupDefinitionAuditFn
 	// AskGuard is set when an agent registers the rule (see WakeupAskGuard).
 	AskGuard *WakeupAskGuard
 	// RefuseTimerOpenPR is set when an agent registers the rule: an at, every or
@@ -262,6 +266,16 @@ func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Ti
 			}
 			if !slices.Contains(WakeupEventTypes, e) {
 				return bad("unsupported event: " + e)
+			}
+		}
+		// A system event has no actor, run or issue payload to filter on, and
+		// server.deployed needs a match this input cannot carry yet (S3).
+		if slices.ContainsFunc(in.EventTypes, eventcontract.IsSystem) {
+			if in.FilterAgentID != "" || in.FilterTaskID != "" || in.FilterActorType != "" || in.FilterActorID != "" {
+				return bad("system events take no agent, run or actor filter")
+			}
+			if err := validateSystemWakeupEvents(in.EventTypes, WakeupScopeIssue, "assignee", nil); err != nil {
+				return pgtype.Timestamptz{}, err
 			}
 		}
 		if in.FilterTaskID != "" {
@@ -1517,7 +1531,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		enabled = false
 		next = pgtype.Timestamptz{}
 	}
-	heartbeatFP := ""
+	heartbeatFP, declaredFP := "", ""
 	// A firing the agent already knows about starts no run. One that a run of
 	// the agent waiting to start can take along keeps its inputs for that run
 	// (JoinWaitingWakeups).
@@ -1603,6 +1617,40 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 					return err
 				}
 				return commit()
+			}
+		}
+		// CHE-5457: an agent-set time rule whose declared inputs are as they
+		// were when its last completed run started adds nothing. Only a pure
+		// scheduled fire qualifies; a mixed receipt set (a member's wake, an
+		// event, a timeout) runs.
+		if scheduled && custom == nil && !timedOut && !isConflictHeartbeat(w) && len(w.WatchInputs) > 0 &&
+			!w.SystemRule.Valid && !w.DefaultRuleKey.Valid && w.SourceTaskID.Valid {
+			if mode := timeWakeupSkipMode(ctx, q, issue.WorkspaceID); mode != "off" {
+				if declaredFP, err = declaredInputsFingerprint(ctx, tx, issue.ID, w.WatchInputs, int32(w.Revision), w.Instruction); err != nil {
+					return err
+				}
+				lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), declaredFP)
+				if err != nil {
+					return err
+				}
+				if unchanged && mode == "warn" {
+					slog.Info("time wakeup skip (warn): declared inputs unchanged, running", "wakeup_id", util.UUIDToString(w.ID), "issue_id", util.UUIDToString(issue.ID), "last_task_id", util.UUIDToString(lastTask))
+				}
+				if unchanged && mode == "block" {
+					if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+						return err
+					}
+					if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+						return err
+					}
+					details := skippedUnchangedDetails("declared_inputs", lastTask)
+					details["wakeup_id"] = util.UUIDToString(w.ID)
+					details["inputs"] = w.WatchInputs
+					if err := note(wakeupActivitySkipped, details); err != nil {
+						return err
+					}
+					return commit()
+				}
 			}
 		}
 	}
@@ -1773,6 +1821,8 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 		if heartbeatFP != "" {
 			taskContext[wakeupFingerprintKey] = heartbeatFP
+		} else if declaredFP != "" {
+			taskContext[wakeupFingerprintKey] = declaredFP
 		}
 		contextJSON, _ := json.Marshal(taskContext)
 		// A custom rule's resolved target carries its own squad identity.

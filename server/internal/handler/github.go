@@ -1306,10 +1306,33 @@ func (h *Handler) DeleteGitHubInstallation(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := h.Queries.DeleteGitHubInstallation(r.Context(), db.DeleteGitHubInstallationParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove installation")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// A missing row is an idempotent no-op: nothing changed, so nothing to audit.
+	if existing, err := qtx.GetGitHubInstallationByID(r.Context(), idUUID); err == nil && existing.WorkspaceID == wsUUID {
+		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind:        "github.installation.delete",
+			WorkspaceID: wsUUID,
+			TargetID:    existing.ID,
+			Before:      githubInstallationAuditFields(existing),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "github.installation.delete")
+			return
+		}
+	}
+	if err := qtx.DeleteGitHubInstallation(r.Context(), db.DeleteGitHubInstallationParams{
 		ID:          idUUID,
 		WorkspaceID: wsUUID,
 	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove installation")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove installation")
 		return
 	}

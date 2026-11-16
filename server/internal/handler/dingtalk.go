@@ -540,7 +540,15 @@ func (h *Handler) ForgetDingTalkGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "conversation id is required")
 		return
 	}
-	if _, err = h.Queries.ForgetDingTalkGroupPresence(r.Context(), db.ForgetDingTalkGroupPresenceParams{
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to forget dingtalk group")
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if _, err = qtx.ForgetDingTalkGroupPresence(ctx, db.ForgetDingTalkGroupPresenceParams{
 		WorkspaceID:    wsUUID,
 		InstallationID: installationUUID,
 		ConversationID: conversationID,
@@ -550,6 +558,17 @@ func (h *Handler) ForgetDingTalkGroup(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusInternalServerError, "failed to forget dingtalk group")
 		}
+		return
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "dingtalk.group.forget", WorkspaceID: wsUUID, TargetID: installationUUID,
+		Before: map[string]any{"conversation_id": conversationID},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "dingtalk.group.forget")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to forget dingtalk group")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -618,8 +637,12 @@ func (h *Handler) RegisterDingTalkBYO(w http.ResponseWriter, r *http.Request) {
 		InitiatorID: initiatorUUID,
 		AppKey:      body.ClientID,
 		AppSecret:   body.ClientSecret,
+		Audit:       h.chatInstallAuditHook(r, "dingtalk"),
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "dingtalk.install") {
+			return
+		}
 		switch {
 		case errors.Is(err, dingtalk.ErrInvalidAppKey), errors.Is(err, dingtalk.ErrInvalidAppSecret):
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -702,8 +725,7 @@ func (h *Handler) RevokeDingTalkInstallation(w http.ResponseWriter, r *http.Requ
 	} else if !h.canManageAgent(w, r, agent) {
 		return
 	}
-	if err := h.DingTalkInstall.Revoke(r.Context(), instUUID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to revoke installation")
+	if !h.revokeChatInstallation(w, r, "dingtalk", "dingtalk", wsUUID, instUUID) {
 		return
 	}
 	h.publish(protocol.EventDingTalkInstallationRevoked, uuidToString(wsUUID), "user", userID, map[string]any{
