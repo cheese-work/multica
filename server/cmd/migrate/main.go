@@ -161,6 +161,7 @@ var concurrentIndexCleanups = map[string]string{
 	"997_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
+	"999c_ci_watch_event_notify_uidx":                           "ci_watch_event_notify_uidx",
 	"9999939_agent_task_handoff_dispatch_idx":                   "agent_task_queue_handoff_dispatch_uidx",
 	"999f_task_supplement_replay_due_idx":                       "task_supplement_replay_due_idx",
 	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
@@ -593,6 +594,13 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		IndexRegclass: "ci_failure_event_created_at_idx",
 		TableRegclass: "ci_failure_event",
 		Columns:       []string{"created_at"},
+	},
+	"999c_ci_watch_event_notify_uidx": {
+		IndexRegclass: "ci_watch_event_notify_uidx",
+		TableRegclass: "ci_watch_event",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "signature_hash", "day"},
+		Predicate:     "kind = 'notify'::text",
 	},
 	"9999939_agent_task_handoff_dispatch_idx": {
 		IndexRegclass: "agent_task_queue_handoff_dispatch_uidx",
