@@ -711,7 +711,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	if err != nil {
 		return empty, err
 	}
-	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession)
+	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession, input.Proposal != nil && input.Action != nil && input.Action.Type == runBudgetRaiseType)
 	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
 		// A stopped task, a removed recipient or a lane that is gone cannot ask
 		// again, but an open proposal of this identity is reported as
