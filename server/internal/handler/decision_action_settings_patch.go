@@ -113,7 +113,7 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
 		err = validateCardLintSetting(map[string]any{key: value})
-	case key == askguard.SettingKey:
+	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
 	case key == decisiontx.SettingHeldMode:

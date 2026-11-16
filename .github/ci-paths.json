@@ -19,6 +19,13 @@
   "backend": [
     "server/**",
     "packages/core/runtimes/cli-version.ts",
+    "packages/core/issues/decision-action-preview.ts",
+    "e2e/decision-dm-card-renders.spec.ts",
+    "e2e/dm-budget-proposal-helpers.ts",
+    "e2e/fixtures.ts",
+    "e2e/env.ts",
+    "e2e/global-setup.ts",
+    "playwright.config.ts",
     "scripts/agent-cli-command-names.txt",
     "scripts/go-test-with-agent-cli-guard.sh",
     "scripts/go-test-db-exec.sh",

@@ -92,6 +92,7 @@ type runBroker struct {
 	mu     sync.Mutex
 	b      *broker.Broker
 	closed bool
+	fenced bool // set by Fence and kept: a broker started later is born fenced
 }
 
 // applyRunBroker is the per-run hook next to applyRestrictedHome. Only
@@ -164,6 +165,8 @@ type brokerCheckout struct {
 	TaskID, RepoURL, Branch, Base, Objects string
 	Bases                                  []string
 	Policy                                 func(context.Context) ([]string, error)
+	// Elevation, when set, makes the run's pushes and PR operations elevated.
+	Elevation *broker.Elevation
 }
 
 // start pins the broker to the run's first checkout; later calls change nothing.
@@ -181,13 +184,49 @@ func (rb *runBroker) start(c brokerCheckout) error {
 	b, err := broker.New(broker.Pin{
 		Repo: strconv.FormatInt(id, 10), Ref: "refs/heads/" + c.Branch, Base: c.Base,
 		RemoteURL: c.RepoURL, Objects: c.Objects, Tokens: rb.tokens, Slug: slug, Bases: c.Bases,
-		Task: c.TaskID, Policy: c.Policy,
+		Task: c.TaskID, Policy: c.Policy, Elevation: c.Elevation,
 	}, rb.Socket, rb.log)
 	if err != nil {
 		return err
 	}
+	if rb.fenced {
+		b.Fence()
+	}
 	rb.b = b
 	return nil
+}
+
+// Fence restricts the run's broker at once. The fence is recorded on the run:
+// before the first checkout there is no broker to fence yet, and the broker that
+// checkout starts is fenced from its first request. Safe on repeat.
+func (rb *runBroker) Fence() {
+	rb.mu.Lock()
+	rb.fenced = true
+	b := rb.b
+	rb.mu.Unlock()
+	if b != nil {
+		b.Fence()
+	}
+}
+
+// Drain waits for the broker's started operations to report; with no broker
+// started there are none.
+func (rb *runBroker) Drain(ctx context.Context) error {
+	rb.mu.Lock()
+	b := rb.b
+	rb.mu.Unlock()
+	if b == nil {
+		return nil
+	}
+	return b.Drain(ctx)
+}
+
+// OwnMessage is the broker's receipt check; false before the broker starts.
+func (rb *runBroker) OwnMessage(sha string, msg []byte) bool {
+	rb.mu.Lock()
+	b := rb.b
+	rb.mu.Unlock()
+	return b != nil && b.OwnMessage(sha, msg)
 }
 
 // Close ends the run's broker, which revokes every token it minted, and

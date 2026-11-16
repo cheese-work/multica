@@ -49,6 +49,15 @@ describe("approvableConfigChange", () => {
     expect(approvableConfigChange(action({ config_change: { ...change, meta } }))).toBeUndefined();
   });
 
+  it("accepts a workflow.steps.set change that edits only instructions, with or without a step target (CHE-6136)", () => {
+    // workflow.steps.set names its field workflow.instructions when only
+    // instructions change, and may edit several steps, so one step target is
+    // not always defined. The diff itself shows every changed step.
+    const steps = { ...change, diff_kind: "json" as const, meta: undefined };
+    expect(approvableConfigChange(action({ action_type: "workflow.steps.set", config_change: steps }))).toEqual(steps);
+    expect(approvableConfigChange(action({ action_type: "workflow.steps.set", config_change: change }))).toEqual(change);
+  });
+
   it("accepts a workflow run-budget change (CHE-5285)", () => {
     const budget = { ...change, field: "workflow.budget", diff_kind: "json" as const, after: { max_runs_per_issue: 40, include_child_prs: true }, meta: { workflow_name: "Production flow" } };
     expect(approvableConfigChange(action({ action_type: "workflow.budget.set", config_change: budget }))).toEqual(budget);
