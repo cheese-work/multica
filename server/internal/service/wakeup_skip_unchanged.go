@@ -93,6 +93,16 @@ func holdsDraftReturn(receipts []db.IssueWakeupReceipt) bool {
 	return false
 }
 
+// holdsRecovery reports a green that follows a red on the same head (CHE-4938).
+func holdsRecovery(receipts []db.IssueWakeupReceipt) bool {
+	for _, r := range receipts {
+		if strings.HasSuffix(r.EventKey, ":after-red") {
+			return true
+		}
+	}
+	return false
+}
+
 func skippedUnchangedDetails(rule string, lastTask pgtype.UUID) map[string]any {
 	return map[string]any{"rule": rule, "reason": wakeupOutcomeUnchanged, "last_task_id": util.UUIDToString(lastTask)}
 }

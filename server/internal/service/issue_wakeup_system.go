@@ -1639,8 +1639,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	commentFingerprint := ""
 	// Returning to draft is an event, not a state: each conversion is new, and
 	// the skip consumes the whole batch, not only its newest fact.
-	if !holdsDraftReturn(receipts) &&
-		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
+	// A green after a red of the same head carries the :after-red key: the red
+	// is a transition the snapshot cannot show, so that green always runs.
+	if !holdsDraftReturn(receipts) && !holdsRecovery(receipts) &&
+		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention || w.SystemRule.String == SystemRulePRChecksPassed) {
 		if inputFingerprint, prStates, commentFingerprint, err = prStateFingerprint(ctx, tx, issue.ID, agent.ID, "wakeup_system", w.SystemRule.String); err != nil {
 			return err
 		}

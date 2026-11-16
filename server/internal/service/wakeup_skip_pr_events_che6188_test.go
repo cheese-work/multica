@@ -30,7 +30,7 @@ func (e skipEnv) enablePassed(t *testing.T) {
 // A green after a red on the same head is a new event (CHE-4938): the red in
 // between is not in the snapshot, so a comparison cannot see it and the green
 // is never skipped. A repeated green of one head is dropped by the per-head
-// ledger before any comparison, so this rule is not in the skip list.
+// ledger before any comparison, so this rule carries the :after-red key, which the skip never covers.
 func TestChecksPassedAfterRedIsNeverSkipped(t *testing.T) {
 	e := newSkipEnv(t, true)
 	e.enablePassed(t)
@@ -43,6 +43,25 @@ func TestChecksPassedAfterRedIsNeverSkipped(t *testing.T) {
 	}
 	if got := e.skipped(t); got != 0 {
 		t.Fatalf("skip activities = %d, want 0", got)
+	}
+}
+
+// A green whose snapshot equals the last run's, with no red in between, starts
+// no run. The per-head ledger and the receipt key drop a repeat first; both rows
+// are removed here so the comparison is what decides.
+func TestChecksPassedWithUnchangedSnapshotIsSkipped(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.enablePassed(t)
+	e.checksPassed(t, "h1")
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `DELETE FROM issue_wakeup_pr_event WHERE event_key='github:acme/widget#157:passed:h1'`)
+	e.f.Exec(t, `DELETE FROM issue_wakeup_receipt WHERE event_key='github:acme/widget#157:passed:h1'`)
+	e.checksPassed(t, "h1")
+	if got := e.systemRuns(t, SystemRulePRChecksPassed); got != 1 {
+		t.Fatalf("checks-passed runs = %d, want 1", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities = %d, want 1", got)
 	}
 }
 
