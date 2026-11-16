@@ -540,6 +540,17 @@ var concurrentIndexCleanups = map[string]string{
 	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
 	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
 	"930_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
+	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
+	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
+	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",
+	"916_ask_recovery_notice_comment_index":                     "idx_ask_recovery_notice_comment",
+	"918_ask_repair_root_task_index":                            "idx_ask_repair_root_task",
+	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
+	"99970_system1_label_labeller_key_idx":                      "system1_label_labeller_key",
+	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
+	"999h_weekly_run_guard_refusal_open_uidx":                   "weekly_run_guard_refusal_open_uidx",
+	"999i_weekly_run_guard_allowance_issue_idx":                 "weekly_run_guard_allowance_issue_idx",
+	"999j_weekly_run_guard_refusal_action_idx":                  "weekly_run_guard_refusal_action_idx",
 }
 
 type requiredConcurrentIndex struct {
