@@ -35,11 +35,14 @@ type rowQuerier interface {
 // prStateFingerprint hashes linked PR state and issue comments, ignoring
 // unchanged comments from the agent's completed runs for this wakeup.
 // It returns "" when no PR is linked.
-func prStateFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID, ctxKey, ctxValue string) (string, json.RawMessage, string, error) {
+//
+// withoutPR lets an issue with no linked PR still have a snapshot (its status,
+// assignee and comments), for fires that are not about a PR.
+func prStateFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID, ctxKey, ctxValue string, withoutPR bool) (string, json.RawMessage, string, error) {
 	var fp, commentFingerprint string
 	var prStates json.RawMessage
 	err := db.QueryRow(ctx, `WITH linked_prs AS (
-			SELECT string_agg(jsonb_build_array(p.id, p.state, p.head_sha, p.mergeable_state, p.api_mergeable, p.api_merge_state_status, p.checks_rollup_state, p.review_state, p.review_head_sha, p.review_id, p.review_at)::text, ';' ORDER BY p.id) || '|' || (SELECT jsonb_build_array(i.status, i.assignee_type, i.assignee_id)::text FROM issue i WHERE i.id = $1) AS value,
+			SELECT count(*) AS pr_count, COALESCE(string_agg(jsonb_build_array(p.id, p.state, p.head_sha, p.mergeable_state, p.api_mergeable, p.api_merge_state_status, p.checks_rollup_state, p.review_state, p.review_head_sha, p.review_id, p.review_at)::text, ';' ORDER BY p.id), '') || '|' || (SELECT jsonb_build_array(i.status, i.assignee_type, i.assignee_id)::text FROM issue i WHERE i.id = $1) AS value,
 				jsonb_agg(jsonb_build_object('repo_owner', p.repo_owner, 'repo_name', p.repo_name, 'pr_number', p.pr_number, 'head_sha', p.head_sha, 'checks_rollup_state', p.checks_rollup_state, 'review_state', p.review_state, 'review_head_sha', p.review_head_sha) ORDER BY p.id) AS snapshot
 			FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id WHERE ip.issue_id = $1
 		), own_completed_tasks AS (
@@ -50,9 +53,9 @@ func prStateFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgt
 			FROM comment c LEFT JOIN own_completed_tasks t ON c.source_task_id = t.id
 			WHERE c.issue_id = $1 AND (t.id IS NULL OR c.updated_at > t.completed_at)
 		)
-		SELECT CASE WHEN linked_prs.value IS NULL THEN '' ELSE md5(linked_prs.value || '|' || COALESCE(issue_comments.value, '')) END,
+		SELECT CASE WHEN linked_prs.value IS NULL OR (linked_prs.pr_count = 0 AND NOT $5) THEN '' ELSE md5(linked_prs.value || '|' || COALESCE(issue_comments.value, '')) END,
 			COALESCE(linked_prs.snapshot, '[]'::jsonb), COALESCE(issue_comments.value, '')
-		FROM linked_prs CROSS JOIN issue_comments`, issueID, agentID, ctxKey, ctxValue).Scan(&fp, &prStates, &commentFingerprint)
+		FROM linked_prs CROSS JOIN issue_comments`, issueID, agentID, ctxKey, ctxValue, withoutPR).Scan(&fp, &prStates, &commentFingerprint)
 	return fp, prStates, commentFingerprint, err
 }
 
@@ -80,6 +83,16 @@ func unchangedSinceLastRun(ctx context.Context, db rowQuerier, issueID, agentID 
 	return id, status == "completed" && fresh && prev != nil && *prev == fingerprint, nil
 }
 
+// newestRunID is the agent's newest run on the issue, whatever started it.
+func newestRunID(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	err := db.QueryRow(ctx, `SELECT id FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 ORDER BY created_at DESC LIMIT 1`, issueID, agentID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil
+	}
+	return id, err
+}
+
 // holdsDraftReturn reports whether any pending fact is a returned-to-draft event.
 func holdsDraftReturn(receipts []db.IssueWakeupReceipt) bool {
 	for _, r := range receipts {
@@ -101,6 +114,23 @@ func holdsRecovery(receipts []db.IssueWakeupReceipt) bool {
 		}
 	}
 	return false
+}
+
+// Context key and value that tie every continuation-watchdog run of an issue
+// together. The watchdog arms a fresh one-shot wakeup per recovery, so the
+// wakeup id cannot (CHE-6189).
+const (
+	watchdogContextKey   = "wakeup_watchdog"
+	watchdogContextValue = "continuation"
+)
+
+// The recovery wakeup of multica-dotfiles scripts/continuation_watchdog
+// (recovery.instruction_text). Its deadline and outbox wakeups carry facts the
+// snapshot does not hold, so they never match.
+var continuationWatchdogText = regexp.MustCompile(`^\[continuation-watchdog [0-9a-f]{12}\] No continuation for `)
+
+func isContinuationWatchdog(w db.IssueWakeup) bool {
+	return w.Kind == "at" && !w.SystemRule.Valid && !w.DefaultRuleKey.Valid && continuationWatchdogText.MatchString(w.Instruction)
 }
 
 func skippedUnchangedDetails(rule string, lastTask pgtype.UUID) map[string]any {
