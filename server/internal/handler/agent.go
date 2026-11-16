@@ -3325,9 +3325,9 @@ func (h *Handler) ListWorkspaceWorkingAgents(w http.ResponseWriter, r *http.Requ
 			mineRelation = "any"
 		}
 		switch mineRelation {
-		case "assigned", "created", "involved", "any":
+		case "assigned", "created", "requested", "involved", "any":
 		default:
-			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, involved, or any")
+			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, requested, involved, or any")
 			return
 		}
 		userID, ok := requireUserID(w, r)
