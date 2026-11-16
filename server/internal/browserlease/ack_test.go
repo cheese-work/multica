@@ -425,3 +425,39 @@ func TestRetriedAckAdvancesAQueueThatTheFirstAckLeftWaiting(t *testing.T) {
 		t.Fatalf("b = %s after the retried ack, want active", l.State)
 	}
 }
+
+// An ended H lease and a queued S2 lease share the one C00 instance. The first ack must hand the
+// instance to the S2 waiter: it advances every class the instance can serve, not only the ended
+// lease's class. H mint is deferred, so the holder is an S2 lease re-labelled H.
+func TestFirstAckAdvancesAWaiterOfAnotherClassOnTheSameInstance(t *testing.T) {
+	for _, tc := range []struct{ name, ended, waiting string }{
+		{"ended H, waiting S2", ClassH, ClassS2},
+		{"ended S2, waiting H", ClassS2, ClassH},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, "c00-1")
+			ack := &AckService{pool: testPool, Queue: e.svc}
+			p := e.profile(ClassS2)
+			a, _ := e.mint(p)
+			e.now = e.now.Add(time.Second)
+			b, _ := e.mint(p)
+			if b.Lease.State != "queued" {
+				t.Fatalf("b = %s, want queued", b.Lease.State)
+			}
+			for id, class := range map[pgtype.UUID]string{a.Lease.ID: tc.ended, b.Lease.ID: tc.waiting} {
+				if _, err := testPool.Exec(context.Background(), `UPDATE browser_lease SET class = $2 WHERE id = $1`, id, class); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.svc.Release(context.Background(), e.ws, a.Lease.TaskID, a.Lease.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ack.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+				t.Fatalf("CleanupAck: %v", err)
+			}
+			if l := e.lease(b.Lease.ID); l.State != "active" || l.Epoch.Int64 != 2 {
+				t.Fatalf("b = %s epoch %d after the first ack, want active epoch 2", l.State, l.Epoch.Int64)
+			}
+		})
+	}
+}

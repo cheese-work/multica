@@ -109,11 +109,10 @@ func (s *AckService) withLockedInstance(ctx context.Context, ws, instance pgtype
 // quarantine. A repeat for an already acked epoch succeeds. An ack for a lease that has not
 // ended, or for a quarantined instance with nothing waiting, is refused.
 //
-// After the ack commits it advances the class queue, so the next waiter takes the instance at
-// once. If the advance fails the ack stays committed and the error is returned: the gateway
+// After the ack commits it advances every class queue, so the next waiter takes the instance at
+// once whatever its class. If the advance fails the ack stays committed and the error is returned: the gateway
 // retries, and the retry (an ack that already landed) advances again.
 func (s *AckService) CleanupAck(ctx context.Context, ws, instance pgtype.UUID, epoch int64) (AckResult, error) {
-	var class string // the ended lease's class; empty on a retry, when no holder is left
 	res, err := s.withLockedInstance(ctx, ws, instance, epoch, func(q *db.Queries, inst db.BrowserInstance) (string, error) {
 		holder, err := q.GetBrowserInstanceHolder(ctx, db.GetBrowserInstanceHolderParams{InstanceID: inst.ID, WorkspaceID: inst.WorkspaceID})
 		switch {
@@ -133,17 +132,14 @@ func (s *AckService) CleanupAck(ctx context.Context, ws, instance pgtype.UUID, e
 		if _, err := q.AckBrowserLeaseCleanup(ctx, db.AckBrowserLeaseCleanupParams{InstanceID: inst.ID, WorkspaceID: inst.WorkspaceID, Epoch: pgtype.Int8{Int64: epoch, Valid: true}}); err != nil {
 			return "", err // the holder is ended and unacked at this epoch under the row lock
 		}
-		class = holder.Class
 		return phaseIdleClean, nil
 	})
 	if err != nil || s.Queue == nil {
 		return res, err
 	}
-	classes := []string{class}
-	if class == "" {
-		classes = []string{ClassS0, ClassS2, ClassH}
-	}
-	for _, c := range classes {
+	// The ended lease's class does not decide who may take the instance: a C00 instance serves S2
+	// and H, so a waiter of any class that the instance serves is advanced.
+	for _, c := range []string{ClassS0, ClassS2, ClassH} {
 		if err := s.Queue.AdvanceQueue(ctx, ws, c); err != nil {
 			return AckResult{}, err
 		}
