@@ -289,7 +289,7 @@ multica agent env set <agent-id> --custom-env-stdin < agent-env.json
 multica agent update <agent-id> --mcp-config-file ./mcp.json
 ```
 
-- `--custom-env` 系のフラグは `agent create` にしかありません。後から変えるときは `agent env set` を使います。これは全体を置き換え、値を `****` にしたキーは元の値を保ちます。
+- `--custom-env` 系のフラグは `agent create` にしかありません。後から変えるときは `agent env set` を使います。これは全体を置き換え、値を `****` にしたキーは元の値を保ちます。保存されていないキー（名前を変えたキーなど）に `****` を指定すると 400 で拒否され、何も変更されません。
 - `agent update --mcp-config null` で MCP 設定を消去します。
 - `--custom-args` は JSON 配列で、起動引数の最後に置かれます。モデルは `--model` で選んでください。カスタム引数の中の `--model` を受け付けないツールもあります。
 - エージェントを呼び出せる人は `--permission-mode` で決めます。`private` は所有者だけ、`public_to` は `--public-to-workspace` または `--public-to-member <user-id>` と組み合わせます。`--visibility private|workspace` は古い書き方で、`--permission-mode` に対応付けられます。両方を指定した場合は `--permission-mode` が優先されます。
@@ -308,6 +308,8 @@ multica runtime rename <runtime-id> "Office Mac"
 multica runtime usage <runtime-id>
 multica runtime activity <runtime-id>
 ```
+
+`daemon restart` は、カスタムユニットと起動設定を含む既存の Linux systemd ユーザーサービスを維持します。停止前に、サービスマネージャーで対象 daemon の PID を確認します。ネイティブの停止判定（メンテナンス保持中は `--maintenance-token` が必要）を使用し、自動再起動を待つか、停止済みの同じサービスを起動します。成功には、90 秒以内にサービスの PID が変わり、稼働中のプロファイルが一致することが必要です。所有関係の不一致や停止結果が不明な場合は、強制終了や別の子プロセスの起動をせずにエラーを返します。管理対象タスクからの daemon 再起動は引き続き禁止されます。
 
 ```bash
 multica daemon autostart enable
@@ -344,6 +346,8 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `--lead` にはメンバーまたはエージェントの名前を指定します。`--default-branch-hint` はリポジトリの既定ブランチをエージェントに伝えるだけで、ブランチは切り替えません。
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。設定は `background_agents` の `routing` ジョブとして保存されます。これらのフラグは `multica workspace background-agents set routing` の別名で、従来の `/routing-agent` API ルートも 1 リリースの間は別名として残ります。
+- `multica workspace update --time-wakeup-skip-mode off|warn|block` は、ワークスペースの時刻ウェイクアップのスキップモード（`settings.time_wakeup_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみで、変更はすべてアクティビティログに記録されます。`off` で確認をオフにし、`warn` と `block` でオンにします。
+- `multica workspace update --ask-guard-mode off|warn|block` は、質問ガードのモード（`settings.ask_guard_mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。コマンドは保存後のワークスペースを表示し、`multica workspace get` でも `settings` にモードが表示されます。`off` でガードをオフにし、`warn` は違反を数えるだけで通し、`block` は拒否します。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 - `--mode script --script <name> [--arg <value>]...` は、モデルセッションなしでエージェントのタスクトークンの下、許可リストにあるスクリプトを 1 つ実行します。`--script` と `--arg` には `--mode script` が必要で、`--mode script` には `--script` が必要です。`--description` は実行されません。デーモンに許可リストがない場合、すべてのスクリプトタスクは安全側で失敗します。`--output json` はスクリプト名と引数を `script_config` として表示します。`autopilot update --mode <他のモード>` はスクリプトを消去します。 タスク終了時、サーバーはタスクトークンの削除をベストエフォートで行います。削除に失敗した場合、トークンは有効期限まで有効なままで、それより早く失効させる仕組みはありません。実行結果の `script` にスクリプト名、引数リストの SHA-256、終了コード、所要時間が記録され、削除に失敗した場合は `token_revoke_failed` が設定されます。
 
@@ -369,6 +373,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 ```
 
 `decision` カードの各選択肢は、選ばれた後に誰が動くかを示せます。`after_choice` に `agent_run`、`human_steps`、`record_only` のいずれかを設定します。`agent_run` の選択肢は `agent_commands` を列挙します。1 つ以上の argv 配列で、例は `["$MULTICA_CLI_PATH", "daemon", "restart"]` です。1 つの文字列で渡したコマンドは、サーバーがシェル文を解析しないため、フィールド名付きで拒否されます。コンソール専用の画面を使う選択肢は、代わりに `agent_surface` にカタログのキーを設定します。この検査は型付きフィールドだけを読み、`what_happens` は読みません。各コマンドをツール名と先頭の語に正規化し(パス、`.exe`、グローバルフラグ `--profile`、`--server-url`、`--workspace-id`、`--debug` は除去)、ワークスペース設定 `agent_cannot_do` と比較します。これはエージェントの実行ではできないことの `{key, tool, subcommand, human_step}` 一覧です。この設定がない場合、エントリは `multica` の `daemon restart` と `daemon stop` です。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` などのラッパーは実際のコマンドを隠すため、コマンド自体を argv で渡してください。ワークスペース設定 `agent_cannot_do_mode`(`off`、`warn`、`block`。既定は `off`)が結果を決めます。`warn` ではカードを作成し、応答にヒントを付けます。`block` ではサーバーが `400` を返し、選択肢のラベル、カタログのキー、`human_steps` に書く人の手順を示し、カードは作成しません。`warn` と `block` では、`after_choice` のない選択肢はヒントが 1 件付くか、フィールド名付きで拒否されます。アクションカードと免除トピックのカードは検査しません。
+
+ワークスペース設定 `decision_card_lint_mode`(`off`、`warn`、`block`。既定は `off`)は、選択肢カードの文面を検査します。`warn` ではカードを作成し、指摘ごとに 1 件のヒントを応答に付けます。`block` ではサーバーが理由コードとフィールドパスを付けて `400` を返し、カードは作成しません。コードは次のとおりです。`weak_cons` は、選択肢のデメリットがすべて「あなたの時間」(「takes 1 minute of your time」)または確認・レビューをもう 1 回行うことだけの場合。`option_markdown` は、`label`、`what_happens`、`pros`、`cons` に表、見出し、画像、HTML、コードブロック、Mermaid ブロックがある場合(太字、斜体、インラインコード、リスト、リンクは使えます)。`option_leak` は、選択肢の文面が推奨を示す場合(「recommended」、「(rec)」、または 1 つのラベルだけの太字)。`default_leak` は、クラス `spend`、`deploy`、`publish`、`irreversible`、`product_direction` で `default_if_no_reply` が選択肢を名指しする場合(「No action until you pick.」と書いてください)。英語とベトナム語の言い回しを照合します。アクションカードと免除トピックのカードは検査しません。 カードの issue コメントに質問先の人へのメンションがない場合、サーバーがメンションを追加し `mention_missing` をログに記録します。拒否はされません。
 
 ## コマンド概要
 
@@ -501,7 +507,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `copy <agent-id>` | 新しいエージェントとして複製。元のエージェントは変更されません | `--name`（デフォルトは元の名前 + ` (copy)`）、`--runtime-id`（別のランタイムへ複製する場合は `--model` の同時指定が必須）、`--no-skills`；`custom_env`、`mcp_config`、`runtime_config` などの機密設定は複製されないため、`create` と同じフラグで再指定してください |
 | | `tasks <id>` | エージェントの実行を表示 | |
 | | `avatar <id>` | アバターをアップロード | |
-| | `env get/set <agent-id>` | カスタム環境変数の読み書き（エージェントの所有者、またはワークスペースの owner/admin。読み取りはすべて記録される） | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
+| | `env get/set <agent-id>` | カスタム環境変数の書き込みとキーの一覧（エージェントの所有者、またはワークスペースの owner/admin）。値は返されません。`get` は各キーとそのソースを表示し、`set`/`patch` のレスポンスはすべての値をマスクします | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
 | | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
 | `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可）, `--script`, `--arg` |
@@ -566,7 +572,7 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。承認しても回答が記録されるだけです。サーバーは意図を読み取れないため、そのようなカードを拒否せず、決定や選択肢がワークフロー・エージェント・スクワッド・ワークスペース・予算の変更に見える場合（または許可リストのアクション種別を含む場合）に助言ヒントを付けます。その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。どちらのコマンドも 1 つ以上の issue ID を受け取ります：`multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<目的>"`。ID が 1 つなら従来の単一提案のままです。タスクトークンで複数の ID を渡すと、バッチ経路を 1 回だけ呼び、カードのリンクを 1 つ表示します。`--goal` でバッチに名前を付けられ（既定：操作と issue 数）、`--output json` はバッチ ID と issue ごとの提案 ID を返します。個人アクセストークンでは ID ごとに個別のリクエストを開きます。バッチ経路にはチャットタスクが必要で、issue は 25 件までです。サーバーは raise のバッチを 1 つのパスキーで承認しますが、top-up のバッチは承認時に拒否するため、top-up は 1 件ずつ承認してください。
 
-実行予算の次の一手: issue の 80 % 通知には、数値とそのまま実行できるコマンドが付きます。例: `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。予算が拒否した実行は、エラーコード `run_budget_exhausted` と `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card`、`next_command` を返します。`multica issue budget get <issue> --output json` も `open_card` と `next_command` を返します。issue の現在のウィンドウに引き上げまたは追加ウィンドウのカードが開いている間、`next_command` はそのカードを待つよう伝え、`multica issue budget raise` を再度実行しても新しいカードは開かず同じカードを返します。タスクトークンでは、issue タスクの `--for` は既定でワークスペースのオーナーになり、ヘルプには `raise` だけが表示されます。`top-up` はメンバーが引き続き使えます。サーバー、メンバー、エージェントがカードを開くたびに、アクターの種別、アクター、アクション種別を記録する `run_budget_ask` アクティビティ行が 1 件追加されます。
+実行予算の次の一手: issue の 80 % 通知には、数値とそのまま実行できるコマンドが付きます。例: `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。予算が拒否した実行は、エラーコード `run_budget_exhausted` と `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card`、`next_command` を返します。`multica issue budget get <issue> --output json` も `open_card` と `next_command` を返します。issue の現在のウィンドウに引き上げまたは追加ウィンドウのカードが開いている間、`next_command` はそのカードを待つよう伝え、`multica issue budget raise` を再度実行しても新しいカードは開かず同じカードを返します。タスクトークンでは、issue タスクの `--for` は既定でワークスペースのオーナーになり、ヘルプには `raise` だけが表示されます。`top-up` はメンバーが引き続き使えます。ワークスペース内の任意の issue のタスクは、別の issue（たとえば自身ではタスクを実行できない予算超過の issue）の `raise` カードを開けます。カードには引き続き人によるパスキー承認が必要で、承認前には何も適用されません。サーバー、メンバー、エージェントがカードを開くたびに、アクターの種別、アクター、アクション種別を記録する `run_budget_ask` アクティビティ行が 1 件追加されます。
 
 適用済みのアクションは、取り消し可能な間、本人が取り消せます。`multica decision revoke <request-id> --why "<理由>"` を実行します。アクションが取り消し可能なのは、適用済みで、その種類に正確な逆操作があり、まだ取り消されていない場合だけです。このリリースで逆操作を持つのは `agent.pause`（逆操作は `agent.resume`）のみで、承認によってエージェントが一時停止され、その後に誰も一時停止状態を変更していない場合に限ります。それ以外のアクション種別は取り消せないままです。取り消せるのは依頼の宛先の本人だけで、承認と同じロール規則が適用されます。passkey が必要なアクションはアプリで取り消します。サーバーは取り消した人、日時、理由を記録し、逆操作を実行して、依頼したエージェントを結果 `revoked` で起こします。却下、期限切れ、未適用、議論のみ、または取り消し済みの判断は取り消せません。`multica decision get <request-id>` は `revocable` を表示し、取り消し後は `revoke` レコード（`at`、`by`、`reason`）も表示します。
 

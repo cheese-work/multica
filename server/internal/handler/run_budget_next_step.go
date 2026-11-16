@@ -126,6 +126,11 @@ type runBudgetView struct {
 	service.RunBudgetSnapshot
 	OpenCard    *runBudgetCard `json:"open_card"`
 	NextCommand string         `json:"next_command,omitempty"`
+	// WeeklyRuns and WeeklyLimit are the weekly run guard's count and limit in
+	// force (CHE-6172); both are 0 when the guard is off. While the guard
+	// refuses, Blocking names it.
+	WeeklyRuns  int64 `json:"weekly_runs"`
+	WeeklyLimit int64 `json:"weekly_limit"`
 }
 
 // recordRunBudgetAsk writes the one activity row of an opened ask. A system ask

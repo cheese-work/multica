@@ -606,8 +606,10 @@ type Daemon struct {
 	// login-shell probe + version detection instead of one per task (MUL-4486).
 	healGroup singleflight.Group
 
-	wsHBMu      sync.RWMutex         // guards wsHBLastAck
-	wsHBLastAck map[string]time.Time // runtime_id -> last successful WS heartbeat ack timestamp
+	wsHBMu      sync.RWMutex            // guards wsHBLastAck
+	wsHBLastAck map[string]time.Time    // runtime_id -> last successful WS heartbeat ack timestamp
+	wsHBSent    map[string][]wsSentBeat // runtime_id -> queued WS heartbeats not yet acked (guarded by wsHBMu)
+	wsHBSeq     atomic.Uint64
 
 	// reconcile fans out a "re-check server state now" signal to subscribers
 	// (watchTaskCancellation, workspaceSyncLoop) so the WS connect/reconnect
@@ -657,8 +659,9 @@ type Daemon struct {
 	pendingWorkInflight map[string]struct{}  // runtime_id -> hint-driven heartbeat in flight
 	pendingWorkLastRun  map[string]time.Time // runtime_id -> when the last hint-driven heartbeat started
 
-	cancelFunc context.CancelFunc // set by Run(); called by triggerRestart
-	rootCtx    context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
+	cancelFunc   context.CancelFunc // set by Run(); called by triggerRestart
+	updateOutbox sync.WaitGroup     // in-flight update result deliveries (enqueueUpdateResult)
+	rootCtx      context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -717,13 +720,9 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
-	// Reload drain (CHE-5453), also guarded by claimMu. While draining, pollers
-	// claim nothing new so the running tasks can finish; reloadKick then wakes
-	// autoUpdateLoop the moment the daemon goes idle. See startReloadDrain.
-	draining     bool
-	drainRetryAt time.Time // no new drain before this (backoff after a timeout)
-	drainTimer   *time.Timer
-	reloadKick   chan struct{} // cap 1; created in New
+	// reloadKick wakes autoUpdateLoop the moment a pending reload finds the
+	// daemon idle. See kickReloadIfIdle.
+	reloadKick chan struct{} // cap 1; created in New
 
 	// pause is the server-reported machine pause, refreshed by every heartbeat
 	// ack (see pause.go). nil when the machine is not paused.
@@ -800,7 +799,7 @@ type Daemon struct {
 	// runUpdateFn executes the brew-or-download upgrade. Set to d.runUpdate by
 	// New() and overridable in tests so the auto-update poller can be exercised
 	// without touching the real network or the brew CLI.
-	runUpdateFn func(targetVersion string) (string, error)
+	runUpdateFn func(ctx context.Context, targetVersion string) (string, error)
 
 	// updateProgress is set while a server-triggered update runs, so the fork
 	// download can report its progress. Nil for auto-updates.
@@ -2102,6 +2101,49 @@ func (d *Daemon) wsHeartbeatRecentlyAcked(runtimeID string) bool {
 	return time.Since(last) < d.wsHeartbeatFreshness()
 }
 
+// wsSentBeat is a queued WS heartbeat frame and when it was queued.
+type wsSentBeat struct {
+	seq uint64
+	at  time.Time
+}
+
+// wsMaxUnacked caps the unacked frames kept per runtime; the oldest is dropped.
+const wsMaxUnacked = 64
+
+// noteWSHeartbeatSent remembers a queued frame so its ack can be anchored.
+func (d *Daemon) noteWSHeartbeatSent(runtimeID string, seq uint64, at time.Time) {
+	d.wsHBMu.Lock()
+	defer d.wsHBMu.Unlock()
+	if d.wsHBSent == nil {
+		d.wsHBSent = make(map[string][]wsSentBeat)
+	}
+	d.wsHBSent[runtimeID] = append(d.wsHBSent[runtimeID], wsSentBeat{seq, at})
+	if s := d.wsHBSent[runtimeID]; len(s) > wsMaxUnacked {
+		d.wsHBSent[runtimeID] = s[1:]
+	}
+}
+
+// wsHeartbeatAnchor returns the send time of the frame an ack answers: the
+// frame whose sequence it echoes, or, from a server that does not echo, the
+// oldest frame not yet acknowledged. Frames up to it are forgotten. With no
+// match it falls back to now, which counts the ack's own travel for free.
+func (d *Daemon) wsHeartbeatAnchor(runtimeID string, seq uint64) time.Time {
+	d.wsHBMu.Lock()
+	defer d.wsHBMu.Unlock()
+	s := d.wsHBSent[runtimeID]
+	i := 0
+	if seq != 0 {
+		for i < len(s) && s[i].seq != seq {
+			i++
+		}
+	}
+	if i >= len(s) {
+		return time.Now()
+	}
+	d.wsHBSent[runtimeID] = s[i+1:]
+	return s[i].at
+}
+
 // clearWSHeartbeatAcks drops all WS heartbeat freshness records. Called on
 // WS disconnect so HTTP heartbeats resume on the next tick.
 func (d *Daemon) clearWSHeartbeatAcks() {
@@ -2109,6 +2151,7 @@ func (d *Daemon) clearWSHeartbeatAcks() {
 	for k := range d.wsHBLastAck {
 		delete(d.wsHBLastAck, k)
 	}
+	clear(d.wsHBSent)
 	d.wsHBMu.Unlock()
 }
 
@@ -4593,6 +4636,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
+	anchor := time.Now()
 	resp, err := d.client.SendHeartbeat(ctx, d.heartbeatRequest(rid))
 	if err != nil {
 		if ctx.Err() == nil {
@@ -4616,7 +4660,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		go d.handleRuntimeGone(rid)
 		return false
 	}
-	d.handleHeartbeatActions(ctx, rid, resp)
+	d.handleHeartbeatActions(ctx, rid, resp, anchor)
 	return false
 }
 
@@ -4624,11 +4668,14 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 // transport (HTTP POST /api/daemon/heartbeat or WS daemon:heartbeat_ack).
 // Each action is dispatched in its own goroutine so a slow handler cannot
 // block subsequent heartbeats.
-func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse) {
+//
+// anchor is the monotonic send time of the heartbeat that produced resp; the
+// server's relative deadlines count from it.
+func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse, anchor time.Time) {
 	if resp == nil {
 		return
 	}
-	d.applyHeartbeatPause(resp.Paused)
+	d.applyHeartbeatPause(resp.Paused, anchor)
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
@@ -4639,7 +4686,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 		)
 	}
 	if resp.PendingUpdate != nil {
-		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
+		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate, anchor)
 	}
 	if resp.PendingModelList != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
@@ -4739,6 +4786,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
+	anchor := time.Now()
 	resp, err := d.client.SendHeartbeat(hbCtx, d.heartbeatRequest(runtimeID))
 	cancel()
 	if err != nil {
@@ -4757,7 +4805,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	d.logger.Debug("pending work hint served", "runtime_id", runtimeID, "kind", kind)
-	d.handleHeartbeatActions(ctx, runtimeID, resp)
+	d.handleHeartbeatActions(ctx, runtimeID, resp, anchor)
 }
 
 // handleModelList resolves the provider's supported models (via static
@@ -5065,49 +5113,132 @@ func (d *Daemon) reportRuntimeResultWithRetry(ctx context.Context, kind, runtime
 		"kind", kind, "runtime_id", runtimeID, "request_id", requestID, "error", lastErr)
 }
 
+// Typed reasons on a `failed` update result. The error text for people stays.
+const (
+	updateReasonBusy         = "busy"
+	updateReasonLateDelivery = "late_delivery"
+	updateReasonDeadline     = "deadline"
+	updateReasonError        = "error"
+)
+
+func failedUpdate(reason, text string) map[string]any {
+	return map[string]any{"status": "failed", "reason": reason, "error": text}
+}
+
+// updateDeadline is when a server-initiated update must stop holding claims:
+// the server's finish_within_ms from the heartbeat send time, less a margin.
+// A request without it (the Update button) keeps today's bound.
+func updateDeadline(update *PendingUpdate, anchor time.Time) time.Time {
+	if update.FinishWithinMs == nil {
+		return time.Now().Add(manualUpdateBound)
+	}
+	return anchor.Add(time.Duration(*update.FinishWithinMs)*time.Millisecond - updateDeadlineMargin)
+}
+
+// Phases of one server-initiated update, guarded by updateWatch.mu.
+const (
+	updateInstalling = iota // runUpdateFn is running
+	updateInstalled         // installed, waiting for the `completed` delivery
+	updateExpired           // the deadline passed first; the barrier is already released
+)
+
+type updateWatch struct {
+	mu    sync.Mutex
+	phase int
+}
+
 // handleUpdate performs the CLI update when triggered by the server via heartbeat.
-func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *PendingUpdate) {
+// anchor is the send time of the heartbeat that carried the request.
+func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *PendingUpdate, anchor time.Time) {
+	if update.StartWithinMs != nil && time.Since(anchor) >= time.Duration(*update.StartWithinMs)*time.Millisecond {
+		d.logger.Warn("update not started: delivery was late", "runtime_id", runtimeID, "update_id", update.ID)
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonLateDelivery,
+			"the update request reached the daemon after its start window"))
+		return
+	}
+
 	// Desktop-managed daemons share their CLI binary with the Electron app,
 	// which is responsible for shipping and replacing it. Letting the daemon
 	// self-update would just get overwritten on the next Desktop launch and
 	// could brick the embedded binary mid-update. Refuse cleanly.
 	if d.cfg.LaunchedBy == "desktop" {
 		d.logger.Info("refusing CLI self-update: daemon is managed by Desktop", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  "CLI is managed by Multica Desktop — update the Desktop app to upgrade the CLI",
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonError,
+			"CLI is managed by Multica Desktop — update the Desktop app to upgrade the CLI"))
 		return
 	}
 
-	switch d.tryBeginServerUpdate(ctx) {
+	deadline := updateDeadline(update, anchor)
+	// Reports and acquisition share the deadline: a claim stuck in flight cannot
+	// hold the barrier past it (tryBeginServerUpdate releases it on ctx.Done).
+	reportCtx, cancelReports := context.WithDeadline(ctx, deadline)
+	defer cancelReports()
+	switch d.tryBeginServerUpdate(reportCtx) {
 	case serverUpdateAlreadyRunning:
 		d.logger.Warn("update deferred: another update is already in progress", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  "another runtime update is already in progress on this machine",
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonBusy,
+			"another runtime update is already in progress on this machine"))
 		return
 	case serverUpdateRuntimeBusy:
+		if !time.Now().Before(deadline) {
+			d.logger.Warn("update not started: deadline passed while waiting for claims to drain", "runtime_id", runtimeID, "update_id", update.ID)
+			d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonDeadline,
+				"the update did not finish before its deadline"))
+			return
+		}
 		d.logger.Info("update deferred: task or claim in progress", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  "runtime update deferred because agent work is starting or still active; retry when the machine is idle",
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonBusy,
+			"runtime update deferred because agent work is starting or still active; retry when the machine is idle"))
 		return
 	}
 	restarting := false
+	releaseBarrier := sync.OnceFunc(d.releaseClaimBarrier)
 	defer func() {
 		if !restarting {
-			d.releaseClaimBarrier()
+			releaseBarrier()
 			d.updating.Store(false)
 		}
 	}()
 
+	// Acquisition may have waited for claims to drain: recheck the start cutoff.
+	if update.StartWithinMs != nil && time.Since(anchor) >= time.Duration(*update.StartWithinMs)*time.Millisecond {
+		d.logger.Warn("update not started: start window passed while waiting for claims to drain", "runtime_id", runtimeID, "update_id", update.ID)
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonLateDelivery,
+			"the update could not start within its start window"))
+		return
+	}
+
+	// The watchdog frees claims at the deadline whatever runUpdateFn or the
+	// report endpoint are doing. The deadline result goes through the outbox, on
+	// the root context, so the expired deadline cannot swallow it.
+	var w updateWatch
+	expire := func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		prev := w.phase
+		if prev == updateExpired {
+			return
+		}
+		w.phase = updateExpired
+		releaseBarrier()
+		d.logger.Warn("CLI update passed its deadline; claims allowed", "runtime_id", runtimeID, "update_id", update.ID)
+		if prev == updateInstalling {
+			d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonDeadline,
+				"the update did not finish before its deadline"))
+		}
+	}
+	timer := time.AfterFunc(time.Until(deadline), expire)
+	defer timer.Stop()
+
+	// The install context stays off the heartbeat context, which ends when
+	// the runtime set changes.
+	installCtx, cancelInstall := context.WithDeadline(context.Background(), deadline)
+	defer cancelInstall()
+
 	d.logger.Info("CLI update requested", "runtime_id", runtimeID, "update_id", update.ID, "target_version", update.TargetVersion)
 
 	// Report running status.
-	d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+	d.reportUpdateResult(reportCtx, runtimeID, update.ID, map[string]any{
 		"status": "running",
 	})
 
@@ -5115,14 +5246,27 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		return d.client.ReportUpdateResult(ctx, runtimeID, update.ID, payload)
 	})
 	d.updateProgress.Store(rep)
-	output, err := d.runUpdateFn(update.TargetVersion)
+	output, err := d.runUpdateFn(installCtx, update.TargetVersion)
 	d.updateProgress.Store(nil)
 	rep.flush() // the last bytes_done and phase land before the terminal report, and no late one after
+
+	if !time.Now().Before(deadline) {
+		expire() // a no-op when the watchdog already ran; a late return sends no second result
+		return
+	}
+	w.mu.Lock()
+	if w.phase == updateExpired {
+		w.mu.Unlock()
+		return
+	}
+	w.phase = updateInstalled
+	w.mu.Unlock()
+
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
 		d.logger.Info("CLI already on the server build; no restart", "runtime_id", runtimeID, "update_id", update.ID)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+		d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 			"status": "completed",
 			"output": "Already on the server build",
 		})
@@ -5130,18 +5274,33 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	}
 	if err != nil {
 		d.logger.Error("CLI update failed", "error", err, "output", output)
-		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
-			"status": "failed",
-			"error":  err.Error(),
-		})
+		d.enqueueUpdateResult(runtimeID, update.ID, failedUpdate(updateReasonError, err.Error()))
 		return
 	}
 
 	d.logger.Info("CLI update completed successfully", "output", output)
-	d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+	delivered := d.enqueueUpdateResult(runtimeID, update.ID, map[string]any{
 		"status": "completed",
 		"output": fmt.Sprintf("Updated to %s", update.TargetVersion),
 	})
+	// The restart waits for the `completed` delivery, but never longer than
+	// updateCompletedWait and never past the deadline.
+	select {
+	case <-delivered:
+	case <-time.After(min(updateCompletedWait, time.Until(deadline))):
+	}
+
+	// Restart only while the deadline has not passed and the barrier is ours.
+	// Otherwise the new binary waits for the idle restart (self-reload).
+	w.mu.Lock()
+	if w.phase == updateExpired || !time.Now().Before(deadline) {
+		w.phase = updateExpired
+		releaseBarrier()
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	timer.Stop()
 
 	// Trigger daemon restart with the new binary.
 	d.triggerRestart()
@@ -5206,14 +5365,14 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 // `updating` CAS guard and for reporting status back to the server / triggering
 // the restart — extracted so the server-triggered path (handleUpdate) and the
 // auto-update poller (autoUpdateLoop) share the exact same execution body.
-func (d *Daemon) runUpdate(targetVersion string) (string, error) {
+func (d *Daemon) runUpdate(ctx context.Context, targetVersion string) (string, error) {
 	if err := cli.CheckUpdateFreeze(); err != nil {
 		return "", err
 	}
 	if forkUpdateSource() {
 		// targetVersion is an upstream release tag from the server or poller; the
 		// fork source ignores it and takes the build its own server carries.
-		return d.runForkUpdate()
+		return d.runForkUpdate(ctx)
 	}
 	if cli.IsBrewInstall() {
 		d.logger.Info("updating CLI via Homebrew...")
@@ -5248,6 +5407,91 @@ func (d *Daemon) reportUpdateResult(ctx context.Context, runtimeID, updateID str
 	d.reportUpdateResultWithRetry(ctx, runtimeID, updateID, func(ctx context.Context) error {
 		return d.client.ReportUpdateResult(ctx, runtimeID, updateID, payload)
 	})
+}
+
+// Result outbox timings (overridable for tests): each send has its own
+// timeout, retries follow updateReportBackoffs and then every
+// updateRetryInterval, and a result is dropped updateOutboxMaxAge after it was
+// queued. updateCompletedWait bounds how long a successful install waits for
+// its `completed` delivery before restarting.
+var (
+	updateSendTimeout   = 10 * time.Second
+	updateRetryInterval = 15 * time.Second
+	updateOutboxMaxAge  = 5 * time.Minute
+	updateCompletedWait = 10 * time.Second
+)
+
+// updateDeadlineMargin is kept off the server's finish_within_ms so the daemon
+// stops, and reports, before the server's own deadline (overridable for tests).
+var updateDeadlineMargin = 60 * time.Second
+
+// enqueueUpdateResult delivers a terminal update result on the daemon root
+// context, so a cancelled heartbeat context, an expired update deadline or a
+// slow report endpoint can neither lose it nor hold the claim barrier. The
+// returned channel closes when delivery ends (2xx, 4xx, bound or shutdown).
+// No disk persistence: if the process dies first, the server ends the cycle
+// as failed with no daemon result.
+func (d *Daemon) enqueueUpdateResult(runtimeID, updateID string, payload map[string]any) <-chan struct{} {
+	done := make(chan struct{})
+	ctx, cancel := context.WithTimeout(d.recoveryContext(), updateOutboxMaxAge)
+	d.updateOutbox.Add(1)
+	go func() {
+		defer d.updateOutbox.Done()
+		defer close(done)
+		defer cancel()
+		d.sendUpdateResult(ctx, runtimeID, updateID, payload)
+	}()
+	return done
+}
+
+func (d *Daemon) sendUpdateResult(ctx context.Context, runtimeID, updateID string, payload map[string]any) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		wait := updateRetryInterval
+		if attempt < len(updateReportBackoffs) {
+			wait = updateReportBackoffs[attempt]
+		}
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				d.logUpdateOutboxStop(ctx, runtimeID, updateID, attempt, lastErr)
+				return
+			case <-time.After(wait):
+			}
+		}
+
+		sendCtx, cancel := context.WithTimeout(ctx, updateSendTimeout)
+		err := d.client.ReportUpdateResult(sendCtx, runtimeID, updateID, payload)
+		cancel()
+		if err == nil {
+			if attempt > 0 {
+				d.logger.Info("CLI update result delivered after retry",
+					"runtime_id", runtimeID, "update_id", updateID, "attempt", attempt+1)
+			}
+			return
+		}
+		lastErr = err
+
+		var reqErr *requestError
+		if errors.As(err, &reqErr) && reqErr.StatusCode >= 400 && reqErr.StatusCode < 500 {
+			d.logger.Error("CLI update result rejected — not retrying",
+				"runtime_id", runtimeID, "update_id", updateID,
+				"status", reqErr.StatusCode, "error", err)
+			return
+		}
+		if ctx.Err() != nil {
+			d.logUpdateOutboxStop(ctx, runtimeID, updateID, attempt+1, lastErr)
+			return
+		}
+		d.logger.Warn("CLI update result failed — will retry",
+			"runtime_id", runtimeID, "update_id", updateID, "attempt", attempt+1, "error", err)
+	}
+}
+
+func (d *Daemon) logUpdateOutboxStop(ctx context.Context, runtimeID, updateID string, attempts int, lastErr error) {
+	d.logger.Error("CLI update result not delivered — outbox stopped",
+		"runtime_id", runtimeID, "update_id", updateID,
+		"attempts", attempts, "reason", ctx.Err(), "last_error", lastErr)
 }
 
 func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, updateID string, fn func(context.Context) error) {
@@ -5299,7 +5543,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims || d.draining || d.heldPauseNow() != nil {
+	if d.pauseClaims || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++
@@ -8952,11 +9196,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	} else {
 		selfBin = agentEnv["MULTICA_CLI_PATH"]
 	}
-	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
-	// failure only costs the guard, never the run.
-	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
-		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
-	}
 	// Hand the guard the workspace's stored policy (CHE-5204); without one it
 	// keeps the compiled default.
 	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
@@ -9025,6 +9264,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, runIsolated, d.cfg.Broker, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
+	}
+	defer runBrk.Close()
+	// Front gh and git with the guard shims for every runtime (CHE-5194 T2).
+	// After applyRunBroker, so the guard hands over to the broker shims and
+	// never around them. A failure only costs the guard, never the run.
+	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
+		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -9292,6 +9542,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// execution window and always remove the credential afterwards.
 	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
 	checkoutTask.StableDir = stableCwd
+	checkoutTask.Broker = runBrk
 	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 

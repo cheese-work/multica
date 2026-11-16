@@ -72,12 +72,12 @@ func TestHeartbeatAck_PauseGatesClaimsUntilCleared(t *testing.T) {
 	}
 	d.exitClaim()
 
-	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{Paused: pausedUntil(time.Hour)})
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{Paused: pausedUntil(time.Hour)}, time.Now())
 	if d.tryEnterClaim() {
 		t.Fatal("claim allowed while the server reports a pause")
 	}
 
-	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{})
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{}, time.Now())
 	if !d.tryEnterClaim() {
 		t.Fatal("claim still refused after an ack without a pause")
 	}
@@ -86,7 +86,7 @@ func TestHeartbeatAck_PauseGatesClaimsUntilCleared(t *testing.T) {
 
 func TestHeartbeatAck_ExpiredPauseDoesNotGateClaims(t *testing.T) {
 	d := &Daemon{logger: slog.Default()}
-	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{Paused: pausedUntil(-time.Minute)})
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{Paused: pausedUntil(-time.Minute)}, time.Now())
 	if !d.tryEnterClaim() {
 		t.Fatal("claim refused by a pause whose expires_at has passed")
 	}
@@ -113,7 +113,7 @@ func TestHealthHandlerReportsPause(t *testing.T) {
 		t.Fatal("health reports paused on an unpaused daemon")
 	}
 	p := pausedUntil(time.Hour)
-	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{Paused: p})
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{Paused: p}, time.Now())
 	raw := read()
 	if raw["paused"] != true || raw["pause_reason"] != "maintenance" || raw["pause_expires_at"] != p.ExpiresAt {
 		t.Fatalf("health pause fields = %v %v %v", raw["paused"], raw["pause_reason"], raw["pause_expires_at"])

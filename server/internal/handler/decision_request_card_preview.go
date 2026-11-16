@@ -219,6 +219,20 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 			return nil, err
 		}
 		return []ActionPreviewField{{"Runs used", strconv.FormatInt(snapshot.RunsUsed, 10), "0"}}, nil
+	case runGuardAllowType:
+		var params decisionaction.RunGuardAllowParams
+		if err := json.Unmarshal(action.Params, &params); err != nil {
+			return nil, err
+		}
+		issueID, err := parseUUIDString(params.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		limit, err := service.WeeklyRunGuardLimit(ctx, handler.Queries, issueID)
+		if err != nil || limit <= 0 {
+			return nil, err
+		}
+		return []ActionPreviewField{{"Weekly run limit", strconv.FormatInt(limit, 10), strconv.FormatInt(limit+int64(params.Runs), 10)}}, nil
 	case issueWorkflowSetType:
 		return handler.issueWorkflowSetPreview(ctx, action)
 	case issueProjectSetType:
