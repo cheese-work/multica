@@ -310,3 +310,77 @@ func TestAskGuardCommentEditAddingUnprovenAsk(t *testing.T) {
 		}
 	})
 }
+
+// CHE-5753 round 1 (CHE-6354): a direct instruction to a person needs no cue
+// word. "Open X → Y." is an ask in any comment, so it is refused on create.
+func TestAskGuardCommentRefusesImperativeAskWithoutCue(t *testing.T) {
+	setAskGuardMode(t, "block")
+	for _, text := range []string{
+		"Open Workspace settings → Delegated governed writes.",
+		"Done. Next:\n1. Click Settings → Governed writes\n2. Toggle it on.",
+		"Run `bash scripts/setup.sh <token>` on the host.",
+	} {
+		t.Run(text, func(t *testing.T) {
+			f := newAskGuardCommentFixture(t)
+			res := f.post(t, map[string]any{"content": text}).Want(http.StatusUnprocessableEntity)
+			if !strings.Contains(res.Text(), "multica decision request") {
+				t.Errorf("422 body lacks the fix: %s", res.Text())
+			}
+			if n := f.comments(t); n != 0 {
+				t.Errorf("refused comment saved %d rows", n)
+			}
+			f.post(t, map[string]any{"content": text, "notify_only": true}).Want(http.StatusCreated)
+		})
+	}
+	// Reports in the past tense and plain prose stay free.
+	f := newAskGuardCommentFixture(t)
+	for _, text := range []string{
+		"Opened Workspace settings → Delegated governed writes and saw it enabled.",
+		"I ran `go test ./...`; all green.",
+		"Receipt posted",
+	} {
+		f.post(t, map[string]any{"content": text}).Want(http.StatusCreated)
+	}
+}
+
+// CHE-5753 round 1 (CHE-6354): a comment that already holds an unverified ask
+// must not take a different or extra unverified ask through an edit.
+func TestAskGuardCommentEditChangingUnprovenAsk(t *testing.T) {
+	const oldAsk = "Cheese, open Workspace settings → Delegated governed writes."
+	stored := func(t *testing.T, id string) string {
+		t.Helper()
+		var content string
+		dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, id).Scan(&content)
+		return content
+	}
+	for name, newAsk := range map[string]string{
+		"different command":  "Cheese, run bash scripts/other.sh --now",
+		"extra command":      oldAsk + " Then run bash scripts/setup.sh <token>.",
+		"different UI path":  "Cheese, open Billing → Invoices.",
+		"different file":     oldAsk + " Edit docs/setup/runner.md.",
+		"imperative, no cue": "Click Billing → Invoices.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			setAskGuardMode(t, "block")
+			f := newAskGuardCommentFixture(t)
+			id, _ := f.post(t, map[string]any{"content": oldAsk, "notify_only": true}).Want(http.StatusCreated).Map()["id"].(string)
+			f.edit(t, id, newAsk).Want(http.StatusUnprocessableEntity)
+			if got := stored(t, id); got != oldAsk {
+				t.Errorf("refused edit changed content to %q", got)
+			}
+			if n := f.events(t, "block"); n != 1 {
+				t.Errorf("block events = %d, want 1", n)
+			}
+		})
+	}
+	t.Run("unrelated edit of the same ask is allowed", func(t *testing.T) {
+		setAskGuardMode(t, "block")
+		f := newAskGuardCommentFixture(t)
+		id, _ := f.post(t, map[string]any{"content": oldAsk, "notify_only": true}).Want(http.StatusCreated).Map()["id"].(string)
+		f.edit(t, id, oldAsk+" Thanks.").Want(http.StatusOK)
+		f.edit(t, id, "Done, no action needed.").Want(http.StatusOK)
+		if n := f.events(t, "block"); n != 0 {
+			t.Errorf("block events = %d, want 0", n)
+		}
+	})
+}
