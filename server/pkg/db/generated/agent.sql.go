@@ -3332,6 +3332,23 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countChangesRoundsSinceMarker = `-- name: CountChangesRoundsSinceMarker :one
+SELECT count(*) FROM activity_log a
+WHERE a.issue_id = $1 AND a.action IN ('review_changes_requested', 'review_handoff_wakeup')
+  AND a.created_at > COALESCE((
+    SELECT max(m.created_at) FROM activity_log m
+    WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
+  ), '-infinity'::timestamptz)
+`
+
+// CHANGES rounds an issue has had since its last PASS or round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author.
+func (q *Queries) CountChangesRoundsSinceMarker(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countChangesRoundsSinceMarker, issueID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countChangesVerdictsForPR = `-- name: CountChangesVerdictsForPR :one
 SELECT count(*) FROM activity_log
 WHERE issue_id = $1 AND action = 'review_changes_requested'

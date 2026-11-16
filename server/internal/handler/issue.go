@@ -319,6 +319,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, nil
 }
 
@@ -4600,6 +4601,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, current, attachmentsChanged, nil
 }
 

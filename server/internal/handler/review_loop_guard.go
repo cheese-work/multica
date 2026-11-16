@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 
@@ -140,24 +139,16 @@ func (h *Handler) reviewRoundsCapped(ctx context.Context, q *db.Queries, prev db
 	return true, nil
 }
 
-// recordRoundsCapped stores the cap, which restarts the count, and tells the
-// need_decision handler why the issue arrived (CHE-6192).
+// recordRoundsCapped stores the cap, which restarts the count. The decision
+// card opens after the commit (openCappedCard): its locks come before the issue
+// row lock this write already holds.
 func (w *workflowWrite) recordRoundsCapped(ctx context.Context, q *db.Queries, moved db.Issue) error {
 	rounds, err := q.CountReviewEntriesSinceLastVerdict(ctx, moved.ID)
 	if err != nil {
 		return err
 	}
-	if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
-		ID: dbid.NewV7(), WorkspaceID: moved.WorkspaceID, IssueID: moved.ID, ActorType: strToText("agent"),
-		ActorID: w.caller.run.AgentID, Action: activityRoundsCapped, Details: []byte(`{}`),
-	}); err != nil {
-		return err
-	}
-	_, err = q.CreateComment(ctx, db.CreateCommentParams{
-		ID: dbid.NewV7(), IssueID: moved.ID, WorkspaceID: moved.WorkspaceID,
-		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
-		Content: fmt.Sprintf("Review round limit: this issue has had %d review rounds without a PASS. The platform did not start another review and moved the issue to need_decision. Open one decision request: split the work, or accept the current head. Include the round count (%d).", rounds, rounds),
-	})
+	id, err := recordRoundsCap(ctx, q, moved, w.caller.run.AgentID)
+	w.capped = &roundsCap{rounds: int(rounds), activityID: id}
 	return err
 }
 

@@ -3773,3 +3773,12 @@ UPDATE agent
 SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_reason = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
+
+-- name: CountChangesRoundsSinceMarker :one
+-- CHANGES rounds an issue has had since its last PASS or round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author.
+SELECT count(*) FROM activity_log a
+WHERE a.issue_id = $1 AND a.action IN ('review_changes_requested', 'review_handoff_wakeup')
+  AND a.created_at > COALESCE((
+    SELECT max(m.created_at) FROM activity_log m
+    WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
+  ), '-infinity'::timestamptz);

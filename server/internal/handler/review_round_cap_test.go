@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -25,8 +26,11 @@ type roundCap struct {
 
 func newRoundCap(t *testing.T) roundCap {
 	t.Helper()
-	createTestCustomStatus(t, "agent_review", "started")
-	createTestCustomStatus(t, "need_decision", "started")
+	for _, key := range []string{"agent_review", "need_decision"} {
+		if dbfx.Count(t, `SELECT count(*) FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key) == 0 {
+			createTestCustomStatus(t, key, "started")
+		}
+	}
 	agentID := seededReadyAgentID(t)
 	var runtimeID string
 	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
@@ -56,6 +60,21 @@ func (c roundCap) enterReview(t *testing.T) {
 	agentUpdateIssue(t, c.issueID, c.agentID, c.run, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
 }
 
+// wantCard checks the decision card the cap opened: one open request on the
+// issue, from the server, whose ask names the round count (CHE-6192).
+func (c roundCap) wantCard(t *testing.T, rounds int) {
+	t.Helper()
+	var n int
+	var ask string
+	dbfx.QueryRow(t, `SELECT count(*), coalesce(max(ask_json::text), '') FROM decision_request WHERE issue_id = $1 AND status = 'open' AND request_fingerprint LIKE 'server:review_rounds:%'`, c.issueID).Scan(&n, &ask)
+	if n == 0 {
+		t.Fatalf("no open review-rounds decision card on the issue")
+	}
+	if want := fmt.Sprintf("%d review rounds", rounds); !strings.Contains(ask, want) {
+		t.Fatalf("card ask does not name %q: %s", want, ask)
+	}
+}
+
 func (c roundCap) status(t *testing.T) string {
 	t.Helper()
 	status, _, _ := issueStatusAndAssignee(t, c.issueID)
@@ -71,11 +90,7 @@ func TestRoundCap_FourthEntryIntoReviewGoesToNeedDecision(t *testing.T) {
 	if got := c.status(t); got != "need_decision" {
 		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
 	}
-	var comment string
-	dbfx.QueryRow(t, `SELECT content FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID).Scan(&comment)
-	if !strings.Contains(comment, "3 review rounds") {
-		t.Fatalf("system comment %q does not name the round count", comment)
-	}
+	c.wantCard(t, 3)
 	var capped int
 	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_capped'`, c.issueID).Scan(&capped)
 	if capped != 1 {
@@ -107,5 +122,107 @@ func TestRoundCap_PassOrEarlierCapRestartsTheCount(t *testing.T) {
 				t.Fatalf("status = %q, want agent_review", got)
 			}
 		})
+	}
+}
+
+// A reviewer on another lab hands the work back by wakeup, not by a status move
+// (agent_review step 4b): the issue never re-enters agent_review, so only the
+// wakeup is counted. The 3rd CHANGES refuses the wakeup, moves the issue to
+// need_decision and opens the card (CHE-6192).
+
+// reviewerWakeup is the reviewer's run on agent_review handing the issue to the
+// author by wakeup.
+func (c roundCap) reviewerWakeup(t *testing.T, reviewRun, author string) *testutil.Response {
+	t.Helper()
+	req := withURLParams(newRequest(http.MethodPost, "/api/issues/"+c.issueID+"/wakeups",
+		map[string]any{"agent_id": author, "kind": "at", "after_seconds": 60, "instruction": "fix the findings"}), "id", c.issueID, "wakeupID", "")
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", c.agentID)
+	req.Header.Set("X-Task-ID", reviewRun)
+	return testutil.Call(t, testHandler.CreateIssueWakeup, req)
+}
+
+// inReview puts the issue in agent_review and returns a reviewer run on it.
+func (c roundCap) inReview(t *testing.T) (reviewRun string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE issue SET status = 'agent_review' WHERE id = $1`, c.issueID)
+	var runtimeID, human string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, c.agentID).Scan(&runtimeID)
+	human = dbfx.User(t, "Reviewer originator", "round-cap-"+workflowTestSuffix()+"@test.invalid")
+	dbfx.Insert(t, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": human, "role": "owner"})
+	run := dbfx.Task(t, c.agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": c.issueID, "status": "running", "workflow_step": "agent_review",
+		"dispatched_at": testutil.Raw("now() - interval '5 minutes'"), "started_at": testutil.Raw("now() - interval '4 minutes'"),
+		"originator_user_id": human, "accountable_user_id": human, "originator_source": "trigger_owner",
+	})
+	dbfx.Cleanup(t, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id = $1)`, c.issueID)
+	dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
+	dbfx.Cleanup(t, `DELETE FROM decision_request WHERE issue_id = $1`, c.issueID)
+	return run
+}
+
+func (c roundCap) wakeups(t *testing.T) int {
+	t.Helper()
+	return dbfx.Count(t, `SELECT count(*) FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
+}
+
+func TestRoundCap_ThirdReviewerWakeupGoesToNeedDecision(t *testing.T) {
+	c := newRoundCap(t)
+	run := c.inReview(t)
+	author := otherReadyAgentID(t)
+	for round := 1; round <= 2; round++ {
+		c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	}
+	if got := c.status(t); got != "agent_review" {
+		t.Fatalf("status after 2 wakeup rounds = %q, want agent_review", got)
+	}
+	c.reviewerWakeup(t, run, author).Want(http.StatusConflict)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status after the 3rd wakeup round = %q, want need_decision", got)
+	}
+	if n := c.wakeups(t); n != 2 {
+		t.Fatalf("wakeups = %d, want 2: the 3rd must not wake the author", n)
+	}
+	c.wantCard(t, 3)
+}
+
+// A wakeup to the reviewer's own agent, or one made outside agent_review, is
+// not a CHANGES round.
+func TestRoundCap_OtherWakeupsAreNotRounds(t *testing.T) {
+	c := newRoundCap(t)
+	run := c.inReview(t)
+	for i := 0; i < 4; i++ {
+		c.reviewerWakeup(t, run, c.agentID).Want(http.StatusCreated)
+	}
+	if got := c.status(t); got != "agent_review" {
+		t.Fatalf("status = %q, want agent_review: a self-wakeup is not a round", got)
+	}
+	// An author's return wakeup is made from its in_progress run.
+	author := otherReadyAgentID(t)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET workflow_step = 'in_progress' WHERE id = $1`, run)
+	for i := 0; i < 4; i++ {
+		c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	}
+	if got := c.status(t); got != "agent_review" {
+		t.Fatalf("status = %q, want agent_review: a return wakeup is not a round", got)
+	}
+}
+
+// Rounds of another issue do not count, and a PASS restarts the count.
+func TestRoundCap_WakeupRoundsAreCountedPerIssueAndEndAtPass(t *testing.T) {
+	other := newRoundCap(t)
+	otherRun := other.inReview(t)
+	author := otherReadyAgentID(t)
+	other.reviewerWakeup(t, otherRun, author).Want(http.StatusCreated)
+	other.reviewerWakeup(t, otherRun, author).Want(http.StatusCreated)
+
+	c := newRoundCap(t)
+	run := c.inReview(t)
+	c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	c.activity(t, "review_passed", "", 0)
+	c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	if got := c.status(t); got != "agent_review" {
+		t.Fatalf("status = %q, want agent_review: a PASS restarts the count", got)
 	}
 }
