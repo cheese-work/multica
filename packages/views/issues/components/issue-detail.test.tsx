@@ -1385,6 +1385,23 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText("Add property")).toBeInTheDocument();
   });
 
+  it("shows how the issue was created, and nothing for older issues (CHE-6098)", async () => {
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, created_via: "dialog" });
+    const { unmount } = renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Created via")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Create dialog")).toBeInTheDocument();
+    unmount();
+
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, created_via: "" });
+    renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Properties")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Created via")).not.toBeInTheDocument();
+  });
+
   it("hides every optional property row when none are set", async () => {
     // Override the default fixture: nothing optional set.
     mockApiObj.getIssue.mockResolvedValue({

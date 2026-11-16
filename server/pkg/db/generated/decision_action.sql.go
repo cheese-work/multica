@@ -1241,7 +1241,7 @@ UPDATE issue SET project_id = $1::uuid, status = $2::text,
   revision = revision + 1, updated_at = now()
 WHERE id = $3::uuid AND workspace_id = $4::uuid
   AND project_id IS NOT DISTINCT FROM $5::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via
 `
 
 type SetIssueProjectFromDecisionParams struct {
@@ -1299,6 +1299,7 @@ func (q *Queries) SetIssueProjectFromDecision(ctx context.Context, arg SetIssueP
 		&i.RequestedByID,
 		&i.MaxRunsOverride,
 		&i.DescriptionExternalRead,
+		&i.CreatedVia,
 	)
 	return i, err
 }

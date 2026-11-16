@@ -175,7 +175,7 @@ func TestMaintenance_BlocksAutomaticAndServerUpdates(t *testing.T) {
 
 	d.cfg.AutoUpdateEnabled = true
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v9.9.9"}, nil)
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		t.Error("update executed under the window")
 		return "", nil
 	}

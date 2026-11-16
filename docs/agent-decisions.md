@@ -296,15 +296,23 @@ Waiver and Jev metrics (CHE-3262, slice 6 of CHE-3239): the feed adds `waivers`
 (live `test_first_red` records per agent; a waiver is WAIVED, never PASS), `jev`
 (`decisions`, `vetoed`, `veto_rate`, `excluded_class_decisions`; the last must be 0
 because an excluded class is refused at propose time) and `jev_asks`. The server
-cannot read the Jev shadow log, so `multica decision brief --jev-shadow-log
-<jsonl>` reads it, sends the Jev-routed ask ids as repeated `jev_ask` query
-parameters (at most 1000) and gets back each ask's `created_at` and Cheese's
-chosen option label (empty while open). The CLI then prints shadow agreement with
-Cheese (answered Jev-routed asks where `pick` equals Cheese's choice), the share
-of in-scope asks (any row whose reason is not `excluded`) that Jev decided within
-10 minutes of the ask, and whether the live-mode gate holds: agreement of at
-least 90% on at least 20 asks. Without the flag the section says the log was not
-given. With `--format json` the same figures are under `jev_shadow`.
+cannot read the Jev shadow log, so the CLI reads it: `--jev-shadow-log <jsonl>`, or
+without the flag the decider's own log, `$JEV_STATE_DIR/shadow.jsonl` (default
+`~/.local/state/jev-decider/shadow.jsonl`). The plain `multica decision brief
+--format markdown` therefore shows the gate. If the default log is missing the section
+says "Shadow log not found" and the gate is NOT MET; a named log that is missing is an
+error. The CLI sends the Jev-routed ask ids as repeated `jev_ask` query parameters (at
+most 1000) plus `since`, the first log row's time, and gets back each ask's `created_at`
+and Cheese's chosen option label (empty while open), and `jev_in_scope`: the count of
+asks in a decidable class (reversible, spend, deploy, publish; not cancelled) created
+since the window opened (`jev_since`: `since`, or the oldest logged ask if earlier). The
+log never holds budget or API-error attempts (the decider retries them), so that server
+count is the denominator of the 10-minute share. An ask that failed before both the first
+log row and the oldest logged ask stays outside the window. The CLI prints shadow agreement with
+Cheese (answered Jev-routed asks where `pick` equals Cheese's choice), the share of
+in-scope asks that Jev decided within 10 minutes of the ask, and whether the live-mode
+gate holds: agreement of at least 90% on at least 20 asks. With `--format json` the same
+figures are under `jev_shadow`.
 
 The daily brief is a Multica autopilot (6f676b71, "Cheese evening brief"). Its
 prompt change, "run `multica decision brief --format markdown` and paste its

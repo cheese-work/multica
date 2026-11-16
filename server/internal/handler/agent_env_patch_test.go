@@ -71,7 +71,7 @@ func TestPatchAgentEnv_StaleRevisionRejected(t *testing.T) {
 		t.Skip("database not available")
 	}
 	agentID, ownerID := agentEnvOwnerFixture(t, "env-patch-cas", "env-patch-cas@multica.test")
-	rev := envRevision(map[string]string{"API_KEY": "secret-value"})
+	rev := envRevision(storedEnvVersion(t, agentID))
 
 	const writers = 8
 	var wg sync.WaitGroup

@@ -67,8 +67,8 @@ class OneWorkflowPerPrPush(unittest.TestCase):
     def test_pr_guards_checks_out_trusted_code_only(self):
         text = (WF / "pr-guards.yml").read_text()
         self.assertNotRegex(text, r"ref: \$\{\{ github\.event\.pull_request\.head")
-        # Only the read-only workflow token (the changed-file list, CHE-4016); no other secret.
-        self.assertEqual(re.findall(r"secrets\.\w+", text), ["secrets.GITHUB_TOKEN"])
+        # The read-only workflow token (the changed-file list, CHE-4016) plus the guard-policy read token (CHE-5752); no other secret.
+        self.assertEqual(re.findall(r"secrets\.\w+", text), ["secrets.GITHUB_TOKEN", "secrets.GUARD_POLICY_READ_TOKEN"])
 
 
 class NoCommentOrCascadeRuns(unittest.TestCase):

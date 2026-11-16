@@ -484,12 +484,12 @@ func (s *IssueWakeupService) capturePRWakeupTx(ctx context.Context, tx pgx.Tx, i
 	}
 	if in.Rule == SystemRulePRChecksPassed && (config == nil || !config.Eff.Config.Target.Set) {
 		// A green is the author's to act on only while the author holds the
-		// issue; otherwise the assignee owns the next step (CHE-5697).
-		notOwner, err := prAuthorNotOwner(ctx, q, issue, in.RepoOwner, in.RepoName, in.Number)
+		// issue; otherwise the assignee owns the next step (CHE-5697, CHE-6070).
+		notOwner, wakeAssignee, err := prGreenRoute(ctx, tx, q, issue, in)
 		if err != nil {
 			return c, err
 		}
-		if notOwner {
+		if notOwner && !wakeAssignee {
 			a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
 				"rule": in.Rule, "repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number, "outcome": wakeupOutcomeNotOwner,
 			})

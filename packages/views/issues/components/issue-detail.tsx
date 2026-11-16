@@ -3969,6 +3969,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <span className="cursor-pointer truncate">{getActorName("member", issue.requested_by_id)}</span>
             </PropRow>
           )}
+          {(issue.created_via === "dialog" || issue.created_via === "agent" || issue.created_via === "cli") && (
+            <PropRow label={t(($) => $.detail.prop_created_via)}>
+              <span className="truncate">
+                {issue.created_via === "dialog"
+                  ? t(($) => $.detail.created_via_dialog)
+                  : issue.created_via === "agent"
+                    ? t(($) => $.detail.created_via_agent)
+                    : t(($) => $.detail.created_via_cli)}
+              </span>
+            </PropRow>
+          )}
           <PropRow label={t(($) => $.detail.prop_created)}>
             <span className="text-muted-foreground">{shortDate(issue.created_at, locale)}</span>
           </PropRow>
