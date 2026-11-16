@@ -119,6 +119,12 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       notice: ${{ steps.resolve.outputs.notice }}
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout the workflow revision
         uses: actions/checkout@v6
         with:
@@ -186,6 +192,12 @@ jobs:
       group: c00-approval-notice
       cancel-in-progress: false
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -221,6 +233,12 @@ jobs:
     outputs:
       eligible: ${{ steps.candidate.outputs.eligible }}
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout the workflow revision
         uses: actions/checkout@v6
         with:
@@ -319,6 +337,12 @@ jobs:
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
         with:
           persist-credentials: false

@@ -34,7 +34,7 @@ jobs:
     # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml posts the queue status and this job skips `merge_group`.
     if: github.event_name != 'merge_group' || vars.SECURITY_GATE_QUEUE_TRUSTED != 'true'
     # CHE-3604: GitHub-hosted runner.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
@@ -58,7 +58,7 @@ jobs:
   queue-handoff:
     name: queue-handoff
     if: github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
