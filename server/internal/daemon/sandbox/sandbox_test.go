@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -434,5 +435,34 @@ func TestMountSourceSwapAfterValidationIsHarmless(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "safe-data") {
 		t.Errorf("sandbox did not mount the validated source:\n%s", out.String())
+	}
+}
+
+func TestArgsBindBrokerSocket(t *testing.T) {
+	l := newLayout(t)
+	spec := Spec{WorkDir: l.work, TempDir: l.tmp, Home: l.home, Argv: []string{"/bin/true"},
+		Env: []string{"MULTICA_BROKER_SOCKET=/host/elsewhere.sock"}, BrokerSocket: filepath.Join(l.root, "b", "b.sock")}
+	args, err := newLauncher().Args(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if want := "--ro-bind " + filepath.Join(l.root, "b") + " " + brokerDir; !strings.Contains(joined, want) {
+		t.Errorf("args lack %q:\n%s", want, joined)
+	}
+	var got []string
+	for _, kv := range spec.environ() {
+		if strings.HasPrefix(kv, "MULTICA_BROKER_SOCKET=") {
+			got = append(got, kv)
+		}
+	}
+	if want := []string{"MULTICA_BROKER_SOCKET=" + brokerDir + "/b.sock"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("broker env = %v, want %v", got, want)
+	}
+	spec.BrokerSocket = ""
+	for _, kv := range spec.environ() {
+		if kv != "MULTICA_BROKER_SOCKET=/host/elsewhere.sock" && strings.HasPrefix(kv, "MULTICA_BROKER_SOCKET=") {
+			t.Errorf("unset BrokerSocket must leave Env alone, got %s", kv)
+		}
 	}
 }

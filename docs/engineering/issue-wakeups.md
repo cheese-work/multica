@@ -659,8 +659,9 @@ key occurs more often than in `condition_state` (checks and merged keys carry
 only the PR number, so same-numbered PRs from two repositories share one); a
 PR leaving the set (resolved, closed, unlinked) only updates
 `condition_state`, so it does not wake the agent again for the PRs that stayed. A base-branch move sends no event for the PR, so the snapshot
-pipeline keeps watched PRs (linked to an issue with an enabled `conflicts`
-rule) fresh: the 10-minute sweep re-fetches them once their snapshot is older
+pipeline keeps every open PR linked to an issue fresh (CHE-6111; an enabled
+`conflicts` rule is not required, so the built-in `pr_needs_attention` wake
+sees a conflict the base move caused): the 10-minute sweep re-fetches them once their snapshot is older
 than 5 minutes even when decided, rotating an address cursor like the
 undecided sweep so repeatedly failing fetches cannot starve the rest, and a merged `pull_request` webhook
 re-fetches the repository's other watched open PRs after 30 seconds and 3

@@ -9,14 +9,26 @@ import (
 func TestResolveStepAssignee(t *testing.T) {
 	handler := StepAssignee{Type: "agent", ID: pgtype.UUID{Bytes: [16]byte{1}, Valid: true}}
 	other := StepAssignee{Type: "agent", ID: pgtype.UUID{Bytes: [16]byte{2}, Valid: true}}
+	sticky := StepAssignee{Type: "member", ID: pgtype.UUID{Bytes: [16]byte{3}, Valid: true}}
 
-	if got, over := ResolveStepAssignee(handler, nil); got != handler || over {
-		t.Errorf("no override = (%v, %v), want the step handler", got, over)
+	cases := []struct {
+		name             string
+		override, kept   *StepAssignee
+		want             StepAssignee
+		wantOver, wantKp bool
+	}{
+		{"no override", nil, nil, handler, false, false},
+		{"override", &other, nil, other, true, false},
+		{"naming the handler", &handler, nil, handler, false, false},
+		{"sticky", nil, &sticky, sticky, true, true},
+		{"sticky equal to the handler", nil, &handler, handler, false, false},
+		{"override beats sticky", &other, &sticky, other, true, false},
+		{"naming the handler beats sticky", &handler, &sticky, handler, false, false},
 	}
-	if got, over := ResolveStepAssignee(handler, &other); got != other || !over {
-		t.Errorf("override = (%v, %v), want the override", got, over)
-	}
-	if got, over := ResolveStepAssignee(handler, &handler); got != handler || over {
-		t.Errorf("naming the handler = (%v, %v), want no override", got, over)
+	for _, c := range cases {
+		got, over, kept := ResolveStepAssignee(handler, c.override, c.kept)
+		if got != c.want || over != c.wantOver || kept != c.wantKp {
+			t.Errorf("%s = (%v, %v, %v), want (%v, %v, %v)", c.name, got, over, kept, c.want, c.wantOver, c.wantKp)
+		}
 	}
 }

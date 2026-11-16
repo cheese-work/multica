@@ -271,7 +271,7 @@ func TestAutoUpdateLoop_WatchesTheBinaryWhenAutoUpdateIsOff(t *testing.T) {
 	d.cfg.AutoUpdateEnabled = false
 	stubSelfVersion(t, "0.3.8", nil)
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v9.9.9"}, errors.New("fetchLatestRelease must not be called"))
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		t.Fatal("runUpdateFn called with auto-update disabled")
 		return "", nil
 	}
@@ -439,7 +439,7 @@ func claimsPaused(t *testing.T, d *Daemon) bool {
 func TestTryAutoUpdate_ResumesClaimingWhenRestartCannotBeScheduled(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
-	d.runUpdateFn = func(string) (string, error) { return "upgraded", nil }
+	d.runUpdateFn = func(context.Context, string) (string, error) { return "upgraded", nil }
 
 	origResolve := resolveSelfExecutable
 	t.Cleanup(func() { resolveSelfExecutable = origResolve })

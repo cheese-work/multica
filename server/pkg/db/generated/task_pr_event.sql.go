@@ -492,7 +492,7 @@ SET status = 'superseded'
 WHERE e.issue_id = $1
   AND e.pull_request_id = $2
   AND e.kind NOT IN ('merged', 'closed')
-  AND (e.status IN ('accepted', 'next_turn')
+  AND (e.status IN ('accepted', 'next_turn', 'notified')
        OR e.id IN (SELECT event_id FROM failed))
 `
 

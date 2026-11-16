@@ -31,7 +31,7 @@ func jevFixtureRows(n, agreed int) ([]jevShadowRow, []jevAsk) {
 }
 
 func TestJevShadowStatsZeroData(t *testing.T) {
-	s := jevShadowStats(nil, nil)
+	s := jevShadowStats(nil, nil, nil)
 	if s.Asks != 0 || s.Agreed != 0 || s.Rate != 0 || s.InScope != 0 || s.Within10 != 0 || s.Within10Rate != 0 || s.GateHolds {
 		t.Fatalf("zero data: %+v, want all zero and the gate not holding", s)
 	}
@@ -53,7 +53,7 @@ func TestJevShadowStatsLiveGate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, asks := jevFixtureRows(tc.n, tc.agreed)
-			s := jevShadowStats(rows, asks)
+			s := jevShadowStats(rows, asks, nil)
 			if s.GateHolds != tc.wantHold || s.Rate != tc.wantRate || s.Asks != tc.wantAskCounts || s.Agreed != tc.agreed {
 				t.Fatalf("%+v, want hold=%v rate=%v asks=%d agreed=%d", s, tc.wantHold, tc.wantRate, tc.wantAskCounts, tc.agreed)
 			}
@@ -67,7 +67,7 @@ func TestJevShadowStatsGradesAnsweredJevRowsOnly(t *testing.T) {
 	asks[2].Answer = ""
 	rows = append(rows, jevShadowRow{At: jevAskedAt.Format(time.RFC3339), ID: "cheese-1", Class: "irreversible", Route: "cheese", Reason: "excluded"})
 	asks = append(asks, jevAsk{ID: "cheese-1", CreatedAt: jevAskedAt.UTC().Format(time.RFC3339), Answer: "Proceed"})
-	s := jevShadowStats(rows, asks)
+	s := jevShadowStats(rows, asks, nil)
 	if s.Asks != 2 || s.Agreed != 2 {
 		t.Fatalf("graded %d agreed %d, want 2 and 2: %+v", s.Asks, s.Agreed, s)
 	}
@@ -86,7 +86,7 @@ func TestJevShadowStatsTenMinuteShare(t *testing.T) {
 		{At: at(time.Minute), ID: "missing", Class: "reversible", Route: "jev", Reason: "decided", Pick: "Proceed"},
 	}
 	asks := []jevAsk{{ID: "a", CreatedAt: created}, {ID: "b", CreatedAt: created}, {ID: "c", CreatedAt: created}, {ID: "d", CreatedAt: created}, {ID: "e", CreatedAt: created}}
-	s := jevShadowStats(rows, asks)
+	s := jevShadowStats(rows, asks, nil)
 	if s.InScope != 5 || s.Within10 != 2 || s.Within10Rate != 0.4 {
 		t.Fatalf("in scope %d, within 10 min %d, rate %v; want 5, 2, 0.4", s.InScope, s.Within10, s.Within10Rate)
 	}
@@ -230,5 +230,95 @@ func TestAgentDecisionBriefCommandUsesShadowLog(t *testing.T) {
 	}
 	if !strings.Contains(out, "Shadow agreement with Cheese: 95% (19 of 20 asks)") || !strings.Contains(out, "Live-mode gate: HOLDS") {
 		t.Errorf("output:\n%s", out)
+	}
+}
+
+func at(d time.Duration) string { return jevAskedAt.Add(d).Format(time.RFC3339) }
+
+// Budget and API-error attempts are never logged, so the server counts the asks of the window.
+func TestJevShadowStatsDenominatorCountsUnloggedAsks(t *testing.T) {
+	created := jevAskedAt.UTC().Format(time.RFC3339)
+	rows := []jevShadowRow{{At: at(time.Minute), ID: "a", Class: "reversible", Route: "jev", Reason: "decided", Pick: "Proceed"}}
+	asks := []jevAsk{{ID: "a", CreatedAt: created}}
+	s := jevShadowStats(rows, asks, &jevWindow{Since: jevAskedAt, InScope: 4})
+	if s.InScope != 4 || s.Within10 != 1 || s.Within10Rate != 0.25 {
+		t.Fatalf("in scope %d, within 10 min %d, rate %v; want 4, 1, 0.25", s.InScope, s.Within10, s.Within10Rate)
+	}
+}
+
+func TestJevWindowOf(t *testing.T) {
+	if jevWindowOf(map[string]any{}) != nil {
+		t.Fatal("a feed without the count must give no window")
+	}
+	w := jevWindowOf(map[string]any{"jev_in_scope": float64(7), "jev_since": jevAskedAt.UTC().Format(time.RFC3339)})
+	if w == nil || w.InScope != 7 || !w.Since.Equal(jevAskedAt) {
+		t.Fatalf("window = %+v", w)
+	}
+}
+
+func runBriefCommand(t *testing.T, server *httptest.Server, flags map[string]string) (string, error) {
+	t.Helper()
+	t.Setenv("MULTICA_SERVER_URL", server.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	brief, _, _ := rootCmd.Find([]string{"decision", "brief"})
+	flags["format"] = "markdown"
+	for k, v := range flags {
+		if err := brief.Flags().Set(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer brief.Flags().Set("format", "json")
+	defer brief.Flags().Set("jev-shadow-log", "")
+	return captureStdout(t, func() error { return brief.RunE(brief, nil) })
+}
+
+// The documented brief command has no flag: it reads the Jev decider's own log.
+func TestAgentDecisionBriefReadsDefaultShadowLog(t *testing.T) {
+	rows, asks := jevFixtureRows(20, 20)
+	dir := t.TempDir()
+	var lines []string
+	for _, r := range rows {
+		raw, _ := json.Marshal(r)
+		lines = append(lines, string(raw))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "shadow.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JEV_STATE_DIR", dir)
+	var gotSince string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSince = r.URL.Query().Get("since")
+		feed := jevFeed()
+		feed["jev_asks"] = asks
+		feed["jev_in_scope"] = 25
+		feed["jev_since"] = gotSince
+		json.NewEncoder(w).Encode(feed)
+	}))
+	defer server.Close()
+	out, err := runBriefCommand(t, server, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotSince == "" {
+		t.Error("the command sent no since for the log's window")
+	}
+	for _, want := range []string{"Live-mode gate: HOLDS", "(20 of 25 in-scope asks)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAgentDecisionBriefSaysWhenDefaultShadowLogIsMissing(t *testing.T) {
+	t.Setenv("JEV_STATE_DIR", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(jevFeed()) }))
+	defer server.Close()
+	out, err := runBriefCommand(t, server, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Shadow log not found") || !strings.Contains(out, "Live-mode gate: NOT MET") {
+		t.Errorf("missing log not stated as an unmet gate:\n%s", out)
 	}
 }

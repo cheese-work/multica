@@ -87,7 +87,8 @@ func TestHandleUpdate_DirectDownloadReportsProgressAndKeepsBinaryOnFailure(t *te
 	d.runUpdateFn = d.runUpdate
 	d.cancelFunc = func() {}
 
-	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: directTestTag})
+	d.handleUpdate(context.Background(), "runtime-1", &PendingUpdate{ID: "update-1", TargetVersion: directTestTag}, time.Now())
+	d.updateOutbox.Wait()
 
 	reports := srv.progressReports()
 	if len(reports) != 2 { // the fake download takes well under 1s: first report + flushed final one
@@ -123,7 +124,7 @@ func TestRunUpdate_DirectDownloadFinalReportCarriesFullBytes(t *testing.T) {
 	d := &Daemon{logger: slog.Default()}
 	d.updateProgress.Store(rep)
 
-	_, err := d.runUpdate(directTestTag)
+	_, err := d.runUpdate(context.Background(), directTestTag)
 	rep.wait()
 
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
@@ -148,7 +149,7 @@ func TestRunUpdate_DirectDownloadWithoutReporterIsQuiet(t *testing.T) {
 	var logs strings.Builder
 	d := &Daemon{client: NewClient(ts.URL), logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 
-	_, err := d.runUpdate(directTestTag)
+	_, err := d.runUpdate(context.Background(), directTestTag)
 
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("err = %v", err)

@@ -172,6 +172,11 @@ func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery
 				if err != nil {
 					return err
 				}
+				// Any review or comment on the PR may be a veto or a revoked PASS, so
+				// the merge receipt facts recorded before it no longer stand (CHE-5594).
+				if err := dropMergeReceiptFacts(ctx, transaction, installation.WorkspaceID, payload, number); err != nil {
+					return err
+				}
 				if err := recordGitHubReviewDecision(ctx, queries, event, payload, object, pullID, revisionReason); err != nil {
 					return err
 				}
@@ -289,6 +294,19 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		}
 	}
 	return pullID, "denied", "no_linked_issue", nil
+}
+
+// dropMergeReceiptFacts deletes the merge_eligibility receipt of the PR a
+// signature-checked review or comment delivery names. It runs for every
+// delivery, admitted or not: a later comment can carry a veto the receipt never
+// saw, and a missing receipt only holds the PR.
+func dropMergeReceiptFacts(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, payload githubIntakePayload, number int32) error {
+	if number <= 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM merge_receipt_fact WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4`,
+		workspaceID, payload.Repository.Owner.Login, payload.Repository.Name, number)
+	return err
 }
 
 // withdrawDismissedGitHubReview clears the stored review decision when GitHub
