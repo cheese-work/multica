@@ -116,14 +116,21 @@ class BuildCacheTests(unittest.TestCase):
                 step['name'],
             )
 
-    def test_builder_is_ephemeral_and_uses_github_cache(self):
+    def test_builder_is_persistent_and_uses_github_cache(self):
+        # CHE-3983 / CHE-6218: a fresh BuildKit container per run starts every Go, pnpm and
+        # .next cache mount empty (0 of 195 runs hit the compile layers). Keep the named
+        # builder so the cache mounts survive, and keep the remove-if-broken guard.
         steps = self.workflow['jobs']['build-images']['steps']
         setup = next(step for step in steps if step.get('id') == 'buildx')['with']
         self.assertEqual(setup['driver'], 'docker-container')
-        self.assertTrue(setup.get('cleanup', True))
+        self.assertEqual(setup['name'], 'multica-cd-${{ matrix.image }}-v1')
+        self.assertIs(setup.get('cleanup'), False)
+        guard = next(step for step in steps if step.get('name') == 'Remove a broken persistent Buildx builder')
+        self.assertEqual(guard['env']['BUILDX_NAME'], setup['name'])
         config = setup['buildkitd-config-inline']
         self.assertIn('max-parallelism = 2', config)
-        self.assertIn('maxUsedSpace = "4GB"', config)
+        self.assertIn('maxUsedSpace = "8GB"', config)
+        self.assertIn('minFreeSpace = "10GB"', config)
         self.assertFalse(any('docker container stop' in step.get('run', '') for step in steps))
         commands = [step['run'] for step in steps if 'docker buildx build' in step.get('run', '')]
         for command in commands:
@@ -229,6 +236,64 @@ esac
                     else:
                         self.assertEqual(removed, '')
                     self.assertNotIn('unrelated-builder', removed)
+
+    def test_daemon_platforms_build_one_at_a_time(self):
+        # CHE-3983 canary 1: four platforms at once beside the server stage got
+        # `compile: signal: killed` in the 4 GB X99 dind (CHE-731). One go build at a time.
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            go = workspace / 'go'
+            go.write_text('''#!/bin/sh
+echo start >> "$GO_LOG"
+sleep 1
+while [ "$1" != -o ]; do shift; done
+echo bin > "$2"
+echo end >> "$GO_LOG"
+''')
+            go.chmod(0o755)
+            log = workspace / 'go.log'
+            result = subprocess.run(['sh', str(ROOT / 'scripts/build-daemon-binaries.sh'), str(workspace / 'out')],
+                                    env={**os.environ, 'PATH': f'{workspace}:{os.environ["PATH"]}', 'GO_LOG': str(log)},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(log.read_text().split(), ['start', 'end'] * 4, 'platform builds overlapped')
+            manifest = json.loads((workspace / 'out/manifest.json').read_text())
+            self.assertEqual(sorted(manifest['binaries']), ['darwin-amd64', 'darwin-arm64', 'linux-amd64', 'linux-arm64'])
+
+    def test_backend_go_compiles_fit_the_x99_dind_memory_limit(self):
+        # The two parallel stages inherit these from `deps`: at most 2 compiles each, ~1 GiB soft cap per process.
+        backend = (ROOT / 'Dockerfile').read_text()
+        deps = backend[backend.index('AS deps'):backend.index('AS builder')]
+        self.assertRegex(deps, r'(?m)^ENV .*GOFLAGS=-p=2\b')
+        self.assertRegex(deps, r'(?m)^ENV .*GOMEMLIMIT=1GiB\b')
+
+    def test_daemon_platform_failure_fails_the_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            go = workspace / 'go'
+            go.write_text('''#!/bin/sh
+case "$GOARCH" in arm64) exit 1 ;; esac
+while [ "$1" != -o ]; do shift; done
+echo bin > "$2"
+''')
+            go.chmod(0o755)
+            result = subprocess.run(['sh', str(ROOT / 'scripts/build-daemon-binaries.sh'), str(workspace / 'out')],
+                                    env={**os.environ, 'PATH': f'{workspace}:{os.environ["PATH"]}'}, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((workspace / 'out/manifest.json').exists())
+
+    def test_daemon_binaries_build_in_a_stage_parallel_to_the_server(self):
+        backend = (ROOT / 'Dockerfile').read_text()
+        stages = {line.split()[-1]: line.split()[1] for line in backend.splitlines() if line.startswith('FROM ') and ' AS ' in line}
+        self.assertEqual(stages.get('builder'), 'deps')
+        self.assertEqual(stages.get('daemon-builder'), 'deps')
+        daemon_stage = backend[backend.index('AS daemon-builder'):backend.index('# --- Runtime stage')]
+        server_stage = backend[backend.index('AS builder'):backend.index('AS daemon-builder')]
+        self.assertIn('sh scripts/build-daemon-binaries.sh', daemon_stage)
+        self.assertNotIn('build-daemon-binaries', server_stage)
+        runtime = backend[backend.index('# --- Runtime stage'):]
+        self.assertIn('COPY --from=daemon-builder /src/server/bin/daemon-binaries', runtime)
+        self.assertIn('COPY --from=daemon-builder /src/server/bin/multica', runtime)
 
     def test_go_module_cache_is_available_to_every_consumer(self):
         backend = (ROOT / 'Dockerfile').read_text()

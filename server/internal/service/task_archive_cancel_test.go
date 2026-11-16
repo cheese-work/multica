@@ -219,3 +219,41 @@ func TestCancelTasksForArchivedAgentCommitFailureDoesNotPublish(t *testing.T) {
 		t.Errorf("failed cancellation: persisted status = %q, published = %d; want running and no events", persistedStatus, published)
 	}
 }
+
+// CHE-5667: archiving an agent cancels its autopilot run_only task. The run
+// must leave `running`, which only happens if task:cancelled is published and
+// the autopilot listener settles the run (cmd/server/autopilot_listeners.go).
+func TestCancelTasksForArchivedAgentSettlesAutopilotRun(t *testing.T) {
+	ctx := context.Background()
+	fx, owner := newPrincipalFixture(t)
+	runtimeID := fx.Runtime(t, "archive-run runtime", testutil.Cols{"owner_id": owner})
+	agentID := fx.Agent(t, "archive-run agent", runtimeID, testutil.Cols{"owner_id": owner})
+	autopilotID, triggerID := fx.autopilotWithTrigger(t, agentID, owner, owner)
+	runID := fx.Insert(t, "autopilot_run", testutil.Cols{
+		"autopilot_id": autopilotID, "trigger_id": triggerID,
+		"source": "schedule", "status": "running",
+	})
+	fx.Task(t, agentID, testutil.Cols{"autopilot_run_id": runID, "runtime_id": runtimeID, "status": "running"})
+
+	bus := events.New()
+	// Same wiring as syncRunFromTaskEvent in cmd/server/autopilot_listeners.go.
+	bus.Subscribe(protocol.EventTaskCancelled, func(e events.Event) {
+		task, err := fx.q.GetAgentTask(ctx, util.MustParseUUID(e.TaskID))
+		if err != nil {
+			t.Errorf("load task %s: %v", e.TaskID, err)
+			return
+		}
+		fx.svc.SyncRunFromTask(ctx, task)
+	})
+	svc := NewTaskService(fx.q, fx.Pool, nil, bus)
+	if _, err := svc.CancelTasksForArchivedAgent(ctx, util.MustParseUUID(agentID)); err != nil {
+		t.Fatalf("cancel archived agent tasks: %v", err)
+	}
+
+	var status string
+	var completedAt *time.Time
+	fx.QueryRow(t, `SELECT status, completed_at FROM autopilot_run WHERE id = $1`, runID).Scan(&status, &completedAt)
+	if status != "failed" || completedAt == nil {
+		t.Errorf("autopilot run status = %q, completed_at = %v; want failed with completed_at set", status, completedAt)
+	}
+}

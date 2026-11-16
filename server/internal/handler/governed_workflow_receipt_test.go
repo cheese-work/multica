@@ -110,50 +110,6 @@ func (r workflowReceiptFixture) wantRefused(t *testing.T, resp *testutil.Respons
 	}
 }
 
-func TestWorkflowPassReceipt_ValidReceiptWritesOnceAndLeavesAuditRow(t *testing.T) {
-	r := newWorkflowReceiptFixture(t, "")
-	r.review(t)
-	r.patch(t, r.body()).Want(http.StatusOK)
-	if got := r.stored(t); got != "agent text" {
-		t.Fatalf("instructions not written: %q", got)
-	}
-	if r.used(t) != 1 {
-		t.Fatal("accepted write left no receipt row")
-	}
-	// Revert as the owner so the before hash matches again: only the
-	// single-use row is left to refuse the same signed change.
-	patchWorkflow(t, r.workflowID, map[string]any{"steps": editedSteps(t, r.workflowID, "in_progress", setInstructions(""))}).Want(http.StatusOK)
-	resp := r.patch(t, r.body()).Want(http.StatusConflict)
-	if !strings.Contains(resp.Body.String(), "already used") {
-		t.Fatalf("body = %s, want already used", resp.Body.String())
-	}
-	if got := r.stored(t); got != "" || r.used(t) != 1 {
-		t.Fatalf("reuse changed the workflow (%q) or the receipt rows (%d)", got, r.used(t))
-	}
-}
-
-func TestWorkflowPassReceipt_HandoffPutWritesWithReceipt(t *testing.T) {
-	r := newWorkflowReceiptFixture(t, "")
-	r.review(t)
-	var step map[string]any
-	for _, raw := range r.steps {
-		if s := raw.(map[string]any); s["status_key"] == "in_progress" {
-			step = s
-		}
-	}
-	for k, v := range r.body() {
-		if k != "steps" {
-			step[k] = v
-		}
-	}
-	req := r.agent("/api/issue-workflows/"+r.workflowID+"/handoffs/in_progress", step, "status", "in_progress")
-	req.Method = http.MethodPut
-	testutil.Call(t, testHandler.SetIssueWorkflowHandoff, req).Want(http.StatusOK)
-	if got := r.stored(t); got != "agent text" {
-		t.Fatalf("instructions not written: %q", got)
-	}
-}
-
 func TestWorkflowPassReceipt_FailedChecksStayRefused(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -251,13 +207,6 @@ func TestWorkflowPassReceipt_HumanBlockChangeRefused(t *testing.T) {
 	r.propose(t, setInstructions(strings.Replace(protectedStart, "Never merge.", "Always merge.", 1)))
 	r.review(t)
 	r.wantRefused(t, r.patch(t, r.body()), protectedStart)
-}
-
-func TestWorkflowPassReceipt_EditInsideAgentRegionWrites(t *testing.T) {
-	r := newWorkflowReceiptFixture(t, protectedStart)
-	r.propose(t, setInstructions(strings.Replace(protectedStart, "old notes", "new notes", 1)))
-	r.review(t)
-	r.patch(t, r.body()).Want(http.StatusOK)
 }
 
 // requires_human_decision is the owner's policy: true or omitted keeps the

@@ -122,11 +122,11 @@ class Guard(unittest.TestCase):
         self.assertNotIn("C00_MULTICADO_", text)
         self.assertNotIn("create-github-app-token", text)
 
-    def test_deploy_path_and_queue_gate_use_the_app_token(self):
+    def test_deploy_path_uses_the_app_token(self):
+        # CHE-5148: the queue gate is off and holds no App token any more.
         jobs = dict(workflows())
         pre = jobs["cd-deploy.yml"]["jobs"]["candidate-preflight"]
-        gate = jobs["security-gate-queue.yml"]["jobs"]["security-gate-queue"]
-        for job in (pre, gate):
+        for job in (pre,):
             self.assertIn(ENV_NAME, env_of(job))
             mint = [s for s in job["steps"] if str(s.get("uses", "")).startswith(MINT)]
             self.assertEqual(len(mint), 1)
@@ -134,7 +134,6 @@ class Guard(unittest.TestCase):
             self.assertEqual(w["repositories"], "multica")
             self.assertTrue(any(k.startswith("permission-") for k in w))
             self.assertNotIn("write", {v for k, v in w.items() if k != "permission-statuses"})
-        self.assertEqual(next(s for s in gate["steps"] if str(s.get("uses", "")).startswith(MINT))["with"]["permission-statuses"], "write")
 
     def test_queue_handoff_holds_no_secret_and_the_gate_skips_the_queue_once_trusted(self):
         sg = dict(workflows())["security-gate.yml"]["jobs"]

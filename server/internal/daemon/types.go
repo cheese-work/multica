@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
@@ -140,6 +141,7 @@ type Task struct {
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
 	TriggerCommentID              string                 `json:"trigger_comment_id,omitempty"`               // comment that triggered this task
+	TriggerKind                   string                 `json:"trigger_kind,omitempty"`                     // CHE-5485: "status_handoff" marks trigger_comment_id as handoff context for an assignment-style run, not a comment to answer
 	CoalescedCommentIDs           []string               `json:"coalesced_comment_ids,omitempty"`            // MUL-4195: earlier comments folded into this run while it was still queued; the agent must address these in addition to the (newest) triggering comment. Empty for old servers / non-merged runs
 	CoalescedComments             []CoalescedCommentData `json:"coalesced_comments,omitempty"`               // MUL-4195: full detail of the folded comments (thread_id/author/created_at/content) so the prompt can address each without assuming a shared thread. Empty for old servers / non-merged runs
 	TriggerThreadID               string                 `json:"trigger_thread_id,omitempty"`                // root comment ID for the triggering thread; falls back to trigger_comment_id on old servers
@@ -173,12 +175,18 @@ type Task struct {
 	AutopilotTitle                string                 `json:"autopilot_title,omitempty"`                  // autopilot title used as task context
 	AutopilotDescription          string                 `json:"autopilot_description,omitempty"`            // autopilot description used as task prompt
 	AutopilotSource               string                 `json:"autopilot_source,omitempty"`                 // manual, schedule, webhook, or api
+	Script                        *TaskScript            `json:"script,omitempty"`                           // non-nil for script-mode autopilot tasks: run the allowlisted script with no model session
 	AutopilotTriggerPayload       json.RawMessage        `json:"autopilot_trigger_payload,omitempty"`        // optional trigger payload for webhook/api runs
 	QuickCreatePrompt             string                 `json:"quick_create_prompt,omitempty"`              // user's natural-language input for quick-create tasks
 	QuickCreatePriority           string                 `json:"quick_create_priority,omitempty"`            // explicit priority selected in quick-create
 	QuickCreateDueDate            string                 `json:"quick_create_due_date,omitempty"`            // explicit calendar due date selected in quick-create
+	QuickCreateFill               bool                   `json:"quick_create_fill,omitempty"`                // CHE-6090: workspace setting quick_create_fill is on; the agent fills every field the modal left empty
+	QuickCreateTitleTypes         []string               `json:"quick_create_title_types,omitempty"`         // CHE-6090: type keys of the workspace workflow_by_type map
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
+	BackgroundJob                 string                 `json:"background_job,omitempty"`                   // non-empty for an output_only background task (CHE-4100): the job name, e.g. dm_title
+	BackgroundInput               string                 `json:"background_input,omitempty"`                 // the bounded input the server stored in the task context; the whole prompt for a background task
+	BackgroundRunSeconds          int                    `json:"background_run_secs,omitempty"`              // run deadline from the job spec; 0 keeps the daemon default
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`                     // legacy assignment handoff instruction; rendered only in the per-turn prompt
 	// CheckpointBlock is a pre-rendered checkpoint-briefing block (CHE-489):
 	// the server computes and diffs the prior checkpoint against the live
@@ -197,6 +205,11 @@ type Task struct {
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
 	ParentIssueID         string `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
 	ParentIssueIdentifier string `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
+	// ParentIssue is the parent of the issue this run works on, for runs on a
+	// sub-issue; unrelated to the quick-create ParentIssueID above. Absent on
+	// old servers and for issues without a parent, and then no parent block is
+	// rendered.
+	ParentIssue *ParentIssueData `json:"parent_issue,omitempty"`
 	// RequestingUserName + RequestingUserProfileDescription describe the human
 	// the agent is working on behalf of. v1 sources them from the runtime
 	// owner (the user who registered the daemon). Empty when the runtime has
@@ -248,6 +261,15 @@ type CoalescedCommentData struct {
 	CreatedAt  string `json:"created_at,omitempty"`
 	EditedAt   string `json:"edited_at,omitempty"` // MUL-8218: set when this comment was edited after the resumed session's run started; empty on old servers / unedited comments
 	Revision   int64  `json:"revision,omitempty"`  // MUL-8218: current revision, sent alongside EditedAt
+}
+
+// ParentIssueData mirrors handler.ClaimParentIssue. Identifier is empty when
+// the server could not resolve the workspace prefix.
+type ParentIssueData struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier,omitempty"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
 }
 
 // AgentData holds agent details returned by the claim endpoint.
@@ -337,6 +359,14 @@ type TaskUsageEntry struct {
 	CostUSDTicks int64 `json:"cost_usd_ticks,omitempty"`
 }
 
+// TaskScript is the script a script-mode autopilot task asks the daemon to run.
+// Name is looked up in the daemon's own allowlist; the server never names an
+// executable.
+type TaskScript struct {
+	Name string   `json:"name"`
+	Args []string `json:"args"`
+}
+
 // TaskResult is the outcome of executing a task.
 type TaskResult struct {
 	Status     string `json:"status"`
@@ -366,6 +396,9 @@ type TaskResult struct {
 	// on the /complete callback only.
 	ContextTokens int64 `json:"-"`
 	ContextWindow int64 `json:"-"`
+	// InitContext is the first-prompt token report. Forwarded on the /complete
+	// callback only; nil when the brief or prompt was not built.
+	InitContext *initctx.Report `json:"-"`
 }
 
 // PluginHookTool is one agent-trigger plugin hook, as the agent will see it.
@@ -395,3 +428,7 @@ func (t Task) EffectiveProfile() string {
 func (t Task) DisableProviderWebTools() bool {
 	return t.EffectiveProfile() == "elevated"
 }
+
+// isStatusHandoff reports a run whose trigger comment is handoff context from a
+// status move (CHE-5485), not a comment the run must answer.
+func (t Task) isStatusHandoff() bool { return t.TriggerKind == "status_handoff" }

@@ -42,6 +42,7 @@ func TestMain(m *testing.M) {
 		os.Unsetenv(key)
 	}
 
+	guardBuildHome = os.Getenv("HOME") // keeps the Go build cache warm for guardMulticaBin
 	scratchHome, err := testutil.IsolateUserHome("multica-daemon-tests-home-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isolate internal/daemon test home: %v\n", err)
@@ -55,6 +56,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	_ = os.RemoveAll(scratchHome)
+	removeGuardMulticaBin()
 	os.Exit(code)
 }
 

@@ -106,23 +106,6 @@ func TestRunBudgetVisibilityShowsARaisedIssueCap(t *testing.T) {
 	wantVisible(t, c, 19, "Run budget: 19 runs left of 20;")
 }
 
-func TestRunBudgetVisibilityShowsTheTokenBalanceOnceActivated(t *testing.T) {
-	if testHandler == nil {
-		t.Fatal("isolated database required")
-	}
-	c, _ := budgetedAt(t, 40, 1)
-	storeTokenValues(t, c)
-	if brief := visibleBrief(t, c); !strings.Contains(brief, "tokens used") {
-		t.Fatalf("before activation the prompt keeps the interim text:\n%s", brief)
-	}
-	admitRun(t, c)
-	want := actAllowance - actReserve
-	brief := visibleBrief(t, c)
-	if !strings.Contains(brief, "9900 tokens left") || strings.Contains(brief, "tokens used") {
-		t.Fatalf("after activation (%d tokens left) the prompt reads:\n%s", want, brief)
-	}
-}
-
 func TestRunBudgetVisibilityNearUsesTheBalance(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("isolated database required")

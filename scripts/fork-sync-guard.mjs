@@ -64,7 +64,9 @@ export function checkForkSync(input) {
   return { sync: true, violations };
 }
 
-export function collectForkSync(pullRequest, cwd = process.cwd()) {
+const UPSTREAM_URL = "https://github.com/multica-ai/multica.git";
+
+export function collectForkSync(pullRequest, cwd = process.cwd(), upstreamUrl = UPSTREAM_URL) {
   const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const base = pullRequest.base.sha;
   const head = pullRequest.head.sha;
@@ -83,7 +85,16 @@ export function collectForkSync(pullRequest, cwd = process.cwd()) {
   const version = git("show", `${base}:UPSTREAM_VERSION`).trim();
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Invalid base UPSTREAM_VERSION; cannot identify fork-authored tests");
   const upstream = `refs/tags/v${version}`;
-  git("rev-parse", "--verify", `${upstream}^{commit}`);
+  try {
+    git("rev-parse", "--verify", `${upstream}^{commit}`);
+  } catch {
+    // Read-only: origin may lack the upstream release tag, and pushing it would start a release run (CHE-6097).
+    try {
+      git("fetch", "--no-tags", upstreamUrl, `${upstream}:${upstream}`);
+    } catch (error) {
+      throw new Error(`Could not fetch upstream tag v${version} from ${upstreamUrl}: ${error.stderr?.trim() || error.message}`);
+    }
+  }
   return {
     ...input,
     ledger: git("show", `${base}:docs/fork/FORK-FEATURES.md`),

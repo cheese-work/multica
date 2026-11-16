@@ -36,6 +36,8 @@ func askGuardWakeupError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, service.ErrWakeupAskGuardBlocked):
 		writeError(w, http.StatusUnprocessableEntity, "this wakeup waits on a person without a decision request; run: "+askGuardWakeupFix)
+	case errors.Is(err, service.ErrWakeupTimerOpenPR):
+		writeError(w, http.StatusUnprocessableEntity, "use --until-pr checks or --until-pr conflicts (or --until-gh-run owner/repo:RUN_ID --expires-in D --on-timeout wake) instead of a timer")
 	case errors.Is(err, service.ErrWakeupAskGuardUnavailable):
 		w.Header().Set("Retry-After", "5")
 		writeError(w, http.StatusServiceUnavailable, "ask guard unavailable; retry the same request")

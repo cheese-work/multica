@@ -3,17 +3,17 @@
 -- project.workflow_id; a project without one uses the workspace's Default
 -- workflow row. Each step also stores who an issue entering it is handed to.
 
--- name: ListIssueWorkflows :many
-SELECT * FROM issue_workflow
+-- name: ListIssueWorkflowsCols :many
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
 ORDER BY is_default DESC, lower(name), created_at, id;
 
--- name: GetDefaultIssueWorkflow :one
-SELECT * FROM issue_workflow
+-- name: GetDefaultIssueWorkflowCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND is_default;
 
--- name: CreateDefaultIssueWorkflow :many
+-- name: CreateDefaultIssueWorkflowCols :many
 -- Returns no row when another request created the Default first.
 INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, is_default)
 VALUES (
@@ -25,7 +25,7 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING *;
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings;
 
 -- name: ListNamedIssueWorkflowSteps :many
 -- The steps of every workflow except Default, for the Default snapshot.
@@ -52,12 +52,12 @@ WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND workflow_id IS NULL
 ORDER BY created_at, id;
 
--- name: GetIssueWorkflow :one
-SELECT * FROM issue_workflow
+-- name: GetIssueWorkflowCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
--- name: CreateIssueWorkflow :one
+-- name: CreateIssueWorkflowCols :one
 INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id, max_runs_per_issue, include_child_prs)
 VALUES (
     sqlc.arg('workspace_id')::uuid,
@@ -69,9 +69,9 @@ VALUES (
     NULLIF(sqlc.narg('max_runs_per_issue')::int, 0),
     COALESCE(sqlc.narg('include_child_prs')::boolean, true)
 )
-RETURNING *;
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings;
 
--- name: UpdateIssueWorkflow :one
+-- name: UpdateIssueWorkflowCols :one
 UPDATE issue_workflow SET
     name = sqlc.arg('name')::text,
     description = sqlc.arg('description')::text,
@@ -90,10 +90,37 @@ UPDATE issue_workflow SET
         WHEN sqlc.narg('start_status_key')::text IS NULL THEN start_status_key
         ELSE NULLIF(sqlc.narg('start_status_key')::text, '')
     END,
+    -- A save that was linted records its override (null when it passed clean);
+    -- any other write keeps the last one.
+    lint_override_reason = CASE
+        WHEN sqlc.arg('lint_checked')::boolean THEN sqlc.narg('lint_override_reason')::text
+        ELSE lint_override_reason
+    END,
+    lint_overridden_at = CASE
+        WHEN NOT sqlc.arg('lint_checked')::boolean THEN lint_overridden_at
+        WHEN sqlc.narg('lint_override_reason')::text IS NULL THEN NULL
+        ELSE now()
+    END,
+    -- The findings of the last linted save, read back with the workflow.
+    lint_findings = CASE
+        WHEN sqlc.arg('lint_checked')::boolean THEN sqlc.arg('lint_findings')::jsonb
+        ELSE lint_findings
+    END,
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
-RETURNING *;
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings;
+
+-- name: InsertIssueWorkflowLintOverride :exec
+INSERT INTO issue_workflow_lint_override (workspace_id, workflow_id, version, reason, actor_id)
+VALUES (sqlc.arg('workspace_id')::uuid, sqlc.arg('workflow_id')::uuid, sqlc.arg('version')::timestamptz,
+        sqlc.arg('reason')::text, sqlc.arg('actor_id')::uuid);
+
+-- name: ListIssueWorkflowLintOverrides :many
+SELECT * FROM issue_workflow_lint_override
+WHERE workflow_id = sqlc.arg('workflow_id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+ORDER BY version DESC;
 
 -- name: DeleteIssueWorkflow :execrows
 DELETE FROM issue_workflow
@@ -236,3 +263,7 @@ ON CONFLICT (issue_id, head_sha) DO NOTHING;
 -- name: ReleaseIssueCIAdvance :exec
 DELETE FROM issue_ci_advance
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha')::text;
+
+-- name: DeleteIssueWorkflowLintOverridesForWorkspace :exec
+-- Workspace teardown only; the log outlives a deleted workflow.
+DELETE FROM issue_workflow_lint_override WHERE workspace_id = sqlc.arg('workspace_id')::uuid;

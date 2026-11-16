@@ -65,7 +65,7 @@ func TestWorkflowEditRecordsRemapHistory(t *testing.T) {
 	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": full.ID}).Want(http.StatusOK)
 	issueID := dbfx.Issue(t, "remapped by edit", testutil.Cols{"project_id": projectID, "status": "blocked"})
 
-	testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+full.ID, map[string]any{
+	testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+full.ID, map[string]any{
 		"steps": statusSteps("backlog", "in_progress"), "status_mapping": map[string]string{"blocked": "in_progress"},
 	}), "id", full.ID)).Want(http.StatusOK)
 

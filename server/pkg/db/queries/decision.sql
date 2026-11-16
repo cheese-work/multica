@@ -48,8 +48,8 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8), sqlc.narg('proposal_fingerprint'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint, batch_id)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8), sqlc.narg('proposal_fingerprint'), sqlc.narg('batch_id'))
 ON CONFLICT (workspace_id, proposal_fingerprint) WHERE status = 'open' DO NOTHING
 RETURNING *;
 
@@ -75,13 +75,23 @@ SELECT answer.* FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id');
 
+-- name: FindOpenActionRequestByAsk :one
+-- The open kind=action request that this ask comment opened for this human. It
+-- does not look at expires_at: a late answer is refused by MarkDecisionRequestAnswered.
+SELECT * FROM decision_request
+WHERE authority = 'human' AND kind = 'action' AND status = 'open' AND origin = 'asked'
+  AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND issue_comment_id = sqlc.arg('issue_comment_id') AND human_user_id = sqlc.arg('human_user_id')
+LIMIT 1;
+
 -- name: MarkDecisionRequestAnswered :one
 UPDATE decision_request SET status = 'answered'
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+  AND (kind <> 'action' OR clock_timestamp() < expires_at)
 RETURNING *;
 
 -- name: DecisionRecordEffectiveAt :one
-SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
+SELECT (clock_timestamp() + CASE WHEN kind = 'action' OR escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
 FROM decision_request WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: WithdrawDecisionAnswer :one
@@ -208,11 +218,61 @@ ORDER BY created_at, id
 LIMIT $1;
 
 -- name: MarkDecisionPingNotified :one
+-- A coalesced receipt may be replaced once by the worker's re-ping (CHE-2689).
 UPDATE decision_request
-SET ping_notified_at = clock_timestamp()
+SET ping_notified_at = clock_timestamp(), ping_outcome = sqlc.arg('outcome')
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
-  AND ping_notified_at IS NULL
+  AND (ping_notified_at IS NULL OR ping_outcome = 'coalesced')
 RETURNING *;
+
+-- name: LockDecisionPingGroup :exec
+-- Serializes the pings of one agent to one person in one DM, so two requests
+-- cannot both miss each other's unread item and ping twice (CHE-2689).
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('asking_agent_id')::uuid::text || sqlc.arg('human_user_id')::uuid::text || sqlc.arg('chat_session_id')::uuid::text, 0));
+
+-- name: GetDecisionPingHeadItem :one
+-- The unread ping item of another open ask from the same agent to the same
+-- person in the same DM, oldest ask first.
+SELECT item.* FROM decision_request head
+JOIN inbox_item item ON item.workspace_id = head.workspace_id
+  AND item.details->>'decision_request_id' = head.id::text
+  AND item.type = 'mentioned' AND item.read = false AND item.archived = false
+WHERE head.authority = 'human' AND head.origin = 'asked' AND head.status = 'open'
+  AND head.workspace_id = sqlc.arg('workspace_id') AND head.asking_agent_id = sqlc.arg('asking_agent_id')
+  AND head.human_user_id = sqlc.arg('human_user_id') AND head.chat_session_id = sqlc.arg('chat_session_id')
+  AND head.id <> sqlc.arg('id') AND head.ping_notified_at IS NOT NULL AND head.ping_outcome IS DISTINCT FROM 'coalesced'
+ORDER BY head.created_at, head.id
+LIMIT 1
+FOR UPDATE OF item;
+
+-- name: CountDecisionPingGroupAsks :one
+-- Open asks one ping line covers: the received pings of the group plus the one being recorded.
+SELECT count(*)::int FROM decision_request
+WHERE authority = 'human' AND origin = 'asked' AND status = 'open'
+  AND workspace_id = sqlc.arg('workspace_id') AND asking_agent_id = sqlc.arg('asking_agent_id')
+  AND human_user_id = sqlc.arg('human_user_id') AND chat_session_id = sqlc.arg('chat_session_id')
+  AND (ping_notified_at IS NOT NULL OR id = sqlc.arg('id'));
+
+-- name: UpdateDecisionPingLine :exec
+-- Rewrites the coalesced line in place. chat_message_id stays, so no push is queued.
+UPDATE inbox_item
+SET body = sqlc.arg('body'), details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int), updated_at = now()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: ListDecisionPingRepings :many
+-- One coalesced open ask per (agent, person, DM) whose group has no open
+-- request with a live ping left: the pinged one was answered or cancelled.
+SELECT DISTINCT ON (r.asking_agent_id, r.human_user_id, r.chat_session_id) r.*
+FROM decision_request r
+WHERE r.authority = 'human' AND r.origin = 'asked' AND r.status = 'open' AND r.ping_outcome = 'coalesced'
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_request head
+      WHERE head.authority = 'human' AND head.origin = 'asked' AND head.status = 'open'
+        AND head.workspace_id = r.workspace_id AND head.asking_agent_id = r.asking_agent_id
+        AND head.human_user_id = r.human_user_id AND head.chat_session_id = r.chat_session_id
+        AND head.ping_notified_at IS NOT NULL AND head.ping_outcome IS DISTINCT FROM 'coalesced')
+ORDER BY r.asking_agent_id, r.human_user_id, r.chat_session_id, r.created_at, r.id
+LIMIT $1;
 
 -- name: ConsumeDecisionIntentTarget :execrows
 UPDATE decision_intent_target target
@@ -290,6 +350,16 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
 ORDER BY session.created_at, session.id
+LIMIT 1;
+
+-- name: GetLatestPlainDM :one
+-- The plain DM a person used most recently with one agent (CHE-5253).
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = sqlc.arg('creator_id')
+  AND session.agent_id = sqlc.arg('agent_id') AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 1;
 
 -- name: LockDecisionTopicLane :exec
@@ -608,3 +678,19 @@ FOR UPDATE;
 UPDATE decision_request SET covers_request_ids = sqlc.arg('covers_request_ids')::uuid[]
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
 RETURNING *;
+
+-- name: ListCIDecisionRequests :many
+-- Every card a CI job opened on the issue, any status. The fingerprint carries
+-- the candidate SHA and its commit time; the caller holds the workspace lock.
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND request_fingerprint LIKE 'server:ci:%'
+ORDER BY created_at, id;
+
+-- name: GetLatestDecisionAnswer :one
+-- The newest answer of a request, disclaimed or not: what a reader of the request
+-- needs to see that the person answered, and whether the answer still stands.
+SELECT answer.* FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;

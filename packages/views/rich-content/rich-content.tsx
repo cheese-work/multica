@@ -57,9 +57,11 @@ import {
   useAppOrigin,
   useOptionalNavigation,
 } from "../navigation";
+import { ChatSessionMentionCard } from "../chat/components/chat-session-mention-card";
 import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
+import { IssueChipLoading } from "../issues/components/issue-chip-loading";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -67,6 +69,8 @@ import {
   isMentionHref,
   parseWorkspaceEntityLink,
   parseWorkspaceCommentLink,
+  parseWorkspaceChatLink,
+  rewriteToCurrentOrigin,
   type WorkspaceEntityRef,
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
@@ -121,10 +125,18 @@ function useClosedFence(offset: number | undefined): ClosedFence | undefined {
  * IssueMentionCard; the wrapper only shields surrounding click handlers
  * (e.g. collapsed-comment expanders) from mention clicks.
  */
-function IssueMentionLink({ issueId, label }: { issueId: string; label?: string }) {
+function IssueMentionLink({
+  issueId,
+  label,
+  stableWidth,
+}: {
+  issueId: string;
+  label?: string;
+  stableWidth?: boolean;
+}) {
   return (
     <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
-      <IssueMentionCard issueId={issueId} fallbackLabel={label} />
+      <IssueMentionCard issueId={issueId} fallbackLabel={label} stableWidth={stableWidth} />
     </span>
   );
 }
@@ -143,18 +155,27 @@ function IssueMentionLink({ issueId, label }: { issueId: string; label?: string 
  *     author wrote a link; degrading it to text would strip a working link off
  *     an issue this workspace simply cannot see.
  *
- * A miss covers not-found, still-loading, and cross-workspace alike.
+ * A miss covers not-found, failed, and cross-workspace alike. While loading,
+ * the autolink entry shows a chip-shaped box instead of the fallback.
  */
 function IdentifierIssueMentionLink({
   identifier,
   fallback,
+  stableBox = false,
 }: {
   identifier: string;
   fallback: ReactNode;
+  /** Show a chip-sized loading box while the lookup is in flight, and a chip of
+   *  the same width once it resolves. Only the autolink entry sets it; an
+   *  authored URL keeps its anchor and the chip's content width throughout. */
+  stableBox?: boolean;
 }) {
   const issue = useResolveIssueIdentifier(identifier);
+  if (issue === undefined && stableBox) {
+    return <IssueChipLoading identifier={identifier} />;
+  }
   if (!issue) return <>{fallback}</>;
-  return <IssueMentionLink issueId={issue.id} label={identifier} />;
+  return <IssueMentionLink issueId={issue.id} label={identifier} stableWidth={stableBox} />;
 }
 
 /**
@@ -204,6 +225,7 @@ function unfurlableEntityLink(
   children: ReactNode,
   currentSlug: string | null,
   appOrigin: string | null,
+  rawHref: string = href,
 ): WorkspaceEntityRef | null {
   const label = childrenToLabel(children);
   const entity = parseWorkspaceEntityLink(href, appOrigin);
@@ -211,7 +233,7 @@ function unfurlableEntityLink(
   // A link labelled with its own issue identifier (`[CHE-1](…/issues/CHE-1)`,
   // what agents write) says nothing the chip does not, so it unfurls too.
   const labelIsOwnIdentifier = entity.kind === "issue" && label === entity.id;
-  if (label !== href && !labelIsOwnIdentifier) return null;
+  if (label !== href && label !== rawHref && !labelIsOwnIdentifier) return null;
   if (entity.slug !== null && entity.slug !== currentSlug) return null;
   return entity;
 }
@@ -266,9 +288,14 @@ function SelfAwareMention({ memberId, children }: { memberId?: string; children?
   );
 }
 
-function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
+function RichLink({ href: rawHref, children: rawChildren }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
+  // A Multica route on a known host (e.g. the Tailscale host) is the same
+  // destination on the current origin; everything below sees the rewritten link.
+  const rewritten = rawHref ? rewriteToCurrentOrigin(rawHref, appOrigin) : null;
+  const href = rewritten ?? rawHref;
+  const children = rewritten && childrenToLabel(rawChildren) === rawHref ? rewritten : rawChildren;
   const attachmentPublicUrl = useConfigStore((s) => s.attachmentPublicUrl);
   const downloadAttachment = useDownloadAttachment("markdown-link");
   // Platform probe only: `openInNewTab` present means desktop, where native
@@ -311,6 +338,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
           <IdentifierIssueMentionLink
             identifier={match[2]}
             fallback={match[2]}
+            stableBox
           />
         );
       }
@@ -379,9 +407,23 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     return <CommentMentionCard commentId={commentRef.commentId} fallback={plainLink} />;
   }
 
+  // A bare in-app DM URL renders as a DM chip; a miss keeps the link.
+  const chatRef = href && childrenToLabel(rawChildren) === rawHref
+    ? parseWorkspaceChatLink(href, appOrigin)
+    : null;
+  if (chatRef && (chatRef.slug === null || chatRef.slug === slug)) {
+    return (
+      <ChatSessionMentionCard
+        sessionId={chatRef.sessionId}
+        messageId={chatRef.messageId}
+        fallback={plainLink}
+      />
+    );
+  }
+
   // A bare in-app entity URL renders as the chip its mention form would.
   const entity = href
-    ? unfurlableEntityLink(href, children, slug, appOrigin)
+    ? unfurlableEntityLink(href, children, slug, appOrigin, rawHref)
     : null;
   if (entity?.kind === "issue") {
     // `MUL-123` is the shape "Copy link" produces, so it is the shape most
@@ -620,9 +662,13 @@ export const RichContent = memo(function RichContent({
   const processed = useMemo(
     () =>
       highlightToHtml(
-        preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true }),
+        preprocessMarkdown(content, {
+          cdnDomain,
+          autolinkIssueIdentifiers: true,
+          deferTrailingIssueIdentifier: phase === "streaming",
+        }),
       ),
-    [content, cdnDomain],
+    [content, cdnDomain, phase],
   );
 
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up

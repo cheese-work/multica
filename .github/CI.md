@@ -45,7 +45,33 @@ bash deploy/cd/test-record-checks.sh
 bash deploy/cd/test-resolve-candidate.sh
 python3 deploy/cd/test-github-api-retry.py
 bash deploy/cd/test-admission.sh
+python3 .github/scripts/test_ci_wait_policy.py
+python3 .github/scripts/ci-wait-policy.py
 ```
+
+## Off-host namespace qualification
+
+Dispatch `ci.yml` with optional input `namespace_source_sha` set to a full
+lowercase commit SHA to add the namespace qualification job. For example:
+
+```sh
+gh workflow run ci.yml --repo cheese-work/multica --ref <recipe-ref> \
+  -f namespace_source_sha=<full-source-sha>
+```
+
+The job checks out the requested source separately from the receipt verifier,
+checks its resolved SHA, and requires an explicit `TestBindingNestedNamespace`
+PASS from the runbinding package. A skip is incomplete qualification. JSON
+events and the receipt are retained as run artifacts. The temporary AppArmor
+adjustment is confined to a disposable GitHub-hosted runner and restored on
+exit; this job does not change X99 policy or install a daemon. Without the
+input, the extra job skips. Other CI jobs retain their existing behavior.
+
+## No waiting while holding a runner
+
+A job must not sleep, poll or use `--watch` for more than 120 s (CHE-5175). Wait with an environment wait timer or an issue wakeup, which hold no runner. `.github/scripts/ci-wait-policy.py` fails the check on `--watch`, on `sleep` over 120 s and on a number over 120 passed to a script whose name has watch, wait, poll, readback or observe in it. A change to any workflow, the policy file or the scanner selects the `deploy-cd` job that runs it. The scan is a heuristic over each step's `run:` text; a wait hidden in a loop or another script is for review to catch. Fixtures: `.github/scripts/test_ci_wait_policy.py`.
+
+An exception is a line under `exceptions:` in `.github/ci-policy.yml` with `rule: inline-wait`, `workflow`, `reason`, `owner`, `root_fix` (an issue key, URL or `owner/repo#n`), `added` and `expires`. `added` is not in the future, `expires` is at most 7 days after `added` and not in the past; otherwise the exception is itself a violation. Copy the script and the CI step to another repository to apply the rule there.
 
 ## Merge-queue fallback
 

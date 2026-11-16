@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
@@ -26,9 +27,6 @@ import (
 // forkRequestMaxBytes bounds the fork body. A normal chat send has no message
 // size limit of its own, so this body cap is the bound on the fork message.
 const forkRequestMaxBytes = 1 << 20
-
-// forkTitleMessageRunes is how much of the fork message the child title shows.
-const forkTitleMessageRunes = 40
 
 type ChatForkResponse struct {
 	Session           ChatSessionResponse  `json:"session"`
@@ -259,6 +257,9 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 			Content: message, TaskID: uuidToString(sent.Task.ID), CreatedAt: timestampToString(sent.Message.CreatedAt),
 		})
 		h.TaskService.NotifyDirectChatSent(r.Context(), sent.Task)
+		// CHE-4107: the fork's first message re-titles the child. Skipped for an
+		// attachments-only first send (no text to title from).
+		h.enqueueDMTitle(workspaceID, userID, child.ID, dmTitleFork, child.Title, message, sent.Message.ID)
 		first := chatMessageToResponse(sent.Message, nil)
 		response.Message = &first
 		response.AttachmentIDs = uuidsToStrings(sent.BoundAttachmentIDs)
@@ -372,15 +373,13 @@ func plainText(markdown string) string {
 }
 
 // forkTitle is "<source> (fork: <message>)", the message as plain text,
-// whitespace-collapsed and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
+// whitespace-collapsed and cut by chattitle.Cut, or "<source> (fork)" without one.
 func forkTitle(source, message string) string {
 	if message == "" {
 		return strings.TrimSpace(source + " (fork)")
 	}
 	label := strings.Join(strings.Fields(plainText(message)), " ")
-	if runes := []rune(label); len(runes) > forkTitleMessageRunes {
-		label = string(runes[:forkTitleMessageRunes]) + "…"
-	}
+	label = chattitle.Cut(label)
 	return strings.TrimSpace(source + " (fork: " + label + ")")
 }
 

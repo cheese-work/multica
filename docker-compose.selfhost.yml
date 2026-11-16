@@ -74,6 +74,7 @@ services:
       REDIS_CLUSTER_MODE: ${REDIS_CLUSTER_MODE:-false}
       PORT: "8080"
       MAINTENANCE_PORT: ${MAINTENANCE_PORT:-}
+      MULTICA_INTERNAL_LISTEN_ADDR: ${MULTICA_INTERNAL_LISTEN_ADDR:-}
       METRICS_ADDR: ${METRICS_ADDR:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set to a strong random value — generate one with 'openssl rand -hex 32'}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
@@ -102,6 +103,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       ATTACHMENT_DOWNLOAD_MODE: ${ATTACHMENT_DOWNLOAD_MODE:-auto}
       ATTACHMENT_DOWNLOAD_URL_TTL: ${ATTACHMENT_DOWNLOAD_URL_TTL:-30m}
+      MULTICA_MAX_PREVIEW_SIZE: ${MULTICA_MAX_PREVIEW_SIZE:-2MiB}
       CLOUDFRONT_DOMAIN: ${CLOUDFRONT_DOMAIN:-}
       CLOUDFRONT_KEY_PAIR_ID: ${CLOUDFRONT_KEY_PAIR_ID:-}
       CLOUDFRONT_PRIVATE_KEY: ${CLOUDFRONT_PRIVATE_KEY:-}
@@ -231,6 +233,11 @@ services:
       # as it ships; set it only behind a fake-IP proxy whose pool would
       # otherwise get every attachment refused. See .env.example.
       MULTICA_WECOM_MEDIA_ALLOW_CIDRS: ${MULTICA_WECOM_MEDIA_ALLOW_CIDRS:-}
+      # The WeCom-issued caller id the scan-code install flow sends as
+      # ?source=. Empty (the default) uses the built-in "multica"; set it only
+      # if WeCom issued your organisation its own source. Nothing but the QR
+      # install endpoints reads it.
+      MULTICA_WECOM_SOURCE_ID: ${MULTICA_WECOM_SOURCE_ID:-}
       # 1 = log every inbound and outbound WeCom frame, including the first
       # 120 runes of each message body, so a real-device session can be
       # checked against the server afterwards. Off unless set; turn it on only
@@ -253,6 +260,10 @@ services:
       # /api/config advertises the path and in-app docs links stay on the
       # origin the visitor reached.
       DOCS_URL: ${DOCS_URL:-}
+      # Base URL the provider-failure guard probes (GET <base>/v1/models, HTTP
+      # 401 = healthy) before it lets skipped recurring autopilots run again.
+      # Empty (the default) leaves the probe unconfigured; see .env.example.
+      MULTICA_PROVIDER_RECOVERY_BASE_URL: ${MULTICA_PROVIDER_RECOVERY_BASE_URL:-}
     restart: unless-stopped
 
   frontend:

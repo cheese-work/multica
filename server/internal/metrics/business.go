@@ -20,6 +20,7 @@ const (
 	RuntimeSweepStageReconnectRetries         = "runtime_reconnect_retries"
 	RuntimeSweepStageStaleTasks               = "stale_tasks"
 	RuntimeSweepStageQueuedExpiry             = "queued_task_expiry"
+	RuntimeSweepStageBackgroundDeadlines      = "background_deadlines"
 	RuntimeSweepStageDelegatedFailureRecovery = "delegated_failure_recovery"
 	RuntimeSweepStageDeferredChatFinalization = "deferred_chat_finalize"
 	RuntimeSweepStageGC                       = "runtime_gc"
@@ -549,6 +550,7 @@ func normalizeRuntimeSweepStage(stage string) string {
 		RuntimeSweepStageReconnectRetries,
 		RuntimeSweepStageStaleTasks,
 		RuntimeSweepStageQueuedExpiry,
+		RuntimeSweepStageBackgroundDeadlines,
 		RuntimeSweepStageDelegatedFailureRecovery,
 		RuntimeSweepStageDeferredChatFinalization,
 		RuntimeSweepStageGC:
@@ -835,6 +837,7 @@ func claimDecisionSeries() []claimDecisionSeriesKey {
 	claimTaskOutcomes := []claimDecisionSeriesKey{
 		{"", "claimed", "claimed"},
 		{"", "no_capacity", "agent_concurrency_cap"},
+		{"", "runtime_no_capacity", "runtime_concurrency_cap"},
 		{"", "no_runtime", "agent_unbound"},
 		{"", "runtime_mismatch", "agent_rebound"},
 		{"", "error_get_agent", "error"},

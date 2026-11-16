@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import json
 import os
 import re
@@ -6,12 +7,32 @@ import subprocess
 import sys
 
 
+QUEUE_REF_PREFIX = "refs/heads/gh-readonly-queue/"
+QUEUE_REF_IDLE = datetime.timedelta(hours=1)
+
+
+def parse_time(value):
+    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def plan_deletions(
-    caches, default_ref="refs/heads/main", target=9_000_000_000, limit=10_000_000_000
+    caches,
+    default_ref="refs/heads/main",
+    target=9_000_000_000,
+    limit=10_000_000_000,
+    now=None,
 ):
+    now = now or datetime.datetime.now(datetime.timezone.utc)
     newest = {}
     deleted = []
     for cache in sorted(caches, key=lambda entry: (entry["created_at"], entry["id"]), reverse=True):
+        # A merge-queue ref is deleted once its entry merges, so nothing can restore this
+        # entry again. Wait an hour so a run still using it is not disturbed.
+        if cache["ref"].startswith(QUEUE_REF_PREFIX) and now - parse_time(
+            cache["last_accessed_at"]
+        ) > QUEUE_REF_IDLE:
+            deleted.append(cache["id"])
+            continue
         family = cache["key"]
         managed = family.startswith(
             ("turbo-", "go-build-race-", "release-go-", "golangci-lint.cache-", "go-job-")

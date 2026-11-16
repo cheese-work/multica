@@ -16,12 +16,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/database"
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
@@ -617,6 +619,7 @@ func main() {
 	registerActivityListeners(bus, queries)
 	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
+	registerIssueUnreadListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
@@ -719,6 +722,11 @@ func main() {
 	if maintenanceErr != nil {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
+	// CHE-4746: gateway-facing control-plane routes live on this second listener only.
+	internalServer, internalErr := newInternalServer(port)
+	if internalErr != nil {
+		slog.Error("internal listener disabled", "error", internalErr)
+	}
 
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
@@ -731,6 +739,8 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	// A task's Steel browser leases end with the task (CHE-4734).
+	(&browserlease.Revoker{Queries: queries, Bus: bus}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -759,10 +769,14 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
+	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
-	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset.
+	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
+	// external heartbeat and the probe credential are opt-in via MULTICA_PROVIDER_*
+	// env (CHE-4580).
 	if taskSvc.ProviderFailureProbe != nil {
-		go service.NewProbeHeartbeatMonitor(taskSvc.ProviderFailureProbe, service.SlogProbeAlertSink{}, time.Now, 10*time.Minute).Run(sweepCtx)
+		service.StartProviderProbeMonitor(sweepCtx, os.Getenv, taskSvc.ProviderFailureProbe)
 	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
@@ -773,6 +787,8 @@ func main() {
 	go runSourceContextSweeper(sweepCtx, taskSvc)
 	go runWebhookNonceSweeper(sweepCtx, queries)
 	go h.RunElevationFenceSweeper(sweepCtx)
+	go h.RunRunBudgetHookSweeper(sweepCtx)
+	go h.RunSteerReplaySweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -801,6 +817,14 @@ func main() {
 	if err := h.ConfigureGitHubAllowlistFromEnv(); err != nil {
 		slog.Error("invalid GitHub allowlist", "error", err)
 		os.Exit(1)
+	}
+	// CHE-4116: move settings.routing_agent into background_agents.routing. Idempotent;
+	// a failed copy keeps the old key, so startup stops instead of routing from nothing.
+	if n, err := h.MigrateRoutingAgentSetting(sweepCtx); err != nil {
+		slog.Error("routing agent setting copy failed", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
@@ -838,6 +862,14 @@ func main() {
 		go h.ChannelMediaReconciler.Run(sweepCtx)
 	}
 
+	// WeCom scan-code install worker: drives QR generate + poll out of band, so
+	// no HTTP request waits on WeCom. Started even when the scan flow is
+	// unconfigured, so any session already in flight reaches a terminal state
+	// instead of spinning forever in the admin's dialog.
+	if h.WecomInstallWorker != nil {
+		go h.WecomInstallWorker.Run(sweepCtx)
+	}
+
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
 	// `sys_cron_executions` table into the distributed lease + audit
 	// log for internal periodic jobs. The first job is
@@ -871,6 +903,18 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	// CHE-5121: shared, bounded refresh of the merge pause variables. Without
+	// the GitHub App the reader stays nil, the job is a no-op and the pause
+	// state stays unknown, which holds every merge_eligibility dispatch.
+	pauseVars := &service.IssueWakeupService{Tasks: taskSvc}
+	if ghClient, err := ghsnapshot.NewClientFromEnv(); err != nil {
+		slog.Warn("github: merge pause refresh disabled (invalid App private key)", "err", err)
+	} else if ghClient != nil {
+		pauseVars.PauseVars = ghClient // ponytail: own token cache, share the handler's client if App-JWT budget matters
+	}
+	if err := schedulerMgr.Register(scheduler.MergePauseRefreshJob(pauseVars)); err != nil {
+		slog.Error("scheduler: register merge pause refresh", "error", err)
+	}
 	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
 	// It runs from the deploy that ships it, so activation needs no manual step.
 	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
@@ -882,6 +926,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.StageQueueReleaseJob(taskSvc)); err != nil {
 		slog.Error("scheduler: register stage queue release", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.AdmissionDeferralReleaseJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register admission deferral release", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
@@ -890,6 +937,9 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
+		slog.Error("scheduler: register member-owned issue sweep", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -943,6 +993,15 @@ func main() {
 		}()
 	}
 
+	if internalServer != nil {
+		go func() {
+			slog.Info("internal listener starting", "addr", internalServer.Addr)
+			if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("internal listener disabled", "error", err)
+			}
+		}()
+	}
+
 	go func() {
 		slog.Info("pprof server starting", "addr", profilingServer.Addr)
 		if err := profilingServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -985,6 +1044,17 @@ func main() {
 			if err := maintenanceServer.Shutdown(ctx); err != nil {
 				slog.Error("maintenance shutdown interrupted", "error", err)
 				_ = maintenanceServer.Close()
+			}
+		},
+		DrainInternal: func() {
+			if internalServer == nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := internalServer.Shutdown(ctx); err != nil {
+				slog.Error("internal listener shutdown interrupted", "error", err)
+				_ = internalServer.Close()
 			}
 		},
 		DrainHTTP: func() {

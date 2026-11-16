@@ -76,6 +76,16 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	if !ok {
 		return false
 	}
+	// An issue with an open sub-issue stays where it is (workflow step 5); a head
+	// refused here is not claimed, so the next snapshot tries again once they close.
+	open, err := h.hasOpenChildren(ctx, issue)
+	if err != nil {
+		slog.Warn("ci advance: load children failed", "err", err, "issue_id", uuidToString(issueID))
+		return false
+	}
+	if open {
+		return false
+	}
 	next := edge.To
 	claimed, err := h.Queries.ClaimIssueCIAdvance(ctx, db.ClaimIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA})
 	if err != nil || claimed == 0 {
@@ -106,6 +116,22 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	return ranHandler
 }
 
+// hasOpenChildren reports whether any direct child of issue is not yet in a
+// done or closed category.
+func (h *Handler) hasOpenChildren(ctx context.Context, issue db.Issue) (bool, error) {
+	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range children {
+		cat := issuestatus.Category(ctx, h.Queries, c.WorkspaceID, c.Status)
+		if cat != issuestatus.CategoryDone && cat != issuestatus.CategoryClosed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // moveIssueOnEdge writes the status change a workflow edge stands for and
 // publishes it as the platform. issue is the row the caller decided on: a
 // concurrent writer that changed it first (revision) wins and nothing moves.
@@ -125,6 +151,24 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
+	return h.tryMoveIssueOnEdgeIf(ctx, issue, to, source, extra, startHandler, nil)
+}
+
+// tryMoveIssueOnEdgeIf is tryMoveIssueOnEdge with a guard read in the move's own
+// transaction, just before the write: false leaves the issue where it is and
+// reports no move and no error.
+func (h *Handler) tryMoveIssueOnEdgeIf(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error)) (moved, ranHandler bool, err error) {
+	return h.tryMoveIssueOnEdgeSettle(ctx, issue, to, source, extra, startHandler, guard, nil)
+}
+
+// edgeRunSettle runs in the move's transaction, only when the move inserted the
+// handler's run (taskID). An error rolls the whole move back. The returned func,
+// if any, runs after the commit.
+type edgeRunSettle func(ctx context.Context, tx pgx.Tx, taskID pgtype.UUID) (func(context.Context), error)
+
+// tryMoveIssueOnEdgeSettle is tryMoveIssueOnEdgeIf with a settle step that
+// shares the move's transaction (CHE-5241).
+func (h *Handler) tryMoveIssueOnEdgeSettle(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error), settle edgeRunSettle) (moved, ranHandler bool, err error) {
 	// The lock holds through the commit, so a person's move cannot read this
 	// issue's status between this write and its grant. The block an exhausted
 	// budget causes neither grants nor needs it: it runs under the refused
@@ -144,6 +188,12 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		return false, false, err
 	}
 	defer tx.Rollback(ctx)
+	if guard != nil {
+		ok, err := guard(ctx, h.Queries.WithTx(tx))
+		if err != nil || !ok {
+			return false, false, err
+		}
+	}
 	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler, overlay)
 	if err != nil {
 		var notConfirmed *service.StopNotConfirmedError
@@ -154,10 +204,19 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		}
 		return false, false, err
 	}
+	var afterSettle func(context.Context)
+	if settle != nil && move.RunRefused == nil && move.TaskID.Valid {
+		if afterSettle, err = settle(ctx, tx, move.TaskID); err != nil {
+			return false, false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, false, fmt.Errorf("commit edge move: %w", err)
 	}
 	release()
+	if afterSettle != nil {
+		afterSettle(ctx)
+	}
 	if move.RunRefused != nil && !errors.Is(move.RunRefused, service.ErrDuplicatePendingTask) {
 		slog.Debug("workflow edge: run refused", "err", move.RunRefused, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 	}
@@ -177,6 +236,8 @@ func edgeMoveCause(source string) string {
 		return "run_budget"
 	case "idle_started_guard":
 		return "watchdog"
+	case "pr_automation":
+		return service.StatusCausePRMerged
 	}
 	return "system"
 }

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -45,7 +46,23 @@ func (handler *Handler) callingChatSession(writer http.ResponseWriter, request *
 
 func (handler *Handler) chatReadSession(writer http.ResponseWriter, request *http.Request, userID string) (db.ChatSession, bool) {
 	if request.Header.Get("X-Actor-Source") == "interactive_jwt" {
+		// A DM can hold an issue's ask recovery notice: a person who left the
+		// workspace reads none of it, even through a request that was already in flight.
+		if !handler.isActiveWorkspaceMember(request.Context(), userID, ctxWorkspaceID(request.Context())) {
+			writeError(writer, http.StatusForbidden, "workspace membership is required")
+			return db.ChatSession{}, false
+		}
 		return handler.gatePublicChatSessionForUser(writer, request, userID, ctxWorkspaceID(request.Context()), chi.URLParam(request, "sessionId"))
 	}
 	return handler.callingChatSession(writer, request)
+}
+
+func (handler *Handler) isActiveWorkspaceMember(ctx context.Context, userID, workspaceID string) bool {
+	user, userErr := util.ParseUUID(userID)
+	workspace, workspaceErr := util.ParseUUID(workspaceID)
+	if userErr != nil || workspaceErr != nil {
+		return false
+	}
+	_, err := handler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: user, WorkspaceID: workspace})
+	return err == nil
 }

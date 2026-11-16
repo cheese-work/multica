@@ -10,6 +10,7 @@ import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions } from "@multica/core/workspace/queries";
+import { AgentPausedBadge, AgentPausedBadgeById } from "../../../agents/components/agent-scheduling";
 import { ActorAvatar } from "../../../common/actor-avatar";
 import { DeferredPopup } from "../../../common/deferred-popup";
 import {
@@ -137,6 +138,7 @@ function AssigneePickerImpl({
           <>
             <ActorAvatar actorType={assigneeType} actorId={assigneeId} size="sm" enableHoverCard showStatusDot />
             <span className="truncate">{triggerLabel}</span>
+            {assigneeType === "agent" && <AgentPausedBadgeById agentId={assigneeId} />}
           </>
         ) : (
           <span className="text-muted-foreground">{t(($) => $.pickers.assignee.trigger_unassigned)}</span>
@@ -347,6 +349,7 @@ function AssigneeOptions({
               >
                 <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
                 <span className={`truncate ${allowed ? "" : "text-muted-foreground"}`}>{a.name}</span>
+                <AgentPausedBadge agent={a} />
                 {a.visibility === "private" && (
                   <Lock className="ml-auto h-3 w-3 text-muted-foreground" />
                 )}

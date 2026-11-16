@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
@@ -63,7 +64,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	response.Body.Close()
 	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Checks completed."})
-	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Completed all the requested checks.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", RecommendedOption: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
+	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Completed all the requested checks.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", RecommendedOption: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID, StateClaims: []decisiontx.StateClaim{{Claim: "A purchase is waiting.", ReadbackCommand: "multica issue get x", ObservedAt: time.Now().Format(time.RFC3339)}}}
 	stored, err := ask.RequireRecommendedFirst() // the server stores the recommended option first (CHE-3628)
 	if err != nil {
 		test.Fatal(err)

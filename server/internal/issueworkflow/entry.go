@@ -22,6 +22,8 @@ type EntryGate struct {
 	Guard          string `json:"guard"`
 	Mode           string `json:"mode"`
 	MemberOverride *bool  `json:"member_override,omitempty"`
+	// Projects scopes upstream_checked to these project ids (CHE-5583).
+	Projects []string `json:"projects,omitempty"`
 }
 
 // Overridable reports whether a person may override the gate.
@@ -47,7 +49,18 @@ func normalizeEntry(gates []EntryGate) []EntryGate {
 	out := make([]EntryGate, len(gates))
 	for i, g := range gates {
 		override := g.Overridable()
-		out[i] = EntryGate{Guard: strings.TrimSpace(g.Guard), Mode: strings.TrimSpace(g.Mode), MemberOverride: &override}
+		out[i] = EntryGate{Guard: strings.TrimSpace(g.Guard), Mode: strings.TrimSpace(g.Mode), MemberOverride: &override, Projects: trimAll(g.Projects)}
+	}
+	return out
+}
+
+func trimAll(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = strings.TrimSpace(s)
 	}
 	return out
 }
@@ -71,6 +84,9 @@ func validateEntry(s Step) error {
 		case EntryModeOff, EntryModeWarn, EntryModeBlock:
 		default:
 			return invalid("entry gate %q needs mode off, warn or block, not %q", e.Guard, e.Mode)
+		}
+		if err := validateGateProjects(g, e); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -129,7 +145,7 @@ func EvaluateEntry(gates []EntryGate, f Facts) []EntryFailure {
 			continue
 		}
 		g, err := ParseGuard(e.Guard)
-		if err != nil {
+		if err != nil || g.Kind == GuardUpstreamChecked { // upstream_checked is checked at create only
 			continue
 		}
 		var fact string
@@ -192,6 +208,8 @@ func factFor(g Guard, f Facts) string {
 		return "no closed PR is linked"
 	case GuardChildrenDone:
 		return "a child issue is not done"
+	case GuardAdoptionLinked:
+		return f.Adoption.Refusal()
 	case GuardIssueStatus:
 		if got := f.IssueStatuses[g.Args[0]]; got != "" {
 			return fmt.Sprintf("%s is %s", g.Args[0], got)
@@ -219,6 +237,8 @@ func fixFor(g Guard) string {
 		return "close the PR without merging and leave no other open or merged PR"
 	case GuardChildrenDone:
 		return "finish or close every child issue"
+	case GuardAdoptionLinked:
+		return adoptionFix()
 	case GuardIssueStatus:
 		return fmt.Sprintf("move %s to %s", g.Args[0], g.Args[1])
 	}

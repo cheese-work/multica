@@ -140,8 +140,12 @@ func (h *Handler) RegisterSlackBYO(w http.ResponseWriter, r *http.Request) {
 		InitiatorID: initiatorUUID,
 		BotToken:    body.BotToken,
 		AppToken:    body.AppToken,
+		Audit:       h.chatInstallAuditHook(r, "slack"),
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "slack.install") {
+			return
+		}
 		switch {
 		case errors.Is(err, slack.ErrInvalidBotToken), errors.Is(err, slack.ErrInvalidAppToken), errors.Is(err, slack.ErrTokenAppMismatch):
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -206,8 +210,7 @@ func (h *Handler) RevokeSlackInstallation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to load installation")
 		return
 	}
-	if err := h.SlackInstall.Revoke(r.Context(), instUUID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to revoke installation")
+	if !h.revokeChatInstallation(w, r, "slack", "slack", wsUUID, instUUID) {
 		return
 	}
 	h.publish(protocol.EventSlackInstallationRevoked, uuidToString(wsUUID), "user", userID, map[string]any{

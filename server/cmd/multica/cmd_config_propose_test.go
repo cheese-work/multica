@@ -36,6 +36,8 @@ func newConfigProposeTestCmd() *cobra.Command {
 	c.Flags().String("status-key", "", "")
 	c.Flags().StringArray("set", nil, "")
 	c.Flags().Int("expires-in", 0, "")
+	c.Flags().Int("max-runs", 0, "")
+	c.Flags().Bool("include-child-prs", false, "")
 	return c
 }
 
@@ -357,5 +359,61 @@ func TestProposeWorkflowStepInstructionsRefusesAHandlerlessStep(t *testing.T) {
 	flags := map[string]string{"file": writeInput(t, "B2"), "status-key": "review", "dry-run": "true"}
 	if _, err := propose(t, flags, "workflow.step.instructions", proposeWorkflowID); err == nil {
 		t.Error("instructions on a handler-less step were accepted; the server would drop them")
+	}
+}
+
+func TestProposeWorkflowBudgetHashesTheLiveBudgetAndSendsOnlyNamedFields(t *testing.T) {
+	proposeServer(t, map[string]any{"/api/issue-workflows/" + proposeWorkflowID: map[string]any{"id": proposeWorkflowID, "max_runs_per_issue": nil, "include_child_prs": true}})
+	out := filepath.Join(t.TempDir(), "action.json")
+	stdout, err := propose(t, map[string]string{"max-runs": "40", "include-child-prs": "false", "out": out}, "workflow.budget", proposeWorkflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forty := 40
+	wantBase := decisionaction.WorkflowBudgetDigest(proposeWorkflowID, nil, true)
+	wantAfter := decisionaction.WorkflowBudgetDigest(proposeWorkflowID, &forty, false)
+	action := readAction(t, out)
+	if action.Type != "workflow.budget.set" || action.str(t, "workflow_id") != proposeWorkflowID || action.str(t, "base_sha256") != wantBase {
+		t.Fatalf("action = %+v params %s", action, action.Params)
+	}
+	if string(action.Params["max_runs_per_issue"]) != "40" || string(action.Params["include_child_prs"]) != "false" {
+		t.Errorf("budget params = %s", action.Params)
+	}
+	if !strings.Contains(stdout, wantBase) || !strings.Contains(stdout, wantAfter) {
+		t.Errorf("stdout lacks the digests: %s", stdout)
+	}
+
+	// Naming one field leaves the other out of the action and out of the digest.
+	only := filepath.Join(t.TempDir(), "only.json")
+	if _, err := propose(t, map[string]string{"include-child-prs": "false", "out": only}, "workflow.budget", proposeWorkflowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := readAction(t, only).Params["max_runs_per_issue"]; present {
+		t.Error("an unnamed cap was sent")
+	}
+}
+
+func TestProposeWorkflowBudgetRejectsBadInputWithoutWriting(t *testing.T) {
+	proposeServer(t, map[string]any{"/api/issue-workflows/" + proposeWorkflowID: map[string]any{"id": proposeWorkflowID, "include_child_prs": true}})
+	out := filepath.Join(t.TempDir(), "a.json")
+	for name, tc := range map[string]struct {
+		flags map[string]string
+		args  []string
+	}{
+		"no budget flag":      {map[string]string{"out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"cap above limit":     {map[string]string{"max-runs": "1001", "out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"negative cap":        {map[string]string{"max-runs": "-1", "out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"file is not taken":   {map[string]string{"max-runs": "5", "file": writeInput(t, "x"), "out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"no target":           {map[string]string{"max-runs": "5", "out": out}, []string{"workflow.budget"}},
+		"flag on other field": {map[string]string{"max-runs": "5", "file": writeInput(t, "x"), "out": out}, []string{"agent.instructions", proposeAgentID}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := propose(t, tc.flags, tc.args...); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Error("a file was written for bad input")
 	}
 }

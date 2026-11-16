@@ -144,6 +144,53 @@ WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT sqlc.arg('row_limit');
 
+-- name: ListChatSegments :many
+-- Closed segments of a DM, oldest first (CHE-2819 L2a). A segment is the
+-- messages after the previous divider up to and including its own divider; the
+-- divider id names it. The current segment has no divider and is not listed.
+-- Counts use the member-visible rows (no channel commands, no onboarding kickoff).
+SELECT d.id AS divider_id, d.created_at,
+       (SELECT count(*) FROM chat_message m
+        WHERE m.chat_session_id = d.chat_session_id
+          AND m.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+          AND (m.created_at, m.id) <= (d.created_at, d.id)
+          AND (prev.id IS NULL OR (m.created_at, m.id) > (prev.created_at, prev.id)))::int AS message_count
+FROM chat_message d
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = d.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < (d.created_at, d.id)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE d.chat_session_id = $1 AND d.message_kind = 'compaction_summary'
+ORDER BY d.created_at, d.id;
+
+-- name: ListChatSegmentMessagesPage :many
+-- One closed segment, newest first, paged by the same before cursor as
+-- ListChatMessagesPage. The segment ends at the divider (end_created_at,
+-- end_id), inclusive, and starts after the previous divider.
+SELECT message.* FROM chat_message AS message
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = message.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < (sqlc.arg('end_created_at')::timestamptz, sqlc.arg('end_id')::uuid)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE message.chat_session_id = sqlc.arg('chat_session_id')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND (message.created_at, message.id) <= (sqlc.arg('end_created_at')::timestamptz, sqlc.arg('end_id')::uuid)
+  AND (prev.id IS NULL OR (message.created_at, message.id) > (prev.created_at, prev.id))
+  AND (
+    sqlc.narg('before_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_id')::uuid)
+  )
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT sqlc.arg('row_limit');
+
 -- name: MoveUnstartedChatTasksToSession :many
 -- A continuation answers the turns still waiting in the archived DM. A task no
 -- daemon has claimed (queued, or deferred behind a retry) moves with its input
@@ -1385,6 +1432,10 @@ WHERE message.chat_session_id = @chat_session_id
     sqlc.narg('before_created_at')::timestamptz IS NULL
     OR (message.created_at, message.id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_id')::uuid)
   )
+  AND (
+    sqlc.narg('floor_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) > (sqlc.narg('floor_created_at')::timestamptz, sqlc.narg('floor_id')::uuid)
+  )
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT @page_limit;
 
@@ -1574,6 +1625,8 @@ WHERE queued_input.chat_session_id = $1
   );
 
 -- name: ListChatMessagesPage :many
+-- floor_created_at/floor_id (both or neither) hide the rows at or before a
+-- segment floor: agent-token reads pass the session's floor (CHE-2819 Rule P).
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind != 'channel_command'
@@ -1607,6 +1660,10 @@ WHERE message.chat_session_id = $1
   AND (
     sqlc.narg('before_created_at')::timestamptz IS NULL
     OR (message.created_at, message.id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_id')::uuid)
+  )
+  AND (
+    sqlc.narg('floor_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) > (sqlc.narg('floor_created_at')::timestamptz, sqlc.narg('floor_id')::uuid)
   )
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $2;
@@ -1648,6 +1705,10 @@ WHERE message.chat_session_id = $1
     )
   )
   AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
+  AND (
+    sqlc.narg('floor_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) > (sqlc.narg('floor_created_at')::timestamptz, sqlc.narg('floor_id')::uuid)
+  )
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2;
 
@@ -2103,6 +2164,41 @@ SELECT EXISTS (
       AND role = 'user'
       AND message_kind != 'channel_command'
 ) AS has_public_user_message;
+
+-- name: ChatSessionTitleMilestone :one
+-- Which re-title milestone the next user message of a DM would start (CHE-4107):
+-- 'fork' for a fork child that has sent no message of its own (copied history
+-- has no task), 'compaction' when the latest compaction summary has no user
+-- message after it, else ''. Read before the new message is inserted.
+SELECT CASE
+    WHEN session.forked_from_session_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM chat_message AS own
+        WHERE own.chat_session_id = session.id AND own.role = 'user' AND own.task_id IS NOT NULL
+    ) THEN 'fork'
+    WHEN EXISTS (
+        SELECT 1 FROM chat_message AS summary
+        WHERE summary.chat_session_id = session.id AND summary.message_kind = 'compaction_summary'
+          AND NOT EXISTS (
+              SELECT 1 FROM chat_message AS later
+              WHERE later.chat_session_id = session.id AND later.role = 'user'
+                AND later.message_kind != 'channel_command' AND later.created_at > summary.created_at
+          )
+    ) THEN 'compaction'
+    ELSE ''
+END::text AS milestone
+FROM chat_session AS session
+WHERE session.id = $1;
+
+-- name: DMTitleJobExists :one
+-- True when a dm_title job for this (session, milestone, source message) was
+-- ever queued: the idempotence key of a milestone trigger (CHE-4107).
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE purpose = 'bg:dm_title'
+      AND source_chat_session_id = sqlc.arg(session_id)
+      AND context->>'milestone' = sqlc.arg(milestone)::text
+      AND context->>'source_message_id' = sqlc.arg(source_message_id)::text
+) AS job_exists;
 
 -- name: CreateChatDraftRestore :one
 -- Persists the deferred-cancellation draft restore (#5219) in the same tx

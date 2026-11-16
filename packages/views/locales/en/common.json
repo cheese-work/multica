@@ -142,8 +142,8 @@
     "reject_error": "Rejecting did not complete. Try again.",
     "waiting": "Waiting for your passkey…",
     "state": {
-      "executed": "Executed",
-      "failed": "Failed",
+      "executed": "Applied",
+      "failed": "Not applied",
       "rejected": "Rejected",
       "expired": "Expired",
       "cancelled": "Cancelled"
@@ -172,13 +172,19 @@
     "error": "Passkey approval did not complete. Try again.",
     "lost": "The response was lost. The action is not approved again. Check the outcome.",
     "check": "Check outcome",
-    "outcome": { "cap_applied": "Cap applied", "run_queued": "Run queued", "still_blocked": "Still blocked: {{reason}}" },
+    "outcome": {
+      "cap_applied": "Cap applied",
+      "run_queued": "Run queued",
+      "still_blocked": "Still blocked: {{reason}}"
+    },
     "panel": {
       "title": "Run-budget request",
       "raise_cap": "Raise the run cap on {{issue}} to {{cap}} runs for this window.",
       "top_up": "Top up the run budget on {{issue}} for this window.",
-      "mismatch": "This approval is not a run-budget request for this issue, so it cannot be approved here.",
-      "unreadable": "This approval is not available to you, or it no longer exists."
+      "settled": "This approval is already {{state}}. If you still need it, ask the agent to propose it again.",
+      "mismatch": "This approval is not a run-budget request for this issue. Open the card in your DM or Inbox to decide it.",
+      "open_card": "Open the card",
+      "unreadable": "This approval is not available to you, or it no longer exists. Ask the agent to propose it again."
     }
   }
 }

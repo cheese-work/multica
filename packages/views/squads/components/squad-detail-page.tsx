@@ -29,14 +29,17 @@ import {
   ObjectSection,
   ObjectSectionAction,
   ObjectSectionCard,
+  ObjectSectionEmpty,
 } from "../../layout/object-page";
 import { CollectionPageState } from "../../layout/collection-page";
 import {
   Bot,
   ChevronDown,
   Crown,
+  FileQuestion,
   Globe,
   Link2,
+  ListTodo,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -46,7 +49,7 @@ import {
   UserPlus,
   Users,
 } from "@multica/ui/icons";
-import { Button } from "@multica/ui/components/ui/button";
+import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
@@ -87,6 +90,7 @@ import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/ac
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { AgentPausedBadgeById } from "../../agents/components/agent-scheduling";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { ContentEditor } from "../../editor/content-editor";
 import { ReadonlyContent } from "../../editor/readonly-content";
@@ -243,8 +247,28 @@ export function SquadDetailPage() {
   if (!squad) {
     if (squadError) {
       return (
-        <ObjectPage layoutId={layoutId} segments={segments} leaf={null}>
-          <CollectionPageState icon={Users} title={t(($) => $.detail.not_found)} />
+        <ObjectPage
+          layoutId={layoutId}
+          segments={segments}
+          leaf={
+            <span className="truncate text-muted-foreground">
+              {t(($) => $.detail.not_found)}
+            </span>
+          }
+        >
+          <CollectionPageState
+            icon={FileQuestion}
+            title={t(($) => $.detail.not_found)}
+            description={t(($) => $.detail.not_found_description)}
+            actions={
+              <AppLink
+                href={p.squads()}
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
+                {t(($) => $.detail.back_to_list)}
+              </AppLink>
+            }
+          />
         </ObjectPage>
       );
     }
@@ -598,6 +622,7 @@ function SquadMembersSection({
                 />
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="truncate font-medium">{name}</span>
+                  {m.member_type === "agent" && <AgentPausedBadgeById agentId={m.member_id} />}
                   {leader && (
                     <span className="inline-flex shrink-0 items-center gap-0.5 rounded-sm border px-1 text-caption text-muted-foreground">
                       <Crown className="size-3" />
@@ -694,7 +719,21 @@ function SquadMembersSection({
             );
           })}
         </ObjectSectionCard>
-      ) : null}
+      ) : (
+        <ObjectSectionEmpty
+          icon={Users}
+          title={t(($) => $.members_tab.empty_title)}
+          description={t(($) => $.members_tab.empty_description)}
+          action={
+            canManage ? (
+              <Button type="button" variant="outline" size="sm" onClick={onAddMemberClick}>
+                <Plus aria-hidden="true" />
+                {t(($) => $.members_tab.add_member_button)}
+              </Button>
+            ) : null
+          }
+        />
+      )}
     </ObjectSection>
   );
 }
@@ -864,7 +903,7 @@ function SquadRecentWorkSection({
           ))}
         </ObjectSectionCard>
       ) : (
-        <p className="text-caption text-muted-foreground">{t(($) => $.detail.recent_work_empty)}</p>
+        <ObjectSectionEmpty icon={ListTodo} description={t(($) => $.detail.recent_work_empty)} />
       )}
     </ObjectSection>
   );

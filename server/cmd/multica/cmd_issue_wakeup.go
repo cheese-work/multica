@@ -90,6 +90,7 @@ func newIssueWakeupCommand() *cobra.Command {
 			c.Flags().String("until-gh-run-state", "completed", "With --until-gh-run: completed or waiting (a job waits at an environment gate)")
 			c.Flags().String("until-issue", "", "Condition: another issue in this workspace reaches --until-issue-state")
 			c.Flags().String("until-issue-state", "done", "With --until-issue: done, ended (done or cancelled), in_review or blocked")
+			c.Flags().StringArray("watch", nil, "Declare what this time wakeup watches. When every declared input is unchanged since the last completed run, the server may skip the fire. Undeclared means always run.")
 			c.Flags().Int32("max-fires", 0, "Repeating rules: stop after this many runs (1-1000; continuous event rules default to 20)")
 		}
 		wake.AddCommand(c)
@@ -193,6 +194,9 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 		}
 		if n, _ := cmd.Flags().GetInt32("max-fires"); n != 0 {
 			body["max_fires"] = n
+		}
+		if watch, _ := cmd.Flags().GetStringArray("watch"); len(watch) > 0 {
+			body["watch_inputs"] = watch
 		}
 		for flag, key := range map[string]string{"after": "after_seconds", "every": "interval_seconds", "expires-in": "expires_in_seconds"} {
 			v, _ := cmd.Flags().GetString(flag)

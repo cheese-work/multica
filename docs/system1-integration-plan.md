@@ -98,8 +98,125 @@ free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
   remains. The observation row keeps the first answer's choice fields.
 - An ask without the topic gets no label row; its `choice_key` stays
   positional.
-- Later slices add labeller rows (`source`, task id, correction link) and
-  the lookup index when a query needs it.
+- Labeller rows are B4a, below.
+
+### Labeller writes (CHE-4383 B4a)
+
+`POST /api/system1/labels` body `{observation_id, kind, label, supersedes?}`.
+Migrations `99969_system1_label_writes` (`source` gains `labeller`; columns
+`task_id`, `agent_id`, `supersedes`) and `99970_system1_label_labeller_key_idx`
+(unique index, concurrent).
+
+- **Who writes:** an agent task token only. Agent and task come from the token
+  (the auth middleware strips client `X-Agent-ID`, `X-Task-ID` and
+  `X-Actor-Source`), as in `RelyAgentDecision`. The task must be `running` for a
+  live agent of the workspace. Member sessions and PATs get 403.
+- **Who is assigned:** workspace setting `system1_labellers`, a map from scope
+  to agent id, set with `PUT /api/system1/labellers` `{scope, agent_id}`
+  (owner only, human only; empty `agent_id` clears). This route is the only
+  writer: a generic workspace settings save (`PUT`/`PATCH /api/workspaces/{id}`)
+  keeps the stored map whatever the body says, so an admin session or a task
+  token cannot assign a labeller that way. An agent that is not
+  assigned for the observation's scope gets 403. An observation of another
+  workspace gets 404.
+- **Closed values:** `test_first_waiver` takes `waive` or `refuse`; any other
+  value gets 400. `kind` is `burn_in` or `eval`.
+- **Idempotency:** key `(observation_id, kind, task_id)` (plus `supersedes` for
+  a correction in the same task). The same body returns 200 and the same row;
+  a different label on the same key gets 409.
+- **Correction:** append-only. A label for an observation and kind that
+  already has a live labeller row needs `supersedes` set to that live row's id
+  (else 409). The new row is written and the old row gets `superseded_at`, in
+  one transaction under a per-observation advisory lock. The label of record is
+  the live row.
+- **Not here:** the check that the labeller's lab differs from the predictor's
+  lab waits for the B3 prediction table. CI scopes (`ci:<repo>:<protocol>`) come
+  with B5/B6.
+
+### Blind label queue (CHE-4383 B4b)
+
+`GET /api/system1/label-queue?scope=X&kind=burn_in|eval`. Migration
+`9999915_system1_label_sample` (table `system1_label_sample`, no foreign key,
+unique `(task_id, scope, kind)`: `seed`, `observation_ids`, `task_id`,
+`agent_id`).
+
+- **Who reads:** the assigned labeller's task token only, checked as in B4a
+  (running task, live agent, `system1_labellers`). A member session or an
+  unassigned agent gets 403; an unknown scope or a kind other than `burn_in` or
+  `eval` gets 400.
+- **What it returns:** `{sample_id, scope, kind, seed, items}`. Each item is
+  `observation_id`, `scope`, `created_at` and `features`, a typed whitelist per
+  scope (`waiver` for `test_first_waiver`). It never returns a prediction: not
+  the observation's `predicted_*` columns, not `system1_prediction` rows. It
+  also leaves out `option_keys`, because the stored order puts the asker's
+  recommendation first.
+- **Eligible:** observations of the scope in the workspace with no live
+  labeller row of this kind. More than 20: the first 20 by `md5(id || seed)`, so
+  the seed reproduces the sample.
+- **Stored when served:** `seed` and `observation_ids` go into
+  `system1_label_sample` in the same transaction. The same task asking again
+  gets the stored sample, whatever arrived since. No eligible observation:
+  an empty queue and no row, so a later ask can still sample.
+- **CLI:** `multica system1 label-queue --scope X --kind K --output json` and
+  `multica system1 label submit --observation ID --kind K --label L
+  [--supersedes ID]` (the B4a write route). Both run in the labeller's task; the
+  identity comes from the token.
+- **Not here:** `eval` samples of Act decisions (B7b) and CI scopes (B5/B6)
+  reuse this route; they add scopes and features, not a new route.
+
+### Waiver predictions (CHE-4383 B3)
+
+Table `system1_prediction` (migration `99968_system1_prediction`, no foreign
+key): `observation_id`, `scope`, `predictor_id`, `predictor_version`,
+`predicted_key` (NULL = abstained), `predicted_confidence`,
+`predicted_precedents`, `predicted_at`. One row per observation, predictor and
+version (unique). The version is part of the identity; a changed rule is a new
+version, never an edit.
+
+- **Written in the ask transaction**, right after the observation, so both rows
+  exist before any answer (`predicted_at` precedes `answered_at`). Only a
+  waiver ask (topic `test_first_waiver`) writes them; the legacy
+  `system1_observation.predicted_*` columns stay as they were.
+- **`waiver_rule@1`:** `refuse` when `cross_lab_pass_on_head` is false; `waive`
+  when it is true and `weaker_evidence_kind` is not `review_only`; abstains
+  otherwise.
+- **`precedent@1`:** `system1.Predict` over the earlier `waive`/`refuse`
+  labels of record in the workspace (newest 200, not superseded, `unmapped`
+  excluded). Fewer than 5 precedents abstain.
+- `jev@<version>` is not written: Jev is shadow only and needs B0's finding
+  that it is available.
+- Later slices add `ci_rules@<version>` rows for CI scopes (B6).
+
+### Qualification and report (CHE-4383 B5)
+
+Table `system1_epoch` (migrations `99971_system1_epoch`,
+`99973_system1_epoch_open_idx`, `99973a_system1_epoch_trigger`, no foreign
+key): one row per `(scope, predictor_id, predictor_version)` with
+`started_at`; `demoted_at` closes it (B7b sets it). A trigger on
+`system1_prediction` opens the epoch at the first prediction of a version, so
+a new predictor version never inherits an old epoch. Predictions that existed
+before the migration start their epoch at their first row. No backfill:
+only observations created at or after `started_at` count.
+
+- **Case:** one prediction row (so one observation per predictor version)
+  whose observation is inside the epoch and has a label of record: the newest
+  `burn_in` label row that is not superseded. Duplicate or corrected label
+  rows never make two cases.
+- **Denominator:** cases with a non-abstaining prediction and a mapped label.
+  This one set is also the 20-case minimum, so 20 labelled observations with
+  19 abstentions and 1 correct prediction have denominator 1 and stay
+  `collecting`. A label of another value (another protocol, `unknown`) is a
+  disagreement and stays in. `abstained` (labelled, predictor skipped) is
+  coverage; `unmapped` (free text) is counted apart; `reversed` counts counted
+  cases whose observation a person reversed. None of them count toward the bar.
+- **Status** (CHE-3239 bar, unchanged): `qualified` at epoch age 7 days or
+  more, denominator 20 or more, agreement 90% or more. `insufficient_data` at
+  4 weeks with fewer than 20 counted cases. `demoted` when the epoch has
+  `demoted_at`. Otherwise `collecting`. The rule is `system1.Status`.
+- **Read:** `GET /api/system1/report[?scope=X]` (workspace members) and
+  `multica system1 report [--scope X]`; one row per scope, predictor and
+  version, over the latest epoch of each. Not in this slice: recall and
+  class confusion (CI scopes, B6), the Act gate and demotion (B7).
 
 ## Recommended option stays first
 
