@@ -2369,12 +2369,6 @@ SELECT COALESCE((
   ORDER BY created_at DESC, id DESC LIMIT 1
 ), '')::text AS head_sha;
 
--- name: CountChangesVerdictsForPR :one
--- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
-SELECT count(*) FROM activity_log
-WHERE issue_id = $1 AND action = 'review_changes_requested'
-  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
-
 -- name: CountReviewEntriesSinceLastVerdict :one
 -- Entries into agent_review since the issue last passed review or hit the
 -- round cap (CHE-6192). Counts every way back into review, not only CHANGES.
@@ -3774,10 +3768,11 @@ SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
--- name: CountChangesRoundsSinceMarker :one
--- CHANGES rounds an issue has had since its last PASS or round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author.
+-- name: CountChangesRoundsForPR :one
+-- CHANGES rounds of one PR lineage since the issue last passed review or hit the round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author. A replacement PR starts at zero.
 SELECT count(*) FROM activity_log a
 WHERE a.issue_id = $1 AND a.action IN ('review_changes_requested', 'review_handoff_wakeup')
+  AND COALESCE(a.details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text
   AND a.created_at > COALESCE((
     SELECT max(m.created_at) FROM activity_log m
     WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')

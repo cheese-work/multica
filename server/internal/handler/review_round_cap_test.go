@@ -226,3 +226,113 @@ func TestRoundCap_WakeupRoundsAreCountedPerIssueAndEndAtPass(t *testing.T) {
 		t.Fatalf("status = %q, want agent_review: a PASS restarts the count", got)
 	}
 }
+
+// The third CHANGES verdict of a PR is rewritten to need_decision by the
+// CHE-3243 guard. That path records the cap and opens the card too.
+func TestRoundCap_ThirdStatusVerdictOpensCardAndRestartsTheCount(t *testing.T) {
+	l := newReviewLoop(t)
+	l.priorChangesRounds(t, 2, "")
+	l.verdict(t, "in_progress", finding("P1")).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "need_decision" {
+		t.Fatalf("status after the 3rd verdict = %q, want need_decision", status)
+	}
+	c := roundCap{l.agentID, l.issueID, l.run}
+	c.wantCard(t, 3)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_capped'`, l.issueID); n != 1 {
+		t.Fatalf("review_rounds_capped rows = %d, want 1", n)
+	}
+}
+
+// newReviewRun is the review-loop fixture with a reviewer run that may hand the
+// work to another agent by wakeup, and a PR lineage on the run.
+func newReviewRun(t *testing.T) (roundCap, string) {
+	t.Helper()
+	l := newReviewLoop(t)
+	human := dbfx.User(t, "Reviewer originator", "round-cap-"+workflowTestSuffix()+"@test.invalid")
+	dbfx.Insert(t, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": human, "role": "owner"})
+	dbfx.Exec(t, `UPDATE agent_task_queue SET originator_user_id = $2, accountable_user_id = $2, originator_source = 'trigger_owner' WHERE id = $1`, l.run, human)
+	c := roundCap{l.agentID, l.issueID, l.run}
+	c.reviewerPR(t, l.run)
+	return c, l.run
+}
+
+// reviewerPR stamps the reviewer's run with a PR lineage, as a dispatched
+// review run is.
+func (c roundCap) reviewerPR(t *testing.T, run string) string {
+	t.Helper()
+	var prID string
+	dbfx.QueryRow(t, `SELECT gen_random_uuid()::text`).Scan(&prID)
+	c.runOnPR(t, run, prID)
+	return prID
+}
+
+func (c roundCap) runOnPR(t *testing.T, run, prID string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE agent_task_queue SET pull_request_id = $2 WHERE id = $1`, run, prID)
+}
+
+// backToReview puts the issue back in agent_review for the reviewer's next
+// verdict, as the run's own step was advanced by the earlier one.
+func (c roundCap) backToReview(t *testing.T, run string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE issue SET status = 'agent_review' WHERE id = $1`, c.issueID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET workflow_step = 'agent_review' WHERE id = $1`, run)
+}
+
+func (c roundCap) statusVerdict(t *testing.T, run string) *testutil.Response {
+	t.Helper()
+	c.backToReview(t, run)
+	return agentUpdateIssue(t, c.issueID, c.agentID, run, map[string]any{
+		"status": "in_progress", "review_findings": []map[string]any{{"severity": "P1", "summary": "finding P1"}},
+	})
+}
+
+// One wakeup round and two status verdicts on one PR are three CHANGES rounds,
+// whichever way each was handed back.
+func TestRoundCap_MixedWakeupAndStatusRoundsCountOnePR(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status after wakeup + 2 status verdicts = %q, want need_decision", got)
+	}
+	c.wantCard(t, 3)
+}
+
+// Two status verdicts then a wakeup: the wakeup is the third round.
+func TestRoundCap_StatusRoundsThenWakeupIsTheThirdRound(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	c.backToReview(t, run)
+	c.reviewerWakeup(t, run, author).Want(http.StatusConflict)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status = %q, want need_decision", got)
+	}
+	c.wantCard(t, 3)
+}
+
+// Rounds of another PR on the same issue do not count: a replacement PR starts
+// at zero.
+func TestRoundCap_RoundsAreCountedPerPR(t *testing.T) {
+	c, run := newReviewRun(t)
+	first := c.reviewerPR(t, run)
+	author := otherReadyAgentID(t)
+	c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	c.reviewerPR(t, run)
+	c.backToReview(t, run)
+	c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("status = %q, want in_progress: 2 rounds on each of 2 PRs", got)
+	}
+	c.runOnPR(t, run, first)
+	c.statusVerdict(t, run).Want(http.StatusOK)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status = %q, want need_decision: the first PR's 3rd round", got)
+	}
+}

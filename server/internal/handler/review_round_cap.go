@@ -52,13 +52,41 @@ func recordRoundsCap(ctx context.Context, q *db.Queries, issue db.Issue, agentID
 }
 
 // openCappedCard opens the card for a write that capped the issue, after its
-// commit. A failure is logged: the issue is already in need_decision.
+// commit.
 func (h *Handler) openCappedCard(ctx context.Context, issue db.Issue, wf *workflowWrite) {
 	if wf == nil || wf.capped == nil {
 		return
 	}
-	if err := h.openReviewRoundsCard(ctx, issue, *wf.capped); err != nil {
-		slog.Warn("review rounds: decision card not opened", "err", err, "issue_id", uuidToString(issue.ID))
+	h.ensureReviewRoundsCard(ctx, issue, *wf.capped)
+}
+
+const reviewRoundsCardAttempts = 3
+
+// errNoCardRecipient means the issue has no owner or asking agent to ask.
+var errNoCardRecipient = errors.New("review rounds: nobody to ask")
+
+// ensureReviewRoundsCard opens the cap's card. The issue is already in
+// need_decision, so a failed attempt is retried, and when every attempt fails
+// the issue gets a system comment that says the card is missing: need_decision
+// never lacks its card silently.
+func (h *Handler) ensureReviewRoundsCard(ctx context.Context, issue db.Issue, c roundsCap) {
+	var err error
+	for attempt := 1; attempt <= reviewRoundsCardAttempts; attempt++ {
+		if err = h.openReviewRoundsCard(ctx, issue, c); err == nil || errors.Is(err, errNoCardRecipient) {
+			break
+		}
+		slog.Warn("review rounds: decision card not opened", "err", err, "attempt", attempt, "issue_id", uuidToString(issue.ID))
+	}
+	if err == nil {
+		return
+	}
+	slog.Error("review rounds: decision card missing", "err", err, "issue_id", uuidToString(issue.ID))
+	if _, cerr := h.Queries.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
+		Content: fmt.Sprintf("Review round limit: this issue has had %d review rounds without a PASS and is in need_decision, but the platform could not open its decision card. The issue owner decides: split the work or accept the current head.", c.rounds),
+	}); cerr != nil {
+		slog.Error("review rounds: missing-card notice not posted", "err", cerr, "issue_id", uuidToString(issue.ID))
 	}
 }
 
@@ -80,8 +108,7 @@ func (h *Handler) openReviewRoundsCard(ctx context.Context, issue db.Issue, c ro
 			return err
 		}
 		if len(plan.lanes) == 0 {
-			slog.Warn("review rounds: nobody to ask", "issue_id", uuidToString(issue.ID))
-			return nil
+			return errNoCardRecipient
 		}
 		// The comment takes the issue lock, after the decision locks.
 		notice, err := q.CreateComment(ctx, db.CreateCommentParams{
@@ -143,7 +170,8 @@ func (h *Handler) reviewHandoffWakeup(ctx context.Context, issue db.Issue, sourc
 // before the third returns false and the wakeup goes on. The third is refused:
 // the issue moves to need_decision, the card opens, and the caller answers 409.
 func (h *Handler) capReviewHandoff(ctx context.Context, issue db.Issue, run db.AgentTaskQueue) (bool, error) {
-	prior, err := h.Queries.CountChangesRoundsSinceMarker(ctx, issue.ID)
+	prID, _ := runReviewHead(&run)
+	prior, err := h.Queries.CountChangesRoundsForPR(ctx, db.CountChangesRoundsForPRParams{IssueID: issue.ID, PullRequestID: prID})
 	if err != nil || prior+1 < maxChangesRounds {
 		return false, err
 	}
@@ -159,15 +187,14 @@ func (h *Handler) capReviewHandoff(ctx context.Context, issue db.Issue, run db.A
 	if after, err := h.Queries.GetIssue(ctx, issue.ID); err == nil {
 		issue = after
 	}
-	if err := h.openReviewRoundsCard(ctx, issue, roundsCap{rounds: int(prior) + 1, activityID: capID}); err != nil {
-		slog.Warn("review rounds: decision card not opened", "err", err, "issue_id", uuidToString(issue.ID))
-	}
+	h.ensureReviewRoundsCard(ctx, issue, roundsCap{rounds: int(prior) + 1, activityID: capID})
 	return true, nil
 }
 
 // recordReviewHandoff counts the wakeup the reviewer made.
 func (h *Handler) recordReviewHandoff(ctx context.Context, issue db.Issue, run db.AgentTaskQueue, wakeup db.IssueWakeup) {
-	details, _ := json.Marshal(map[string]string{"wakeup_id": uuidToString(wakeup.ID), "agent_id": uuidToString(wakeup.AgentID)})
+	prID, head := runReviewHead(&run)
+	details, _ := json.Marshal(map[string]string{"wakeup_id": uuidToString(wakeup.ID), "agent_id": uuidToString(wakeup.AgentID), "pull_request_id": prID, "head_sha": head})
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: strToText("agent"),
 		ActorID: run.AgentID, Action: activityHandoffWakeup, Details: details,

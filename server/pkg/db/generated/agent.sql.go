@@ -3332,37 +3332,24 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
-const countChangesRoundsSinceMarker = `-- name: CountChangesRoundsSinceMarker :one
+const countChangesRoundsForPR = `-- name: CountChangesRoundsForPR :one
 SELECT count(*) FROM activity_log a
 WHERE a.issue_id = $1 AND a.action IN ('review_changes_requested', 'review_handoff_wakeup')
+  AND COALESCE(a.details->>'pull_request_id', '') = $2::text
   AND a.created_at > COALESCE((
     SELECT max(m.created_at) FROM activity_log m
     WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
   ), '-infinity'::timestamptz)
 `
 
-// CHANGES rounds an issue has had since its last PASS or round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author.
-func (q *Queries) CountChangesRoundsSinceMarker(ctx context.Context, issueID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countChangesRoundsSinceMarker, issueID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countChangesVerdictsForPR = `-- name: CountChangesVerdictsForPR :one
-SELECT count(*) FROM activity_log
-WHERE issue_id = $1 AND action = 'review_changes_requested'
-  AND COALESCE(details->>'pull_request_id', '') = $2::text
-`
-
-type CountChangesVerdictsForPRParams struct {
+type CountChangesRoundsForPRParams struct {
 	IssueID       pgtype.UUID `json:"issue_id"`
 	PullRequestID string      `json:"pull_request_id"`
 }
 
-// Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
-func (q *Queries) CountChangesVerdictsForPR(ctx context.Context, arg CountChangesVerdictsForPRParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countChangesVerdictsForPR, arg.IssueID, arg.PullRequestID)
+// CHANGES rounds of one PR lineage since the issue last passed review or hit the round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author. A replacement PR starts at zero.
+func (q *Queries) CountChangesRoundsForPR(ctx context.Context, arg CountChangesRoundsForPRParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countChangesRoundsForPR, arg.IssueID, arg.PullRequestID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

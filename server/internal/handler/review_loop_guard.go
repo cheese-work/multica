@@ -112,7 +112,7 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 		return errFindingsRequired
 	}
 	prID, _ := runReviewHead(caller.run)
-	earlier, err := q.CountChangesVerdictsForPR(ctx, db.CountChangesVerdictsForPRParams{IssueID: prev.ID, PullRequestID: prID})
+	earlier, err := q.CountChangesRoundsForPR(ctx, db.CountChangesRoundsForPRParams{IssueID: prev.ID, PullRequestID: prID})
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 	prID, head := runReviewHead(w.caller.run)
 	findings, _ := json.Marshal(w.caller.findings)
 	details, _ := json.Marshal(map[string]string{"findings": string(findings), "pull_request_id": prID, "head_sha": head})
-	_, err = q.CreateActivity(ctx, db.CreateActivityParams{
+	if _, err = q.CreateActivity(ctx, db.CreateActivityParams{
 		ID:          dbid.NewV7(),
 		WorkspaceID: prev.WorkspaceID,
 		IssueID:     prev.ID,
@@ -183,6 +183,17 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 		ActorID:     w.caller.run.AgentID,
 		Action:      action,
 		Details:     details,
-	})
+	}); err != nil || action != activityChangesRequested || moved.Status != statusNeedDecision || w.pre.Status.String == statusNeedDecision {
+		return err
+	}
+	// The guard rewrote this CHANGES verdict to need_decision: it was the
+	// maxChangesRounds-th round of the PR. Record the cap so the count restarts
+	// and the card opens after the commit.
+	rounds, err := q.CountChangesRoundsForPR(ctx, db.CountChangesRoundsForPRParams{IssueID: prev.ID, PullRequestID: prID})
+	if err != nil {
+		return err
+	}
+	id, err := recordRoundsCap(ctx, q, moved, w.caller.run.AgentID)
+	w.capped = &roundsCap{rounds: int(rounds), activityID: id}
 	return err
 }
