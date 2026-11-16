@@ -9,6 +9,9 @@ const PREVIEWED_ACTION_TYPES = [
   "issue.project.set",
   "agent.env.patch",
   "agent.copy",
+  "issue.run_guard.allow",
+  "agent.pause",
+  "agent.resume",
 ] as const;
 
 /** The Run budget group: actions that change how many runs an issue may use. */
