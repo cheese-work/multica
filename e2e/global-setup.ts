@@ -69,6 +69,8 @@ export default async function globalSetup(config: FullConfig) {
       fetch(`${baseURL}/${route}`, {
         headers: { cookie: "multica_logged_in=1" },
         redirect: "manual",
+        // CHE-6481: a hung `next dev` compile must not hold the whole job.
+        signal: AbortSignal.timeout(120_000),
       }).catch(() => undefined),
     ),
   );

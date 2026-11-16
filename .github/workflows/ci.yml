@@ -797,8 +797,11 @@ jobs:
         if: ${{ matrix.partition == 'rest' }}
         run: pnpm exec playwright install --with-deps chromium
 
+      # CHE-6481: a good run takes about 5.5 min. Two runs hung here with no log until the 60 min job
+      # limit. The step limit fails a hang in minutes, and the next step then dumps the API and web logs.
       - name: Decision card E2E
         if: ${{ matrix.partition == 'rest' }}
+        timeout-minutes: 12
         env:
           PORT: "8080"
           FRONTEND_ORIGIN: http://localhost:3000
@@ -821,7 +824,7 @@ jobs:
           ready() { for _ in $(seq 1 90); do curl -sf "$1" > /dev/null && return 0; sleep 2; done; echo "::error::$1 not ready"; return 1; }
           ready http://localhost:8080/health
           ready http://localhost:3000/
-          pnpm exec playwright test --project=chromium e2e/decision-dm-card-renders.spec.ts
+          pnpm exec playwright test --project=chromium --global-timeout=600000 e2e/decision-dm-card-renders.spec.ts
 
       - name: Show decision card E2E logs
         if: ${{ failure() && matrix.partition == 'rest' }}
