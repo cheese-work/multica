@@ -452,3 +452,79 @@ func TestDecisionGetCarriesTheAnswerCheeseGave(test *testing.T) {
 		test.Fatalf("wrong answer on read: %+v", fetched.Answer)
 	}
 }
+
+// newActionCardFixture is an open kind=action request: no options, an hour to run.
+func newActionCardFixture(test *testing.T) askedRecordFixture {
+	test.Helper()
+	fixture := newLegacyCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', options = '[]'::jsonb, ask_json = NULL, expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	return fixture
+}
+
+func TestActionCardDoneAndCantDoRecordTheirLabel(test *testing.T) {
+	for _, tc := range []struct {
+		input   decisionCardAnswerInput
+		label   string
+		content string
+	}{
+		{decisionCardAnswerInput{Option: "done"}, "done", "Done"},
+		{decisionCardAnswerInput{Option: "cant_do", Text: "no access"}, "cant_do", "Can't do\n\nno access"},
+		{decisionCardAnswerInput{Text: "running it tomorrow"}, "replied", "running it tomorrow"},
+	} {
+		test.Run(tc.label, func(test *testing.T) {
+			fixture := newActionCardFixture(test)
+			result, err := fixture.answerOnCard(tc.input)
+			if err != nil {
+				test.Fatal(err)
+			}
+			if result.Request.Status != "answered" || result.Answer.AnswerSource != "card" || result.Answer.AnsweredLabel.String != tc.label || result.Answer.ContentSnapshot != tc.content || result.Answer.ChosenOptionIndex.Valid {
+				test.Fatalf("answer = %+v, want label %q and content %q", result.Answer, tc.label, tc.content)
+			}
+			if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND effective_at <= clock_timestamp()`, result.Answer.ID); n != 1 {
+				test.Fatal("an action answer takes effect at once for every class")
+			}
+			if n := dbfx.Count(test, `SELECT count(*) FROM decision_wake_event WHERE request_id = $1 AND type = 'answered'`, fixture.decision.ID); n != 1 {
+				test.Fatalf("answered events = %d, want 1", n)
+			}
+		})
+	}
+}
+
+func TestActionCardRefusesAnOptionThatIsNotDoneOrCantDo(test *testing.T) {
+	fixture := newActionCardFixture(test)
+	for _, option := range []string{"Option A", "Done", "yes"} {
+		if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: option}); err == nil {
+			test.Fatalf("option %q was accepted", option)
+		}
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, fixture.decision.ID); n != 0 {
+		test.Fatalf("refusals left %d answers", n)
+	}
+}
+
+// A decision card never takes done / cant_do: only an action request does.
+func TestDecisionCardRefusesDoneAndCantDo(test *testing.T) {
+	fixture := newCardFixture(test)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "done"}); err == nil {
+		test.Fatal("a decision card took done")
+	}
+}
+
+func TestActionCardAnswerAfterExpiryIsRefusedAndLeavesNothing(test *testing.T) {
+	fixture := newActionCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, fixture.decision.ID)
+	_, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "done"})
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+		test.Fatalf("late answer = %v, want a 409 refusal", err)
+	}
+	for _, query := range []string{
+		`SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`,
+		`SELECT count(*) FROM decision_wake_event WHERE request_id = $1`,
+		`SELECT count(*) FROM decision_request WHERE id = $1 AND status <> 'open'`,
+	} {
+		if n := dbfx.Count(test, query, fixture.decision.ID); n != 0 {
+			test.Fatalf("%s = %d after a refused answer, want 0", query, n)
+		}
+	}
+}

@@ -82,7 +82,7 @@ func (s *AckService) withLockedInstance(ctx context.Context, ws, instance pgtype
 		return AckResult{}, err
 	}
 	if phase != inst.Phase {
-		if _, err := q.SetBrowserInstancePhase(ctx, db.SetBrowserInstancePhaseParams{ID: instance, WorkspaceID: ws, Phase: phase}); err != nil {
+		if err := q.SetBrowserInstancePhase(ctx, db.SetBrowserInstancePhaseParams{ID: instance, WorkspaceID: ws, Phase: phase}); err != nil {
 			return AckResult{}, err
 		}
 	}

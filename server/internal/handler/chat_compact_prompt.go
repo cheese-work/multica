@@ -23,12 +23,12 @@ func compactChatPrompt(content string, workspaceSettings, agentConfig []byte) st
 			criteria = strings.TrimSpace(settings.CompactPrompt)
 		}
 	}
-	return fmt.Sprintf(`Continue this web DM in a fresh session. Use the resumed conversation; read multica chat history if needed. Do not invent facts or include credentials, tokens, or secrets.
+	return fmt.Sprintf(`Compact this web DM in place. Use the resumed conversation; read multica chat history if needed. Do not invent facts or include credentials, tokens, or secrets.
 
 Summary requirements:
 %s
 
-Save the summary to a UTF-8 file in your working directory. Run multica chat continue --summary-file <path>. The server creates a fresh DM with the same agent, title, creator and project, seeds it with your summary, and archives this DM without deleting its transcript. Do not start a replacement conversation yourself or move decision requests. Report the returned URL of the new DM.
+Save the summary to a UTF-8 file in your working directory. Run multica chat compact --summary-file <path>. The server keeps the same DM (same id, history and URL), stores your summary, and starts your next turn from it. Do not start a replacement conversation yourself or move decision requests. Report that the same DM was compacted.
 
 Optional focus supplied by the human:
 %s`, criteria, focus)

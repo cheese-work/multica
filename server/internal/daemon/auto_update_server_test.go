@@ -107,7 +107,7 @@ func TestRunForkUpdate_InstallsFromOwnServerWithoutGitHub(t *testing.T) {
 	srv := fakeUpdateServer(t, bin, sha, &auths)
 	d, exe := serverUpdateDaemon(t, srv)
 
-	out, err := d.runForkUpdate()
+	out, err := d.runForkUpdate(context.Background())
 	if err != nil {
 		t.Fatalf("runForkUpdate: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRunForkUpdate_RejectsServerBytesThatMissTheDigest(t *testing.T) {
 	srv := fakeUpdateServer(t, bin, strings.Repeat("0", 64), &auths)
 	d, exe := serverUpdateDaemon(t, srv)
 
-	if _, err := d.runForkUpdate(); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if _, err := d.runForkUpdate(context.Background()); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("err = %v", err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "old-binary" {
@@ -148,7 +148,7 @@ func TestRunUpdate_UsesOwnServerSource(t *testing.T) {
 	srv := fakeUpdateServer(t, bin, sha, &auths)
 	d, exe := serverUpdateDaemon(t, srv)
 
-	if _, err := d.runUpdate("v9.9.9"); err != nil {
+	if _, err := d.runUpdate(context.Background(), "v9.9.9"); err != nil {
 		t.Fatalf("runUpdate: %v", err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != string(bin) {

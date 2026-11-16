@@ -181,8 +181,22 @@ test("CLI fails on losses, passes Ported: acknowledgements, and never executes P
 test("missing upstream tag fails closed for syncs but does not affect ordinary PRs", (context) => {
   const { cwd, git, pullRequest } = repositoryFixture(context);
   git("tag", "-d", "v1.0.0");
-  assert.throws(() => collectForkSync(pullRequest, cwd), /refs\/tags\/v1.0.0/);
-  assert.deepEqual(checkForkSync(collectForkSync({ ...pullRequest, title: "refactor: cleanup" }, cwd)), { sync: false, violations: [] });
+  const unreachable = join(cwd, "no-such-upstream");
+  assert.throws(() => collectForkSync(pullRequest, cwd, unreachable), /Could not fetch upstream tag v1\.0\.0/);
+  assert.deepEqual(checkForkSync(collectForkSync({ ...pullRequest, title: "refactor: cleanup" }, cwd, unreachable)), { sync: false, violations: [] });
+});
+
+test("missing upstream tag is fetched from the upstream remote (CHE-6097)", (context) => {
+  const { cwd, git, pullRequest } = repositoryFixture(context);
+  const upstream = mkdtempSync(join(tmpdir(), "fork-sync-upstream-"));
+  context.after(() => rmSync(upstream, { recursive: true, force: true }));
+  git("clone", "--quiet", "--bare", cwd, upstream);
+  git("tag", "-d", "v1.0.0");
+  assert.throws(() => git("rev-parse", "--verify", "refs/tags/v1.0.0^{commit}"));
+  const input = collectForkSync(pullRequest, cwd, upstream);
+  assert.ok(input.forkTests.includes(oldTest));
+  assert.equal(checkForkSync(input).violations.length, 5);
+  assert.equal(git("remote").trim(), "", "the fetch adds no remote");
 });
 
 test("a sync with no parseable Source paths fails closed", () => {
@@ -199,6 +213,6 @@ test("the workflow uses trusted code on a hosted runner and reruns on every push
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /test "\$\(git rev-parse FETCH_HEAD\)" = "\$EXPECTED_HEAD"/);
   assert.doesNotMatch(workflow, /self-hosted|pull_request\.head\.repo/);
-  assert.deepEqual(workflow.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only token of the changelog job");
+  assert.deepEqual(workflow.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN", "secrets.GUARD_POLICY_READ_TOKEN"], "only the read-only token of the changelog job and the read-only guard policy token (CHE-5752)");
   assert.match(workflow, /node scripts\/fork-sync-guard.mjs/);
 });

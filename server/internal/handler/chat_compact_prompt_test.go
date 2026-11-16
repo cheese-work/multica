@@ -45,7 +45,7 @@ func TestCompactWebDMSavedPrompt(t *testing.T) {
 			if response.Task == nil {
 				t.Fatal("compact task was not claimed")
 			}
-			for _, required := range []string{testCase.want, "retain IDs", "multica chat continue --summary-file", "Do not invent facts"} {
+			for _, required := range []string{testCase.want, "retain IDs", "multica chat compact --summary-file", "Do not invent facts"} {
 				if !strings.Contains(response.Task.ChatMessage, required) {
 					t.Errorf("compact prompt does not contain %q: %s", required, response.Task.ChatMessage)
 				}
@@ -60,7 +60,12 @@ func TestCompactWebDMSavedPrompt(t *testing.T) {
 func TestCompactChatPrompt(t *testing.T) {
 	for _, content := range []string{"/compact", "/compact focus on evidence", "\n /compact focus\nnext action"} {
 		prompt := compactChatPrompt(content, nil, nil)
-		for _, required := range []string{"multica chat continue --summary-file", "goal, decisions, evidence, open items", "archives this DM", "Do not invent facts"} {
+		for _, forbidden := range []string{"chat continue", "archives this DM", "fresh DM", "new DM"} {
+			if strings.Contains(prompt, forbidden) {
+				t.Errorf("prompt for %q still contains %q", content, forbidden)
+			}
+		}
+		for _, required := range []string{"multica chat compact --summary-file", "goal, decisions, evidence, open items", "same DM", "Do not invent facts"} {
 			if !strings.Contains(prompt, required) {
 				t.Errorf("prompt for %q does not contain %q", content, required)
 			}
