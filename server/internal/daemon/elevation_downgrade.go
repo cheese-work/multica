@@ -55,8 +55,11 @@ const (
 type Downgrader struct {
 	Server DowngradeServer
 	// Fence is the run's RunFence: restrict locally, stop new and unsent
-	// operations, end launch-scope processes, wait for started operations.
-	Fence interface{ Run(context.Context) error }
+	// operations, fence the server, end launch-scope processes and report them
+	// ended, wait for started operations.
+	Fence interface {
+		RunWithServerFence(ctx context.Context, serverFence func(context.Context) error) error
+	}
 	Epoch int64 // the epoch the run was claimed at
 	// Attempts and Backoff bound the retries of the server fence call.
 	Attempts int
@@ -66,14 +69,14 @@ type Downgrader struct {
 }
 
 // Downgrade returns nil only when it is safe to deliver withheld bytes. The
-// local fence runs first and needs nothing from the server, so the run is
-// restricted even if every server call fails. The server fence is retried;
-// delivery is asked for only after both the local fence and the server fence
-// succeeded. Any failure alerts and returns an error: the proxy keeps the stub.
+// local restriction runs first and needs nothing from the server, so the run is
+// restricted even if every server call fails. The server fence (retried) runs
+// inside the run fence, before launch scopes are reported ended, because the
+// server accepts that report only from a fenced task. Delivery is asked for
+// only after the whole run fence succeeded. Any failure alerts and returns an
+// error: the proxy keeps the stub.
 func (d *Downgrader) Downgrade(ctx context.Context) error {
-	fenceErr := d.Fence.Run(ctx)
-	startErr := d.startServerFence(ctx)
-	if err := errors.Join(fenceErr, startErr); err != nil {
+	if err := d.Fence.RunWithServerFence(ctx, d.startServerFence); err != nil {
 		return d.fail(fmt.Errorf("downgrade fence: %w", err))
 	}
 	if err := d.Server.DeliverDowngrade(ctx); err != nil {

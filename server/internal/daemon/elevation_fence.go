@@ -70,6 +70,11 @@ type RunFence struct {
 	StopRun func() error
 	// EndLaunchScopes reports that exit to the server.
 	EndLaunchScopes func(context.Context) error
+	// ServerFence, when set, fences the task on the server. It runs after the
+	// local restriction and before launch scopes are reported ended: the server
+	// accepts that report only from a fenced task. A failure never undoes the
+	// local restriction and keeps the report from going out.
+	ServerFence func(context.Context) error
 }
 
 // Run restricts, stops new and unsent operations, ends the run, and waits for
@@ -78,11 +83,20 @@ type RunFence struct {
 func (f RunFence) Run(ctx context.Context) error {
 	f.Restrict()
 	f.Broker.Fence()
-	var stopErr, endErr error
-	if stopErr = f.StopRun(); stopErr == nil {
+	var fenceErr, stopErr, endErr error
+	if f.ServerFence != nil {
+		fenceErr = f.ServerFence(ctx)
+	}
+	if stopErr = f.StopRun(); stopErr == nil && fenceErr == nil {
 		endErr = f.EndLaunchScopes(ctx)
 	}
-	return errors.Join(stopErr, endErr, f.Broker.Drain(ctx))
+	return errors.Join(fenceErr, stopErr, endErr, f.Broker.Drain(ctx))
+}
+
+// RunWithServerFence is Run with the server fence step supplied by the caller.
+func (f RunFence) RunWithServerFence(ctx context.Context, serverFence func(context.Context) error) error {
+	f.ServerFence = serverFence
+	return f.Run(ctx)
 }
 
 // WatchFence polls the server until the task leaves its claimed epoch's

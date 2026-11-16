@@ -34,13 +34,17 @@ type fakeFence struct {
 	block bool
 }
 
-func (f fakeFence) Run(ctx context.Context) error {
-	f.tr.add("fence")
+func (f fakeFence) RunWithServerFence(ctx context.Context, serverFence func(context.Context) error) error {
+	f.tr.add("restrict")
+	startErr := serverFence(ctx)
 	if f.block {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	return f.err
+	if startErr == nil {
+		f.tr.add("end-scopes")
+	}
+	return errors.Join(f.err, startErr)
 }
 
 type fakeDowngradeServer struct {
@@ -76,7 +80,7 @@ func TestDowngradeRestrictsLocallyThenFencesThenDelivers(t *testing.T) {
 	if err := newDowngrader(tr, srv, fakeFence{tr: tr}, &alerts).Downgrade(context.Background()); err != nil {
 		t.Fatalf("Downgrade: %v", err)
 	}
-	if got, want := tr.get(), []string{"fence", "start", "deliver"}; !reflect.DeepEqual(got, want) {
+	if got, want := tr.get(), []string{"restrict", "start", "end-scopes", "deliver"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps %v, want %v", got, want)
 	}
 	if !reflect.DeepEqual(srv.startEpochs, []int64{3}) || len(alerts) != 0 {
@@ -95,8 +99,8 @@ func TestServerFenceFailureRestrictsLocallyAndDeliversNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("Downgrade returned nil: bytes would be delivered")
 	}
-	if got, want := tr.get(), []string{"fence", "start", "start", "start"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("steps %v, want local fence then 3 start attempts and no deliver %v", got, want)
+	if got, want := tr.get(), []string{"restrict", "start", "start", "start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("steps %v, want local restrict, 3 start attempts, no end-scopes and no deliver %v", got, want)
 	}
 	if len(alerts) == 0 {
 		t.Fatal("no alert")
@@ -110,7 +114,7 @@ func TestServerFenceRetrySucceeds(t *testing.T) {
 	if err := newDowngrader(tr, srv, fakeFence{tr: tr}, &alerts).Downgrade(context.Background()); err != nil {
 		t.Fatalf("Downgrade: %v", err)
 	}
-	if got, want := tr.get(), []string{"fence", "start", "start", "deliver"}; !reflect.DeepEqual(got, want) {
+	if got, want := tr.get(), []string{"restrict", "start", "start", "end-scopes", "deliver"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps %v, want %v", got, want)
 	}
 }

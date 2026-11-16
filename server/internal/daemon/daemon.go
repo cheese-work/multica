@@ -9269,6 +9269,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
 	}
 	defer runBrk.Close()
+	// The elevated run's read proxy sits beside the broker; ctx becomes the
+	// run's own context, which its fence cancels (CHE-2512 B4c).
+	ctx, runProxy, err := startRunReadProxy(ctx, d.client, task, runBrk, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare read proxy: %w", err)
+	}
+	defer runProxy.Close()
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2).
 	// After applyRunBroker, so the guard hands over to the broker shims and
 	// never around them. A failure only costs the guard, never the run.
@@ -10291,6 +10298,8 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			d.cleanupUnconfirmed.Store(true)
 		}
 	}()
+	// A fence stops the run by waiting for this process to exit (run_tracker.go).
+	defer enterRun(ctx)()
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,18 +57,43 @@ func wireGitHub(t *testing.T) string {
 	return srv.URL
 }
 
+// wireOpts shapes the fake server: a failing fence, and a hook that runs as the
+// launch scopes are reported ended.
+type wireOpts struct {
+	downgradeStatus int
+	onEnded         func()
+}
+
 // wireServer records every call the daemon makes to the Multica server.
-func wireServer(t *testing.T, tr *wireTrace, deliverStatus int) *httptest.Server {
+func wireServer(t *testing.T, tr *wireTrace, deliverStatus int, opts ...func(*wireOpts)) *httptest.Server {
 	t.Helper()
+	var o wireOpts
+	for _, f := range opts {
+		f(&o)
+	}
+	var fenced atomic.Bool // the real endpoint refuses launch-scopes-ended while the task is elevated
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch r.URL.Path {
 		case "/api/daemon/tasks/task-1/elevation/launch-scopes-ended":
+			if !fenced.Load() {
+				tr.add("server.launch-scopes-ended REFUSED: task is not fenced")
+				http.Error(w, `{"error":"task is not fenced"}`, http.StatusConflict)
+				return
+			}
+			if o.onEnded != nil {
+				o.onEnded()
+			}
 			tr.add("server.launch-scopes-ended")
-			_, _ = w.Write([]byte(`{}`))
+			_, _ = w.Write([]byte(`{"ended":true}`))
 		case "/api/daemon/tasks/task-1/elevation/downgrade":
 			tr.add("server.downgrade epoch=" + string(rune('0'+int(body["epoch"].(float64)))))
+			if o.downgradeStatus != 0 {
+				http.Error(w, `{"error":"server down"}`, o.downgradeStatus)
+				return
+			}
+			fenced.Store(true)
 			_, _ = w.Write([]byte(`{"state":"fencing","epoch":4}`))
 		case "/api/daemon/tasks/task-1/elevation/downgrade/deliver":
 			tr.add("server.deliver")
@@ -130,8 +156,8 @@ func TestWiredProxyFencesTaintsDeliversThenReleasesBytes(t *testing.T) {
 	if err != nil || !res.Full || res.Body != wiredComment {
 		t.Fatalf("ask: res=%+v err=%v, want full text", res, err)
 	}
-	want := []string{"restrict", "broker.fence", "stop-run", "server.launch-scopes-ended", "broker.drain",
-		"server.downgrade epoch=3", "server.deliver"}
+	want := []string{"restrict", "broker.fence", "server.downgrade epoch=3", "stop-run",
+		"server.launch-scopes-ended", "broker.drain", "server.deliver"}
 	if got := tr.get(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps %v, want %v", got, want)
 	}
