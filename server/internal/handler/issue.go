@@ -319,6 +319,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, nil
 }
 
@@ -1509,8 +1510,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	// runSearch fills results from one search statement and writes the error
 	// response itself, returning false when the request is already answered.
-	runSearch := func(sqlQuery string, args []any) bool {
-		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+	runSearch := func(setup []string, sqlQuery string, args []any) bool {
+		err := runSearchQueryWithSetup(ctx, h.TxStarter, setup, sqlQuery, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
 				if err != nil {
@@ -1544,7 +1545,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	if !runSearch(sqlQuery, args) {
+	if !runSearch(nil, sqlQuery, args) {
 		return
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
@@ -1553,7 +1554,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
-		if !runSearch(fuzzyQuery, fuzzyArgs) {
+		if !runSearch(fuzzySearchSetup, fuzzyQuery, fuzzyArgs) {
 			return
 		}
 	}
@@ -1743,6 +1744,14 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		creatorFilter = id
 	}
+	var requestedByFilter pgtype.UUID
+	if c := r.URL.Query().Get("requested_by_id"); c != "" {
+		id, ok := parseUUIDOrBadRequest(w, c, "requested_by_id")
+		if !ok {
+			return
+		}
+		requestedByFilter = id
+	}
 	var projectFilter pgtype.UUID
 	if p := r.URL.Query().Get("project_id"); p != "" {
 		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
@@ -1803,6 +1812,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			AssigneeID:         assigneeFilter,
 			AssigneeIds:        assigneeIdsFilter,
 			CreatorID:          creatorFilter,
+			RequestedByID:      requestedByFilter,
 			ProjectID:          projectFilter,
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
@@ -2003,6 +2013,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if creatorFilter.Valid {
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
+	}
+	if requestedByFilter.Valid {
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(requestedByFilter)))
 	}
 	if projectFilter.Valid {
 		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
@@ -2556,6 +2569,13 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(id)))
+	}
+	if raw := r.URL.Query().Get("requested_by_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "requested_by_id")
+		if !ok {
+			return
+		}
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(id)))
 	}
 	if raw := r.URL.Query().Get("project_id"); raw != "" {
 		id, ok := parseUUIDOrBadRequest(w, raw, "project_id")
@@ -4581,6 +4601,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, current, attachmentsChanged, nil
 }
 

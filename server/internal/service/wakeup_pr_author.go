@@ -6,6 +6,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -37,7 +39,20 @@ func prResolverTarget(ctx context.Context, queries *db.Queries, issue db.Issue, 
 	if found {
 		return target, nil
 	}
-	return resolveWakeTarget(ctx, queries, issue)
+	assignee, err := resolveWakeTarget(ctx, queries, issue)
+	if err != nil || assignee.Type != "member" {
+		return assignee, err
+	}
+	// A member holds the issue and no PR author resolves: the last agent that
+	// worked on it takes the PR action, so the member is not the owner (CHE-5837).
+	last, err := queries.LastWorkingAgentOnIssue(ctx, db.LastWorkingAgentOnIssueParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return assignee, nil
+	}
+	if err != nil {
+		return wakeTarget{}, err
+	}
+	return wakeTarget{Type: "agent", ID: last.ID, Agent: last}, nil
 }
 
 // prAuthorTarget is the PR's author as a wake target; found is false when the
@@ -122,4 +137,57 @@ func prResolverReceipts(ctx context.Context, queries *db.Queries, issue db.Issue
 		}
 	}
 	return matched, nil
+}
+
+// prNotice is one member notice (CHE-5901): the receipts of one pull request,
+// the stored events they carry (which stop being offered to the bridge once the
+// notice is written), and the key of the one unread row per issue and pull
+// request. A receipt that names no pull request in the workspace gives no key.
+type prNotice struct {
+	Receipts []db.IssueWakeupReceipt
+	Events   []pgtype.UUID
+	Key      pgtype.Text
+}
+
+// prNotices splits the receipts of one wake into one notice per pull request,
+// in first-seen order, so two pull requests batched in one wake are never
+// settled by one row. Receipts that name no pull request form one notice
+// without a key.
+func prNotices(ctx context.Context, queries *db.Queries, issue db.Issue, receipts []db.IssueWakeupReceipt) ([]prNotice, error) {
+	type pullRef struct {
+		owner, repo string
+		number      int32
+	}
+	var notices []prNotice
+	at := map[pullRef]int{}
+	for _, receipt := range receipts {
+		var payload struct {
+			EventID   pgtype.UUID `json:"event_id"`
+			RepoOwner string      `json:"repo_owner"`
+			RepoName  string      `json:"repo_name"`
+			Number    int32       `json:"pr_number"`
+		}
+		_ = json.Unmarshal(receipt.Payload, &payload)
+		ref := pullRef{payload.RepoOwner, payload.RepoName, payload.Number}
+		i, seen := at[ref]
+		if !seen {
+			i = len(notices)
+			at[ref] = i
+			notices = append(notices, prNotice{})
+			pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+				WorkspaceID: issue.WorkspaceID, RepoOwner: ref.owner, RepoName: ref.repo, PrNumber: ref.number,
+			})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return nil, err
+			}
+			if err == nil {
+				notices[i].Key = pgtype.Text{String: "pr_fyi:" + util.UUIDToString(issue.ID) + ":" + util.UUIDToString(pull.ID), Valid: true}
+			}
+		}
+		notices[i].Receipts = append(notices[i].Receipts, receipt)
+		if payload.EventID.Valid {
+			notices[i].Events = append(notices[i].Events, payload.EventID)
+		}
+	}
+	return notices, nil
 }

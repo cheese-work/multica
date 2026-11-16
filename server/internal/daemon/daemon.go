@@ -9196,11 +9196,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	} else {
 		selfBin = agentEnv["MULTICA_CLI_PATH"]
 	}
-	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
-	// failure only costs the guard, never the run.
-	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
-		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
-	}
 	// Hand the guard the workspace's stored policy (CHE-5204); without one it
 	// keeps the compiled default.
 	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
@@ -9269,6 +9264,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, runIsolated, d.cfg.Broker, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
+	}
+	defer runBrk.Close()
+	// The elevated run's read proxy sits beside the broker (CHE-2512 B4c). Its
+	// agent turns run under runProxy.Ctx(ctx), which a launch-scope fence stops.
+	runProxy, err := startRunReadProxy(d.client, task, runBrk, agentEnv, restrictedSuccessorLaunch, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare read proxy: %w", err)
+	}
+	defer runProxy.Close()
+	// Front gh and git with the guard shims for every runtime (CHE-5194 T2).
+	// After applyRunBroker, so the guard hands over to the broker shims and
+	// never around them. A failure only costs the guard, never the run.
+	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
+		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -9536,6 +9549,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// execution window and always remove the credential afterwards.
 	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
 	checkoutTask.StableDir = stableCwd
+	checkoutTask.Broker = runBrk
 	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
@@ -9572,7 +9586,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	stopUsageFlush := d.startUsageFlush(ctx, task.ID, &liveUsage, taskLog)
 	defer stopUsageFlush()
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+	result, tools, err := d.executeWithDowngrade(ctx, runProxy, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -9628,7 +9642,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, withPriorTaskUsage(execOpts, firstUsage), taskLog, task.ID, env.CodexHome, &msgSeq)
+		retryResult, retryTools, retryErr := d.executeWithDowngrade(ctx, runProxy, backend, freshPrompt, withPriorTaskUsage(execOpts, firstUsage), taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
@@ -9653,7 +9667,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// pass the very same check in Finalize.
 	if env.LocalWorktree != nil && result.Status == "completed" {
 		if problem := env.LocalWorktree.CheckDelivery(); problem != nil {
-			result, tools = d.repairWorktreeDelivery(ctx, backend, execOpts, result, tools, problem, env, taskLog, task.ID, &msgSeq)
+			result, tools = d.repairWorktreeDelivery(runProxy.Ctx(ctx), backend, execOpts, result, tools, problem, env, taskLog, task.ID, &msgSeq)
 		}
 	}
 	phaseRecorder.Mark(taskPhaseTurnCompleted)
@@ -10284,6 +10298,8 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			d.cleanupUnconfirmed.Store(true)
 		}
 	}()
+	// A fence stops the run by waiting for this process to exit (run_tracker.go).
+	defer enterRun(ctx)()
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
@@ -10587,6 +10603,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					// preserved), while a session whose rollout never lands is never
 					// pinned. The terminal report is the authoritative writer.
 					// Non-Codex providers (codexHome == "") pin immediately.
+					noteRunSession(ctx, msg.SessionID)
 					if msg.SessionID != "" && !sessionPinned.Swap(true) {
 						sid := msg.SessionID
 						wd := opts.Cwd

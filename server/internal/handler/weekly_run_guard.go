@@ -17,15 +17,18 @@ import (
 )
 
 // weeklyRunGuardAction is the activity row the brief reads.
-const weeklyRunGuardAction = "weekly_run_guard_tripped"
+const (
+	weeklyRunGuardAction       = "weekly_run_guard_tripped"
+	weeklyRunGuardWarnedAction = "weekly_run_guard_warned"
+)
 
 // ictLocation is the day boundary of the incident claim.
 var ictLocation = time.FixedZone("ICT", 7*60*60)
 
 // onWeeklyRunGuardTripped records one incident per issue and ICT day (CHE-5720):
 // an activity row with the run count and the status of the last three runs.
-// The refusal itself changes no status and writes no comment; the brief carries
-// the incident.
+// The refusal itself changes no status; the brief carries the incident, and the
+// first refusal opens the owner's card with one system comment (CHE-6172).
 func (h *Handler) onWeeklyRunGuardTripped(ctx context.Context, e service.WeeklyRunGuardTripped) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
@@ -35,6 +38,21 @@ func (h *Handler) onWeeklyRunGuardTripped(ctx context.Context, e service.WeeklyR
 	details, err := json.Marshal(map[string]any{"runs": e.Runs, "outcomes": e.Outcomes})
 	if err != nil {
 		return
+	}
+	// Warn mode refused nothing: count it for the brief and open no card (CHE-6248).
+	if e.Warn {
+		if err := h.warnWeeklyRunGuard(ctx, issue, details); err != nil {
+			slog.Warn("weekly run guard: write warning failed", "err", err, "issue_id", uuidToString(issue.ID))
+		}
+		return
+	}
+	// The auto-approver settles a refusal with progress before any card opens (CHE-6248).
+	// The card, when it opens, is claimed once per issue until it is answered (CHE-6172);
+	// the incident row below once per ICT day.
+	if !h.autoApproveRunGuard(ctx, issue, &e) {
+		if err := h.openWeeklyRunGuardCard(ctx, issue, e); err != nil {
+			slog.Warn("weekly run guard: open card failed", "err", err, "issue_id", uuidToString(issue.ID))
+		}
 	}
 	err = h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		qtx := h.Queries.WithTx(tx)
@@ -70,7 +88,7 @@ func (h *Handler) weeklyRunGuardBrief(ctx context.Context, workspaceID pgtype.UU
 		return "", err
 	}
 	prefix := h.getIssuePrefix(ctx, workspaceID)
-	items := make([]string, 0, len(rows))
+	var stopped, warned []string
 	for _, r := range rows {
 		var d struct {
 			Runs     int64    `json:"runs"`
@@ -79,10 +97,19 @@ func (h *Handler) weeklyRunGuardBrief(ctx context.Context, workspaceID pgtype.UU
 		if err := json.Unmarshal(r.Details, &d); err != nil {
 			continue
 		}
-		items = append(items, fmt.Sprintf("%s-%d %d runs in 7 days, last 3: %s", prefix, r.Number, d.Runs, strings.Join(d.Outcomes, ", ")))
+		item := fmt.Sprintf("%s-%d %d runs in 7 days, last 3: %s", prefix, r.Number, d.Runs, strings.Join(d.Outcomes, ", "))
+		if r.Action == weeklyRunGuardWarnedAction {
+			warned = append(warned, item)
+		} else {
+			stopped = append(stopped, item)
+		}
 	}
-	if len(items) == 0 {
-		return "", nil
+	var lines []string
+	if len(stopped) > 0 {
+		lines = append(lines, "Run guard stopped runs on: "+strings.Join(stopped, "; ")+".")
 	}
-	return "Run guard stopped runs on: " + strings.Join(items, "; ") + ".", nil
+	if len(warned) > 0 {
+		lines = append(lines, "Run guard (warn mode) would have stopped runs on: "+strings.Join(warned, "; ")+".")
+	}
+	return strings.Join(lines, " "), nil
 }

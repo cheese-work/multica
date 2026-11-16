@@ -71,6 +71,9 @@ type workflowWrite struct {
 	// Step entry gates bind explicit status writes only.
 	system bool
 	entry  entryWrite
+	// capped is set when the write moved the issue to need_decision because its
+	// review rounds ran out; the card opens after the commit (CHE-6192).
+	capped *roundsCap
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like

@@ -319,7 +319,7 @@ func issueViewTableScope(view db.IssueView) (issueTableScope, error) {
 			relation = view.ScopeVariant.String
 		}
 		switch relation {
-		case "assigned", "created", "involved", "any":
+		case "assigned", "created", "requested", "involved", "any":
 			return issueTableScope{Kind: "my", Relation: relation}, nil
 		}
 	}

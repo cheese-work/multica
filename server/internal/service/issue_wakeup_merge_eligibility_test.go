@@ -37,6 +37,10 @@ type mergeFix struct {
 	facts *fakeMergeFacts
 	clock time.Time
 	w     db.IssueWakeup
+	// author is the agent bound as the PR author by stored().
+	author string
+	// pass is the signed PASS comment posted by stored().
+	pass string
 }
 
 func eligibleFacts(observed time.Time) MergeFacts {

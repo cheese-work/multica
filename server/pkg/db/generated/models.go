@@ -448,14 +448,26 @@ type AutopilotTrigger struct {
 	CreatedByID pgtype.UUID `json:"created_by_id"`
 }
 
+type BrowserGatewayCredential struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Gateway        string             `json:"gateway"`
+	CredentialHash string             `json:"credential_hash"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type BrowserInstance struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Name        string             `json:"name"`
-	Epoch       int64              `json:"epoch"`
-	Phase       string             `json:"phase"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Name           string             `json:"name"`
+	Epoch          int64              `json:"epoch"`
+	Phase          string             `json:"phase"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Host           string             `json:"host"`
+	Gateway        string             `json:"gateway"`
+	AllowedClasses []string           `json:"allowed_classes"`
 }
 
 type BrowserLease struct {
@@ -1017,6 +1029,11 @@ type Comment struct {
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
 	ExternalRead        bool               `json:"external_read"`
+}
+
+type CommentContentEdit struct {
+	CommentID pgtype.UUID        `json:"comment_id"`
+	EditedAt  pgtype.Timestamptz `json:"edited_at"`
 }
 
 type CommentReaction struct {
@@ -2757,6 +2774,36 @@ type MergePauseState struct {
 	Error        pgtype.Text        `json:"error"`
 }
 
+type MergeReceiptFact struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RepoOwner         string             `json:"repo_owner"`
+	RepoName          string             `json:"repo_name"`
+	PrNumber          int32              `json:"pr_number"`
+	HeadSha           string             `json:"head_sha"`
+	BaseRef           string             `json:"base_ref"`
+	Tier              pgtype.Int4        `json:"tier"`
+	ClassifierTrusted pgtype.Bool        `json:"classifier_trusted"`
+	CoverageComplete  pgtype.Bool        `json:"coverage_complete"`
+	PrBound           pgtype.Bool        `json:"pr_bound"`
+	SecurityGate      string             `json:"security_gate"`
+	ScopeClassified   pgtype.Bool        `json:"scope_classified"`
+	GateVetoed        pgtype.Bool        `json:"gate_vetoed"`
+	Paths             []string           `json:"paths"`
+	Labels            []string           `json:"labels"`
+	Evidence          string             `json:"evidence"`
+	ObservedAt        pgtype.Timestamptz `json:"observed_at"`
+}
+
+type MergeVeto struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	VetoedBy    pgtype.UUID        `json:"vetoed_by"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type MergeVetoDeadline struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	RepoOwner   string             `json:"repo_owner"`
@@ -3893,6 +3940,32 @@ type WecomInstallSession struct {
 	ErrorMessage       pgtype.Text        `json:"error_message"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WeeklyRunGuardAllowance struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Runs        int32              `json:"runs"`
+	ActionID    pgtype.UUID        `json:"action_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type WeeklyRunGuardRefusal struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID   pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID     pgtype.UUID        `json:"source_task_id"`
+	Runs             int64              `json:"runs"`
+	State            string             `json:"state"`
+	ActionID         pgtype.UUID        `json:"action_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkflowWebhookEndpoint struct {

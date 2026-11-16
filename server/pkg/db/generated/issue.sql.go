@@ -1723,8 +1723,9 @@ WHERE i.workspace_id = $1
   AND ($4::uuid IS NULL OR i.assignee_id = $4)
   AND ($5::uuid[] IS NULL OR i.assignee_id = ANY($5::uuid[]))
   AND ($6::uuid IS NULL OR i.creator_id = $6)
-  AND ($7::uuid IS NULL OR i.project_id = $7)
-  AND ($8::jsonb IS NULL OR i.metadata @> $8::jsonb)
+  AND ($7::uuid IS NULL OR i.requested_by_id = $7)
+  AND ($8::uuid IS NULL OR i.project_id = $8)
+  AND ($9::jsonb IS NULL OR i.metadata @> $9::jsonb)
   -- properties_filter is a jsonb array of groups, each group an array of
   -- patterns (built by parsePropertiesFilterParam): the issue must match at
   -- least one pattern from EVERY group (AND of ORs). Three pattern shapes:
@@ -1742,10 +1743,10 @@ WHERE i.workspace_id = $1
   -- terminal-status predicate intentionally remains a filter rather than a
   -- positive index narrowing so unknown legacy status keys stay visible.
   AND (
-    $9::jsonb IS NULL
+    $10::jsonb IS NULL
     OR NOT EXISTS (
       SELECT 1
-      FROM jsonb_array_elements($9::jsonb) AS pf(alternatives)
+      FROM jsonb_array_elements($10::jsonb) AS pf(alternatives)
       WHERE NOT EXISTS (
         SELECT 1
         FROM jsonb_array_elements(pf.alternatives) AS alt(pattern)
@@ -1783,11 +1784,11 @@ WHERE i.workspace_id = $1
     )
   )
   AND (
-    $10::uuid IS NULL
+    $11::uuid IS NULL
     OR (i.assignee_type = 'agent' AND i.assignee_id IN (
           SELECT a.id FROM agent a
            WHERE a.workspace_id = $1
-             AND a.owner_id     = $10::uuid
+             AND a.owner_id     = $11::uuid
     ))
     OR (i.assignee_type = 'squad' AND i.assignee_id IN (
           SELECT sm.squad_id
@@ -1795,14 +1796,14 @@ WHERE i.workspace_id = $1
             JOIN squad s ON s.id = sm.squad_id
            WHERE s.workspace_id = $1
              AND sm.member_type = 'member'
-             AND sm.member_id   = $10::uuid
+             AND sm.member_id   = $11::uuid
           UNION
           SELECT s.id
             FROM squad s
             JOIN agent a ON a.id = s.leader_id
            WHERE s.workspace_id = $1
              AND a.workspace_id = $1
-             AND a.owner_id     = $10::uuid
+             AND a.owner_id     = $11::uuid
           UNION
           SELECT sm.squad_id
             FROM squad_member sm
@@ -1811,7 +1812,7 @@ WHERE i.workspace_id = $1
            WHERE s.workspace_id = $1
              AND sm.member_type = 'agent'
              AND a.workspace_id = $1
-             AND a.owner_id     = $10::uuid
+             AND a.owner_id     = $11::uuid
     ))
   )
 ORDER BY i.position ASC, i.created_at DESC
@@ -1824,6 +1825,7 @@ type ListOpenIssuesParams struct {
 	AssigneeID         pgtype.UUID   `json:"assignee_id"`
 	AssigneeIds        []pgtype.UUID `json:"assignee_ids"`
 	CreatorID          pgtype.UUID   `json:"creator_id"`
+	RequestedByID      pgtype.UUID   `json:"requested_by_id"`
 	ProjectID          pgtype.UUID   `json:"project_id"`
 	MetadataFilter     []byte        `json:"metadata_filter"`
 	PropertiesFilter   []byte        `json:"properties_filter"`
@@ -1870,6 +1872,7 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 		arg.AssigneeID,
 		arg.AssigneeIds,
 		arg.CreatorID,
+		arg.RequestedByID,
 		arg.ProjectID,
 		arg.MetadataFilter,
 		arg.PropertiesFilter,

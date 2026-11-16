@@ -1,0 +1,7 @@
+[
+  {"purpose":"bg:quick_actions","status":"completed","created_at":"2026-11-06T00:00:00Z","dispatched_at":"2026-11-06T00:00:01Z","started_at":"2026-11-06T00:00:02Z","completed_at":"2026-11-06T00:00:07Z","cost_usd_ticks":20000000,"input_tokens":1000,"output_tokens":100},
+  {"purpose":"bg:quick_actions","status":"completed","created_at":"2026-11-06T00:01:00Z","dispatched_at":"2026-11-06T00:01:03Z","started_at":"2026-11-06T00:01:03Z","completed_at":"2026-11-06T00:01:13Z","cost_usd_ticks":40000000,"input_tokens":2000,"output_tokens":200},
+  {"purpose":"bg:quick_actions","status":"failed","created_at":"2026-11-06T00:02:00Z","dispatched_at":"2026-11-06T00:02:02Z","started_at":"2026-11-06T00:02:02Z","completed_at":"2026-11-06T00:02:22Z","cost_usd_ticks":0,"input_tokens":500,"output_tokens":0},
+  {"purpose":"bg:dm_title","status":"completed","created_at":"2026-11-06T00:03:00Z","dispatched_at":"2026-11-06T00:03:02Z","started_at":"2026-11-06T00:03:02Z","completed_at":"2026-11-06T00:03:06Z","cost_usd_ticks":10000000,"input_tokens":300,"output_tokens":20},
+  {"purpose":null,"status":"completed","created_at":"2026-11-06T00:04:00Z","dispatched_at":"2026-11-06T00:04:00Z","started_at":"2026-11-06T00:04:00Z","completed_at":"2026-11-06T00:05:00Z","cost_usd_ticks":999,"input_tokens":1,"output_tokens":1}
+]
