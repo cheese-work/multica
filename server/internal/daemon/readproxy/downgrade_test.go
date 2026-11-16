@@ -45,7 +45,7 @@ func (f *fakeDowngrade) count() int {
 	return f.calls
 }
 
-func serveDowngrade(t *testing.T, graphQL, rest string, admit bool, ap Approver, d Downgrader) string {
+func serveDowngrade(t *testing.T, graphQL, rest string, admit bool, ap Approver, d Downgrader, opts ...func(*Proxy)) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "rp")
 	if err != nil {
@@ -62,6 +62,9 @@ func serveDowngrade(t *testing.T, graphQL, rest string, admit bool, ap Approver,
 		Token:   func(context.Context) (string, error) { return secretToken, nil },
 		Admit:   &fakeAdmit{ok: admit},
 		Approve: ap, Downgrade: d, LookupTimeout: 200 * time.Millisecond, DowngradeWait: 300 * time.Millisecond}
+	for _, o := range opts {
+		o(p)
+	}
 	go p.Serve(ln)
 	return sock
 }
@@ -184,5 +187,74 @@ func TestShimAskDowngradeFlag(t *testing.T) {
 	}
 	if code := ShimMain([]string{"--ask-downgrade"}, env, &out, &errb); code != 2 {
 		t.Fatalf("flag alone: code=%d, want 2", code)
+	}
+}
+
+type downgradeReport struct {
+	res Result
+	ok  bool
+}
+
+// OnDowngrade is told how each handshake ended, with the text only on success;
+// a read that did not ask, or was admitted, never reaches it.
+func TestOnDowngradeReportsEachHandshake(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err     error
+		wantOK  bool
+		wantTxt string
+	}{
+		"success": {nil, true, hostileComment},
+		"failure": {errors.New("fence failed"), false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := newFakeGitHub(t, node("IssueComment", hostileComment, "null", "null"))
+			got := make(chan downgradeReport, 4)
+			sock := serveDowngrade(t, gh.srv.URL, "", false, nil, &fakeDowngrade{err: tc.err},
+				func(p *Proxy) { p.OnDowngrade = func(r Result, ok bool) { got <- downgradeReport{r, ok} } })
+			if _, err := Read(context.Background(), sock, "IC_node1"); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Fatal("a read that did not ask was reported as a handshake")
+			}
+			if _, err := Read(context.Background(), sock, "IC_node1", AskDowngrade); err != nil {
+				t.Fatal(err)
+			}
+			r := <-got
+			if r.ok != tc.wantOK || r.res.Body != tc.wantTxt {
+				t.Fatalf("OnDowngrade(ok=%v, body=%q), want ok=%v body=%q", r.ok, r.res.Body, tc.wantOK, tc.wantTxt)
+			}
+		})
+	}
+}
+
+// A handshake that ends the requester must still finish: detached, it runs to
+// the end after the requester's request context is gone; attached, it is
+// aborted with it.
+func TestDetachedHandshakeSurvivesTheRequester(t *testing.T) {
+	for name, tc := range map[string]struct {
+		detach bool
+		wantOK bool
+	}{"detached": {true, true}, "attached": {false, false}} {
+		t.Run(name, func(t *testing.T) {
+			gh := newFakeGitHub(t, node("IssueComment", hostileComment, "null", "null"))
+			got := make(chan downgradeReport, 1)
+			sock := serveDowngrade(t, gh.srv.URL, "", false, nil, &fakeDowngrade{delay: 150 * time.Millisecond},
+				func(p *Proxy) {
+					p.DetachDowngrade = tc.detach
+					p.OnDowngrade = func(r Result, ok bool) { got <- downgradeReport{r, ok} }
+				})
+			ctx, die := context.WithTimeout(context.Background(), 40*time.Millisecond)
+			defer die()
+			_, _ = Read(ctx, sock, "IC_node1", AskDowngrade) // the requester gives up mid-handshake
+			select {
+			case r := <-got:
+				if r.ok != tc.wantOK || (tc.wantOK && r.res.Body != hostileComment) {
+					t.Fatalf("OnDowngrade(ok=%v, body=%q), want ok=%v", r.ok, r.res.Body, tc.wantOK)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the handshake never reported")
+			}
+		})
 	}
 }

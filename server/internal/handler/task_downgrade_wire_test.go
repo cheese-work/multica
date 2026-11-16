@@ -48,7 +48,10 @@ func realHandlers(t *testing.T) *httptest.Server {
 	return srv
 }
 
-type wireBroker struct{ fenced, drained atomic.Bool }
+type wireBroker struct {
+	fenced, drained, stopped atomic.Bool
+	delivered                atomic.Pointer[readproxy.Result] // what OnDowngrade was told, on success
+}
 
 func (b *wireBroker) Fence()                       { b.fenced.Store(true) }
 func (b *wireBroker) Drain(context.Context) error  { b.drained.Store(true); return nil }
@@ -77,7 +80,13 @@ func wiredProxy(t *testing.T, f elevatedFixture, epoch int64, launchScopes bool)
 		Broker:       b,
 		Restrict:     func() { restricted.Store(true) },
 		LaunchScopes: launchScopes,
-		Attempts:     1, Backoff: time.Millisecond,
+		StopRun:      func() error { b.stopped.Store(true); return nil },
+		OnDowngrade: func(res readproxy.Result, ok bool) {
+			if ok {
+				b.delivered.Store(&res)
+			}
+		},
+		Attempts: 1, Backoff: time.Millisecond,
 		Wait: 5 * time.Second,
 	})
 	dir, err := os.MkdirTemp("", "rrp")
@@ -168,22 +177,29 @@ func TestRealHandlersFailedHandshakeKeepsRestrictionAndStub(t *testing.T) {
 	}
 }
 
-// A task holding a launch scope is refused the handshake before any server call:
-// the row stays elevated, nothing is tainted, the read stays a stub.
-func TestRealHandlersRefuseHandshakeForLaunchScopeTask(t *testing.T) {
+// A task holding a launch scope has its run stopped and the scopes reported
+// ended before the server finishes the fence; the text goes to OnDowngrade (the
+// successor turn), because the requester died with the run.
+func TestRealHandlersDeliverLaunchScopeTaskToTheSuccessor(t *testing.T) {
 	f := claimElevated(t, "repo_write:1234", "docker")
 	sock, restricted, broker := wiredProxy(t, f, 1, true)
-	res, err := readproxy.Read(context.Background(), sock, "IC_1", readproxy.AskDowngrade)
-	if err != nil || res.Full || res.Body != "" || res.SHA256 == "" {
-		t.Fatalf("ask: %+v %v, want the stub", res, err)
+	if _, err := readproxy.Read(context.Background(), sock, "IC_1", readproxy.AskDowngrade); err != nil {
+		t.Fatalf("ask: %v", err)
 	}
-	if state, epoch := f.state(t); state != "elevated" || epoch != 1 {
-		t.Fatalf("row = %s epoch %d, want it untouched", state, epoch)
+	if state, epoch := f.state(t); state != "restricted_final" || epoch != 2 {
+		t.Fatalf("row = %s epoch %d, want restricted_final at epoch 2", state, epoch)
 	}
-	if restricted.Load() || broker.fenced.Load() {
-		t.Fatalf("restricted=%v fenced=%v: a refused handshake starts nothing", restricted.Load(), broker.fenced.Load())
+	if !f.scopesEnded(t) || !broker.stopped.Load() {
+		t.Fatalf("scopesEnded=%v stopped=%v, want the run stopped and its launch scopes reported ended", f.scopesEnded(t), broker.stopped.Load())
 	}
-	if a, b := f.taintCounts(t); a != 0 || b != 0 {
-		t.Fatalf("taint = task %d issue %d, want none", a, b)
+	if a, b := f.taintCounts(t); a != 1 || b != 1 {
+		t.Fatalf("taint = task %d issue %d, want both tainted", a, b)
 	}
+	if !restricted.Load() || !broker.fenced.Load() || !broker.drained.Load() {
+		t.Fatalf("restricted=%v fenced=%v drained=%v, want all", restricted.Load(), broker.fenced.Load(), broker.drained.Load())
+	}
+	if got := broker.delivered.Load(); got == nil || got.Body != wireComment {
+		t.Fatalf("OnDowngrade got %+v, want the full text for the successor", got)
+	}
+	f.authorize(t, 2, "repo_write:1234", hashA).Want(http.StatusForbidden) // no re-elevation
 }

@@ -102,6 +102,14 @@ type Proxy struct {
 	LookupTimeout   time.Duration // server lookup bound; default 5s
 	Downgrade       Downgrader    // nil: a read that asks for a downgrade still gets the stub
 	DowngradeWait   time.Duration // whole handshake bound; default 30s
+	// DetachDowngrade runs the handshake independent of the request's context.
+	// Set it when the handshake ends the process that asked, so the requester's
+	// death does not abort the fence half way.
+	DetachDowngrade bool
+	// OnDowngrade, when set, is told how every handshake ended, with the
+	// withheld text in the result when ok. It is the delivery path for a
+	// requester that no longer exists.
+	OnDowngrade func(res Result, ok bool)
 }
 
 // object keeps editor and lastEditedAt raw: a missing key (nil) differs from
@@ -219,8 +227,14 @@ func (p *Proxy) read(ctx context.Context, id string, ask bool) (Result, error) {
 	}
 	if ok, err := p.admit(ctx, func(lctx context.Context) (bool, error) { return p.Admit.Admitted(lctx, c) }); err == nil && ok {
 		res.Full, res.Body = true, *n.Body
-	} else if ask && p.downgrade(ctx) {
-		res.Full, res.Body = true, *n.Body
+	} else if ask && p.Downgrade != nil {
+		ok := p.downgrade(ctx)
+		if ok {
+			res.Full, res.Body = true, *n.Body
+		}
+		if p.OnDowngrade != nil {
+			p.OnDowngrade(res, ok)
+		}
 	}
 	return res, nil
 }
@@ -236,6 +250,9 @@ func (p *Proxy) downgrade(ctx context.Context) bool {
 	wait := p.DowngradeWait
 	if wait <= 0 {
 		wait = defaultDowngrade
+	}
+	if p.DetachDowngrade {
+		ctx = context.WithoutCancel(ctx)
 	}
 	dctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()

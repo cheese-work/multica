@@ -57,7 +57,10 @@ type childOut struct {
 
 // childBackend is the agent: it runs the requesting gh as its child and
 // reports what the child printed, the way a real agent reports a tool result.
-type childBackend struct{ sock string }
+type childBackend struct {
+	sock    string
+	session string // the session id the run reports, so a successor can resume it
+}
 
 func (b *childBackend) Execute(ctx context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRunReadProxyChild$")
@@ -67,15 +70,20 @@ func (b *childBackend) Execute(ctx context.Context, _ string, _ agent.ExecOption
 	msgCh := make(chan agent.Message)
 	resCh := make(chan agent.Result, 1)
 	go func() {
+		// The backend reveals its session as soon as it starts, like a real one.
+		select {
+		case msgCh <- agent.Message{Type: agent.MessageStatus, SessionID: b.session}:
+		case <-ctx.Done():
+		}
 		err := processtree.Run(ctx, cmd, time.Second)
 		close(msgCh)
 		switch {
 		case ctx.Err() != nil:
-			resCh <- agent.Result{Status: "cancelled", Output: out.String()}
+			resCh <- agent.Result{Status: "cancelled", Output: out.String(), SessionID: b.session}
 		case err != nil:
-			resCh <- agent.Result{Status: "failed", Error: err.Error(), Output: out.String()}
+			resCh <- agent.Result{Status: "failed", Error: err.Error(), Output: out.String(), SessionID: b.session}
 		default:
-			resCh <- agent.Result{Status: "completed", Output: out.String()}
+			resCh <- agent.Result{Status: "completed", Output: out.String(), SessionID: b.session}
 		}
 	}()
 	return &agent.Session{Messages: msgCh, Result: resCh}, nil
@@ -182,7 +190,7 @@ func (l *launched) run(t *testing.T) (agent.Result, childOut) {
 	}
 	done := make(chan ran, 1)
 	go func() {
-		res, _, err := d.executeAndDrain(context.Background(), &childBackend{sock: l.env[readproxy.SocketEnv]}, "p", agent.ExecOptions{}, quietLog(), "task-1", "", new(atomic.Int32))
+		res, _, err := d.executeWithDowngrade(context.Background(), l.rp, &childBackend{sock: l.env[readproxy.SocketEnv]}, "p", agent.ExecOptions{}, quietLog(), "task-1", "", new(atomic.Int32))
 		done <- ran{res, err}
 	}()
 	select {
@@ -252,25 +260,142 @@ func TestLaunchFailedServerFenceKeepsLocalRestrictionAndStub(t *testing.T) {
 	}
 }
 
+// successorBackend is the agent across turns: turn 1 is the requesting child,
+// every later turn records what it was given and answers.
+type successorBackend struct {
+	sock    string
+	mu      sync.Mutex
+	prompts []string
+	resumes []string
+}
+
+func (b *successorBackend) Execute(ctx context.Context, prompt string, opts agent.ExecOptions) (*agent.Session, error) {
+	b.mu.Lock()
+	b.prompts = append(b.prompts, prompt)
+	b.resumes = append(b.resumes, opts.ResumeSessionID)
+	n := len(b.prompts)
+	b.mu.Unlock()
+	if n == 1 {
+		return (&childBackend{sock: b.sock, session: "sess-1"}).Execute(ctx, prompt, opts)
+	}
+	msgCh := make(chan agent.Message)
+	close(msgCh)
+	resCh := make(chan agent.Result, 1)
+	resCh <- agent.Result{Status: "completed", Output: "continued", SessionID: "sess-2"}
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
+func (b *successorBackend) turns() (prompts, resumes []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.prompts...), append([]string(nil), b.resumes...)
+}
+
+func (l *launched) runTurns(t *testing.T, b agent.Backend) (agent.Result, error) {
+	t.Helper()
+	d := newTestDaemon(t)
+	type ran struct {
+		res agent.Result
+		err error
+	}
+	done := make(chan ran, 1)
+	go func() {
+		res, _, err := d.executeWithDowngrade(context.Background(), l.rp, b, "first prompt", agent.ExecOptions{}, quietLog(), "task-1", "", new(atomic.Int32))
+		done <- ran{res, err}
+	}()
+	select {
+	case r := <-done:
+		return r.res, r.err
+	case <-time.After(60 * time.Second):
+		t.Fatal("the task did not finish")
+		return agent.Result{}, nil
+	}
+}
+
 // A task holding docker or device: scopes cannot be fenced without ending the
-// processes that hold them, and those include the one that asked. The proxy
-// refuses the downgrade up front: no fence starts, the run stays as it was, and
-// the child gets the stub.
-func TestLaunchRefusesDowngradeWhileLaunchScopesAreHeld(t *testing.T) {
+// processes that hold them, and those include the one that asked. The
+// requester dies with them; the bytes go to a restricted successor turn that
+// resumes the same session, after the fence and the launch-scopes report.
+func TestLaunchScopeTaskDeliversToARestrictedSuccessor(t *testing.T) {
 	for _, scope := range []string{"docker", "device:usb0"} {
 		t.Run(scope, func(t *testing.T) {
 			tr := &wireTrace{}
 			srv := wireServer(t, tr, http.StatusOK)
 			gh, live := readGitHub(t)
 			l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", scope)
-			res, out := l.run(t)
-			if res.Status != "completed" || out.Full || out.Body != "" || out.SHA == "" {
-				t.Fatalf("run %q child %+v, want the stub and a run left alone", res.Status, out)
+			b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+			res, err := l.runTurns(t, b)
+			if err != nil {
+				t.Fatalf("task: %v", err)
 			}
-			if got := tr.get(); len(got) != 0 {
-				t.Fatalf("server calls %v, want none: no fence may start", got)
+			if res.Status != "completed" || res.Output != "continued" {
+				t.Fatalf("result %q %q, want the successor's completed answer", res.Status, res.Output)
+			}
+			prompts, resumes := b.turns()
+			if len(prompts) != 2 {
+				t.Fatalf("%d turns, want the requester then one successor", len(prompts))
+			}
+			if strings.Contains(prompts[0], wiredComment) {
+				t.Fatal("the first turn's prompt carries the withheld text")
+			}
+			if !strings.Contains(prompts[1], wiredComment) {
+				t.Fatalf("successor prompt %q lacks the delivered text", prompts[1])
+			}
+			if resumes[1] != "sess-1" {
+				t.Fatalf("successor resumes %q, want the requester's session sess-1", resumes[1])
+			}
+			want := []string{"server.downgrade epoch=3", "server.launch-scopes-ended", "server.deliver"}
+			if got := tr.get(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("server calls %v, want %v", got, want)
+			}
+			if !l.rp.Restricted() {
+				t.Fatal("the run was not restricted locally")
 			}
 		})
+	}
+}
+
+// A failed server fence still stops the run (the fence is fail closed: the
+// run is restricted, drained and stopped, and nothing is reported ended). No
+// successor is started and the task fails loudly instead of reporting a
+// cancelled run.
+func TestLaunchScopeFailedFenceFailsTheTaskAndReportsNothing(t *testing.T) {
+	tr := &wireTrace{}
+	srv := wireServer(t, tr, http.StatusOK, func(o *wireOpts) { o.downgradeStatus = http.StatusInternalServerError })
+	gh, live := readGitHub(t)
+	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", "docker")
+	b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+	_, err := l.runTurns(t, b)
+	if err == nil || !strings.Contains(err.Error(), "downgrade") {
+		t.Fatalf("err %v, want a downgrade failure naming the stopped run", err)
+	}
+	if prompts, _ := b.turns(); len(prompts) != 1 {
+		t.Fatalf("%d turns, want no successor", len(prompts))
+	}
+	if !l.rp.Restricted() {
+		t.Fatal("a failed server fence must not undo the local restriction")
+	}
+	for _, s := range tr.get() {
+		if s == "server.launch-scopes-ended" || s == "server.deliver" {
+			t.Fatalf("server calls %v: nothing may be reported or delivered after a failed fence", tr.get())
+		}
+	}
+}
+
+// The run was stopped and the delivery then failed: there is no recipient and
+// no way back, so the task fails loudly instead of reporting a cancelled run.
+func TestLaunchScopeDeliveryFailureFailsTheTask(t *testing.T) {
+	tr := &wireTrace{}
+	srv := wireServer(t, tr, http.StatusInternalServerError)
+	gh, live := readGitHub(t)
+	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", "docker")
+	b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+	_, err := l.runTurns(t, b)
+	if err == nil || !strings.Contains(err.Error(), "downgrade") {
+		t.Fatalf("err %v, want a downgrade failure naming the stopped run", err)
+	}
+	if prompts, _ := b.turns(); len(prompts) != 1 {
+		t.Fatalf("%d turns, want no successor after a failed delivery", len(prompts))
 	}
 }
 

@@ -25,6 +25,16 @@ type runReadProxy struct {
 	src        interface{ Close(context.Context) error }
 	restricted atomic.Bool
 	once       sync.Once
+
+	// The run's context and the agent processes under it, for a task whose
+	// fence stops the run (launch scopes). See run_downgrade_successor.go.
+	mu      sync.Mutex
+	outer   context.Context
+	runCtx  context.Context
+	cancel  context.CancelFunc
+	tracker *runTracker
+	stopped bool
+	outcome chan downgradeOutcome
 }
 
 // Restricted reports whether the run's local policy was switched to restricted.
@@ -36,6 +46,11 @@ func (p *runReadProxy) Close() {
 		return
 	}
 	p.once.Do(func() {
+		p.mu.Lock()
+		if p.cancel != nil {
+			p.cancel()
+		}
+		p.mu.Unlock()
 		_ = p.ln.Close()
 		_ = os.Remove(p.Socket)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -65,10 +80,10 @@ func hasLaunchScope(scopes []string) bool {
 
 // startRunReadProxy is the per-run launch hook next to applyRunBroker. Only an
 // elevated run that has a broker gets a proxy: its socket sits beside the
-// broker's and the run's env names it. The run itself is never stopped: the
-// process that asks for the downgrade is the one that receives the response.
-// A task with a launch scope is refused the handshake instead (see
-// RunReadProxyConfig.LaunchScopes). The caller closes the proxy when the run
+// broker's and the run's env names it. A task with no launch scope keeps its
+// run: the process that asks for the downgrade receives the response. A task
+// with one has its run stopped by the fence and gets the text in a successor
+// turn (executeWithDowngrade). The caller closes the proxy when the run
 // ends. An elevated run without a proxy has no GitHub read path at all, which
 // is the safe state.
 func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]string, log *slog.Logger) (*runReadProxy, error) {
@@ -90,7 +105,7 @@ func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]
 		api = "https://api.github.com"
 	}
 	src := rb.tokens.NewReadSource(repoID)
-	p := &runReadProxy{Socket: sock, ln: ln, src: src}
+	p := &runReadProxy{Socket: sock, ln: ln, src: src, outcome: make(chan downgradeOutcome, 1)}
 	proxy := c.NewRunReadProxy(RunReadProxyConfig{
 		IssueID: task.IssueID, TaskID: task.ID, Epoch: task.Epoch,
 		GraphQLURL: api + "/graphql", RESTURL: api,
@@ -98,6 +113,8 @@ func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]
 		Admit:        denyAdmit{},
 		Broker:       rb,
 		LaunchScopes: hasLaunchScope(task.Scopes),
+		StopRun:      p.StopRun,
+		OnDowngrade:  p.noteDowngrade,
 		Restrict:     func() { p.restricted.Store(true); log.Warn("elevated run restricted", "task_id", task.ID) },
 		Attempts:     3, Backoff: time.Second,
 		Alert: func(err error) { log.Error("downgrade handshake", "task_id", task.ID, "error", err) },
