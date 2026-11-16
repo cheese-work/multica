@@ -31,7 +31,16 @@ func (fixture requestCoreFixture) apiRequest() *http.Request {
 }
 
 func structuredDecisionAsk(issueID, commentID, decision string) decisiontx.Ask {
-	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran the scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", RecommendedOption: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
+	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran the scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", RecommendedOption: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID, StateClaims: testStateClaims()}
+}
+
+// testStateClaims is a valid read-back the ask decoder accepts (CHE-5950).
+func testStateClaims() []decisiontx.StateClaim {
+	return []decisiontx.StateClaim{{Claim: "The change is ready.", ReadbackCommand: "gh pr view 1 --json isDraft", ObservedAt: time.Now().Format(time.RFC3339)}}
+}
+
+func testStateClaimMaps() []map[string]any {
+	return []map[string]any{{"claim": "The change is ready.", "readback_command": "gh pr view 1 --json isDraft", "observed_at": time.Now().Format(time.RFC3339)}}
 }
 
 func testAskOption(label string) decisiontx.AskOption {

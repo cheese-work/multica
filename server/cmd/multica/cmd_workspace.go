@@ -220,6 +220,8 @@ func init() {
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
 	workspaceUpdateCmd.Flags().String("compact-prompt-file", "", "Set the /compact summary prompt from a file, byte-for-byte; pass null to reset to the built-in default. Changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("idle-guard-mode", "", "Set the idle-issue guard mode: off, shadow (log only) or act (move idle started issues). Owner only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("time-wakeup-skip-mode", "", "Set the time-wakeup skip mode (settings.time_wakeup_skip.mode): off, warn or block. Owner only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("ask-guard-mode", "", "Set the ask guard mode (settings.ask_guard_mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().Int("idle-guard-after-hours", 0, "Set the idle-issue guard threshold in whole hours, 1 to 72. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("routing-agent", "", "Set the routing agent (agent id) that handles routing-only workflow steps; pass none to turn routing off. Human owner/admin only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("routing-fallback-agent", "", "Set the agent used when the routing agent is archived (agent id); pass none to clear")
@@ -227,7 +229,7 @@ func init() {
 	workspaceUpdateCmd.Flags().String("routing-overrides", "", "Comma-separated status=agent-id pairs sending one routing status to another agent; a key <workflow-id>:<status> limits it to one workflow; pass none to clear")
 	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context-stdin or --context-file (inline --context is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
-	workspaceUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
+	workspaceUpdateCmd.Flags().String("decision-id", "", "Refused: this field needs a passkey-approved action, not a decision card. The command stops and names the \"multica config propose\" command to run.")
 	workspaceUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -652,7 +654,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
 			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (context)", name)
@@ -740,6 +742,31 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 	if len(guard) > 0 {
 		body["idle_started_guard"] = guard
 	}
+	// Each single-key mode flag patches one settings key alone; refuse any
+	// other update flag, including the other mode flag, rather than send a
+	// mixed patch.
+	for _, single := range []struct{ flag, field, what string }{
+		{"time-wakeup-skip-mode", "time_wakeup_skip", "time-wakeup skip mode"},
+		{"ask-guard-mode", "ask_guard_mode", "ask guard mode"},
+	} {
+		if !cmd.Flags().Changed(single.flag) {
+			continue
+		}
+		for _, name := range []string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+			if name != single.flag && cmd.Flags().Changed(name) {
+				return nil, fmt.Errorf("--%s cannot be combined with --%s; it changes only the %s", single.flag, name, single.what)
+			}
+		}
+		mode, _ := cmd.Flags().GetString(single.flag)
+		if mode != "off" && mode != "warn" && mode != "block" {
+			return nil, fmt.Errorf("--%s must be off, warn or block", single.flag)
+		}
+		if single.field == "ask_guard_mode" {
+			body[single.field] = mode
+		} else {
+			body[single.field] = map[string]any{"mode": mode}
+		}
+	}
 	return body, nil
 }
 
@@ -749,7 +776,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	// issues a real GET /api/workspaces lookup when args[0] is a slug/prefix
 	// rather than a raw UUID, and CHE-789 requires malformed digest-mode
 	// requests to be rejected before any request goes out.
-	if err := checkBindingFlags(cmd); err != nil {
+	if err := checkBindingFlags(cmd, "workspace.context", ""); err != nil {
 		return err
 	}
 	if cmd.Flags().Changed("expected-before-digest") {
@@ -807,7 +834,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	}
 	routing := routingFlagsChanged(cmd)
 	if len(body) == 0 && !routing {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, or a --routing-* flag")
+		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, --time-wakeup-skip-mode, --ask-guard-mode, or a --routing-* flag")
 	}
 
 	if routing {

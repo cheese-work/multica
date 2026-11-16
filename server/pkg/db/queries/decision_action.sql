@@ -103,7 +103,7 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 FOR UPDATE NOWAIT;
 
 -- name: LockDecisionWorkflowNowaitCols :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 FOR UPDATE NOWAIT;
 

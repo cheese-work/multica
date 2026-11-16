@@ -97,6 +97,10 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	hints, ok := checkAgentCannotDo(w, parsed, workspace.Settings)
+	if !ok {
+		return
+	}
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask})) > maxCommentContentBytes {
 		writeError(w, http.StatusBadRequest, "ask is too long")
@@ -173,14 +177,14 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if replayed {
-		writeJSON(w, http.StatusOK, decisionRequestResponse{DecisionRequest: result.Request})
+		writeJSON(w, http.StatusOK, decisionRequestResponse{DecisionRequest: result.Request, Hints: hints})
 		return
 	}
 	for _, done := range withdrawn {
 		h.publishDecisionWithdrawal(uuidToString(issue.WorkspaceID), done)
 	}
 	h.publishRunBudgetDecisions(issue, []decisionRequestResult{result})
-	writeJSON(w, http.StatusCreated, decisionRequestResponse{DecisionRequest: result.Request})
+	writeJSON(w, http.StatusCreated, decisionRequestResponse{DecisionRequest: result.Request, Hints: hints})
 }
 
 // withdrawSupersededCICard cancels an older candidate's open ask as the PAT's

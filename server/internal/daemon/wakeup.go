@@ -313,9 +313,12 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 		if ctx.Err() != nil {
 			return
 		}
+		req := d.heartbeatRequest(rid)
+		req.Seq = d.wsHBSeq.Add(1)
+		queuedAt := time.Now()
 		frame, err := json.Marshal(protocol.Message{
 			Type:    protocol.EventDaemonHeartbeat,
-			Payload: marshalRaw(d.heartbeatRequest(rid)),
+			Payload: marshalRaw(req),
 		})
 		if err != nil {
 			d.logger.Debug("ws heartbeat marshal failed", "error", err, "runtime_id", rid)
@@ -323,6 +326,7 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 		}
 		select {
 		case writes <- &wsOutbound{data: frame}:
+			d.noteWSHeartbeatSent(rid, req.Seq, queuedAt)
 		case <-ctx.Done():
 			return
 		default:
@@ -372,7 +376,7 @@ func (d *Daemon) handleWSHeartbeatAckForConnection(ctx context.Context, ack *Hea
 		}
 	}
 	d.recordWSHeartbeatAck(ack.RuntimeID)
-	d.handleHeartbeatActions(ctx, ack.RuntimeID, ack)
+	d.handleHeartbeatActions(ctx, ack.RuntimeID, ack, d.wsHeartbeatAnchor(ack.RuntimeID, ack.Seq))
 }
 
 func (d *Daemon) readTaskWakeupMessages(conn *websocket.Conn, taskWakeups chan<- taskWakeup) error {

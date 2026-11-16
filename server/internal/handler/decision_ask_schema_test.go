@@ -21,6 +21,7 @@ func (fixture requestCoreFixture) newShapeAsk() map[string]any {
 		},
 		"recommendation": "KEEP", "recommended_option": "KEEP", "default_if_no_reply": "KEEP",
 		"source_issue_id": fixture.issueID, "source_comment_id": fixture.tagID,
+		"state_claims": testStateClaimMaps(),
 	}
 }
 
