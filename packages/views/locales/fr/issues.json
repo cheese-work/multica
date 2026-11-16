@@ -1229,6 +1229,7 @@
     "variant_my_any": "Toute relation",
     "variant_my_assigned": "Qui me sont assignés",
     "variant_my_created": "Que j'ai créés",
+    "variant_my_requested": "Que j'ai demandés",
     "variant_my_involved": "Impliqué"
   },
   "plugins": {

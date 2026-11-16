@@ -59,7 +59,7 @@ export function listFilterDependsOn(
   filter: MyIssuesFilter,
   changed: IssueChangedDims,
 ): boolean {
-  // my:all is the union of assigned / created / involved — the assigned and
+  // my:all is the union of assigned / created / requested / involved — the assigned and
   // involved legs key on the assignee.
   if (scope === "all") return changed.assignee;
   if (
@@ -72,7 +72,8 @@ export function listFilterDependsOn(
     return true;
   }
   if (changed.project && filter.project_id !== undefined) return true;
-  // creator_id filters never react to updates — creator is immutable.
+  // creator_id and requested_by_id filters never react to updates — both are
+  // fixed at creation.
   return false;
 }
 
@@ -118,6 +119,10 @@ export function issueMatchesListFilter(
   if (filter.creator_id !== undefined) {
     if (issue.creator_id === undefined) unknown = true;
     else if (issue.creator_id !== filter.creator_id) return false;
+  }
+  if (filter.requested_by_id !== undefined) {
+    if (issue.requested_by_id === undefined) unknown = true;
+    else if (issue.requested_by_id !== filter.requested_by_id) return false;
   }
   if (filter.project_id !== undefined) {
     if (issue.project_id === undefined) unknown = true;
