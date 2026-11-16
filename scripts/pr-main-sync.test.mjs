@@ -154,3 +154,47 @@ test("mergeOutcome reads GitHub's mergeable flag and refuses an unknown one", as
   assert.equal(mergeOutcome(false), "would-conflict");
   assert.throws(() => mergeOutcome(null), /not computed/);
 });
+
+// CHE-4963: the runner is a container with no `multica` CLI, and the App installation shares one API budget.
+test("low API budget: the run stops cleanly before any compare call", async () => {
+  const f = fakes({ prs: [pr(1), pr(2)] });
+  const compares = [];
+  f.gh.behindBy = async (sha) => compares.push(sha);
+  f.gh.remaining = async () => 3;
+  const lines = [];
+  await (await load()).syncPrs({ ...f, repo: "o/r", base: "main", print: (l) => lines.push(l) });
+  assert.deepEqual(compares, []);
+  assert.match(lines.join("\n"), /skipped: low API budget/);
+});
+
+test("enough API budget: the run proceeds", async () => {
+  const f = fakes({ prs: [pr(1)] });
+  f.gh.remaining = async () => 5000;
+  await run(f);
+  assert.deepEqual(f.log.updates, [[1, "sha1"]]);
+});
+
+test("a rate-limit 403 mid-run ends the run without failing and without touching later PRs", async () => {
+  const f = fakes({ prs: [pr(1), pr(2)] });
+  f.gh.behindBy = async () => {
+    throw new Error("gh api failed: HTTP 403: API rate limit exceeded for installation ID 1");
+  };
+  await run(f); // must not throw
+  assert.deepEqual(f.log.updates, []);
+});
+
+test("quiet window: a PR updated a minute ago is skipped, an older one is synced", async () => {
+  const f = fakes({ prs: [pr(1, { updated_at: new Date(Date.now() - 60e3).toISOString() }), pr(2, { updated_at: new Date(Date.now() - 3600e3).toISOString() })] });
+  await (await load()).syncPrs({ ...f, repo: "o/r", base: "main", quietMs: 600e3, print: () => {} });
+  assert.deepEqual(f.log.updates, [[2, "sha2"]]);
+});
+
+test("without the multica CLI, a conflict is reported and no task is opened or crashes", async () => {
+  const { noMultica } = await load();
+  const lines = [];
+  const m = noMultica((l) => lines.push(l));
+  assert.deepEqual(await m.activeRuns("CHE-1"), []);
+  assert.equal(await m.findConflictTask(7), undefined);
+  await m.createConflictTask(pr(7), "CHE-7");
+  assert.match(lines.join("\n"), /#7: conflict.*no multica CLI/);
+});

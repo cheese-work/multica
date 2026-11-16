@@ -26,13 +26,31 @@ export const taskOwner = (author, agents, issue) => {
   return owner;
 };
 
-export async function syncPrs({ gh, multica, repo, base, only, print = console.log }) {
+// The runner is a container with no `multica` CLI: no active-run check, no conflict task (a conflict only prints).
+export const noMultica = (print = console.log) => ({
+  activeRuns: async () => [],
+  findConflictTask: async () => undefined,
+  createConflictTask: async (pr) => print(`#${pr.number}: conflict, no multica CLI here, no task opened`),
+});
+
+// The App installation shares one API budget (CHE-4242): a run costs about one compare call per ready PR.
+const rateLimited = (e) => /rate limit/i.test(e.message);
+
+// quietMs: with no active-run check, skip a PR touched this recently (its author is probably mid-run); the next main push retries.
+export async function syncPrs({ gh, multica, repo, base, only, quietMs = 0, print = console.log }) {
   const failures = [];
-  for (const pr of (await gh.openPrs()).filter((p) => !only || only.includes(p.number))) {
+  const prs = (await gh.openPrs()).filter((p) => !only || only.includes(p.number));
+  if (gh.remaining) {
+    const need = prs.filter((p) => !p.draft).length * 2 + 50;
+    const left = await gh.remaining();
+    if (left < need) return print(`skipped: low API budget (${left} left, need ${need})`);
+  }
+  for (const pr of prs) {
     try {
       // Fork branches are not ours to push to; a PR with no linked issue cannot be checked for an active run.
       // A draft is synced on the first main-build run after it is marked ready (CHE-4963): keeps PR CI load down.
       if (pr.draft || pr.base.ref !== base || pr.head.repo?.full_name !== repo) continue;
+      if (Date.now() - Date.parse(pr.updated_at) < quietMs) continue;
       if (!(await gh.behindBy(pr.head.sha))) continue;
       const id = issueIdOf(pr);
       if (!id) {
@@ -48,6 +66,7 @@ export async function syncPrs({ gh, multica, repo, base, only, print = console.l
       // A dry run reports the same split without writing: "would-conflict" opens (prints) the task it would create.
       if ((result === "conflict" || result === "would-conflict") && !(await multica.findConflictTask(pr.number))) await multica.createConflictTask(pr, id);
     } catch (e) {
+      if (rateLimited(e)) return print(`#${pr.number}: stopped, API rate limit hit; the next main push retries`);
       print(`#${pr.number}: error ${e.message}`);
       failures.push(e);
     }
@@ -74,6 +93,7 @@ export const mergeOutcome = (mergeable) => {
 export const taskTitle = (n) => `main-sync conflict: PR #${n}`;
 
 export const ghFor = (repo, base, dryRun) => ({
+  remaining: async () => Number(must("gh", ["api", "rate_limit", "--jq", ".resources.core.remaining"])),
   openPrs: async () => must("gh", ["api", "--paginate", `repos/${repo}/pulls?state=open&per_page=100`, "--jq", ".[] | @json"]).split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   behindBy: async (sha) => Number(must("gh", ["api", `repos/${repo}/compare/${base}...${sha}`, "--jq", ".behind_by"])),
   updateBranch: async (number, expectedHeadSha) => {
@@ -119,5 +139,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const base = arg("--base", "main");
   const dryRun = process.argv.includes("--dry-run");
   const only = arg("--pr")?.split(",").map(Number);
-  await syncPrs({ gh: ghFor(repo, base, dryRun), multica: multicaCli(repo, dryRun), repo, base, only });
+  const hasCli = !spawnSync("multica", ["--version"]).error;
+  await syncPrs({ gh: ghFor(repo, base, dryRun), multica: hasCli ? multicaCli(repo, dryRun) : noMultica(), repo, base, only, quietMs: hasCli ? 0 : 10 * 60e3 });
 }
