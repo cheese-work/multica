@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -92,6 +93,7 @@ func releaseIntakeFixture(t *testing.T, installationID int64) pgtype.UUID {
 		testPool.Exec(ctx, `DELETE FROM issue WHERE id IN (SELECT issue_id FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2)`, ws, relNew)
 		testPool.Exec(ctx, `DELETE FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew)
 		testPool.Exec(ctx, `DELETE FROM github_release_pending WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew)
+		testPool.Exec(ctx, `DELETE FROM github_release_intake WHERE installation_id = $1`, installationID)
 		for _, table := range []string{"github_workflow_run", "github_workflow_job"} {
 			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'cheese-work' AND repo_name = 'multica' AND run_id IN ($1, 880001, 880002, 880004, 880010)`, cdDeployRunID)
 			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'evil' AND repo_name = 'multica'`)
@@ -419,4 +421,64 @@ func TestReleaseSweepKeepsAWaitingReceiptAndExpiresAStaleOne(t *testing.T) {
 		t.Fatalf("stale receipt after the sweep = %d, want 0", n)
 	}
 	wantReleaseIssues(t, ws, before, 0)
+}
+
+// failQueryMatching is a DBTX whose statements containing substr fail, as a
+// dropped connection would, while every other statement goes through.
+type failQueryMatching struct {
+	db.DBTX
+	substr string
+}
+
+func (f failQueryMatching) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if strings.Contains(sql, f.substr) {
+		return nil, errors.New("connection reset")
+	}
+	return f.DBTX.Query(ctx, sql, args...)
+}
+
+func (f failQueryMatching) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, f.substr) {
+		return failedRow{}
+	}
+	return f.DBTX.QueryRow(ctx, sql, args...)
+}
+
+// GitHub does not redeliver a failed webhook. A verified delivery whose
+// installation or workspace lookup fails must still be stored, so the sweep
+// (no manual redelivery) creates the release issue, exactly once.
+func TestReleaseDeliverySurvivesAFailedInstallationOrWorkspaceLookup(t *testing.T) {
+	for name, failing := range map[string]string{
+		"installation lookup": "FROM github_installation\nWHERE installation_id = $1",
+		"workspace lookup":    "FROM workspace\nWHERE id = $1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			const inst = 880112
+			ws := releaseIntakeFixture(t, inst)
+			before := len(releaseIssues(t, ws))
+			body, err := json.Marshal(releaseDeliveryBody(inst, 21, 1, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			flaky := *testHandler
+			flaky.Queries = db.New(failQueryMatching{DBTX: testPool, substr: failing})
+			if err := flaky.handleWorkflowJobEvent(context.Background(), body); err == nil {
+				t.Fatal("a failed lookup was swallowed: GitHub would not redeliver the delivery")
+			}
+			wantReleaseIssues(t, ws, before, 0)
+
+			if err := testHandler.SweepReleaseReceipts(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			wantReleaseIssues(t, ws, before, 1)
+			// A second sweep and a late redelivery create nothing more.
+			if err := testHandler.SweepReleaseReceipts(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := testHandler.handleWorkflowJobEvent(context.Background(), body); err != nil {
+				t.Fatal(err)
+			}
+			wantReleaseIssues(t, ws, before, 1)
+		})
+	}
 }

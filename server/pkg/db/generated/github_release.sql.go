@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteGitHubReleaseIntake = `-- name: DeleteGitHubReleaseIntake :exec
+DELETE FROM github_release_intake
+WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4
+`
+
+type DeleteGitHubReleaseIntakeParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	RunID          int64  `json:"run_id"`
+}
+
+func (q *Queries) DeleteGitHubReleaseIntake(ctx context.Context, arg DeleteGitHubReleaseIntakeParams) error {
+	_, err := q.db.Exec(ctx, deleteGitHubReleaseIntake,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.RunID,
+	)
+	return err
+}
+
 const deleteGitHubReleasePending = `-- name: DeleteGitHubReleasePending :exec
 DELETE FROM github_release_pending
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4
@@ -144,6 +166,40 @@ func (q *Queries) LinkGitHubReleaseDeploy(ctx context.Context, arg LinkGitHubRel
 	return err
 }
 
+const listGitHubReleaseIntake = `-- name: ListGitHubReleaseIntake :many
+SELECT installation_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest, created_at FROM github_release_intake ORDER BY created_at LIMIT 100
+`
+
+// Oldest first; the sweep fans out a bounded batch per tick.
+func (q *Queries) ListGitHubReleaseIntake(ctx context.Context) ([]GithubReleaseIntake, error) {
+	rows, err := q.db.Query(ctx, listGitHubReleaseIntake)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubReleaseIntake{}
+	for rows.Next() {
+		var i GithubReleaseIntake
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.RunID,
+			&i.OldSha,
+			&i.SourceSha,
+			&i.ImageDigest,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubReleasePending = `-- name: ListGitHubReleasePending :many
 SELECT workspace_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest, created_at FROM github_release_pending ORDER BY created_at LIMIT 100
 `
@@ -274,6 +330,36 @@ func (q *Queries) ListReleaseMergedPullRequests(ctx context.Context, arg ListRel
 		return nil, err
 	}
 	return items, nil
+}
+
+const putGitHubReleaseIntake = `-- name: PutGitHubReleaseIntake :exec
+INSERT INTO github_release_intake (installation_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (installation_id, repo_owner, repo_name, run_id) DO NOTHING
+`
+
+type PutGitHubReleaseIntakeParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	RunID          int64  `json:"run_id"`
+	OldSha         string `json:"old_sha"`
+	SourceSha      string `json:"source_sha"`
+	ImageDigest    string `json:"image_digest"`
+}
+
+// Keeps a verified receipt delivery before any lookup. A redelivery rewrites nothing.
+func (q *Queries) PutGitHubReleaseIntake(ctx context.Context, arg PutGitHubReleaseIntakeParams) error {
+	_, err := q.db.Exec(ctx, putGitHubReleaseIntake,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.RunID,
+		arg.OldSha,
+		arg.SourceSha,
+		arg.ImageDigest,
+	)
+	return err
 }
 
 const putGitHubReleasePending = `-- name: PutGitHubReleasePending :exec

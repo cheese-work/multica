@@ -1620,6 +1620,17 @@ type GithubReleaseDeploy struct {
 	ClaimedAt   pgtype.Timestamptz `json:"claimed_at"`
 }
 
+type GithubReleaseIntake struct {
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	RunID          int64              `json:"run_id"`
+	OldSha         string             `json:"old_sha"`
+	SourceSha      string             `json:"source_sha"`
+	ImageDigest    string             `json:"image_digest"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubReleasePending struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	RepoOwner   string             `json:"repo_owner"`

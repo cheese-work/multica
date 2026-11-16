@@ -59,7 +59,15 @@ func (h *Handler) handleWorkflowJobEvent(ctx context.Context, body []byte) error
 	if deployed {
 		installationID = receipt.InstallationID
 	}
-	return h.fanOutWorkflowEvent(ctx, installationID, func(ws db.Workspace) error {
+	// Store the verified delivery before the installation and workspace
+	// lookups: GitHub does not redeliver a failed webhook, so a lookup that
+	// fails after this point is retried by the sweep.
+	if deployed {
+		if err := h.Queries.PutGitHubReleaseIntake(ctx, intakeParams(receipt)); err != nil {
+			return fmt.Errorf("keep release delivery: %w", err)
+		}
+	}
+	err := h.fanOutWorkflowEvent(ctx, installationID, func(ws db.Workspace) error {
 		workspaceID := ws.ID
 		var errs []error
 		if ok {
@@ -70,6 +78,50 @@ func (h *Handler) handleWorkflowJobEvent(ctx context.Context, body []byte) error
 		}
 		return errors.Join(errs...)
 	})
+	if err == nil && deployed {
+		err = h.dropReleaseIntake(ctx, receipt)
+	}
+	return err
+}
+
+func intakeParams(r ghrun.ReleaseReceipt) db.PutGitHubReleaseIntakeParams {
+	return db.PutGitHubReleaseIntakeParams{
+		InstallationID: r.InstallationID, RepoOwner: r.RepoOwner, RepoName: r.RepoName, RunID: r.RunID,
+		OldSha: r.OldSHA, SourceSha: r.NewSHA, ImageDigest: r.Digest,
+	}
+}
+
+func (h *Handler) dropReleaseIntake(ctx context.Context, r ghrun.ReleaseReceipt) error {
+	return h.Queries.DeleteGitHubReleaseIntake(ctx, db.DeleteGitHubReleaseIntakeParams{
+		InstallationID: r.InstallationID, RepoOwner: r.RepoOwner, RepoName: r.RepoName, RunID: r.RunID,
+	})
+}
+
+// sweepReleaseIntake fans a stored delivery out again after a lookup failed
+// before the per-workspace receipt existed. It is idempotent: the issue id is
+// derived from the deployment identity. An intake that still fails after
+// pendingReleaseTTL is dropped.
+func (h *Handler) sweepReleaseIntake(ctx context.Context) error {
+	rows, err := h.Queries.ListGitHubReleaseIntake(ctx)
+	if err != nil {
+		return fmt.Errorf("list release deliveries: %w", err)
+	}
+	var errs []error
+	for _, row := range rows {
+		r := ghrun.ReleaseReceipt{
+			InstallationID: row.InstallationID, RepoOwner: row.RepoOwner, RepoName: row.RepoName,
+			RunID: row.RunID, OldSHA: row.OldSha, NewSHA: row.SourceSha, Digest: row.ImageDigest,
+		}
+		err := h.fanOutWorkflowEvent(ctx, r.InstallationID, func(ws db.Workspace) error {
+			return h.openRelease(ctx, ws, r)
+		})
+		if err == nil || time.Since(row.CreatedAt.Time) > pendingReleaseTTL {
+			errs = append(errs, err, h.dropReleaseIntake(ctx, r))
+			continue
+		}
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // deployWorkflowPath is the workflow file of the C00 deploy.
@@ -197,16 +249,16 @@ func (h *Handler) reconcileRelease(ctx context.Context, ws db.Workspace, event g
 	return errors.Join(errs...)
 }
 
-// SweepReleaseReceipts is the automatic retry for stored receipts: a lookup
-// that failed, or an interleaving that left a receipt behind a verified run.
+// SweepReleaseReceipts is the automatic retry for stored deliveries and receipts:
+// a lookup that failed, or an interleaving that left a receipt behind a verified run.
 // GitHub does not redeliver a failed webhook, so nothing else would settle
 // them. A receipt whose run never arrives expires after pendingReleaseTTL.
 func (h *Handler) SweepReleaseReceipts(ctx context.Context) error {
+	errs := []error{h.sweepReleaseIntake(ctx)}
 	pending, err := h.Queries.ListGitHubReleasePending(ctx)
 	if err != nil {
-		return fmt.Errorf("list pending release receipts: %w", err)
+		return errors.Join(append(errs, fmt.Errorf("list pending release receipts: %w", err))...)
 	}
-	var errs []error
 	for _, p := range pending {
 		ws, err := h.Queries.GetWorkspace(ctx, p.WorkspaceID)
 		if err != nil {

@@ -55,3 +55,17 @@ WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4;
 -- name: ListGitHubReleasePending :many
 -- Oldest first; the sweep settles a bounded batch per tick.
 SELECT * FROM github_release_pending ORDER BY created_at LIMIT 100;
+
+-- name: PutGitHubReleaseIntake :exec
+-- Keeps a verified receipt delivery before any lookup. A redelivery rewrites nothing.
+INSERT INTO github_release_intake (installation_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (installation_id, repo_owner, repo_name, run_id) DO NOTHING;
+
+-- name: DeleteGitHubReleaseIntake :exec
+DELETE FROM github_release_intake
+WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4;
+
+-- name: ListGitHubReleaseIntake :many
+-- Oldest first; the sweep fans out a bounded batch per tick.
+SELECT * FROM github_release_intake ORDER BY created_at LIMIT 100;
