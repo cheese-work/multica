@@ -26,18 +26,10 @@ export const taskOwner = (author, agents, issue) => {
   return owner;
 };
 
-// The runner is a container with no `multica` CLI: no active-run check, no conflict task (a conflict only prints).
-export const noMultica = (print = console.log) => ({
-  activeRuns: async () => [],
-  findConflictTask: async () => undefined,
-  createConflictTask: async (pr) => print(`#${pr.number}: conflict, no multica CLI here, no task opened`),
-});
-
 // The App installation shares one API budget (CHE-4242): a run costs about one compare call per ready PR.
 const rateLimited = (e) => /rate limit/i.test(e.message);
 
-// quietMs: with no active-run check, skip a PR touched this recently (its author is probably mid-run); the next main push retries.
-export async function syncPrs({ gh, multica, repo, base, only, quietMs = 0, print = console.log }) {
+export async function syncPrs({ gh, multica, repo, base, only, print = console.log }) {
   const failures = [];
   const prs = (await gh.openPrs()).filter((p) => !only || only.includes(p.number));
   if (gh.remaining) {
@@ -50,7 +42,6 @@ export async function syncPrs({ gh, multica, repo, base, only, quietMs = 0, prin
       // Fork branches are not ours to push to; a PR with no linked issue cannot be checked for an active run.
       // A draft is synced on the first main-build run after it is marked ready (CHE-4963): keeps PR CI load down.
       if (pr.draft || pr.base.ref !== base || pr.head.repo?.full_name !== repo) continue;
-      if (Date.now() - Date.parse(pr.updated_at) < quietMs) continue;
       if (!(await gh.behindBy(pr.head.sha))) continue;
       const id = issueIdOf(pr);
       if (!id) {
@@ -88,6 +79,13 @@ const must = (cmd, args, input) => {
 export const mergeOutcome = (mergeable) => {
   if (mergeable === null || mergeable === undefined) throw new Error("mergeable not computed yet");
   return mergeable ? "would-merge" : "would-conflict";
+};
+
+// Active-run check and conflict tasks need the multica CLI and a token. Without them the run fails closed (dry run too):
+// a sync with no active-run check could merge main under an author's running agent.
+export const requireMultica = (env = process.env, probe = () => spawnSync("multica", ["--version"])) => {
+  if (!env.MULTICA_TOKEN) throw new Error("MULTICA_TOKEN is not set: the active-run check and conflict tasks need it");
+  if (probe().error) throw new Error("multica CLI not found on PATH: the active-run check and conflict tasks need it");
 };
 
 export const taskTitle = (n) => `main-sync conflict: PR #${n}`;
@@ -139,6 +137,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const base = arg("--base", "main");
   const dryRun = process.argv.includes("--dry-run");
   const only = arg("--pr")?.split(",").map(Number);
-  const hasCli = !spawnSync("multica", ["--version"]).error;
-  await syncPrs({ gh: ghFor(repo, base, dryRun), multica: hasCli ? multicaCli(repo, dryRun) : noMultica(), repo, base, only, quietMs: hasCli ? 0 : 10 * 60e3 });
+  requireMultica();
+  await syncPrs({ gh: ghFor(repo, base, dryRun), multica: multicaCli(repo, dryRun), repo, base, only });
 }

@@ -183,18 +183,16 @@ test("a rate-limit 403 mid-run ends the run without failing and without touching
   assert.deepEqual(f.log.updates, []);
 });
 
-test("quiet window: a PR updated a minute ago is skipped, an older one is synced", async () => {
-  const f = fakes({ prs: [pr(1, { updated_at: new Date(Date.now() - 60e3).toISOString() }), pr(2, { updated_at: new Date(Date.now() - 3600e3).toISOString() })] });
-  await (await load()).syncPrs({ ...f, repo: "o/r", base: "main", quietMs: 600e3, print: () => {} });
-  assert.deepEqual(f.log.updates, [[2, "sha2"]]);
+// Review of PR #1768: no bypass. Without a usable multica CLI and token the run fails closed, dry run included.
+test("fail closed: no multica token or no CLI stops the run before any PR is read", async () => {
+  const { requireMultica } = await load();
+  assert.throws(() => requireMultica({}, () => ({})), /MULTICA_TOKEN/);
+  assert.throws(() => requireMultica({ MULTICA_TOKEN: "t" }, () => ({ error: new Error("ENOENT") })), /multica CLI/);
+  assert.doesNotThrow(() => requireMultica({ MULTICA_TOKEN: "t" }, () => ({ status: 0 })));
 });
 
-test("without the multica CLI, a conflict is reported and no task is opened or crashes", async () => {
-  const { noMultica } = await load();
-  const lines = [];
-  const m = noMultica((l) => lines.push(l));
-  assert.deepEqual(await m.activeRuns("CHE-1"), []);
-  assert.equal(await m.findConflictTask(7), undefined);
-  await m.createConflictTask(pr(7), "CHE-7");
-  assert.match(lines.join("\n"), /#7: conflict.*no multica CLI/);
+test("the sync job builds the multica CLI and passes the token secret (no CLI-less fallback)", () => {
+  const y = readFileSync(new URL("../.github/workflows/pr-main-sync.yml", import.meta.url), "utf8");
+  assert.match(y, /go build -o "\$RUNNER_TEMP\/multica" \.\/cmd\/multica/);
+  assert.match(y, /MULTICA_TOKEN: \$\{\{ secrets\.PR_MAIN_SYNC_MULTICA_TOKEN \}\}/);
 });

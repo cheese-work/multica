@@ -6,7 +6,8 @@ name: PR main sync
 # Trust boundary: runs only the default-branch script (workflow_run / manual dispatch on main), never PR code.
 # It holds the c00-multicado App key, so it must be a workflow_run or schedule definition (CHE-4251 guard).
 # It follows each completed Main Build push run, whatever its conclusion, so a ready PR is synced after every main push (CHE-4963).
-# Runs on the X99 runner container, which has no `multica` CLI: the script then skips the active-run check (it skips PRs touched in the last 10 min instead) and only prints a conflict. Pushes use the App token, so CI starts on the PR.
+# Runs on the X99 runner. The runner has no `multica` CLI, so the job builds it and reads PR_MAIN_SYNC_MULTICA_TOKEN (environment ci-app-token);
+# the script fails closed without either, because the active-run check and the conflict tasks need both. Pushes use the App token, so CI starts on the PR.
 on:
   workflow_run:
     workflows: ["Main Build"]
@@ -42,6 +43,13 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          cache-dependency-path: server/go.sum
+      - name: Build the multica CLI
+        working-directory: server
+        run: go build -o "$RUNNER_TEMP/multica" ./cmd/multica
       - name: Mint the c00-multicado write token
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -54,5 +62,10 @@ jobs:
       - name: Merge main into behind PR branches
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          MULTICA_SERVER_URL: ${{ vars.GUARD_POLICY_SERVER_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
+          MULTICA_TOKEN: ${{ secrets.PR_MAIN_SYNC_MULTICA_TOKEN }}
+          MULTICA_WORKSPACE_ID: ${{ vars.GUARD_POLICY_WORKSPACE_ID || 'f2b734e0-b6de-4414-8a27-a2f69b0ef843' }}
           DRY_RUN: ${{ (vars.PR_MAIN_SYNC_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)) && '--dry-run' || '' }}
-        run: node scripts/pr-main-sync.mjs --repo "$GITHUB_REPOSITORY" --base "${{ github.event.repository.default_branch }}" $DRY_RUN
+        run: |
+          export PATH="$RUNNER_TEMP:$PATH"
+          node scripts/pr-main-sync.mjs --repo "$GITHUB_REPOSITORY" --base "${{ github.event.repository.default_branch }}" $DRY_RUN
