@@ -93,6 +93,11 @@ test("each exception expires within 60 days of the day it was added", () => {
   }
 });
 
+// CHE-6563: migration-checks has a zero warning baseline, so its Postgres service must not print initdb's trust-auth warning.
+test("migration-checks Postgres service initialises with password auth for local and host connections", () => {
+  assert.match(job("migration-checks"), /POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256\n/);
+});
+
 // CHE-6563 (CHE-6210 A2c): migration order and fresh-vs-upgrade parity gate the required check.
 test("migration-checks runs on pull_request and merge_group and backend-tests requires its success", () => {
   assert.match(jobKey("migration-checks", "if"), /pull_request/);

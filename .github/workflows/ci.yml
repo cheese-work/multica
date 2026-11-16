@@ -175,6 +175,7 @@ jobs:
           POSTGRES_DB: postgres
           POSTGRES_USER: multica
           POSTGRES_PASSWORD: multica
+          POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
         ports:
           - 5432:5432
         options: >-
