@@ -59,28 +59,31 @@ export function GuardEditor({ row, onClose }: { row: GuardRow; onClose: () => vo
   const { data: base, isError } = useQuery(guardPolicyOptions(wsId));
   const [draft, patchDraft, clearDraft] = usePersistedDraft(useGuardEditDraftStore, `workspace:${row.name}`, EMPTY_DRAFT);
   const frozen = useMemo(() => parseBase(draft.base), [draft.base]);
+  // Untouched fields come from the same version the edit will be signed against (the
+  // frozen base, else the fetched one); the workspace row only fills in until it loads.
+  const against = frozen ?? base;
+  const fromBase = against ? currentValues(against, row.name) : null;
   const edit: GuardEdit = {
-    action: (draft.action as GuardEdit["action"] | undefined) ?? (row.action === "unknown" ? "pass" : row.action),
-    message: draft.message ?? row.message,
+    action: (draft.action as GuardEdit["action"] | undefined) ?? fromBase?.action ?? (row.action === "unknown" ? "pass" : row.action),
+    message: draft.message ?? fromBase?.message ?? row.message,
   };
   // Every change freezes the version the form started from; the live query never replaces it.
   const change = (next: Partial<GuardEdit>) => {
     const values = { ...edit, ...next };
     patchDraft({ action: values.action, message: values.message, base: draft.base ?? (base ? JSON.stringify(base) : undefined) });
   };
-  const against = frozen ?? base;
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const busy = phase.kind === "saving";
 
-  const submit = async (against: GuardPolicyVersion) => {
-    const policy = applyGuardEdit(against.policy, row.name, edit);
+  const submit = async (version: GuardPolicyVersion) => {
+    const policy = applyGuardEdit(version.policy, row.name, edit);
     if (!policy) {
       setPhase({ kind: "error", message: t(($) => $.guard.edit_plugin_gone) });
       return;
     }
     setPhase({ kind: "saving" });
     try {
-      const saved = await saveGuardPolicy(wsId, { policy, base_sha256: against.sha256 });
+      const saved = await saveGuardPolicy(wsId, { policy, base_sha256: version.sha256 });
       qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
         old?.map((ws) => (ws.id === wsId ? { ...ws, settings: { ...((ws.settings as Record<string, unknown>) ?? {}), guard_policy: saved.policy } } : ws)),
       );

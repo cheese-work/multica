@@ -317,3 +317,17 @@ it("clears the unsent edit after a save and after Cancel", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(useGuardEditDraftStore.getState().drafts).toEqual({});
 });
+
+it("starts the form from the same fetched policy version it freezes, not from a stale workspace row", async () => {
+  // The workspace settings (the row) still say Deny; the fetched version already says Watch.
+  getPolicy.mockResolvedValue({ policy: OTHER_OWNER_POLICY, sha256: OTHER_OWNER_SHA });
+  const { action } = await openEditor();
+  expect(action).toHaveValue("shadow");
+  fireEvent.change(screen.getByRole("textbox", { name: "Message to agent" }), { target: { value: "only the message" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save with passkey" }));
+  await waitFor(() => expect(challenge).toHaveBeenCalledTimes(1));
+  const [, input] = challenge.mock.calls[0] ?? [];
+  expect(input?.base_sha256).toBe(OTHER_OWNER_SHA);
+  const saved = (input?.policy as { plugins: { name: string; action: string; message?: string }[] }).plugins.find((p) => p.name === "ci-wait");
+  expect(saved).toMatchObject({ action: "shadow", message: "only the message" });
+});
