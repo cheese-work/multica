@@ -27,7 +27,7 @@ func (h *Handler) newCIWatcher(gh ciwatch.GitHub, budget ciwatch.Budget) *ciwatc
 		Pipeline: ciwatch.Pipeline{
 			Collector: &ciwatch.Collector{GH: gh, Budget: budget, Runs: ciwatch.DBRuns{Q: h.Queries}},
 			Tx:        ciwatch.PgxTx(h.TxStarter),
-			Observer: ciwatch.Observer{W: h.Queries, Labels: labeler, Flake: func(ctx context.Context, run ciwatch.Run, sig string) (int, error) {
+			Observer: ciwatch.Observer{W: h.Queries, Labels: labeler, Hist: labeler.History, Flake: func(ctx context.Context, run ciwatch.Run, sig string) (int, error) {
 				return labeler.FlakeCount7d(ctx, run.WorkspaceID, run.RepoOwner, run.RepoName, sig)
 			}},
 		},

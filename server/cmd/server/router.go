@@ -1674,6 +1674,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// this when an agent picks one of its tools; the server makes the
 		// signed request so the daemon never holds the signing secret.
 		r.Post("/tasks/{id}/plugin-hooks", h.InvokeAgentPluginHook)
+		// An agent's task releases one of its Steel browser leases (CHE-4734).
+		r.Post("/tasks/{id}/browser-leases/{leaseId}/release", h.ReleaseBrowserLease)
 		// The broker asks for an mcp hook's credential at connection time, so
 		// a secret never sits in a task record.
 		r.Get("/tasks/{id}/plugin-mcp/{contributionId}/credential", h.ResolvePluginMCPCredential)
@@ -1907,6 +1909,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateWorkspace)
 					// Scheduling pause: the handler also refuses agent credentials.
 					r.Post("/pause", h.PauseWorkspaceScheduling)
+					// Kill switch for every Steel browser lease (CHE-4734); the handler refuses agents.
+					r.Post("/browser-leases/revoke-all", h.RevokeAllBrowserLeases)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
 					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)

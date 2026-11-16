@@ -65,3 +65,29 @@ func TestWorkflowForTitleDuplicateKeysAreDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// CHE-5946: the decision-action patch validates workflow_by_type before it is stored.
+func TestValidateWorkflowByType(t *testing.T) {
+	for name, raw := range map[string]string{
+		"critic to gate": `{"critic":"7328545d-f16f-4bdb-9deb-27f5d70b1210"}`,
+		"two types":      `{"design":"` + designWF + `","fix":"` + bugWF + `"}`,
+	} {
+		if err := ValidateWorkflowByType([]byte(raw)); err != nil {
+			t.Errorf("%s: valid map refused: %v", name, err)
+		}
+	}
+	for name, raw := range map[string]string{
+		"not an object":    `"critic"`,
+		"array":            `["critic"]`,
+		"empty map":        `{}`,
+		"value not a uuid": `{"critic":"gate"}`,
+		"value not string": `{"critic":7}`,
+		"empty key":        `{"":"` + designWF + `"}`,
+		"key with space":   `{"a b":"` + designWF + `"}`,
+		"uppercase key":    `{"Critic":"` + designWF + `"}`,
+	} {
+		if err := ValidateWorkflowByType([]byte(raw)); err == nil {
+			t.Errorf("%s: invalid map accepted", name)
+		}
+	}
+}
