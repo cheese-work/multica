@@ -21,6 +21,7 @@ export {
   useRestoredScrollRef,
   useRestoredViewState,
   useViewStateWriter,
+  useBindViewStateWriter,
   type ExternalScrollSource,
   type ScrollRestorationAdapter,
   type ScrollRestorationEntry,
