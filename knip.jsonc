@@ -28,6 +28,8 @@
     "packages/views/agents/components/inspector/skill-attach.tsx",
     "packages/views/agents/components/inspector/visibility-picker.tsx",
     "packages/views/chat/components/quick-agent-bar.tsx",
+    // Upstream v0.9.0 hook; the fork's issue detail does not call it (CHE-6039).
+    "packages/views/issues/hooks/use-issue-timeline-anchor.ts",
     "packages/views/labels/index.ts",
     "packages/views/workflows/index.ts"
   ],
@@ -38,7 +40,10 @@
       "project": ["scripts/*.mjs", "scripts/brand/*.mjs"],
       // scripts/theme-preview.mjs drives Tailwind through the PostCSS API; the
       // root has no Tailwind stylesheets for the plugin to read.
-      "tailwind": false
+      "tailwind": false,
+      // e2e/*.spec.ts bundle fixtures with esbuild, which only the pnpm store
+      // hoists to the root (`shamefully-hoist=true`); root declares no bundler (CHE-6039).
+      "ignoreDependencies": ["esbuild"]
     },
 
     "apps/web": {
@@ -63,7 +68,9 @@
       ],
       // Consumed by `extends` in tsconfig.node.json / tsconfig.web.json.
       // knip follows `extends` from the default tsconfig.json only.
-      "ignoreDependencies": ["@multica/tsconfig"]
+      // electron-builder-squirrel-windows is loaded by electron-builder by name
+      // at package time; no import reaches it (CHE-6039).
+      "ignoreDependencies": ["@multica/tsconfig", "electron-builder-squirrel-windows"]
     },
 
     "apps/docs": {
