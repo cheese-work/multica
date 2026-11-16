@@ -3895,6 +3895,32 @@ type WecomInstallSession struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
+type WeeklyRunGuardAllowance struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Runs        int32              `json:"runs"`
+	ActionID    pgtype.UUID        `json:"action_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type WeeklyRunGuardRefusal struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID   pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID     pgtype.UUID        `json:"source_task_id"`
+	Runs             int64              `json:"runs"`
+	State            string             `json:"state"`
+	ActionID         pgtype.UUID        `json:"action_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type WorkflowWebhookEndpoint struct {
 	ID                   pgtype.UUID        `json:"id"`
 	WorkspaceID          pgtype.UUID        `json:"workspace_id"`

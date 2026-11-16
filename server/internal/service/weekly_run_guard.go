@@ -47,6 +47,8 @@ type WeeklyRunGuardTripped struct {
 	IssueID  pgtype.UUID
 	Runs     int64
 	Outcomes []string
+	// Target is the refused run, kept so an approved card can run it once.
+	Target RunTarget
 }
 
 var onWeeklyRunGuardTripped atomic.Pointer[func(context.Context, WeeklyRunGuardTripped)]
@@ -62,11 +64,28 @@ func SetOnWeeklyRunGuardTripped(fn func(context.Context, WeeklyRunGuardTripped))
 	onWeeklyRunGuardTripped.Store(&fn)
 }
 
-// guardWeeklyRuns refuses the run when the issue already started MaxRuns runs
-// in the window.
-func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
+// WeeklyRunGuardLimit is the runs an issue may start in the window: the
+// configured maximum plus what approved cards added in the window (CHE-6172).
+// max <= 0 means the guard is off.
+func WeeklyRunGuardLimit(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (limit int64, err error) {
 	max := WeeklyRunGuardMaxRuns()
 	if max <= 0 {
+		return 0, nil
+	}
+	extra, err := q.SumWeeklyRunGuardAllowance(ctx, db.SumWeeklyRunGuardAllowanceParams{
+		IssueID: issueID, CreatedAt: pgtype.Timestamptz{Time: time.Now().Add(-WeeklyRunGuardWindow), Valid: true},
+	})
+	return int64(max) + extra, err
+}
+
+// guardWeeklyRuns refuses the run when the issue already started its limit of
+// runs in the window.
+func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
+	limit, err := WeeklyRunGuardLimit(ctx, q, issueID)
+	if err != nil {
+		return fmt.Errorf("weekly run guard: %w", err)
+	}
+	if limit <= 0 {
 		return nil
 	}
 	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{
@@ -75,11 +94,11 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID) er
 	if err != nil {
 		return fmt.Errorf("weekly run guard: %w", err)
 	}
-	if runs < int64(max) {
+	if runs < limit {
 		return nil
 	}
-	if hook := onWeeklyRunGuardTripped.Load(); hook != nil {
-		event := WeeklyRunGuardTripped{IssueID: issueID, Runs: runs}
+	if hook := onWeeklyRunGuardTripped.Load(); hook != nil && !hookSuppressed(ctx) {
+		event := WeeklyRunGuardTripped{IssueID: issueID, Runs: runs, Target: target}
 		// Best effort: the incident loses its outcomes, never the refusal.
 		if statuses, err := q.ListIssueLastRunStatuses(ctx, db.ListIssueLastRunStatusesParams{IssueID: issueID, Limit: 3}); err == nil {
 			event.Outcomes = statuses
