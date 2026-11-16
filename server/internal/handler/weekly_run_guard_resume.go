@@ -324,6 +324,14 @@ func (h *Handler) addWeeklyRunGuard(ctx context.Context, issue db.Issue, view *r
 	if runs < limit {
 		return nil
 	}
+	workspace, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	// Only block mode refuses a run; warn and off leave the issue unblocked.
+	if service.WeeklyRunGuardModeFromSettings(workspace.Settings) != service.WeeklyRunGuardBlock {
+		return nil
+	}
 	view.Blocking = append(view.Blocking, "weekly_run_guard")
 	if view.OpenCard != nil {
 		return nil
@@ -332,10 +340,6 @@ func (h *Handler) addWeeklyRunGuard(ctx context.Context, issue db.Issue, view *r
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	workspace, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
 		return err
 	}

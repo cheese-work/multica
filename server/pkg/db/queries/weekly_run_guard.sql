@@ -16,10 +16,10 @@ ON CONFLICT (issue_id, window_id, kind) DO NOTHING
 RETURNING id;
 
 -- name: ListWeeklyRunGuardIncidentsSince :many
--- The guard's incidents since a time, newest first, for the brief.
-SELECT i.number::bigint AS number, a.details
+-- The guard's incidents since a time, newest first, for the brief: refusals and warn-mode would-be refusals.
+SELECT i.number::bigint AS number, a.details, a.action
 FROM activity_log a JOIN issue i ON i.id = a.issue_id
-WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action = 'weekly_run_guard_tripped'
+WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned')
   AND a.created_at >= sqlc.arg('since')::timestamptz
 ORDER BY a.created_at DESC;
 
@@ -72,3 +72,7 @@ SELECT r.id AS request_id, a.id AS action_id
 FROM decision_request r JOIN decision_action a ON a.decision_request_id = r.id
 WHERE r.workspace_id = $1 AND r.issue_id = $2 AND r.status = 'open' AND a.action_type = 'issue.run_guard.allow'
 ORDER BY r.created_at DESC LIMIT 1;
+
+-- name: ListOpenWeeklyRunGuardRefusals :many
+-- Refusals still waiting for a card answer, oldest first, for the auto-approver pass.
+SELECT * FROM weekly_run_guard_refusal WHERE state = 'open' ORDER BY created_at LIMIT 100;

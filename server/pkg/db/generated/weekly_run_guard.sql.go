@@ -278,10 +278,50 @@ func (q *Queries) ListIssueLastRunStatuses(ctx context.Context, arg ListIssueLas
 	return items, nil
 }
 
+const listOpenWeeklyRunGuardRefusals = `-- name: ListOpenWeeklyRunGuardRefusals :many
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE state = 'open' ORDER BY created_at LIMIT 100
+`
+
+// Refusals still waiting for a card answer, oldest first, for the auto-approver pass.
+func (q *Queries) ListOpenWeeklyRunGuardRefusals(ctx context.Context) ([]WeeklyRunGuardRefusal, error) {
+	rows, err := q.db.Query(ctx, listOpenWeeklyRunGuardRefusals)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WeeklyRunGuardRefusal{}
+	for rows.Next() {
+		var i WeeklyRunGuardRefusal
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.ActorUserID,
+			&i.TriggerCommentID,
+			&i.SourceWakeupID,
+			&i.SourceTaskID,
+			&i.Runs,
+			&i.State,
+			&i.ActionID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWeeklyRunGuardIncidentsSince = `-- name: ListWeeklyRunGuardIncidentsSince :many
-SELECT i.number::bigint AS number, a.details
+SELECT i.number::bigint AS number, a.details, a.action
 FROM activity_log a JOIN issue i ON i.id = a.issue_id
-WHERE a.workspace_id = $1::uuid AND a.action = 'weekly_run_guard_tripped'
+WHERE a.workspace_id = $1::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned')
   AND a.created_at >= $2::timestamptz
 ORDER BY a.created_at DESC
 `
@@ -294,9 +334,10 @@ type ListWeeklyRunGuardIncidentsSinceParams struct {
 type ListWeeklyRunGuardIncidentsSinceRow struct {
 	Number  int64  `json:"number"`
 	Details []byte `json:"details"`
+	Action  string `json:"action"`
 }
 
-// The guard's incidents since a time, newest first, for the brief.
+// The guard's incidents since a time, newest first, for the brief: refusals and warn-mode would-be refusals.
 func (q *Queries) ListWeeklyRunGuardIncidentsSince(ctx context.Context, arg ListWeeklyRunGuardIncidentsSinceParams) ([]ListWeeklyRunGuardIncidentsSinceRow, error) {
 	rows, err := q.db.Query(ctx, listWeeklyRunGuardIncidentsSince, arg.WorkspaceID, arg.Since)
 	if err != nil {
@@ -306,7 +347,7 @@ func (q *Queries) ListWeeklyRunGuardIncidentsSince(ctx context.Context, arg List
 	items := []ListWeeklyRunGuardIncidentsSinceRow{}
 	for rows.Next() {
 		var i ListWeeklyRunGuardIncidentsSinceRow
-		if err := rows.Scan(&i.Number, &i.Details); err != nil {
+		if err := rows.Scan(&i.Number, &i.Details, &i.Action); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
