@@ -157,39 +157,48 @@ func (d *Daemon) autoUpdateLoop(ctx context.Context) {
 	if err := sleepWithContext(ctx, autoUpdateInitialDelay); err != nil {
 		return
 	}
+	// The reload half runs on its own goroutine. tryAutoUpdate does a network
+	// lookup; sharing one loop would let a stalled lookup hold the kick past the
+	// idle instant (CHE-5881). The two halves stay safe together: both take
+	// update ownership with the same CAS on d.updating, and both restart only
+	// through the strict claim barrier.
+	if reloadEnabled {
+		reloadDone := make(chan struct{})
+		go func() { defer close(reloadDone); d.selfReloadLoop(ctx) }()
+		defer func() { <-reloadDone }() // return only once both halves have stopped
+	}
 	if pullEnabled {
 		d.tryAutoUpdate(ctx)
-	}
-	if reloadEnabled {
-		d.trySelfReload(ctx)
-	}
-
-	// Tickers start only now, after the first check. Starting them before the
-	// delay would let an interval shorter than autoUpdateInitialDelay buffer a
-	// tick and fire a second check immediately after the first.
-	//
-	// A disabled half leaves its channel nil, which never fires in a select.
-	var pullTick, reloadTick <-chan time.Time
-	if pullEnabled {
 		ticker := time.NewTicker(pullInterval)
 		defer ticker.Stop()
-		pullTick = ticker.C
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				d.tryAutoUpdate(ctx)
+			}
+		}
 	}
-	if reloadEnabled {
-		ticker := time.NewTicker(selfReloadCheckInterval)
-		defer ticker.Stop()
-		reloadTick = ticker.C
-	}
+	<-ctx.Done()
+}
 
+// selfReloadLoop checks the on-disk binary at startup, every
+// selfReloadCheckInterval, and whenever a pending reload finds the daemon idle
+// (reloadKick). The ticker starts after the first check, so an interval shorter
+// than autoUpdateInitialDelay cannot buffer a tick and fire a second check
+// immediately after the first.
+func (d *Daemon) selfReloadLoop(ctx context.Context) {
+	d.trySelfReload(ctx)
+	ticker := time.NewTicker(selfReloadCheckInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-pullTick:
-			d.tryAutoUpdate(ctx)
-		case <-reloadTick:
+		case <-ticker.C:
 			d.trySelfReload(ctx)
-		case <-d.reloadKick: // draining and just went idle: reload now, not at the next tick
+		case <-d.reloadKick: // reload pending and just went idle: reload now, not at the next tick
 			d.trySelfReload(ctx)
 		}
 	}
@@ -329,13 +338,11 @@ func (d *Daemon) autoUpdateTarget(ctx context.Context) (string, bool) {
 //
 // Restart mechanics are shared with tryAutoUpdate rather than reinvented:
 // the same trySetClaimBarrier keeps a running task from being interrupted, and
-// the same triggerRestart performs the handoff. A busy daemon drains
-// (startReloadDrain): pollers claim nothing new, running tasks finish, and the
-// last one to end kicks this check so the reload happens at once. A busy daemon
-// that never goes idle would otherwise never reload, because the barrier needs
-// a zero-task instant (CHE-5453). The drain is time-bounded, so a stuck task
-// cannot park claiming; reloadPendingReason explains the stale version on
-// /health.
+// the same triggerRestart performs the handoff. A busy daemon keeps
+// claiming (CHE-5881): the reload only restarts at an idle instant, and the
+// last task or claim to end kicks this check (kickReloadIfIdle) so the restart
+// happens at once. Claims are never paused for a pending reload;
+// reloadPendingReason explains the stale version on /health.
 //
 // A failed probe is never treated as a version change. The binary is most
 // likely to be unreadable during the few hundred milliseconds of the very
@@ -400,16 +407,12 @@ func (d *Daemon) trySelfReload(ctx context.Context) {
 	}
 	if onDisk == d.cfg.CLIVersion {
 		d.clearReloadPending()
-		d.endReloadDrain(false)
 		return
 	}
 
 	reason := fmt.Sprintf("multica binary on disk reports %s, running %s", onDisk, d.cfg.CLIVersion)
 	d.setReloadPending(reason)
 
-	// Drain first so a busy daemon stops admitting work; the barrier below then
-	// succeeds as soon as the running tasks finish (CHE-5453).
-	d.startReloadDrain(reason)
 	if !d.trySetClaimBarrier() {
 		d.logger.Info("auto-reload: deferring — task or claim in flight at barrier check", "reason", reason)
 		return
@@ -427,7 +430,6 @@ func (d *Daemon) trySelfReload(ctx context.Context) {
 		// restart must never cost the daemon its ability to claim, nor leave the
 		// update flag held against a restart that is not coming. The next tick
 		// re-probes from scratch, so there is no stale baseline to re-detect.
-		d.endReloadDrain(false)
 		return
 	}
 	released = true
@@ -496,63 +498,18 @@ func (d *Daemon) runForkUpdate(ctx context.Context) (string, error) {
 	return out, nil
 }
 
-// reloadDrainTimeout bounds one drain; after it the daemon claims again and
-// retries at the first tick past the retry backoff (one selfReloadCheckInterval).
-var reloadDrainTimeout = 30 * time.Minute
-
-// startReloadDrain stops new claims while a reload is pending. Idempotent, and
-// a no-op inside the retry backoff that follows a timed-out drain.
-func (d *Daemon) startReloadDrain(reason string) {
-	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
-	if d.draining || time.Now().Before(d.drainRetryAt) {
-		return
-	}
-	d.draining = true
-	d.drainTimer = time.AfterFunc(reloadDrainTimeout, func() { d.endReloadDrain(true) })
-	d.logger.Info("auto-reload: draining — claiming paused until running tasks finish",
-		"reason", reason, "active_tasks", d.activeTasks.Load(), "timeout", reloadDrainTimeout)
-}
-
-// endReloadDrain resumes claiming. timedOut also arms the retry backoff.
-func (d *Daemon) endReloadDrain(timedOut bool) {
-	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
-	if !d.draining {
-		return
-	}
-	d.draining = false
-	if d.drainTimer != nil {
-		d.drainTimer.Stop()
-		d.drainTimer = nil
-	}
-	if timedOut {
-		d.drainRetryAt = time.Now().Add(selfReloadCheckInterval)
-		d.logger.Warn("auto-reload: drain timed out — claiming resumed, will retry later",
-			"timeout", reloadDrainTimeout, "active_tasks", d.activeTasks.Load())
-		return
-	}
-	d.logger.Info("auto-reload: drain ended — claiming resumed")
-}
-
-func (d *Daemon) isDraining() bool {
-	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
-	return d.draining
-}
-
-// taskDone ends one task's activeTasks hold and, while draining, wakes the
-// reload check once the daemon is idle.
+// taskDone ends one task's activeTasks hold and, with a reload pending, wakes
+// the reload check once the daemon is idle.
 func (d *Daemon) taskDone() {
 	d.activeTasks.Add(-1)
 	d.kickReloadIfIdle()
 }
 
-// kickReloadIfIdle wakes autoUpdateLoop when draining and nothing is running or
-// being claimed. A kick that finds the daemon busy again just defers.
+// kickReloadIfIdle wakes autoUpdateLoop when a reload is pending and nothing is
+// running or being claimed. A kick that finds the daemon busy again just defers.
 func (d *Daemon) kickReloadIfIdle() {
 	d.claimMu.Lock()
-	idle := d.draining && d.claimsInFlight == 0 && d.activeTasks.Load() == 0
+	idle := d.reloadPending() != "" && d.claimsInFlight == 0 && d.activeTasks.Load() == 0
 	d.claimMu.Unlock()
 	if !idle {
 		return
