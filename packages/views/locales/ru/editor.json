@@ -124,8 +124,22 @@
     "no_skills_configured": "Навыки не настроены",
     "no_results": "Совпадающих навыков не найдено",
     "commands": {
-      "note": "Добавить заметку — не запускает агентов"
-    }
+      "note": "Добавить заметку — не запускает агентов",
+      "compact": "Summarize this DM and continue in a new one",
+      "rename": "Rename this DM without starting an agent turn",
+      "fork": "Copy this DM into a new one; optional message is sent there",
+      "preset": "Choose which preset this DM uses",
+      "statistic": "Show usage and cost for this DM",
+      "archive": "Archive this DM without starting an agent turn",
+      "pin": "Pin or unpin this DM",
+      "unseen": "Mark this DM as unseen and leave it",
+      "unarchive": "Unarchive this DM. Nothing is sent to the agent."
+    },
+    "client_command": "Multica",
+    "runs_the_agent": "runs the agent",
+    "focus_hint": "[focus]",
+    "title_hint": "[title]",
+    "message_hint": "[message]"
   },
   "code_block": {
     "html_preview": "HTML-предпросмотр",
@@ -190,5 +204,50 @@
     "clear_filter": "Сбросить фильтр",
     "no_matches": "Подходящих строк нет",
     "close": "Закрыть"
+  },
+  "plan_revision": {
+    "added": "Added: ",
+    "removed": "Removed: ",
+    "revision": "Revision {{number}}",
+    "readonly": "Readonly",
+    "issue": "Source issue",
+    "diff": "Diff",
+    "split": "Split",
+    "unify": "Unify",
+    "compare": "Compare with",
+    "choose_base": "Choose a base revision",
+    "change": "Change {{current}} / {{total}}",
+    "previous": "Previous change",
+    "next": "Next change",
+    "download": "Download",
+    "close": "Close",
+    "more": "More options",
+    "base": "Base",
+    "current": "Current",
+    "loading_revisions": "Loading revisions…",
+    "revisions_error": "Could not load revisions",
+    "no_earlier": "No earlier revisions",
+    "loading": "Loading document…",
+    "current_error": "Could not load document",
+    "loading_diff": "Loading comparison…",
+    "comparison_error": "Could not load comparison",
+    "too_large": "This comparison is too large. Download the files to compare locally.",
+    "identical": "No changes between these revisions",
+    "empty": "This document is empty",
+    "unchanged": "{{count}} unchanged lines",
+    "retry": "Retry"
+  },
+  "media": {
+    "title": "Media",
+    "more": "More",
+    "open_in_new_window": "Open in new window",
+    "open_failed": "Couldn't open the media page",
+    "loading": "Loading media…",
+    "load_failed": "Couldn't load media",
+    "offline": "Offline — showing the last loaded copy.",
+    "retry": "Retry"
+  },
+  "next_self_mention": {
+    "label": "Next mention of me"
   }
 }

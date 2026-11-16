@@ -18,7 +18,8 @@
     "skills": "Skills",
     "new": "Nuevo",
     "best_match": "Mejor coincidencia",
-    "actions": "Acciones"
+    "actions": "Acciones",
+    "messages": "Messages"
   },
   "commands": {
     "current_theme_aria": "Tema actual",
@@ -51,7 +52,9 @@
     "no_results": "No se encontraron resultados.",
     "no_labels": "Sin etiquetas",
     "type_to_find_issue": "Escribe para buscar una tarea",
-    "type_to_find_people": "Escribe para buscar personas y agentes"
+    "type_to_find_people": "Escribe para buscar personas y agentes",
+    "no_results_for": "No results for “{{query}}”",
+    "no_results_hint": "Try a different keyword."
   },
   "trigger": {
     "label": "Buscar..."
@@ -162,6 +165,25 @@
     "back": "Atrás",
     "prefix_commands": "Comandos",
     "prefix_issues": "Tareas",
-    "prefix_people": "Personas y agentes"
+    "prefix_people": "Personas y agentes",
+    "add_filter": "Add filter",
+    "remove_filter": "Remove filter"
+  },
+  "messages": {
+    "untitled": "Untitled chat",
+    "searching": "Searching messages…",
+    "error_title": "Couldn't search message content",
+    "error_failed": "The server returned an error. Chats still filter by title.",
+    "error_timed_out": "The search took too long. Chats still filter by title.",
+    "retry": "Retry",
+    "offline_title": "You're offline",
+    "offline_body_one": "Searching only {{count}} saved chat by title, not message content.",
+    "offline_body_many": "Searching only {{count}} saved chats by title, not message content.",
+    "offline_body_other": "Searching only {{count}} saved chats by title, not message content."
+  },
+  "chips": {
+    "agent": "Agent: {{name}}",
+    "active": "Filters on: {{names}}",
+    "none": "No filters on"
   }
 }

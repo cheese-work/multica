@@ -34,7 +34,8 @@
     "received_today": "Hoy",
     "received_last_7_days": "Últimos 7 días",
     "received_last_30_days": "Últimos 30 días",
-    "agent_idle": "Inactivo"
+    "agent_idle": "Inactivo",
+    "mentions_only": "Mentions me"
   },
   "context_menu": {
     "mark_read": "Marcar como leído",
@@ -100,7 +101,8 @@
     "app_action_requested": "Necesita tu confirmación",
     "app_action_reminder": "La confirmación caduca pronto",
     "app_connect_requested": "Conectar una aplicación",
-    "app_action_result": "Resultado de la acción de la aplicación"
+    "app_action_result": "Resultado de la acción de la aplicación",
+    "machine_drained": "Safe to shut down"
   },
   "labels": {
     "set_status_to": "Establecer estado en",
