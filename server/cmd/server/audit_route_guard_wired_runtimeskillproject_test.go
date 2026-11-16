@@ -12,6 +12,7 @@ func init() {
 		"POST /api/runtimes/{runtimeId}/local-skills/import":     "runtime.local_skill.import",
 		"PUT /api/skills/{id}/files":                             "skill.update",
 		"DELETE /api/skills/{id}/files/{fileId}":                 "skill.update",
+		"POST /api/skills/{id}/versions/{version}/restore":       "skill.update",
 		"POST /api/skills/{id}/labels":                           "skill.label.attach",
 		"DELETE /api/skills/{id}/labels/{labelId}":               "skill.label.detach",
 		"POST /api/projects/{id}/wakeup-definitions/":            "project.wakeup_definition.create",
