@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 // CHE-4268: the merge-queue critical path was one 15 min `backend-tests` job. It is now a matrix of
@@ -47,4 +48,16 @@ test("required check names are unchanged and the aggregate backend-tests gates o
 test("the old single-job layout is gone: only shards run the Go test step", () => {
   assert.equal(ci.match(/scripts\/test-go\.sh --race --only regular/g)?.length, 1);
   assert.match(shards, /scripts\/test-go\.sh --race --only regular/);
+});
+
+// CHE-6374: `| tee` hides the test exit code unless pipefail is on, so a red Go test left the shard green.
+test("the Test step fails the shard when test-go.sh fails, despite the tee pipe", () => {
+  const step = shards.match(/      - name: Test\n[\s\S]*?(?=^      - name: )/m)?.[0] ?? "";
+  const run = step.match(/^        run: (.*)$/m)?.[1];
+  assert.ok(run, "missing Test step run line");
+  // Actions runs `shell: bash` as `bash -eo pipefail`; with no shell it runs `bash -e`.
+  const flags = /^        shell: bash$/m.test(step) ? "-eo pipefail" : "-e";
+  const command = run.replace(/bash scripts\/test-go\.sh .*? 2>&1/, "false 2>&1");
+  const result = spawnSync("bash", [...flags.split(" "), "-c", command], { env: { ...process.env, RUNNER_TEMP: tmpdir() } });
+  assert.notEqual(result.status, 0, `step must fail when tests fail (ran: bash ${flags} -c '${command}')`);
 });

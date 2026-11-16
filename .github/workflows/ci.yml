@@ -767,6 +767,8 @@ jobs:
           # push stay unchanged so authors see every failure.
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        # `shell: bash` adds pipefail; without it `| tee` hides a red test (CHE-6374).
+        shell: bash
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
