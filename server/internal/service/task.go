@@ -1881,13 +1881,6 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 }
 
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
-	// An answered card is a progress event: the weekly guard does not refuse it
-	// (CHE-6239). The delivery acknowledges each answer once, so one answer
-	// admits one run.
-	return s.enqueueDecisionTaskInTx(withProgressEvent(ctx), queries, issue, agentID, squadID, triggerCommentID, commentIDs, handoff)
-}
-
-func (s *TaskService) enqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
 		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
 		return task, err
@@ -1900,7 +1893,7 @@ func (s *TaskService) enqueueDecisionTaskInTx(ctx context.Context, queries *db.Q
 // A repair is not a review, so it never uses the review-head exception to a
 // spent run budget, even when the producing agent is the issue's reviewer.
 func (s *TaskService) EnqueueAskRepairTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
-	return s.enqueueDecisionTaskInTx(withoutReviewRun(ctx), queries, issue, agentID, pgtype.UUID{}, pgtype.UUID{}, nil, handoff)
+	return s.EnqueueDecisionTaskInTx(withoutReviewRun(ctx), queries, issue, agentID, pgtype.UUID{}, pgtype.UUID{}, nil, handoff)
 }
 
 // EnqueueDecisionWaitLeaderTaskInTx shares leader callback admission and

@@ -80,11 +80,11 @@ func WeeklyRunGuardLimit(ctx context.Context, q *db.Queries, issueID pgtype.UUID
 
 type weeklyGuardProgressKey struct{}
 
-// withProgressEvent marks an enqueue that follows a progress event no loop can
+// WithProgressEvent marks an enqueue that follows a progress event no loop can
 // produce, such as an answered decision card (CHE-6239). The weekly guard lets
 // it through; the loop breaker and the run budget still judge it. The caller
 // must admit at most one run per event.
-func withProgressEvent(ctx context.Context) context.Context {
+func WithProgressEvent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, weeklyGuardProgressKey{}, true)
 }
 
