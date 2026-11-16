@@ -309,6 +309,8 @@ multica runtime usage <runtime-id>
 multica runtime activity <runtime-id>
 ```
 
+`daemon restart`는 사용자 지정 유닛과 시작 설정을 포함한 기존 Linux systemd 사용자 서비스를 유지합니다. 종료 전에 서비스 관리자에서 대상 daemon의 PID를 확인합니다. 기본 종료 승인 절차(유지 관리 보류 중에는 `--maintenance-token` 필요)를 사용한 다음 자동 재시작을 기다리거나 중지된 동일 서비스를 시작합니다. 성공하려면 90초 이내에 서비스 PID가 바뀌고 실행 중인 프로필 상태가 일치해야 합니다. 소유 관계가 다르거나 종료를 확인할 수 없으면 강제 종료나 별도 자식 프로세스 실행 없이 오류를 반환합니다. 관리되는 작업에서는 여전히 daemon을 재시작할 수 없습니다.
+
 ```bash
 multica daemon autostart enable
 multica runtime usage <runtime-id> --days 30
