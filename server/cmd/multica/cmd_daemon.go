@@ -1338,6 +1338,23 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 		}
 		pid, _ := health["pid"].(float64)
 		if pid > 0 {
+			supervisor, err := findDaemonRestartSupervisor(int(pid))
+			if err != nil {
+				return err
+			}
+			if supervisor != nil {
+				// Unlike the legacy portable path, a service handoff requires
+				// explicit profile identity on both sides of shutdown.
+				if got, ok := health["profile"].(string); !ok || got != profile {
+					return fmt.Errorf("cannot prove supervised daemon profile before shutdown")
+				}
+				if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
+					return fmt.Errorf("supervised daemon shutdown not confirmed: %w; not forcing a kill or starting a replacement", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+				defer cancel()
+				return supervisor.wait(ctx, profile, healthPort, int(pid))
+			}
 			fmt.Fprintf(os.Stderr, "Stopping daemon (pid %d)...\n", int(pid))
 			if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
 				// A refusal or unknown outcome never escalates to a kill.
@@ -1664,9 +1681,6 @@ func printDaemonStatusReport(w io.Writer, label string, health map[string]any) {
 	// daemon to go idle, so it reads as an explanation rather than a status line.
 	if reason, ok := health["reload_pending_reason"].(string); ok && reason != "" {
 		rows = append(rows, row{"Restart pending", reason})
-	}
-	if draining, _ := health["draining_for_reload"].(bool); draining {
-		rows = append(rows, row{"Draining", "draining_for_reload — claiming nothing new; reloads when running tasks finish"})
 	}
 	if held, _ := health["maintenance_held"].(bool); held {
 		rows = append(rows, row{"Maintenance", fmt.Sprintf("window held until %v (claims paused)", health["maintenance_expires_at"])})

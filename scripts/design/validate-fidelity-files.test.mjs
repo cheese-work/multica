@@ -8,6 +8,7 @@ import {
   validateDevices,
   validateBlocksMap,
   validateRepoFiles,
+  lockLabelWidths,
 } from "./validate-fidelity-files.mjs";
 
 const profile = (over = {}) => ({
@@ -85,4 +86,9 @@ test("blocks: annotation field is not allowed; repeat must be boolean", () => {
   assert.match(validateBlocksMap(m, ctx).errors.join(), /annotation/);
   const r = map({ blocks: { "decision-request-ask": { selector: ".ask", repeat: "yes" } } });
   assert.match(validateBlocksMap(r, ctx).errors.join(), /repeat/);
+});
+
+test("lockLabelWidths reads a label that carries a data-annotation mark (CHE-5845)", () => {
+  const html = '<div class="col ph"><div class="lbl" data-annotation>7 · Phone</div></div>';
+  assert.deepEqual([...lockLabelWidths(html)], [["7", 358]]);
 });

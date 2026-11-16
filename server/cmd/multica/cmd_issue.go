@@ -589,7 +589,7 @@ var validIssueFields = []string{
 	"id", "workspace_id", "number", "identifier", "title", "description",
 	"status", "status_category", "status_name", "priority", "assignee_type",
 	"assignee_id", "creator_type", "creator_id", "parent_issue_id",
-	"duplicate_of", "project_id", "workflow_id", "requested_by_id", "position", "stage", "start_date", "due_date", "created_at",
+	"duplicate_of", "project_id", "workflow_id", "requested_by_id", "created_via", "position", "stage", "start_date", "due_date", "created_at",
 	"updated_at", "revision", "last_activity_at", "metadata", "properties",
 	"labels", "effective_due", "due_source", "diagnostics",
 }

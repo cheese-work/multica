@@ -20,8 +20,13 @@ import type { Issue } from "@multica/core/types";
  *
  * When the prefix is unknown (workspace list still loading) we fall through to
  * the query and let the exact-match filter in `issueIdentifierOptions` decide.
+ *
+ * Returns `undefined` while the lookup is in flight (a lookup paused offline is
+ * still unresolved), `null` once it settled without an issue (404, exhausted
+ * retries, or short-circuited), and the issue otherwise. Callers reserve space
+ * for `undefined` and render plain text for `null`.
  */
-export function useResolveIssueIdentifier(identifier: string): Issue | null {
+export function useResolveIssueIdentifier(identifier: string): Issue | null | undefined {
   const workspace = useCurrentWorkspace();
   const wsId = workspace?.id ?? "";
   const prefix = workspace?.issue_prefix;
@@ -29,10 +34,14 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null {
     !prefix ||
     identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`);
 
-  const { data } = useQuery({
+  const enabled = Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches;
+  const { data, isPending } = useQuery({
     ...issueIdentifierOptions(wsId, identifier),
-    enabled: Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches,
+    enabled,
   });
 
-  return data ?? null;
+  if (data) return data;
+  // `isPending`, not `isLoading`: a lookup paused offline is unresolved too. A
+  // disabled query stays pending forever, so it must not count.
+  return enabled && isPending ? undefined : null;
 }

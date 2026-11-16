@@ -1,0 +1,3 @@
+--- PASS: TestUpdateDeadline_StuckClaimDuringAcquisition (0.15s)
+--- PASS: TestUpdateDeadline_StartCutoffRecheckedAfterAcquisition (0.13s)
+ok  	github.com/multica-ai/multica/server/internal/daemon	0.346s

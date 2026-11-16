@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -271,6 +272,8 @@ type issueBudgetSnapshot struct {
 	State        string   `json:"state"`
 	Blocking     []string `json:"blocking"`
 	CanRaise     bool     `json:"can_raise"`
+	WeeklyRuns   int64    `json:"weekly_runs"`
+	WeeklyLimit  int64    `json:"weekly_limit"`
 	NextCommand  string   `json:"next_command"`
 	RaisePreview *struct {
 		AddRuns       int `json:"add_runs"`
@@ -304,6 +307,14 @@ func runIssueBudgetGet(cmd *cobra.Command, args []string) error {
 	}
 	if !snap.Budgeted {
 		fmt.Fprintf(os.Stdout, "%s has no run budget\n", issueRef.Display)
+	}
+	if slices.Contains(snap.Blocking, "weekly_run_guard") {
+		fmt.Fprintf(os.Stdout, "weekly run guard: %d/%d runs in 7 days, refusing new runs\n", snap.WeeklyRuns, snap.WeeklyLimit)
+		if snap.NextCommand != "" {
+			fmt.Fprintf(os.Stdout, "next: %s\n", snap.NextCommand)
+		}
+	}
+	if !snap.Budgeted {
 		return nil
 	}
 	fmt.Fprintf(os.Stdout, "%s runs: %d/%d (%s)\n", issueRef.Display, snap.RunsUsed, snap.RunsLimit, snap.State)

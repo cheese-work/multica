@@ -182,11 +182,11 @@ INSERT INTO issue (
     workspace_id, title, description, status, priority,
     assignee_type, assignee_id, creator_type, creator_id,
     parent_issue_id, position, start_date, due_date, number, project_id,
-    stage, properties, last_activity_at, id, workflow_id, requested_by_id
+    stage, properties, last_activity_at, id, workflow_id, requested_by_id, created_via
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
     sqlc.narg('stage'), COALESCE(sqlc.narg('properties')::jsonb, '{}'::jsonb), now(), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
-    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id')
+    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id'), sqlc.narg('created_via')
 ) RETURNING *;
 
 -- name: GetIssueByNumber :one
@@ -413,11 +413,11 @@ INSERT INTO issue (
     workspace_id, title, description, status, priority,
     assignee_type, assignee_id, creator_type, creator_id,
     parent_issue_id, position, start_date, due_date, number, project_id,
-    origin_type, origin_id, stage, properties, last_activity_at, id, workflow_id, requested_by_id
+    origin_type, origin_id, stage, properties, last_activity_at, id, workflow_id, requested_by_id, created_via
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
     sqlc.narg('origin_type'), sqlc.narg('origin_id'), sqlc.narg('stage'), COALESCE(sqlc.narg('properties')::jsonb, '{}'::jsonb), now(), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
-    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id')
+    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id'), sqlc.narg('created_via')
 ) RETURNING *;
 
 -- name: LockIssueDuplicateKey :exec
@@ -436,6 +436,15 @@ WHERE workspace_id = $1
   AND parent_issue_id IS NOT DISTINCT FROM sqlc.arg('parent_issue_id')::uuid
   AND lower(btrim(regexp_replace(title, '[[:space:]]+', ' ', 'g'))) = sqlc.arg('normalized_title')
 ORDER BY created_at ASC
+LIMIT 1;
+
+-- name: FindIssueByNormalizedTitle :one
+-- Any issue, open or closed, whose title matches. Used to refuse a second
+-- dated autopilot issue (CHE-5757).
+SELECT i.* FROM issue i
+WHERE i.workspace_id = $1
+  AND lower(btrim(regexp_replace(i.title, '[[:space:]]+', ' ', 'g'))) = sqlc.arg('normalized_title')
+ORDER BY i.created_at ASC
 LIMIT 1;
 
 -- name: FindRecentAutopilotDuplicateIssue :one
@@ -547,6 +556,7 @@ WHERE i.workspace_id = $1
   AND (sqlc.narg('assignee_id')::uuid IS NULL OR i.assignee_id = sqlc.narg('assignee_id'))
   AND (sqlc.narg('assignee_ids')::uuid[] IS NULL OR i.assignee_id = ANY(sqlc.narg('assignee_ids')::uuid[]))
   AND (sqlc.narg('creator_id')::uuid IS NULL OR i.creator_id = sqlc.narg('creator_id'))
+  AND (sqlc.narg('requested_by_id')::uuid IS NULL OR i.requested_by_id = sqlc.narg('requested_by_id'))
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
   AND (sqlc.narg('metadata_filter')::jsonb IS NULL OR i.metadata @> sqlc.narg('metadata_filter')::jsonb)
   -- properties_filter is a jsonb array of groups, each group an array of

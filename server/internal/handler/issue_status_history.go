@@ -27,12 +27,17 @@ type statusRecord struct {
 	// override and stepHandler record a handoff move that named its own
 	// assignee, and who the step alone would have handed the issue to.
 	override    bool
+	kept        bool
 	stepHandler issueworkflow.StepAssignee
 	activity    *db.ActivityLog
 	// eventID is the pre-assigned id of the status_changed row (CHE-4439); the
 	// route label shares it. routingExit marks the row as a routing agent leaving its step.
 	eventID     pgtype.UUID
 	routingExit bool
+	// intent, when armed, makes the write record a handoff dispatch intent in
+	// its own transaction; intentID is the row it wrote (CHE-5486).
+	intent   *handoffIntentSeed
+	intentID pgtype.UUID
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {
@@ -87,6 +92,9 @@ func (rec *statusRecord) recordedHandoff(issue db.Issue) map[string]string {
 	if rec.override {
 		out["override"] = "true"
 		out["step_handler"] = rec.stepHandler.Type + ":" + uuidToString(rec.stepHandler.ID)
+		if rec.kept {
+			out["kept_for_step"] = "true"
+		}
 	}
 	return out
 }
@@ -94,7 +102,7 @@ func (rec *statusRecord) recordedHandoff(issue db.Issue) map[string]string {
 // enterHandoff records the handoff this write makes.
 func (rec *statusRecord) enterHandoff(hand *workflowHandoff) {
 	rec.handoffWorkflow = hand.def.Name
-	rec.override, rec.stepHandler = hand.override, hand.stepHandler
+	rec.override, rec.stepHandler, rec.kept = hand.override, hand.stepHandler, hand.kept
 }
 
 // finishRecordedHandoff adds what only the commit settles, whether the handoff

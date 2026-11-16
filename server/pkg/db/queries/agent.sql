@@ -970,7 +970,8 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 -- a task is only claimable when no other task for the same issue AND same agent is
 -- already dispatched or running. This allows different agents to work on the same
 -- issue in parallel while preventing a single agent from running duplicate tasks.
--- Chat tasks (issue_id IS NULL) use chat_session_id for serialization instead.
+-- Chat tasks (issue_id IS NULL) serialize per DM (chat_session_id) whatever their
+-- agent: at most one active task per DM (CHE-2894).
 -- Quick-create tasks have no issue / chat / autopilot link, so they serialize on
 -- "any other quick-create-shaped task" (all four FKs NULL) for the same agent —
 -- otherwise a user mashing the create button could fire concurrent quick-creates
@@ -1049,7 +1050,6 @@ WHERE id = (
             AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
             AND (
               (atq.issue_id IS NOT NULL AND active.issue_id = atq.issue_id)
-              OR (atq.chat_session_id IS NOT NULL AND active.chat_session_id = atq.chat_session_id)
               OR (
                 atq.issue_id IS NULL
                 AND atq.chat_session_id IS NULL
@@ -1059,6 +1059,18 @@ WHERE id = (
                 AND active.autopilot_run_id IS NULL
               )
             )
+      )
+      -- One active task per DM whatever its agent (CHE-2894 atomic admission);
+      -- idx_agent_task_queue_one_active_per_chat decides the concurrent case.
+      -- Only this alternative ignores the agent: issue and quick-create tasks
+      -- of different agents still run in parallel.
+      AND (
+          atq.chat_session_id IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM agent_task_queue active
+              WHERE active.chat_session_id = atq.chat_session_id
+                AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
       )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
@@ -2357,11 +2369,15 @@ SELECT COALESCE((
   ORDER BY created_at DESC, id DESC LIMIT 1
 ), '')::text AS head_sha;
 
--- name: CountChangesVerdictsForPR :one
--- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
-SELECT count(*) FROM activity_log
-WHERE issue_id = $1 AND action = 'review_changes_requested'
-  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
+-- name: CountReviewEntriesSinceLastVerdict :one
+-- Entries into agent_review since the issue last passed review or hit the
+-- round cap (CHE-6192). Counts every way back into review, not only CHANGES.
+SELECT count(*) FROM activity_log a
+WHERE a.issue_id = $1 AND a.action = 'status_changed' AND a.details->>'to' = 'agent_review'
+  AND a.created_at > COALESCE((
+    SELECT max(m.created_at) FROM activity_log m
+    WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
+  ), '-infinity'::timestamptz);
 
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
@@ -3570,6 +3586,10 @@ WHERE a.workspace_id = $1
             AND i.creator_id = @member_id::uuid
           )
           OR (
+            @mine_relation::text IN ('requested', 'any')
+            AND i.requested_by_id = @member_id::uuid
+          )
+          OR (
             @mine_relation::text IN ('involved', 'any')
             AND (
               (
@@ -3747,3 +3767,13 @@ UPDATE agent
 SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_reason = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
+
+-- name: CountChangesRoundsForPR :one
+-- CHANGES rounds of one PR lineage since the issue last passed review or hit the round cap (CHE-6192): a verdict by status move, or a reviewer's wakeup that hands the work to its author. A replacement PR starts at zero.
+SELECT count(*) FROM activity_log a
+WHERE a.issue_id = $1 AND a.action IN ('review_changes_requested', 'review_handoff_wakeup')
+  AND COALESCE(a.details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text
+  AND a.created_at > COALESCE((
+    SELECT max(m.created_at) FROM activity_log m
+    WHERE m.issue_id = $1 AND m.action IN ('review_passed', 'review_rounds_capped')
+  ), '-infinity'::timestamptz);

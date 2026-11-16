@@ -228,8 +228,8 @@ func runBenchSearch(ctx context.Context, wsUUID pgtype.UUID, q string) ([]string
 	queryNum, hasNum := parseQueryNumber(q)
 	terminal := []string{"done", "cancelled"}
 	var ids []string
-	run := func(sql string, args []any) error {
-		return runSearchQuery(ctx, testPool, sql, args, func(rows pgx.Rows) error {
+	run := func(setup []string, sql string, args []any) error {
+		return runSearchQueryWithSetup(ctx, testPool, setup, sql, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
 				if err != nil {
@@ -243,14 +243,14 @@ func runBenchSearch(ctx context.Context, wsUUID pgtype.UUID, q string) ([]string
 	sql, args := buildSearchQuery(q, terms, queryNum, hasNum, false, terminal)
 	args[3] = wsUUID
 	args[len(args)-2], args[len(args)-1] = 20, 0
-	if err := run(sql, args); err != nil {
+	if err := run(nil, sql, args); err != nil {
 		return nil, err
 	}
 	if shouldRunFuzzyFallback(q, hasNum, 0, len(ids)) {
 		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(q), false, terminal)
 		fargs[1] = wsUUID
 		fargs[len(fargs)-2], fargs[len(fargs)-1] = 20, 0
-		if err := run(fsql, fargs); err != nil {
+		if err := run(fuzzySearchSetup, fsql, fargs); err != nil {
 			return nil, err
 		}
 	}
@@ -355,8 +355,9 @@ func TestSearchBenchReport(t *testing.T) {
 }
 
 // TestSearchBenchExplain prints EXPLAIN (ANALYZE, BUFFERS) of the normal search
-// statement for every query class (BENCH_EXPLAIN=1), against the corpus that
-// TestSearchBench seeded.
+// statement for every query class, and of the typo fallback (all three arms, with
+// its SET LOCAL setup) for the classes that reach it (BENCH_EXPLAIN=1), against
+// the corpus that TestSearchBench seeded.
 func TestSearchBenchExplain(t *testing.T) {
 	if os.Getenv("BENCH_EXPLAIN") != "1" {
 		t.Skip("set BENCH_EXPLAIN=1 to print query plans")
@@ -385,5 +386,26 @@ func TestSearchBenchExplain(t *testing.T) {
 			t.Fatalf("%q: %v", bq.class, err)
 		}
 		t.Logf("q=%q\n%s", bq.class, strings.Join(plan, "\n"))
+		if bq.class != "fallback typo" && bq.class != "zzzznomatch" {
+			continue
+		}
+		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(bq.query), false, []string{"done", "cancelled"})
+		fargs[1] = util.MustParseUUID(wsID)
+		fargs[len(fargs)-2], fargs[len(fargs)-1] = 20, 0
+		plan = nil
+		err = runSearchQueryWithSetup(ctx, testPool, fuzzySearchSetup, "EXPLAIN (ANALYZE, BUFFERS) "+fsql, fargs, func(rows pgx.Rows) error {
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					return err
+				}
+				plan = append(plan, line)
+			}
+			return rows.Err()
+		})
+		if err != nil {
+			t.Fatalf("fallback %q: %v", bq.class, err)
+		}
+		t.Logf("fallback q=%q\n%s", bq.class, strings.Join(plan, "\n"))
 	}
 }
