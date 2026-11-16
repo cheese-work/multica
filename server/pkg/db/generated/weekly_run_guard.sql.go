@@ -11,6 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const approveWeeklyRunGuardRefusal = `-- name: ApproveWeeklyRunGuardRefusal :execrows
+UPDATE weekly_run_guard_refusal SET state = 'approved', action_id = $3, updated_at = now()
+WHERE id = $1 AND issue_id = $2 AND state = 'open'
+`
+
+type ApproveWeeklyRunGuardRefusalParams struct {
+	ID       pgtype.UUID `json:"id"`
+	IssueID  pgtype.UUID `json:"issue_id"`
+	ActionID pgtype.UUID `json:"action_id"`
+}
+
+func (q *Queries) ApproveWeeklyRunGuardRefusal(ctx context.Context, arg ApproveWeeklyRunGuardRefusalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, approveWeeklyRunGuardRefusal, arg.ID, arg.IssueID, arg.ActionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimWeeklyRunGuardIncident = `-- name: ClaimWeeklyRunGuardIncident :one
 INSERT INTO run_budget_notice (id, workspace_id, issue_id, window_id, kind)
 VALUES ($1, $2, $3, $4, 'weekly_run_guard')
@@ -38,6 +57,191 @@ func (q *Queries) ClaimWeeklyRunGuardIncident(ctx context.Context, arg ClaimWeek
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const countOpenWeeklyRunGuardCards = `-- name: CountOpenWeeklyRunGuardCards :one
+SELECT count(*)::bigint FROM decision_request
+WHERE issue_id = $1 AND status = 'open' AND request_fingerprint = $2
+`
+
+type CountOpenWeeklyRunGuardCardsParams struct {
+	IssueID            pgtype.UUID `json:"issue_id"`
+	RequestFingerprint string      `json:"request_fingerprint"`
+}
+
+func (q *Queries) CountOpenWeeklyRunGuardCards(ctx context.Context, arg CountOpenWeeklyRunGuardCardsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenWeeklyRunGuardCards, arg.IssueID, arg.RequestFingerprint)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const createWeeklyRunGuardAllowance = `-- name: CreateWeeklyRunGuardAllowance :exec
+INSERT INTO weekly_run_guard_allowance (id, workspace_id, issue_id, runs, action_id)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type CreateWeeklyRunGuardAllowanceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	Runs        int32       `json:"runs"`
+	ActionID    pgtype.UUID `json:"action_id"`
+}
+
+func (q *Queries) CreateWeeklyRunGuardAllowance(ctx context.Context, arg CreateWeeklyRunGuardAllowanceParams) error {
+	_, err := q.db.Exec(ctx, createWeeklyRunGuardAllowance,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.Runs,
+		arg.ActionID,
+	)
+	return err
+}
+
+const findOpenWeeklyRunGuardCard = `-- name: FindOpenWeeklyRunGuardCard :one
+SELECT r.id AS request_id, a.id AS action_id
+FROM decision_request r JOIN decision_action a ON a.decision_request_id = r.id
+WHERE r.workspace_id = $1 AND r.issue_id = $2 AND r.status = 'open' AND a.action_type = 'issue.run_guard.allow'
+ORDER BY r.created_at DESC LIMIT 1
+`
+
+type FindOpenWeeklyRunGuardCardParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+type FindOpenWeeklyRunGuardCardRow struct {
+	RequestID pgtype.UUID `json:"request_id"`
+	ActionID  pgtype.UUID `json:"action_id"`
+}
+
+// The issue's open weekly run guard card, for the budget read (CHE-6172).
+func (q *Queries) FindOpenWeeklyRunGuardCard(ctx context.Context, arg FindOpenWeeklyRunGuardCardParams) (FindOpenWeeklyRunGuardCardRow, error) {
+	row := q.db.QueryRow(ctx, findOpenWeeklyRunGuardCard, arg.WorkspaceID, arg.IssueID)
+	var i FindOpenWeeklyRunGuardCardRow
+	err := row.Scan(&i.RequestID, &i.ActionID)
+	return i, err
+}
+
+const getWeeklyRunGuardRefusal = `-- name: GetWeeklyRunGuardRefusal :one
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE id = $1
+`
+
+func (q *Queries) GetWeeklyRunGuardRefusal(ctx context.Context, id pgtype.UUID) (WeeklyRunGuardRefusal, error) {
+	row := q.db.QueryRow(ctx, getWeeklyRunGuardRefusal, id)
+	var i WeeklyRunGuardRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
+		&i.Runs,
+		&i.State,
+		&i.ActionID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertWeeklyRunGuardRefusal = `-- name: InsertWeeklyRunGuardRefusal :one
+INSERT INTO weekly_run_guard_refusal (id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (issue_id) WHERE state = 'open' DO NOTHING
+RETURNING id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at
+`
+
+type InsertWeeklyRunGuardRefusalParams struct {
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	Trigger          string      `json:"trigger"`
+	ActorUserID      pgtype.UUID `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
+	SourceWakeupID   pgtype.UUID `json:"source_wakeup_id"`
+	SourceTaskID     pgtype.UUID `json:"source_task_id"`
+	Runs             int64       `json:"runs"`
+}
+
+// A concurrent refusal that lost the one-open-per-issue index returns no row.
+func (q *Queries) InsertWeeklyRunGuardRefusal(ctx context.Context, arg InsertWeeklyRunGuardRefusalParams) (WeeklyRunGuardRefusal, error) {
+	row := q.db.QueryRow(ctx, insertWeeklyRunGuardRefusal,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.Trigger,
+		arg.ActorUserID,
+		arg.TriggerCommentID,
+		arg.SourceWakeupID,
+		arg.SourceTaskID,
+		arg.Runs,
+	)
+	var i WeeklyRunGuardRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
+		&i.Runs,
+		&i.State,
+		&i.ActionID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listApprovedWeeklyRunGuardRefusalsByAction = `-- name: ListApprovedWeeklyRunGuardRefusalsByAction :many
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE action_id = $1 AND state = 'approved'
+`
+
+func (q *Queries) ListApprovedWeeklyRunGuardRefusalsByAction(ctx context.Context, actionID pgtype.UUID) ([]WeeklyRunGuardRefusal, error) {
+	rows, err := q.db.Query(ctx, listApprovedWeeklyRunGuardRefusalsByAction, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WeeklyRunGuardRefusal{}
+	for rows.Next() {
+		var i WeeklyRunGuardRefusal
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.ActorUserID,
+			&i.TriggerCommentID,
+			&i.SourceWakeupID,
+			&i.SourceTaskID,
+			&i.Runs,
+			&i.State,
+			&i.ActionID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listIssueLastRunStatuses = `-- name: ListIssueLastRunStatuses :many
@@ -111,4 +315,128 @@ func (q *Queries) ListWeeklyRunGuardIncidentsSince(ctx context.Context, arg List
 		return nil, err
 	}
 	return items, nil
+}
+
+const listWeeklyRunGuardRefusalsToResume = `-- name: ListWeeklyRunGuardRefusalsToResume :many
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE state = 'approved' AND updated_at < $1
+`
+
+// Approved refusals a crashed or missed post-commit left unresumed.
+func (q *Queries) ListWeeklyRunGuardRefusalsToResume(ctx context.Context, updatedAt pgtype.Timestamptz) ([]WeeklyRunGuardRefusal, error) {
+	rows, err := q.db.Query(ctx, listWeeklyRunGuardRefusalsToResume, updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WeeklyRunGuardRefusal{}
+	for rows.Next() {
+		var i WeeklyRunGuardRefusal
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.ActorUserID,
+			&i.TriggerCommentID,
+			&i.SourceWakeupID,
+			&i.SourceTaskID,
+			&i.Runs,
+			&i.State,
+			&i.ActionID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockApprovedWeeklyRunGuardRefusal = `-- name: LockApprovedWeeklyRunGuardRefusal :one
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE id = $1 AND state = 'approved' FOR UPDATE
+`
+
+func (q *Queries) LockApprovedWeeklyRunGuardRefusal(ctx context.Context, id pgtype.UUID) (WeeklyRunGuardRefusal, error) {
+	row := q.db.QueryRow(ctx, lockApprovedWeeklyRunGuardRefusal, id)
+	var i WeeklyRunGuardRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
+		&i.Runs,
+		&i.State,
+		&i.ActionID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockOpenWeeklyRunGuardRefusal = `-- name: LockOpenWeeklyRunGuardRefusal :one
+SELECT id, workspace_id, issue_id, agent_id, trigger, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id, runs, state, action_id, created_at, updated_at FROM weekly_run_guard_refusal WHERE issue_id = $1 AND state = 'open' FOR UPDATE
+`
+
+func (q *Queries) LockOpenWeeklyRunGuardRefusal(ctx context.Context, issueID pgtype.UUID) (WeeklyRunGuardRefusal, error) {
+	row := q.db.QueryRow(ctx, lockOpenWeeklyRunGuardRefusal, issueID)
+	var i WeeklyRunGuardRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
+		&i.Runs,
+		&i.State,
+		&i.ActionID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setWeeklyRunGuardRefusalState = `-- name: SetWeeklyRunGuardRefusalState :exec
+UPDATE weekly_run_guard_refusal SET state = $2, updated_at = now() WHERE id = $1
+`
+
+type SetWeeklyRunGuardRefusalStateParams struct {
+	ID    pgtype.UUID `json:"id"`
+	State string      `json:"state"`
+}
+
+func (q *Queries) SetWeeklyRunGuardRefusalState(ctx context.Context, arg SetWeeklyRunGuardRefusalStateParams) error {
+	_, err := q.db.Exec(ctx, setWeeklyRunGuardRefusalState, arg.ID, arg.State)
+	return err
+}
+
+const sumWeeklyRunGuardAllowance = `-- name: SumWeeklyRunGuardAllowance :one
+SELECT COALESCE(SUM(runs), 0)::bigint FROM weekly_run_guard_allowance
+WHERE issue_id = $1 AND created_at > $2
+`
+
+type SumWeeklyRunGuardAllowanceParams struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Runs the issue's approved cards added to the guard's limit in the window (CHE-6172).
+func (q *Queries) SumWeeklyRunGuardAllowance(ctx context.Context, arg SumWeeklyRunGuardAllowanceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumWeeklyRunGuardAllowance, arg.IssueID, arg.CreatedAt)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
