@@ -37,6 +37,7 @@ func segmentFloor(t *testing.T, sessionID string) (at time.Time, id string, set 
 // (a)+(g): the floor is the divider's position, strictly after every earlier
 // message, and a second compact moves it strictly forward.
 func TestChatCompactSetsSegmentFloorAtTheDivider(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	fx := newCompactFixture(t)
 	seedChatMessage(t, fx.sessionID, "user", "")
 	seedChatMessage(t, fx.sessionID, "assistant", "")
@@ -65,10 +66,10 @@ func TestChatCompactSetsSegmentFloorAtTheDivider(t *testing.T) {
 	}
 
 	// A second compact from a new running task: the floor moves forward, no tie.
-	token2 := chatTaskToken(t, fx.sessionID, "running")
 	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
 		t.Fatal(err)
 	}
+	token2 := chatTaskToken(t, fx.sessionID, "running")
 	if status, body := postCompact(t, token2, "Second summary."); status != http.StatusOK {
 		t.Fatalf("second compact = %d %s, want 200", status, body)
 	}

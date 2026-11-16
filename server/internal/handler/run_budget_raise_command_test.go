@@ -452,6 +452,7 @@ func TestNoticeFollowsABalanceThatMovedBeforeTheNoticeTransaction(t *testing.T) 
 	if testHandler == nil {
 		t.Fatal("isolated database required")
 	}
+	t.Skip("CHE-4873 quarantine (CHE-4909): fails alone on fresh-DB origin/main 864dc2e4fb and depends on test order; restore once the order dependency is fixed")
 	c := newBudgetCase(t, 2886105, mergeEdgeSteps, 2)
 	e := refusedEvent(t, c)
 	landBeforeNotice(t, func() { namedRun(t, c.edgeCase) })

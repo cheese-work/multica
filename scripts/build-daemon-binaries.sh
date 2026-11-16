@@ -23,13 +23,18 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 rm -f "$out"/multica-* "$out/manifest.json"
 
-entries=""
+# One go build at a time: the server image builds its own binaries beside this
+# script, and the X99 dind has 4 GB (CHE-731); four at once got OOM-killed.
 for platform in $platforms; do
   goos="${platform%/*}"
   goarch="${platform#*/}"
-  key="${goos}-${goarch}"
   (cd "$root/server" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -ldflags "$ldflags" -o "$out/multica-$key" ./cmd/multica)
+    go build -ldflags "$ldflags" -o "$out/multica-${goos}-${goarch}" ./cmd/multica)
+done
+
+entries=""
+for platform in $platforms; do
+  key="$(echo "$platform" | tr / -)"
   sum="$(sha256sum "$out/multica-$key" | cut -d' ' -f1)"
   size="$(wc -c < "$out/multica-$key" | tr -d ' ')"
   entries="${entries}${entries:+,}\"${key}\":{\"sha256\":\"${sum}\",\"size\":${size}}"

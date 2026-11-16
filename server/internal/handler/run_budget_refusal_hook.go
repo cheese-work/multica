@@ -508,6 +508,7 @@ func (h *Handler) RunRunBudgetHookSweeper(ctx context.Context) {
 		case <-ticker.C:
 			h.sweepRunBudgetHooks(ctx, time.Now().Add(-runBudgetHookStale))
 			h.sweepRunBudgetResumes(ctx, time.Now().Add(-runBudgetHookStale))
+			h.sweepRunGuardAuto(ctx)
 		}
 	}
 }

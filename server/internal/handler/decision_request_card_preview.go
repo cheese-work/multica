@@ -243,6 +243,17 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.agentCopyPreview(ctx, action, viewer)
 	case agentPauseAction, agentResumeAction:
 		return handler.agentSchedulingPreview(ctx, action, viewer)
+	case "doop.deploy_lift":
+		// No row to read: the approver signs the marker and repository themselves.
+		var params decisionaction.DoopDeployLiftParams
+		if err := json.Unmarshal(action.Params, &params); err != nil {
+			return nil, err
+		}
+		return []ActionPreviewField{
+			{"Deploy train", "held", "lifted"},
+			{"Repository", params.Repo, params.Repo},
+			{"Train marker", params.MarkerValue, params.MarkerValue},
+		}, nil
 	}
 	return nil, nil
 }

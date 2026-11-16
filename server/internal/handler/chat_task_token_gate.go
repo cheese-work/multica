@@ -35,6 +35,9 @@ const (
 var chatRouteClasses = map[string]chatRouteClass{
 	"GET /api/chat/history": chatRouteContent,
 	"GET /api/chat/thread":  chatRouteContent,
+	// CHE-2819 L2b: the CLI reads closed segments of the token's own DM, no session id.
+	"GET /api/chat/segments": chatRouteContent,
+	"GET /api/chat/segment":  chatRouteContent,
 
 	"GET /api/chat/sessions/{sessionId}/messages":       chatRouteDeny,
 	"GET /api/chat/sessions/{sessionId}/messages/page":  chatRouteDeny,
