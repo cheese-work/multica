@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/spf13/cobra"
@@ -28,8 +29,9 @@ var chatSegmentCmd = &cobra.Command{
 	Use:   "segment <divider-id>",
 	Short: "Read one closed segment of this DM (newest page first)",
 	Long: `Read the messages of one closed segment, named by a divider_id from
-"multica chat segments". Use --before with a next_cursor to page to older
-messages. A divider of another DM, or an id that is not a divider, is not found.`,
+"multica chat segments". The reply lists the newest page; when has_more is
+true it carries next_before, and --before <next_before> reads the next older
+page. A divider of another DM, or an id that is not a divider, is not found.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runChatSegment,
 }
@@ -37,7 +39,7 @@ messages. A divider of another DM, or an id that is not a divider, is not found.
 func init() {
 	chatSegmentsCmd.Flags().String("output", "json", "Output format: table or json")
 	chatSegmentCmd.Flags().Int("limit", 0, "Maximum number of messages to return (the server clamps the range)")
-	chatSegmentCmd.Flags().String("before", "", "Opaque cursor (a next_cursor from a prior page) to read older messages")
+	chatSegmentCmd.Flags().String("before", "", "next_before from a prior page (<created_at>,<id>) to read older messages")
 	chatCmd.AddCommand(chatSegmentsCmd, chatSegmentCmd)
 }
 
@@ -69,11 +71,20 @@ func runChatSegment(cmd *cobra.Command, args []string) error {
 		q.Set("limit", strconv.Itoa(limit))
 	}
 	if before, _ := cmd.Flags().GetString("before"); before != "" {
-		q.Set("before", before)
+		at, id, ok := strings.Cut(before, ",")
+		if !ok || at == "" || id == "" {
+			return fmt.Errorf("invalid --before %q: want the next_before of a prior page (<created_at>,<id>)", before)
+		}
+		q.Set("before_created_at", at)
+		q.Set("before_id", id)
 	}
 	var resp map[string]any
 	if err := getChatSegmentJSON(cmd, "/api/chat/segment?"+q.Encode(), &resp); err != nil {
 		return err
+	}
+	// Hand the agent the cursor in the form --before takes.
+	if c, ok := resp["next_cursor"].(map[string]any); ok {
+		resp["next_before"] = fmt.Sprintf("%v,%v", c["created_at"], c["id"])
 	}
 	return cli.PrintJSON(cmd.OutOrStdout(), resp)
 }
