@@ -338,3 +338,56 @@ func TestWeeklyRunGuardRejectCommentDispatchesNothingThroughTheCommentSeam(t *te
 		t.Fatalf("open cards after the reject comment = %d, want 0", n)
 	}
 }
+
+// CHE-6241: a system comment (the decision answer or a guard notice) never
+// routes to an agent, even on a squad-assigned issue where an untagged comment
+// falls back to the squad leader. A member comment on the same issue does, so
+// the fixture reaches dispatch.
+func TestSystemCommentNeverRoutesToSquadLeader(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	squadID, leaderID := newAuditSquad(t, "che6241-squad")
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID) })
+	var issueID string
+	dbfx.QueryRow(t, `INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id, number)
+		VALUES ($1, 'member', $2, 'CHE-6241 squad routing', 'squad', $3, $4) RETURNING id`,
+		testWorkspaceID, testUserID, squadID, nextWorkspaceIssueNumber(t)).Scan(&issueID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(authorType, content string) db.Comment {
+		var id pgtype.UUID
+		authorID := testUserID
+		if authorType == "system" {
+			dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+				VALUES ($1, $2, 'system', gen_random_uuid(), $3, 'comment') RETURNING id`, issueID, testWorkspaceID, content).Scan(&id)
+		} else {
+			dbfx.QueryRow(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+				VALUES ($1, $2, $3, $4, $5, 'comment') RETURNING id`, issueID, testWorkspaceID, authorType, authorID, content).Scan(&id)
+		}
+		comment, err := testHandler.Queries.GetComment(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return comment
+	}
+	queued := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, leaderID)
+	}
+	testHandler.triggerTasksForComment(ctx, issue, post("system", "Rejected issue.run_guard.allow."), nil, "system", "", "", nil, commentSteerRequest{})
+	if n := queued(); n != 0 {
+		t.Fatalf("runs enqueued for the leader by a system comment = %d, want 0", n)
+	}
+	testHandler.triggerTasksForComment(ctx, issue, post("member", "please continue"), nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
+	if n := queued(); n != 1 {
+		t.Fatalf("runs enqueued for the leader by a member comment = %d, want 1 (fixture must reach dispatch)", n)
+	}
+}
