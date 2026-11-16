@@ -27,9 +27,11 @@ in its image, so manifest assembly cannot hash a different download.
 
 Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
 `multica-cd-web-v1` builders. They use `docker-container` for provenance and
-SBOM generation. A bounded stop releases builder memory after the job;
-the builder and its cache volume remain for later trusted main pushes.
-BuildKit GC targets at most 4 GB per builder, reserves 1 GB, and targets
+SBOM generation. `cleanup: false` keeps the builder container and its cache
+volume for later trusted main pushes; a fresh container per run emptied every
+cache mount (CHE-6218). The `Remove a broken persistent Buildx builder` step
+still replaces an unhealthy builder.
+BuildKit GC targets at most 8 GB per builder, reserves 1 GB, and targets
 10 GB free. Each builder admits at most two build vertices at once.
 No registry cache or untrusted PR cache is imported.
 

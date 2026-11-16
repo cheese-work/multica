@@ -1914,7 +1914,10 @@ type WorkflowHandoffPreviewResponse struct {
 	HandlerID    string `json:"handler_id,omitempty"`
 	// Override is true when the move names its own assignee; the step's own
 	// handler then rides in StepHandlerType and StepHandlerID.
-	Override             bool                 `json:"override,omitempty"`
+	Override bool `json:"override,omitempty"`
+	// KeptForStep is true when the override is the issue's sticky assignee for
+	// this step.
+	KeptForStep          bool                 `json:"kept_for_step,omitempty"`
 	StepHandlerType      string               `json:"step_handler_type,omitempty"`
 	StepHandlerID        string               `json:"step_handler_id,omitempty"`
 	PreviousAssigneeType *string              `json:"previous_assignee_type"`
@@ -2006,6 +2009,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 	resp.HandlerID = uuidToString(params.AssigneeID)
 	if hand.override {
 		resp.Override = true
+		resp.KeptForStep = hand.kept
 		resp.StepHandlerType = hand.stepHandler.Type
 		resp.StepHandlerID = uuidToString(hand.stepHandler.ID)
 	}

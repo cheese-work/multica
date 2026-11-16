@@ -242,10 +242,29 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid wakeup id")
 		return
 	}
-	result, err := svc.Save(r.Context(), issue.ID, member, h.wakeupSourceTaskID(r), existingID, in)
+	source := h.wakeupSourceTaskID(r)
+	var reviewRun db.AgentTaskQueue
+	handoff := false
+	if !existingID.Valid && actorType == "agent" {
+		if reviewRun, handoff = h.reviewHandoffWakeup(r.Context(), issue, source, in); handoff {
+			capped, err := h.capReviewHandoff(r.Context(), issue, reviewRun)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "could not count the review round")
+				return
+			}
+			if capped {
+				writeReviewRoundsCapped(w)
+				return
+			}
+		}
+	}
+	result, err := svc.Save(r.Context(), issue.ID, member, source, existingID, in)
 	if err != nil {
 		wakeupError(w, err)
 		return
+	}
+	if handoff {
+		h.recordReviewHandoff(r.Context(), issue, reviewRun, result)
 	}
 	status := http.StatusCreated
 	if existingID.Valid {

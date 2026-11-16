@@ -21,6 +21,9 @@ import (
 // linked in its own transaction. The link is idempotent, so a retry of the
 // post-commit work links nothing twice.
 func (h *Handler) resumeRefusalsAfterBudgetChange(ctx context.Context, action db.DecisionAction) error {
+	if action.ActionType == runGuardAllowType {
+		return h.resumeWeeklyRefusalsOfAction(ctx, action.ID)
+	}
 	if err := h.linkRefusalsAfterBudgetChange(ctx, action); err != nil {
 		return err
 	}

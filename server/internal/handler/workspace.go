@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -396,6 +397,9 @@ type UpdateWorkspaceRequest struct {
 	// TimeWakeupSkip sets settings.time_wakeup_skip alone (CHE-5987): the
 	// object {"mode": off|warn|block}. Owner only.
 	TimeWakeupSkip json.RawMessage `json:"time_wakeup_skip"`
+	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
+	// off|warn|block. Owner only.
+	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -571,7 +575,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAgentCannotDoSetting(req.Settings), ghstack.ValidateSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), validateCardLintSetting(req.Settings), ghstack.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -648,6 +652,22 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.TimeWakeupSkip = req.TimeWakeupSkip
+	}
+	if req.AskGuardMode != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		var mode any
+		_ = json.Unmarshal(req.AskGuardMode, &mode)
+		if _, isString := mode.(string); !isString {
+			writeError(w, http.StatusBadRequest, "ask_guard_mode must be off, warn or block")
+			return
+		}
+		if err := validateAskGuardSetting(map[string]any{askguard.SettingKey: mode}); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.AskGuardMode = req.AskGuardMode
 	}
 	for _, mapping := range []struct {
 		field string

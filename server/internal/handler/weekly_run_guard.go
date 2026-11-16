@@ -24,13 +24,18 @@ var ictLocation = time.FixedZone("ICT", 7*60*60)
 
 // onWeeklyRunGuardTripped records one incident per issue and ICT day (CHE-5720):
 // an activity row with the run count and the status of the last three runs.
-// The refusal itself changes no status and writes no comment; the brief carries
-// the incident.
+// The refusal itself changes no status; the brief carries the incident, and the
+// first refusal opens the owner's card with one system comment (CHE-6172).
 func (h *Handler) onWeeklyRunGuardTripped(ctx context.Context, e service.WeeklyRunGuardTripped) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("weekly run guard: load issue failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return
+	}
+	// The card first: the incident row below is claimed once per ICT day, the
+	// card once per issue until it is answered (CHE-6172).
+	if err := h.openWeeklyRunGuardCard(ctx, issue, e); err != nil {
+		slog.Warn("weekly run guard: open card failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 	details, err := json.Marshal(map[string]any{"runs": e.Runs, "outcomes": e.Outcomes})
 	if err != nil {

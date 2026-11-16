@@ -100,7 +100,7 @@ import { RunLifecycleDemo } from "@/components/demos/run-lifecycle-demo";
 
 ## 每周运行限制
 
-无论运行预算窗口如何，Multica 都会拒绝对过去 7 天内已启动 30 次运行的 issue 派生新的运行。成员更改 issue 状态会重新打开预算窗口，但不会重置此限制。人手动指定智能体时不会被拒绝。拒绝不会更改状态，也不会写入评论。每个 issue 每个 ICT 日记录一次事件，包含运行次数和最近 3 次运行的状态，并在智能体决策简报（`multica decision brief`）的 `run_guard` 字段中列出。
+无论运行预算窗口如何，Multica 都会拒绝对过去 7 天内已启动 30 次运行的 issue 派生新的运行。成员更改 issue 状态会重新打开预算窗口，但不会重置此限制。人手动指定智能体时不会被拒绝。拒绝不会更改状态。它会向工作区所有者打开一张支出审批卡片，并写入一条系统评论，说明被拒绝的触发（交接、唤醒或提及，以及目标智能体）。每个 issue 最多有一张打开的卡片。批准卡片会在 7 天内将上限提高 10 次运行，并将被拒绝的触发运行一次；拒绝则不运行任何内容。用完这 10 次后，此限制会再次拒绝。限制拒绝期间，`multica issue budget get` 会显示 `weekly_runs`、`weekly_limit` 和 `blocking: ["weekly_run_guard"]`。它还会每个 issue 每个 ICT 日记录一次事件，包含运行次数和最近 3 次运行的状态，并在智能体决策简报（`multica decision brief`）的 `run_guard` 字段中列出。
 
 要调整限制，请在服务器上设置 `MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS`（默认 `30`；`0` 关闭此限制）。
 
