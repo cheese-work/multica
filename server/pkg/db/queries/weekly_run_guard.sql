@@ -16,10 +16,10 @@ ON CONFLICT (issue_id, window_id, kind) DO NOTHING
 RETURNING id;
 
 -- name: ListWeeklyRunGuardIncidentsSince :many
--- The guard's incidents since a time, newest first, for the brief.
-SELECT i.number::bigint AS number, a.details
+-- The guard's incidents since a time, newest first, for the brief: refusals and warn-mode would-be refusals.
+SELECT i.number::bigint AS number, a.details, a.action
 FROM activity_log a JOIN issue i ON i.id = a.issue_id
-WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action = 'weekly_run_guard_tripped'
+WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned')
   AND a.created_at >= sqlc.arg('since')::timestamptz
 ORDER BY a.created_at DESC;
 
@@ -96,6 +96,13 @@ SELECT (
       WHERE r.issue_id = sqlc.arg('issue_id')::uuid AND da.disclaimed_at IS NULL AND da.effective_at > since.at
         AND r.request_fingerprint NOT LIKE 'server:run_guard_allow:%')
 )::bigint;
+
+-- name: ListOpenWeeklyRunGuardRefusals :many
+-- One page of refusals still waiting for a card answer, oldest first, after the
+-- (created_at, id) cursor, for the auto-approver pass.
+SELECT * FROM weekly_run_guard_refusal
+WHERE state = 'open' AND (created_at, id) > (@after_created_at::timestamptz, @after_id::uuid)
+ORDER BY created_at, id LIMIT 100;
 
 -- name: HasRejectedWeeklyRunGuardCard :one
 -- CHE-6241: the refusal's card was declined. The refusal row keeps the trigger

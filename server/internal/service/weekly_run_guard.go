@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -57,6 +58,47 @@ type WeeklyRunGuardTripped struct {
 	Outcomes []string
 	// Target is the refused run, kept so an approved card can run it once.
 	Target RunTarget
+	// Warn marks a would-be refusal in warn mode: the run was not refused.
+	Warn bool
+}
+
+// Guard modes (workspace setting settings.run_guard.mode). Block is the default.
+const (
+	WeeklyRunGuardOff   = "off"
+	WeeklyRunGuardWarn  = "warn"
+	WeeklyRunGuardBlock = "block"
+)
+
+// WeeklyRunGuardModeFromSettings reads settings.run_guard.mode. Absent or
+// unreadable, the guard blocks: the default is today's behavior.
+func WeeklyRunGuardModeFromSettings(settings []byte) string {
+	var doc struct {
+		Guard struct {
+			Mode string `json:"mode"`
+		} `json:"run_guard"`
+	}
+	if json.Unmarshal(settings, &doc) != nil {
+		return WeeklyRunGuardBlock
+	}
+	switch doc.Guard.Mode {
+	case WeeklyRunGuardOff, WeeklyRunGuardWarn:
+		return doc.Guard.Mode
+	}
+	return WeeklyRunGuardBlock
+}
+
+// weeklyRunGuardMode is the workspace's mode for the issue. A read that fails
+// blocks, so an unknown mode never lets a run through.
+func weeklyRunGuardMode(ctx context.Context, q *db.Queries, issueID pgtype.UUID) string {
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		return WeeklyRunGuardBlock
+	}
+	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return WeeklyRunGuardBlock
+	}
+	return WeeklyRunGuardModeFromSettings(ws.Settings)
 }
 
 var onWeeklyRunGuardTripped atomic.Pointer[func(context.Context, WeeklyRunGuardTripped)]
@@ -118,6 +160,10 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	if runs < limit {
 		return nil
 	}
+	mode := weeklyRunGuardMode(ctx, q, issueID)
+	if mode == WeeklyRunGuardOff {
+		return nil
+	}
 	// Past the limit, a run that follows progress passes once (CHE-6175), up to
 	// the hard ceiling; the loop breaker has already judged it.
 	if runs < limit*WeeklyRunGuardCeilingFactor && target.AgentID.Valid {
@@ -139,7 +185,7 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 		}
 	}
 	if hook := onWeeklyRunGuardTripped.Load(); hook != nil && !hookSuppressed(ctx) {
-		event := WeeklyRunGuardTripped{IssueID: issueID, Runs: runs, Target: target}
+		event := WeeklyRunGuardTripped{IssueID: issueID, Runs: runs, Target: target, Warn: mode == WeeklyRunGuardWarn}
 		// Best effort: the incident loses its outcomes, never the refusal.
 		if statuses, err := q.ListIssueLastRunStatuses(ctx, db.ListIssueLastRunStatusesParams{IssueID: issueID, Limit: 3}); err == nil {
 			event.Outcomes = statuses
@@ -147,6 +193,9 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 		// The guard runs inside the enqueue transaction; the hook writes on its
 		// own connection after the caller is done with it.
 		goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), event) })
+	}
+	if mode == WeeklyRunGuardWarn {
+		return nil
 	}
 	return ErrWeeklyRunGuard
 }

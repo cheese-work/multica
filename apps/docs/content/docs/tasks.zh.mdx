@@ -104,6 +104,10 @@ import { RunLifecycleDemo } from "@/components/demos/run-lifecycle-demo";
 
 要调整限制，请在服务器上设置 `MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS`（默认 `30`；`0` 关闭此限制）。
 
+开启运行预算自动审批（工作区设置 `run_budget_auto`）后，限制卡片遵循它的规则。如果 issue 在过去 7 天内有进展且没有异常（循环、无产出窗口、token 激增、反复重开），服务器会自行批准额外的 10 次运行，将被拒绝的触发运行一次，把卡片作为已决定关闭，并写入一条注明 `auto-approver v1` 的审计评论。适用同一个每日额度和停用开关。出现循环或没有进展的 issue 会保留卡片，由人决定。服务器还会每分钟重新检查所有打开的限制卡片，因此开启自动审批时正在等待的卡片会在下一轮被批准。
+
+工作区设置 `run_guard.mode`（`off`、`warn` 或 `block`；默认 `block`）决定限制在达到上限时的行为。`block` 按上文拒绝运行。`warn` 不拒绝任何运行，也不打开卡片，而是每个 issue 每个 ICT 日记录一次本该被拒绝的情况，并在智能体决策简报中列为限制本会拦下的运行。`off` 为工作区关闭此限制。使用 `multica config propose workspace.settings --set 'run_guard:={"mode":"warn"}'` 修改。上限仍由上面的环境变量设置。
+
 ## 失败原因参考
 
 执行日志和[统计](/analytics#错误页签)里的失败原因分两类：不带前缀的原因码由平台记录，`agent_error.*` 由 AI 编程工具的报错归类而来。

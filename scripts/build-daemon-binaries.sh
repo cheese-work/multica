@@ -23,13 +23,23 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 rm -f "$out"/multica-* "$out/manifest.json"
 
-entries=""
+# The platforms share no output, so build them side by side; wait on each pid
+# so one failed platform fails the script and writes no manifest.
+pids=""
 for platform in $platforms; do
   goos="${platform%/*}"
   goarch="${platform#*/}"
-  key="${goos}-${goarch}"
   (cd "$root/server" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -ldflags "$ldflags" -o "$out/multica-$key" ./cmd/multica)
+    go build -ldflags "$ldflags" -o "$out/multica-${goos}-${goarch}" ./cmd/multica) &
+  pids="$pids $!"
+done
+for pid in $pids; do
+  wait "$pid" || { echo "build-daemon-binaries: a platform build failed" >&2; exit 1; }
+done
+
+entries=""
+for platform in $platforms; do
+  key="$(echo "$platform" | tr / -)"
   sum="$(sha256sum "$out/multica-$key" | cut -d' ' -f1)"
   size="$(wc -c < "$out/multica-$key" | tr -d ' ')"
   entries="${entries}${entries:+,}\"${key}\":{\"sha256\":\"${sum}\",\"size\":${size}}"
