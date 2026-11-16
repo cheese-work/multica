@@ -23,10 +23,11 @@ FROM deps AS deps-list
 COPY server/ ./server/
 RUN --mount=type=cache,target=/go/pkg/mod cd server && mkdir /deplists \
     && pkgs="{{if not .Module}}{{.ImportPath}}{{else if not .Module.Main}}{{.ImportPath}}{{end}}" \
-    && CGO_ENABLED=0 go list -deps -f "$pkgs" ./cmd/server ./cmd/migrate ./cmd/maintenance ./cmd/backfill_task_usage_hourly ./cmd/backfill_codex_usage_cache | sort -u > /deplists/server.txt \
+    && CGO_ENABLED=0 go list -deps -f "$pkgs" ./cmd/server ./cmd/migrate ./cmd/maintenance ./cmd/backfill_task_usage_hourly ./cmd/backfill_codex_usage_cache > /deplists/server.txt \
     && for t in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do \
-         CGO_ENABLED=0 GOOS="${t%/*}" GOARCH="${t#*/}" go list -deps -f "$pkgs" ./cmd/multica | sort -u > "/deplists/daemon-$(echo "$t" | tr / -).txt"; \
-       done
+         CGO_ENABLED=0 GOOS="${t%/*}" GOARCH="${t#*/}" go list -deps -f "$pkgs" ./cmd/multica > "/deplists/daemon-${t%/*}-${t#*/}.txt" || exit 1; \
+       done \
+    && for f in /deplists/*.txt; do sort -u -o "$f" "$f"; done
 
 FROM deps AS deps-compiled
 
@@ -38,7 +39,7 @@ RUN --mount=type=cache,target=/go/pkg/mod cd server && go mod download \
     && CGO_ENABLED=0 GOCACHE=/gocache/server go build $(cat /deplists/server.txt) \
     && for list in /deplists/daemon-*.txt; do \
          target="$(basename "$list" .txt)"; target="${target#daemon-}"; \
-         CGO_ENABLED=0 GOOS="${target%-*}" GOARCH="${target#*-}" GOCACHE=/gocache/daemon go build $(cat "$list"); \
+         CGO_ENABLED=0 GOOS="${target%-*}" GOARCH="${target#*-}" GOCACHE=/gocache/daemon go build $(cat "$list") || exit 1; \
        done
 
 # The server binaries and the daemon cross-builds are separate stages so
