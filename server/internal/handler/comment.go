@@ -1905,6 +1905,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// verification (MUL-4857).
 	var sourceTaskID pgtype.UUID
 	var actorTask *db.AgentTaskQueue
+	var handoffTask *db.AgentTaskQueue // set when the server derives the parent (CHE-6120)
 	if authorType == "agent" {
 		if task, ok := h.taskFromRequestHeader(r); ok {
 			actorTask = &task
@@ -1920,7 +1921,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			// Assignment-triggered tasks (no TriggerCommentID) are also
 			// unaffected.
 			if task.IssueID.Valid && uuidToString(task.IssueID) == uuidToString(issue.ID) {
-				if task.TriggerCommentID.Valid {
+				if statusHandoffDerivesParent(task, req) {
+					// The guard checks a parent the request sent. Here the server
+					// derives it inside the insert transaction.
+					handoffTask = &task
+				} else if task.TriggerCommentID.Valid {
 					if !taskCoversReplyParent(task, parentID) {
 						// Keep this error actionable for agents (MUL-4417 / GH #5266).
 						// The two rejections need different copy. A resumed
@@ -2031,6 +2036,18 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		qtx = h.Queries.WithTx(tx)
+		if handoffTask != nil {
+			// Before the thread lock, so the lock, the insert, the resolution
+			// clear and the response all see the same parent.
+			parentID, err = deriveStatusHandoffParent(r.Context(), qtx, *handoffTask, issue)
+			if err != nil {
+				_ = tx.Rollback(r.Context())
+				slog.Warn("derive status handoff parent failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+				writeError(w, http.StatusInternalServerError, "failed to create comment")
+				return
+			}
+			createParams.ParentID = parentID
+		}
 		decisionAnnotation, err = prepareAgentDecision(r.Context(), tx, createParams, r.Header.Get("X-Actor-Source") == "task_token")
 		if err == nil && decisionAnnotation != nil && req.DecisionIntent {
 			err = agentDecisionRefusal("a protocol action cannot open a human decision intent")
