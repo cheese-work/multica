@@ -1,34 +1,26 @@
 // Package browserlease signs Steel lease tokens and publishes their verification keys
-// (CHE-4733, W3-4; plan W1 r3, "Token model").
+// (CHE-4733, W3-4; plan W1 r5, "Token model").
 //
-// Mint (W3-3) calls Keyring.Mint; the internal listener (W3-17) mounts Keyring.JWKSHandler at
+// W3-3's Service signs through Keyring.Sign (the Signer interface); the internal listener (W3-17) mounts Keyring.JWKSHandler at
 // JWKSPath. The public and tailnet routers must not mount it. The private seeds come from the
 // C00 secret named by SigningKeysEnv, applied in W2-13 after Cheese's approval.
 package browserlease
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
 	Issuer = "multica"
-	// AudienceC00 and AudienceX99 are the literal `aud` values. Each host's gateway accepts only
-	// its own (plan W1 r5, "Token model"), so a token minted for one host fails on the other.
-	AudienceC00 = "steel-gateway/c00"
-	AudienceX99 = "steel-gateway/x99"
-	TokenTTL    = 15 * time.Minute
 	// SigningKeysEnv names the C00 secret: comma-separated `kid:base64(32-byte seed)`.
 	// The first entry signs; the rest stay in the JWKS so tokens signed before a rotation verify
 	// until they expire (drop an old entry after TokenTTL).
@@ -37,60 +29,6 @@ const (
 )
 
 var kidPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-// Claims are the token claims beyond iss, aud, iat, exp and jti, which Mint sets. Mint writes
-// each claim by name into a map; the struct tags document the wire names.
-// DecisionID is null only for class S0. Class S1 is deferred and never signed.
-type Claims struct {
-	Sub        string  `json:"sub"`
-	LeaseID    string  `json:"lease_id"`
-	Epoch      int64   `json:"epoch"`
-	TaskID     string  `json:"task_id"`
-	IssueID    string  `json:"issue_id"`
-	DecisionID *string `json:"decision_id"`
-	UserID     string  `json:"user_id"`
-	Profile    string  `json:"profile"`
-	Class      string  `json:"class"`
-	Instance   string  `json:"instance"`
-	// Host is the selected instance's host, "c00" or "x99". It sets `aud`; it is not a claim.
-	Host string `json:"-"`
-}
-
-func audienceFor(host string) (string, bool) {
-	switch host {
-	case "c00":
-		return AudienceC00, true
-	case "x99":
-		return AudienceX99, true
-	}
-	return "", false
-}
-
-func (c Claims) validate() error {
-	switch {
-	case c.Sub == "", c.LeaseID == "", c.TaskID == "", c.IssueID == "", c.UserID == "",
-		c.Profile == "", c.Instance == "":
-		return errors.New("browserlease: empty required claim")
-	case c.Epoch <= 0:
-		return errors.New("browserlease: epoch must be positive")
-	}
-	if _, ok := audienceFor(c.Host); !ok {
-		return fmt.Errorf("browserlease: host %q is not c00 or x99", c.Host)
-	}
-	switch c.Class {
-	case "S0":
-		if c.DecisionID != nil && *c.DecisionID == "" {
-			return errors.New("browserlease: empty decision_id")
-		}
-	case "S2", "H":
-		if c.DecisionID == nil || *c.DecisionID == "" {
-			return fmt.Errorf("browserlease: class %s needs decision_id", c.Class)
-		}
-	default:
-		return fmt.Errorf("browserlease: class %q is not mintable", c.Class)
-	}
-	return nil
-}
 
 type signingKey struct {
 	kid  string
@@ -177,31 +115,59 @@ func (kr *Keyring) JWKSHandler() http.Handler {
 	})
 }
 
-// Mint signs a token for c with the first key: iat=now, exp=now+TokenTTL, a random jti.
-// The caller stores a hash of jti, never the token. The caller enforces the hard lease limit
-// (2 h or the decision's duration) before calling Mint on a renew.
-func (kr *Keyring) Mint(c Claims, now time.Time) (token, jti string, exp time.Time, err error) {
-	if err := c.validate(); err != nil {
-		return "", "", time.Time{}, err
+// Sign implements Signer: it signs the claims W3-3's Service built with the first key and sets
+// `iss` and the `kid` header. It writes each claim by name, so `decision_id` is present and null
+// for class S0. The token carries the caller's `aud`, which must name a host.
+func (kr *Keyring) Sign(c Claims) (string, error) {
+	if err := validateClaims(c); err != nil {
+		return "", err
 	}
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", "", time.Time{}, fmt.Errorf("browserlease: jti: %w", err)
+	var decision *string
+	if c.DecisionID != "" {
+		decision = &c.DecisionID
 	}
-	aud, _ := audienceFor(c.Host) // validate checked it
-	jti = hex.EncodeToString(raw[:])
-	exp = now.Add(TokenTTL)
-	mc := jwt.MapClaims{
-		"iss": Issuer, "aud": aud, "jti": jti, "sub": c.Sub, "lease_id": c.LeaseID,
-		"epoch": c.Epoch, "task_id": c.TaskID, "issue_id": c.IssueID, "decision_id": c.DecisionID,
+	t := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
+		"iss": Issuer, "aud": c.Aud, "jti": c.JTI, "sub": c.Sub, "lease_id": c.LeaseID,
+		"epoch": c.Epoch, "task_id": c.TaskID, "issue_id": c.IssueID, "decision_id": decision,
 		"user_id": c.UserID, "profile": c.Profile, "class": c.Class, "instance": c.Instance,
-		"iat": now.Unix(), "exp": exp.Unix(),
-	}
-	t := jwt.NewWithClaims(jwt.SigningMethodEdDSA, mc)
+		"iat": c.Iat, "exp": c.Exp,
+	})
 	t.Header["kid"] = kr.keys[0].kid
-	token, err = t.SignedString(kr.keys[0].priv)
+	tok, err := t.SignedString(kr.keys[0].priv)
 	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("browserlease: sign: %w", err)
+		return "", fmt.Errorf("browserlease: sign: %w", err)
 	}
-	return token, jti, exp, nil
+	return tok, nil
+}
+
+var _ Signer = (*Keyring)(nil)
+
+// validateClaims refuses what no gateway would accept: an `aud` other than the two host
+// audiences (each gateway accepts only its own), an empty required claim, a lifetime over
+// TokenTTL, and a class that is not mintable. Class S1 is deferred and never signed.
+func validateClaims(c Claims) error {
+	if c.Aud != Aud(HostC00) && c.Aud != Aud(HostX99) {
+		return fmt.Errorf("browserlease: aud %q is not %s or %s", c.Aud, Aud(HostC00), Aud(HostX99))
+	}
+	switch {
+	case c.Sub == "", c.LeaseID == "", c.TaskID == "", c.IssueID == "", c.UserID == "",
+		c.Profile == "", c.Instance == "":
+		return errors.New("browserlease: empty required claim")
+	case len(c.JTI) < 32:
+		return errors.New("browserlease: jti must be at least 32 characters")
+	case c.Epoch <= 0:
+		return errors.New("browserlease: epoch must be positive")
+	case c.Iat <= 0 || c.Exp <= c.Iat || c.Exp-c.Iat > int64(TokenTTL.Seconds()):
+		return errors.New("browserlease: exp must be after iat and within the token TTL")
+	}
+	switch c.Class {
+	case ClassS0:
+	case ClassS2, ClassH:
+		if c.DecisionID == "" {
+			return fmt.Errorf("browserlease: class %s needs decision_id", c.Class)
+		}
+	default:
+		return fmt.Errorf("browserlease: class %q is not mintable", c.Class)
+	}
+	return nil
 }

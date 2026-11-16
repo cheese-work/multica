@@ -23,11 +23,21 @@ func seed(b byte) string {
 
 func str(s string) *string { return &s }
 
+const tNow = int64(1_800_000_000)
+
+// claims is what W3-3's Service hands the signer for a C00 S2 lease.
 func claims() Claims {
 	return Claims{
-		Sub: "agent-1", LeaseID: "lease-1", Epoch: 3, TaskID: "task-1", IssueID: "issue-1",
-		DecisionID: str("dec-1"), UserID: "user-1", Profile: "figma", Class: "S2", Instance: "c00-1", Host: "c00",
+		Aud: "steel-gateway/c00", Sub: "agent-1", LeaseID: "lease-1", Epoch: 3, TaskID: "task-1",
+		IssueID: "issue-1", DecisionID: "dec-1", UserID: "user-1", Profile: "figma", Class: "S2",
+		Instance: "c00-1", Iat: tNow, Exp: tNow + int64(TokenTTL.Seconds()), JTI: "0123456789abcdef0123456789abcdef",
 	}
+}
+
+func s0Claims() Claims {
+	c := claims()
+	c.Aud, c.Class, c.DecisionID, c.Instance = "steel-gateway/x99", "S0", "", "x99-1"
+	return c
 }
 
 type jwk struct{ Kty, Crv, X, Kid, Use, Alg string }
@@ -79,19 +89,23 @@ func verifyAud(t *testing.T, tok string, keys map[string]ed25519.PublicKey, now 
 	return mc, parsed
 }
 
-func TestMintClaimsAndJWKS(t *testing.T) {
+func sign(t *testing.T, kr *Keyring, c Claims) string {
+	t.Helper()
+	tok, err := kr.Sign(c)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return tok
+}
+
+func TestSignClaimsAndJWKS(t *testing.T) {
 	kr, err := ParseKeyring("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Unix(1_800_000_000, 0)
-	tok, jti, exp, err := kr.Mint(claims(), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := now.Add(15 * time.Minute); !exp.Equal(want) {
-		t.Fatalf("exp=%v want %v", exp, want)
-	}
+	now := time.Unix(tNow, 0)
+	c := claims()
+	tok := sign(t, kr, c)
 	keys, rec := fetchJWKS(t, kr)
 	mc, parsed := verify(t, tok, keys, now.Add(time.Minute))
 	if parsed.Header["kid"] != "k1" || parsed.Header["alg"] != "EdDSA" {
@@ -100,8 +114,8 @@ func TestMintClaimsAndJWKS(t *testing.T) {
 	want := map[string]any{
 		"iss": Issuer, "aud": "steel-gateway/c00", "sub": "agent-1", "lease_id": "lease-1", "epoch": float64(3),
 		"task_id": "task-1", "issue_id": "issue-1", "decision_id": "dec-1", "user_id": "user-1",
-		"profile": "figma", "class": "S2", "instance": "c00-1", "jti": jti,
-		"iat": float64(now.Unix()), "exp": float64(exp.Unix()),
+		"profile": "figma", "class": "S2", "instance": "c00-1", "jti": c.JTI,
+		"iat": float64(tNow), "exp": float64(tNow + 900),
 	}
 	if len(mc) != len(want) {
 		t.Fatalf("claims %v", mc)
@@ -110,9 +124,6 @@ func TestMintClaimsAndJWKS(t *testing.T) {
 		if mc[k] != v {
 			t.Errorf("claim %s = %v, want %v", k, mc[k], v)
 		}
-	}
-	if len(jti) < 32 {
-		t.Fatalf("jti too short: %q", jti)
 	}
 	if rec.Header().Get("Content-Type") != "application/jwk-set+json" {
 		t.Errorf("content-type %q", rec.Header().Get("Content-Type"))
@@ -128,71 +139,60 @@ func TestMintClaimsAndJWKS(t *testing.T) {
 func TestAudienceIsHostSpecific(t *testing.T) {
 	kr, _ := ParseKeyring("k1:" + seed(1))
 	keys, _ := fetchJWKS(t, kr)
-	now := time.Now()
-	for _, tc := range []struct{ host, class, inst, aud, other string }{
-		{"c00", "S2", "c00-1", "steel-gateway/c00", "steel-gateway/x99"},
-		{"x99", "S0", "x99-3", "steel-gateway/x99", "steel-gateway/c00"},
-	} {
-		c := claims()
-		c.Host, c.Class, c.Instance = tc.host, tc.class, tc.inst
-		if tc.class == "S0" {
-			c.DecisionID = nil
-		}
-		tok, _, _, err := kr.Mint(c, now)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.host, err)
-		}
-		mc, _ := verifyAud(t, tok, keys, now, tc.aud)
-		if mc["aud"] != tc.aud {
-			t.Errorf("%s: aud=%v want %s", tc.host, mc["aud"], tc.aud)
-		}
-		if _, err := jwt.NewParser(jwt.WithAudience(tc.other), jwt.WithTimeFunc(func() time.Time { return now })).
-			Parse(tok, func(*jwt.Token) (any, error) { return keys["k1"], nil }); err == nil {
-			t.Errorf("%s token accepted by %s verifier", tc.host, tc.other)
-		}
-		if _, err := jwt.NewParser(jwt.WithAudience("steel-gateway"), jwt.WithTimeFunc(func() time.Time { return now })).
-			Parse(tok, func(*jwt.Token) (any, error) { return keys["k1"], nil }); err == nil {
-			t.Errorf("%s token accepted with generic audience", tc.host)
-		}
+	now := time.Unix(tNow, 0)
+	accepts := func(tok, aud string) bool {
+		_, err := jwt.NewParser(jwt.WithAudience(aud), jwt.WithTimeFunc(func() time.Time { return now })).
+			Parse(tok, func(*jwt.Token) (any, error) { return keys["k1"], nil })
+		return err == nil
 	}
-}
-
-func TestJTIUnique(t *testing.T) {
-	kr, _ := ParseKeyring("k1:" + seed(1))
-	_, a, _, _ := kr.Mint(claims(), time.Now())
-	_, b, _, _ := kr.Mint(claims(), time.Now())
-	if a == "" || a == b {
-		t.Fatalf("jti %q %q", a, b)
+	for _, tc := range []struct {
+		c          Claims
+		aud, other string
+	}{
+		{claims(), "steel-gateway/c00", "steel-gateway/x99"},
+		{s0Claims(), "steel-gateway/x99", "steel-gateway/c00"},
+	} {
+		tok := sign(t, kr, tc.c)
+		if !accepts(tok, tc.aud) {
+			t.Errorf("%s token rejected by its own verifier", tc.aud)
+		}
+		if accepts(tok, tc.other) {
+			t.Errorf("%s token accepted by %s verifier", tc.aud, tc.other)
+		}
+		if accepts(tok, "steel-gateway") {
+			t.Errorf("%s token accepted with the generic audience", tc.aud)
+		}
 	}
 }
 
 func TestDecisionNullOnlyForS0(t *testing.T) {
 	kr, _ := ParseKeyring("k1:" + seed(1))
 	keys, _ := fetchJWKS(t, kr)
-	now := time.Now()
-	c := claims()
-	c.Class, c.DecisionID, c.Instance, c.Host = "S0", nil, "x99-1", "x99"
-	tok, _, _, err := kr.Mint(c, now)
+	tok, err := kr.Sign(s0Claims())
 	if err != nil {
 		t.Fatalf("S0 null decision: %v", err)
 	}
-	mc, _ := verifyAud(t, tok, keys, now, "steel-gateway/x99")
+	mc, _ := verifyAud(t, tok, keys, time.Unix(tNow, 0), "steel-gateway/x99")
 	if v, ok := mc["decision_id"]; !ok || v != nil {
 		t.Fatalf("decision_id must be present and null, got %v (present=%v)", v, ok)
 	}
 	for _, class := range []string{"S2", "H"} {
-		c.Class = class
-		if _, _, _, err := kr.Mint(c, now); err == nil {
-			t.Errorf("class %s minted without decision", class)
+		c := claims()
+		c.Class, c.DecisionID = class, ""
+		if _, err := kr.Sign(c); err == nil {
+			t.Errorf("class %s signed without decision", class)
 		}
 	}
 }
 
-func TestMintRejectsBadClaims(t *testing.T) {
+func TestSignRejectsBadClaims(t *testing.T) {
 	kr, _ := ParseKeyring("k1:" + seed(1))
 	cases := map[string]func(*Claims){
 		"S1 class":       func(c *Claims) { c.Class = "S1" },
 		"unknown class":  func(c *Claims) { c.Class = "x" },
+		"generic aud":    func(c *Claims) { c.Aud = "steel-gateway" },
+		"empty aud":      func(c *Claims) { c.Aud = "" },
+		"other host aud": func(c *Claims) { c.Aud = "steel-gateway/mbp" },
 		"empty sub":      func(c *Claims) { c.Sub = "" },
 		"empty lease":    func(c *Claims) { c.LeaseID = "" },
 		"zero epoch":     func(c *Claims) { c.Epoch = 0 },
@@ -201,24 +201,25 @@ func TestMintRejectsBadClaims(t *testing.T) {
 		"empty user":     func(c *Claims) { c.UserID = "" },
 		"empty profile":  func(c *Claims) { c.Profile = "" },
 		"empty inst":     func(c *Claims) { c.Instance = "" },
-		"empty host":     func(c *Claims) { c.Host = "" },
-		"unknown host":   func(c *Claims) { c.Host = "mbp" },
-		"generic host":   func(c *Claims) { c.Host = "steel-gateway" },
-		"empty decision": func(c *Claims) { c.DecisionID = str("") },
+		"empty jti":      func(c *Claims) { c.JTI = "" },
+		"short jti":      func(c *Claims) { c.JTI = "abc" },
+		"zero iat":       func(c *Claims) { c.Iat = 0 },
+		"exp not after":  func(c *Claims) { c.Exp = c.Iat },
+		"ttl over 15m":   func(c *Claims) { c.Exp = c.Iat + 901 },
 	}
 	for name, mut := range cases {
 		c := claims()
 		mut(&c)
-		if _, _, _, err := kr.Mint(c, time.Now()); err == nil {
-			t.Errorf("%s: minted", name)
+		if tok, err := kr.Sign(c); err == nil || tok != "" {
+			t.Errorf("%s: signed", name)
 		}
 	}
 }
 
 func TestRotationKeepsOldKeyVerifiable(t *testing.T) {
 	old, _ := ParseKeyring("k1:" + seed(1))
-	now := time.Now()
-	oldTok, _, _, _ := old.Mint(claims(), now)
+	now := time.Unix(tNow, 0)
+	oldTok := sign(t, old, claims())
 
 	rot, err := ParseKeyring("k2:" + seed(2) + ",k1:" + seed(1))
 	if err != nil {
@@ -229,7 +230,7 @@ func TestRotationKeepsOldKeyVerifiable(t *testing.T) {
 		t.Fatalf("jwks keys=%d", len(keys))
 	}
 	verify(t, oldTok, keys, now) // still verifies after rotation
-	newTok, _, _, _ := rot.Mint(claims(), now)
+	newTok := sign(t, rot, claims())
 	_, parsed := verify(t, newTok, keys, now)
 	if parsed.Header["kid"] != "k2" {
 		t.Fatalf("new tokens must use the first key, got %v", parsed.Header["kid"])
