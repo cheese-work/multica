@@ -307,7 +307,8 @@ and Cheese's chosen option label (empty while open), and `jev_in_scope`: the cou
 asks in a decidable class (reversible, spend, deploy, publish; not cancelled) created
 since the window opened (`jev_since`: `since`, or the oldest logged ask if earlier). The
 log never holds budget or API-error attempts (the decider retries them), so that server
-count is the denominator of the 10-minute share. The CLI prints shadow agreement with
+count is the denominator of the 10-minute share. An ask that failed before both the first
+log row and the oldest logged ask stays outside the window. The CLI prints shadow agreement with
 Cheese (answered Jev-routed asks where `pick` equals Cheese's choice), the share of
 in-scope asks that Jev decided within 10 minutes of the ask, and whether the live-mode
 gate holds: agreement of at least 90% on at least 20 asks. With `--format json` the same
