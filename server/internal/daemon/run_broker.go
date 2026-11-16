@@ -190,6 +190,37 @@ func (rb *runBroker) start(c brokerCheckout) error {
 	return nil
 }
 
+// Fence restricts the run's broker at once. Before the first checkout there is
+// no broker and nothing to fence. Safe on repeat.
+func (rb *runBroker) Fence() {
+	rb.mu.Lock()
+	b := rb.b
+	rb.mu.Unlock()
+	if b != nil {
+		b.Fence()
+	}
+}
+
+// Drain waits for the broker's started operations to report; with no broker
+// started there are none.
+func (rb *runBroker) Drain(ctx context.Context) error {
+	rb.mu.Lock()
+	b := rb.b
+	rb.mu.Unlock()
+	if b == nil {
+		return nil
+	}
+	return b.Drain(ctx)
+}
+
+// OwnMessage is the broker's receipt check; false before the broker starts.
+func (rb *runBroker) OwnMessage(sha string, msg []byte) bool {
+	rb.mu.Lock()
+	b := rb.b
+	rb.mu.Unlock()
+	return b != nil && b.OwnMessage(sha, msg)
+}
+
 // Close ends the run's broker, which revokes every token it minted, and
 // removes the shims and socket. Safe on nil and on repeat.
 func (rb *runBroker) Close() {
