@@ -226,3 +226,26 @@ func TestRunFenceServerFenceGoesBeforeLaunchScopesReport(t *testing.T) {
 		})
 	}
 }
+
+// KeepRun is the downgrade handshake's fence: the process that asked must live
+// to receive the response, so the run is neither stopped nor reported ended.
+func TestRunFenceKeepRunSkipsStopAndLaunchScopesReport(t *testing.T) {
+	var log []string
+	step := func(s string) { log = append(log, s) }
+	f := RunFence{
+		Broker:          fakeBroker{log: &log},
+		Restrict:        func() { step("restrict") },
+		StopRun:         func() error { step("stop"); return nil },
+		EndLaunchScopes: func(context.Context) error { step("end"); return nil },
+		ServerFence:     func(context.Context) error { step("server-fence"); return nil },
+		KeepRun:         true,
+	}
+	if err := f.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range log {
+		if s == "stop" || s == "end" {
+			t.Fatalf("steps %v: KeepRun must not stop the run or report scopes ended", log)
+		}
+	}
+}

@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +58,7 @@ type denyAll struct{}
 
 func (denyAll) Admitted(context.Context, readproxy.Check) (bool, error) { return false, nil }
 
-func wiredProxy(t *testing.T, f elevatedFixture, epoch int64, stop func() error) (sock string, restricted *atomic.Bool, b *wireBroker) {
+func wiredProxy(t *testing.T, f elevatedFixture, epoch int64, launchScopes bool) (sock string, restricted *atomic.Bool, b *wireBroker) {
 	t.Helper()
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(wireComment)
@@ -72,13 +71,13 @@ func wiredProxy(t *testing.T, f elevatedFixture, epoch int64, stop func() error)
 	restricted, b = new(atomic.Bool), &wireBroker{}
 	p := c.NewRunReadProxy(daemon.RunReadProxyConfig{
 		IssueID: f.issueID, TaskID: f.taskID, Epoch: epoch,
-		GraphQLURL: gh.URL,
-		Token:      func(context.Context) (string, error) { return "read-token", nil },
-		Admit:      denyAll{},
-		Broker:     b,
-		Restrict:   func() { restricted.Store(true) },
-		StopRun:    stop,
-		Attempts:   1, Backoff: time.Millisecond,
+		GraphQLURL:   gh.URL,
+		Token:        func(context.Context) (string, error) { return "read-token", nil },
+		Admit:        denyAll{},
+		Broker:       b,
+		Restrict:     func() { restricted.Store(true) },
+		LaunchScopes: launchScopes,
+		Attempts:     1, Backoff: time.Millisecond,
 		Wait: 5 * time.Second,
 	})
 	dir, err := os.MkdirTemp("", "rrp")
@@ -104,8 +103,7 @@ func (f elevatedFixture) scopesEnded(t *testing.T) (ended bool) {
 
 func TestRealHandlersAcceptTheWiredProxyHandshake(t *testing.T) {
 	f := claimElevated(t, "repo_write:1234")
-	stopped := false
-	sock, restricted, broker := wiredProxy(t, f, 1, func() error { stopped = true; return nil })
+	sock, restricted, broker := wiredProxy(t, f, 1, false)
 
 	stub, err := readproxy.Read(context.Background(), sock, "IC_1")
 	if err != nil || stub.Full {
@@ -122,31 +120,34 @@ func TestRealHandlersAcceptTheWiredProxyHandshake(t *testing.T) {
 	if state, epoch := f.state(t); state != "restricted_final" || epoch != 2 {
 		t.Fatalf("row = %s epoch %d, want restricted_final at epoch 2", state, epoch)
 	}
-	if !f.scopesEnded(t) {
-		t.Fatal("the real handler never recorded the launch scopes as ended")
+	if f.scopesEnded(t) {
+		t.Fatal("launch scopes were reported ended: the run is kept alive and holds no launch scope")
 	}
 	if a, b := f.taintCounts(t); a != 1 || b != 1 {
 		t.Fatalf("taint = task %d issue %d, want both tainted before the bytes came back", a, b)
 	}
-	if !restricted.Load() || !stopped || !broker.fenced.Load() || !broker.drained.Load() {
-		t.Fatalf("restricted=%v stopped=%v fenced=%v drained=%v, want all", restricted.Load(), stopped, broker.fenced.Load(), broker.drained.Load())
+	if !restricted.Load() || !broker.fenced.Load() || !broker.drained.Load() {
+		t.Fatalf("restricted=%v fenced=%v drained=%v, want all", restricted.Load(), broker.fenced.Load(), broker.drained.Load())
 	}
 	f.authorize(t, 2, "repo_write:1234", hashA).Want(http.StatusForbidden) // no re-elevation
 }
 
 func TestRealHandlersFailedHandshakeKeepsRestrictionAndStub(t *testing.T) {
 	cases := map[string]struct {
-		epoch int64
-		stop  func() error
-		state string
+		epoch    int64
+		inFlight bool
+		state    string
 	}{
-		"server refuses the fence (stale epoch)": {7, func() error { return nil }, "elevated"},
-		"run will not stop":                      {1, func() error { return errors.New("pid 7 still alive") }, "fencing"},
+		"server refuses the fence (stale epoch)": {7, false, "elevated"},
+		"an authorized op never completed":       {1, true, "fencing"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := claimElevated(t, "repo_write:1234")
-			sock, restricted, broker := wiredProxy(t, f, tc.epoch, tc.stop)
+			if tc.inFlight {
+				f.authorize(t, 1, "repo_write:1234", hashA).Want(http.StatusOK)
+			}
+			sock, restricted, broker := wiredProxy(t, f, tc.epoch, false)
 			res, err := readproxy.Read(context.Background(), sock, "IC_1", readproxy.AskDowngrade)
 			if err != nil || res.Full || res.Body != "" || res.SHA256 == "" {
 				t.Fatalf("ask: %+v %v, want the stub", res, err)
@@ -158,11 +159,31 @@ func TestRealHandlersFailedHandshakeKeepsRestrictionAndStub(t *testing.T) {
 				t.Fatalf("row = %s, want %s", state, tc.state)
 			}
 			if f.scopesEnded(t) {
-				t.Fatal("launch scopes were reported ended without a clean fence and stop")
+				t.Fatal("launch scopes were reported ended without a clean fence")
 			}
 			if a, b := f.taintCounts(t); a != 0 || b != 0 {
 				t.Fatalf("taint = task %d issue %d, want none without delivery", a, b)
 			}
 		})
+	}
+}
+
+// A task holding a launch scope is refused the handshake before any server call:
+// the row stays elevated, nothing is tainted, the read stays a stub.
+func TestRealHandlersRefuseHandshakeForLaunchScopeTask(t *testing.T) {
+	f := claimElevated(t, "repo_write:1234", "docker")
+	sock, restricted, broker := wiredProxy(t, f, 1, true)
+	res, err := readproxy.Read(context.Background(), sock, "IC_1", readproxy.AskDowngrade)
+	if err != nil || res.Full || res.Body != "" || res.SHA256 == "" {
+		t.Fatalf("ask: %+v %v, want the stub", res, err)
+	}
+	if state, epoch := f.state(t); state != "elevated" || epoch != 1 {
+		t.Fatalf("row = %s epoch %d, want it untouched", state, epoch)
+	}
+	if restricted.Load() || broker.fenced.Load() {
+		t.Fatalf("restricted=%v fenced=%v: a refused handshake starts nothing", restricted.Load(), broker.fenced.Load())
+	}
+	if a, b := f.taintCounts(t); a != 0 || b != 0 {
+		t.Fatalf("taint = task %d issue %d, want none", a, b)
 	}
 }

@@ -16,10 +16,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 )
 
-// runStopTimeout bounds the wait for the run's agent process to exit after
-// the fence cancels it.
-const runStopTimeout = 30 * time.Second
-
 // runReadProxy is one elevated run's read proxy: the listener beside the run's
 // broker socket and the read credential it holds.
 type runReadProxy struct {
@@ -56,26 +52,38 @@ type denyAdmit struct{}
 
 func (denyAdmit) Admitted(context.Context, readproxy.Check) (bool, error) { return false, nil }
 
+// hasLaunchScope reports whether the task holds a docker or device: scope,
+// mirroring the server's isLaunchScope.
+func hasLaunchScope(scopes []string) bool {
+	for _, sc := range scopes {
+		if sc == "docker" || strings.HasPrefix(sc, "device:") {
+			return true
+		}
+	}
+	return false
+}
+
 // startRunReadProxy is the per-run launch hook next to applyRunBroker. Only an
 // elevated run that has a broker gets a proxy: its socket sits beside the
-// broker's, the run's env names it, and the returned context is the run's:
-// the fence stops the run by cancelling it and waiting for its agent process
-// (every executeAndDrain under that context) to exit. The caller closes the
-// proxy when the run ends. An elevated run without a proxy has no GitHub read
-// path at all, which is the safe state.
-func startRunReadProxy(ctx context.Context, c *Client, task Task, rb *runBroker, agentEnv map[string]string, log *slog.Logger) (context.Context, *runReadProxy, error) {
+// broker's and the run's env names it. The run itself is never stopped: the
+// process that asks for the downgrade is the one that receives the response.
+// A task with a launch scope is refused the handshake instead (see
+// RunReadProxyConfig.LaunchScopes). The caller closes the proxy when the run
+// ends. An elevated run without a proxy has no GitHub read path at all, which
+// is the safe state.
+func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]string, log *slog.Logger) (*runReadProxy, error) {
 	if rb == nil || task.EffectiveProfile() != "elevated" {
-		return ctx, nil, nil
+		return nil, nil
 	}
 	slug := strings.TrimPrefix(repocache.RepoIdentity(task.PinnedRepo), "github.com/")
 	repoID, ok := rb.cfg.RepoIDs[slug]
 	if !ok {
-		return ctx, nil, errors.New("read proxy: no GitHub repository ID configured for the pinned repository")
+		return nil, errors.New("read proxy: no GitHub repository ID configured for the pinned repository")
 	}
 	sock := filepath.Join(filepath.Dir(rb.Socket), "r.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
-		return ctx, nil, err
+		return nil, err
 	}
 	api := strings.TrimRight(rb.cfg.APIBase, "/")
 	if api == "" {
@@ -83,22 +91,18 @@ func startRunReadProxy(ctx context.Context, c *Client, task Task, rb *runBroker,
 	}
 	src := rb.tokens.NewReadSource(repoID)
 	p := &runReadProxy{Socket: sock, ln: ln, src: src}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	tracker := &runTracker{}
-	runCtx = withRunTracker(runCtx, tracker)
 	proxy := c.NewRunReadProxy(RunReadProxyConfig{
 		IssueID: task.IssueID, TaskID: task.ID, Epoch: task.Epoch,
 		GraphQLURL: api + "/graphql", RESTURL: api,
-		Token:    src.Token,
-		Admit:    denyAdmit{},
-		Broker:   rb,
-		Restrict: func() { p.restricted.Store(true); log.Warn("elevated run restricted", "task_id", task.ID) },
-		StopRun:  func() error { cancel(); return tracker.idle(runStopTimeout) },
-		Attempts: 3, Backoff: time.Second,
+		Token:        src.Token,
+		Admit:        denyAdmit{},
+		Broker:       rb,
+		LaunchScopes: hasLaunchScope(task.Scopes),
+		Restrict:     func() { p.restricted.Store(true); log.Warn("elevated run restricted", "task_id", task.ID) },
+		Attempts:     3, Backoff: time.Second,
 		Alert: func(err error) { log.Error("downgrade handshake", "task_id", task.ID, "error", err) },
 	})
 	go func() { _ = proxy.Serve(ln) }()
 	agentEnv[readproxy.SocketEnv] = sock
-	return runCtx, p, nil
+	return p, nil
 }

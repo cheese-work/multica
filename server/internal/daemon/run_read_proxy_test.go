@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -110,7 +109,7 @@ func wireServer(t *testing.T, tr *wireTrace, deliverStatus int, opts ...func(*wi
 	return srv
 }
 
-func serveWired(t *testing.T, c *Client, tr *wireTrace, stop func() error) string {
+func serveWired(t *testing.T, c *Client, tr *wireTrace, launchScopes bool) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "rrp")
 	if err != nil {
@@ -125,13 +124,13 @@ func serveWired(t *testing.T, c *Client, tr *wireTrace, stop func() error) strin
 	t.Cleanup(func() { ln.Close() })
 	p := c.NewRunReadProxy(RunReadProxyConfig{
 		IssueID: "issue-1", TaskID: "task-1", Epoch: 3,
-		GraphQLURL: wireGitHub(t),
-		Token:      func(context.Context) (string, error) { return "read-token", nil },
-		Admit:      notAdmitted{},
-		Broker:     wireBroker{tr},
-		Restrict:   func() { tr.add("restrict") },
-		StopRun:    stop,
-		Attempts:   1, Backoff: time.Millisecond,
+		GraphQLURL:   wireGitHub(t),
+		Token:        func(context.Context) (string, error) { return "read-token", nil },
+		Admit:        notAdmitted{},
+		Broker:       wireBroker{tr},
+		Restrict:     func() { tr.add("restrict") },
+		LaunchScopes: launchScopes,
+		Attempts:     1, Backoff: time.Millisecond,
 		Wait: 2 * time.Second,
 	})
 	go p.Serve(ln)
@@ -143,7 +142,7 @@ func TestWiredProxyFencesTaintsDeliversThenReleasesBytes(t *testing.T) {
 	srv := wireServer(t, tr, http.StatusOK)
 	c := NewClient(srv.URL)
 	c.SetToken("tok")
-	sock := serveWired(t, c, tr, func() error { tr.add("stop-run"); return nil })
+	sock := serveWired(t, c, tr, false)
 
 	stub, err := readproxy.Read(context.Background(), sock, "IC_1")
 	if err != nil || stub.Full || stub.Body != "" {
@@ -156,8 +155,7 @@ func TestWiredProxyFencesTaintsDeliversThenReleasesBytes(t *testing.T) {
 	if err != nil || !res.Full || res.Body != wiredComment {
 		t.Fatalf("ask: res=%+v err=%v, want full text", res, err)
 	}
-	want := []string{"restrict", "broker.fence", "server.downgrade epoch=3", "stop-run",
-		"server.launch-scopes-ended", "broker.drain", "server.deliver"}
+	want := []string{"restrict", "broker.fence", "server.downgrade epoch=3", "broker.drain", "server.deliver"}
 	if got := tr.get(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps %v, want %v", got, want)
 	}
@@ -165,19 +163,18 @@ func TestWiredProxyFencesTaintsDeliversThenReleasesBytes(t *testing.T) {
 
 func TestWiredProxyFailedHandshakeReturnsStub(t *testing.T) {
 	cases := map[string]struct {
-		deliver int
-		stop    func() error
+		deliver, fence int
 	}{
-		"server refuses delivery": {http.StatusConflict, func() error { return nil }},
-		"run will not stop":       {http.StatusOK, func() error { return errors.New("pid 7 still alive") }},
+		"server refuses delivery": {http.StatusConflict, http.StatusOK},
+		"server fence fails":      {http.StatusOK, http.StatusInternalServerError},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			tr := &wireTrace{}
-			srv := wireServer(t, tr, tc.deliver)
+			srv := wireServer(t, tr, tc.deliver, func(o *wireOpts) { o.downgradeStatus = tc.fence })
 			c := NewClient(srv.URL)
 			c.SetToken("tok")
-			sock := serveWired(t, c, tr, tc.stop)
+			sock := serveWired(t, c, tr, false)
 			res, err := readproxy.Read(context.Background(), sock, "IC_1", readproxy.AskDowngrade)
 			if err != nil || res.Full || res.Body != "" || res.SHA256 == "" {
 				t.Fatalf("res=%+v err=%v, want the stub", res, err)
@@ -186,6 +183,23 @@ func TestWiredProxyFailedHandshakeReturnsStub(t *testing.T) {
 				t.Fatalf("steps %v: the run must be restricted first", got)
 			}
 		})
+	}
+}
+
+// A task with a launch scope is refused up front: nothing runs, no restriction,
+// no server call, and the read stays a stub.
+func TestWiredProxyRefusesHandshakeForLaunchScopeTask(t *testing.T) {
+	tr := &wireTrace{}
+	srv := wireServer(t, tr, http.StatusOK)
+	c := NewClient(srv.URL)
+	c.SetToken("tok")
+	sock := serveWired(t, c, tr, true)
+	res, err := readproxy.Read(context.Background(), sock, "IC_1", readproxy.AskDowngrade)
+	if err != nil || res.Full || res.Body != "" || res.SHA256 == "" {
+		t.Fatalf("res=%+v err=%v, want the stub", res, err)
+	}
+	if got := tr.get(); len(got) != 0 {
+		t.Fatalf("steps %v, want none", got)
 	}
 }
 

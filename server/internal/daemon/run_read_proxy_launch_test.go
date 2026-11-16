@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/gatesuite"
+	"github.com/multica-ai/multica/server/internal/daemon/processtree"
 	"github.com/multica-ai/multica/server/internal/daemon/readproxy"
 	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/pkg/agent"
@@ -23,33 +26,57 @@ import (
 
 // The launch wiring (CHE-2512 review P1 1): runTask starts the proxy beside the
 // run's broker, names its socket in the run's env, and the run's own process
-// is what the fence stops. The agent here is a real executeAndDrain over a
-// backend that blocks until it is stopped; only GitHub and the Multica server
-// are fake.
+// is what the fence leaves running. The agent here is a real executeAndDrain
+// over a backend that starts a real child process (the requesting gh): the
+// child reads through the socket in its env and the run's result is what the
+// child printed. Only GitHub and the Multica server are fake.
 
-// stoppableBackend is an agent that runs until its context ends, and may call
-// into the run's env while it runs.
-type stoppableBackend struct {
-	running  chan struct{} // closed once the agent is running
-	exited   atomic.Bool
-	work     func() // what the agent's gh does while it runs, in its own process
-	workDone chan struct{}
+// childRead is what the run's gh does: one plain read, then one that asks for
+// the downgrade, printed as JSON. It runs as a real child process: the test
+// binary re-executed, because the fence must not kill the process that asked.
+func TestRunReadProxyChild(t *testing.T) {
+	sock := os.Getenv("RRP_CHILD_SOCK")
+	if sock == "" {
+		t.Skip("child helper")
+	}
+	ctx := context.Background()
+	plain, perr := readproxy.Read(ctx, sock, "IC_1")
+	asked, aerr := readproxy.Read(ctx, sock, "IC_1", readproxy.AskDowngrade)
+	out, _ := json.Marshal(map[string]any{"plain_full": plain.Full, "plain_err": fmt.Sprint(perr), "full": asked.Full, "body": asked.Body, "sha": asked.SHA256, "err": fmt.Sprint(aerr)})
+	fmt.Println(string(out))
+	os.Exit(0)
 }
 
-func (b *stoppableBackend) Execute(ctx context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+type childOut struct {
+	PlainFull bool   `json:"plain_full"`
+	Full      bool   `json:"full"`
+	Body      string `json:"body"`
+	SHA       string `json:"sha"`
+	Err       string `json:"err"`
+}
+
+// childBackend is the agent: it runs the requesting gh as its child and
+// reports what the child printed, the way a real agent reports a tool result.
+type childBackend struct{ sock string }
+
+func (b *childBackend) Execute(ctx context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunReadProxyChild$")
+	cmd.Env = append(os.Environ(), "RRP_CHILD_SOCK="+b.sock)
+	var out bytes.Buffer
+	cmd.Stdout = &out
 	msgCh := make(chan agent.Message)
 	resCh := make(chan agent.Result, 1)
-	if b.work != nil {
-		go func() { b.work(); close(b.workDone) }() // the gh shim: a child the fence kills
-	} else {
-		close(b.workDone)
-	}
 	go func() {
-		close(b.running)
-		<-ctx.Done()
-		b.exited.Store(true)
+		err := processtree.Run(ctx, cmd, time.Second)
 		close(msgCh)
-		resCh <- agent.Result{Status: "aborted"}
+		switch {
+		case ctx.Err() != nil:
+			resCh <- agent.Result{Status: "cancelled", Output: out.String()}
+		case err != nil:
+			resCh <- agent.Result{Status: "failed", Error: err.Error(), Output: out.String()}
+		default:
+			resCh <- agent.Result{Status: "completed", Output: out.String()}
+		}
 	}()
 	return &agent.Session{Messages: msgCh, Result: resCh}, nil
 }
@@ -104,18 +131,15 @@ func readGitHub(t *testing.T) (*httptest.Server, func() int) {
 }
 
 type launched struct {
-	ctx     context.Context
-	rp      *runReadProxy
-	rb      *runBroker
-	env     map[string]string
-	backend *stoppableBackend
-	trace   *wireTrace
-	live    func() int
-	result  chan agent.Result
+	rp    *runReadProxy
+	rb    *runBroker
+	env   map[string]string
+	trace *wireTrace
+	live  func() int
 }
 
-// launch wires one elevated run the way runTask does and starts its agent.
-func launch(t *testing.T, srv *httptest.Server, tr *wireTrace, live func() int, gh *httptest.Server, profile string) *launched {
+// launch wires one run the way runTask does.
+func launch(t *testing.T, srv *httptest.Server, tr *wireTrace, live func() int, gh *httptest.Server, profile string, scopes ...string) *launched {
 	t.Helper()
 	gs := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
 	cfg := brokerTestConfig(t, gs)
@@ -133,43 +157,55 @@ func launch(t *testing.T, srv *httptest.Server, tr *wireTrace, live func() int, 
 
 	c := NewClient(srv.URL)
 	c.SetToken("tok")
-	task := Task{ID: "task-1", IssueID: "issue-1", Epoch: 3, Profile: profile, PinnedRepo: "https://github.com/o/r.git"}
-	ctx, rp, err := startRunReadProxy(context.Background(), c, task, rb, env, quietLog())
+	task := Task{ID: "task-1", IssueID: "issue-1", Epoch: 3, Profile: profile, Scopes: scopes, PinnedRepo: "https://github.com/o/r.git"}
+	rp, err := startRunReadProxy(c, task, rb, env, quietLog())
 	if err != nil {
 		t.Fatalf("startRunReadProxy: %v", err)
 	}
 	if rp != nil {
 		t.Cleanup(rp.Close)
 	}
-	l := &launched{ctx: ctx, rp: rp, rb: rb, env: env, trace: tr, live: live, result: make(chan agent.Result, 1)}
-	l.backend = &stoppableBackend{running: make(chan struct{}), workDone: make(chan struct{})}
-	return l
+	return &launched{rp: rp, rb: rb, env: env, trace: tr, live: live}
 }
 
-// run starts the agent through the real executeAndDrain.
-func (l *launched) run(t *testing.T) {
+// run is the agent's whole turn through the real executeAndDrain; it returns
+// the result and what the requesting child printed.
+func (l *launched) run(t *testing.T) (agent.Result, childOut) {
 	t.Helper()
+	if l.rp == nil {
+		t.Fatal("an elevated run with a broker got no read proxy")
+	}
 	d := newTestDaemon(t)
+	type ran struct {
+		res agent.Result
+		err error
+	}
+	done := make(chan ran, 1)
 	go func() {
-		res, _, _ := d.executeAndDrain(l.ctx, l.backend, "p", agent.ExecOptions{}, quietLog(), "task-1", "", new(atomic.Int32))
-		l.result <- res
+		res, _, err := d.executeAndDrain(context.Background(), &childBackend{sock: l.env[readproxy.SocketEnv]}, "p", agent.ExecOptions{}, quietLog(), "task-1", "", new(atomic.Int32))
+		done <- ran{res, err}
 	}()
 	select {
-	case <-l.backend.running:
-	case <-time.After(5 * time.Second):
-		t.Fatal("agent did not start")
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("executeAndDrain: %v", r.err)
+		}
+		var out childOut
+		if err := json.Unmarshal([]byte(strings.TrimSpace(r.res.Output)), &out); err != nil && r.res.Status == "completed" {
+			t.Fatalf("child output %q: %v", r.res.Output, err)
+		}
+		return r.res, out
+	case <-time.After(60 * time.Second):
+		t.Fatal("the run did not finish")
+		return agent.Result{}, childOut{}
 	}
 }
 
-func TestLaunchWiresProxyBesideBrokerAndFencesTheRealRun(t *testing.T) {
+func TestLaunchRequestingChildReceivesBytesAfterTheFence(t *testing.T) {
 	tr := &wireTrace{}
-	var l *launched
-	var runGoneAtEnd atomic.Bool
-	srv := wireServer(t, tr, http.StatusOK, func(o *wireOpts) {
-		o.onEnded = func() { runGoneAtEnd.Store(l.backend.exited.Load()) }
-	})
+	srv := wireServer(t, tr, http.StatusOK)
 	gh, live := readGitHub(t)
-	l = launch(t, srv, tr, live, gh, "elevated")
+	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234")
 	if l.rp == nil {
 		t.Fatal("an elevated run with a broker got no read proxy")
 	}
@@ -177,34 +213,16 @@ func TestLaunchWiresProxyBesideBrokerAndFencesTheRealRun(t *testing.T) {
 		t.Fatalf("socket %q env %q, want %q beside the broker socket in the run env", l.rp.Socket, l.env[readproxy.SocketEnv], want)
 	}
 
-	var res readproxy.Result
-	var readErr error
-	l.backend.work = func() {
-		if r, err := readproxy.Read(context.Background(), l.rp.Socket, "IC_1"); err != nil || r.Full {
-			t.Errorf("a read that did not ask: %+v %v, want the stub", r, err)
-		}
-		res, readErr = readproxy.Read(context.Background(), l.rp.Socket, "IC_1", readproxy.AskDowngrade)
+	res, out := l.run(t)
+	if res.Status != "completed" {
+		t.Fatalf("run %q, want the run still alive to receive the bytes", res.Status)
 	}
-	l.run(t)
-
-	select {
-	case r := <-l.result:
-		if r.Status != "cancelled" {
-			t.Fatalf("run result %q, want the run cancelled by the fence", r.Status)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the fence did not stop the run")
+	if out.PlainFull || !out.Full || out.Body != wiredComment {
+		t.Fatalf("child saw %+v, want the stub without an ask and the full text after the handshake", out)
 	}
-	<-l.backend.workDone
-	if readErr != nil || !res.Full || res.Body != wiredComment {
-		t.Fatalf("ask: %+v %v, want full text after the handshake", res, readErr)
-	}
-	want := []string{"server.downgrade epoch=3", "server.launch-scopes-ended", "server.deliver"}
+	want := []string{"server.downgrade epoch=3", "server.deliver"}
 	if got := tr.get(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("server calls %v, want %v", got, want)
-	}
-	if !runGoneAtEnd.Load() {
-		t.Fatal("launch scopes were reported ended while the run was still alive")
+		t.Fatalf("server calls %v, want %v: no launch scope, so nothing to end", got, want)
 	}
 	if !l.rp.Restricted() {
 		t.Fatal("the run was not restricted locally")
@@ -219,24 +237,10 @@ func TestLaunchFailedServerFenceKeepsLocalRestrictionAndStub(t *testing.T) {
 	tr := &wireTrace{}
 	srv := wireServer(t, tr, http.StatusOK, func(o *wireOpts) { o.downgradeStatus = http.StatusInternalServerError })
 	gh, live := readGitHub(t)
-	l := launch(t, srv, tr, live, gh, "elevated")
-	if l.rp == nil {
-		t.Fatal("an elevated run with a broker got no read proxy")
-	}
-	var res readproxy.Result
-	var readErr error
-	l.backend.work = func() {
-		res, readErr = readproxy.Read(context.Background(), l.rp.Socket, "IC_1", readproxy.AskDowngrade)
-	}
-	l.run(t)
-	select {
-	case <-l.result:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the run was not stopped")
-	}
-	<-l.backend.workDone
-	if readErr != nil || res.Full || res.Body != "" {
-		t.Fatalf("ask: %+v %v, want the stub", res, readErr)
+	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234")
+	res, out := l.run(t)
+	if res.Status != "completed" || out.Full || out.Body != "" || out.SHA == "" {
+		t.Fatalf("run %q child %+v, want the child to get the stub", res.Status, out)
 	}
 	if !l.rp.Restricted() {
 		t.Fatal("a failed server fence must not undo the local restriction")
@@ -245,6 +249,28 @@ func TestLaunchFailedServerFenceKeepsLocalRestrictionAndStub(t *testing.T) {
 		if s == "server.launch-scopes-ended" || s == "server.deliver" {
 			t.Fatalf("server calls %v: nothing may be reported or delivered after a failed fence", tr.get())
 		}
+	}
+}
+
+// A task holding docker or device: scopes cannot be fenced without ending the
+// processes that hold them, and those include the one that asked. The proxy
+// refuses the downgrade up front: no fence starts, the run stays as it was, and
+// the child gets the stub.
+func TestLaunchRefusesDowngradeWhileLaunchScopesAreHeld(t *testing.T) {
+	for _, scope := range []string{"docker", "device:usb0"} {
+		t.Run(scope, func(t *testing.T) {
+			tr := &wireTrace{}
+			srv := wireServer(t, tr, http.StatusOK)
+			gh, live := readGitHub(t)
+			l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", scope)
+			res, out := l.run(t)
+			if res.Status != "completed" || out.Full || out.Body != "" || out.SHA == "" {
+				t.Fatalf("run %q child %+v, want the stub and a run left alone", res.Status, out)
+			}
+			if got := tr.get(); len(got) != 0 {
+				t.Fatalf("server calls %v, want none: no fence may start", got)
+			}
+		})
 	}
 }
 
