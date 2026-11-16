@@ -2855,6 +2855,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// thread (?id for a specific one, else the thread the session is in).
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
+			// Closed segments of the caller's own DM (CHE-2819 L2b): same handlers as
+			// /api/chat/sessions/{id}/segment(s); the task token names the DM.
+			r.Get("/api/chat/segments", h.ListChatSegments)
+			r.Get("/api/chat/segment", h.GetChatSegment)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
