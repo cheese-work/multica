@@ -315,6 +315,31 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
  disabled_at=CASE WHEN @block_runs::bool THEN COALESCE(disabled_at,clock_timestamp()) ELSE disabled_at END,
  updated_at=clock_timestamp() WHERE id= @id;
 
+-- name: DisableGuardBlockedWakeup :one
+-- CHE-6193: a run guard refused the rule's run. Disable it once; a rule that is
+-- already off or paused returns no row, so only one timeline line is written.
+-- next_fire_at stays, so a re-enabled schedule rule fires at once, not never.
+UPDATE issue_wakeup SET enabled=false,paused_reason= @paused_reason,last_error=NULL,updated_at=clock_timestamp()
+WHERE id= @id AND enabled AND paused_reason IS NULL
+RETURNING *;
+
+-- name: ResumeGuardPausedWakeups :execrows
+-- Re-enable the issue's rules a guard paused for this reason (a budget raise).
+UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,updated_at=clock_timestamp()
+WHERE issue_id= @issue_id AND NOT enabled AND paused_reason= @paused_reason;
+
+-- name: ResumeGuardPausedWakeup :execrows
+-- Re-enable one rule while it still carries the pause the caller judged.
+UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,updated_at=clock_timestamp()
+WHERE id= @id AND NOT enabled AND paused_reason= @paused_reason;
+
+-- name: ListWeeklyGuardPausedWakeups :many
+-- Rules the weekly run guard paused, oldest pause first, for the resume sweep.
+SELECT * FROM issue_wakeup
+WHERE NOT enabled AND paused_reason='weekly_run_guard'
+ AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+ORDER BY updated_at LIMIT 100;
+
 -- name: ResumeRateLimitedSystemWakeup :execrows
 -- The only way out of a rate pause: one statement clears the pause and its
 -- run block together, and only while the rolling limit has room. Manual,
