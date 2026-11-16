@@ -26,9 +26,10 @@ import (
 const SocketEnv = "MULTICA_READPROXY_SOCK"
 
 const (
-	maxResponse    = 4 << 20
-	defaultLookup  = 5 * time.Second
-	defaultGraphQL = "https://api.github.com/graphql"
+	maxResponse      = 4 << 20
+	defaultLookup    = 5 * time.Second
+	defaultDowngrade = 30 * time.Second
+	defaultGraphQL   = "https://api.github.com/graphql"
 )
 
 // Comments, reviews and review comments have an admission path (CHE-2214);
@@ -69,6 +70,14 @@ type OwnMessager interface {
 	OwnMessage(sha string, msg []byte) bool
 }
 
+// Downgrader runs the downgrade handshake (plan 3.8) for one run. It returns
+// nil only when the fence has completed, the task and issue are tainted and
+// the daemon confirms its local policy is restricted; any other outcome is an
+// error and the proxy keeps the stub.
+type Downgrader interface {
+	Downgrade(ctx context.Context) error
+}
+
 // Result is one read's answer: full text, or a stub with no body.
 type Result struct {
 	Full   bool   `json:"full"`
@@ -91,6 +100,8 @@ type Proxy struct {
 	RESTURL         string      // default https://api.github.com
 	HTTP            *http.Client
 	LookupTimeout   time.Duration // server lookup bound; default 5s
+	Downgrade       Downgrader    // nil: a read that asks for a downgrade still gets the stub
+	DowngradeWait   time.Duration // whole handshake bound; default 30s
 }
 
 // object keeps editor and lastEditedAt raw: a missing key (nil) differs from
@@ -194,7 +205,7 @@ func (p *Proxy) fetch(ctx context.Context, id string) (*object, error) {
 	return n, nil
 }
 
-func (p *Proxy) read(ctx context.Context, id string) (Result, error) {
+func (p *Proxy) read(ctx context.Context, id string, ask bool) (Result, error) {
 	n, err := p.fetch(ctx, id)
 	if err != nil {
 		return Result{}, err
@@ -208,9 +219,30 @@ func (p *Proxy) read(ctx context.Context, id string) (Result, error) {
 	}
 	if ok, err := p.admit(ctx, func(lctx context.Context) (bool, error) { return p.Admit.Admitted(lctx, c) }); err == nil && ok {
 		res.Full, res.Body = true, *n.Body
+	} else if ask && p.downgrade(ctx) {
+		res.Full, res.Body = true, *n.Body
 	}
 	return res, nil
 }
+
+// downgrade runs the handshake once, bounded as a whole. True means the fence
+// completed and the task and issue are tainted, so the withheld bytes may go.
+// An error, a timeout, or a success that arrives after the deadline is false:
+// the caller keeps the stub and the error text never reaches the answer.
+func (p *Proxy) downgrade(ctx context.Context) bool {
+	if p.Downgrade == nil {
+		return false
+	}
+	wait := p.DowngradeWait
+	if wait <= 0 {
+		wait = defaultDowngrade
+	}
+	dctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	return p.Downgrade.Downgrade(dctx) == nil && dctx.Err() == nil
+}
+
+func askedDowngrade(r *http.Request) bool { return r.URL.Query().Get("ask_downgrade") == "true" }
 
 // admit bounds one server lookup. An error, a timeout, or a success that
 // arrives after the deadline is a refusal, so the caller returns a stub.
@@ -234,7 +266,7 @@ func (p *Proxy) Handler() http.Handler {
 			http.Error(w, "bad object id", http.StatusBadRequest)
 			return
 		}
-		res, err := p.read(r.Context(), id)
+		res, err := p.read(r.Context(), id, askedDowngrade(r))
 		if err != nil {
 			// No upstream bytes in an error.
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -252,9 +284,25 @@ func (p *Proxy) Serve(ln net.Listener) error {
 	return (&http.Server{Handler: p.Handler(), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 }
 
+// ReadOption changes one read request.
+type ReadOption int
+
+// AskDowngrade asks the proxy to run the downgrade handshake when it would
+// withhold the bytes. Full text comes back only after the handshake succeeds.
+const AskDowngrade ReadOption = 1
+
+func askParam(opts []ReadOption) string {
+	for _, o := range opts {
+		if o == AskDowngrade {
+			return "&ask_downgrade=true"
+		}
+	}
+	return ""
+}
+
 // Read asks the proxy on sock for one object.
-func Read(ctx context.Context, sock, id string) (Result, error) {
-	return get(ctx, sock, "/v1/object?id="+url.QueryEscape(id))
+func Read(ctx context.Context, sock, id string, opts ...ReadOption) (Result, error) {
+	return get(ctx, sock, "/v1/object?id="+url.QueryEscape(id)+askParam(opts))
 }
 
 func get(ctx context.Context, sock, pathQuery string) (Result, error) {
