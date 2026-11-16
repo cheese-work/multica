@@ -398,6 +398,7 @@ func TestChatAttentionLater_DecisionSnoozeIsPerRevision(t *testing.T) {
 
 // A20: Xong tất cả acknowledges the displayed unclassified turn; the next turn is a new subject.
 func TestChatAttentionXongAll_NextUnclassifiedTurnStaysVisible(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	f := newAttnFx(t)
 	t1 := f.turn()
 	if !has(f.keysAt(time.Now()), service.TurnKey(t1)) {

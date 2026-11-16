@@ -129,8 +129,11 @@ func TestScanProcTaskIDsSkipsNonRunners(t *testing.T) {
 func TestHeartbeatRequestReportsHostScan(t *testing.T) {
 	d := &Daemon{logger: slog.Default()}
 	req := d.heartbeatRequest("rt-1")
-	if req.HostScanOK == nil || !*req.HostScanOK || req.HostTaskIDs == nil {
-		t.Fatalf("host scan = ok:%v ids:%v, want ok with ids", req.HostScanOK, req.HostTaskIDs)
+	// The real /proc decides ok: a CI runner with a nondumpable process in the
+	// daemon's cgroup fails the scan by design (CHE-6457), so assert the pairing,
+	// not that the host scan succeeds.
+	if req.HostScanOK == nil || *req.HostScanOK != (req.HostTaskIDs != nil) {
+		t.Fatalf("host scan = ok:%v ids:%v, want ids reported exactly when ok", req.HostScanOK, req.HostTaskIDs)
 	}
 	d.cleanupUnconfirmed.Store(true)
 	if req := d.heartbeatRequest("rt-1"); req.HostScanOK != nil || req.HostTaskIDs != nil {

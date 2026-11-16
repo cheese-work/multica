@@ -135,11 +135,21 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
+),
+deleted_browser_leases AS (
+    DELETE FROM browser_lease WHERE workspace_id = $1
+),
+deleted_browser_instances AS (
+    DELETE FROM browser_instance WHERE workspace_id = $1
+),
+deleted_browser_profiles AS (
+    DELETE FROM browser_profile WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
 `
 
+// CHE-4731 browser lease storage: workspace-owned leaves, no FK (migration 99960).
 func (q *Queries) DeleteWorkspaceAdministration(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceAdministration, workspaceID)
 	return err
@@ -468,6 +478,9 @@ deleted_ci_signature_owners AS (
 ),
 deleted_ci_flake_increments AS (
     DELETE FROM ci_flake_increment WHERE workspace_id = $1
+),
+deleted_ci_watch_events AS (
+    DELETE FROM ci_watch_event WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -799,6 +812,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-4474 System 1 epochs: workspace-owned leaf, no FK.
 // CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
 // budget tables are per App installation, have no workspace_id, and stay.
+// CHE-4279 storm-breaker event log: workspace-owned leaf, no FK.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
