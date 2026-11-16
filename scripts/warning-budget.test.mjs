@@ -49,6 +49,13 @@ test("a byte-order mark at a GitHub log chunk boundary does not expose a timesta
   assert.deepEqual(warningCounts([{ name: "backend-tests", log, annotations: [] }]), {})
 })
 
+test("expected slog WARN lines from backend-agent-tests fixtures are not warnings, but a real warning there still is (CHE-6346)", () => {
+  const slog = 'time=2026-11-16T10:00:00.000Z level=WARN msg="script rejected" task_id=task-1 reason=script_not_allowlisted script=ghost'
+  assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: slog, annotations: [] }]), {})
+  assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: `${slog}\nWarning: compiler diagnostic`, annotations: [] }]), { "backend-agent-tests: Warning: compiler diagnostic": 1 })
+  assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: slog, annotations: [] }])).length, 1)
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
