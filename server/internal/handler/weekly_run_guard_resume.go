@@ -201,12 +201,28 @@ func executeRunGuardAllowAction(ctx context.Context, execution decisionActionExe
 	if moved == 0 {
 		return nil, actionFailure{Code: "refusal_closed", Message: "this refusal was already approved or is no longer open"}
 	}
+	// CHE-6295: the allowance counts from the current run count. An issue
+	// already over its limit would otherwise stay refused after the approval.
+	runs := int64(params.Runs)
+	limit, err := service.WeeklyRunGuardLimit(ctx, q, issueID)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 {
+		used, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{
+			IssueID: issueID, Since: pgtype.Timestamptz{Time: time.Now().Add(-service.WeeklyRunGuardWindow), Valid: true},
+		})
+		if err != nil {
+			return nil, err
+		}
+		runs += max(used-limit, 0)
+	}
 	if err := q.CreateWeeklyRunGuardAllowance(ctx, db.CreateWeeklyRunGuardAllowanceParams{
-		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(params.Runs), ActionID: execution.Action.ID,
+		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(runs), ActionID: execution.Action.ID,
 	}); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"issue_id": params.IssueID, "runs": params.Runs})
+	return json.Marshal(map[string]any{"issue_id": params.IssueID, "runs": runs})
 }
 
 // resumeWeeklyRefusalsOfAction runs the trigger of every refusal the action approved.

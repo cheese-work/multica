@@ -32,13 +32,24 @@ func weeklyCardCase(t *testing.T, installationID int64) (budgetCase, service.Wee
 // recipients are every workspace owner, and adds a second owner.
 func weeklyCardCaseFor(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
 	t.Helper()
-	c, e := weeklyRefusalCase(t, installationID, manyOwners)
+	return weeklyCardCaseRuns(t, installationID, manyOwners, 30)
+}
+
+// weeklyCardCaseRuns is weeklyCardCaseFor with the issue's 7-day run count set.
+func weeklyCardCaseRuns(t *testing.T, installationID int64, manyOwners bool, runs int) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
+	c, e := weeklyRefusalCaseRuns(t, installationID, manyOwners, runs)
 	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
 	return c, e
 }
 
 // weeklyRefusalCase is weeklyCardCaseFor before the incident hook runs.
 func weeklyRefusalCase(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
+	return weeklyRefusalCaseRuns(t, installationID, manyOwners, 30)
+}
+
+func weeklyRefusalCaseRuns(t *testing.T, installationID int64, manyOwners bool, runs int) (budgetCase, service.WeeklyRunGuardTripped) {
 	t.Helper()
 	c := weeklyCase(t, installationID)
 	var role string
@@ -58,7 +69,7 @@ func weeklyRefusalCase(t *testing.T, installationID int64, manyOwners bool) (bud
 	dbfx.Cleanup(t, `DELETE FROM decision_request WHERE issue_id = $1`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_allowance WHERE issue_id = $1`, c.issueID)
-	seedRuns(t, c, c.agentID, 30, 2*24*time.Hour)
+	seedRuns(t, c, c.agentID, runs, 2*24*time.Hour)
 	return c, c.weeklyTripped(t)
 }
 
@@ -431,5 +442,65 @@ func TestWeeklyRunGuardRefusalOnFinishedIssueOpensNothing(t *testing.T) {
 				t.Fatalf("queued runs = %d, want 0", n)
 			}
 		})
+	}
+}
+
+type weeklyBudgetRead struct {
+	Blocking    []string `json:"blocking"`
+	WeeklyRuns  int64    `json:"weekly_runs"`
+	WeeklyLimit int64    `json:"weekly_limit"`
+}
+
+func (c budgetCase) weeklyBudget(t *testing.T) weeklyBudgetRead {
+	t.Helper()
+	var got weeklyBudgetRead
+	request := withURLParam(newRequest(http.MethodGet, "/api/issues/"+c.issueID+"/run-budget", nil), "id", c.issueID)
+	testutil.Call(t, testHandler.GetIssueRunBudget, request).Want(http.StatusOK).JSON(&got)
+	return got
+}
+
+// CHE-6295 AC1, AC2, AC4: an issue 30 runs over the limit gets 10 more derived
+// runs counted from its current count; the refused trigger runs once, the next
+// nine pass, the 11th is refused and opens a new card.
+func TestWeeklyRunGuardApprovalCountsAllowanceFromCurrentCount(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseRuns(t, 6295001, false, 60)
+	action := c.pendingAllow(t)
+	action.approve(t, withVerifier(acceptingVerifier), action.claim(t, map[string]string{}), http.StatusOK)
+	if n := c.queuedRuns(t); n != 1 {
+		t.Fatalf("queued runs after approval = %d, want the refused trigger once", n)
+	}
+	got := c.weeklyBudget(t)
+	if len(got.Blocking) != 0 || got.WeeklyRuns != 61 || got.WeeklyLimit != 70 {
+		t.Fatalf("budget after approval = %+v, want 61 of 70 and nothing blocking", got)
+	}
+	// The next nine derived runs pass.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status = 'queued'`, c.issueID)
+	seedRuns(t, c, c.agentID, 9, time.Hour)
+	// The 11th derived run is refused and opens a new card.
+	e := c.weeklyTripped(t)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open allow cards after the 11th run = %d, want 1", n)
+	}
+}
+
+// CHE-6295 AC3: an issue just over the limit (31 of 30) is unblocked as before:
+// the refused trigger runs once and ten derived runs count from the current 31.
+func TestWeeklyRunGuardApprovalJustOverLimitStillUnblocks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseRuns(t, 6295002, false, 31)
+	action := c.pendingAllow(t)
+	action.approve(t, withVerifier(acceptingVerifier), action.claim(t, map[string]string{}), http.StatusOK)
+	if n := c.queuedRuns(t); n != 1 {
+		t.Fatalf("queued runs after approval = %d, want the refused trigger once", n)
+	}
+	got := c.weeklyBudget(t)
+	if len(got.Blocking) != 0 || got.WeeklyLimit != 41 {
+		t.Fatalf("budget after approval = %+v, want limit 41 and nothing blocking", got)
 	}
 }
