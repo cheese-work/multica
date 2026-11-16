@@ -233,3 +233,80 @@ func TestAskGuardCommentEditAddingMemberMention(t *testing.T) {
 		}
 	})
 }
+
+// CHE-5753: a comment with no member link that asks a person to act on an
+// unproven UI path, file, command or placeholder is refused like a member ask.
+func TestAskGuardCommentRefusesUnprovenAskWithoutMemberLink(t *testing.T) {
+	setAskGuardMode(t, "block")
+	f := newAskGuardCommentFixture(t)
+	res := f.post(t, map[string]any{"content": "Cheese, open Workspace settings → Delegated governed writes and run bash scripts/setup.sh <token>."}).Want(http.StatusUnprocessableEntity)
+	for _, fix := range []string{"multica decision request", "--notify-only", "comment"} {
+		if !strings.Contains(res.Text(), fix) {
+			t.Errorf("422 body lacks %q: %s", fix, res.Text())
+		}
+	}
+	if n := f.comments(t); n != 0 {
+		t.Errorf("refused comment saved %d rows", n)
+	}
+	f.post(t, map[string]any{"content": "Cheese, open Workspace settings → Delegated governed writes.", "notify_only": true}).Want(http.StatusCreated)
+	f.post(t, map[string]any{"content": "Fixed docs/setup/runner.md and ran `go test ./...`."}).Want(http.StatusCreated)
+}
+
+// CHE-5753 round 3: an edit must not be a way around the comment-ask check.
+// A refused edit leaves the stored content unchanged; a normal edit still works.
+func TestAskGuardCommentEditAddingUnprovenAsk(t *testing.T) {
+	const ask = "Cheese, open Workspace settings → Delegated governed writes and run bash scripts/setup.sh <token>."
+	stored := func(t *testing.T, id string) string {
+		t.Helper()
+		var content string
+		dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, id).Scan(&content)
+		return content
+	}
+	post := func(t *testing.T, f askGuardCommentFixture, body map[string]any) string {
+		t.Helper()
+		id, _ := f.post(t, body).Want(http.StatusCreated).Map()["id"].(string)
+		return id
+	}
+	t.Run("refused and unchanged", func(t *testing.T) {
+		setAskGuardMode(t, "block")
+		f := newAskGuardCommentFixture(t)
+		id := post(t, f, map[string]any{"content": "Receipt posted"})
+		res := f.edit(t, id, ask).Want(http.StatusUnprocessableEntity)
+		if !strings.Contains(res.Text(), "multica decision request") {
+			t.Errorf("422 body lacks the fix: %s", res.Text())
+		}
+		if got := stored(t, id); got != "Receipt posted" {
+			t.Errorf("refused edit changed content to %q", got)
+		}
+		if n := f.events(t, "block"); n != 1 {
+			t.Errorf("block events = %d, want 1", n)
+		}
+	})
+	t.Run("normal edit is allowed", func(t *testing.T) {
+		setAskGuardMode(t, "block")
+		f := newAskGuardCommentFixture(t)
+		id := post(t, f, map[string]any{"content": "Receipt posted"})
+		f.edit(t, id, "Fixed docs/setup/runner.md and ran `go test ./...`.").Want(http.StatusOK)
+		if n := f.events(t, "block"); n != 0 {
+			t.Errorf("block events = %d, want 0", n)
+		}
+	})
+	t.Run("edit of a notify-only ask is not re-refused", func(t *testing.T) {
+		setAskGuardMode(t, "block")
+		f := newAskGuardCommentFixture(t)
+		id := post(t, f, map[string]any{"content": ask, "notify_only": true})
+		f.edit(t, id, ask+" Thanks.").Want(http.StatusOK)
+		if n := f.events(t, "block"); n != 0 {
+			t.Errorf("block events = %d, want 0", n)
+		}
+	})
+	t.Run("warn mode posts the edit", func(t *testing.T) {
+		setAskGuardMode(t, "warn")
+		f := newAskGuardCommentFixture(t)
+		id := post(t, f, map[string]any{"content": "Receipt posted"})
+		f.edit(t, id, ask).Want(http.StatusOK)
+		if n := f.events(t, "warn"); n != 1 {
+			t.Errorf("warn events = %d, want 1", n)
+		}
+	})
+}
