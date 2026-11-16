@@ -448,14 +448,26 @@ type AutopilotTrigger struct {
 	CreatedByID pgtype.UUID `json:"created_by_id"`
 }
 
+type BrowserGatewayCredential struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Gateway        string             `json:"gateway"`
+	CredentialHash string             `json:"credential_hash"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type BrowserInstance struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Name        string             `json:"name"`
-	Epoch       int64              `json:"epoch"`
-	Phase       string             `json:"phase"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Name           string             `json:"name"`
+	Epoch          int64              `json:"epoch"`
+	Phase          string             `json:"phase"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Host           string             `json:"host"`
+	Gateway        string             `json:"gateway"`
+	AllowedClasses []string           `json:"allowed_classes"`
 }
 
 type BrowserLease struct {
