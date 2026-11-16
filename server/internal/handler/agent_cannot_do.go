@@ -51,6 +51,42 @@ func checkAgentCannotDo(writer http.ResponseWriter, ask decisiontx.Ask, settings
 	return hints, true
 }
 
+// checkCardLint runs the CHE-5993 card lint with the workspace mode. It writes
+// the response and returns false when the card is refused (400, one line with
+// the reason code and field path) or the stored setting is unreadable.
+func checkCardLint(writer http.ResponseWriter, ask decisiontx.Ask, class string, settings []byte) (hints []string, ok bool) {
+	mode, err := decisiontx.CardLintModeFromSettings(settings)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		return nil, false
+	}
+	hints, err = ask.CheckCard(mode, class)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	return hints, true
+}
+
+// validateCardLintSetting checks decision_card_lint_mode of a workspace
+// settings object with the reader the card lint uses. An absent key is valid; null is not.
+func validateCardLintSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	mode, present := config[decisiontx.SettingCardLintMode]
+	if !present {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{decisiontx.SettingCardLintMode: mode})
+	if err != nil {
+		return err
+	}
+	_, err = decisiontx.CardLintModeFromSettings(raw)
+	return err
+}
+
 // validateAgentCannotDoSetting checks agent_cannot_do_mode and agent_cannot_do
 // of a workspace settings object with the reader the decision check uses.
 // Absent keys are valid; null is not.
