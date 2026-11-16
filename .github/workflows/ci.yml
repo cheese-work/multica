@@ -439,8 +439,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Show PR base
+        run: echo "base_ref=${{ github.base_ref }} event_base=${{ github.event.pull_request.base.ref }}"
+
       - name: Merge the newest main
-        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main'
         run: |
           git fetch origin main
           git -c user.name=ci -c user.email=ci@invalid merge --no-edit origin/main
