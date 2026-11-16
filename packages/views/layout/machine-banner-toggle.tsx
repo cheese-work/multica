@@ -31,6 +31,7 @@ export function MachineBannerToggle() {
   return (
     <TooltipHint label={label}>
       <button
+        // ui-pattern-ref: allow header status icon with a count and aria-pressed; Button has no icon-plus-count toggle variant, see pause-banner
         type="button"
         aria-label={label}
         aria-pressed={open}
