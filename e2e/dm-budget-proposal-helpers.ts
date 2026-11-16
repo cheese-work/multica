@@ -92,6 +92,20 @@ export async function addVirtualAuthenticator(page: Page, passkey: TestPasskey) 
   });
 }
 
+type RouteHandler = (route: import("@playwright/test").Route) => Promise<unknown>;
+
+// CHE-6346: a route still fetching when the test ends fails the test with "Target page, context or browser
+// has been closed" (Playwright's own advice is to ignore routes in flight). The page is gone, so there is nothing to serve.
+function ignoreClosedTarget(handler: RouteHandler): RouteHandler {
+  return async (route) => {
+    try {
+      return await handler(route);
+    } catch (error) {
+      if (!/Target page, context or browser has been closed|Target closed/.test(String(error))) throw error;
+    }
+  };
+}
+
 /**
  * Serves the web app on the https origin the passkey is bound to. Each request
  * is fetched from the real web server and fulfilled, so no certificate is needed.
@@ -114,7 +128,7 @@ export async function serveOverHttps(
   });
   // The API allows CORS only for the origins it was started with, not for the passkey origin. The
   // page's API calls go through here, and the answer is given the header the browser asks for.
-  await context.route(`${API_BASE}/**`, async (route) => {
+  await context.route(`${API_BASE}/**`, ignoreClosedTarget(async (route) => {
     if (await onApiRequest?.(route)) return;
     const request = route.request();
     const cors = {
@@ -130,8 +144,8 @@ export async function serveOverHttps(
     delete headers["content-encoding"];
     delete headers["content-length"];
     await route.fulfill({ status: response.status(), headers, body: await response.body() });
-  });
-  await context.route(`${HTTPS_ORIGIN}/**`, async (route) => {
+  }));
+  await context.route(`${HTTPS_ORIGIN}/**`, ignoreClosedTarget(async (route) => {
     const url = route.request().url().replace(HTTPS_ORIGIN, WEB_ORIGIN);
     const response = await route.fetch({ url });
     // fetch() already inflated the body; keeping content-encoding would make the browser inflate it again.
@@ -139,7 +153,7 @@ export async function serveOverHttps(
     delete headers["content-encoding"];
     delete headers["content-length"];
     await route.fulfill({ status: response.status(), headers, body: await response.body() });
-  });
+  }));
 }
 
 /** GET as the signed-in E2E user. */
