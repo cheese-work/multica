@@ -476,14 +476,45 @@ func TestWeeklyRunGuardApprovalCountsAllowanceFromCurrentCount(t *testing.T) {
 	if len(got.Blocking) != 0 || got.WeeklyRuns != 61 || got.WeeklyLimit != 70 {
 		t.Fatalf("budget after approval = %+v, want 61 of 70 and nothing blocking", got)
 	}
-	// The next nine derived runs pass.
-	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status = 'queued'`, c.issueID)
-	seedRuns(t, c, c.agentID, 9, time.Hour)
+	// The next nine derived runs pass through real dispatches.
+	for i := 0; i < 9; i++ {
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status = 'queued'`, c.issueID)
+		if err := c.enqueue(t); err != nil {
+			t.Fatalf("derived run %d after approval = %v, want it admitted", i+2, err)
+		}
+	}
 	// The 11th derived run is refused and opens a new card.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status = 'queued'`, c.issueID)
 	e := c.weeklyTripped(t)
 	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
 	if n := c.allowCards(t); n != 1 {
 		t.Fatalf("open allow cards after the 11th run = %d, want 1", n)
+	}
+}
+
+// CHE-6295 review: an approved trigger that the guard (or another gate) still
+// refuses at resume is never dropped silently; the issue gets a system comment.
+func TestWeeklyRunGuardRefusedResumePostsSystemComment(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseRuns(t, 6295003, false, 60)
+	// Mark the refusal approved without the allowance, as if another gate ate it.
+	dbfx.Exec(t, `UPDATE weekly_run_guard_refusal SET state = 'approved' WHERE issue_id = $1 AND state = 'open'`, c.issueID)
+	before := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID)
+	var id pgtype.UUID
+	dbfx.QueryRow(t, `SELECT id FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID).Scan(&id)
+	testHandler.resumeWeeklyRefusal(context.Background(), id)
+	var state string
+	dbfx.QueryRow(t, `SELECT state FROM weekly_run_guard_refusal WHERE id = $1`, id).Scan(&state)
+	if state != "refused" {
+		t.Fatalf("refusal state = %s, want refused", state)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID); n != before+1 {
+		t.Fatalf("system comments = %d, want %d: a refused resume must say so", n, before+1)
+	}
+	if n := c.queuedRuns(t); n != 0 {
+		t.Fatalf("queued runs = %d, want 0", n)
 	}
 }
 
