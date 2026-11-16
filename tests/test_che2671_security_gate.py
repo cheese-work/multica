@@ -119,7 +119,8 @@ class GateDecisionTest(unittest.TestCase):
         state, why = self.run_gate([comment(verdict())], pr=pr)
         self.assertEqual(state, "failure")
         self.assertIn("author", why)
-        pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699333}
+        # CHE-4671: dependabot[bot] (49699333) is registered as an author; any other unknown id stays refused
+        pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699334}
         self.assertEqual(self.run_gate([comment(verdict())], pr=pr)[0], "failure")
 
     def test_verdict_for_another_pr_with_the_same_head_does_not_pass(self):
@@ -240,109 +241,6 @@ class WrapperTest(unittest.TestCase):
             code, posted = self.run_main(sibling_head=HEAD, sibling_diff_error=False)
         self.assertEqual(code, 0)
         self.assertIn("state=failure", posted[0])
-
-
-class MergeGroupStepTest(unittest.TestCase):
-    """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
-    DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
-    re-evaluates the queued PR with that script unchanged and posts the state on the queue commit itself."""
-
-    QUEUE = "e" * 40
-    REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
-    STUB_GH = ('#!/bin/bash\n'
-               'case "$*" in\n'
-               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
-               '  *) echo "gh $*" >> "$LOG" ;;\n'
-               'esac\n')
-    STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
-                 'echo "gate $*" >> "$LOG"\n'
-                 'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
-                 'n=$(grep -c "^gate " "$LOG")\n'  # this is the Nth read: STATES answers per read, FAIL_AT makes one read error out
-                 '[ "$n" = "${FAIL_AT:-}" ] && exit 1\n'
-                 'if [ -n "${STATES:-}" ]; then STATE=$(echo $STATES | cut -d" " -f$n); fi\n'
-                 'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
-
-    def step_run(self):
-        steps = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]["security-gate"]["steps"]
-        gate = [s for s in steps if "security_gate.py" in s.get("run", "")]
-        self.assertEqual(len(gate), 1)
-        return gate[0]["run"]
-
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at=""):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            (tmp / "bin").mkdir()
-            (tmp / "scripts/security-gate").mkdir(parents=True)
-            (tmp / "bin/gh").write_text(self.STUB_GH)
-            (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
-            (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
-            (tmp / "bin/python3").write_text(
-                '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
-                f'exec {sys.executable} "$@"\n')
-            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
-                path.chmod(0o755)
-            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
-                   "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
-                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
-            done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
-            log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
-        return done, log
-
-    def posted(self, log):
-        return [l for l in log if l.startswith("gh ") and f"statuses/{self.QUEUE}" in l]
-
-    def test_queued_pr_verdict_is_posted_on_the_queue_commit(self):
-        done, log = self.run_step()
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(len(self.posted(log)), 1, log)
-        self.assertIn("state=success", self.posted(log)[0])
-        self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
-        self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
-
-    def test_queue_run_scans_with_semgrep_once_the_gate_script_supports_it(self):
-        done, log = self.run_step(script='ap.add_argument("--semgrep")')
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
-
-    def test_queue_run_omits_semgrep_for_an_older_gate_script(self):
-        done, log = self.run_step()
-        self.assertNotIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
-
-    def test_verdict_is_read_fresh_at_queue_time(self):
-        done, log = self.run_step(state="pending")
-        self.assertIn("state=pending", self.posted(log)[0])
-
-    def test_a_verdict_revoked_after_the_first_read_never_ends_as_success(self):
-        # a late success must not overwrite a revocation failure: a success is read again before and after it is posted
-        for states, last in (("success pending", "pending"), ("success success pending", "pending"),
-                             ("success success success", "success")):
-            done, log = self.run_step(states=states)
-            self.assertIn(f"state={last}", self.posted(log)[-1], (states, log))
-
-    def test_a_success_is_read_again_before_and_after_it_is_published(self):
-        done, log = self.run_step(states="success success success")
-        self.assertEqual(len([l for l in log if l.startswith("gate ")]), 3, log)
-
-    def test_a_failed_read_after_the_success_was_posted_fails_closed(self):
-        # round 7 P1: an error in the post-write read left the cached success in place under set -e
-        done, log = self.run_step(fail_at=3)
-        self.assertIn("state=success", self.posted(log)[0], log)
-        self.assertIn("state=failure", self.posted(log)[-1], (done.stderr, log))
-
-    def test_a_failed_read_before_the_success_is_posted_posts_a_failure_not_a_stall(self):
-        for fail_at in (1, 2):
-            done, log = self.run_step(fail_at=fail_at)
-            self.assertIn("state=failure", self.posted(log)[-1], (fail_at, done.stderr, log))
-
-    def test_pr_head_that_is_not_a_parent_fails(self):
-        done, log = self.run_step(parents=("d" * 40, OLD))
-        self.assertIn("state=failure", self.posted(log)[0])
-
-    def test_queue_for_another_branch_fails_without_evaluating(self):
-        done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
-        self.assertIn("state=failure", self.posted(log)[0])
-        self.assertFalse([l for l in log if l.startswith("gate ")])
 
 
 class QueueRevocationTest(unittest.TestCase):
@@ -532,19 +430,6 @@ class WorkflowTest(unittest.TestCase):
         self.text = (ROOT / ".github/workflows/security-gate.yml").read_text()
         self.doc = yaml.safe_load(self.text)
 
-    def test_runs_from_base_and_never_checks_out_head(self):
-        # CHE-4385: the file runs only when pr-guards calls it (pull_request_target, base definition), on a dispatch
-        # of the default branch, or on the merge queue. It has no event of its own for a PR or a comment.
-        self.assertEqual(set(self.doc[True]), {"workflow_call", "workflow_dispatch", "issue_comment", "merge_group"})
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", self.text)
-        self.assertNotIn("pull_request.head.ref", self.text)
-
-    def test_privileged_job_runs_the_default_branch_not_the_pr_base(self):
-        # finding 1: base.sha of a PR into an unprotected branch is attacker-influenced code
-        self.assertIn("github.event.repository.default_branch", self.text)
-        self.assertNotIn(".base.sha", self.text)
-        self.assertIn("--default-branch", self.text)
-
     def test_pr_guards_calls_the_gate_on_a_push_and_a_retarget_needs_a_dispatch(self):
         # findings 3 and 4, moved twice by CHE-4385: `edited` (retarget) is no longer a pr-guards trigger (Cheese chose the
         # run cut), so a retarget re-runs the gate only through a push or `workflow_dispatch`. A stale status fails closed:
@@ -560,24 +445,6 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(list(self.doc[True]["workflow_dispatch"]["inputs"]), ["pr"])
         self.assertIn("github.event.inputs.pr", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
         self.assertIn("pr must be digits only", self.text)
-
-    def test_a_created_edited_or_deleted_verdict_comment_evaluates_without_a_dispatch(self):
-        # CHE-4385: `created` is restored so a new FAIL flips the status at once; edit/delete revoke a PASS.
-        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["created", "deleted", "edited"])
-        cond = self.doc["jobs"]["security-gate"]["if"]
-        self.assertIn("github.event_name != 'issue_comment'", cond)
-        self.assertIn("Security-Gate-Verdict:", cond)
-        self.assertIn("github.event.changes.body.from", cond)
-        self.assertIn("OWNER", cond)
-        self.assertIn("282619718", cond)
-        self.assertIn("github.event.issue.number", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
-
-    def test_job_group_differs_from_the_caller_group(self):
-        # A called workflow cannot share its caller's concurrency group (pr-guards-<n>); a dispatch and a push for the
-        # same PR share this one, so the newest read of the verdict wins.
-        job = self.doc["jobs"]["security-gate"]
-        self.assertTrue(job["concurrency"]["group"].startswith("security-gate-"))
-        self.assertIn("github.event.merge_group.head_sha", job["concurrency"]["group"])
 
     def test_merge_queue_commit_gets_the_status(self):
         self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])

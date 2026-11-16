@@ -409,6 +409,40 @@ func (q *Queries) GetProviderFailureTriggerID(ctx context.Context, taskID pgtype
 	return trigger_id, err
 }
 
+const getProviderHeldRetryFence = `-- name: GetProviderHeldRetryFence :one
+SELECT (
+    i.id IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM agent_task_queue newer
+        WHERE newer.issue_id = t.issue_id AND newer.id <> t.id
+          AND (newer.created_at, newer.id) > (t.created_at, t.id)
+    )
+    AND i.status NOT IN ('done', 'cancelled')
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed')
+    )
+    AND (
+        (i.assignee_type = 'agent' AND i.assignee_id = t.agent_id)
+        OR (i.assignee_type = 'squad' AND i.assignee_id = t.squad_id)
+    )
+)::boolean AS allowed
+FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+WHERE t.id = $1
+`
+
+// CHE-1736 M1.2 fence for a held provider retry. TRUE only if the failed task is
+// still the issue's latest run, the issue is not in a terminal status, and the
+// issue is still assigned to the task's agent or squad. An unassigned issue, a
+// newer run or a reassignment means no retry.
+func (q *Queries) GetProviderHeldRetryFence(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getProviderHeldRetryFence, taskID)
+	var allowed bool
+	err := row.Scan(&allowed)
+	return allowed, err
+}
+
 const getRecoveryLineageFacts = `-- name: GetRecoveryLineageFacts :one
 WITH RECURSIVE lineage(id, depth, path) AS (
     SELECT t.id, 0, ARRAY[t.id] FROM agent_task_queue t WHERE t.id = $1

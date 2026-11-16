@@ -358,7 +358,7 @@ func TestEnsureCodexModelCatalogOverrideCoexistsWithMultiAgentBlock(t *testing.T
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, "0.145.0", nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 

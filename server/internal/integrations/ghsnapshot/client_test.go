@@ -164,6 +164,23 @@ func TestRateLimitFromResponse(t *testing.T) {
 	}
 }
 
+// RetryAfter stays clamped to 5m for the refresh loop. The ledger needs the
+// real reset, so the raw headers ride along.
+func TestRateLimitErrorKeepsTheRawHeaders(t *testing.T) {
+	now := time.Unix(1000, 0)
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("X-RateLimit-Remaining", "0")
+	resp.Header.Set("X-RateLimit-Reset", "2200") // 20 minutes away
+	resp.Header.Set("Retry-After", "600")
+	got := rateLimitFromResponse(resp, now)
+	if got.RetryAfter != 5*time.Minute {
+		t.Fatalf("RetryAfter = %s", got.RetryAfter)
+	}
+	if got.Header.Get("X-RateLimit-Reset") != "2200" || got.Header.Get("Retry-After") != "600" || got.Header.Get("X-RateLimit-Remaining") != "0" {
+		t.Fatalf("headers = %v, want the raw throttling headers", got.Header)
+	}
+}
+
 func TestRESTErrorsKeepPermissionsSeparateFromRateLimits(t *testing.T) {
 	cases := []struct {
 		name    string

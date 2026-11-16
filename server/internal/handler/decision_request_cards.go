@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -42,6 +43,20 @@ type DecisionRequestCard struct {
 	CoveredCards []DecisionRequestCoveredCard `json:"covered_cards,omitempty"`
 	// AnsweredByBatchRequestID is the batch card whose answer closed this card.
 	AnsweredByBatchRequestID *string `json:"answered_by_batch_request_id,omitempty"`
+	// BatchID is set on every card of a proposal batch (CHE-5412); BatchItems then lists one entry per item.
+	BatchID    string                     `json:"batch_id,omitempty"`
+	BatchItems []DecisionRequestBatchItem `json:"batch_items,omitempty"`
+}
+
+// DecisionRequestBatchItem is one action of a proposal batch as the card reads it.
+type DecisionRequestBatchItem struct {
+	ActionID        string          `json:"action_id"`
+	IssueID         string          `json:"issue_id"`
+	IssueIdentifier string          `json:"issue_identifier"`
+	IssueTitle      string          `json:"issue_title,omitempty"`
+	State           string          `json:"state"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	ErrorCode       string          `json:"error_code,omitempty"`
 }
 
 // DecisionRequestCoveredCard names one per-issue card a batch card covers.
@@ -111,6 +126,7 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		return nil
 	}
 	cards := make(map[string][]DecisionRequestCard, len(rows))
+	batches := map[pgtype.UUID][]DecisionRequestBatchItem{}
 	for _, row := range rows {
 		card := DecisionRequestCard{
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
@@ -143,6 +159,13 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			batchID := uuidToString(row.AnsweredByBatchRequestID)
 			card.AnsweredByBatchRequestID = &batchID
 		}
+		if row.BatchID.Valid {
+			card.BatchID = uuidToString(row.BatchID)
+			if _, read := batches[row.BatchID]; !read {
+				batches[row.BatchID] = handler.batchItems(ctx, workspaceUUID, row.BatchID)
+			}
+			card.BatchItems = batches[row.BatchID]
+		}
 		if row.RecordCommentID.Valid {
 			recordID := uuidToString(row.RecordCommentID)
 			card.RecordCommentID = &recordID
@@ -170,6 +193,25 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		}
 	}
 	return cards
+}
+
+// batchItems reads one entry per action of a proposal batch. A read failure
+// lists none, and the client then offers no per-item choice (fail closed).
+func (handler *Handler) batchItems(ctx context.Context, workspaceUUID, batchID pgtype.UUID) []DecisionRequestBatchItem {
+	rows, err := handler.Queries.ListDecisionBatchItems(ctx, db.ListDecisionBatchItemsParams{WorkspaceID: workspaceUUID, BatchID: batchID})
+	if err != nil {
+		slog.ErrorContext(ctx, "list decision batch items", "batch_id", uuidToString(batchID), "error", err)
+		return nil
+	}
+	items := make([]DecisionRequestBatchItem, len(rows))
+	for index, row := range rows {
+		items[index] = DecisionRequestBatchItem{
+			ActionID: uuidToString(row.ActionID), IssueID: uuidToString(row.IssueID),
+			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber), IssueTitle: row.IssueTitle,
+			State: row.State, Result: row.Result, ErrorCode: row.ErrorCode,
+		}
+	}
+	return items
 }
 
 // recommendedOptionIndex is the one option whose label is the whole
@@ -218,4 +260,40 @@ func (handler *Handler) coveredCardSummaries(ctx context.Context, workspaceUUID 
 		covered = append(covered, summary)
 	}
 	return covered, nil
+}
+
+// ListIssueDecisionCards returns the viewer's used (answered or withdrawn)
+// request cards on one issue, oldest first. The issue page folds them; the open
+// ones come from ListOpenDecisions. Only the viewer's own requests are listed,
+// as in the DM.
+func (handler *Handler) ListIssueDecisionCards(writer http.ResponseWriter, request *http.Request) {
+	issue, ok := handler.loadIssueForUser(writer, request, request.URL.Query().Get("issue"))
+	if !ok {
+		return
+	}
+	member, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found")
+	if !ok {
+		return
+	}
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list decision requests")
+		return
+	}
+	var messages []db.ChatMessage
+	for _, stored := range requests {
+		if stored.Status != "open" && stored.HumanUserID == member.UserID && stored.PingMessageID.Valid {
+			messages = append(messages, db.ChatMessage{ID: stored.PingMessageID})
+		}
+	}
+	cards := []DecisionRequestCard{}
+	byMessage := handler.decisionRequestsForMessages(request.Context(), uuidToString(issue.WorkspaceID), messages)
+	for _, stored := range requests {
+		for _, card := range byMessage[uuidToString(stored.PingMessageID)] {
+			if card.ID == uuidToString(stored.ID) && stored.Status != "open" && stored.HumanUserID == member.UserID {
+				cards = append(cards, card)
+			}
+		}
+	}
+	writeJSON(writer, http.StatusOK, cards)
 }

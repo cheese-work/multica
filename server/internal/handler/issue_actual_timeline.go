@@ -293,11 +293,20 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 		})
 		nextCursor = &c
 	}
+	pageIDs := make([]string, len(selectedAll))
+	for i, entry := range selectedAll {
+		pageIDs[i] = entry.IssueID
+	}
+	wakeupEvents, ok := h.loadTimelineWakeupEvents(w, r, workspaceID, pageIDs, from, to, asOf)
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"as_of":       asOf,
-		"window":      map[string]time.Time{"from": from, "to": to},
-		"issues":      selectedAll,
-		"next_cursor": nextCursor,
+		"as_of":         asOf,
+		"window":        map[string]time.Time{"from": from, "to": to},
+		"issues":        selectedAll,
+		"wakeup_events": wakeupEvents,
+		"next_cursor":   nextCursor,
 	})
 }
 

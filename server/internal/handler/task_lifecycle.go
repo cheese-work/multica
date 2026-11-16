@@ -260,6 +260,10 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProviderHold)
 		return
 	}
+	if errors.Is(err, service.ErrAgentPaused) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonAgentPaused)
+		return
+	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
@@ -273,7 +277,11 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		return
 	}
 	if errors.Is(err, service.ErrRunBudgetExhausted) {
-		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonRunBudgetExhausted)
+		h.writeRunBudgetExhausted(w, r, issue)
+		return
+	}
+	if errors.Is(err, service.ErrReviewHeadAnswered) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonReviewHeadAnswered)
 		return
 	}
 	if errors.Is(err, service.ErrRecoveryCaused) {

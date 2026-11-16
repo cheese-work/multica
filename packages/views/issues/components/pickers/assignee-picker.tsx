@@ -10,10 +10,12 @@ import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions } from "@multica/core/workspace/queries";
+import { AgentPausedBadge, AgentPausedBadgeById } from "../../../agents/components/agent-scheduling";
 import { ActorAvatar } from "../../../common/actor-avatar";
 import { DeferredPopup } from "../../../common/deferred-popup";
 import {
   PropertyPicker,
+  PickerPanel,
   PickerItem,
   PickerSection,
   PickerEmpty,
@@ -109,14 +111,109 @@ function AssigneePickerImpl({
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [filter, setFilter] = useState("");
+  const choices = useAssigneeChoices(filter, open);
+  const { getActorName } = useActorName();
+
+  const triggerLabel =
+    assigneeType && assigneeId
+      ? getActorName(assigneeType, assigneeId)
+      : t(($) => $.pickers.assignee.trigger_unassigned);
+
+  return (
+    <PropertyPicker
+      open={open}
+      onOpenChange={(v: boolean) => {
+        setOpen(v);
+        if (!v) setFilter("");
+      }}
+      width="w-64"
+      align={align}
+      searchable
+      searchPlaceholder={t(($) => $.pickers.assignee.search_placeholder)}
+      onSearchChange={setFilter}
+      triggerRender={triggerRender}
+      tooltip={tooltip}
+      trigger={
+        customTrigger ? customTrigger : assigneeType && assigneeId ? (
+          <>
+            <ActorAvatar actorType={assigneeType} actorId={assigneeId} size="sm" enableHoverCard showStatusDot />
+            <span className="truncate">{triggerLabel}</span>
+            {assigneeType === "agent" && <AgentPausedBadgeById agentId={assigneeId} />}
+          </>
+        ) : (
+          <span className="text-muted-foreground">{t(($) => $.pickers.assignee.trigger_unassigned)}</span>
+        )
+      }
+    >
+      <AssigneeOptions
+        choices={choices}
+        filter={filter}
+        assigneeType={assigneeType}
+        assigneeId={assigneeId}
+        mixed={mixed}
+        onPick={(updates) => {
+          onUpdate(updates);
+          setOpen(false);
+        }}
+      />
+    </PropertyPicker>
+  );
+}
+
+/**
+ * The assignee picker's search box and list without the popover, for hosting
+ * inside a menu. `onPicked` runs after the choice is applied so the host can
+ * close itself.
+ */
+export function AssigneePickerPanel({
+  assigneeType,
+  assigneeId,
+  onUpdate,
+  onPicked,
+}: {
+  assigneeType: IssueAssigneeType | null;
+  assigneeId: string | null;
+  onUpdate: (updates: Partial<UpdateIssueRequest>) => void;
+  onPicked: () => void;
+}) {
+  const { t } = useT("issues");
+  const [filter, setFilter] = useState("");
+  // The panel only mounts while its menu is open.
+  const choices = useAssigneeChoices(filter, true);
+
+  return (
+    <PickerPanel
+      searchable
+      autoFocusSearch
+      searchPlaceholder={t(($) => $.pickers.assignee.search_placeholder)}
+      onSearchChange={setFilter}
+    >
+      <AssigneeOptions
+        choices={choices}
+        filter={filter}
+        assigneeType={assigneeType}
+        assigneeId={assigneeId}
+        onPick={(updates) => {
+          onUpdate(updates);
+          onPicked();
+        }}
+      />
+    </PickerPanel>
+  );
+}
+
+// `rankingEnabled`: ranking only matters inside the open popover; a closed
+// picker skips the frequency request.
+function useAssigneeChoices(filter: string, rankingEnabled: boolean) {
   const user = useAuthStore((s) => s.user);
   const wsId = useWorkspaceId();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: squads = [] } = useQuery(squadListOptions(wsId));
-  // Ranking only matters inside the popover; a closed picker skips the request.
-  const { data: frequency = [] } = useQuery({ ...assigneeFrequencyOptions(wsId), enabled: open });
-  const { getActorName } = useActorName();
+  const { data: frequency = [] } = useQuery({
+    ...assigneeFrequencyOptions(wsId),
+    enabled: rankingEnabled,
+  });
 
   const currentMember = members.find((m) => m.user_id === user?.id);
   const memberRole = currentMember?.role;
@@ -148,49 +245,47 @@ function AssigneePickerImpl({
       .map((agent) => agent.id),
   );
 
+  return {
+    userId: user?.id ?? null,
+    memberRole,
+    filteredMembers,
+    filteredAgents,
+    filteredSquads,
+    runnableAgentIds,
+  };
+}
+
+function AssigneeOptions({
+  choices,
+  filter,
+  assigneeType,
+  assigneeId,
+  mixed = false,
+  onPick,
+}: {
+  choices: ReturnType<typeof useAssigneeChoices>;
+  filter: string;
+  assigneeType: IssueAssigneeType | null;
+  assigneeId: string | null;
+  mixed?: boolean;
+  onPick: (updates: Partial<UpdateIssueRequest>) => void;
+}) {
+  const { t } = useT("issues");
+  const { userId, memberRole, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds } =
+    choices;
+
   const isSelected = (type: string, id: string) =>
     assigneeType === type && assigneeId === id;
 
-  const triggerLabel =
-    assigneeType && assigneeId
-      ? getActorName(assigneeType, assigneeId)
-      : t(($) => $.pickers.assignee.trigger_unassigned);
-
   return (
-    <PropertyPicker
-      open={open}
-      onOpenChange={(v: boolean) => {
-        setOpen(v);
-        if (!v) setFilter("");
-      }}
-      width="w-64"
-      align={align}
-      searchable
-      searchPlaceholder={t(($) => $.pickers.assignee.search_placeholder)}
-      onSearchChange={setFilter}
-      triggerRender={triggerRender}
-      tooltip={tooltip}
-      trigger={
-        customTrigger ? customTrigger : assigneeType && assigneeId ? (
-          <>
-            <ActorAvatar actorType={assigneeType} actorId={assigneeId} size="sm" enableHoverCard showStatusDot />
-            <span className="truncate">{triggerLabel}</span>
-          </>
-        ) : (
-          <span className="text-muted-foreground">{t(($) => $.pickers.assignee.trigger_unassigned)}</span>
-        )
-      }
-    >
+    <>
       {/* Unassigned — always the first row, search active or not. Every
           picker in the app puts the empty value there, so "clear this field"
           never moves. */}
       <PickerItem
         emptyValue
         selected={!mixed && !assigneeType && !assigneeId}
-        onClick={() => {
-          onUpdate({ assignee_type: null, assignee_id: null });
-          setOpen(false);
-        }}
+        onClick={() => onPick({ assignee_type: null, assignee_id: null })}
       >
         <UserMinus className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-muted-foreground">{t(($) => $.pickers.assignee.trigger_unassigned)}</span>
@@ -203,13 +298,12 @@ function AssigneePickerImpl({
             <PickerItem
               key={m.user_id}
               selected={isSelected("member", m.user_id)}
-              onClick={() => {
-                onUpdate({
+              onClick={() =>
+                onPick({
                   assignee_type: "member",
                   assignee_id: m.user_id,
-                });
-                setOpen(false);
-              }}
+                })
+              }
             >
               <ActorAvatar actorType="member" actorId={m.user_id} size="sm" />
               <span className="truncate">{m.name}</span>
@@ -223,7 +317,7 @@ function AssigneePickerImpl({
         <PickerSection label={t(($) => $.pickers.assignee.agents_group)}>
           {filteredAgents.map((a) => {
             const decision = canAssignAgentToIssue(a, {
-              userId: user?.id ?? null,
+              userId,
               role:
                 memberRole === "owner" ||
                 memberRole === "admin" ||
@@ -247,15 +341,15 @@ function AssigneePickerImpl({
                 }
                 onClick={() => {
                   if (!allowed) return;
-                  onUpdate({
+                  onPick({
                     assignee_type: "agent",
                     assignee_id: a.id,
                   });
-                  setOpen(false);
                 }}
               >
                 <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
                 <span className={`truncate ${allowed ? "" : "text-muted-foreground"}`}>{a.name}</span>
+                <AgentPausedBadge agent={a} />
                 {a.visibility === "private" && (
                   <Lock className="ml-auto h-3 w-3 text-muted-foreground" />
                 )}
@@ -283,11 +377,10 @@ function AssigneePickerImpl({
                 }
                 onClick={() => {
                   if (!runtimeBound) return;
-                  onUpdate({
+                  onPick({
                     assignee_type: "squad",
                     assignee_id: s.id,
                   });
-                  setOpen(false);
                 }}
               >
                 <ActorAvatar actorType="squad" actorId={s.id} size="sm" />
@@ -302,6 +395,6 @@ function AssigneePickerImpl({
         filteredAgents.length === 0 &&
         filteredSquads.length === 0 &&
         filter && <PickerEmpty />}
-    </PropertyPicker>
+    </>
   );
 }

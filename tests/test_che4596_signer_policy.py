@@ -63,7 +63,7 @@ class PlainPathTest(unittest.TestCase):
         self.assertEqual(run(SONNET_PR, PLAIN, SOL), "pending")
 
     def test_non_signers_never_count(self):
-        for who in (LUNA, GEMINI, "x99-claude-sonnet-200k (claude-sonnet-5-5)"):
+        for who in (LUNA, "x99-claude-sonnet-200k (claude-sonnet-5-5)", "x99-agy-geminis (gemini-3)", "x99-agy-other (gemini-3)"):
             with self.subTest(who=who):
                 self.assertEqual(run(HUMAN_PR, PLAIN, who), "pending")
 
@@ -144,6 +144,38 @@ class SolAuthorTest(unittest.TestCase):
         self.assertEqual(run(SOL_PR, SENSITIVE, OPUS), "success")
 
 
+class GeminiSolRoleTest(unittest.TestCase):
+    """CHE-5097: Cheese moved Sol's review work to Gemini, so a Gemini signer holds the `sol` role."""
+
+    def test_gemini_has_the_sol_role_by_whole_name_token(self):
+        for name in ("x99-agy-gemini", "x99-agy-gemini-ux", "x99-agy-gemini-200k", "x99-codex-sol"):
+            with self.subTest(name=name):
+                self.assertEqual(sg.signer_role(name), "sol")
+        for name in ("x99-agy-geminis", "x99-agy-gemini2", "x99-agy-other", "x99-codex-luna", None):
+            with self.subTest(name=name):
+                self.assertIsNone(sg.signer_role(name))
+
+    def test_gemini_pass_is_the_sol_signature_on_a_sensitive_path(self):
+        self.assertEqual(run(SONNET_PR, SENSITIVE, OPUS, GEMINI), "success")
+        self.assertEqual(run(SONNET_PR, SENSITIVE, GEMINI), "pending")
+
+    def test_gemini_alone_is_not_enough_on_a_plain_path(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, GEMINI), "pending")
+
+    def test_gemini_signs_an_opus_pr(self):
+        self.assertEqual(run(OPUS_PR, PLAIN, GEMINI), "success")
+
+    def test_gemini_never_signs_its_own_pr(self):
+        gemini_pr = {**SONNET_PR, "head_ref": "agent/x99-agy-gemini/che-5097-x"}
+        self.assertEqual(run(gemini_pr, PLAIN, GEMINI), "failure")
+        self.assertEqual(run(gemini_pr, SENSITIVE, GEMINI), "failure")
+        self.assertEqual(run(gemini_pr, SENSITIVE, GEMINI, OPUS), "success")  # Opus alone, as for a Sol PR
+        self.assertEqual(run(gemini_pr, SENSITIVE, OPUS), "success")
+
+    def test_a_gemini_fail_blocks(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (GEMINI, "FAIL")), "failure")
+
+
 class NonSignerVerdictTest(unittest.TestCase):
     """CHE-4568 / Cheese decision ef13afdd (Path 2): a verdict from a reviewer that is not a named signer is ignored,
     PASS or FAIL, as in multica-dotfiles main and D8 = A. Only an Opus or Sol FAIL blocks."""
@@ -151,7 +183,6 @@ class NonSignerVerdictTest(unittest.TestCase):
     def test_non_signer_fail_from_another_lab_is_ignored(self):
         self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (LUNA, "FAIL")), "success")
         self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL"), OPUS), "success")
-        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (GEMINI, "FAIL")), "success")
 
     def test_non_signer_fail_alone_leaves_the_gate_pending(self):
         self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL")), "pending")

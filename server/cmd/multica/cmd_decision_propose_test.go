@@ -169,6 +169,22 @@ func TestTaskTokenBudgetRaiseProposesAndPrintsTheCardLink(t *testing.T) {
 	}
 }
 
+func TestProposalOutputNamesTheDMWhereTheCardLanded(t *testing.T) {
+	var posts []map[string]any
+	var other []string
+	proposalServer(t, http.StatusCreated, map[string]any{"id": "req-1", "chat_session_id": "dm-9", "action": map[string]any{"id": "act-1"}}, &posts, &other)
+	cmd := newIssueBudgetRaiseTestCmd()
+	_ = cmd.Flags().Set("runs", "60")
+	_ = cmd.Flags().Set("for", "user-1")
+	out, err := captureStdout(t, func() error { return runIssueBudgetRaise(cmd, []string{testIssueUUID}) })
+	if err != nil {
+		t.Fatalf("raise: %v", err)
+	}
+	if !strings.Contains(out, "/acme/chat?session=dm-9") {
+		t.Fatalf("output %q lacks the DM link", out)
+	}
+}
+
 func TestTaskTokenBudgetTopUpProposesWithoutNewCap(t *testing.T) {
 	var posts []map[string]any
 	var other []string

@@ -1,0 +1,18 @@
+Channel-list query benchmark. Postgres 17 (docker che5906-pg), pgbench, 1 connection, 60 runs (n=5 where marked).
+Synthetic data: 10k issues, 1.5M comments, 426k inbox items, 267,624 thread_participant rows;
+the benchmark member has 4,075 own comments, 4,531 tagged issues, 18,183 joined thread rows.
+Latency per run in ms. Source query: measure/channel_list.sql (existing rows) and measure/channel_list_table.sql (table).
+
+existing rows + new partial index idx_comment_member_author (not in repo migrations)
+  jit=on  days=7 : p50=701.0  p95=739.7  max=999.4
+  jit=on  days=30: p50=1121.7 p95=1243.2 max=1292.7
+  jit=on  days=90: p50=1269.9 p95=1346.0 max=1431.6
+  jit=off days=7 : p50=19.3   p95=24.3   max=56.8
+  jit=off days=30: p50=83.4   p95=117.6  max=129.1
+  jit=off days=90: p50=241.6  p95=279.9  max=388.8
+existing rows, NO new index (n=5, thin)
+  jit=off days=7 : p50=145.6  p95=158.5  max=216.4
+  jit=off days=30: p50=181.3  p95=202.7  max=216.1
+thread_participant read path (channel_list_table.sql)
+  jit=on : p50=26.4 p95=30.1 max=159.6
+  jit=off: p50=25.5 p95=32.9 max=43.4

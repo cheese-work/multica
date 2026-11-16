@@ -27,6 +27,17 @@ func (q *Queries) ClearIssueTaintIDs(ctx context.Context, arg ClearIssueTaintIDs
 	return err
 }
 
+const getIssueRunTaint = `-- name: GetIssueRunTaint :one
+SELECT COALESCE((SELECT taint_ids FROM issue_run_taint WHERE issue_id = $1), '{}')::text[] AS taint_ids
+`
+
+func (q *Queries) GetIssueRunTaint(ctx context.Context, issueID pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, getIssueRunTaint, issueID)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
+}
+
 const getIssueTaintIDs = `-- name: GetIssueTaintIDs :one
 SELECT COALESCE((SELECT taint_ids FROM issue_taint WHERE issue_id = $1), '{}')::text[] AS taint_ids
 `
@@ -87,5 +98,62 @@ SELECT 1 FROM issue WHERE id = $1 FOR NO KEY UPDATE
 
 func (q *Queries) LockIssueForTaintClear(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, lockIssueForTaintClear, id)
+	return err
+}
+
+const noteIssueRunTaint = `-- name: NoteIssueRunTaint :exec
+INSERT INTO issue_run_taint (issue_id, workspace_id, taint_ids)
+SELECT i.id, i.workspace_id, array_agg(DISTINCT t ORDER BY t)
+FROM issue i, unnest($1::text[]) AS t
+WHERE i.id = $2::uuid
+GROUP BY i.id, i.workspace_id
+ON CONFLICT (issue_id) DO UPDATE SET
+    taint_ids = (SELECT array_agg(DISTINCT u ORDER BY u) FROM unnest(issue_run_taint.taint_ids || EXCLUDED.taint_ids) AS u)
+`
+
+type NoteIssueRunTaintParams struct {
+	Taint   []string    `json:"taint"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// A tainted writer's whole taint, kept apart from the issue's own taint so a
+// member's clear, before or after the write, never drops it. Written in the
+// writer's own transaction.
+func (q *Queries) NoteIssueRunTaint(ctx context.Context, arg NoteIssueRunTaintParams) error {
+	_, err := q.db.Exec(ctx, noteIssueRunTaint, arg.Taint, arg.IssueID)
+	return err
+}
+
+const noteIssueTaint = `-- name: NoteIssueTaint :exec
+SELECT issue_taint_note($1::uuid, $2::text[])
+`
+
+type NoteIssueTaintParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Taint   []string    `json:"taint"`
+}
+
+func (q *Queries) NoteIssueTaint(ctx context.Context, arg NoteIssueTaintParams) error {
+	_, err := q.db.Exec(ctx, noteIssueTaint, arg.IssueID, arg.Taint)
+	return err
+}
+
+const taintBudgetRecoveryRuns = `-- name: TaintBudgetRecoveryRuns :exec
+UPDATE agent_task_queue SET taint_ids = $1::text[]
+WHERE issue_id = $2::uuid AND task_kind = 'budget_recovery'
+  AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running')
+`
+
+type TaintBudgetRecoveryRunsParams struct {
+	Taint   []string    `json:"taint"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// A requester's taint reaches a recovery run that already exists, whether it is
+// still queued, waiting for a local directory, or already started (the task
+// trigger unions it with what the run has, and a started run reads its taint on
+// every call).
+func (q *Queries) TaintBudgetRecoveryRuns(ctx context.Context, arg TaintBudgetRecoveryRunsParams) error {
+	_, err := q.db.Exec(ctx, taintBudgetRecoveryRuns, arg.Taint, arg.IssueID)
 	return err
 }

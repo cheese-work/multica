@@ -1,33 +1,13 @@
-# Pre-merge security gate (CHE-2671). Copy of cheese-work/multica-dotfiles .github/workflows/security-gate.yml.
+# Pre-merge security gate (CHE-2671), switched OFF by Cheese (CHE-5126, 10 Nov 2026; re-scan: CHE-5127; this change: CHE-5148).
 #
-# Sets the `security-gate` commit status on the PR's exact head SHA. Register `security-gate` as a required status
-# check only through the rollout in cheese-work/multica-dotfiles docs/cheese-work/SECURITY-GATE.md; this file alone blocks nothing.
+# While the gate is off this workflow runs no verdict logic: its one step posts commit status `security-gate` = `success`
+# with the description `security gate off (CHE-5126)`, so no PR or queue commit stays yellow.
+# Switch the gate back on by reverting the CHE-5148 PR: the verdict logic and the comment trigger come back with it.
 #
-# Runs (CHE-4385): GitHub disabled Actions at about 2,500 created runs a day, and a skipped run still counts, so the
-# trigger set is the budget. There is no `pull_request_target` trigger here. `issue_comment` covers `created`, `edited`
-# and `deleted` (Cheese restored `created`): a new FAIL verdict must flip the status at once, with no sweep wait:
-#   - `workflow_call`: pr-guards.yml calls this file once per PR event, so a PR push adds no run of its own.
-#   - `issue_comment` (created, edited, deleted): evaluates a verdict the moment it is posted, edited or deleted. This adds
-#     one run per PR comment (about 284 a day); the job-level `if` skips every comment that is not a trusted verdict, but
-#     a skipped run still counts. The job runs only for a comment that holds, or held before the edit, the
-#     `Security-Gate-Verdict:` header and comes from a trusted author.
-#   - `workflow_dispatch` (input `pr`): an optional extra for the verdict poster, no longer needed for correctness:
-#       gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
-#     The dispatched run re-reads every verdict comment, posts the status, then refreshes the mechanical-tier receipt.
-#   - `merge_group`: see below. It re-reads every verdict, so a new FAIL is caught when the PR enters the queue.
-#   - security-gate-sweep.yml: every 30 minutes it re-runs this script for each open PR whose status is `success`, as a
-#     backstop for a missed event.
-# SECURITY — same boundary as mechanical-tier.yml: a call from `pull_request_target`, a dispatch and `issue_comment` all run this
-# definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
-# unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
-# the head is executed (semgrep reads an extracted copy of the changed files; CHE-3121). Do not add a head checkout or a secret here.
-# The script re-reads the live head SHA and base ref. The dispatch input is matched against a digits-only pattern before use.
-# `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
-# reports there and the queue times out. This file runs from the queue commit; the job still checks out the default
-# branch and only fetches the queue ref. A verdict revoked after the queue commit went green is mirrored by the
-# pull_request_target / dispatch path: when the PR status is not `success`, the script (`revoke_queue`, CHE-3240)
-# flips every queue head carrying that PR to `failure`, and fails a group it cannot read closed. If both queue lookups
-# keep failing the job goes red and no head is flipped: dequeue the PR by hand. Each head's write is retried (3 attempts) and a head that still fails never skips the later heads; the job fails naming each unflipped head: dequeue it or re-run the job.
+# Runs: `workflow_call` (pr-guards.yml, once per PR event), `workflow_dispatch` (input `pr`) and `merge_group`.
+# No `issue_comment` trigger: a comment cannot change a status that is always `success`, and a skipped run still counts
+# toward the daily run budget (CHE-4385).
+# Nothing from a PR head is checked out or executed; the job holds no secret.
 
 name: security-gate
 
@@ -36,11 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       pr:
-        description: Pull request number to evaluate
+        description: Pull request number to mark green
         required: true
         type: string
-  issue_comment:
-    types: [created, edited, deleted]
   merge_group:
     types: [checks_requested]
 
@@ -51,110 +29,29 @@ permissions:
 
 jobs:
   security-gate:
-    # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
+    # Job name differs from the status context on purpose: the context is posted by the step, not by the job name.
     name: security-gate-eval
-    # A comment run needs the `Security-Gate-Verdict:` header, or an edit whose OLD body had it (`changes.body.from`).
-    # An edit that drops the header is a revocation and still runs. The author must be OWNER, MEMBER or COLLABORATOR,
-    # or the trusted agent App (ID 282619718, type Bot) whose comment starts with the header. A job-level `if` skips a
-    # comment before its concurrency group is read, so an ignored comment cannot cancel a real evaluation.
-    # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml (a trusted `workflow_run` definition that
-    # holds the App key) evaluates the queue, and this job skips `merge_group`; `queue-handoff` below still runs.
-    # CHE-4385: every event other than a comment or a queue entry (`workflow_call`, `workflow_dispatch`) runs.
-    if: >-
-      (github.event_name != 'issue_comment' && (github.event_name != 'merge_group' || vars.SECURITY_GATE_QUEUE_TRUSTED != 'true')) || (github.event.issue.pull_request &&
-      (contains(github.event.comment.body, 'Security-Gate-Verdict:') ||
-      (github.event.action == 'edited' && contains(github.event.changes.body.from, 'Security-Gate-Verdict:'))) &&
-      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
-      (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' &&
-      (startsWith(github.event.comment.body, 'Security-Gate-Verdict:') ||
-      (github.event.action == 'edited' && startsWith(github.event.changes.body.from, 'Security-Gate-Verdict:'))))))
-    # The job group differs from pr-guards' group on purpose: a called workflow cannot share its caller's group.
-    concurrency:
-      group: security-gate-${{ github.event.pull_request.number || github.event.inputs.pr || github.event.issue.number || github.event.merge_group.head_sha }}
-      cancel-in-progress: true
+    # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml posts the queue status and this job skips `merge_group`.
+    if: github.event_name != 'merge_group' || vars.SECURITY_GATE_QUEUE_TRUSTED != 'true'
     # CHE-3604: GitHub-hosted runner.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     env:
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr || github.event.issue.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
       GH_TOKEN: ${{ github.token }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
       MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
     steps:
-      - name: Discard a reused workspace
-        run: |
-          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-      - name: Check the dispatched pull request number
-        run: |
-          [ -n "$MERGE_GROUP_REF" ] || [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
-      - name: Check out the protected default branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Fetch the head objects without checking them out
-        run: |
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          # A queue commit has the queued PR head as a parent, so fetching the queue ref brings the head objects too.
-          src="refs/pull/${PR_NUMBER}/head"
-          [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            fetch --no-tags origin "+${src}:refs/remotes/pull/head"
-      - name: Install pinned semgrep (cached on the runner)
-        run: |
-          venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
-          [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
-          echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
-      - name: Evaluate the verdict and post the status
+      - name: Post security-gate success (gate off, CHE-5126)
         run: |
           set -euo pipefail
-          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          if [ -z "$MERGE_GROUP_REF" ]; then
-            exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-              --default-branch "$DEFAULT_BRANCH" --semgrep --run-url "$run_url" --post
+          sha="$MERGE_GROUP_SHA"
+          if [ -z "$sha" ]; then
+            [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)"
           fi
-          # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
-          # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
-          post() {
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-              -f "description=${2:0:140}" -f "target_url=$run_url"
-          }
-          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
-          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
-            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
-            exit 0
-          fi
-          pr="${BASH_REMATCH[2]}"
-          # Scan with semgrep once the default-branch script knows the flag; an older script would reject it.
-          sg=""
-          grep -q -e '--semgrep' scripts/security-gate/security_gate.py && sg="--semgrep"
-          # Fresh verdict read -> head/state/desc; the PR head must be a parent of the queue commit. Every step returns
-          # non-zero on error (no `set -e` inside an `if`), so the callers below can fail closed.
-          evaluate() {
-            local out parents
-            out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-              --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return 1
-            head="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha"])' "$out")" || return 1
-            state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$out")" || return 1
-            desc="#$pr: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["description"])' "$out")" || return 1
-            parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return 1
-            if ! grep -qx "$head" <<<"$parents"; then
-              state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
-            fi
-          }
-          # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success.
-          read_verdict() { evaluate || { state=failure desc="#$pr: cannot read the verdict"; }; }
-          # A success is read again right before it is published and once more after (CHE-3240): a verdict revoked in
-          # between is overwritten by the failure instead of the cached success. The revoke path (PR events) covers the rest.
-          read_verdict
-          if [ "$state" = success ]; then read_verdict; fi
-          post "$state" "$desc"
-          if [ "$state" = success ]; then
-            read_verdict
-            if [ "$state" != success ]; then post "$state" "$desc"; fi
-          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$sha" -f state=success -f context=security-gate \
+            -f "description=security gate off (CHE-5126)" \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
   # CHE-4251: a queue run that holds no secret. Its completion triggers security-gate-queue.yml, which runs from the
   # default branch. This definition comes from the queue commit, so it must never name an environment or a secret.

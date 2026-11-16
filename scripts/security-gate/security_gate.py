@@ -46,6 +46,9 @@ import time
 from pathlib import Path
 
 CONTEXT = "security-gate"
+# CHE-4671: dependabot[bot] (GitHub numeric user id) may AUTHOR a PR. It is not a signer and not an instruction author;
+# the PR still needs the normal Opus (and Sol on a sensitive path) verdict, so registration only skips the author refusal.
+PR_ONLY_AUTHOR_IDS = frozenset({49699333})
 TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.json"
 SEMGREP_BASELINE = "scripts/security-gate/semgrep-baseline.json"
 SEMGREP_CONFIGS = ("p/default", "p/golang", "p/gosec", "p/typescript", "p/python", "p/kotlin")
@@ -141,7 +144,9 @@ def lab_of(name: str) -> str | None:
 
 
 # CHE-4596 signer roles, matched on whole name tokens (`x99-claude-opus`, `mbp-claude-opus`, `x99-codex-sol-200k`).
-SIGNER_RES = {"opus": re.compile(r"(?:^|-)claude-opus(?:$|-)"), "sol": re.compile(r"(?:^|-)codex-sol(?:$|-)")}
+# CHE-5097: Sol's review work moved to Gemini, so `x99-agy-gemini` holds the `sol` role too.
+SIGNER_RES = {"opus": re.compile(r"(?:^|-)claude-opus(?:$|-)"),
+              "sol": re.compile(r"(?:^|-)(?:codex-sol|agy-gemini)(?:$|-)")}
 
 
 def signer_role(name: str | None) -> str | None:
@@ -375,6 +380,8 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
     # Authorship comes from the PR author's registered identity, never from a branch name alone.
     if pr["author_id"] in human_ids:
         author, author_lab = None, "human"
+    elif pr["author_id"] in PR_ONLY_AUTHOR_IDS:
+        author, author_lab = None, "bot"
     elif pr["author_id"] in trusted_ids:
         author = author_agent(pr["head_ref"])
         author_lab = lab_of(author) if author else None

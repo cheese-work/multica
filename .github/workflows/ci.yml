@@ -8,12 +8,80 @@ on:
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
+    inputs:
+      namespace_source_sha:
+        description: 'Optional full commit SHA for off-host namespace qualification'
+        type: string
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  namespace-qualification:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.namespace_source_sha != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.namespace_source_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate source and qualification verifier
+        run: |
+          python3 -m unittest discover -s scripts -p test_namespace_qualification.py -v
+          python3 scripts/namespace-qualification.py check-source "$SOURCE_SHA"
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.namespace_source_sha }}
+          path: namespace-source
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '~1.27.3'
+          cache: false
+      - name: Require explicit namespace PASS on requested source
+        shell: bash
+        working-directory: namespace-source/server
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_SHA"
+          printf 'Qualification source: %s\n' "$actual"
+          uname -a
+          cat /proc/self/uid_map
+          policy=kernel.apparmor_restrict_unprivileged_userns
+          original=''
+          restore_policy() {
+            if [ -n "$original" ]; then
+              sudo sysctl -w "$policy=$original"
+              test "$(sysctl -n "$policy")" = "$original"
+            fi
+          }
+          trap restore_policy EXIT
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            original=$(sysctl -n "$policy")
+            sudo sysctl -w "$policy=0"
+          fi
+          unshare --user --map-root-user --pid --fork --mount-proc /bin/true
+          go test -json -count=1 -timeout=60s ./pkg/runbinding -run '^TestBindingNestedNamespace$' | tee namespace-result.jsonl
+          python3 ../../scripts/namespace-qualification.py verify "$SOURCE_SHA" "$actual" namespace-result.jsonl | tee namespace-receipt.txt
+      - name: Retain namespace qualification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: namespace-qualification-${{ github.run_id }}
+          path: |
+            namespace-source/server/namespace-result.jsonl
+            namespace-source/server/namespace-receipt.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
   warning-budget:
     needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
     if: ${{ always() && !cancelled() }}
@@ -56,6 +124,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Cache the gitleaks download
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/gitleaks-8.30.1
+          key: gitleaks-${{ hashFiles('scripts/secret-scan.sh') }}
       - name: Scan the added commits
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -99,6 +172,8 @@ jobs:
         run: bash scripts/check-no-upstream-update-source.test.sh
       - name: Test the upstream-main mirror script
         run: bash scripts/mirror-upstream-main.test.sh
+      - name: Test the merge review pack script
+        run: bash scripts/merge-review-pack.test.sh
       - name: Test the upstream-main rulesets
         run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
@@ -172,6 +247,9 @@ jobs:
       full: ${{ steps.decide.outputs.full }}
       merge_group_green: ${{ steps.decide.outputs.merge_group_green }}
       push_full: ${{ steps.decide.outputs.push_full }}
+      push_backend: ${{ steps.decide.outputs.push_backend }}
+      push_frontend: ${{ steps.decide.outputs.push_frontend }}
+      push_sqlc: ${{ steps.decide.outputs.push_sqlc }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -182,7 +260,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/dependabot-config.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -209,7 +287,7 @@ jobs:
 
   sqlc-check:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_sqlc == 'true' }}
     runs-on: ${{ vars.RUNNER_SQLC_CHECK || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
@@ -242,7 +320,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_frontend == 'true' }}
     runs-on: ${{ vars.RUNNER_FRONTEND_BUILD || 'ubuntu-24.04' }}
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
@@ -306,7 +384,7 @@ jobs:
 
   frontend-test:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_frontend == 'true' }}
     runs-on: ${{ vars.RUNNER_FRONTEND_TEST || 'ubuntu-24.04' }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
@@ -324,6 +402,9 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        # Desktop unit tests mock `electron`; skip its binary download (CHE-4820).
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: pnpm install
 
       - name: Resolve runtime for cache key
@@ -452,7 +533,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"push_full","frontend-test":"push_full","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"push_frontend","frontend-test":"push_frontend","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -508,7 +589,7 @@ jobs:
   backend-test-shards:
     name: backend-test-shards (${{ matrix.partition }})
     needs: [changes, migration-prefix-check]
-    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
     strategy:
       # A red shard must not cancel the others: the slowest evidence is the
       # most useful, and the aggregate fails on any non-success anyway.
@@ -689,6 +770,63 @@ jobs:
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
+      # CHE-6247: a decision card that renders "Details unavailable" cannot be
+      # approved, and no unit test sees it (CHE-6242). This opens each
+      # previewed action type's card in a browser against the API and the
+      # database this job already has. It runs here, not in a new job, because
+      # this is the only job with Postgres and a built server; the `rest`
+      # partition only, so the six shards do not each install a browser.
+      # It follows Test on purpose: test-go.sh clones the migrated database and
+      # a connected API server would block the clone.
+      - name: Setup pnpm (decision card E2E)
+        if: ${{ matrix.partition == 'rest' }}
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js (decision card E2E)
+        if: ${{ matrix.partition == 'rest' }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (decision card E2E)
+        if: ${{ matrix.partition == 'rest' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium (decision card E2E)
+        if: ${{ matrix.partition == 'rest' }}
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Decision card E2E
+        if: ${{ matrix.partition == 'rest' }}
+        env:
+          PORT: "8080"
+          FRONTEND_ORIGIN: http://localhost:3000
+          JWT_SECRET: ci-decision-card-e2e-secret
+          # The login fixture signs in with a fixed code: the database stores
+          # only a hash of the emailed one. Ignored when APP_ENV=production.
+          MULTICA_DEV_VERIFICATION_CODE: "888888"
+          # The passkey ceremony needs an exact https origin; the spec serves
+          # the web app over it (e2e/dm-budget-proposal-helpers.ts).
+          MULTICA_WEBAUTHN_RP_ID: localhost
+          MULTICA_WEBAUTHN_ORIGINS: https://localhost:23627
+        run: |
+          set -euo pipefail
+          (cd server && go build -o "$RUNNER_TEMP/multica-server" ./cmd/server)
+          "$RUNNER_TEMP/multica-server" > "$RUNNER_TEMP/e2e-api.log" 2>&1 &
+          API=$!
+          pnpm dev:web > "$RUNNER_TEMP/e2e-web.log" 2>&1 &
+          WEB=$!
+          trap 'kill "$API" "$WEB" 2>/dev/null || true; pkill -P "$WEB" 2>/dev/null || true' EXIT
+          ready() { for _ in $(seq 1 90); do curl -sf "$1" > /dev/null && return 0; sleep 2; done; echo "::error::$1 not ready"; return 1; }
+          ready http://localhost:8080/health
+          ready http://localhost:3000/
+          pnpm exec playwright test --project=chromium e2e/decision-dm-card-renders.spec.ts
+
+      - name: Show decision card E2E logs
+        if: ${{ failure() && matrix.partition == 'rest' }}
+        run: tail -n 80 "$RUNNER_TEMP/e2e-api.log" "$RUNNER_TEMP/e2e-web.log" || true
+
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.
       - name: Summarize test timing
@@ -749,7 +887,7 @@ jobs:
   # cancelled or missing fails it.
   backend-tests:
     needs: [changes, migration-prefix-check, backend-test-shards]
-    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
     runs-on: ${{ vars.RUNNER_BACKEND_TESTS_GATE || 'ubuntu-24.04' }}
     steps:
       - name: Require shard results
@@ -848,7 +986,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_backend == 'true' }}
     runs-on: ${{ vars.RUNNER_GO_VULNERABILITY_SCAN || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
@@ -876,10 +1014,14 @@ jobs:
   # merge base to diff against, and its branch was already checked.
   go-lint:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_backend == 'true' }}
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
     runs-on: ${{ vars.RUNNER_GO_LINT || 'ubuntu-24.04' }}
+    env:
+      # Pinned: a floating version turns an upstream release into a surprise red build on an unrelated pull request.
+      GOLANGCI_LINT_VERSION: "2.13.2"
+      GOLANGCI_LINT_SHA256: "2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6"  # golangci-lint-2.13.2-linux-amd64.tar.gz
     steps:
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
@@ -898,20 +1040,37 @@ jobs:
           # job builds no shipped binary. Raise with a golangci-lint built on 1.27.
           go-version: "~1.26.10"
           check-latest: true
-          cache-dependency-path: server/go.sum
+          # CHE-5128: this job runs on pull requests only, so main never holds a 1.26.x
+          # entry and each PR ref would save its own ~397 MB copy. Modules re-download.
+          cache: false
+
+      # CHE-4877: golangci-lint-action downloads the binary on every run and failed on HTTP 504. Fetch the pinned
+      # tarball ourselves (5xx retry, sha256 check on every run, so a restored cache is never trusted unverified).
+      - name: Cache the golangci-lint download
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/golangci-lint-dl
+          key: golangci-lint-${{ env.GOLANGCI_LINT_VERSION }}-linux-amd64
+
+      - name: Install golangci-lint
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        run: |
+          set -euo pipefail
+          tgz="$RUNNER_TEMP/golangci-lint-dl/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
+          bash scripts/fetch-verified.sh "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/$(basename "$tgz")" "$GOLANGCI_LINT_SHA256" "$tgz"
+          mkdir -p "$RUNNER_TEMP/golangci-lint-bin"
+          tar -xzf "$tgz" --strip-components=1 -C "$RUNNER_TEMP/golangci-lint-bin" "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint"
+          echo "$RUNNER_TEMP/golangci-lint-bin" >> "$GITHUB_PATH"
 
       - name: Run golangci-lint
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
-        uses: golangci/golangci-lint-action@v9
-        with:
-          # Pinned: a floating version turns an upstream release into a
-          # surprise red build on an unrelated pull request.
-          version: v2.13.2
-          working-directory: server
-          # golangci-lint-action's only-new-issues fetches the PR diff through
-          # GitHub's API, which rejects this upstream-sync PR at 300 files.
-          # Use the already-fetched local merge base instead.
-          args: --new-from-merge-base=origin/${{ github.base_ref }}
+        working-directory: server
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        # Diff-only against the already-fetched local merge base: the action's only-new-issues reads the PR diff
+        # through GitHub's API, which rejects the upstream-sync PR at 300 files.
+        run: golangci-lint run --new-from-merge-base="origin/$BASE_REF"
 
   # CHE-4666: fails a PR that adds a high or critical vulnerable dependency; findings already on the base never fail it.
   # Always runs so the `backend` gate can expect success on every event; the action itself needs a pull_request diff.
@@ -941,7 +1100,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
+          JOB_SCOPES: '{"backend-tests":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
@@ -1034,8 +1193,14 @@ jobs:
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
 
+      - name: Test namespace qualification receipt validation
+        run: python3 -m unittest discover -s scripts -p test_namespace_qualification.py -v
+
       - name: Test mechanical-tier classifier paths (CHE-3339)
         run: python3 -m unittest tests.test_che3339_mechanical_tier
+
+      - name: Test the merge-receipt producer (CHE-5594)
+        run: python3 -m unittest tests.test_che5594_merge_receipt_facts
 
       - name: Test workflow run budget and cascade triggers (CHE-4250, CHE-4385)
         run: python3 -m unittest tests.test_che4385_run_budget
@@ -1048,6 +1213,8 @@ jobs:
 
       - name: Test check script
         run: bash scripts/check.test.sh
+      - name: Test the verified-download helper
+        run: bash scripts/fetch-verified.test.sh
 
       - name: Test worktree database cleanup
         run: bash scripts/worktree-db.test.sh
@@ -1114,10 +1281,23 @@ jobs:
           bash deploy/cd/ensure-pyyaml.sh
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-authorize-c00.py
+          python3 deploy/cd/test-deploy-job-guard.py
+          python3 deploy/cd/test-deploy-schedule.py
+          python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-post-deploy-confirm.py
+          python3 deploy/cd/test-health-window.py
+          python3 deploy/cd/test-install-health-observer.py
+          python3 .github/scripts/test_ci_wait_policy.py
+          python3 .github/scripts/ci-wait-policy.py
+          python3 deploy/cd/test-rollback-failed-readback.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
+          bash deploy/cd/test-resolve-candidate.sh
+          bash deploy/cd/test-resolve-scheduled.sh
+          python3 deploy/cd/test-github-api-retry.py
 
       # CHE-773: A/B cutover port agreement, pre-drain refusal, gated
       # incumbent recovery, and the public-route health alarm.

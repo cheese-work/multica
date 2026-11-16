@@ -75,7 +75,7 @@ func newPREventEnv(t *testing.T) prEventEnv {
 	e.f.Exec(t, `INSERT INTO task_pr_event_capability (task_id, workspace_id, issue_id, capability) VALUES ($1, $2, $3, 'task-supplement-pr-event-v1')`, run, ws, e.issue)
 	var event string
 	e.f.QueryRow(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key)
-		VALUES ($1, $2, $3, 'head_changed', 'new-head', 'base-1', now(), 'head_changed|new-head') RETURNING id`, ws, e.issue, prID).Scan(&event)
+		VALUES ($1, $2, $3, 'head_changed', 'new-head', 'base-1', now() - interval '1 day', 'head_changed|new-head') RETURNING id`, ws, e.issue, prID).Scan(&event)
 	return prEventEnv{builtinEnv: e, run: run, event: event}
 }
 

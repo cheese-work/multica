@@ -17,11 +17,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/workflowlint"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -94,6 +96,15 @@ type IssueWorkflowStepPayload struct {
 	// Entry are the step's entry gates; see issueworkflow.EntryGate. Omitted
 	// keeps the stored gates, [] clears them.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// DynamicAssignment and LintWaive: see issueworkflow.Step.
+	DynamicAssignment bool                       `json:"dynamic_assignment,omitempty"`
+	LintWaive         []issueworkflow.LintWaiver `json:"lint_waive,omitempty"`
+	// WaitsOnOpenDecision: see issueworkflow.Step. A write that omits it keeps
+	// the stored value; false clears it. A response carries it only when set.
+	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
+	// KeepOtherAssignee: see issueworkflow.Step. TEMPORARY, replaced by
+	// per-issue workflows (CHE-5024).
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -117,6 +128,14 @@ type IssueWorkflowResponse struct {
 	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
 	// its direct children.
 	IncludeChildPRs bool `json:"include_child_prs"`
+	// LintFindings are the findings of the last save, stored with the workflow
+	// and read back with it. A save with an unwaived error is refused unless
+	// it carries lint_override.
+	LintFindings []workflowlint.Finding `json:"lint_findings,omitempty"`
+	// LintOverrideReason and LintOverriddenAt record the last save that went
+	// through despite unwaived lint errors.
+	LintOverrideReason *string `json:"lint_override_reason,omitempty"`
+	LintOverriddenAt   *string `json:"lint_overridden_at,omitempty"`
 	// StartStatusKey is where new issues of the workflow start; empty means
 	// todo (CHE-3113).
 	StartStatusKey string `json:"start_status_key"`
@@ -145,7 +164,7 @@ type workflowMappingPlan struct {
 }
 
 func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
-	return IssueWorkflowStepPayload{
+	p := IssueWorkflowStepPayload{
 		StatusKey:     s.StatusKey,
 		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID, Preset: s.Handler.Preset},
 		Instructions:  s.Instructions,
@@ -156,7 +175,16 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		Edges:            s.Edges,
 		SubWorkflow:      s.SubWorkflow,
 		Entry:            s.Entry,
+
+		DynamicAssignment: s.DynamicAssignment,
+		LintWaive:         s.LintWaive,
+		KeepOtherAssignee: s.KeepOtherAssignee,
 	}
+	if s.WaitsOnOpenDecision {
+		set := true
+		p.WaitsOnOpenDecision = &set
+	}
+	return p
 }
 
 func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.Step {
@@ -171,6 +199,11 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Edges:            in.Edges,
 		SubWorkflow:      in.SubWorkflow,
 		Entry:            in.Entry,
+
+		DynamicAssignment:   in.DynamicAssignment,
+		LintWaive:           in.LintWaive,
+		WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
+		KeepOtherAssignee:   in.KeepOtherAssignee,
 	}
 }
 
@@ -198,7 +231,21 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 		MaxRunsPerIssue: maxRunsPtr(row.MaxRunsPerIssue),
 		IncludeChildPRs: row.IncludeChildPrs,
 		StartStatusKey:  row.StartStatusKey.String,
+
+		LintOverrideReason: textPtr(row.LintOverrideReason),
+		LintOverriddenAt:   timestampToPtr(row.LintOverriddenAt),
+		LintFindings:       storedLintFindings(row.LintFindings),
 	}
+}
+
+// storedLintFindings reads back the findings saved with a workflow. A value
+// that does not decode reads as none: it is a display field, not a gate.
+func storedLintFindings(raw []byte) []workflowlint.Finding {
+	var out []workflowlint.Finding
+	if len(raw) == 0 || json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
 }
 
 func maxRunsPtr(v pgtype.Int4) *int {
@@ -392,6 +439,13 @@ type IssueWorkflowStepInput struct {
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 	// Entry: see IssueWorkflowStepPayload.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// DynamicAssignment and LintWaive: see IssueWorkflowStepPayload.
+	DynamicAssignment bool                       `json:"dynamic_assignment,omitempty"`
+	LintWaive         []issueworkflow.LintWaiver `json:"lint_waive,omitempty"`
+	// WaitsOnOpenDecision: see IssueWorkflowStepPayload.
+	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
+	// KeepOtherAssignee: see IssueWorkflowStepPayload.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -422,6 +476,9 @@ type IssueWorkflowWriteRequest struct {
 	// IncludeChildPRs sets whether a parent's PR guards read its children's
 	// PRs. Omitted keeps the stored value (true for a new workflow).
 	IncludeChildPRs *bool `json:"include_child_prs,omitempty"`
+	// LintOverride saves the steps despite unwaived lint errors. It must give
+	// the reason, which the workflow stores. Not accepted from an agent task.
+	LintOverride *string `json:"lint_override,omitempty"`
 	// StartStatusKey names the status where new issues of the workflow start
 	// (CHE-3113). Omitted keeps the stored value; "" clears it back to todo.
 	// It must be an unstarted or started step of the workflow.
@@ -459,6 +516,11 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Edges:            in.Edges,
 			SubWorkflow:      in.SubWorkflow,
 			Entry:            in.Entry,
+
+			DynamicAssignment:   in.DynamicAssignment,
+			LintWaive:           in.LintWaive,
+			WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
+			KeepOtherAssignee:   in.KeepOtherAssignee,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -489,6 +551,24 @@ func keepStoredEntry(steps, stored []issueworkflow.Step) {
 		for _, old := range stored {
 			if old.StatusKey == steps[i].StatusKey {
 				steps[i].Entry = old.Entry
+				break
+			}
+		}
+	}
+}
+
+// keepStoredWaits gives a step whose input omits waits_on_open_decision the
+// value stored for its status, so a client that predates the field cannot drop
+// it by saving. An explicit false clears. steps and inputs are index-aligned,
+// as resolveStepInputs returns one step per input.
+func keepStoredWaits(steps []issueworkflow.Step, inputs []IssueWorkflowStepInput, stored []issueworkflow.Step) {
+	for i := range steps {
+		if i >= len(inputs) || inputs[i].WaitsOnOpenDecision != nil {
+			continue
+		}
+		for _, old := range stored {
+			if old.StatusKey == steps[i].StatusKey {
+				steps[i].WaitsOnOpenDecision = old.WaitsOnOpenDecision
 				break
 			}
 		}
@@ -598,6 +678,9 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Steps != nil && refuseMachineWorkflowWrite(w, r) {
+		return
+	}
 	maxRuns, includeChildPRs, ruleMsg := runRuleParams(req)
 	if ruleMsg != "" {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
@@ -655,6 +738,13 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issueworkflow.Validate(name, description, steps, false, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	if msg, err := h.refuseNewPRMergedEdge(ctx, qtx, wsUUID, nil, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
 	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
@@ -815,12 +905,25 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if req.LintOverride != nil && strings.TrimSpace(*req.LintOverride) == "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "lint_override needs a reason")
 		return
 	}
 	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
-		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
+	// A machine credential writes the budget fields only with a workflow.budget
+	// decision (CHE-5228), alone: a budget write carries no step or name edit.
+	// Every other machine write is refused with passkey_action_required (CHE-3482).
+	budgetWrite := machine && (req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil)
+	if budgetWrite && strings.TrimSpace(req.DecisionID) == "" {
+		writeBudgetRequiresDecision(w)
+		return
+	}
+	if !budgetWrite && h.refuseMachineWorkflowUpdate(w, r, wsUUID, idUUID, req.Steps) {
+		return
+	}
+	carriesMore := req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun
+	if budgetWrite && (req.Steps != nil || carriesMore) {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound budget write carries the budget fields and the decision only")
 		return
 	}
 	ctx := r.Context()
@@ -849,15 +952,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
-	// The run cap is budget authority (CHE-2798 S1b): only an interactive
-	// session changes it. A write that leaves it as stored keeps its usual
-	// authorization. The budget start has no write path here.
-	if req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32 && r.Header.Get("X-Actor-Source") != "interactive_jwt" {
-		writeErrorCode(w, http.StatusForbidden, "budget_requires_interactive", "changing a workflow's run budget needs an interactive web or desktop session")
+	if budgetWrite {
+		h.updateBoundBudget(w, r, tx, qtx, member, current, req)
 		return
 	}
-	if machine && req.MaxRunsPerIssue != nil {
-		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
+	// The budget fields are budget authority (CHE-2798 S1b, CHE-5228): an
+	// interactive session changes them directly, anyone else through a
+	// workflow.budget decision. A write that leaves them as stored keeps its
+	// usual authorization. The budget start has no write path here.
+	changesBudget := (req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32) ||
+		(req.IncludeChildPRs != nil && includeChildPRs.Bool != current.IncludeChildPrs)
+	if changesBudget && !isInteractiveRequest(r) {
+		writeBudgetRequiresDecision(w)
 		return
 	}
 	// Read under the exclusive catalog lock, so no other save can slip between
@@ -907,6 +1013,9 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	keepStoredEntry(steps, currentSteps)
+	if req.Steps != nil {
+		keepStoredWaits(steps, *req.Steps, currentSteps)
+	}
 	name, description, steps = issueworkflow.Normalize(name, description, steps)
 	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
 	if err != nil {
@@ -915,6 +1024,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issueworkflow.Validate(name, description, steps, current.IsDefault, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	if msg, err := h.refuseNewPRMergedEdge(ctx, qtx, wsUUID, currentSteps, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
 	// The start status is checked against the steps this save leaves, so a
@@ -999,7 +1115,40 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Lint gate: every save lints the workflow as it would be left, and an
+	// unwaived error refuses the save unless it carries a reason. A dry run
+	// writes nothing, so it is not gated. It runs after the authority checks,
+	// so a 403 or 409 is never masked by a 422.
+	lintChecked := !req.DryRun
+	var lintFindings []workflowlint.Finding
+	var lintOverride pgtype.Text
+	if lintChecked {
+		proposed := issueworkflow.Definition{ID: current.ID, Name: name, IsDefault: current.IsDefault, Steps: steps, IncludeChildPRs: current.IncludeChildPrs}
+		proposed.MaxRunsPerIssue = int(current.MaxRunsPerIssue.Int32)
+		if maxRuns.Valid {
+			proposed.MaxRunsPerIssue = int(maxRuns.Int32)
+		}
+		lintFindings, err = h.lintProposedSave(ctx, wsUUID, uuidToString(member.UserID), member.Role, current, proposed, catalog, projects)
+		if err != nil {
+			slog.Warn("UpdateIssueWorkflow lint failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to lint workflow")
+			return
+		}
+		if errs := unwaivedErrors(lintFindings); len(errs) > 0 {
+			if req.LintOverride == nil {
+				writeLintRefusal(w, errs)
+				return
+			}
+			lintOverride = pgtype.Text{String: strings.TrimSpace(*req.LintOverride), Valid: true}
+		}
+	}
+
 	raw, err := issueworkflow.EncodeSteps(steps)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	findingsRaw, err := json.Marshal(storableFindings(lintFindings))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
@@ -1013,7 +1162,11 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Steps:            raw,
 		MaxRunsPerIssue:  maxRuns,
 		IncludeChildPrs:  includeChildPRs,
-		StartStatusKey:   startStatus,
+
+		LintChecked:        lintChecked,
+		LintOverrideReason: lintOverride,
+		LintFindings:       findingsRaw,
+		StartStatusKey:     startStatus,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -1023,6 +1176,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("UpdateIssueWorkflow failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
+	}
+	if lintOverride.Valid {
+		// The row keeps only the last override; this log keeps every one with
+		// the version it let through.
+		if err := qtx.InsertIssueWorkflowLintOverride(ctx, db.InsertIssueWorkflowLintOverrideParams{
+			WorkspaceID: wsUUID, WorkflowID: row.ID, Version: row.UpdatedAt,
+			Reason: lintOverride.String, ActorID: member.UserID,
+		}); err != nil {
+			slog.Warn("UpdateIssueWorkflow override log failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to save workflow")
+			return
+		}
 	}
 	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, projectIDs, plan, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
@@ -1042,6 +1207,39 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
+	resp := h.issueWorkflowResponse(ctx, row)
+	if lintChecked {
+		// The saver sees every finding of this save; the stored readback
+		// leaves the agent-derived ones out.
+		resp.LintFindings = lintFindings
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// updateBoundBudget applies an agent's workflow.budget write: the owner's card
+// named the budget before and after, and the digests prove this write is that
+// change and nothing wider. It commits qtx's transaction.
+func (h *Handler) updateBoundBudget(w http.ResponseWriter, r *http.Request, tx pgx.Tx, qtx *db.Queries, member db.Member, current db.IssueWorkflow, req IssueWorkflowWriteRequest) {
+	ctx := r.Context()
+	id := uuidToString(current.ID)
+	liveCap, liveChildren := storedBudget(current)
+	afterCap, afterChildren := budgetAfter(current, req.MaxRunsPerIssue, req.IncludeChildPRs)
+	if err := h.verifyBoundDigests(ctx, qtx, r, current.WorkspaceID, req.DecisionBindingFields, workflowBudgetField,
+		decisionaction.WorkflowBudgetDigest(id, liveCap, liveChildren), decisionaction.WorkflowBudgetDigest(id, afterCap, afterChildren)); err != nil {
+		writeDecisionError(w, err, "workflow budget write")
+		return
+	}
+	row, err := qtx.UpdateIssueWorkflow(ctx, budgetUpdateParams(current, req.MaxRunsPerIssue, req.IncludeChildPRs))
+	if err != nil {
+		slog.Warn("UpdateIssueWorkflow budget failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	h.publishIssueWorkflowChanged(uuidToString(current.WorkspaceID), member, "updated")
 	h.writeIssueWorkflow(w, r, http.StatusOK, row)
 }
 
@@ -1380,7 +1578,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if refuseMachineWorkflowWrite(w, r) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
@@ -1436,6 +1634,9 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 		if step.Entry == nil {
 			step.Entry = stored.Entry
+		}
+		if req.WaitsOnOpenDecision == nil {
+			step.WaitsOnOpenDecision = stored.WaitsOnOpenDecision
 		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
@@ -1705,12 +1906,20 @@ type WorkflowHandoffRun struct {
 }
 
 type WorkflowHandoffPreviewResponse struct {
-	Handoff              bool                 `json:"handoff"`
-	WorkflowName         string               `json:"workflow_name,omitempty"`
-	FromStatus           string               `json:"from_status"`
-	ToStatus             string               `json:"to_status"`
-	HandlerType          string               `json:"handler_type,omitempty"`
-	HandlerID            string               `json:"handler_id,omitempty"`
+	Handoff      bool   `json:"handoff"`
+	WorkflowName string `json:"workflow_name,omitempty"`
+	FromStatus   string `json:"from_status"`
+	ToStatus     string `json:"to_status"`
+	HandlerType  string `json:"handler_type,omitempty"`
+	HandlerID    string `json:"handler_id,omitempty"`
+	// Override is true when the move names its own assignee; the step's own
+	// handler then rides in StepHandlerType and StepHandlerID.
+	Override bool `json:"override,omitempty"`
+	// KeptForStep is true when the override is the issue's sticky assignee for
+	// this step.
+	KeptForStep          bool                 `json:"kept_for_step,omitempty"`
+	StepHandlerType      string               `json:"step_handler_type,omitempty"`
+	StepHandlerID        string               `json:"step_handler_id,omitempty"`
 	PreviousAssigneeType *string              `json:"previous_assignee_type"`
 	PreviousAssigneeID   *string              `json:"previous_assignee_id"`
 	PreviousRuns         []WorkflowHandoffRun `json:"previous_runs"`
@@ -1755,13 +1964,28 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		params.ProjectID = projectID
 		enterOnMove = true
 	}
-	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{})
+	var override *HandoffAssigneeRequest
+	if t, id := r.URL.Query().Get("handoff_assignee_type"), r.URL.Query().Get("handoff_assignee_id"); t != "" || id != "" {
+		override = &HandoffAssigneeRequest{Type: t, ID: id}
+	}
+	handoffAssignee, ok := parseHandoffAssignee(w, override)
+	if !ok {
+		return
+	}
+	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{handoffAssignee: handoffAssignee})
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return
+	}
+	if hand != nil && hand.override {
+		// A named assignee is shown only when the write would accept it.
+		if code, msg := h.validateAssigneePair(r.Context(), r, uuidToString(issue.WorkspaceID), params.AssigneeType, params.AssigneeID); code != 0 {
+			writeHandoffAssigneeRefusal(w, hand, code, msg)
+			return
+		}
 	}
 	if params.Status.Valid {
 		status = params.Status.String
@@ -1783,6 +2007,12 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 	resp.Handoff = true
 	resp.HandlerType = params.AssigneeType.String
 	resp.HandlerID = uuidToString(params.AssigneeID)
+	if hand.override {
+		resp.Override = true
+		resp.KeptForStep = hand.kept
+		resp.StepHandlerType = hand.stepHandler.Type
+		resp.StepHandlerID = uuidToString(hand.stepHandler.ID)
+	}
 	next := issue
 	next.Status = status
 	next.ProjectID = params.ProjectID
@@ -1804,4 +2034,11 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeBudgetRequiresDecision refuses a direct budget write from a credential
+// that is not an interactive session and names the path that works.
+func writeBudgetRequiresDecision(w http.ResponseWriter) {
+	writeErrorCode(w, http.StatusForbidden, "budget_requires_decision",
+		"changing a workflow's run budget needs the owner's approval: run `multica config propose workflow.budget <workflow-id> --max-runs N` and submit it with `multica decision request`, or use an interactive web or desktop session")
 }

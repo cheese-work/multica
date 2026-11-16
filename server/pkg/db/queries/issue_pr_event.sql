@@ -68,6 +68,8 @@ FOR UPDATE;
 -- take now must not hold every later batch back.
 -- Action-required kinds of a merged or closed PR are never selected: the
 -- lifecycle stop already ran, and a reopen raises its own events.
+-- Lifecycle kinds draft, ready and merged are never selected: they report
+-- state only, and the pr_merged rule already wakes the issue (CHE-4972). closed has no rule, so it stays.
 SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.observed_at,
        pr.pr_number, pr.repo_owner, pr.repo_name,
        COALESCE(NULLIF(e.previous_head_sha, ''), (
@@ -92,9 +94,13 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
        ), '')::text AS check_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
-WHERE e.kind NOT IN ('draft', 'ready')
+WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
+       -- A member was told once (notified); an agent or squad holding the issue
+       -- takes the event now (CHE-5901).
+       OR (e.status = 'notified'
+           AND EXISTS (SELECT 1 FROM issue i WHERE i.id = e.issue_id AND i.assignee_type IN ('agent', 'squad')))
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t
@@ -135,6 +141,11 @@ FOR UPDATE OF e SKIP LOCKED;
 -- The fallback owns the event from here: typed delivery takes accepted ones only.
 UPDATE issue_pr_event SET status = 'next_turn' WHERE id = @id AND status = 'accepted';
 
+-- name: MarkPREventsNotified :execrows
+-- A member was told about these events once: the bridge selects them again only
+-- when an agent or squad holds the issue (CHE-5901).
+UPDATE issue_pr_event SET status = 'notified' WHERE id = ANY(@ids::uuid[]) AND status = 'next_turn';
+
 -- name: MarkStartedPREventsDelivered :execrows
 -- A wake that started carries its receipts' events: a next-turn pr.event
 -- receipt's, or the legacy rule's receipt for the same cause (CHE-2540).
@@ -142,7 +153,7 @@ UPDATE issue_pr_event e
 SET status = 'delivered'
 FROM github_pull_request pr
 WHERE pr.id = e.pull_request_id
-  AND e.status IN ('accepted', 'next_turn')
+  AND e.status IN ('accepted', 'next_turn', 'notified')
   AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR e.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
   AND (EXISTS (
       SELECT 1
@@ -237,3 +248,18 @@ SELECT EXISTS (
     SELECT 1 FROM activity_log
     WHERE issue_id = @issue_id AND details->>'event_id' = @event_id::text
 )::boolean;
+
+-- name: LastWorkingAgentOnIssue :one
+-- The agent that most recently ran on an issue and can still run: the PR-action
+-- fallback when a member holds the issue and no PR author resolves, so the
+-- notice reaches an agent rather than the member (CHE-5837).
+SELECT a.*
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = @issue_id
+  AND t.started_at IS NOT NULL
+  AND a.workspace_id = @workspace_id
+  AND a.archived_at IS NULL
+  AND a.runtime_id IS NOT NULL
+ORDER BY t.started_at DESC
+LIMIT 1;

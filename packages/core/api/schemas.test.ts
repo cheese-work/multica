@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentTaskSchema,
   AppConfigSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
@@ -71,14 +72,51 @@ import {
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
 } from "./schemas";
-import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema } from "./schemas";
+import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema, SidebarProjectPrefsDocSchema } from "./schemas";
+import type { SidebarIssueAssignee } from "../issues/stores/sidebar-tree-store";
 import {
   ListIssueStatusesResponseSchema,
   IssueStatusEntrySchema,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
+import { IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("IssueUnreadPageSchema", () => {
+  const endpoint = "GET /api/issues/unread";
+
+  it("defaults missing run fields and next_cursor to null", () => {
+    const parsed = parseWithFallback(
+      {
+        items: [
+          {
+            issue_id: "i-1", outcome: "completed", agent_id: "a-1", task_id: "t-1", comment_id: "c-1",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          { issue_id: "i-2", outcome: "manual", created_at: "2026-01-01T00:00:00Z", extra: true },
+        ],
+      },
+      IssueUnreadPageSchema,
+      EMPTY_ISSUE_UNREAD_PAGE,
+      { endpoint },
+    );
+    expect(parsed.items.map((u) => [u.issue_id, u.agent_id, u.task_id, u.comment_id])).toEqual([
+      ["i-1", "a-1", "t-1", "c-1"],
+      ["i-2", null, null, null],
+    ]);
+    expect(parsed.next_cursor).toBeNull();
+  });
+
+  it("falls back to an empty last page for a malformed body", () => {
+    expect(parseWithFallback({ items: "nope" }, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, { endpoint })).toEqual(
+      EMPTY_ISSUE_UNREAD_PAGE,
+    );
+    expect(parseWithFallback(null, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, { endpoint })).toEqual(
+      EMPTY_ISSUE_UNREAD_PAGE,
+    );
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -152,6 +190,15 @@ describe("ChatSessionSchema", () => {
     expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: keys }).attention_unclassified_keys).toEqual(keys);
     expect(old.attention_unclassified_keys).toBeUndefined();
     expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
+  });
+
+  it("CHE-4153 carries the displayed keys and the reply-to-ask ids, dropping malformed values", () => {
+    const parsed = ChatSessionSchema.parse({ ...baseSession, attention_keys: ["item:a", "decision:d@1"], attention_ask_ids: ["a"] });
+    expect(parsed.attention_keys).toEqual(["item:a", "decision:d@1"]);
+    expect(parsed.attention_ask_ids).toEqual(["a"]);
+    const bad = ChatSessionSchema.parse({ ...baseSession, attention_keys: "item:a", attention_ask_ids: 3 });
+    expect(bad.attention_keys).toBeUndefined();
+    expect(bad.attention_ask_ids).toBeUndefined();
   });
 
   it("keeps sessions readable when older servers send lane-summary data", () => {
@@ -255,6 +302,13 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     const parsed = ListIssuesResponseSchema.parse({ issues: [withoutName], total: 1 });
     expect(parsed.issues[0]?.id).toBe(baseIssue.id);
     expect(parsed.issues[0]?.status_name).toBeUndefined();
+  });
+  it("reads run_budget_blocked, tolerating a server without it or a malformed one (CHE-5285)", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    expect(parse({ run_budget_blocked: true })?.run_budget_blocked).toBe(true);
+    expect(parse({})?.run_budget_blocked).toBeUndefined();
+    expect(parse({ run_budget_blocked: "yes" })?.id).toBe(baseIssue.id);
+    expect(parse({ run_budget_blocked: "yes" })?.run_budget_blocked).toBeUndefined();
   });
   it("reads the workflow override and tolerates a server without it or a malformed one", () => {
     const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
@@ -1179,6 +1233,35 @@ describe("UserSchema timezone drift", () => {
       { endpoint: "GET /api/me" },
     );
     expect(parsed).toBe(EMPTY_USER);
+  });
+});
+
+describe("UserSchema whats_new_seen_version drift", () => {
+  const base = {
+    id: "11111111-1111-1111-1111-111111111111",
+    name: "Ada",
+    email: "ada@example.com",
+  };
+
+  it("leaves the field undefined when an older server omits it", () => {
+    const parsed = UserSchema.parse(base);
+    expect(parsed.whats_new_seen_version).toBeUndefined();
+  });
+
+  it("keeps null and string values distinct from absence", () => {
+    expect(UserSchema.parse({ ...base, whats_new_seen_version: null }).whats_new_seen_version).toBe(null);
+    expect(UserSchema.parse({ ...base, whats_new_seen_version: "0.7.2" }).whats_new_seen_version).toBe("0.7.2");
+  });
+
+  it("degrades a wrong-type value to undefined without discarding the user", () => {
+    const parsed = parseWithFallback(
+      { ...base, whats_new_seen_version: 7 },
+      UserSchema,
+      EMPTY_USER,
+      { endpoint: "GET /api/me" },
+    );
+    expect(parsed.email).toBe("ada@example.com");
+    expect(parsed.whats_new_seen_version).toBeUndefined();
   });
 });
 
@@ -2133,6 +2216,48 @@ describe("IssueViewSchema", () => {
   });
 });
 
+describe("SidebarProjectPrefsDocSchema", () => {
+  it("keeps every setting this client knows", () => {
+    const doc = {
+      projects: { ordering: "name", statuses: ["planned"], onlyMine: true, showCount: false },
+      issues: { sortBy: "priority", sortDirection: "asc", hiddenStatuses: ["done"], assignee: "me", showSubIssues: false },
+      order: ["p2", "p1"],
+    };
+    expect(SidebarProjectPrefsDocSchema.parse(doc)).toEqual(doc);
+  });
+
+  it.each(["anyone", "me", "my_agents", "me_and_my_agents"] satisfies SidebarIssueAssignee[])(
+    "keeps the %s assignee setting",
+    (assignee) => {
+      expect(SidebarProjectPrefsDocSchema.parse({ issues: { assignee } }).issues.assignee).toBe(assignee);
+    },
+  );
+
+  it("drops settings saved by another client version instead of failing the document", () => {
+    const parsed = SidebarProjectPrefsDocSchema.parse({
+      projects: { ordering: "future-order", statuses: "planned", onlyMine: "no", showCount: true },
+      issues: { sortBy: "magic", sortDirection: "up", hiddenStatuses: null, assignee: 1, showSubIssues: "yes" },
+      order: ["p1", 2, null],
+    });
+    expect(parsed.projects).toEqual({ ordering: undefined, statuses: undefined, onlyMine: undefined, showCount: true });
+    expect(parsed.issues).toEqual({
+      sortBy: undefined,
+      sortDirection: undefined,
+      hiddenStatuses: null,
+      assignee: undefined,
+      showSubIssues: undefined,
+    });
+    expect(parsed.order).toEqual(["p1"]);
+  });
+
+  it.each([{}, { projects: null, issues: "x", order: {} }])("parses an empty or malformed document %j", (doc) => {
+    const parsed = SidebarProjectPrefsDocSchema.parse(doc);
+    expect(parsed.order).toEqual([]);
+    expect(Object.values(parsed.projects).every((v) => v === undefined)).toBe(true);
+    expect(Object.values(parsed.issues).every((v) => v === undefined)).toBe(true);
+  });
+});
+
 // WeCom smart-bot installation schemas. These gate UI affordances (the Connect
 // dialog, the "ask your operator" state, the revoked-vs-active badge), so a
 // malformed response must degrade to the safe state rather than a broken one.
@@ -2685,5 +2810,34 @@ describe("AgentDecisionSettingSchema", () => {
 
   it("falls back to null when enabled is missing instead of guessing a value", () => {
     expect(parseWithFallback({}, AgentDecisionSettingSchema, null, { endpoint: "t" })).toBeNull();
+  });
+});
+
+describe("task usage credits", () => {
+  const slice = {
+    provider: "qoder_cloud",
+    model: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+  };
+
+  it("keeps credits and treats a missing field as token-only usage", () => {
+    const parsed = AgentTaskSchema.parse({
+      id: "run",
+      usage: [{ ...slice, credits_micros: 1_250_000 }, { ...slice, provider: "anthropic" }],
+    });
+    expect(parsed.usage?.[0]?.credits_micros).toBe(1_250_000);
+    expect(parsed.usage?.[1]?.credits_micros).toBeUndefined();
+  });
+
+  it("drops malformed credits without losing the usage row", () => {
+    const parsed = AgentTaskSchema.parse({
+      id: "run",
+      usage: [{ ...slice, credits_micros: "lots" }],
+    });
+    expect(parsed.usage).toHaveLength(1);
+    expect(parsed.usage?.[0]?.credits_micros).toBeUndefined();
   });
 });

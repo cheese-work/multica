@@ -42,6 +42,8 @@ export function issueViewDefinitionFromState(state: IssueViewState): IssueViewDe
       negatedFilters: effectiveNegatedFilters(state),
       propertyFilters: state.propertyFilters,
       advancedFilter: pruneAdvancedFilter(state.advancedFilter),
+      agentRunningFilter: state.agentRunningFilter,
+      unreadFilter: state.unreadFilter,
     },
     display: {
       showSubIssues: state.showSubIssues,
@@ -150,7 +152,26 @@ export function modifiedFilterDimensions(
     }
   }
   if (seed.advancedFilter !== live.advancedFilter) modified.add("advanced");
+  if (seed.agentRunningFilter !== live.agentRunningFilter) modified.add("agentRunning");
+  if (seed.unreadFilter !== live.unreadFilter) modified.add("unread");
   return modified;
+}
+
+/**
+ * A view that saves nothing of its own: no narrower scope, no conditions, the
+ * default display. It shows exactly what its page shows, so it is waiting to
+ * be defined.
+ */
+export function isIssueViewUndefined(
+  view: Pick<IssueView, "query" | "display" | "scope_variant">,
+): boolean {
+  if (view.scope_variant && view.scope_variant !== "any") return false;
+  const seed = issueViewSeedDefinition(view);
+  const blank = issueViewSeedDefinition({ query: {}, display: {} });
+  return (
+    sameFilterMeaning(seed.query, blank.query) &&
+    stableStringify(seed.display) === stableStringify(blank.display)
+  );
 }
 
 /** Whether the live state drifted from what the view saves. */

@@ -7,7 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -69,6 +71,9 @@ type workflowWrite struct {
 	// Step entry gates bind explicit status writes only.
 	system bool
 	entry  entryWrite
+	// capped is set when the write moved the issue to need_decision because its
+	// review rounds ran out; the card opens after the commit (CHE-6192).
+	capped *roundsCap
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like
@@ -190,4 +195,17 @@ func (w *workflowWrite) lockIssueAndVerify(ctx context.Context, h *Handler, q *d
 		return err
 	}
 	return w.verify(ctx, h, q, locked)
+}
+
+// recordStepAssignee keeps the assignee a move named for the step it entered,
+// in the transaction that moves the issue, when the move asked for it.
+func (w *workflowWrite) recordStepAssignee(ctx context.Context, q *db.Queries, moved db.Issue) error {
+	if w == nil || w.handoff == nil || !w.caller.keepForStep || w.caller.handoffAssignee == nil {
+		return nil
+	}
+	var setBy pgtype.UUID
+	if id, err := util.ParseUUID(w.entry.actorID); err == nil {
+		setBy = id
+	}
+	return issueworkflow.SetStepAssignee(ctx, q, moved.WorkspaceID, moved.ID, w.handoff.step.StatusKey, *w.caller.handoffAssignee, w.entry.actorType, setBy)
 }

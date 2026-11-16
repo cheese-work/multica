@@ -60,6 +60,11 @@ export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = fa
   // Product builds already install dependencies and run the shared checks.
   // Only allocate a separate runner when quality is the sole frontend work.
   outputs.quality_only = String(outputs.quality === "true" && outputs.frontend === "false");
+  // Full-suite jobs (CHE-4874): a PR runs one only when its own scope changed; merge_group,
+  // main pushes, schedule and dispatch keep the whole suite. A reused merge group skips all.
+  for (const scope of ["backend", "frontend", "sqlc"]) {
+    outputs[`push_${scope}`] = String(!reuse && (event !== "pull_request" || outputs[scope] === "true"));
+  }
   if (headRef.startsWith("upstream-sync/")) {
     for (const scope of X99_SCOPES) outputs[scope] = "false";
   }

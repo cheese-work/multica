@@ -93,6 +93,12 @@ const LIVE_END_SETTLE_MS = 120;
 const REVEAL_DEADLINE_MS = 1000;
 
 /**
+ * A scroll with no input that lands farther than this many viewports from the
+ * live end is the reader moving the list (see `LiveEndFollow.onScroll`).
+ */
+const JUMP_LIMIT_VIEWPORTS = 2;
+
+/**
  * Conversations whose list has already been revealed in this page session.
  *
  * What the settle window waits out is cold content: fonts, image decodes,
@@ -201,6 +207,8 @@ export function useStickToBottom(
   const [settleMs] = useState(() =>
     revealKey !== null && revealedLists.has(revealKey) ? 0 : LIVE_END_SETTLE_MS,
   );
+  const revealedRef = useRef(false);
+  revealedRef.current = hasReachedLiveEnd;
   useEffect(() => {
     if (hasReachedLiveEnd && revealKey !== null) markListRevealed(revealKey);
   }, [hasReachedLiveEnd, revealKey]);
@@ -318,7 +326,10 @@ export function useStickToBottom(
         follow.onAtEdgeChange(nowAtEdge);
       }
       // The list itself moved: this is what promotes staged input.
-      if (follow.onScroll(distanceFromBottom(scrollEl))) pin();
+      // Before the first reveal Virtuoso is still landing on the newest row over
+      // estimated heights, and that scroll is the system's: no jump limit yet.
+      const jumpLimit = revealedRef.current ? JUMP_LIMIT_VIEWPORTS * scrollEl.clientHeight : undefined;
+      if (follow.onScroll(distanceFromBottom(scrollEl), jumpLimit)) pin();
     };
 
     // The composer growing (or banners appearing) shrinks the container's box

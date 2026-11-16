@@ -18,19 +18,29 @@ import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
 import { ApiError } from "@multica/core/api";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { issueStatusCategory } from "@multica/core/issues";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useSidebarTreeStore } from "@multica/core/issues/stores/sidebar-tree-store";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
+import { useIssueUnread } from "@multica/core/issues/unread";
 import { useWorkspacePaths, type WorkspacePaths } from "@multica/core/paths";
-import type { PinnedItem } from "@multica/core/types";
+import type { Issue, PinnedItem } from "@multica/core/types";
 import { AppLink } from "../../navigation";
-import { StatusIcon } from "../../issues/components/status-icon";
+import { IssueActionsContextMenu } from "../../issues/actions";
+import { useStatusLabel } from "../../issues/utils/status-label";
 import { useT } from "../../i18n";
 import { PANEL_ROW_CLASS, PanelList, PanelSection, isPathWithin, panelRowStateClass } from "../panel-nav";
-import { IssueAgentBadge, SIDEBAR_SHIMMER_CLASS, useIssueAgentState } from "./sidebar-tree";
+import {
+  ISSUE_ROW_LINK_CLASS,
+  IssueAgentBadge,
+  IssueUnreadDot,
+  SIDEBAR_SHIMMER_CLASS,
+  SidebarIssueStatus,
+  issueRowMenuOpenClass,
+  unreadIssueHref,
+  useIssueAgentState,
+} from "./sidebar-tree";
 
 // Stable empty default: an inline `= []` on useQuery is a new reference every
 // render while the query is disabled, which re-fires the sync effect below.
@@ -182,8 +192,10 @@ function SortablePinItem({
   iconNode,
   active,
   running = false,
+  unread = false,
   trailing,
   onNavigate,
+  issue,
 }: {
   pin: PinnedItem;
   href: string;
@@ -193,9 +205,13 @@ function SortablePinItem({
   active: boolean;
   /** Shimmers the label while an agent works on the pinned issue. */
   running?: boolean;
+  /** Brightens the label while the issue has an unread agent result. */
+  unread?: boolean;
   trailing?: React.ReactNode;
   /** Runs on a real click (not a drag-release) before navigation. */
   onNavigate?: () => void;
+  /** A pinned issue's row opens the issue context menu on right-click. */
+  issue?: Issue;
 }) {
   const { t } = useT("layout");
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: pin.id });
@@ -205,14 +221,18 @@ function SortablePinItem({
     if (isDragging) wasDragged.current = true;
   }, [isDragging]);
 
-  return (
-    <li
-      ref={setNodeRef}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn("group/pin relative", isDragging && "opacity-30")}
-      {...attributes}
-      {...listeners}
+  const row = (
+    <div
+      className={cn(
+        PANEL_ROW_CLASS,
+        panelRowStateClass(active),
+        issue && issueRowMenuOpenClass(active),
+        "relative",
+        trailing ? "pr-2" : "pr-8",
+        isDragging && "pointer-events-none",
+      )}
     >
+      {iconNode}
       <AppLink
         href={href}
         newTabTitle={label}
@@ -226,15 +246,12 @@ function SortablePinItem({
           }
           onNavigate?.();
         }}
-        className={cn(
-          PANEL_ROW_CLASS,
-          panelRowStateClass(active),
-          trailing ? "pr-2" : "pr-8",
-          isDragging && "pointer-events-none",
-        )}
+        className={cn(ISSUE_ROW_LINK_CLASS, "gap-2.5")}
       >
-        {iconNode}
-        <ShimmerText active={running} className={cn("min-w-0 flex-1 truncate", SIDEBAR_SHIMMER_CLASS)}>
+        <ShimmerText
+          active={running}
+          className={cn("min-w-0 flex-1 truncate", SIDEBAR_SHIMMER_CLASS, unread && "text-foreground")}
+        >
           {label}
         </ShimmerText>
         {/* Holds the same right-edge slot as a tree row's avatars, and yields
@@ -245,6 +262,18 @@ function SortablePinItem({
           </span>
         )}
       </AppLink>
+    </div>
+  );
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cn("group/pin relative", isDragging && "opacity-30")}
+      {...attributes}
+      {...listeners}
+    >
+      {issue ? <IssueActionsContextMenu issue={issue}>{row}</IssueActionsContextMenu> : row}
       <TooltipHint label={t(($) => $.sidebar.unpin_tooltip)}>
         <button
           type="button"
@@ -288,7 +317,9 @@ function PinRow({
 }) {
   const isIssue = pin.item_type === "issue";
   const agents = useIssueAgentState(wsId, isIssue ? pin.item_id : "");
+  const unread = useIssueUnread(wsId, isIssue ? pin.item_id : "");
   const statusCatalog = useIssueStatuses(wsId);
+  const statusLabel = useStatusLabel(wsId);
   const issueQuery = useQuery({ ...issueDetailOptions(wsId, pin.item_id), enabled: isIssue });
   const projectQuery = useQuery({
     ...projectDetailOptions(wsId, pin.item_id),
@@ -311,19 +342,21 @@ function PinRow({
     return (
       <SortablePinItem
         pin={pin}
-        href={href}
+        href={unreadIssueHref(href, unread)}
         onUnpin={onUnpin}
         label={issue.title}
         active={active}
         running={!!agents?.running}
-        trailing={agents && <IssueAgentBadge agents={agents} />}
+        unread={!agents && !!unread}
+        trailing={agents ? <IssueAgentBadge agents={agents} /> : unread && <IssueUnreadDot unread={unread} />}
+        issue={issue}
         iconNode={
-          <StatusIcon
-            status={issue.status}
+          <SidebarIssueStatus
+            issue={issue}
             color={statusCatalog.colorOf(issue.status)}
             icon={statusCatalog.iconOf(issue.status)}
-            category={issueStatusCategory(issue) ?? undefined}
-            className="size-3.5 shrink-0"
+            label={statusLabel(issue.status)}
+            className="size-3.5"
           />
         }
       />

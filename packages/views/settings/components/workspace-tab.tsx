@@ -59,6 +59,7 @@ import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
 import { AgentDecisionsRow } from "./agent-decisions-row";
 import { AutoCompactTokensRow } from "./auto-compact-tokens-row";
+import { DelegatedWritesSection } from "./delegated-writes-section";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { useT } from "../../i18n";
 import {
@@ -71,8 +72,8 @@ import {
   type SettingsSaveStatus,
 } from "./settings-layout";
 import { IdleGuardRows } from "./idle-guard-rows";
+import { WorkspaceSchedulingRow } from "./workspace-scheduling-row";
 import { RuntimeProfileRow } from "./runtime-profile-row";
-import { RoutingAgentRows } from "./routing-agent-rows";
 import { useAutoSave } from "./use-auto-save";
 import { useSettingsDraft } from "./use-settings-draft";
 import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
@@ -672,7 +673,7 @@ export function WorkspaceTab() {
 
           {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
           <IdleGuardRows workspace={workspace} canEdit={isOwner} />
-          <RoutingAgentRows wsId={workspace.id} canEdit={canManageWorkspace} />
+          <WorkspaceSchedulingRow workspace={workspace} canManage={canManageWorkspace} />
 
           <SettingsRow
             anchor="slug"
@@ -723,6 +724,10 @@ export function WorkspaceTab() {
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+
+      {membersFetched && (
+        <DelegatedWritesSection wsId={workspace.id} canEdit={canManageWorkspace} />
+      )}
 
       {/* Danger Zone — gated on the member query settling so the owner-only
           Delete button and the sole-owner Leave guidance don't flash in

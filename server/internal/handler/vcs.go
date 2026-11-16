@@ -230,7 +230,25 @@ func (h *Handler) ConnectVCS(w http.ResponseWriter, r *http.Request) {
 		connectedBy = member.UserID
 	}
 
-	conn, err := h.Queries.UpsertVCSConnection(r.Context(), db.UpsertVCSConnectionParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save connection")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// Reconnecting the same instance replaces the stored secrets in place, so
+	// the audit row carries the previous state when there is one.
+	var before map[string]any
+	if existing, err := qtx.ListVCSConnectionsByWorkspace(r.Context(), wsUUID); err == nil {
+		for _, c := range existing {
+			if c.InstanceUrl == instanceURL {
+				before = vcsConnectionAuditFields(c, "previous")
+			}
+		}
+	}
+	conn, err := qtx.UpsertVCSConnection(r.Context(), db.UpsertVCSConnectionParams{
 		WorkspaceID:            wsUUID,
 		Provider:               string(provider.Kind()),
 		InstanceUrl:            instanceURL,
@@ -240,6 +258,20 @@ func (h *Handler) ConnectVCS(w http.ResponseWriter, r *http.Request) {
 		ConnectedByID:          connectedBy,
 	})
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save connection")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "vcs.connection.create",
+		WorkspaceID: wsUUID,
+		TargetID:    conn.ID,
+		Before:      before,
+		After:       vcsConnectionAuditFields(conn, "set"),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "vcs.connection.create")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save connection")
 		return
 	}
@@ -285,10 +317,33 @@ func (h *Handler) DeleteVCSConnection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Queries.DeleteVCSConnection(r.Context(), db.DeleteVCSConnectionParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove connection")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// A missing row is an idempotent no-op: nothing changed, so nothing to audit.
+	if existing, err := qtx.GetVCSConnectionByID(r.Context(), idUUID); err == nil && existing.WorkspaceID == wsUUID {
+		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind:        "vcs.connection.delete",
+			WorkspaceID: wsUUID,
+			TargetID:    existing.ID,
+			Before:      vcsConnectionAuditFields(existing, "set"),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "vcs.connection.delete")
+			return
+		}
+	}
+	if err := qtx.DeleteVCSConnection(r.Context(), db.DeleteVCSConnectionParams{
 		ID:          idUUID,
 		WorkspaceID: wsUUID,
 	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove connection")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove connection")
 		return
 	}
@@ -338,12 +393,34 @@ func (h *Handler) RotateVCSConnectionWebhook(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	updated, err := h.Queries.RotateVCSConnectionWebhookSecret(r.Context(), db.RotateVCSConnectionWebhookSecretParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rotate webhook secret")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.RotateVCSConnectionWebhookSecret(r.Context(), db.RotateVCSConnectionWebhookSecretParams{
 		ID:                     connUUID,
 		WorkspaceID:            wsUUID,
 		WebhookSecretEncrypted: secretEnc,
 	})
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rotate webhook secret")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "vcs.webhook.rotate",
+		WorkspaceID: wsUUID,
+		TargetID:    updated.ID,
+		// Only the changed field is stored; the target id names the connection.
+		Before: map[string]any{"webhook_secret": "previous"},
+		After:  map[string]any{"webhook_secret": "rotated"},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "vcs.webhook.rotate")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to rotate webhook secret")
 		return
 	}

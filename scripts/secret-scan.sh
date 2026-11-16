@@ -10,11 +10,8 @@ range="${1:?usage: secret-scan.sh <range>}"
 bin="${GITLEAKS_BIN:-}"
 if [[ -z "$bin" ]]; then
   d="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gitleaks-$V"; bin="$d/gitleaks"
-  if [[ ! -x "$bin" ]]; then
-    mkdir -p "$d"
-    curl -fsSL -o "$d/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v$V/gitleaks_${V}_linux_x64.tar.gz"
-    echo "$SHA256  $d/gl.tgz" | sha256sum -c - >/dev/null
-    tar -xzf "$d/gl.tgz" -C "$d" gitleaks
-  fi
+  # The tarball is the cache unit (CI caches $d): it is re-verified on every run, so a restored cache is never trusted blindly.
+  "$(dirname "$0")/fetch-verified.sh" "https://github.com/gitleaks/gitleaks/releases/download/v$V/gitleaks_${V}_linux_x64.tar.gz" "$SHA256" "$d/gl.tgz"
+  tar -xzf "$d/gl.tgz" -C "$d" gitleaks
 fi
 exec "$bin" git --no-banner --redact --log-opts="$range" .

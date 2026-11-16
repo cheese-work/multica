@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { ArrowLeft, MessageSquare } from "@multica/ui/icons";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowLeft, Bot, MessageSquare, Plus, Search } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -19,7 +19,8 @@ import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
+import type { Agent, ChatSession } from "@multica/core/types";
+import { CollectionPageState } from "../layout/collection-page";
 import { CollapsedNavTrigger, PageHeader } from "../layout/page-header";
 import { PanelHeader } from "../layout/panel-nav";
 import { useListColumnCollapsed } from "../layout/app-shell-context";
@@ -48,6 +49,7 @@ import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
 import { useQuoteRequest } from "./components/use-quote-request";
 import { useRegisterCommandBarContext } from "../search/register-context";
+import { useSearchStore } from "../search/search-store";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -73,7 +75,10 @@ import { useRegisterCommandBarContext } from "../search/register-context";
  * style).
  */
 export function ChatPage() {
+  // The DM list chip lives for as long as Chat is open; leaving Chat resets it.
+  useEffect(() => () => useChatStore.getState().resetListView(), []);
   const { t } = useT("chat");
+  const { t: tSearch } = useT("search");
   const { pathname, searchParams, push, replace } = useNavigation();
   const backOrReplace = useBackOrReplace();
   const workspaceSlug = useRequiredWorkspaceSlug();
@@ -106,7 +111,22 @@ export function ChatPage() {
   // `?message=` is a one-shot jump from a decision card; it only applies once
   // the list shows the session named beside it.
   const urlMessage = searchParams.get("message") || null;
+  // A cached transcript can predate the target (a card opened right after it
+  // was proposed). The first miss refetches once and re-arms the jump; only a
+  // miss on fresh data is reported.
+  const jumpKey = urlSession && urlMessage ? `${urlSession}:${urlMessage}` : null;
+  const [retriedJump, setRetriedJump] = useState<string | null>(null);
+  const [refetchingJump, setRefetchingJump] = useState(false);
   const settleJump = (outcome: "landed" | "missing") => {
+    if (outcome === "missing" && urlSession && jumpKey && retriedJump !== jumpKey) {
+      setRetriedJump(jumpKey);
+      setRefetchingJump(true);
+      void qc
+        .refetchQueries({ queryKey: chatKeys.messagesPage(urlSession), exact: true })
+        .catch(() => {})
+        .finally(() => setRefetchingJump(false));
+      return;
+    }
     if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
     replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
   };
@@ -124,12 +144,18 @@ export function ChatPage() {
   const settledEmptyJump = useRef<string | null>(null);
   useEffect(() => {
     // Forget the target once the URL drops it, so the same hit can settle again.
-    if (!urlMessage) settledEmptyJump.current = null;
-    if (!jumpTargetsEmptyChat || settledEmptyJump.current === urlMessage) return;
-    settledEmptyJump.current = urlMessage;
+    if (!urlMessage) {
+      settledEmptyJump.current = null;
+      if (retriedJump) setRetriedJump(null);
+    }
+    if (!jumpTargetsEmptyChat || refetchingJump) return;
+    // The refetched chat settles once more: first pass retries, second reports.
+    const settleKey = `${urlMessage}:${retriedJump === jumpKey ? "retried" : "first"}`;
+    if (settledEmptyJump.current === settleKey) return;
+    settledEmptyJump.current = settleKey;
     settleJump("missing");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target
-  }, [jumpTargetsEmptyChat, urlMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target and pass
+  }, [jumpTargetsEmptyChat, urlMessage, refetchingJump, retriedJump]);
 
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
@@ -356,23 +382,19 @@ export function ChatPage() {
 
   const listHeader = (
     <PanelHeader as="h1" title={t(($) => $.page.title)} leading={<CollapsedNavTrigger />}>
+      {isCompact && (
+        <IconButton
+          label={tSearch(($) => $.trigger.label)}
+          tooltipSide="bottom"
+          className="text-muted-foreground"
+          onClick={() => useSearchStore.getState().setOpen(true)}
+        >
+          <Search />
+        </IconButton>
+      )}
       {newChatButton}
     </PanelHeader>
   );
-
-  // A message hit pushes the same `?session=&message=` entry a decision card
-  // links to, so the existing one-shot jump scrolls to the message and Back
-  // returns to the list with the search still in the field. A title hit is a
-  // plain selection.
-  const handleOpenSearchHit = (hit: ChatSearchHit) => {
-    const session = c.sessions.find((s) => s.id === hit.session_id);
-    if (!hit.message_id) {
-      if (session) handleSelect(session);
-      return;
-    }
-    supersedeAgentIntent();
-    push(`${wsPaths.chat()}?session=${hit.session_id}&message=${hit.message_id}`);
-  };
 
   const listBody = (
     <div className="px-2 py-1">
@@ -382,12 +404,29 @@ export function ChatPage() {
         activeSessionId={c.activeSessionId}
         onSelectSession={handleSelect}
         onArchive={handleArchive}
-        onOpenSearchHit={handleOpenSearchHit}
+        loadState={c.sessionsLoaded ? undefined : c.sessionsFailed ? "error" : "loading"}
+        onRetry={() => void c.refetchSessions()}
       />
     </div>
   );
 
   const compactConversation = isCompact && (!!c.activeSessionId || composingNew);
+  // Nothing to talk to and nothing to reread: the composer would only be a
+  // disabled box, so the page explains the prerequisite instead.
+  const noAgentPage = c.noAgent && c.sessions.length === 0;
+  const noAgentState = (
+    <CollectionPageState
+      icon={Bot}
+      title={t(($) => $.page.no_agent_title)}
+      description={t(($) => $.page.no_agent_description)}
+      actions={
+        <Button size="sm" onClick={() => push(wsPaths.newAgent())}>
+          <Plus aria-hidden="true" />
+          {t(($) => $.page.no_agent_action)}
+        </Button>
+      }
+    />
+  );
   // Back follows real history; the list is only the fallback.
   const backToList = () => {
     if (c.activeSessionId || urlNew) backOrReplace(wsPaths.chat());
@@ -475,7 +514,7 @@ export function ChatPage() {
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
-          jumpToMessageId={urlSession === c.activeSessionId ? urlMessage : null}
+          jumpToMessageId={urlSession === c.activeSessionId && !refetchingJump ? urlMessage : null}
           onJumpSettled={settleJump}
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={
@@ -598,7 +637,11 @@ export function ChatPage() {
     return (
       <div className="flex flex-1 flex-col min-h-0">
         {listHeader}
-        <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+        {noAgentPage ? (
+          noAgentState
+        ) : (
+          <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+        )}
       </div>
     );
   }
@@ -610,7 +653,7 @@ export function ChatPage() {
   const hasTarget = !!c.activeSessionId || composingNew;
   return (
     <div className="flex min-h-0 flex-1">
-      <ListColumn collapsed={listCollapsed}>
+      <ListColumn collapsed={listCollapsed} width="list">
         {listHeader}
         <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
       </ListColumn>
@@ -618,6 +661,8 @@ export function ChatPage() {
         {listCollapsed && !c.currentSession && <PageHeader>{newChatButton}</PageHeader>}
         {hasTarget ? (
           conversation
+        ) : noAgentPage ? (
+          noAgentState
         ) : (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
             <MessageSquare className="h-10 w-10 text-faint-foreground" />

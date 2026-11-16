@@ -61,8 +61,37 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if ask.Confidence != nil {
 		params.AgentConfidence = pgtype.Float4{Float32: float32(*ask.Confidence), Valid: true}
 	}
-	return q.CreateSystem1Observation(ctx, params)
+	if err := q.CreateSystem1Observation(ctx, params); err != nil {
+		return err
+	}
+	if ask.Topic == system1.ScopeTestFirstWaiver {
+		return recordWaiverPredictions(ctx, q, issue.WorkspaceID, request.ID, ask.Waiver)
+	}
+	return nil
 }
+
+// recordWaiverPredictions writes one prediction row per waiver predictor (CHE-4383 B3), in the ask transaction so both precede any answer.
+func recordWaiverPredictions(ctx context.Context, q *db.Queries, workspaceID, requestID pgtype.UUID, waiver *decisiontx.Waiver) error {
+	labels, err := q.ListSystem1WaiverPrecedentKeys(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	precedent := system1.Predict(labels)
+	for _, row := range []db.CreateSystem1PredictionParams{
+		{PredictorID: system1.PredictorWaiverRule, PredictorVersion: system1.WaiverRuleVersion, PredictedKey: textOrNull(system1.WaiverRule(waiver.CrossLabPassOnHead, waiver.WeakerEvidenceKind))},
+		{PredictorID: system1.PredictorPrecedent, PredictorVersion: system1.PrecedentVersion, PredictedKey: textOrNull(precedent.Key),
+			PredictedConfidence: pgtype.Float4{Float32: float32(precedent.Confidence), Valid: precedent.Key != ""}, PredictedPrecedents: pgtype.Int4{Int32: int32(precedent.Precedents), Valid: true}},
+	} {
+		row.WorkspaceID, row.SubjectID = workspaceID, requestID
+		if err := q.CreateSystem1Prediction(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// textOrNull maps an empty key (an abstention) to NULL.
+func textOrNull(key string) pgtype.Text { return pgtype.Text{String: key, Valid: key != ""} }
 
 // recordSystem1Routing notes a workflow handoff (a rule chose the handler) or a
 // person replacing the handler a handoff just chose. It runs after the write and

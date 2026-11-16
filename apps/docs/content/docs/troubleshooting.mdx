@@ -341,3 +341,15 @@ If you still cannot pin it down, search existing issues or file a new one on [Gi
 - [Daemon and runtimes](/daemon-runtimes) — how runtimes register and report online status.
 - [Runs](/tasks) — status, timeout, and failure reference.
 - [Environment variables](/environment-variables) — the full self-hosting configuration reference.
+
+## Provider breaker holds
+
+When a provider breaker holds new work, issue tasks remain deferred with a durable `provider_hold` marker. Timer and media promotion cannot start these tasks. An explicit release must recheck the breaker state before removing the marker. Chat and quick-create requests instead refuse with `provider_breaker`.
+
+The workspace setting `provider_breaker_max_hold_seconds` defaults to **21600 seconds (6 hours)**. It bounds new holds; changing the setting does not extend an existing deadline. Prepare a settings proposal through the CLI, then use the normal configuration approval flow:
+
+```bash
+multica config propose workspace.settings --set provider_breaker_max_hold_seconds:=21600 --out provider-hold.json
+```
+
+At the deadline, the task fails with `provider_breaker_hold_expired` and creates one action-required inbox notice for its accountable workspace member. This failure does not retry automatically. Check the provider before rerunning the issue. Runtime reconnect retries keep their existing behavior.

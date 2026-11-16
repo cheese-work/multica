@@ -35,6 +35,20 @@ const wakeupPreviewRuleKey = "00000000-0000-4000-8000-000000000000"
 
 var customWakeupRuleKey = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// WakeupDefinitionChange is one stored-definition write as the audit hook sees
+// it. A zero revision means the definition did not exist on that side.
+type WakeupDefinitionChange struct {
+	Ref                       WakeupScopeRef
+	RuleKey                   string
+	BeforeRevision            int64
+	AfterRevision             int64
+	BeforeConfig, AfterConfig []byte
+}
+
+// WakeupDefinitionAuditFn records a definition write through q, which is bound
+// to the write's transaction.
+type WakeupDefinitionAuditFn func(ctx context.Context, q *db.Queries, c WakeupDefinitionChange) error
+
 // WakeupScopeRef names the scope one definition API call acts on. ID is the
 // workspace, project or issue id by Kind.
 type WakeupScopeRef struct {
@@ -370,6 +384,18 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	}
 	resolved := eff.Config
 	view.Effective = &resolved
+	if s.AuditDefinition != nil && (found || keep) {
+		change := WakeupDefinitionChange{Ref: ref, RuleKey: w.RuleKey}
+		if found {
+			change.BeforeRevision, change.BeforeConfig = existing.Revision, existing.Config
+		}
+		if keep {
+			change.AfterRevision, change.AfterConfig = row.Revision, row.Config
+		}
+		if err := s.AuditDefinition(ctx, q, change); err != nil {
+			return WakeupDefinitionView{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return WakeupDefinitionView{}, err
 	}
@@ -457,6 +483,13 @@ func (s *IssueWakeupService) DeleteWakeupDefinition(ctx context.Context, ref Wak
 	}
 	if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeIssue {
 		if err := retireLegacyIssueOverride(ctx, tx, q, ref, ruleKey); err != nil {
+			return err
+		}
+	}
+	if s.AuditDefinition != nil {
+		if err := s.AuditDefinition(ctx, q, WakeupDefinitionChange{
+			Ref: ref, RuleKey: ruleKey, BeforeRevision: row.Revision, BeforeConfig: row.Config,
+		}); err != nil {
 			return err
 		}
 	}

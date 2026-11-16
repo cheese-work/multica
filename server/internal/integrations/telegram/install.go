@@ -125,6 +125,9 @@ type RegisterParams struct {
 	AgentID     pgtype.UUID
 	InitiatorID pgtype.UUID
 	BotToken    string
+	// Audit, when set, runs inside the install transaction before commit; an
+	// error rolls the install back and is returned unchanged.
+	Audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 // Register installs a user-supplied Telegram bot for an agent: validate the
@@ -171,6 +174,7 @@ func (s *InstallService) Register(ctx context.Context, p RegisterParams) (db.Cha
 		installerID: p.InitiatorID,
 		appIDKey:    botID,
 		configJSON:  cfgJSON,
+		audit:       p.Audit,
 	})
 }
 
@@ -193,6 +197,9 @@ type installPersist struct {
 	installerID pgtype.UUID
 	appIDKey    string
 	configJSON  []byte
+	// audit, when set, runs in the install transaction after the upsert. An
+	// error from it rolls the install back and is returned unwrapped.
+	audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 const pgUniqueViolation = "23505"
@@ -239,6 +246,11 @@ func (s *InstallService) persistInstall(ctx context.Context, p installPersist) (
 			return db.ChannelInstallation{}, s.liveOwnerConflictErr(ctx, p.wsID, p.appIDKey)
 		}
 		return db.ChannelInstallation{}, fmt.Errorf("upsert telegram installation: %w", err)
+	}
+	if p.audit != nil {
+		if err := p.audit(tx, inst); err != nil {
+			return db.ChannelInstallation{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.ChannelInstallation{}, fmt.Errorf("commit telegram install: %w", err)

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -54,7 +54,7 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-follow";
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
 import { chatAnchorKey, parseChatAnchor, serializeChatAnchor, type ChatAnchor } from "./chat-anchor";
-import { useRestoredViewState, useViewStateWriter } from "../../platform";
+import { useBindViewStateWriter, useRestoredViewState } from "../../platform";
 import { formatElapsedMs } from "../lib/format";
 import {
   canonicalAnswerText,
@@ -149,6 +149,10 @@ interface ChatMessageListProps {
 const FLASH_MS = 1500;
 /** How long the jump keeps re-aiming while Virtuoso measures rows. */
 const JUMP_AIM_MS = 1000;
+/** How long a restored list keeps its saved position as the target while Virtuoso lands it. */
+const RESTORE_SETTLE_MS = 1000;
+/** Min gap between persisted scroll-anchor writes; the in-memory anchor stays per-frame (CHE-3234). */
+const ANCHOR_PERSIST_MS = 500;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -382,6 +386,79 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Footer: ChatListFooter,
 };
 
+// Box of a node: an element's own box, a text node's line boxes (measured with
+// a Range, so no marker element is added to the message).
+function rectOf(node: Node): DOMRect {
+  if (node.nodeType === Node.ELEMENT_NODE) return (node as Element).getBoundingClientRect();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  return range.getBoundingClientRect();
+}
+
+// First child (element or visible text) whose box still reaches below the
+// viewport top: the content the reader is looking at inside its parent. Text
+// nodes count: a paragraph's plain text must win over a later `<strong>`.
+function firstReaching(parent: Node, viewportTop: number): Node | undefined {
+  for (const child of parent.childNodes) {
+    const isText = child.nodeType === Node.TEXT_NODE;
+    if (!isText && child.nodeType !== Node.ELEMENT_NODE) continue;
+    if (isText && !child.textContent?.trim()) continue;
+    if (rectOf(child).bottom > viewportTop) return child;
+  }
+  return undefined;
+}
+
+// Index of the first character at or after `from` whose line reaches below
+// `edge`, or -1. The box of [0, n) only grows with n, so it is bisected.
+function charReaching(node: Text, from: number, edge: number): number {
+  const prefix = document.createRange();
+  prefix.setStart(node, 0);
+  let lo = from + 1;
+  let hi = node.data.length;
+  prefix.setEnd(node, hi);
+  if (hi < lo || prefix.getBoundingClientRect().bottom <= edge) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    prefix.setEnd(node, mid);
+    if (prefix.getBoundingClientRect().bottom > edge) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo - 1;
+}
+
+// The visible character the reader is on: the first non-blank character at or
+// below the viewport top (the last visible line when none starts there), as a
+// live Range. It follows text inserted before it, and reflow inside the node
+// moves it where the node's own box would not.
+function firstVisibleChar(node: Text, viewportTop: number): Range | undefined {
+  const text = node.data;
+  let at = charReaching(node, 0, viewportTop);
+  if (at < 0) return undefined;
+  const probe = document.createRange();
+  probe.setStart(node, at);
+  probe.setEnd(node, at + 1);
+  const line = probe.getBoundingClientRect();
+  if (line.top < viewportTop) {
+    const next = charReaching(node, at + 1, line.bottom + 0.5);
+    if (next >= 0) at = next;
+  }
+  while (at < text.length && !text[at]!.trim()) at++;
+  if (at >= text.length) return undefined;
+  const char = document.createRange();
+  char.setStart(node, at);
+  char.setEnd(node, at + 1);
+  return char;
+}
+
+// Box of the reading point. A character Range that was replaced under us (the
+// node's data was rewritten, the character is gone) has no position: undefined.
+function pointRect(point: Node, char: Range | undefined): DOMRect | undefined {
+  if (!point.isConnected) return undefined;
+  if (!char) return rectOf(point);
+  if (char.collapsed || char.startContainer !== point) return undefined;
+  return char.getBoundingClientRect();
+}
+
 export function ChatMessageList({
   active = true,
   revealKey = null,
@@ -430,6 +507,132 @@ export function ChatMessageList({
   useEffect(() => {
     if (active && hasReachedLiveEnd) onRevealed?.();
   }, [active, hasReachedLiveEnd, onRevealed]);
+  // WebKit has no native scroll anchoring and Virtuoso's rows opt out of it, so
+  // a row that starts above the viewport and grows late (image, embed, expanded
+  // block) pushes the reader's message down. The reader's reading anchor is the
+  // message row at the viewport top, narrowed to the deepest element or text still
+  // reaching below that edge (the visible content point inside a tall message),
+  // and where it sits from the edge; after any resize batch it is put back
+  // there. It is a measured position, not a sum of deltas: growth below the
+  // anchor never moves it, growth above it moves it back once, even when it
+  // happens inside the same message. The first observation of a row is only a
+  // baseline; the live-end follow owns its own pin (CHE-4638).
+  const isFollowingRef = useRef(isFollowing);
+  isFollowingRef.current = isFollowing;
+  const readingAnchor = useRef<{
+    id: string;
+    top: number;
+    point: Node;
+    char: Range | undefined;
+    pointTop: number;
+  } | null>(null);
+  // A restored list holds its saved position (a fixed target) until the reader
+  // moves or the list has had RESTORE_SETTLE_MS to land; before then a scroll
+  // event is Virtuoso landing it, not the reader. Other lists anchor on input.
+  const restoreUntil = useRef(0);
+  const readerMoved = useRef(false);
+  const restoreTarget = useRef<{ id: string; top: number } | null>(null);
+  const captureAnchor = useCallback(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const viewportTop = scroller.getBoundingClientRect().top;
+    for (const row of scroller.querySelectorAll("[data-message-id]")) {
+      const { top, bottom } = row.getBoundingClientRect();
+      if (bottom <= viewportTop) continue;
+      let point: Node = row;
+      for (let next = firstReaching(point, viewportTop); next; next = firstReaching(point, viewportTop)) {
+        point = next;
+      }
+      const char = point.nodeType === Node.TEXT_NODE ? firstVisibleChar(point as Text, viewportTop) : undefined;
+      readingAnchor.current = {
+        id: row.getAttribute("data-message-id")!,
+        top: top - viewportTop,
+        point,
+        char,
+        pointTop: (char ? char.getBoundingClientRect() : rectOf(point)).top - viewportTop,
+      };
+      return;
+    }
+  }, []);
+  // The saved row is where Virtuoso starts rendering (overscan included), not
+  // what the reader sees. Once it sits at its saved offset the list has landed:
+  // anchor the row at the viewport top from then on.
+  const landRestore = useCallback(() => {
+    const scroller = scrollRef.current;
+    const target = restoreTarget.current;
+    if (!scroller || !target) return;
+    const row = scroller.querySelector(`[data-message-id="${CSS.escape(target.id)}"]`);
+    if (!row) return;
+    const top = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (Math.abs(top - target.top) > 2) return;
+    restoreTarget.current = null;
+    captureAnchor();
+  }, [captureAnchor]);
+  const holdAnchor = useCallback(() => {
+    const scroller = scrollRef.current;
+    const anchor = readingAnchor.current;
+    if (!scroller || !anchor) return;
+    // The content point can be re-rendered away; the row is then the anchor.
+    const pointBox = pointRect(anchor.point, anchor.char);
+    const row = pointBox
+      ? undefined
+      : scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
+    if (!pointBox && !row) return;
+    const delta =
+      (pointBox ?? row!.getBoundingClientRect()).top -
+      scroller.getBoundingClientRect().top -
+      (pointBox ? anchor.pointTop : anchor.top);
+    if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
+  }, []);
+  useEffect(() => {
+    if (!scrollContainerEl) return;
+    const mark = () => {
+      readerMoved.current = true;
+      restoreTarget.current = null;
+      captureAnchor();
+    };
+    const onScroll = () => {
+      landRestore();
+      const restored = restoreUntil.current > 0;
+      if (readerMoved.current || (restored && Date.now() >= restoreUntil.current)) captureAnchor();
+    };
+    const events = ["wheel", "touchstart", "keydown"] as const;
+    for (const e of events) scrollContainerEl.addEventListener(e, mark, { passive: true });
+    scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      for (const e of events) scrollContainerEl.removeEventListener(e, mark);
+      scrollContainerEl.removeEventListener("scroll", onScroll);
+    };
+  }, [scrollContainerEl, captureAnchor, landRestore]);
+  const rowHeights = useRef(new WeakMap<Element, number>());
+  const rowObserver = useRef<ResizeObserver | null>(null);
+  const observeRow = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node || typeof ResizeObserver === "undefined") return;
+      rowObserver.current ??= new ResizeObserver((entries) => {
+        let resized = false;
+        for (const { target, borderBoxSize } of entries) {
+          // A row Virtuoso unmounted reports 0 on its way out; not a resize.
+          if (!target.isConnected) continue;
+          const height = borderBoxSize?.[0]?.blockSize ?? target.getBoundingClientRect().height;
+          const prev = rowHeights.current.get(target);
+          rowHeights.current.set(target, height);
+          if (prev !== undefined && prev !== height) resized = true;
+        }
+        landRestore();
+        if (resized && !isFollowingRef.current()) holdAnchor();
+      });
+      rowObserver.current.observe(node);
+    },
+    [holdAnchor, landRestore],
+  );
+  useEffect(
+    () => () => {
+      rowObserver.current?.disconnect();
+      rowObserver.current = null;
+    },
+    [],
+  );
   // Soft edge fade hinting more content above/below. Kept small so it barely
   // grazes full-bleed previews (image / HTML) at the edges.
   const fadeStyle = useScrollFade(scrollRef, 16);
@@ -627,14 +830,14 @@ export function ChatMessageList({
   // is loaded; every other case opens at the newest message as before.
   const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
   const savedAnchorRaw = useRestoredViewState(anchorKey ?? "");
-  const writeViewState = useViewStateWriter();
+  const bindViewStateWriter = useBindViewStateWriter();
   const [restore] = useState(() => {
     const saved = anchorKey ? parseChatAnchor(savedAnchorRaw) : null;
     if (!saved || saved.atLiveEnd) return null;
     const index = renderItems.findIndex(
       (item) => item.kind === "message" && item.message.id === saved.itemId,
     );
-    return index >= 0 ? { index, offsetInItemPx: saved.offsetInItemPx } : null;
+    return index >= 0 ? { index, itemId: saved.itemId, offsetInItemPx: saved.offsetInItemPx } : null;
   });
   const restoring = restore !== null;
   // The restored list is shown where it opened, and must not be pulled to the
@@ -644,19 +847,72 @@ export function ChatMessageList({
   useEffect(() => {
     if (restoring) disengageRef.current();
   }, [restoring, scrollContainerEl]);
+  // A restored reader may be still after Back: the saved position is the reading
+  // anchor from the first frame, so growth above is corrected without input (CHE-4638).
+  if (restore && restoreUntil.current === 0) {
+    restoreUntil.current = Date.now() + RESTORE_SETTLE_MS;
+    restoreTarget.current = { id: restore.itemId, top: -restore.offsetInItemPx };
+  }
 
   // Until the list has landed, the range Virtuoso reports is not the reader's
   // position (it is on its way to the newest message), so nothing is recorded.
   const anchorReady = restoring || jumped || hasReachedLiveEnd;
   const atBottomRef = useRef(!restoring);
   const lastAnchorRef = useRef<ChatAnchor | null>(null);
+  // The in-memory anchor is current on every call; the persisted copy goes to the
+  // platform (desktop: tab store → JSON of all tabs) at most once per
+  // ANCHOR_PERSIST_MS — leading edge, then a trailing write — and is flushed on
+  // unmount and pagehide so the last position is never lost (CHE-3234).
+  // Each pending write carries a writer pinned to the tab and route it was
+  // scrolled on, so a flush after the view left (tab switch, navigation) still
+  // lands on the right entry.
+  const pendingAnchorWrite = useRef<{
+    key: string;
+    value: string;
+    write: (key: string, value: string | undefined) => void;
+  } | null>(null);
+  const lastAnchorWriteAt = useRef(0);
+  const anchorWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bindViewStateWriterRef = useRef(bindViewStateWriter);
+  bindViewStateWriterRef.current = bindViewStateWriter;
+  const flushAnchor = useCallback(() => {
+    if (anchorWriteTimer.current) clearTimeout(anchorWriteTimer.current);
+    anchorWriteTimer.current = null;
+    const pending = pendingAnchorWrite.current;
+    if (!pending) return;
+    pendingAnchorWrite.current = null;
+    lastAnchorWriteAt.current = Date.now();
+    pending.write(pending.key, pending.value);
+  }, []);
   const saveAnchor = useCallback(
-    (anchor: ChatAnchor) => {
+    (anchor: ChatAnchor, write = bindViewStateWriterRef.current()) => {
       lastAnchorRef.current = anchor;
-      if (anchorKey) writeViewState(anchorKey, serializeChatAnchor(anchor));
+      if (!anchorKey) return;
+      pendingAnchorWrite.current = {
+        key: anchorKey,
+        value: serializeChatAnchor(anchor),
+        write,
+      };
+      const wait = ANCHOR_PERSIST_MS - (Date.now() - lastAnchorWriteAt.current);
+      if (wait <= 0) flushAnchor();
+      else anchorWriteTimer.current ??= setTimeout(flushAnchor, wait);
     },
-    [anchorKey, writeViewState],
+    [anchorKey, flushAnchor],
   );
+  // Runs the measurement a queued scroll frame would have run. Set by the scroll
+  // effect below; a layout effect so unmount drains it while the rows are attached.
+  const drainScrollFrameRef = useRef<() => void>(() => {});
+  useLayoutEffect(() => {
+    const flushNow = () => {
+      drainScrollFrameRef.current();
+      flushAnchor();
+    };
+    window.addEventListener("pagehide", flushNow);
+    return () => {
+      window.removeEventListener("pagehide", flushNow);
+      flushNow();
+    };
+  }, [flushAnchor]);
   const measureOffset = useCallback(
     (messageId: string) => {
       const row = scrollContainerEl?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
@@ -679,19 +935,43 @@ export function ChatMessageList({
   // endpoints, so Virtuoso reports nothing. Re-measure the recorded item.
   useEffect(() => {
     if (!anchorReady || !scrollContainerEl) return;
-    const onScroll = () => {
+    // Measure once per frame, not once per scroll event.
+    let frame = 0;
+    // Bound when the frame is queued: a frame drained after navigation already
+    // moved the tab's route must still file under the route it was scrolled on.
+    let frameWriter = bindViewStateWriterRef.current();
+    const measure = () => {
+      frame = 0;
       const last = lastAnchorRef.current;
-      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) });
+      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) }, frameWriter);
     };
+    const onScroll = () => {
+      if (frame) return;
+      frameWriter = bindViewStateWriterRef.current();
+      frame = requestAnimationFrame(measure);
+    };
+    // A queued frame holds the reader's final offset: run it now rather than drop it.
+    const drain = () => {
+      if (!frame) return;
+      cancelAnimationFrame(frame);
+      measure();
+    };
+    drainScrollFrameRef.current = drain;
     scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => scrollContainerEl.removeEventListener("scroll", onScroll);
+    return () => {
+      scrollContainerEl.removeEventListener("scroll", onScroll);
+      drain();
+      if (drainScrollFrameRef.current === drain) drainScrollFrameRef.current = () => {};
+    };
   }, [anchorReady, scrollContainerEl, saveAnchor, measureOffset]);
   const onAtBottomStateChange = useCallback(
     (atBottom: boolean) => {
       atBottomRef.current = atBottom;
-      if (anchorReady && lastAnchorRef.current) saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+      if (!anchorReady || !lastAnchorRef.current) return;
+      saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+      flushAnchor(); // a rare transition, not scroll spam: persist now
     },
-    [anchorReady, saveAnchor],
+    [anchorReady, saveAnchor, flushAnchor],
   );
 
   const forkSource = forkedFromSessionId && sessions
@@ -817,7 +1097,7 @@ export function ChatMessageList({
         // than the viewport, so switching sessions always shows the latest reply.
         initialTopMostItemIndex={
           restore
-            ? { index: restore.index, align: "start", offset: -restore.offsetInItemPx }
+            ? { index: restore.index, align: "start", offset: restore.offsetInItemPx }
             : { index: "LAST", align: "end" }
         }
         rangeChanged={onRangeChanged}
@@ -847,6 +1127,7 @@ export function ChatMessageList({
         components={LIST_COMPONENTS}
         itemContent={(_, item) => (
           <div
+            ref={observeRow}
             className={cn(
               CHAT_COLUMN,
               "py-2 transition-colors duration-700",

@@ -47,6 +47,7 @@ You also need to pick an email service, otherwise verification codes and invitat
 | `LOG_LEVEL` | application default | Log level |
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | How long to wait after a termination signal before graceful shutdown begins |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | How long an offline runtime may reconnect before its in-flight runs fail; values below `150s` are clamped |
+| `MULTICA_REVIEW_GUARD_AGENT_IDS` | empty (guard off) | Comma-separated agent IDs of reviewers. A reviewer run is skipped, with reason `review_head_answered`, when that agent already posted PASS, FAIL, BLOCKED or NOT-RUN for the PR head and the issue has exactly one open linked PR; a new head runs again. A verdict is a line `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN` (or a line starting `BLOCKED` or `NOT-RUN`) plus a `Candidate:` or `Head:` line naming the head SHA. The skip shows in the run list as a cancelled run. Scheduled check-ins are not affected |
 
 When setting a shutdown hold on Kubernetes, `terminationGracePeriodSeconds` must exceed the hold plus the time the actual shutdown needs.
 
@@ -115,6 +116,7 @@ SMTP takes priority over Resend whenever `SMTP_HOST` is non-empty.
 | `ALLOWED_EMAIL_DOMAINS` | empty | Email domains allowed to sign up, comma-separated |
 | `DISABLE_WORKSPACE_CREATION` | `false` | Blocks all users from creating workspaces; no owner/admin exception |
 | `WORKSPACE_CREATION_ALLOWED_EMAILS` | empty | Full email addresses allowed to create workspaces, comma-separated. When set, all other users get 403. `DISABLE_WORKSPACE_CREATION=true` takes precedence. Grants no access to other workspaces |
+| `MULTICA_SETUP_COMPONENTS` | empty | Setup component ids, comma-separated. The `adoption_linked` close gate checks metadata `components` and the `none` cross-check against them. Empty: a `yes` Setup change cannot close |
 | `MULTICA_DEV_VERIFICATION_CODE` | empty | Fixed 6-digit test code for non-production environments |
 
 For the exact allowlist evaluation order, see [Sign-in and signup](/auth-setup#signup-restrictions).
@@ -122,6 +124,10 @@ For the exact allowlist evaluation order, see [Sign-in and signup](/auth-setup#s
 ## Attachment storage
 
 When `S3_BUCKET` is unset, Multica uses local disk.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MULTICA_MAX_PREVIEW_SIZE` | `2MiB` | Maximum body size for online text/HTML previews, up to `16MiB`. Accepts positive integer bytes or `KB`/`KiB`, `MB`/`MiB` (binary units). Valid values above `16MiB` are clamped to `16MiB`; invalid values use the default. Larger limits can slow browser previews, especially syntax highlighting and Markdown rendering. Restart the API after changing it. Upload and download limits are unchanged. |
 
 ### S3 or compatible storage
 

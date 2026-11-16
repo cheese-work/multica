@@ -107,6 +107,21 @@ type agentDecisionNoticeFailure struct {
 	NextAttemptAt string `json:"next_attempt_at"`
 }
 
+// An ask that never reached a person: the agent that produced it owns the
+// failure. The excerpt is the stored source, cut short.
+type agentAskFailure struct {
+	RootID     string `json:"root_id"`
+	IssueID    string `json:"issue_id"`
+	Identifier string `json:"identifier"`
+	AgentID    string `json:"agent_id"`
+	Agent      string `json:"agent"`
+	Reason     string `json:"reason"`
+	FailedAt   string `json:"failed_at"`
+	Excerpt    string `json:"excerpt,omitempty"`
+}
+
+const agentAskFailureExcerptRunes = 200
+
 func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace_id")
 	if !ok {
@@ -123,6 +138,15 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 	}
 	for _, id := range askIDs {
 		if _, ok := parseUUIDOrBadRequest(w, id, "jev_ask"); !ok {
+			return
+		}
+	}
+	// since = when the Jev shadow log began; the count below is for that window.
+	var since time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		var err error
+		if since, err = time.Parse(time.RFC3339, raw); err != nil {
+			writeError(w, http.StatusBadRequest, "since must be an RFC 3339 time")
 			return
 		}
 	}
@@ -220,6 +244,12 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	askFailures, err := h.agentAskFailures(ctx, workspaceID)
+	if err != nil {
+		fail(err)
+		return
+	}
+
 	var pilot struct {
 		Effective   int   `json:"effective"`
 		Vetoed      int   `json:"vetoed"`
@@ -261,17 +291,41 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	jevInScope, jevSince, err := h.agentDecisionJevInScope(ctx, workspaceID, since, askIDs)
+	if err != nil {
+		fail(err)
+		return
+	}
+	// The run-budget auto-approver's audit line for the last day; "" when it did nothing.
+	runBudgetAuto, err := h.runBudgetAutoBrief(ctx, workspaceID, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		fail(err)
+		return
+	}
+	runGuard, err := h.weeklyRunGuardBrief(ctx, workspaceID, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		fail(err)
+		return
+	}
+	feed := map[string]any{
+		"run_budget_auto":     runBudgetAuto,
+		"run_guard":           runGuard,
 		"enabled":             parsed.Enabled,
 		"stopped":             parsed.Stopped,
 		"review_target_hours": int(agentDecisionReviewTarget / time.Hour),
 		"decisions":           records,
 		"notice_failures":     failures,
+		"ask_failures":        askFailures,
 		"pilot":               pilot,
 		"waivers":             waivers,
 		"jev":                 jev,
 		"jev_asks":            jevAsks,
-	})
+	}
+	if jevInScope >= 0 {
+		feed["jev_in_scope"] = jevInScope
+		feed["jev_since"] = jevSince.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, feed)
 }
 
 // Most ids the CLI may ask about in one call.
@@ -333,6 +387,26 @@ func (h *Handler) agentDecisionJevMetrics(ctx context.Context, workspaceID pgtyp
 	return m, nil
 }
 
+// The classes scripts/jev_decider.py may decide (its DECIDABLE allowlist); every other class stays with Cheese.
+var jevDecidableClasses = []string{"reversible", "spend", "deploy", "publish"}
+
+// Asks Jev could take since the shadow log began: a decidable class, not cancelled. Budget and
+// API-error attempts are never logged, so the log alone would drop them from the 10-minute
+// share. The window opens at since, or at the oldest logged ask if that is earlier, so every
+// logged ask is inside it. Returns -1 when no window was asked for.
+func (h *Handler) agentDecisionJevInScope(ctx context.Context, workspaceID pgtype.UUID, since time.Time, ids []string) (int, time.Time, error) {
+	if since.IsZero() {
+		return -1, since, nil
+	}
+	var n int
+	var start time.Time
+	err := h.DB.QueryRow(ctx, `WITH w AS (
+        SELECT LEAST($2::timestamptz, min(created_at)) AS start FROM decision_request WHERE workspace_id=$1 AND id = ANY($3::uuid[]))
+        SELECT (SELECT count(*) FROM decision_request WHERE workspace_id=$1 AND created_at>=w.start AND status<>'cancelled' AND escalation_class = ANY($4)), w.start FROM w`,
+		workspaceID, since, ids, jevDecidableClasses).Scan(&n, &start)
+	return n, start, err
+}
+
 type agentDecisionJevAsk struct {
 	ID        string `json:"id"`
 	CreatedAt string `json:"created_at"`
@@ -364,6 +438,27 @@ func (h *Handler) agentDecisionJevAsks(ctx context.Context, workspaceID pgtype.U
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ponytail: access is workspace membership, which the brief already requires;
+// the repo has no per-issue ACL. The excerpt is withheld if the issue is gone.
+func (h *Handler) agentAskFailures(ctx context.Context, workspaceID pgtype.UUID) ([]agentAskFailure, error) {
+	rows, err := h.Queries.ListFailedAskRepairRoots(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentAskFailure, 0, len(rows))
+	for _, row := range rows {
+		failure := agentAskFailure{RootID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), Identifier: row.Identifier, AgentID: uuidToString(row.AgentID),
+			Agent: row.AgentName, Reason: row.FailureReason.String, FailedAt: row.FailedAt.Time.UTC().Format(time.RFC3339)}
+		if runes := []rune(row.Source); len(runes) > agentAskFailureExcerptRunes {
+			failure.Excerpt = string(runes[:agentAskFailureExcerptRunes]) + "…"
+		} else {
+			failure.Excerpt = row.Source
+		}
+		out = append(out, failure)
+	}
+	return out, nil
 }
 
 // The line names the reader as undo owner, so pasting it needs no edit.

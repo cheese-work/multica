@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 type idleActFixture struct {
@@ -21,6 +23,11 @@ func newIdleActFixture(test *testing.T, hours float64) idleActFixture {
 	for _, status := range []struct{ key, name string }{{"need_decision", "Need Decision"}, {"blocked", "Blocked"}} {
 		if dbfx.Count(test, `SELECT count(*) FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, status.key) == 0 {
 			dbfx.Insert(test, "issue_status", testutil.Cols{"workspace_id": testWorkspaceID, "key": status.key, "name": status.name, "category": "started", "color": "#112233"})
+		}
+		// The API lists a new status in a stored Default; a raw insert must too,
+		// or an earlier test's Default would refuse the move. (MUL-8250)
+		if err := issueworkflow.AddToDefault(context.Background(), testHandler.Queries, util.MustParseUUID(testWorkspaceID), status.key); err != nil {
+			test.Fatal(err)
 		}
 	}
 	leader := createHandlerTestAgent(test, "idle leader "+test.Name(), []byte("[]"))

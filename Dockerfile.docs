@@ -9,6 +9,7 @@ COPY apps/docs/package.json apps/docs/
 # postinstall runs fumadocs-mdx, which reads the source config
 COPY apps/docs/source.config.ts apps/docs/source.config.ts
 # Root pnpm patchedDependencies is read even without the mobile workspace.
+COPY patches/ patches/
 COPY apps/mobile/patches/ apps/mobile/patches/
 COPY packages/ui/package.json packages/ui/
 COPY packages/tsconfig/package.json packages/tsconfig/

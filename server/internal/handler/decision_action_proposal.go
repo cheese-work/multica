@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -84,9 +82,7 @@ type proposalRequest struct {
 	ChatSessionID pgtype.UUID
 }
 
-// inDM and chatSession are nil-safe: most requests are not proposals.
-func (proposal *proposalRequest) inDM() bool { return proposal != nil && proposal.ChatSessionID.Valid }
-
+// chatSession is nil-safe: most requests are not proposals.
 func (proposal *proposalRequest) chatSession() pgtype.UUID {
 	if proposal == nil {
 		return pgtype.UUID{}
@@ -237,21 +233,9 @@ func (handler *Handler) admitProposal(ctx context.Context, queries *db.Queries, 
 	})
 }
 
-var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
+var errProposerSetsPasskey = decisionIntentRefusal{http.StatusBadRequest, "requires_passkey_not_proposable: the registry sets whether an action needs a passkey"}
 
-// composeProposalAsk is the ask text of a proposal. The server writes it from
-// the validated action; the agent's reason appears only as a labelled quote.
-func composeProposalAsk(issueID string, draft *decisionActionDraft, reason string) (string, error) {
-	params, err := json.MarshalIndent(draft.Params, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	ask := "**Proposed action**\n`" + draft.Type + "` version " + strconv.Itoa(draft.Version) + " on [Issue](mention://issue/" + issueID + ")\n\n**Parameters**\n```json\n" + string(params) + "\n```"
-	if reason = strings.TrimSpace(reason); reason != "" {
-		ask += "\n\n**Agent's note (not verified)**\n> " + strings.ReplaceAll(strings.ReplaceAll(reason, "\r", ""), "\n", "\n> ")
-	}
-	return ask, nil
-}
+var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
 
 // ProposeDecisionAction opens a decision request that asks a person to approve
 // one allowlisted action. The agent names the action and its parameters; the
@@ -272,9 +256,17 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		IssueID    string          `json:"issue_id"`
 		For        string          `json:"for"`
 		Reason     string          `json:"reason"`
+		// The registry sets the passkey flag per action type; a proposer that
+		// names it is refused (B v9 S5, CHE-5415).
+		RequiresPasskeySnake *json.RawMessage `json:"requires_passkey"`
+		RequiresPasskeyCamel *json.RawMessage `json:"requiresPasskey"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&body); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	if body.RequiresPasskeySnake != nil || body.RequiresPasskeyCamel != nil {
+		writeDecisionError(writer, errProposerSetsPasskey, "action proposal")
 		return
 	}
 	issue, ok := handler.loadIssueForUser(writer, request, body.IssueID)
@@ -290,13 +282,36 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		writeError(writer, http.StatusForbidden, "action proposal requires this issue's running task")
 		return
 	}
-	recipient, chatSession, ok := handler.proposalRecipient(writer, request, issue, taskID, body.For)
+	var owner pgtype.UUID
+	if body.For == "" && isRunBudgetActionType(body.ActionType) {
+		owners, err := handler.Queries.ListWorkspaceOwnerUserIDs(request.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeDecisionError(writer, err, "action proposal")
+			return
+		}
+		if len(owners) > 0 {
+			owner = owners[0]
+		}
+	}
+	recipient, chatSession, ok := handler.proposalRecipient(writer, request, issue, taskID, body.For, owner)
 	if !ok {
 		return
 	}
-	draft, err := draftDecisionAction(&decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params})
+	wire := &decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params}
+	if err := withIssueTarget(wire, issue.ID); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	draft, err := draftDecisionAction(wire)
 	if err != nil {
 		writeDecisionError(writer, err, "action proposal")
+		return
+	}
+	if open, found, err := handler.openRunBudgetProposal(request.Context(), issue, draft); err != nil {
+		writeDecisionError(writer, err, "action proposal")
+		return
+	} else if found {
+		handler.writeDecisionResult(writer, request, issue, decisionRequestResult{Request: open, Replayed: true}, nil)
 		return
 	}
 	var recipientErr error
@@ -313,7 +328,8 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	body.Reason = cleanProposalReason(body.Reason)
-	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, body.Reason)
+	change := handler.proposalChange(request.Context(), issue, agentID, recipient, draft)
+	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, change, body.Reason)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to compose proposal")
 		return
@@ -323,8 +339,13 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	paramsHash := sha256.Sum256(draft.Params)
+	class, err := handler.requestClassFor(request.Context(), issue, "reversible", draft)
+	if err != nil {
+		writeDecisionError(writer, err, "action proposal")
+		return
+	}
 	input := decisionRequestInput{
-		HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
+		HumanUserID: recipient, Ask: ask, EscalationClass: class, Action: draft,
 		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr, ChatSessionID: chatSession},
 	}
 	// A duplicate that committed first makes the second pass replay it.
@@ -346,7 +367,9 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 
 // proposalRecipient names who is asked. An issue task names a person. A chat
 // task asks the creator of its own session, and may name only that person.
-func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *http.Request, issue db.Issue, taskID pgtype.UUID, named string) (recipient, chatSession pgtype.UUID, ok bool) {
+//
+// An issue task that names no one asks fallback when it is valid.
+func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *http.Request, issue db.Issue, taskID pgtype.UUID, named string, fallback pgtype.UUID) (recipient, chatSession pgtype.UUID, ok bool) {
 	task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(writer, http.StatusInternalServerError, "failed to load task")
@@ -363,11 +386,14 @@ func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *h
 				return recipient, chatSession, false
 			}
 			if resolved, err := handler.resolveDecisionRecipient(request.Context(), issue, recipient); err != nil || resolved != session.CreatorID {
-				writeError(writer, http.StatusForbidden, "for: a proposal from a chat goes to the chat's creator only")
+				writeError(writer, http.StatusForbidden, "for: a request from a chat goes to the chat's creator only")
 				return recipient, chatSession, false
 			}
 		}
 		return session.CreatorID, session.ID, true
+	}
+	if named == "" && fallback.Valid {
+		return fallback, chatSession, true
 	}
 	if recipient, ok = parseUUIDOrBadRequest(writer, named, "for"); !ok {
 		return recipient, chatSession, false

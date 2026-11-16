@@ -326,6 +326,10 @@ func buildSquadLeaderBriefing(ctx context.Context, q *db.Queries, squad db.Squad
 	}
 	sb.WriteString("\n\n")
 	sb.WriteString(buildSquadRoster(ctx, q, squad))
+	if stage := stageQueueBriefing(ctx, q, squad); stage != "" {
+		sb.WriteString("\n")
+		sb.WriteString(stage)
+	}
 
 	if trimmed := strings.TrimSpace(squad.Instructions); trimmed != "" {
 		sb.WriteString("\n\n## Squad Instructions (")

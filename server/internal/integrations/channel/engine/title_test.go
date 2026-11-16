@@ -1,14 +1,17 @@
 package engine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDeriveChatTitle(t *testing.T) {
 	tests := []struct{ input, want string }{
 		{"\n#  发布检查\n后续", "发布检查"},
 		{"[部署文档](https://example.com) **失败**", "部署文档 失败"},
 		{"![架构图](https://example.com/a.png)", "架构图"},
-		{"一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三", "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九…"},
-		{"12345678901234567890123456 890123", "12345678901234567890123456 89…"},
+		{strings.Repeat("一二三四五六七八九十", 9), strings.Repeat("一二三四五六七八九十", 8)},
+		{strings.Repeat("1234567890", 7) + " 12345678901234", strings.Repeat("1234567890", 7)},
 	}
 	for _, tc := range tests {
 		if got := DeriveChatTitle(tc.input); got != tc.want {
