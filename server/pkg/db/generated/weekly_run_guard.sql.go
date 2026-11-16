@@ -59,6 +59,42 @@ func (q *Queries) ClaimWeeklyRunGuardIncident(ctx context.Context, arg ClaimWeek
 	return id, err
 }
 
+const countIssueProgressEventsSince = `-- name: CountIssueProgressEventsSince :one
+WITH since AS (
+    SELECT GREATEST(
+        $2::timestamptz,
+        COALESCE((SELECT max(created_at) FROM agent_task_queue WHERE issue_id = $1::uuid AND agent_id = $3::uuid), '-infinity'::timestamptz)
+    ) AS at
+)
+SELECT (
+    (SELECT count(*) FROM issue_pr_event e, since
+      WHERE e.issue_id = $1::uuid AND e.kind IN ('head_changed', 'merged') AND e.observed_at > since.at)
+  + (SELECT count(*) FROM activity_log a, since
+      WHERE a.issue_id = $1::uuid AND a.action IN ('review_passed', 'review_changes_requested') AND a.created_at > since.at)
+  + (SELECT count(*) FROM decision_answer da JOIN decision_request r ON r.id = da.decision_request_id, since
+      WHERE r.issue_id = $1::uuid AND da.disclaimed_at IS NULL AND da.effective_at > since.at
+        AND r.request_fingerprint NOT LIKE 'server:run_guard_allow:%')
+)::bigint
+`
+
+type CountIssueProgressEventsSinceParams struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WindowStart pgtype.Timestamptz `json:"window_start"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+}
+
+// Progress events on the issue newer than both the window start and the target
+// agent's last run on it (CHE-6175): a PR head change or merge, a signed review
+// verdict, an answered decision request (not the guard's own card: its approval
+// already adds allowance). Each event is older than the run it
+// admitted, so it admits one run per agent.
+func (q *Queries) CountIssueProgressEventsSince(ctx context.Context, arg CountIssueProgressEventsSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssueProgressEventsSince, arg.IssueID, arg.WindowStart, arg.AgentID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countOpenWeeklyRunGuardCards = `-- name: CountOpenWeeklyRunGuardCards :one
 SELECT count(*)::bigint FROM decision_request
 WHERE issue_id = $1 AND status = 'open' AND request_fingerprint = $2
