@@ -136,7 +136,20 @@ func (d *Daemon) executeWithDowngrade(ctx context.Context, rp *runReadProxy, bac
 		next.ResumeSessionID = session
 		next.ResumeContinuityNotice = ""
 	}
-	res, nextTools, err := d.executeAndDrain(rp.Ctx(ctx), backend, BuildDowngradeSuccessorPrompt(out, prompt, resumed), next, log, taskID, codexHome, msgSeq)
+	// The successor must not be the original backend: its env and process
+	// hold the launch grants the fence just ended. It runs only through the
+	// restricted launch; without one the task fails and the text is dropped.
+	if rp.successor == nil {
+		return agent.Result{}, 0, errors.New("downgrade delivered to a launch-scope task with no restricted launch for its successor; nothing was handed to an unrestricted process")
+	}
+	sb, sopts, rerr := rp.successor(backend, next)
+	if rerr != nil || sb == nil {
+		if rerr == nil {
+			rerr = errors.New("no backend")
+		}
+		return agent.Result{}, 0, fmt.Errorf("restricted launch of the successor turn failed; nothing was handed to an unrestricted process: %w", rerr)
+	}
+	res, nextTools, err := d.executeAndDrain(rp.Ctx(ctx), sb, BuildDowngradeSuccessorPrompt(out, prompt, resumed), sopts, log, taskID, codexHome, msgSeq)
 	if err != nil {
 		return agent.Result{}, 0, err
 	}

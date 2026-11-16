@@ -9271,7 +9271,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer runBrk.Close()
 	// The elevated run's read proxy sits beside the broker (CHE-2512 B4c). Its
 	// agent turns run under runProxy.Ctx(ctx), which a launch-scope fence stops.
-	runProxy, err := startRunReadProxy(d.client, task, runBrk, agentEnv, taskLog)
+	runProxy, err := startRunReadProxy(d.client, task, runBrk, agentEnv, restrictedSuccessorLaunch, taskLog)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("prepare read proxy: %w", err)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/readproxy"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 // runReadProxy is one elevated run's read proxy: the listener beside the run's
@@ -24,7 +25,10 @@ type runReadProxy struct {
 	ln         net.Listener
 	src        interface{ Close(context.Context) error }
 	restricted atomic.Bool
-	once       sync.Once
+	// successor builds the backend of the successor turn, without the run's
+	// launch grants. Nil: a launch-scope run cannot be downgraded.
+	successor restrictedLaunch
+	once      sync.Once
 
 	// The run's context and the agent processes under it, for a task whose
 	// fence stops the run (launch scopes). See run_downgrade_successor.go.
@@ -67,6 +71,17 @@ type denyAdmit struct{}
 
 func (denyAdmit) Admitted(context.Context, readproxy.Check) (bool, error) { return false, nil }
 
+// restrictedLaunch builds the successor turn's backend and options without the
+// run's launch grants. See restrictedSuccessorLaunch.
+type restrictedLaunch func(agent.Backend, agent.ExecOptions) (agent.Backend, agent.ExecOptions, error)
+
+// restrictedSuccessorLaunch is nil until agent runs start through sandbox.Launcher
+// (the same wiring that flips runIsolated): only then is there a launch that
+// provably lacks the run's docker and device access. Until then a launch-scope
+// task is refused its downgrade rather than handed the text in a process that
+// still holds those grants.
+var restrictedSuccessorLaunch restrictedLaunch
+
 // hasLaunchScope reports whether the task holds a docker or device: scope,
 // mirroring the server's isLaunchScope.
 func hasLaunchScope(scopes []string) bool {
@@ -86,7 +101,7 @@ func hasLaunchScope(scopes []string) bool {
 // turn (executeWithDowngrade). The caller closes the proxy when the run
 // ends. An elevated run without a proxy has no GitHub read path at all, which
 // is the safe state.
-func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]string, log *slog.Logger) (*runReadProxy, error) {
+func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]string, restricted restrictedLaunch, log *slog.Logger) (*runReadProxy, error) {
 	if rb == nil || task.EffectiveProfile() != "elevated" {
 		return nil, nil
 	}
@@ -105,18 +120,19 @@ func startRunReadProxy(c *Client, task Task, rb *runBroker, agentEnv map[string]
 		api = "https://api.github.com"
 	}
 	src := rb.tokens.NewReadSource(repoID)
-	p := &runReadProxy{Socket: sock, ln: ln, src: src, outcome: make(chan downgradeOutcome, 1)}
+	p := &runReadProxy{Socket: sock, ln: ln, src: src, successor: restricted, outcome: make(chan downgradeOutcome, 1)}
 	proxy := c.NewRunReadProxy(RunReadProxyConfig{
 		IssueID: task.IssueID, TaskID: task.ID, Epoch: task.Epoch,
 		GraphQLURL: api + "/graphql", RESTURL: api,
-		Token:        src.Token,
-		Admit:        denyAdmit{},
-		Broker:       rb,
-		LaunchScopes: hasLaunchScope(task.Scopes),
-		StopRun:      p.StopRun,
-		OnDowngrade:  p.noteDowngrade,
-		Restrict:     func() { p.restricted.Store(true); log.Warn("elevated run restricted", "task_id", task.ID) },
-		Attempts:     3, Backoff: time.Second,
+		Token:               src.Token,
+		Admit:               denyAdmit{},
+		Broker:              rb,
+		LaunchScopes:        hasLaunchScope(task.Scopes),
+		SuccessorRestricted: restricted != nil,
+		StopRun:             p.StopRun,
+		OnDowngrade:         p.noteDowngrade,
+		Restrict:            func() { p.restricted.Store(true); log.Warn("elevated run restricted", "task_id", task.ID) },
+		Attempts:            3, Backoff: time.Second,
 		Alert: func(err error) { log.Error("downgrade handshake", "task_id", task.ID, "error", err) },
 	})
 	go func() { _ = proxy.Serve(ln) }()

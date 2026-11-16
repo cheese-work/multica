@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,17 @@ type launched struct {
 	live  func() int
 }
 
+// launchRestricted is the restricted launcher the next launch() wires into the
+// run. Production has none (restrictedSuccessorLaunch is nil), so a test that
+// needs one sets it.
+var launchRestricted restrictedLaunch
+
+func withRestricted(t *testing.T, r restrictedLaunch) {
+	t.Helper()
+	launchRestricted = r
+	t.Cleanup(func() { launchRestricted = nil })
+}
+
 // launch wires one run the way runTask does.
 func launch(t *testing.T, srv *httptest.Server, tr *wireTrace, live func() int, gh *httptest.Server, profile string, scopes ...string) *launched {
 	t.Helper()
@@ -166,7 +178,7 @@ func launch(t *testing.T, srv *httptest.Server, tr *wireTrace, live func() int, 
 	c := NewClient(srv.URL)
 	c.SetToken("tok")
 	task := Task{ID: "task-1", IssueID: "issue-1", Epoch: 3, Profile: profile, Scopes: scopes, PinnedRepo: "https://github.com/o/r.git"}
-	rp, err := startRunReadProxy(c, task, rb, env, quietLog())
+	rp, err := startRunReadProxy(c, task, rb, env, launchRestricted, quietLog())
 	if err != nil {
 		t.Fatalf("startRunReadProxy: %v", err)
 	}
@@ -262,11 +274,50 @@ func TestLaunchFailedServerFenceKeepsLocalRestrictionAndStub(t *testing.T) {
 
 // successorBackend is the agent across turns: turn 1 is the requesting child,
 // every later turn records what it was given and answers.
+//
+// The backend holds a docker launch grant, the way the original run's env and
+// process do. Every turn after the first records whether it could still use
+// it (launches); a restricted successor is built without it.
 type successorBackend struct {
-	sock    string
-	mu      sync.Mutex
-	prompts []string
-	resumes []string
+	sock     string
+	mu       sync.Mutex
+	prompts  []string
+	resumes  []string
+	launches []bool
+}
+
+// try is a turn attempting the launch capability the run held before the fence.
+func (b *successorBackend) try(holdsGrant bool) {
+	b.mu.Lock()
+	b.launches = append(b.launches, holdsGrant)
+	b.mu.Unlock()
+}
+
+// restrictedSuccessor is the launcher a real restricted launch provides: the
+// successor runs a backend that does not hold the grant.
+func (b *successorBackend) restrictedSuccessor(_ agent.Backend, opts agent.ExecOptions) (agent.Backend, agent.ExecOptions, error) {
+	return &restrictedBackend{parent: b}, opts, nil
+}
+
+// restrictedBackend is the successor's backend: it records its turn on the
+// parent and its launch attempt fails, because it was built without the grant.
+type restrictedBackend struct{ parent *successorBackend }
+
+func (r *restrictedBackend) Execute(ctx context.Context, prompt string, opts agent.ExecOptions) (*agent.Session, error) {
+	r.parent.mu.Lock()
+	r.parent.prompts = append(r.parent.prompts, prompt)
+	r.parent.resumes = append(r.parent.resumes, opts.ResumeSessionID)
+	r.parent.mu.Unlock()
+	r.parent.try(false)
+	return finishedSession("continued"), nil
+}
+
+func finishedSession(out string) *agent.Session {
+	msgCh := make(chan agent.Message)
+	close(msgCh)
+	resCh := make(chan agent.Result, 1)
+	resCh <- agent.Result{Status: "completed", Output: out, SessionID: "sess-2"}
+	return &agent.Session{Messages: msgCh, Result: resCh}
 }
 
 func (b *successorBackend) Execute(ctx context.Context, prompt string, opts agent.ExecOptions) (*agent.Session, error) {
@@ -278,11 +329,8 @@ func (b *successorBackend) Execute(ctx context.Context, prompt string, opts agen
 	if n == 1 {
 		return (&childBackend{sock: b.sock, session: "sess-1"}).Execute(ctx, prompt, opts)
 	}
-	msgCh := make(chan agent.Message)
-	close(msgCh)
-	resCh := make(chan agent.Result, 1)
-	resCh <- agent.Result{Status: "completed", Output: "continued", SessionID: "sess-2"}
-	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+	b.try(true) // the same backend as the requester: it still holds the grant
+	return finishedSession("continued"), nil
 }
 
 func (b *successorBackend) turns() (prompts, resumes []string) {
@@ -322,8 +370,10 @@ func TestLaunchScopeTaskDeliversToARestrictedSuccessor(t *testing.T) {
 			tr := &wireTrace{}
 			srv := wireServer(t, tr, http.StatusOK)
 			gh, live := readGitHub(t)
+			b := &successorBackend{}
+			withRestricted(t, b.restrictedSuccessor)
 			l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", scope)
-			b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+			b.sock = l.env[readproxy.SocketEnv]
 			res, err := l.runTurns(t, b)
 			if err != nil {
 				t.Fatalf("task: %v", err)
@@ -344,6 +394,12 @@ func TestLaunchScopeTaskDeliversToARestrictedSuccessor(t *testing.T) {
 			if resumes[1] != "sess-1" {
 				t.Fatalf("successor resumes %q, want the requester's session sess-1", resumes[1])
 			}
+			b.mu.Lock()
+			launches := append([]bool(nil), b.launches...)
+			b.mu.Unlock()
+			if !reflect.DeepEqual(launches, []bool{false}) {
+				t.Fatalf("successor launch attempts %v, want one, and denied: it received the text, so it must not hold the launch grant", launches)
+			}
 			want := []string{"server.downgrade epoch=3", "server.launch-scopes-ended", "server.deliver"}
 			if got := tr.get(); !reflect.DeepEqual(got, want) {
 				t.Fatalf("server calls %v, want %v", got, want)
@@ -363,8 +419,10 @@ func TestLaunchScopeFailedFenceFailsTheTaskAndReportsNothing(t *testing.T) {
 	tr := &wireTrace{}
 	srv := wireServer(t, tr, http.StatusOK, func(o *wireOpts) { o.downgradeStatus = http.StatusInternalServerError })
 	gh, live := readGitHub(t)
+	b := &successorBackend{}
+	withRestricted(t, b.restrictedSuccessor)
 	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", "docker")
-	b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+	b.sock = l.env[readproxy.SocketEnv]
 	_, err := l.runTurns(t, b)
 	if err == nil || !strings.Contains(err.Error(), "downgrade") {
 		t.Fatalf("err %v, want a downgrade failure naming the stopped run", err)
@@ -388,8 +446,10 @@ func TestLaunchScopeDeliveryFailureFailsTheTask(t *testing.T) {
 	tr := &wireTrace{}
 	srv := wireServer(t, tr, http.StatusInternalServerError)
 	gh, live := readGitHub(t)
+	b := &successorBackend{}
+	withRestricted(t, b.restrictedSuccessor)
 	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", "docker")
-	b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+	b.sock = l.env[readproxy.SocketEnv]
 	_, err := l.runTurns(t, b)
 	if err == nil || !strings.Contains(err.Error(), "downgrade") {
 		t.Fatalf("err %v, want a downgrade failure naming the stopped run", err)
@@ -406,5 +466,52 @@ func TestLaunchStartsNothingForARestrictedRun(t *testing.T) {
 	l := launch(t, srv, tr, live, gh, "restricted")
 	if l.rp != nil || l.env[readproxy.SocketEnv] != "" {
 		t.Fatalf("a restricted run got a read proxy: %+v env=%q", l.rp, l.env[readproxy.SocketEnv])
+	}
+}
+
+// No restricted launcher exists in production yet, so a launch-scope task
+// cannot get a successor that lacks its grants. The handshake is then refused
+// before it starts: the proxy keeps the stub, nothing is fenced, tainted or
+// delivered, and the requester keeps its run. Nothing reaches a process that
+// still holds docker or device access.
+func TestLaunchScopeWithoutARestrictedLauncherDeliversNothing(t *testing.T) {
+	for _, scope := range []string{"docker", "device:usb0"} {
+		t.Run(scope, func(t *testing.T) {
+			tr := &wireTrace{}
+			srv := wireServer(t, tr, http.StatusOK)
+			gh, live := readGitHub(t)
+			l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", scope)
+			res, out := l.run(t)
+			if res.Status != "completed" || out.Full || out.Body != "" || out.SHA == "" {
+				t.Fatalf("run %q child %+v, want the requester to keep running with the stub", res.Status, out)
+			}
+			if got := tr.get(); len(got) != 0 {
+				t.Fatalf("server calls %v, want none: no fence, no taint, no delivery", got)
+			}
+			if l.rp.Restricted() {
+				t.Fatal("the run was fenced although nothing was delivered")
+			}
+		})
+	}
+}
+
+// The launcher cannot build a restricted successor after the fence: the text
+// was withheld from the dead requester, so the task fails and the original
+// backend, which still holds the grants, never receives it.
+func TestLaunchScopeRestrictedLaunchFailureFailsTheTask(t *testing.T) {
+	tr := &wireTrace{}
+	srv := wireServer(t, tr, http.StatusOK)
+	gh, live := readGitHub(t)
+	withRestricted(t, func(agent.Backend, agent.ExecOptions) (agent.Backend, agent.ExecOptions, error) {
+		return nil, agent.ExecOptions{}, errors.New("no sandbox")
+	})
+	l := launch(t, srv, tr, live, gh, "elevated", "repo_write:1234", "docker")
+	b := &successorBackend{sock: l.env[readproxy.SocketEnv]}
+	_, err := l.runTurns(t, b)
+	if err == nil || !strings.Contains(err.Error(), "restricted") {
+		t.Fatalf("err %v, want a failure naming the restricted launch", err)
+	}
+	if prompts, _ := b.turns(); len(prompts) != 1 {
+		t.Fatalf("%d turns, want the requester only: the unrestricted backend must not get the text", len(prompts))
 	}
 }

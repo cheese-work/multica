@@ -130,7 +130,7 @@ func serveWired(t *testing.T, c *Client, tr *wireTrace, launchScopes bool, onDow
 		Admit:        notAdmitted{},
 		Broker:       wireBroker{tr},
 		Restrict:     func() { tr.add("restrict") },
-		LaunchScopes: launchScopes,
+		LaunchScopes: launchScopes, SuccessorRestricted: launchScopes,
 		StopRun: func() error {
 			tr.add("stop-run")
 			if tr.onStop != nil {

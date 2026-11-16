@@ -79,8 +79,8 @@ func wiredProxy(t *testing.T, f elevatedFixture, epoch int64, launchScopes bool)
 		Admit:        denyAll{},
 		Broker:       b,
 		Restrict:     func() { restricted.Store(true) },
-		LaunchScopes: launchScopes,
-		StopRun:      func() error { b.stopped.Store(true); return nil },
+		LaunchScopes: launchScopes, SuccessorRestricted: launchScopes,
+		StopRun: func() error { b.stopped.Store(true); return nil },
 		OnDowngrade: func(res readproxy.Result, ok bool) {
 			if ok {
 				b.delivered.Store(&res)

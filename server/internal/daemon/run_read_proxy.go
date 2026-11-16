@@ -25,12 +25,18 @@ type RunReadProxyConfig struct {
 	// and report the scopes ended; the requester dies with them and the text
 	// goes through OnDowngrade to a successor turn instead.
 	LaunchScopes bool
-	StopRun      func() error
-	OnDowngrade  func(readproxy.Result, bool)
-	Attempts     int
-	Backoff      time.Duration
-	Wait         time.Duration
-	Alert        func(error)
+	// SuccessorRestricted is true when a restricted launch exists for the
+	// successor turn. A launch-scope task without one is refused its downgrade:
+	// the proxy keeps the stub and nothing is fenced, tainted or delivered,
+	// because the text would otherwise reach a process that still holds the
+	// task's docker or device access.
+	SuccessorRestricted bool
+	StopRun             func() error
+	OnDowngrade         func(readproxy.Result, bool)
+	Attempts            int
+	Backoff             time.Duration
+	Wait                time.Duration
+	Alert               func(error)
 }
 
 type runFenceBroker interface {
@@ -54,6 +60,9 @@ func (c *Client) NewRunReadProxy(cfg RunReadProxyConfig) *readproxy.Proxy {
 		DowngradeWait: cfg.Wait, OnDowngrade: cfg.OnDowngrade}
 	if cfg.Broker != nil {
 		p.Own = cfg.Broker
+		if cfg.LaunchScopes && !cfg.SuccessorRestricted {
+			return p
+		}
 		fence := RunFence{Broker: cfg.Broker, Restrict: cfg.Restrict, KeepRun: true}
 		if cfg.LaunchScopes {
 			fence = RunFence{
