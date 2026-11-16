@@ -104,6 +104,10 @@ Multica refuse un run dérivé sur une issue qui a déjà démarré 30 runs au c
 
 Définissez `MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS` (par défaut `30` ; `0` désactive la garde) sur le serveur pour modifier la limite.
 
+Lorsque l'approbateur automatique du budget de runs est activé (paramètre d'espace de travail `run_budget_auto`), une carte de la garde suit ses règles. Si l'issue a progressé au cours des 7 derniers jours et ne présente aucune anomalie (boucle, fenêtre sans effet, pic de tokens, va-et-vient), le serveur approuve lui-même les 10 runs supplémentaires, exécute une fois le déclencheur refusé, clôt la carte comme décidée et écrit un commentaire d'audit qui nomme `auto-approver v1`. La même enveloppe quotidienne et le même interrupteur s'appliquent. Une boucle ou une issue sans progrès garde sa carte pour une personne. Le serveur réexamine aussi chaque minute toutes les cartes de la garde ouvertes : les cartes qui attendaient lorsque vous avez activé l'approbateur automatique sont approuvées au passage suivant.
+
+Le paramètre d'espace de travail `run_guard.mode` (`off`, `warn` ou `block` ; par défaut `block`) définit ce que fait la garde à la limite. `block` refuse le run comme décrit ci-dessus. `warn` ne refuse rien, n'ouvre aucune carte et enregistre un refus évité par issue et par jour ICT, que le brief de décisions d'agents liste comme runs que la garde aurait arrêtés. `off` désactive la garde pour l'espace de travail. Modifiez-le avec `multica config propose workspace.settings --set 'run_guard:={"mode":"warn"}'`. La variable d'environnement ci-dessus fixe toujours la limite.
+
 ## Référence des motifs d'échec
 
 Les motifs d'échec affichés dans le journal d'exécution et dans les [Statistiques](/analytics#onglet-erreurs) se répartissent en deux groupes : les codes sans préfixe sont enregistrés par la plateforme ; les codes `agent_error.*` sont classés à partir des erreurs propres à l'outil de codage IA.
