@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -18,36 +19,45 @@ import (
 // lists must be equal.
 func TestActionPreviewTypesMatchWebClientList(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var files []*ast.File
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
+	}
 	consts := map[string]string{}
 	var cases []ast.Expr
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				switch n := n.(type) {
-				case *ast.ValueSpec:
-					for i, name := range n.Names {
-						if lit, ok := valueAt(n.Values, i).(*ast.BasicLit); ok && lit.Kind == token.STRING {
-							consts[name.Name], _ = strconv.Unquote(lit.Value)
-						}
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.ValueSpec:
+				for i, name := range n.Names {
+					if lit, ok := valueAt(n.Values, i).(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						consts[name.Name], _ = strconv.Unquote(lit.Value)
 					}
-				case *ast.FuncDecl:
-					if n.Name.Name == "actionPreviewFields" {
-						for _, stmt := range n.Body.List {
-							if sw, ok := stmt.(*ast.SwitchStmt); ok {
-								for _, c := range sw.Body.List {
-									cases = append(cases, c.(*ast.CaseClause).List...)
-								}
+				}
+			case *ast.FuncDecl:
+				if n.Name.Name == "actionPreviewFields" {
+					for _, stmt := range n.Body.List {
+						if sw, ok := stmt.(*ast.SwitchStmt); ok {
+							for _, c := range sw.Body.List {
+								cases = append(cases, c.(*ast.CaseClause).List...)
 							}
 						}
 					}
 				}
-				return true
-			})
-		}
+			}
+			return true
+		})
 	}
 	server := map[string]bool{}
 	for _, expr := range cases {
