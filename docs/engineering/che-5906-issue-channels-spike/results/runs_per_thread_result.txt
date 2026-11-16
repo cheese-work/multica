@@ -1,0 +1,16 @@
+runs with comment trigger 4123 unmapped 0 threads 2454 trigger author type {'agent': 3991, 'member': 131, 'system': 1}
+runs per thread, 7 days: n=2454 p50=1.0 p90=3.0 p95=4.0 p99=7.0 max=26 mean=1.68
+max runs per thread in any rolling 24h: n=2454 p50=1.0 p90=3.0 p95=4.0 p99=7.0 max=26 mean=1.68
+member-authored trigger runs per thread (7d, threads with >=1): n=82 p50=1.0 p90=3.0 p95=4.0 p99=5.2 max=6 mean=1.60
+agent-authored trigger runs per thread (7d, threads with >=1): n=2397 p50=1.0 p90=3.0 p95=4.0 p99=7.0 max=26 mean=1.66
+top threads [('01a1be9c', 26, 26), ('01a1bdc3', 15, 15), ('01a1c2e5', 15, 15), ('01a1bf53', 14, 14), ('01a1b60f', 14, 14)]
+M=3: threads over M in 24h = 181 of 2454
+M=4: threads over M in 24h = 108 of 2454
+M=5: threads over M in 24h = 58 of 2454
+M=6: threads over M in 24h = 38 of 2454
+M=8: threads over M in 24h = 17 of 2454
+M=10: threads over M in 24h = 10 of 2454
+M=15: threads over M in 24h = 1 of 2454
+M=20: threads over M in 24h = 1 of 2454
+M=25: threads over M in 24h = 1 of 2454
+M=30: threads over M in 24h = 0 of 2454

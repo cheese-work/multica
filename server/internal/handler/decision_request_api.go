@@ -75,6 +75,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	if input.Action == nil {
+		if refusal := deadBoundWriteCardRefusal(parsed); refusal != "" {
+			writeErrorCode(writer, http.StatusBadRequest, "bound_write_card_refused", refusal)
+			return
+		}
+	}
 	hints := decisiontx.LintAsk(parsed)
 	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
 	if !ok {
@@ -92,6 +98,25 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
 		return
+	}
+	heldHints, ok := checkHeldSettingsAsk(writer, parsed, workspace.Settings)
+	if !ok {
+		return
+	}
+	hints = append(hints, heldHints...)
+	lintMode := "off"
+	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
+		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
+		if !ok {
+			return
+		}
+		hints = append(hints, cannotDoHints...)
+		lintHints, ok := checkCardLint(writer, parsed, input.EscalationClass, workspace.Settings)
+		if !ok {
+			return
+		}
+		hints = append(hints, lintHints...)
+		lintMode, _ = decisiontx.CardLintModeFromSettings(workspace.Settings) // checkCardLint read it
 	}
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
@@ -163,12 +188,25 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
 	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// deadBoundWriteCardRefusal is the one-line refusal of a card that asks the
+// owner to "Apply this change to <field>?" for a field only a passkey action
+// can write (CHE-5843). The write is refused for every machine credential
+// (CHE-3482), so the approval would authorize nothing and cost a second card.
+func deadBoundWriteCardRefusal(ask decisiontx.Ask) string {
+	field, ok := decisiontx.PasskeyOnlyBoundWriteField(ask.Decision)
+	if !ok {
+		return ""
+	}
+	command, _ := decisiontx.PasskeyOnlyCommand(field, "", "")
+	return "a card cannot authorize a write to " + field + "; run `" + command + "`, then send the action file with `multica decision request --action-file <out>`"
 }
 
 // configChangeWords matches a decision or option that reads like a change to

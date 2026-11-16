@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"942_issue_workflow_lint_override_log_idx":                  "idx_issue_workflow_lint_override_workflow",
 	"9999918_skill_version_index":                               "idx_skill_version_skill_version",
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
 	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
@@ -160,6 +161,7 @@ var concurrentIndexCleanups = map[string]string{
 	"997_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
+	"9999939_agent_task_handoff_dispatch_idx":                   "agent_task_queue_handoff_dispatch_uidx",
 	"999f_task_supplement_replay_due_idx":                       "task_supplement_replay_due_idx",
 	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
@@ -168,6 +170,7 @@ var concurrentIndexCleanups = map[string]string{
 	"99963_browser_lease_one_holder_idx":                        "browser_lease_one_holder_uidx",
 	"99973_system1_epoch_open_idx":                              "system1_epoch_open",
 	"99964_browser_lease_epoch_idx":                             "browser_lease_instance_epoch_uidx",
+	"99964b_browser_gateway_credential_hash_idx":                "browser_gateway_credential_hash_uidx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
@@ -590,6 +593,13 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		IndexRegclass: "ci_failure_event_created_at_idx",
 		TableRegclass: "ci_failure_event",
 		Columns:       []string{"created_at"},
+	},
+	"9999939_agent_task_handoff_dispatch_idx": {
+		IndexRegclass: "agent_task_queue_handoff_dispatch_uidx",
+		TableRegclass: "agent_task_queue",
+		Unique:        true,
+		Columns:       []string{"handoff_dispatch_id"},
+		Predicate:     "handoff_dispatch_id IS NOT NULL",
 	},
 	"9992_system1_observation_ci_event_subject_idx": {
 		IndexRegclass: "system1_observation_ci_event_subject",

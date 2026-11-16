@@ -70,19 +70,41 @@ type RunFence struct {
 	StopRun func() error
 	// EndLaunchScopes reports that exit to the server.
 	EndLaunchScopes func(context.Context) error
+	// KeepRun leaves the run alive and skips StopRun and EndLaunchScopes. It is
+	// only for a task that holds no docker or device: scope, where the server
+	// finishes the fence without either step (isLaunchScope). The downgrade
+	// handshake needs it: the process that asked is the one that must receive
+	// the response, so stopping the run would kill the recipient.
+	KeepRun bool
+	// ServerFence, when set, fences the task on the server. It runs after the
+	// local restriction and before launch scopes are reported ended: the server
+	// accepts that report only from a fenced task. A failure never undoes the
+	// local restriction and keeps the report from going out.
+	ServerFence func(context.Context) error
 }
 
-// Run restricts, stops new and unsent operations, ends the run, and waits for
-// started operations to report. Launch scopes are reported ended only after the
+// Run restricts, stops new and unsent operations, ends the run (unless KeepRun),
+// and waits for started operations to report. Launch scopes are reported ended only after the
 // processes exited; a run that will not stop leaves the fence open (fail closed).
 func (f RunFence) Run(ctx context.Context) error {
 	f.Restrict()
 	f.Broker.Fence()
-	var stopErr, endErr error
-	if stopErr = f.StopRun(); stopErr == nil {
-		endErr = f.EndLaunchScopes(ctx)
+	var fenceErr, stopErr, endErr error
+	if f.ServerFence != nil {
+		fenceErr = f.ServerFence(ctx)
 	}
-	return errors.Join(stopErr, endErr, f.Broker.Drain(ctx))
+	if !f.KeepRun {
+		if stopErr = f.StopRun(); stopErr == nil && fenceErr == nil {
+			endErr = f.EndLaunchScopes(ctx)
+		}
+	}
+	return errors.Join(fenceErr, stopErr, endErr, f.Broker.Drain(ctx))
+}
+
+// RunWithServerFence is Run with the server fence step supplied by the caller.
+func (f RunFence) RunWithServerFence(ctx context.Context, serverFence func(context.Context) error) error {
+	f.ServerFence = serverFence
+	return f.Run(ctx)
 }
 
 // WatchFence polls the server until the task leaves its claimed epoch's

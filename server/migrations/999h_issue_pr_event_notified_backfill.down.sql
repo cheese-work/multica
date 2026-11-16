@@ -1,0 +1,1 @@
+-- The backfill is not reversible: archived duplicate rows stay archived.

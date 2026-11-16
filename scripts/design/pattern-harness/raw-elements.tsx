@@ -1,7 +1,7 @@
 // S0b raw-element pages (CHE-5534, S4b-SS1): the real component, seeded with query data, one page per file.
 // Not a pattern: these exist so scripts/design/capture-frame.mjs can screenshot files the S4b audit lists.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { create } from "zustand";
 import { setApiInstance } from "@multica/core/api";
 import { registerAuthStore } from "@multica/core/auth";
@@ -21,10 +21,8 @@ import { WakeupEventRow } from "../../../packages/views/chat/components/wakeup-e
 import { WakeupFields } from "../../../packages/views/issues/components/wakeup-fields";
 import { PillMenu, Segmented, AgentChoice, ActorChoice, AssigneeChoice } from "../../../packages/views/issues/components/wakeup-pickers";
 import { WorkspaceWakeupRules } from "../../../packages/views/settings/components/workspace-wakeup-rules";
-import { ChatSearch } from "../../../packages/views/chat/components/chat-search";
 import { ConfigChangeViewer } from "../../../packages/views/chat/components/config-change-viewer";
 import { WORKSPACE_WAKEUP_SCOPE, wakeupDefinitionsOptions } from "@multica/core/workspace/wakeup-definitions";
-import { chatSearchKeys, useChatSearchStore } from "@multica/core/chat/search";
 import { squadListOptions } from "../../../packages/core/workspace/queries";
 import * as stub from "./workspace-stub"; // the aliased core/workspace/queries the picker components read
 import { ConditionParams } from "../../../packages/views/issues/components/wakeup-condition-params";
@@ -34,6 +32,16 @@ import { NeedsYouList } from "../../../packages/views/chat/components/needs-you-
 import { QuickAgentBar } from "../../../packages/views/chat/components/quick-agent-bar";
 import { DelegatedWritesSection } from "../../../packages/views/settings/components/delegated-writes-section";
 import { chatKeys } from "@multica/core/chat/queries";
+import { TelegramTab } from "../../../packages/views/settings/components/telegram-tab";
+import { SlackTab } from "../../../packages/views/settings/components/slack-tab";
+import { LarkTab } from "../../../packages/views/settings/components/lark-tab";
+import { WecomTab } from "../../../packages/views/settings/components/wecom-tab";
+import { DingTalkTab } from "../../../packages/views/settings/components/dingtalk-tab";
+import { telegramKeys } from "@multica/core/telegram";
+import { slackKeys } from "@multica/core/slack";
+import { larkKeys } from "@multica/core/lark";
+import { wecomKeys } from "@multica/core/wecom";
+import { dingtalkKeys } from "@multica/core/dingtalk";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
 const WS = "ws-harness";
@@ -93,6 +101,9 @@ export function seedRawElements(qc: QueryClient) {
     getDelegatedWrites: async (ws: string) => DELEGATED[ws] ?? null,
     updateDelegatedWrites: async (_ws: string, rule: unknown) => rule,
     listChatPinnedAgents: async () => PINNED,
+    // Only the polled lists (lark, dingtalk groups) can refetch before the capture; the rest stay seeded.
+    listLarkInstallations: async () => LARK_LIST,
+    listDingTalkGroups: async () => DT_GROUPS,
   } as never);
   // Components read the signed-in user (assignee pickers, decision card); no real auth runs here.
   registerAuthStore(create(() => ({ user: { id: "u1", name: "Cheese", email: "c@example.com" }, isLoading: false })) as never);
@@ -217,14 +228,10 @@ export function ConditionParamsPage() {
   );
 }
 
-// ---- SS2 (CHE-5535): wakeup-fields, wakeup-pickers, workspace-wakeup-rules, chat-search, config-change-viewer ----
+// ---- SS2 (CHE-5535): wakeup-fields, wakeup-pickers, workspace-wakeup-rules, config-change-viewer ----
 const DEF = (key: string, name: string, instruction: string, trigger: { kind: string; events?: string[] }) => ({
   scope: "workspace", scope_id: WS, rule_key: key, root: true, revision: "7", updated_at: NOW, redacted: false,
   config: { v: 1, name, instruction, trigger, target: { type: "agent", id: AGENT }, mode: "once", expiry: { after_seconds: 7 * 86400 } },
-});
-const HIT = (n: number, title: string, snippet: string | null, extra: Record<string, unknown> = {}) => ({
-  session_id: `cs-${n}`, title, agent_id: AGENT, message_id: snippet ? `msg-${n}` : null, snippet: snippet ?? "",
-  updated_at: "2026-11-12T10:20:00Z", archived: false, ...extra,
 });
 
 function seedSS2(set: (key: readonly unknown[], data: unknown) => void) {
@@ -239,15 +246,6 @@ function seedSS2(set: (key: readonly unknown[], data: unknown) => void) {
       DEF("4f1c2d3e-0000-4000-8000-000000000001", "Nudge stalled design reviews", "Check the doop frame for an open Cheese comment and reply in thread.", { kind: "event", events: ["comment.created"] }),
       DEF("4f1c2d3e-0000-4000-8000-000000000002", "Weekly capture drift check", "Re-run the pattern harness and report any frame that changed.", { kind: "event", events: ["task.completed"] }),
     ],
-  });
-  useChatSearchStore.setState({ queries: { page: "frame" } });
-  set(chatSearchKeys.query(WS, "frame"), {
-    pages: [{ next_cursor: null, results: [
-      HIT(1, "Reference frame layout", null),
-      HIT(2, "Capture batch SS2", "…add the 1440 and 390 shots to the existing reference frame, labelled with the file path…"),
-      HIT(3, "Patterns page notes", "…each frame note names the pattern id and the source file…", { archived: true }),
-    ] }],
-    pageParams: [null],
   });
 }
 
@@ -306,26 +304,6 @@ export function WorkspaceWakeupRulesPage() {
   return (
     <div className="max-w-[720px] p-6">
       <WorkspaceWakeupRules workspaceId={WS} canManage />
-    </div>
-  );
-}
-
-export function ChatSearchPage() {
-  const sessions = [{ id: "cs-2", agent_id: AGENT, title: "Capture batch SS2", pinned: false }];
-  return (
-    <div className="w-[360px] p-6">
-      <ChatSearch
-        scope="page"
-        sessions={sessions as never}
-        agents={[{ id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", archived_at: null }] as never}
-        activeSessionId="cs-2"
-        onOpenHit={noop}
-        onUnarchive={noop}
-        onTogglePin={noop}
-        onArchive={noop}
-      >
-        <p className="px-2 py-1.5 text-caption text-muted-foreground">Chat list shows here while the field is empty.</p>
-      </ChatSearch>
     </div>
   );
 }
@@ -474,5 +452,92 @@ export function DelegatedWritesPage() {
       <Label>owner or admin, editor opened (decision required)</Label>
       <DelegatedWritesSection wsId="ws-dw-edit" canEdit />
     </div>
+  );
+}
+
+// ---- SS4 (CHE-5537): dingtalk-tab, lark-tab, slack-tab, telegram-tab, wecom-tab ----
+// Each tab reads one installation list for the one workspace the harness has, so each variant gets its own
+// client (seeded, never stale) and the page stacks the states: not enabled, empty, listed.
+const T0 = "2026-11-13T02:30:00Z";
+const inst = (id: string, agent: string, extra: Record<string, unknown> = {}) => ({
+  id, workspace_id: WS, agent_id: agent, installer_user_id: "u1", status: "active", installed_at: T0, created_at: T0, updated_at: T0, ...extra,
+});
+const OFF = { installations: [], configured: false };
+const EMPTY = { installations: [], configured: true, install_supported: true };
+const listed = (installations: unknown[], extra: Record<string, unknown> = {}) => ({ installations, configured: true, install_supported: true, ...extra });
+const TG = listed([
+  inst("tg1", AGENT, { bot_username: "design_capture_bot" }),
+  inst("tg2", "agent-ux", { bot_username: "terra_review_bot", status: "revoked" }),
+]);
+const SL = listed([inst("sl1", AGENT, { team_id: "T01", bot_user_id: "U01" }), inst("sl2", "agent-ops", { team_id: "T01", bot_user_id: "U02", status: "revoked" })]);
+const LARK_LIST = listed([
+  inst("lk1", AGENT, { app_id: "cli_a1", bot_open_id: "ou_1", region: "feishu", first_message_received_at: "2026-11-13T03:10:00Z" }),
+  inst("lk2", "agent-ux", { app_id: "cli_a2", bot_open_id: "ou_2", region: "lark", first_message_received_at: "2026-11-13T03:10:00Z" }),
+  inst("lk3", "agent-ops", { app_id: "cli_a3", bot_open_id: "ou_3", region: "lark", status: "revoked" }),
+]);
+const WC = listed([
+  { id: "wc1", workspace_id: WS, agent_id: AGENT, bot_id: "aibot-1", installer_user_id: "u1", status: "active" },
+  { id: "wc2", workspace_id: WS, agent_id: "agent-ops", bot_id: "aibot-2", installer_user_id: "u1", status: "revoked" },
+], { scan_install_supported: true });
+const DT = listed([inst("dt1", AGENT, { bound_dingtalk_user_ids: ["staff-1"] }), inst("dt2", "agent-ux"), inst("dt3", "agent-ops", { status: "revoked" })]);
+const DT_GROUPS = {
+  group_discovery_supported: true,
+  groups: [
+    { conversation_id: "cv1", conversation_title: "Design review", bots: [{ installation_id: "dt1", agent_id: AGENT, bot_name: "Design capture", bot_identity_issue: "", last_active_at: "2026-11-14T03:00:00Z", mention_count: 14 }] },
+    { conversation_id: "cv2", conversation_title: "Release room", bots: [{ installation_id: "dt1", agent_id: AGENT, bot_name: "Design capture", bot_identity_issue: "", last_active_at: "2026-11-10T08:00:00Z", mention_count: 3 }] },
+  ],
+  inactive_group_counts: { dt1: 2 },
+  bot_identities: { dt1: { installation_id: "dt1", agent_id: AGENT, bot_name: "Design capture", bot_identity_issue: "" }, dt2: { installation_id: "dt2", agent_id: "agent-ux", bot_name: "", bot_identity_issue: "missing_permission" } },
+};
+
+function Variant({ label, seed, children }: { label: string; seed: (qc: QueryClient) => void; children: ReactNode }) {
+  const [qc] = useState(() => {
+    const c = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    c.setQueryData(stub.agentListOptions(WS).queryKey, AGENTS);
+    c.setQueryData(agentListOptions(WS).queryKey, AGENTS);
+    c.setQueryData(stub.memberListOptions(WS).queryKey, [{ id: "m1", user_id: "u-owner", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }]);
+    seed(c);
+    return c;
+  });
+  return (
+    <section>
+      <Label>{label}</Label>
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    </section>
+  );
+}
+
+function IntegrationTabPage({ keyOf, off, empty, full, fullLabel, children, extra }: {
+  keyOf: (ws: string) => readonly unknown[]; off: unknown; empty: unknown; full: unknown; fullLabel: string; children: ReactNode;
+  extra?: (qc: QueryClient) => void;
+}) {
+  const v = (label: string, data: unknown, grow?: (qc: QueryClient) => void) => (
+    <Variant label={label} seed={(qc) => { qc.setQueryData(keyOf(WS), data); grow?.(qc); }}>{children}</Variant>
+  );
+  return (
+    <div className="grid max-w-[760px] gap-2 p-6">
+      {v(fullLabel, full, extra)}
+      {v("no installations yet", empty)}
+      {v("secret key not set (not enabled)", off)}
+    </div>
+  );
+}
+
+export function TelegramTabPage() {
+  return <IntegrationTabPage keyOf={telegramKeys.installations} off={OFF} empty={EMPTY} full={TG} fullLabel="owner: 1 active bot, 1 revoked"><TelegramTab /></IntegrationTabPage>;
+}
+export function SlackTabPage() {
+  return <IntegrationTabPage keyOf={slackKeys.installations} off={OFF} empty={EMPTY} full={SL} fullLabel="owner: 1 active app, 1 revoked"><SlackTab /></IntegrationTabPage>;
+}
+export function LarkTabPage() {
+  return <IntegrationTabPage keyOf={larkKeys.installations} off={OFF} empty={EMPTY} full={LARK_LIST} fullLabel="owner: Feishu verified, Lark verified, 1 revoked"><LarkTab /></IntegrationTabPage>;
+}
+export function WecomTabPage() {
+  return <IntegrationTabPage keyOf={wecomKeys.installations} off={OFF} empty={EMPTY} full={WC} fullLabel="owner: 1 active bot, 1 revoked"><WecomTab /></IntegrationTabPage>;
+}
+export function DingTalkTabPage() {
+  return (
+    <IntegrationTabPage keyOf={dingtalkKeys.installations} off={OFF} empty={EMPTY} full={DT} fullLabel="owner: 2 active robots with groups and identity states, 1 revoked"
+      extra={(qc) => qc.setQueryData(dingtalkKeys.groups(WS), DT_GROUPS)}><DingTalkTab /></IntegrationTabPage>
   );
 }

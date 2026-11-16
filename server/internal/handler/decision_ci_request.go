@@ -97,6 +97,16 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	hints, ok := checkAgentCannotDo(w, parsed, workspace.Settings)
+	if !ok {
+		return
+	}
+	lintHints, ok := checkCardLint(w, parsed, "deploy", workspace.Settings)
+	if !ok {
+		return
+	}
+	hints = append(hints, lintHints...)
+	lintMode, _ := decisiontx.CardLintModeFromSettings(workspace.Settings) // checkCardLint read it
 	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask})) > maxCommentContentBytes {
 		writeError(w, http.StatusBadRequest, "ask is too long")
@@ -114,7 +124,7 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 	card := decisionRequestInput{
 		HumanUserID: human, Ask: ask, Options: parsed.Options, AskJSON: askJSON, EscalationClass: "deploy",
 		SourceCommentID: sourceCommentID, Parsed: &parsed, Slug: workspace.Slug, Kind: decisiontx.KindDecision,
-		Fingerprint: ciFingerprintPrefix + candidateSHA + ":" + candidateAt.UTC().Format(time.RFC3339),
+		CardLintMode: lintMode, Fingerprint: ciFingerprintPrefix + candidateSHA + ":" + candidateAt.UTC().Format(time.RFC3339),
 	}
 	actor := parseUUID(r.Header.Get("X-User-ID"))
 	var result decisionRequestResult
@@ -173,14 +183,14 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if replayed {
-		writeJSON(w, http.StatusOK, decisionRequestResponse{DecisionRequest: result.Request})
+		writeJSON(w, http.StatusOK, decisionRequestResponse{DecisionRequest: result.Request, Hints: hints})
 		return
 	}
 	for _, done := range withdrawn {
 		h.publishDecisionWithdrawal(uuidToString(issue.WorkspaceID), done)
 	}
 	h.publishRunBudgetDecisions(issue, []decisionRequestResult{result})
-	writeJSON(w, http.StatusCreated, decisionRequestResponse{DecisionRequest: result.Request})
+	writeJSON(w, http.StatusCreated, decisionRequestResponse{DecisionRequest: result.Request, Hints: hints})
 }
 
 // withdrawSupersededCICard cancels an older candidate's open ask as the PAT's

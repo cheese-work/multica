@@ -144,9 +144,13 @@ func digestWriteError(op string, err error, candidate, expectedBefore string) er
 // vote issue, checked server-side.
 var voteIssueUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// checkBindingFlags rejects a malformed --vote-issue, --decision-id or
-// --print-hash request before any HTTP call. The two bindings are alternatives.
-func checkBindingFlags(cmd *cobra.Command) error {
+// checkBindingFlags rejects a malformed --vote-issue or --print-hash request,
+// and any --decision-id (field is passkey-only), before any HTTP call. The two
+// bindings are alternatives.
+func checkBindingFlags(cmd *cobra.Command, field, target string) error {
+	if err := refusePasskeyOnlyDecisionID(cmd, field, target, ""); err != nil {
+		return err
+	}
 	voteSet, decisionSet := cmd.Flags().Changed("vote-issue"), cmd.Flags().Changed("decision-id")
 	digestSet := cmd.Flags().Changed("expected-before-digest")
 	if voteSet && decisionSet {

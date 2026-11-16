@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS weekly_run_guard_refusal_open_uidx;

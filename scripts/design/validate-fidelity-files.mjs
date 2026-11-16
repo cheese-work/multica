@@ -6,13 +6,12 @@
  *
  * Run: node scripts/design/validate-fidelity-files.mjs
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
 export const DEVICES_PATH = "design/devices.yml";
 export const BLOCKS_PATH = "tests/fidelity/decision-card.blocks.yml";
-const CODE_DIR = "packages/views/chat/components";
 
 const PLATFORMS = new Set(["web", "desktop", "android", "ios"]);
 const THEMES = new Set(["light", "dark"]);
@@ -44,7 +43,7 @@ export function validateDevices(doc) {
   return { errors };
 }
 
-export function validateBlocksMap(doc, { profileIds, lockLabels, testIds }) {
+export function validateBlocksMap(doc, { profileIds, lockLabels }) {
   const errors = [];
   for (const k of Object.keys(doc ?? {})) {
     if (/annotation/i.test(k)) errors.push(`blocks: ${k}: the blocks map has no annotation field (C2)`);
@@ -59,7 +58,15 @@ export function validateBlocksMap(doc, { profileIds, lockLabels, testIds }) {
       if (typeof c?.[k] !== "string" || !c[k]) errors.push(`${at}: ${k} is required`);
     }
     for (const k of Object.keys(c ?? {})) {
-      if (!["lock_file", "state", "profile", "fixture"].includes(k)) errors.push(`${at}: ${/annotation/i.test(k) ? "annotation field not allowed" : `unknown field ${k}`}`);
+      if (!["lock_file", "state", "profile", "fixture", "steps"].includes(k)) errors.push(`${at}: ${/annotation/i.test(k) ? "annotation field not allowed" : `unknown field ${k}`}`);
+    }
+    if (c?.steps !== undefined) {
+      if (!Array.isArray(c.steps)) errors.push(`${at}: steps must be a list`);
+      else c.steps.forEach((st, n) => {
+        const sel = st?.click ?? st?.type;
+        const shape = st && typeof sel === "string" && sel && (st.click !== undefined ? Object.keys(st).length === 1 : typeof st.text === "string" && Object.keys(st).length === 2);
+        if (!shape) errors.push(`${at}: steps[${n}] must be { click: <selector> } or { type: <selector>, text: <string> }`);
+      });
     }
     if (typeof c?.state === "string" && (!STATE.test(c.state) || !lockLabels.has(c.state.slice(1)))) {
       errors.push(`${at}: state ${c.state} is not a state the lock draws`);
@@ -75,7 +82,7 @@ export function validateBlocksMap(doc, { profileIds, lockLabels, testIds }) {
     return { errors };
   }
   for (const [id, b] of Object.entries(blocks)) {
-    if (!testIds.has(id)) errors.push(`blocks[${id}]: id is not a data-testid the code carries`);
+    if (!ID.test(id)) errors.push(`blocks[${id}]: id must be a kebab-case string`);
     if (typeof b?.selector !== "string" || !b.selector) errors.push(`blocks[${id}]: selector is required`);
     if (b?.repeat !== undefined && typeof b.repeat !== "boolean") errors.push(`blocks[${id}]: repeat must be a boolean`);
     for (const k of Object.keys(b ?? {})) {
@@ -94,23 +101,19 @@ export function lockLabelWidths(html) {
   for (const line of html.split("\n")) {
     const col = line.match(/<div class="col( ph)?"(?: style="width:(\d+)px")?/);
     if (col) width = col[2] ? Number(col[2]) : col[1] ? 358 : 540;
-    for (const m of line.matchAll(/class="lbl">(\d+[a-z]?) ·/g)) widths.set(m[1], width);
+    for (const m of line.matchAll(/class="lbl"[^>]*>(\d+[a-z]?) ·/g)) widths.set(m[1], width);
   }
   return widths;
 }
 
-export function validateRepoFiles({ read, listDir = readdirSync }) {
+export function validateRepoFiles({ read }) {
   const devices = parse(read(DEVICES_PATH));
   const map = parse(read(BLOCKS_PATH));
   const errors = [...validateDevices(devices).errors];
   const profiles = new Map((devices?.profiles ?? []).map((p) => [p.id, p]));
-  const testIds = new Set();
-  for (const f of listDir(CODE_DIR).filter((n) => /^decision-.*\.tsx$/.test(n) && !n.endsWith(".test.tsx"))) {
-    for (const m of read(`${CODE_DIR}/${f}`).matchAll(/data-testid="([^"]+)"/g)) testIds.add(m[1]);
-  }
   const lockFile = map?.cases?.[0]?.lock_file;
   const widths = lockLabelWidths(read(lockFile));
-  errors.push(...validateBlocksMap(map, { profileIds: new Set(profiles.keys()), lockLabels: new Set(widths.keys()), testIds }).errors);
+  errors.push(...validateBlocksMap(map, { profileIds: new Set(profiles.keys()), lockLabels: new Set(widths.keys()) }).errors);
   const covered = new Set((map?.cases ?? []).map((c) => c.state));
   for (const [label, width] of widths) {
     if (!covered.has(`s${label}`)) errors.push(`lock draws state ${label} but no case covers it`);

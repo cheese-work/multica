@@ -10,7 +10,7 @@ B v9 replaces fold direction A of CHE-4431 (design PR 1183, `decision-card-fold`
 
 It replaces the v4 lock in this folder (`updatedAt` `2026-11-12T01:38:19.680Z`, UX verdict `01a1cd6c-fd03-70c1-bd06-9ff0417b7698`). The v4 picks `01a1cd63-7807-7887-ae08-22e9e410cf81` and `01a1cce0-7263-747f-ba85-d09e4ac44ae4` are superseded by the 13 Nov 2026 pick above.
 
-- `direction-b.html`: the standalone export of the frame, unchanged (59468 bytes). Its hash is `screens[0].content_sha256` in `LOCK.json`. The live frame now reads a later `updatedAt` (`2026-11-12T10:42:54.370Z`) only because doop added eight `data-doop-id` attributes; without them the HTML is byte-identical to this file.
+- `direction-b.html`: the standalone export of the frame (61327 bytes). Its hash is `screens[0].content_sha256` in `LOCK.json`. The live frame reads `updatedAt` `2026-11-15T04:21:03.679Z` (15 Nov 2026 11:21 ICT, [CHE-5845](mention://issue/01a1dabc-f83c-713f-9edd-94a4d4a12315)) and carries `data-doop-id` attributes that doop adds; without them the HTML is byte-identical to this file. CHE-5845 only added the marks below to the v9 export: rendered pixels are identical (full page and all 27 states, diff 0).
 - Shows: Approve and Reject as two selectable choices, none chosen when the card opens, one joined control, also in a batch; one composer that is always there; one primary button whose label follows the choice and ends with its send key (`(⌘ + ⏎)` on macOS, `(Ctrl + ⏎)` on Windows and Linux); plain-language ask, "if you do nothing" line, before → after rows, JSON behind Details; a config-change card that shows the diff only (old value struck through, new value in a chip) with Show full; decided cards collapsed to one block with Revoke while revocable; a collapse animation that respects reduced motion; one request as one record with a DM view and an issue view; one batch card per goal; the state table; AgentX CLI shape and DevX action template with its failing test.
 
 ## Button rule
@@ -46,3 +46,13 @@ It replaces the v4 lock in this folder (`updatedAt` `2026-11-12T01:38:19.680Z`, 
 - No live keyboard, passkey or assistive-technology flow was tested (static HTML).
 - Light theme, loading, empty and error states are not mocked.
 - Density: 13 cards on one tall frame. Reviewers scored it 5; the cards are one state each, not one screen.
+
+## Lock marks (CHE-5793 step 1b)
+
+The lock carries three marks so the fidelity map can tell UI from notes.
+
+- `data-state="sN"`: on the root element of each of the 27 states (s1, s1b, s2 to s7, s7b, s8 to s21, s23 to s26). Each has a `data-profile` that is an `id` in `design/devices.yml` (desktop 540 px, phone 358 px, desktop-wide 520 px).
+- `data-annotation`: on every non-UI note (labels, headings, sub-lines, panels, the state table, the s26 trailing meta). An annotation holds no control and sits inside no state root.
+- s25 is three siblings (one state); a wrapper `div` carries the mark. It adds no layout change.
+- s22 (collapse animation loop, 584 px) has no matching profile and no blocks-map case. It has no controls and is `aria-hidden`, so it is annotated as a whole; its stills are s1 and s8. The UX reviewer confirms this call.
+- Check: `node scripts/design/check-lock-marks.mjs` (test: `node --test scripts/design/check-lock-marks.test.mjs`).

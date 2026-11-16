@@ -97,7 +97,7 @@ var agentEnvCmd = &cobra.Command{
 
 var agentEnvGetCmd = &cobra.Command{
 	Use:   "get <agent-id>",
-	Short: "Print an agent's custom_env as a JSON map (agent owner or workspace owner/admin; every call is recorded)",
+	Short: "List an agent's env keys and their source; values are never shown (agent owner or workspace owner/admin)",
 	Args:  exactArgs(1),
 	RunE:  runAgentEnvGet,
 }
@@ -196,7 +196,7 @@ func init() {
 	agentUpdateCmd.Flags().String("instructions-file", "", "Read the new instructions byte-for-byte from a file")
 	agentUpdateCmd.Flags().String("expected-before-digest", "", "Owner-only guarded write: sha256 hex of the RAW UTF-8 bytes of the instructions you believe are live (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). The server swaps atomically and answers 409 with no write when it is stale. Requires --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments) and forbids every other update flag. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	agentUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
-	agentUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
+	agentUpdateCmd.Flags().String("decision-id", "", "Refused: this field needs a passkey-approved action, not a decision card. The command stops and names the \"multica config propose\" command to run.")
 	agentUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
 	agentUpdateCmd.Flags().String("conversation-starters", "", "New conversation starters as a JSON array of {\"label\",\"prompt\"} objects (at most 3; label ≤80, prompt ≤4000). Pass '[]' to clear. Omit to leave the stored value unchanged.")
 	agentUpdateCmd.Flags().String("runtime-id", "", "New runtime ID")
@@ -768,7 +768,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 
 	// --expected-before-digest -> owner-only guarded CAS on exactly
 	// `instructions`; see governed_cas.go.
-	if err := checkBindingFlags(cmd); err != nil {
+	if err := checkBindingFlags(cmd, "agent.instructions", args[0]); err != nil {
 		return err
 	}
 	if cmd.Flags().Changed("expected-before-digest") {
@@ -1192,10 +1192,9 @@ func printAgentSkillsMutationResult(cmd *cobra.Command, agentID string, result j
 
 // Agent env subcommands
 
-// runAgentEnvGet fetches the plaintext custom_env for a single agent
-// via the audited `/env` endpoint. The CLI prints raw JSON in JSON
-// mode and a key/value table otherwise; we never truncate or mask
-// values here — the security gate is on the server, not the printer.
+// runAgentEnvGet fetches env metadata for a single agent via the `/env`
+// endpoint. The server never returns a value (every one is masked), so JSON
+// mode prints the body as received and the table lists key and source only.
 func runAgentEnvGet(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -1215,11 +1214,12 @@ func runAgentEnvGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, resp)
 	}
 
-	headers := []string{"KEY", "VALUE"}
-	env, _ := resp["custom_env"].(map[string]any)
-	rows := make([][]string, 0, len(env))
-	for k, v := range env {
-		rows = append(rows, []string{k, fmt.Sprintf("%v", v)})
+	headers := []string{"KEY", "SOURCE"}
+	keys, _ := resp["keys"].([]any)
+	rows := make([][]string, 0, len(keys))
+	for _, k := range keys {
+		m, _ := k.(map[string]any)
+		rows = append(rows, []string{strVal(m, "key"), strVal(m, "source")})
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil

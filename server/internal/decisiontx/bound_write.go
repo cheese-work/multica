@@ -1,6 +1,9 @@
 package decisiontx
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ApproveWriteLabel is the one option label that approves a decision-bound
 // write. The server accepts only a card answer whose text is exactly this label.
@@ -18,4 +21,51 @@ func BoundWriteDecision(field, beforeSHA, afterSHA string) string {
 // another field.
 func BoundWriteHeading(field string) string {
 	return fmt.Sprintf("Apply this change to %s?\n", field)
+}
+
+// passkeyOnlyFields are the bound-write fields a machine credential can no
+// longer write (CHE-3482): only a passkey-approved action changes them, so a
+// card cannot authorize the write. Each maps to its "multica config propose"
+// field and the kind of id it takes.
+var passkeyOnlyFields = map[string]struct{ propose, idKind string }{
+	"workflow.steps":        {"workflow.steps", "workflow"},
+	"workflow.instructions": {"workflow.step.instructions", "workflow"},
+	"workspace.context":     {"workspace.context", ""},
+	"squad.instructions":    {"squad.instructions", "squad"},
+	"agent.instructions":    {"agent.instructions", "agent"},
+}
+
+// PasskeyOnlyBoundWriteField returns the field of a bound-write ask whose
+// decision text opens with "Apply this change to <field>?" for a passkey-only
+// field.
+func PasskeyOnlyBoundWriteField(decision string) (string, bool) {
+	for field := range passkeyOnlyFields {
+		if strings.HasPrefix(decision, strings.TrimSuffix(BoundWriteHeading(field), "\n")) {
+			return field, true
+		}
+	}
+	return "", false
+}
+
+// PasskeyOnlyCommand is the command that changes field when a card cannot. A
+// blank target or statusKey leaves a placeholder.
+func PasskeyOnlyCommand(field, target, statusKey string) (string, bool) {
+	spec, ok := passkeyOnlyFields[field]
+	if !ok {
+		return "", false
+	}
+	command := "multica config propose " + spec.propose
+	if spec.idKind != "" {
+		if target == "" {
+			target = "<" + spec.idKind + "-id>"
+		}
+		command += " " + target
+	}
+	if spec.propose == "workflow.step.instructions" {
+		if statusKey == "" {
+			statusKey = "<key>"
+		}
+		command += " --status-key " + statusKey
+	}
+	return command + " --file <path> --out <out>", true
 }

@@ -13,18 +13,28 @@ const ShimHelperArg = "__gh-shim"
 // only reads; anything else is refused, so a real GitHub call never
 // starts from here. Exit 2 is a usage refusal, 1 a failed read.
 func ShimMain(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	var opts []ReadOption
+	if len(args) > 0 && args[0] == "--ask-downgrade" {
+		opts, args = []ReadOption{AskDowngrade}, args[1:]
+	}
 	var call func(sock string) (Result, error)
 	switch {
 	case len(args) == 2 && args[0] == "read":
-		call = func(sock string) (Result, error) { return Read(context.Background(), sock, args[1]) }
+		call = func(sock string) (Result, error) { return Read(context.Background(), sock, args[1], opts...) }
 	case len(args) == 3 && args[0] == "read":
-		call = func(sock string) (Result, error) { return ReadPR(context.Background(), sock, args[1], args[2]) }
+		call = func(sock string) (Result, error) {
+			return ReadPR(context.Background(), sock, args[1], args[2], opts...)
+		}
 	case len(args) == 3 && args[0] == "log":
-		call = func(sock string) (Result, error) { return ReadCILog(context.Background(), sock, args[1], args[2]) }
+		call = func(sock string) (Result, error) {
+			return ReadCILog(context.Background(), sock, args[1], args[2], opts...)
+		}
 	case len(args) == 3 && args[0] == "commit":
-		call = func(sock string) (Result, error) { return ReadCommit(context.Background(), sock, args[1], args[2]) }
+		call = func(sock string) (Result, error) {
+			return ReadCommit(context.Background(), sock, args[1], args[2], opts...)
+		}
 	default:
-		fmt.Fprintln(stderr, "gh: elevated runs support only `gh read <node-id> [title|body]`, `gh log <owner/repo> <job-id>` and `gh commit <owner/repo> <sha>`")
+		fmt.Fprintln(stderr, "gh: elevated runs support only `gh [--ask-downgrade] read <node-id> [title|body]`, `gh [--ask-downgrade] log <owner/repo> <job-id>` and `gh [--ask-downgrade] commit <owner/repo> <sha>`")
 		return 2
 	}
 	sock := getenv(SocketEnv)
