@@ -141,6 +141,15 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// since = when the Jev shadow log began; the count below is for that window.
+	var since time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		var err error
+		if since, err = time.Parse(time.RFC3339, raw); err != nil {
+			writeError(w, http.StatusBadRequest, "since must be an RFC 3339 time")
+			return
+		}
+	}
 	ctx := r.Context()
 	fail := func(err error) {
 		slog.Warn("agent decision brief failed", "error", err)
@@ -282,6 +291,11 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
+	jevInScope, jevSince, err := h.agentDecisionJevInScope(ctx, workspaceID, since, askIDs)
+	if err != nil {
+		fail(err)
+		return
+	}
 	// The run-budget auto-approver's audit line for the last day; "" when it did nothing.
 	runBudgetAuto, err := h.runBudgetAutoBrief(ctx, workspaceID, time.Now().Add(-24*time.Hour))
 	if err != nil {
@@ -293,7 +307,7 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	feed := map[string]any{
 		"run_budget_auto":     runBudgetAuto,
 		"run_guard":           runGuard,
 		"enabled":             parsed.Enabled,
@@ -306,7 +320,12 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		"waivers":             waivers,
 		"jev":                 jev,
 		"jev_asks":            jevAsks,
-	})
+	}
+	if jevInScope >= 0 {
+		feed["jev_in_scope"] = jevInScope
+		feed["jev_since"] = jevSince.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, feed)
 }
 
 // Most ids the CLI may ask about in one call.
@@ -366,6 +385,26 @@ func (h *Handler) agentDecisionJevMetrics(ctx context.Context, workspaceID pgtyp
 		m.VetoRate = float64(m.Vetoed) / float64(m.Decisions)
 	}
 	return m, nil
+}
+
+// The classes scripts/jev_decider.py may decide (its DECIDABLE allowlist); every other class stays with Cheese.
+var jevDecidableClasses = []string{"reversible", "spend", "deploy", "publish"}
+
+// Asks Jev could take since the shadow log began: a decidable class, not cancelled. Budget and
+// API-error attempts are never logged, so the log alone would drop them from the 10-minute
+// share. The window opens at since, or at the oldest logged ask if that is earlier, so every
+// logged ask is inside it. Returns -1 when no window was asked for.
+func (h *Handler) agentDecisionJevInScope(ctx context.Context, workspaceID pgtype.UUID, since time.Time, ids []string) (int, time.Time, error) {
+	if since.IsZero() {
+		return -1, since, nil
+	}
+	var n int
+	var start time.Time
+	err := h.DB.QueryRow(ctx, `WITH w AS (
+        SELECT LEAST($2::timestamptz, min(created_at)) AS start FROM decision_request WHERE workspace_id=$1 AND id = ANY($3::uuid[]))
+        SELECT (SELECT count(*) FROM decision_request WHERE workspace_id=$1 AND created_at>=w.start AND status<>'cancelled' AND escalation_class = ANY($4)), w.start FROM w`,
+		workspaceID, since, ids, jevDecidableClasses).Scan(&n, &start)
+	return n, start, err
 }
 
 type agentDecisionJevAsk struct {

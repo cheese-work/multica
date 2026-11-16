@@ -44,7 +44,7 @@ func TestTryAutoUpdate_ForkSourceUpdatesToArtifactCommit(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13-235-gabcdef0") // dev-describe version: fork source must not care
 	stubFork(t, forkCandidate, nil)
 	var target string
-	d.runUpdateFn = func(tv string) (string, error) { target = tv; return "ok", nil }
+	d.runUpdateFn = func(_ context.Context, tv string) (string, error) { target = tv; return "ok", nil }
 
 	d.tryAutoUpdate(context.Background())
 
@@ -68,7 +68,7 @@ func TestTryAutoUpdate_ForkSourceInstallsWhileBusyAndReloadsWhenIdle(t *testing.
 			case "claim in flight":
 				testDaemon.claimsInFlight = 1
 			}
-			testDaemon.runUpdateFn = func(target string) (string, error) {
+			testDaemon.runUpdateFn = func(ctx context.Context, target string) (string, error) {
 				if target != forkCandidate.HeadSHA {
 					t.Fatalf("update target = %q, want %q", target, forkCandidate.HeadSHA)
 				}
@@ -78,7 +78,7 @@ func TestTryAutoUpdate_ForkSourceInstallsWhileBusyAndReloadsWhenIdle(t *testing.
 				if busy == "task starts during install" {
 					testDaemon.activeTasks.Store(1)
 				}
-				return testDaemon.runUpdate(target)
+				return testDaemon.runUpdate(ctx, target)
 			}
 
 			testDaemon.tryAutoUpdate(context.Background())
@@ -131,7 +131,7 @@ func TestTryAutoUpdate_ForkSourceKeepsDaemonWithoutEligibleBuild(t *testing.T) {
 
 func TestAutoUpdateLoop_ForkSourceSkipsWithoutBuildCommit(t *testing.T) {
 	d := &Daemon{cfg: Config{AutoUpdateEnabled: true, CLIVersion: "v0.1.13"}, logger: slog.Default()}
-	d.runUpdateFn = func(string) (string, error) { t.Fatal("runUpdateFn called"); return "", nil }
+	d.runUpdateFn = func(context.Context, string) (string, error) { t.Fatal("runUpdateFn called"); return "", nil }
 	stubFork(t, nil, nil)
 	currentCommit = func() string { return "unknown" }
 
@@ -155,7 +155,7 @@ func TestRunUpdate_ForkSourceFailureReportsAndKeepsInstalled(t *testing.T) {
 	applied := stubFork(t, nil, fmt.Errorf("%w: server has no darwin-arm64 build", cli.ErrForkNoArtifact))
 	forkUpdateSource = func() bool { return true }
 
-	out, err := d.runUpdate("v9.9.9")
+	out, err := d.runUpdate(context.Background(), "v9.9.9")
 
 	if err == nil || !errors.Is(err, cli.ErrForkNoArtifact) || !strings.Contains(err.Error(), "installed daemon unchanged") {
 		t.Fatalf("err = %v", err)
@@ -172,7 +172,7 @@ func TestRunUpdate_ForkSourceAppliesResolvedCandidate(t *testing.T) {
 	d, _ := newAutoUpdateTestDaemon(t, "v0.1.13")
 	applied := stubFork(t, forkCandidate, nil)
 
-	out, err := d.runUpdate("v9.9.9")
+	out, err := d.runUpdate(context.Background(), "v9.9.9")
 
 	if err != nil || out != "installed" || *applied != 1 {
 		t.Fatalf("out=%q err=%v applied=%d", out, err, *applied)
