@@ -5,8 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-
-	)
+)
 
 // CHE-6619 (CHE-6594 S1a): Vote lines come from vote_lines, Route and Risk
 // lines from full_body of the same governed_vote_record row. Live comment
