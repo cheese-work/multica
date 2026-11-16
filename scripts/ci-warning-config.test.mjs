@@ -4,9 +4,12 @@ import { test } from "node:test"
 
 const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8")
 
+// CHE-3604/CHE-4385: the light security-gate jobs run on the free GitHub-hosted `ubuntu-latest` (scripts/ci-runners.test.mjs requires it).
+const hostedLatest = new Set(["mechanical-tier.yml", "security-gate.yml", "security-gate-queue.yml", "security-gate-sweep.yml"])
+
 test("workflow Ubuntu labels are pinned instead of silently migrating", () => {
   for (const name of readdirSync(new URL("../.github/workflows/", import.meta.url))) {
-    if (name.endsWith(".yml")) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
+    if (name.endsWith(".yml") && !hostedLatest.has(name)) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
   }
 })
 

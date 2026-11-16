@@ -43,7 +43,7 @@ permissions:
 jobs:
   find:
     name: mechanical-tier-find
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       targets: ${{ steps.find.outputs.targets }}
@@ -88,7 +88,7 @@ jobs:
     name: mechanical-tier
     needs: find
     if: needs.find.outputs.targets != '[]'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
