@@ -78,6 +78,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	runGuardAllowType:        executeRunGuardAllowAction,
 	issueWorkflowSetType:     executeIssueWorkflowSetAction,
 	issueProjectSetType:      executeIssueProjectSetAction,
 	doopDeployLiftAction:     executeDoopDeployLiftAction,

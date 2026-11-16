@@ -133,12 +133,16 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	} else if sent, err = h.TaskService.SendDirectChatMessageTx(ctx, queries, plan, session, humanID, content, attachmentIDs, "member", humanID, "interactive_jwt"); err != nil {
 		return nil, err
 	}
-	result, err := h.persistDecisionRecord(ctx, queries, issue, current, decisionRecordInput{
-		ParentID: current.IssueCommentID, MessageIDs: []pgtype.UUID{sent.Message.ID},
-	}, decisionRecordSource{
+	source := decisionRecordSource{
 		TaskID: sent.Task.ID, AgentID: decision.AskingAgentID, SessionID: session.ID, SourceSessionID: session.ID,
 		CommentID: dbid.NewV7(), Snapshot: content, Quote: blockQuote(content), ReplyText: content,
-	}, root)
+	}
+	if current.Kind == "action" {
+		source.AnsweredLabel = actionAnswerReply
+	}
+	result, err := h.persistDecisionRecord(ctx, queries, issue, current, decisionRecordInput{
+		ParentID: current.IssueCommentID, MessageIDs: []pgtype.UUID{sent.Message.ID},
+	}, source, root)
 	if err != nil {
 		return nil, err
 	}

@@ -230,7 +230,7 @@ SET status = 'superseded'
 WHERE e.issue_id = @issue_id
   AND e.pull_request_id = @pull_request_id
   AND e.kind NOT IN ('merged', 'closed')
-  AND (e.status IN ('accepted', 'next_turn')
+  AND (e.status IN ('accepted', 'next_turn', 'notified')
        OR e.id IN (SELECT event_id FROM failed));
 
 -- name: ListAcceptedPRNoticeEvents :many

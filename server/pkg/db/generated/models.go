@@ -1019,6 +1019,11 @@ type Comment struct {
 	ExternalRead        bool               `json:"external_read"`
 }
 
+type CommentContentEdit struct {
+	CommentID pgtype.UUID        `json:"comment_id"`
+	EditedAt  pgtype.Timestamptz `json:"edited_at"`
+}
+
 type CommentReaction struct {
 	ID          pgtype.UUID        `json:"id"`
 	CommentID   pgtype.UUID        `json:"comment_id"`
@@ -2158,6 +2163,7 @@ type Issue struct {
 	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
 	MaxRunsOverride         pgtype.Int4        `json:"max_runs_override"`
 	DescriptionExternalRead bool               `json:"description_external_read"`
+	CreatedVia              pgtype.Text        `json:"created_via"`
 }
 
 type IssueCheckpoint struct {
@@ -2420,6 +2426,18 @@ type IssueStatus struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	Icon        string             `json:"icon"`
+}
+
+type IssueStepAssignee struct {
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	StatusKey    string             `json:"status_key"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AssigneeType string             `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	SetByType    string             `json:"set_by_type"`
+	SetByID      pgtype.UUID        `json:"set_by_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type IssueSubscriber struct {
@@ -2758,6 +2776,36 @@ type MergePauseState struct {
 	IsSet        pgtype.Bool        `json:"is_set"`
 	FetchedAt    pgtype.Timestamptz `json:"fetched_at"`
 	Error        pgtype.Text        `json:"error"`
+}
+
+type MergeReceiptFact struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RepoOwner         string             `json:"repo_owner"`
+	RepoName          string             `json:"repo_name"`
+	PrNumber          int32              `json:"pr_number"`
+	HeadSha           string             `json:"head_sha"`
+	BaseRef           string             `json:"base_ref"`
+	Tier              pgtype.Int4        `json:"tier"`
+	ClassifierTrusted pgtype.Bool        `json:"classifier_trusted"`
+	CoverageComplete  pgtype.Bool        `json:"coverage_complete"`
+	PrBound           pgtype.Bool        `json:"pr_bound"`
+	SecurityGate      string             `json:"security_gate"`
+	ScopeClassified   pgtype.Bool        `json:"scope_classified"`
+	GateVetoed        pgtype.Bool        `json:"gate_vetoed"`
+	Paths             []string           `json:"paths"`
+	Labels            []string           `json:"labels"`
+	Evidence          string             `json:"evidence"`
+	ObservedAt        pgtype.Timestamptz `json:"observed_at"`
+}
+
+type MergeVeto struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	VetoedBy    pgtype.UUID        `json:"vetoed_by"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type MergeVetoDeadline struct {
@@ -3896,6 +3944,32 @@ type WecomInstallSession struct {
 	ErrorMessage       pgtype.Text        `json:"error_message"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WeeklyRunGuardAllowance struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Runs        int32              `json:"runs"`
+	ActionID    pgtype.UUID        `json:"action_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type WeeklyRunGuardRefusal struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID   pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID     pgtype.UUID        `json:"source_task_id"`
+	Runs             int64              `json:"runs"`
+	State            string             `json:"state"`
+	ActionID         pgtype.UUID        `json:"action_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkflowWebhookEndpoint struct {

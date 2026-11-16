@@ -81,6 +81,10 @@ type IssueResponse struct {
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// CreatedVia is how the issue was made: dialog, agent or cli. The server
+	// sets it at create; it is empty for issues made before it existed and
+	// for creates from web or desktop forms.
+	CreatedVia    string  `json:"created_via"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -315,6 +319,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, nil
 }
 
@@ -352,7 +357,10 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err != nil {
 		return issue, nil, err
 	}
-	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
+	if err := wf.recordVerdict(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -694,6 +702,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		CreatedVia:         i.CreatedVia.String,
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -1501,8 +1510,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	// runSearch fills results from one search statement and writes the error
 	// response itself, returning false when the request is already answered.
-	runSearch := func(sqlQuery string, args []any) bool {
-		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+	runSearch := func(setup []string, sqlQuery string, args []any) bool {
+		err := runSearchQueryWithSetup(ctx, h.TxStarter, setup, sqlQuery, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
 				if err != nil {
@@ -1536,7 +1545,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	if !runSearch(sqlQuery, args) {
+	if !runSearch(nil, sqlQuery, args) {
 		return
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
@@ -1545,7 +1554,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
-		if !runSearch(fuzzyQuery, fuzzyArgs) {
+		if !runSearch(fuzzySearchSetup, fuzzyQuery, fuzzyArgs) {
 			return
 		}
 	}
@@ -1735,6 +1744,14 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		creatorFilter = id
 	}
+	var requestedByFilter pgtype.UUID
+	if c := r.URL.Query().Get("requested_by_id"); c != "" {
+		id, ok := parseUUIDOrBadRequest(w, c, "requested_by_id")
+		if !ok {
+			return
+		}
+		requestedByFilter = id
+	}
 	var projectFilter pgtype.UUID
 	if p := r.URL.Query().Get("project_id"); p != "" {
 		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
@@ -1795,6 +1812,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			AssigneeID:         assigneeFilter,
 			AssigneeIds:        assigneeIdsFilter,
 			CreatorID:          creatorFilter,
+			RequestedByID:      requestedByFilter,
 			ProjectID:          projectFilter,
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
@@ -1995,6 +2013,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if creatorFilter.Valid {
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
+	}
+	if requestedByFilter.Valid {
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(requestedByFilter)))
 	}
 	if projectFilter.Valid {
 		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
@@ -2548,6 +2569,13 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(id)))
+	}
+	if raw := r.URL.Query().Get("requested_by_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "requested_by_id")
+		if !ok {
+			return
+		}
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(id)))
 	}
 	if raw := r.URL.Query().Get("project_id"); raw != "" {
 		id, ok := parseUUIDOrBadRequest(w, raw, "project_id")
@@ -3872,6 +3900,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+		return
+	}
 	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
 	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
@@ -3947,6 +3978,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				assigneeID = id
 				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
 					writeError(w, status, msg)
+					return
+				}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 					return
 				}
 			}
@@ -4043,6 +4077,19 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// created_via is server-set and has no request field. A quick_create origin
+	// is the "create with agents" dialog: IssueService.Create rejects it unless
+	// the origin task is a quick-create task of the creating agent.
+	var createdVia pgtype.Text
+	switch {
+	case originType.String == "quick_create":
+		createdVia = pgtype.Text{String: "dialog", Valid: true}
+	case creatorType == "agent":
+		createdVia = pgtype.Text{String: "agent", Valid: true}
+	case statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel == "cli":
+		createdVia = pgtype.Text{String: "cli", Valid: true}
 	}
 
 	// Prefix is workspace-level; pre-compute once so both the broadcast
@@ -4151,6 +4198,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		DueDate:         dueDate,
 		OriginType:      originType,
 		OriginID:        originID,
+		CreatedVia:      createdVia,
 		Stage:           ptrToInt4(req.Stage),
 		AttachmentIDs:   attachmentIDs,
 		LabelIDs:        labelIDs,
@@ -4283,6 +4331,9 @@ type UpdateIssueRequest struct {
 	// of the step's handler. Valid only with a status change into a step that
 	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
 	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
+	// KeepForStep keeps HandoffAssignee for the target step on this issue:
+	// later entries of the step go to it. Needs HandoffAssignee. (CHE-5490)
+	KeepForStep bool `json:"keep_for_step,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -4520,6 +4571,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
 	}
+	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)
+	}
 
 	attachmentsChanged := false
 	if len(attachmentIDs) > 0 {
@@ -4547,6 +4601,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, current, attachmentsChanged, nil
 }
 
@@ -4808,7 +4863,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee})
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee, keepForStep: req.KeepForStep})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4832,6 +4887,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeHandoffAssigneeRefusal(w, handoff, status, msg)
+			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
 			return
 		}
 		if handoff == nil && (touchedType || touchedID) {
@@ -5907,6 +5966,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		if batchTouchedType || batchTouchedID || handoff != nil {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
+				continue
+			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
 				continue
 			}
 			if handoff == nil {
