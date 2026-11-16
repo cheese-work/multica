@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,13 @@ type RunBudgetAutoConfig struct {
 	Enabled       bool `json:"enabled"`
 	DailyEnvelope int  `json:"daily_envelope"`
 	// ExpectedChecks is the check set a pushed head must hold, each finished,
-	// before its CI reads as known. Empty, no head does: the hold stays on.
+	// before its CI reads as known. Each entry is "name@appid@workflow-path": the
+	// check name, the numeric GitHub App id that produces it, and the workflow file
+	// that runs it (".github/workflows/ci.yml"). GitHub Actions is app 15368 and
+	// must name its workflow, because two workflows can report the same check name
+	// under the same App. Another App's entry may be "name@appid". An entry without
+	// a valid app id, or an Actions entry without a workflow, never matches, and an
+	// empty set means no head does: the hold stays on.
 	ExpectedChecks []string `json:"expected_checks"`
 }
 
@@ -100,6 +107,45 @@ func runBudgetAutoErrorKey(msg string) string {
 		key = key[:120]
 	}
 	return key
+}
+
+// githubActionsAppID is the App id of GitHub Actions. Its check runs carry no
+// other producer identity than the workflow, so an expected Actions check must
+// name its workflow file.
+const githubActionsAppID = 15368
+
+// splitExpectedChecks splits "name@appid" and "name@appid@workflow-path" entries
+// into parallel name, app id and workflow lists. The workflow is "" when the
+// entry names none. An entry with no valid positive app id gets app id 0, which
+// no stored row carries, so it can never read as finished (fail closed). So does
+// a GitHub Actions entry with no workflow path: two workflows can report the same
+// check name under the same App.
+func splitExpectedChecks(entries []string) ([]string, []int64, []string) {
+	names, appIDs, workflows := make([]string, len(entries)), make([]int64, len(entries)), make([]string, len(entries))
+	parseApp := func(s string) int64 {
+		if id, err := strconv.ParseInt(s, 10, 64); err == nil && id > 0 {
+			return id
+		}
+		return 0
+	}
+	for i, e := range entries {
+		names[i] = e
+		at := strings.LastIndex(e, "@")
+		if at < 0 {
+			continue
+		}
+		if id := parseApp(e[at+1:]); id > 0 {
+			names[i], appIDs[i] = e[:at], id
+		} else if mid := strings.LastIndex(e[:at], "@"); mid >= 0 {
+			if id := parseApp(e[mid+1 : at]); id > 0 {
+				names[i], appIDs[i], workflows[i] = e[:mid], id, e[at+1:]
+			}
+		}
+		if appIDs[i] == githubActionsAppID && workflows[i] == "" {
+			appIDs[i] = 0
+		}
+	}
+	return names, appIDs, workflows
 }
 
 // EvaluateRunBudgetAuto judges the spent window that opened at since. It only
@@ -143,7 +189,8 @@ func EvaluateRunGuardAuto(ctx context.Context, q *db.Queries, issue db.Issue, no
 // anomalies, then progress, then the daily envelope.
 func evaluateAutoWindow(ctx context.Context, q *db.Queries, issue db.Issue, settings []byte, cfg RunBudgetAutoConfig, since time.Time, grant int, now time.Time) (RunBudgetAutoVerdict, error) {
 	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
-	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedChecks: append([]string{}, cfg.ExpectedChecks...)})
+	names, appIDs, workflows := splitExpectedChecks(cfg.ExpectedChecks)
+	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedNames: names, ExpectedAppIds: appIDs, ExpectedWorkflows: workflows})
 	if err != nil {
 		return RunBudgetAutoVerdict{}, fmt.Errorf("run budget auto: list runs: %w", err)
 	}

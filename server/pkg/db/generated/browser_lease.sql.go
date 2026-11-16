@@ -11,6 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const ackBrowserLeaseCleanup = `-- name: AckBrowserLeaseCleanup :one
+UPDATE browser_lease
+SET cleanup_acked_at = clock_timestamp()
+WHERE instance_id = $1 AND workspace_id = $2 AND epoch = $3
+  AND state = 'ended' AND cleanup_acked_at IS NULL
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+`
+
+type AckBrowserLeaseCleanupParams struct {
+	InstanceID  pgtype.UUID `json:"instance_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Epoch       pgtype.Int8 `json:"epoch"`
+}
+
+// Stamps cleanup-ack on the ended lease that still holds the instance, for the given epoch only.
+func (q *Queries) AckBrowserLeaseCleanup(ctx context.Context, arg AckBrowserLeaseCleanupParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, ackBrowserLeaseCleanup, arg.InstanceID, arg.WorkspaceID, arg.Epoch)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const activateBrowserLease = `-- name: ActivateBrowserLease :one
 UPDATE browser_lease
 SET state = 'active', instance_id = $3, epoch = $4, granted_at = $5, expires_at = $6
@@ -824,6 +866,36 @@ func (q *Queries) ListBrowserInstancesForGateway(ctx context.Context, credential
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockBrowserInstance = `-- name: LockBrowserInstance :one
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockBrowserInstanceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Serializes cleanup-ack, quarantine and grant on one instance (CHE-4736, W3-7).
+func (q *Queries) LockBrowserInstance(ctx context.Context, arg LockBrowserInstanceParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, lockBrowserInstance, arg.ID, arg.WorkspaceID)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
 }
 
 const lockBrowserLeaseQueue = `-- name: LockBrowserLeaseQueue :exec

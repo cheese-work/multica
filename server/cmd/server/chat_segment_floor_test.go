@@ -66,10 +66,10 @@ func TestChatCompactSetsSegmentFloorAtTheDivider(t *testing.T) {
 	}
 
 	// A second compact from a new running task: the floor moves forward, no tie.
-	token2 := chatTaskToken(t, fx.sessionID, "running")
 	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
 		t.Fatal(err)
 	}
+	token2 := chatTaskToken(t, fx.sessionID, "running")
 	if status, body := postCompact(t, token2, "Second summary."); status != http.StatusOK {
 		t.Fatalf("second compact = %d %s, want 200", status, body)
 	}
