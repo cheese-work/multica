@@ -46,6 +46,8 @@ for (const [name, files, selected] of [
   ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
   ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
   ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
+  ["decision card browser contract", ["e2e/decision-dm-card-renders.spec.ts"], ["backend"]],
+  ["decision card preview list", ["packages/core/issues/decision-action-preview.ts"], ["frontend", "backend", "quality"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
