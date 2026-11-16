@@ -75,14 +75,27 @@ func TestWF005RuntimeNotQualified(t *testing.T) {
 			t.Fatalf("codex %q is qualified, got %v", v, rules(fs))
 		}
 	}
-	// No qualification is recorded for Claude, so any Claude version fails WF005.
-	for _, v := range []string{"2.1.0", ""} {
-		env := Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeVersion: v, RuntimeOnline: true}}}
-		if fs := LintWith(clean(), env); !has(fs, "WF005", "todo") {
-			t.Fatalf("claude %q has no recorded qualification: want WF005, got %v", v, rules(fs))
+	// Claude Code is qualified only as 2.1.318 on the X99 Claude runtime (CHE-6366).
+	claude := func(version string) Env {
+		return Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeID: x99Claude, RuntimeVersion: version, RuntimeOnline: true}}}
+	}
+	for _, v := range []string{"2.1.318", "2.1.318 (Claude Code)"} {
+		if fs := LintWith(clean(), claude(v)); countRule(fs, "WF005") != 0 {
+			t.Fatalf("claude %q on X99: want no WF005, got %v", v, rules(fs))
 		}
 	}
+	for _, v := range []string{"2.1.307", "2.1.0", ""} {
+		if fs := LintWith(clean(), claude(v)); !has(fs, "WF005", "todo") {
+			t.Fatalf("claude %q is not qualified: want WF005, got %v", v, rules(fs))
+		}
+	}
+	other := Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeID: "cdd16bd4-f33a-4065-929a-984d1b921b96", RuntimeVersion: "2.1.318", RuntimeOnline: true}}}
+	if fs := LintWith(clean(), other); !has(fs, "WF005", "todo") {
+		t.Fatalf("claude 2.1.318 on another runtime: want WF005, got %v", rules(fs))
+	}
 }
+
+const x99Claude = "cc2a0ee7-9d1f-41b1-a50f-88390b8aadc9"
 
 const x99Codex = "bc0835c7-a25d-4a16-a3bc-e2921d092ed9"
 
@@ -249,7 +262,7 @@ func TestWF013Unused(t *testing.T) {
 }
 
 func TestEmbeddedConfigsParse(t *testing.T) {
-	if len(qualified) != 1 || len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.166.0" {
+	if len(qualified) != 2 || len(qualified["claude"]) != 1 || len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.166.0" {
 		t.Fatalf("seed: want codex 0.166.0, got %v", qualified)
 	}
 	if lab, ok := labs.of(Agent{Provider: "codex"}); !ok || lab != "OpenAI" {

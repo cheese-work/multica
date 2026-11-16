@@ -1,4 +1,11 @@
 {
+  "claude": [
+    {
+      "version": "2.1.318",
+      "runtime_id": "cc2a0ee7-9d1f-41b1-a50f-88390b8aadc9",
+      "note": "CHE-6366 (Cheese decision, 16 Nov 2026): X99 Claude Code runtime, write-qualified on this version. Evidence: Claude-authored PRs merged from this runtime, for example cheese-work/multica#1667 (CHE-5754) and #1744 (CHE-6302)"
+    }
+  ],
   "codex": [
     {
       "version": "0.166.0",
