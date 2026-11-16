@@ -40,7 +40,8 @@ func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, 
 // askGuardAllowsCommentEdit is S2 for an edit. A plain edit has no typed kind,
 // so an agent edit that adds a member link, or turns the text into an unproven
 // ask (decisiontx.CheckCommentAsk, CHE-5753), is refused like a plain comment.
-// Links and asks the comment already had never block an unrelated edit.
+// Links and asks the comment already had never block an unrelated edit; a new
+// or changed unverified command, file or UI step does.
 func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Request, issue db.Issue, actorType, oldContent, newContent string) bool {
 	if actorType != "agent" {
 		return true
@@ -52,7 +53,10 @@ func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Reque
 	if addsMemberMention(oldContent, newContent) {
 		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditFix)
 	}
-	if err := decisiontx.CheckCommentAsk(newContent); err != nil && decisiontx.CheckCommentAsk(oldContent) == nil {
+	// An ask the comment already held stays editable, but an edit may not bring
+	// in a command, file or UI step it did not cite before (CHE-6354).
+	err := decisiontx.CheckCommentAsk(newContent)
+	if err != nil && (decisiontx.CheckCommentAsk(oldContent) == nil || decisiontx.AddsAskItem(oldContent, newContent)) {
 		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditAskFix+" (edit refused: "+err.Error()+")")
 	}
 	return true

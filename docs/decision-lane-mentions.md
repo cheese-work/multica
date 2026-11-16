@@ -182,8 +182,12 @@ field, a fenced block, a `$ ` line, text after `run`) is a shell redirection,
 not a UI path. A plain issue comment from an agent that mentions a person is
 already refused (ask guard S2). A plain comment with no member link that asks a
 person to act ("please", "you need to", "Cheese,", "steps for you", "vui lòng",
-"请") and cites a UI path, a repo file, a command or a placeholder is refused
-the same way, because a comment has no field for the evidence. The person is
+"请"), or opens a sentence, line or list item with an imperative UI or shell verb
+("Open", "Click", "Run", "Go to", "Select", "Paste", ...), and cites a UI path, a
+repo file, a command or a placeholder is refused the same way, because a comment
+has no field for the evidence. An edit of an agent comment that already holds
+such an ask may keep it, but may not add or change a command, file or UI step.
+The person is
 asked with a decision or action request, which carries this guard; a comment
 that needs no answer takes `--notify-only`.
 
