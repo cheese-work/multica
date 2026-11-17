@@ -3522,6 +3522,30 @@ export class ApiClient {
     return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "PUT");
   }
 
+  // CHE-4124: the caller's own picks (`{}` when none). Null when the response is
+  // malformed, so a guessed value is never shown.
+  async getMyBackgroundAgents(workspaceId: string): Promise<BackgroundAgents | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/me/background-agents`);
+    return parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/me/background-agents",
+    });
+  }
+
+  // Merges per job and per field; a null slot clears the personal pick. Any
+  // workspace member may call it, for their own picks only.
+  async updateMyBackgroundAgents(
+    workspaceId: string,
+    patch: Record<string, Record<string, string | null>>,
+  ): Promise<BackgroundAgents | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/me/background-agents`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+      endpoint: "PUT /api/workspaces/{id}/me/background-agents",
+    });
+  }
+
   // CHE-4617: null when the response is malformed, so a guessed rule is never
   // shown or saved back over the real one.
   async getDelegatedWrites(workspaceId: string): Promise<DelegatedWrites | null> {
