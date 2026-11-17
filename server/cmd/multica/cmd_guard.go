@@ -72,6 +72,7 @@ func runGuardCheckPR(cmd *cobra.Command, args []string) error {
 	}
 	e := &guard.Engine{
 		Policy: pol,
+		Env:    os.Getenv, // the merge-queue Git read of the rules file needs it
 		Out:    cmd.OutOrStdout(),
 		Err:    cmd.ErrOrStderr(),
 		Runner: guard.ExecRunner{
