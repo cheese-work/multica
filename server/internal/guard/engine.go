@@ -130,6 +130,12 @@ func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, err
 		return 2, nil
 	}
 	args = e.expandAlias(ctx, tool, args)
+	if err := e.repositoryAccess(ctx, tool, args); err != nil {
+		d := refuse(2, "repository allowlist: %s", err)
+		fmt.Fprintln(e.Err, "guard: "+d.line)
+		e.log(&Plugin{Name: "repository-allowlist"}, tool, args, d)
+		return 2, nil
+	}
 	t := Target{}
 	// ponytail: one extra gh repo view and git call per guarded call when the
 	// policy has layers; cache per run if that shows up.

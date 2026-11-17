@@ -75,7 +75,7 @@ func runGuardCheckPR(cmd *cobra.Command, args []string) error {
 		Out:    cmd.OutOrStdout(),
 		Err:    cmd.ErrOrStderr(),
 		Runner: guard.ExecRunner{
-			Real:   func(string) string { return os.Getenv("MULTICA_GUARD_REAL_GH") },
+			Real:   guardRealTool,
 			Stdin:  cmd.InOrStdin(),
 			Stdout: cmd.OutOrStdout(),
 			Stderr: cmd.ErrOrStderr(),
@@ -114,14 +114,13 @@ func runGuardExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	realEnv := "MULTICA_GUARD_REAL_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(tool))
 	e := &guard.Engine{
 		Policy: pol,
 		Log:    logw,
 		Out:    cmd.OutOrStdout(),
 		Err:    cmd.ErrOrStderr(),
 		Runner: guard.ExecRunner{
-			Real:   func(string) string { return os.Getenv(realEnv) },
+			Real:   guardRealTool,
 			Stdin:  cmd.InOrStdin(),
 			Stdout: cmd.OutOrStdout(),
 			Stderr: cmd.ErrOrStderr(),
@@ -140,4 +139,8 @@ func runGuardExec(cmd *cobra.Command, args []string) error {
 		guardExit(code)
 	}
 	return nil
+}
+
+func guardRealTool(tool string) string {
+	return os.Getenv("MULTICA_GUARD_REAL_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(tool)))
 }

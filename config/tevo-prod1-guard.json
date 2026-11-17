@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "ci-wait",
+      "match": {
+        "tool": "gh"
+      },
+      "action": "deny",
+      "builtin": "ci-wait"
+    },
+    {
+      "name": "ci-wait-sleep",
+      "match": {
+        "tool": "sleep"
+      },
+      "action": "deny",
+      "builtin": "ci-wait"
+    },
+    {
+      "name": "gh-pr",
+      "match": {
+        "tool": "gh",
+        "subcommand": [
+          "pr"
+        ]
+      },
+      "action": "fix",
+      "builtin": "gh-pr"
+    },
+    {
+      "name": "gh-api",
+      "match": {
+        "tool": "gh",
+        "subcommand": [
+          "api"
+        ]
+      },
+      "action": "deny",
+      "builtin": "gh-api"
+    },
+    {
+      "name": "wakeup-create",
+      "match": {
+        "tool": "multica",
+        "subcommand": [
+          "issue",
+          "wakeup",
+          "create"
+        ]
+      },
+      "action": "shadow",
+      "builtin": "multica-wakeup"
+    },
+    {
+      "name": "wakeup-update",
+      "match": {
+        "tool": "multica",
+        "subcommand": [
+          "issue",
+          "wakeup",
+          "update"
+        ]
+      },
+      "action": "shadow",
+      "builtin": "multica-wakeup"
+    }
+  ],
+  "repository_allowlist": {
+    "tevo-studio": [
+      "ap006-dramajoy",
+      "ap007-zonamatch-3",
+      "ap008-vpn",
+      "ev005-blood-sugar",
+      "sa039-astrology",
+      "sa042-vpn-4",
+      "sa052-flash-light",
+      "sa056-zonamatch",
+      "sa061-flash-light-2",
+      "SA064-Gymetric",
+      "sa067-4k-parallax-wallpaper",
+      "sa068-silly-face-wallpaper",
+      "sa071-virtual-number",
+      "sa075-astrology-2",
+      "sa077-astrology-3",
+      "st007-walk-on",
+      "tg001-all-document-reader-editor",
+      "tg002-ai-pdf-reader-editor",
+      "tt007-ai-voice-lock",
+      "tt009-vpn",
+      "tt012-reward-apps",
+      "tt016-vpn2",
+      "va003-homework-ai",
+      "VA023-AI-Learning-Language",
+      "code-android-gradle-plugin",
+      "code-android-template",
+      "code-android-template-fork",
+      "flutter-template",
+      "playevo-mobile-sdk",
+      "playevo-example",
+      "mMonetize",
+      "mMonetize-sample",
+      "tevo_iap",
+      "tevo-license-mobile-sdk",
+      "flutter-ads",
+      "che-5179-template-sync-smoke"
+    ]
+  }
+}

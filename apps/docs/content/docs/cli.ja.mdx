@@ -560,6 +560,9 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `guard` | `check-pr <pr-url\|number\|branch>` | プルリクエストをポリシーとリポジトリの `.github/agent-rules.yml` に照らして、変更せずに検査します。ファイルは PR の保護されたベースブランチの現在の先端からデータとして読み、PR ブランチからは読みません。ファイルがなければルールは増えず、不正な形式のファイルや読めないベースは検査を失敗させます。CI のチェックとして使います | 終了コード: 0 は合格、1 はルール違反、2 は拒否。`-R owner/name` でリポジトリを指定 |
 | `guard` | `plugin list\|get\|set` | 保存済みのガードポリシーを読む（`list`、`get <name>`）か、置き換える決定アクションファイルを書き出す（`set --file <policy.json> --out <action.json>`、または `--dry-run`）。ポリシーはワークスペースのプラグインとレビュールールに加え、org・リポジトリ・パスの各レイヤーを持つ。深いレイヤーは浅いレイヤーをキーごとに上書きし、`locked` を付けたレイヤーまたはワークスペースは、そのキーを深いレイヤーから固定する。`set` は何も送信せず、人が passkey で `workspace.settings.patch` を承認する。デーモンは承認済みポリシーを、作業ツリー外のファイル `MULTICA_GUARD_POLICY` と `MULTICA_GUARD_POLICY_SHA256` として各実行に渡す | 出力：JSON 行（`--output table` で表）。`set` は `before_sha256` と `after_sha256` を表示 |
 
+`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。Cheese Work の正規ファイルは `config/tevo-prod1-guard.json` です。
+
+
 ### 判断の提案
 
 タスクトークンは、人がパスキーで承認する管理対象アクションを提案できます。提案自体は何も変更しません。
