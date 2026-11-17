@@ -5,6 +5,9 @@
  *    its box when a list update drops that issue from the list's first page.
  * R4 (CHE-1830, H5): the description's "Show more" label stays identical, frame
  *    by frame, for 500 ms after a child mutation in the description.
+ * R3-reconnect (CHE-1827): a chip that showed its title keeps it, frame by
+ *    frame, when the WebSocket drops and reconnects and the list refetch that
+ *    follows no longer holds the chip's issue.
  *
  * Runs once per profile project in playwright.perf.config.ts (desktop, phone),
  * both under 4x CPU throttling, against the production build with synthetic
@@ -146,6 +149,94 @@ test("R3: a chip keeps its title when its issue leaves the list's first page", a
   expect.soft(heightDelta, "chip height delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
 
   report("R3", {
+    profile, frames: frames.length, chipCounts, distinctTexts: [...texts], widthDelta, heightDelta,
+    cls: shift.cls, rawShift: shift.raw,
+  });
+  expectClean(h);
+});
+
+// ---- R3-reconnect -----------------------------------------------------------
+
+test("R3-reconnect: a chip keeps its title across a WebSocket reconnect", async ({
+  page, context, baseURL,
+}, testInfo) => {
+  const origin = new URL(baseURL ?? "http://localhost:3000").origin;
+  const profile = fx.profileOf(testInfo.project.name);
+  const threadIssue = fx.issueFor(fx.THREAD_ISSUE_IDENTIFIER, fx.THREAD_ISSUE_ID);
+  const comments = timeline((i) => `Comment ${i} tracks ${CHIP_KEY} in the thread.`, CHIP_COUNT);
+  const list = { holdsChipIssue: true, requests: 0 };
+  const h = await fx.installHarness(page, context, origin, (path) => {
+    if (path === "/api/issues") {
+      list.requests += 1;
+      return { issues: list.holdsChipIssue ? [CHIP_ISSUE] : [], total: list.holdsChipIssue ? 1 : 0 };
+    }
+    return fx.issuePageRoute(path, threadIssue, comments);
+  });
+  h.gate.release();
+  await context.addInitScript(() => {
+    localStorage.setItem("multica:chat:floatingChatEnabled", "false");
+    const w = window as unknown as { __samples: ChipSample[][]; __sampling: boolean };
+    w.__samples = [];
+    w.__sampling = false;
+    const sample = () => {
+      if (w.__sampling) {
+        w.__samples.push([...document.querySelectorAll("span.issue-mention")].map((chip) => {
+          const r = chip.getBoundingClientRect();
+          return { text: chip.textContent ?? "", w: r.width, h: r.height };
+        }));
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  const sockets: WebSocketRoute[] = [];
+  await context.routeWebSocket((url) => url.pathname === "/ws", (ws) => {
+    sockets.push(ws);
+    ws.onMessage(() => {});
+  });
+
+  await page.goto(`${origin}/${fx.WORKSPACE_SLUG}/issues/${fx.THREAD_ISSUE_IDENTIFIER}`, {
+    waitUntil: "domcontentloaded",
+  });
+  await expect.poll(() => sockets.length, { timeout: 30_000 }).toBe(1);
+  const chips = page.locator("span.issue-mention");
+  await expect(chips).toHaveCount(CHIP_COUNT, { timeout: 30_000 });
+  for (const chip of await chips.all()) {
+    await expect(chip).toContainText(CHIP_ISSUE.title, { timeout: 15_000 });
+  }
+  await nextFrame(page);
+  await fx.resetShift(page);
+  const titleText = (await chips.first().textContent()) ?? "";
+  const requestsBefore = list.requests;
+  await page.evaluate(() => { (window as unknown as { __sampling: boolean }).__sampling = true; });
+
+  // The connection drops; the list the reconnect refetches no longer holds the issue.
+  list.holdsChipIssue = false;
+  await sockets[0]!.close();
+  await expect.poll(() => sockets.length, { timeout: 30_000 }).toBe(2);
+  await expect.poll(() => list.requests, { timeout: 10_000 }).toBeGreaterThan(requestsBefore);
+  await page.waitForTimeout(fx.LOOKUP_DELAY_MS * 3);
+  await nextFrame(page);
+  const frames = await page.evaluate(() => {
+    const w = window as unknown as { __samples: ChipSample[][]; __sampling: boolean };
+    w.__sampling = false;
+    return w.__samples;
+  });
+
+  const chipCounts = [...new Set(frames.map((s) => s.length))];
+  const present = frames.filter((s) => s.length > 0);
+  const texts = new Set(present.flat().map((c) => c.text));
+  const widthDelta = Math.max(0, ...present.flat().map((c) => Math.abs(c.w - present[0]![0]!.w)));
+  const heightDelta = Math.max(0, ...present.flat().map((c) => Math.abs(c.h - present[0]![0]!.h)));
+  const shift = await fx.readShift(page);
+
+  expect.soft(frames.length, "frames sampled across the reconnect").toBeGreaterThan(10);
+  expect.soft(chipCounts, "chips present in every frame").toEqual([CHIP_COUNT]);
+  expect.soft([...texts], "distinct chip texts across the reconnect").toEqual([titleText]);
+  expect.soft(widthDelta, "chip width delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
+  expect.soft(heightDelta, "chip height delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
+
+  report("R3-reconnect", {
     profile, frames: frames.length, chipCounts, distinctTexts: [...texts], widthDelta, heightDelta,
     cls: shift.cls, rawShift: shift.raw,
   });

@@ -58,6 +58,32 @@ export type RuntimeVisibility = "private" | "public";
 /** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
 export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
 
+/** Last update cycle result of a machine; `unknown` is an outcome a newer server added. */
+export type RuntimeUpdateOutcome =
+  | "updated"
+  | "up_to_date"
+  | "failed"
+  | "no_window"
+  | "cancelled"
+  | "skipped_manual_pause"
+  | "skipped_open_cycle"
+  | "unknown";
+
+/** Per-machine update schedule (CHE-5465). Every runtime on the machine carries the same value. */
+export interface RuntimeUpdateSchedule {
+  enabled: boolean;
+  /** Five-field cron, evaluated in `timezone`. */
+  cron: string;
+  /** IANA name; the server default is Asia/Ho_Chi_Minh. */
+  timezone: string;
+  /** Maintenance window length in minutes, 10 to 30. */
+  window_minutes: number;
+  /** Next fire times; only the schedule endpoints fill it. */
+  next_runs?: string[];
+  updated_at?: string | null;
+  updated_by?: string | null;
+}
+
 /** Machine-wide pause (CHE-2430). Every runtime on the same daemon carries the same value. */
 export interface RuntimePause {
   reason: RuntimePauseReason;
@@ -121,6 +147,10 @@ export interface RuntimeDevice {
    * Null/absent when the runtime has no daemon or the server predates pause.
    */
   daemon_running_tasks?: number | null;
+  /** The machine's update schedule, null/absent when none is saved or the server predates it. */
+  update_schedule?: RuntimeUpdateSchedule | null;
+  /** Result of the machine's last update cycle; null until one ran. */
+  last_update_outcome?: RuntimeUpdateOutcome | null;
   /**
    * Runtime-wide cap on tasks running at once across every agent bound to
    * this runtime (GitHub #9626). `null` means no runtime cap; each agent's

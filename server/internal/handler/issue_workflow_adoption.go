@@ -80,7 +80,7 @@ func (h *Handler) loadAdoptionFacts(ctx context.Context, q *db.Queries, issue db
 // setupChangeValue is the option name (none or yes) the issue holds in the
 // Setup change property; "" when the property is unset or not defined.
 func setupChangeValue(ctx context.Context, q *db.Queries, issue db.Issue) (string, error) {
-	properties, err := q.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: issue.WorkspaceID})
+	properties, err := q.ListIssuePropertyDefinitions(ctx, db.ListIssuePropertyDefinitionsParams{WorkspaceID: issue.WorkspaceID})
 	if err != nil {
 		return "", err
 	}
