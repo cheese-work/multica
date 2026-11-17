@@ -118,7 +118,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/decision-requests":        {6, byHuman},
 	"api/dingtalk":                 {1, byPublic},
 	"api/feedback":                 {1, byOwnRow},
-	"api/github":                   {5, byWorkspace},
+	"api/github":                   {6, byWorkspace},
 	"api/inbox":                    {9, byOwnRow},
 	"api/integrations":             {2, byWorkspace},
 	"api/invitations":              {2, byOwnRow},

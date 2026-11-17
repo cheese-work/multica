@@ -2232,6 +2232,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+			// Stack auto-link mode (CHE-4165, CHE-4143 step 5): any member reads; owner/admin writes.
+			r.Get("/api/github/stack-autolink", h.GetGitHubStackAutolink)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/stack-autolink", h.SetGitHubStackAutolink)
 			// Receipt facts for merge_eligibility dispatch (CHE-5594): a person who is owner/admin only.
 			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/merge-receipts", h.PutMergeReceipt)
 			// A Multica-only veto holds the PR and drops its receipt (CHE-5594): same gates.
