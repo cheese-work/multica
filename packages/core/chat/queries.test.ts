@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 
 import type { TaskMessagePayload } from "../types/events";
@@ -171,6 +172,17 @@ describe("sortChatSessions", () => {
       last_message: { content: "Reply", role: "assistant", created_at: "2026-06-02T00:00:00Z" },
     });
     expect(sortChatSessions([notesOnly, conversation]).map((row) => row.id)).toEqual(["conversation", "notes"]);
+  });
+
+  it("preserves server order and session identities when activity times tie", () => {
+    const first = session({ id: "first" });
+    const second = session({ id: "second" });
+    const pinned = session({ id: "pinned", pinned: true });
+
+    const sorted = sortChatSessions([first, pinned, second]);
+    expect(sorted).toEqual([pinned, first, second]);
+    expect(sorted[1]).toBe(first);
+    expect(sorted[2]).toBe(second);
   });
 });
 
