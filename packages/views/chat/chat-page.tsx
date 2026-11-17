@@ -48,6 +48,7 @@ import { InteractiveLoginBanner } from "./components/interactive-login-banner";
 import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
 import { useQuoteRequest } from "./components/use-quote-request";
+import { ChatAppRequests } from "../common/app-requests";
 import { useRegisterCommandBarContext } from "../search/register-context";
 import { useSearchStore } from "../search/search-store";
 
@@ -397,7 +398,7 @@ export function ChatPage() {
   );
 
   const listBody = (
-    <div className="px-2 py-1">
+    <div className="min-h-0 flex-1 px-2 py-1">
       <ChatThreadList
         sessions={c.sessions}
         agents={c.agents}
@@ -540,7 +541,6 @@ export function ChatPage() {
           agent={c.activeAgent}
           hasSessions={c.sessions.length > 0}
           onPickPrompt={c.sendConversationStarter}
-          customizeHref={c.customizeConversationStartersHref}
         />
       )}
 
@@ -558,6 +558,10 @@ export function ChatPage() {
       ) : (
         <OfflineBanner agentName={c.activeAgent?.name} availability={c.availability} />
       )}
+
+      <div className="px-4">
+        <ChatAppRequests sessionId={c.activeSessionId} />
+      </div>
 
       <ChatQueue
         tasks={queuedTasks}
@@ -640,7 +644,7 @@ export function ChatPage() {
         {noAgentPage ? (
           noAgentState
         ) : (
-          <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+          <div className="flex min-h-0 flex-1 flex-col">{listBody}</div>
         )}
       </div>
     );
@@ -655,7 +659,7 @@ export function ChatPage() {
     <div className="flex min-h-0 flex-1">
       <ListColumn collapsed={listCollapsed} width="list">
         {listHeader}
-        <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+        <div className="flex min-h-0 flex-1 flex-col">{listBody}</div>
       </ListColumn>
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         {listCollapsed && !c.currentSession && <PageHeader>{newChatButton}</PageHeader>}

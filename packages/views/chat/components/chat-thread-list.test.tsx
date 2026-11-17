@@ -163,6 +163,30 @@ beforeEach(() => {
   useChatStore.setState({ listView: "main" });
 });
 
+describe("ChatThreadList windowing", () => {
+  it("mounts only a window of a long history without an archive footer", () => {
+    renderList(null, {
+      renderedSessions: Array.from({ length: 200 }, (_, i) => makeSession({ id: `history-${i}` })),
+    });
+    expect(screen.getByText("Chat history-0")).toBeInTheDocument();
+    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThan(30);
+    expect(screen.queryByText("Chat history-199")).not.toBeInTheDocument();
+  });
+
+  it("keeps the archive entry reachable and windows archived sessions", () => {
+    renderList(null, {
+      renderedSessions: [
+        ...sessions,
+        ...Array.from({ length: 200 }, (_, i) => makeSession({ id: `archived-${i}`, status: "archived" })),
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Archived.*200/ }));
+    expect(screen.getByText("Chat archived-0")).toBeInTheDocument();
+    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThan(30);
+    expect(screen.queryByText("Chat archived-199")).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatThreadList archive delegation", () => {
   beforeEach(() => {
     needsYou.rows = [];
@@ -244,17 +268,7 @@ describe("ChatThreadList no_response preview (MUL-4351)", () => {
         message_kind: "no_response",
       },
     });
-    render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatThreadList
-          sessions={[session]}
-          agents={[agent]}
-          activeSessionId={null}
-          onSelectSession={vi.fn()}
-          onArchive={vi.fn()}
-        />
-      </I18nProvider>,
-    );
+    renderList(null, { renderedSessions: [session] });
     expect(screen.getByText(enChat.list.no_response_preview)).toBeInTheDocument();
     // The stored English fallback body must not leak into the preview.
     expect(
