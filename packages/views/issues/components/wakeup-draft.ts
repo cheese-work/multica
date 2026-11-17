@@ -31,6 +31,13 @@ export const WAKEUP_EVENT_TYPES = [
 
 const RUN_END_EVENTS = ["task.completed", "task.failed", "task.cancelled"];
 
+/** The events of a custom rule after one picker toggle. */
+export function toggleWakeupEvent(events: string[], event: string, checked: boolean): string[] {
+  return checked
+    ? WAKEUP_EVENT_TYPES.filter((e) => e === event || events.includes(e))
+    : events.filter((e) => e !== event);
+}
+
 export type WakeupCondition =
   | "at"
   | "recurring"
