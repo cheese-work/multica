@@ -7,8 +7,11 @@
 -- when it reports none. It is overwritten like the token counters so a
 -- corrected report replaces the previous figure rather than accumulating.
 -- credits_micros follows the same rule for providers that bill in credits.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('credits_micros'), now())
+-- cache_write_1h_tokens is the 1-hour-TTL part of cache_write_tokens, NULL when
+-- the run carried no TTL split; it too is overwritten, so a report without a
+-- split resets it rather than keeping a stale one.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, cache_write_1h_tokens, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('credits_micros'), sqlc.narg('cache_write_1h_tokens'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -17,6 +20,7 @@ DO UPDATE SET
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
     credits_micros = EXCLUDED.credits_micros,
+    cache_write_1h_tokens = EXCLUDED.cache_write_1h_tokens,
     updated_at = now();
 
 -- name: GetTaskUsage :many
