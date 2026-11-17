@@ -34,6 +34,8 @@ type statusRecord struct {
 	// route label shares it. routingExit marks the row as a routing agent leaving its step.
 	eventID     pgtype.UUID
 	routingExit bool
+	// blockedOn is the validated blocked_on ref of a move to blocked (CHE-6972).
+	blockedOn string
 	// intent, when armed, makes the write record a handoff dispatch intent in
 	// its own transaction; intentID is the row it wrote (CHE-5486).
 	intent   *handoffIntentSeed
