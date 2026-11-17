@@ -62,6 +62,14 @@ func prStateFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgt
 // unchangedSinceLastRun reports whether the newest run on the issue that
 // matches (context key = value) completed recently with this same fingerprint.
 func unchangedSinceLastRun(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID, ctxKey, ctxValue, fingerprint string) (pgtype.UUID, bool, error) {
+	return unchangedSinceLastRunWithin(ctx, db, issueID, agentID, ctxKey, ctxValue, fingerprint, wakeupSkipWindow)
+}
+
+// unchangedSinceLastRunWithin is unchangedSinceLastRun with its own freshness
+// window; zero means the run vouches until something changes. A fire already
+// deferred (CHE-6968) uses zero: it waits for a change or its expiry, not for
+// the window.
+func unchangedSinceLastRunWithin(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID, ctxKey, ctxValue, fingerprint string, window time.Duration) (pgtype.UUID, bool, error) {
 	if fingerprint == "" {
 		return pgtype.UUID{}, false, nil
 	}
@@ -71,9 +79,9 @@ func unchangedSinceLastRun(ctx context.Context, db rowQuerier, issueID, agentID 
 		prev   *string
 		fresh  bool
 	)
-	err := db.QueryRow(ctx, `SELECT id, status, context->>'`+wakeupFingerprintKey+`', created_at > now() - make_interval(secs => $5)
+	err := db.QueryRow(ctx, `SELECT id, status, context->>'`+wakeupFingerprintKey+`', ($5::float8 <= 0 OR created_at > now() - make_interval(secs => $5::float8))
 		FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND context->>$3 = $4 ORDER BY created_at DESC LIMIT 1`,
-		issueID, agentID, ctxKey, ctxValue, wakeupSkipWindow.Seconds()).Scan(&id, &status, &prev, &fresh)
+		issueID, agentID, ctxKey, ctxValue, window.Seconds()).Scan(&id, &status, &prev, &fresh)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pgtype.UUID{}, false, nil
 	}
@@ -236,4 +244,17 @@ func markWakeupDeferred(ctx context.Context, db rowQuerier, ids []pgtype.UUID) (
 			WHERE r.id = ANY($1) AND NOT (r.payload ? 'deferred_at') RETURNING r.id
 		) SELECT EXISTS(SELECT 1 FROM marked)`, ids).Scan(&fresh)
 	return fresh, err
+}
+
+// anyDeferred reports whether a pending receipt was already deferred.
+func anyDeferred(receipts []db.IssueWakeupReceipt) bool {
+	for _, r := range receipts {
+		var p struct {
+			DeferredAt *string `json:"deferred_at"`
+		}
+		if json.Unmarshal(r.Payload, &p) == nil && p.DeferredAt != nil {
+			return true
+		}
+	}
+	return false
 }

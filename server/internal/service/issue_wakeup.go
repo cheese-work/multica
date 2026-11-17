@@ -1586,7 +1586,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if err != nil {
 			return err
 		}
-		if waiting {
+		// CHE-6968: a deferred fire released by `off` is delivered in this pass,
+		// not held behind the run another replayed wakeup just queued; runs of an
+		// agent on an issue are serialized, so its own run just follows.
+		replay := waiting && anyDeferred(receipts) && timeWakeupSkipMode(ctx, q, issue.WorkspaceID) == "off"
+		if waiting && !replay {
 			// As while its own run is claimed: timers advance, inputs stay,
 			// and a once rule stays on until its input is handed over.
 			reason := pgtype.Text{String: "Waiting for a queued run of this agent on the issue to start; new trigger inputs are retained.", Valid: true}
@@ -1685,7 +1689,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				if declaredFP, err = declaredInputsFingerprint(ctx, tx, issue.ID, w.WatchInputs, int32(w.Revision), w.Instruction); err != nil {
 					return err
 				}
-				lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), declaredFP)
+				window := wakeupSkipWindow
+				if anyDeferred(receipts) {
+					window = 0
+				}
+				lastTask, unchanged, err := unchangedSinceLastRunWithin(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), declaredFP, window)
 				if err != nil {
 					return err
 				}

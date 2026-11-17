@@ -107,10 +107,8 @@ func TestOffReplaysEveryDeferredWakeup(t *testing.T) {
 		t.Fatal("both fires must be deferred")
 	}
 	e.mode(t, `{"time_wakeup_skip":{"mode":"off"}}`)
-	e.tick(t)
-	// One agent holds one waiting run per issue: the second fire joins the pass
-	// after the first run has started, and is not lost.
-	e.finishRuns(t, "completed")
+	// One agent holds one waiting run per issue, yet both deferred instructions
+	// are delivered in this single pass (CHE-6968 review round 1).
 	e.tick(t)
 	for _, id := range []pgtype.UUID{a, b} {
 		if got := wakeRuns(t, e.f, id); got != 2 {
@@ -209,5 +207,80 @@ func TestWarnAndMemberCreatesWithoutWatchSucceed(t *testing.T) {
 	wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "at", AfterSeconds: 600, Instruction: "A person asked"})
 	if got := e.acts(t, "wake_watch_missing"); got != 1 {
 		t.Fatalf("a member create is exempt: rows = %d, want 1", got)
+	}
+}
+
+func TestDeferredWakeupOutlivesSixHourWindow(t *testing.T) {
+	e := newSkipEnv(t, false)
+	id := e.deferred(t, "issue")
+	e.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '7 hours' WHERE issue_id=$1`, e.issue)
+	e.tick(t)
+	if got := wakeRuns(t, e.f, id); got != 1 {
+		t.Fatalf("a deferred fire ran after the 6h window with nothing changed: runs = %d, want 1", got)
+	}
+	if !e.enabled(t, id) || e.pendingDue(t, id) != 1 {
+		t.Fatal("the deferred wakeup must stay pending until a change or its expiry")
+	}
+	e.f.Exec(t, `UPDATE issue SET status='in_review', revision=revision+1 WHERE id=$1`, e.issue)
+	e.tick(t)
+	if got := wakeRuns(t, e.f, id); got != 2 {
+		t.Fatalf("runs after a change = %d, want 2", got)
+	}
+}
+
+func TestDeferredThreadWakeupFiresOnRealReply(t *testing.T) {
+	e := newSkipEnv(t, false)
+	root := e.f.Comment(t, util.UUIDToString(e.issue), "Root of the thread")
+	id := e.deferred(t, "thread:"+root)
+	if e.pendingDue(t, id) != 1 {
+		t.Fatal("the unchanged thread fire must be deferred")
+	}
+	e.finishRuns(t, "completed")
+	e.f.Comment(t, util.UUIDToString(e.issue), "A person replied", testutil.Cols{"parent_id": root})
+	e.tick(t)
+	if got := wakeRuns(t, e.f, id); got != 2 {
+		t.Fatalf("runs after a reply = %d, want 2", got)
+	}
+}
+
+// A time wakeup one agent creates for another after the target's last run
+// carries a new instruction: it fires once in block even with --watch pr and
+// no PR change, because the wakeup itself never ran (CHE-6971 constraint).
+func TestBlockFiresNewAtWakeupAgentCreatedForTarget(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.blockMode(t)
+	e.f.Task(t, e.agent, testutil.Cols{"issue_id": e.issue, "status": "completed", "runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + e.agent + "')")})
+	source := e.f.Task(t, e.agent, testutil.Cols{"issue_id": e.issue, "status": "running", "runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + e.agent + "')")})
+	w, err := e.s.Create(context.Background(), e.issue, parseTestUUID(t, e.f.UserID), parseTestUUID(t, source), WakeupInput{
+		AgentID: e.agent, Kind: "at", AfterSeconds: 600, Instruction: "Fix the P1 findings", WatchInputs: []string{"pr"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='completed' WHERE id=$1`, source)
+	wakeTick(t, e.f, e.s, w.ID)
+	if got := wakeRuns(t, e.f, w.ID); got != 1 {
+		t.Fatalf("a new instruction must fire once: runs = %d, want 1", got)
+	}
+	if got := e.acts(t, "wake_deferred"); got != 0 {
+		t.Fatalf("a never-run wakeup was deferred: %d rows", got)
+	}
+}
+
+// A deferred fire stays the rule's own: a run claimed for another reason must
+// not take it along (JoinWaitingWakeups), which would consume the fire.
+func TestBlockDeferredFireDoesNotJoinClaimedRun(t *testing.T) {
+	e := newSkipEnv(t, false)
+	id := e.deferred(t, "issue")
+	e.finishRuns(t, "completed")
+	if got := e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND task_id IS NOT NULL AND processed_at IS NULL`, id); got != 0 {
+		t.Fatalf("precondition: deferred receipt already reserved (%d)", got)
+	}
+	waiting := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+	if notes := wakeClaim(t, e.f, e.s, waiting); strings.Contains(notes, "Look at the issue") {
+		t.Fatalf("a deferred fire joined a claimed run: %q", notes)
+	}
+	if e.pendingDue(t, id) != 1 || e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND task_id IS NOT NULL AND processed_at IS NULL`, id) != 0 {
+		t.Fatalf("the deferred fire must stay pending and unreserved: pending=%d reserved=%d", e.pendingDue(t, id), e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND task_id IS NOT NULL AND processed_at IS NULL`, id))
 	}
 }
