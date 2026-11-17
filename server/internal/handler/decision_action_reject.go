@@ -155,6 +155,8 @@ type decisionActionOutcome struct {
 	Result       json.RawMessage `json:"result,omitempty"`
 	ErrorCode    string          `json:"error_code,omitempty"`
 	ErrorMessage string          `json:"error_message,omitempty"`
+	// Receipt is set for an executed run-budget raise or top-up.
+	Receipt *RunBudgetReceipt `json:"receipt,omitempty"`
 }
 
 func newDecisionActionOutcome(action db.DecisionAction) decisionActionOutcome {

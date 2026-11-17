@@ -62,6 +62,8 @@ type DecisionRequestCardAction struct {
 	Revocable    bool   `json:"revocable"`
 	// Revoke is the record of a revoke that happened.
 	Revoke *CardRevoke `json:"revoke,omitempty"`
+	// Receipt is what an executed run-budget raise or top-up did and where its run stands.
+	Receipt *RunBudgetReceipt `json:"receipt,omitempty"`
 }
 
 // CardRevoke is who revoked an applied action, when, and why.
