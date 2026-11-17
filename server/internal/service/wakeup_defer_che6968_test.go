@@ -284,3 +284,32 @@ func TestBlockDeferredFireDoesNotJoinClaimedRun(t *testing.T) {
 		t.Fatalf("the deferred fire must stay pending and unreserved: pending=%d reserved=%d", e.pendingDue(t, id), e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND task_id IS NOT NULL AND processed_at IS NULL`, id))
 	}
 }
+
+// The next due slot of a recurring wakeup replaces its pending receipt; the
+// deferred mark must ride along, so the 6h window cannot release it early and
+// `off` still replays it.
+func TestDeferredMarkSurvivesNextRecurringSlot(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		e := newSkipEnv(t, false)
+		id := e.deferred(t, "issue")
+		e.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '7 hours' WHERE issue_id=$1`, e.issue)
+		e.f.Exec(t, `UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1`, id)
+		e.tick(t)
+		if got := wakeRuns(t, e.f, id); got != 1 {
+			t.Fatalf("replay=%v: next slot ran an unchanged deferred wakeup after 6h: runs = %d, want 1", replay, got)
+		}
+		if e.pendingDue(t, id) != 1 {
+			t.Fatalf("replay=%v: want exactly one pending slot, got %d", replay, e.pendingDue(t, id))
+		}
+		if got := e.acts(t, "wake_deferred"); got != 1 {
+			t.Fatalf("replay=%v: wake_deferred rows = %d, want 1 (no repeat row for a carried deferral)", replay, got)
+		}
+		if replay {
+			e.mode(t, `{"time_wakeup_skip":{"mode":"off"}}`)
+			e.tick(t)
+			if got := wakeRuns(t, e.f, id); got != 2 {
+				t.Fatalf("off must replay the carried deferral: runs = %d, want 2", got)
+			}
+		}
+	}
+}

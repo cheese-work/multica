@@ -1433,6 +1433,15 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		var latest db.IssueWakeupReceipt
 		latest, err = q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision, EventKey: planned.UTC().Format(time.RFC3339Nano), EventType: "time.due", Payload: payload})
 		if err == nil {
+			// CHE-6968: the slot that replaces a deferred one inherits its mark,
+			// so the deferral outlives the interval (6h window, off replay).
+			_, err = tx.Exec(ctx, `UPDATE issue_wakeup_receipt SET payload = payload || jsonb_build_object('deferred_at', (
+				SELECT min(o.payload->>'deferred_at') FROM issue_wakeup_receipt o
+				WHERE o.wakeup_id=$1 AND o.event_type='time.due' AND o.processed_at IS NULL AND o.id<>$2 AND o.payload ? 'deferred_at'))
+				WHERE id=$2 AND EXISTS (SELECT 1 FROM issue_wakeup_receipt o
+				WHERE o.wakeup_id=$1 AND o.event_type='time.due' AND o.processed_at IS NULL AND o.id<>$2 AND o.payload ? 'deferred_at')`, w.ID, latest.ID)
+		}
+		if err == nil {
 			_, err = tx.Exec(ctx, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND event_type='time.due' AND processed_at IS NULL AND id<>$2", w.ID, latest.ID)
 		}
 		if err != nil {
