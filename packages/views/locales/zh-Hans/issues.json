@@ -927,6 +927,7 @@
     "status_queued": "排队中",
     "status_dispatched": "启动中",
     "status_waiting_local_directory": "等待本地目录释放",
+    "status_deferred": "已延后",
     "status_running": "正在工作",
     "status_completed": "已完成",
     "status_failed": "失败",

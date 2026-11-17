@@ -965,6 +965,7 @@
     "status_queued": "En file d'attente",
     "status_dispatched": "Démarrage",
     "status_waiting_local_directory": "En attente du répertoire local",
+    "status_deferred": "Différée",
     "status_running": "Au travail",
     "status_completed": "Terminée",
     "status_failed": "En échec",
