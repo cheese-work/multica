@@ -81,7 +81,7 @@
     "sherpa-onnx-node": "2.0.1",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
-    "vite": "^8.3.6",
+    "vite": "catalog:",
     "vitest": "catalog:"
   }
 }
