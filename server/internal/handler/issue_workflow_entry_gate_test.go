@@ -278,3 +278,33 @@ func TestEntryChangeIsAStepsWrite(t *testing.T) {
 		t.Fatalf("dropping a gate classified as %q, want %q", got, workflowStepsField)
 	}
 }
+
+// CHE-6831: investigating has no exit for a child issue, so a root_issue block
+// gate refuses a child's move into it and still lets a root issue in.
+func TestEntryGateRootIssueRefusesChildInvestigating(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 6831001
+	createTestCustomStatus(t, "investigating", "started")
+	steps := []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "todo"},
+		{"status_key": "investigating", "entry": []map[string]any{gate("root_issue", "block")}},
+		{"status_key": "in_progress"},
+		{"status_key": "blocked"},
+	}
+	c := newEdgeCase(t, installationID, steps)
+	childID := c.fx.child.ID
+	dbfx.Exec(t, `UPDATE issue SET project_id=(SELECT project_id FROM issue WHERE id=$2), status='blocked' WHERE id=$1`, childID, c.issueID)
+
+	res := putIssue(t, childID, map[string]any{"status": "investigating"}, func(r *http.Request) *http.Request { return asAgentTask(t, r) })
+	res.Want(http.StatusConflict)
+	if got := failedGuards(t, res); !reflect.DeepEqual(got, []string{"root_issue"}) {
+		t.Fatalf("failed guards = %v, want [root_issue]; body %s", got, res.Text())
+	}
+	wantIssueStatus(t, childID, "blocked")
+
+	putIssue(t, c.issueID, map[string]any{"status": "investigating"}).Want(http.StatusOK)
+	wantIssueStatus(t, c.issueID, "investigating")
+}
