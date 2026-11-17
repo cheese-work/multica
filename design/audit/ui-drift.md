@@ -293,11 +293,11 @@ Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element 
 18. `settings/components/slack-tab.tsx` (batch 3, S4b) — captured (CHE-5537)
 19. `settings/components/telegram-tab.tsx` (batch 3, S4b) — captured (CHE-5537)
 20. `settings/components/wecom-tab.tsx` (batch 3, S4b) — captured (CHE-5537)
-21. `agents/components/create-agent-dialog.tsx` (batch 3, S4b)
-22. `agents/components/inspector/concurrency-picker.tsx` (batch 3, S4b)
-23. `agents/components/inspector/skill-attach.tsx` (batch 3, S4b)
-24. `agents/components/inspector/visibility-picker.tsx` (batch 3, S4b)
-25. `agents/components/instructions-editor.tsx` (batch 3, S4b)
+21. `agents/components/create-agent-dialog.tsx` (batch 3, S4b) — captured locally (CHE-5538)
+22. `agents/components/inspector/concurrency-picker.tsx` (batch 3, S4b) — captured locally (CHE-5538)
+23. `agents/components/inspector/skill-attach.tsx` (batch 3, S4b) — captured locally (CHE-5538)
+24. `agents/components/inspector/visibility-picker.tsx` (batch 3, S4b) — captured locally (CHE-5538)
+25. `agents/components/instructions-editor.tsx` (batch 3, S4b) — captured locally (CHE-5538)
 26. `autopilots/components/add-trigger-dialog.tsx` (batch 4, S4b)
 27. `common/expandable-description.tsx` (batch 4, S4b)
 28. `editor/html-viewer.tsx` (batch 4, S4b)
@@ -309,4 +309,4 @@ Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element 
 34. `rich-content/next-self-mention.tsx` (batch 4, S4b)
 35. `workflows/project-workflow-menu.tsx` (batch 4, S4b)
 
-Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5. CHE-5535 (S4b-SS2) captured 5 more: items 6 to 10. CHE-5536 (S4b-SS3) captured 5 more: items 11 to 15. CHE-5537 (S4b-SS4) captured 5 more: items 16 to 20. 20 of 35 are on the frame. Item 9 (`chat/components/chat-search.tsx`) is gone from main (CHE-5593); its harness page is removed.
+Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5. CHE-5535 (S4b-SS2) captured 5 more: items 6 to 10. CHE-5536 (S4b-SS3) captured 5 more: items 11 to 15. CHE-5537 (S4b-SS4) captured 5 more: items 16 to 20. CHE-5538 (S4b-SS5) captured 5 more locally: items 21 to 25 (`captured locally`: PNGs and HTML made by `run.sh`, not yet on the frame). 20 of 35 are on the frame; 25 of 35 are captured. Item 9 (`chat/components/chat-search.tsx`) is gone from main (CHE-5593); its harness page is removed.
