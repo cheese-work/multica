@@ -236,6 +236,17 @@ When both the API key and the base URL are empty, this layer is disabled and mak
 This covers the assist layer only. Running an agent is a separate data path: when an agent answers a chat, your daemon executes that agent's AI coding tool using the tool's own credentials, and does not forward the `MULTICA_LLM_*` settings above to it. (The run-scoped Multica connection variables the agent needs are injected by the daemon separately.) Emptying the variables above does not affect that path — govern it through the agent's runtime configuration.
 </Callout>
 
+## Design guard (doop)
+
+This group configures how Multica reads design attestations from doop for the workspace setting `design_card_guard`. One HTTPS GET with a shared bearer token reads one attestation.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | empty | doop origin, such as `https://doop.example.com`. It must be `https` and have no path |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | empty | Shared token of at least 32 characters. It must equal `DOOP_ATTESTATION_READ_TOKEN` on doop |
+
+If either variable is unset or unusable, the reader is not configured and every read fails as not configured. Each read has a 3 second timeout, follows no redirect and accepts a body of at most 256 KiB.
+
 ## Daemon configuration
 
 The variables below are read on the computer that runs your agents, not in the API container.

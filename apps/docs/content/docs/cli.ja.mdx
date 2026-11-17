@@ -394,6 +394,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 ワークスペース設定 `decision_card_lint_mode`(`off`、`warn`、`block`。既定は `off`)は、選択肢カードの文面を検査します。`warn` ではカードを作成し、指摘ごとに 1 件のヒントを応答に付けます。`block` ではサーバーが理由コードとフィールドパスを付けて `400` を返し、カードは作成しません。コードは次のとおりです。`weak_cons` は、選択肢のデメリットがすべて「あなたの時間」(「takes 1 minute of your time」)または確認・レビューをもう 1 回行うことだけの場合。`option_markdown` は、`label`、`what_happens`、`pros`、`cons` に表、見出し、画像、HTML、コードブロック、Mermaid ブロックがある場合(太字、斜体、インラインコード、リスト、リンクは使えます)。`option_leak` は、選択肢の文面が推奨を示す場合(「recommended」、「(rec)」、または 1 つのラベルだけの太字)。`default_leak` は、クラス `spend`、`deploy`、`publish`、`irreversible`、`product_direction` で `default_if_no_reply` が選択肢を名指しする場合(「No action until you pick.」と書いてください)。英語とベトナム語の言い回しを照合します。アクションカードと免除トピックのカードは検査しません。 カードの issue コメントに質問先の人へのメンションがない場合、サーバーがメンションを追加し `mention_missing` をログに記録します。拒否はされません。
 
+ワークスペース設定 `design_card_guard` は、`mode`、`doop_origin`、`design_url_property_id`、`design_workflow_id` を持つオブジェクトです。`mode` は `off`、`warn`、`block` のいずれかで、キーがない場合や `mode` がない場合は `off` です。`warn` または `block` では、`doop_origin`(パスのない `https` オリジン)と `design_url_property_id`(UUID)が必須で、`design_workflow_id`(UUID)は任意です。それ以外のフィールド、`null` 値、型の誤りはサーバーが `400` で拒否します。決定アクションによる設定変更でもこのキーを指定できます。現時点では設定の読み取りと検証だけを行い、カードに対する警告や拒否はまだ行いません。
+
 ## コマンド概要
 
 | コマンド | 用途 |

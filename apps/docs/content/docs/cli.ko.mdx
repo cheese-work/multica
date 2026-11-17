@@ -394,6 +394,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 워크스페이스 설정 `decision_card_lint_mode`(`off`, `warn`, `block`; 기본값 `off`)는 선택지 카드의 문구를 검사합니다. `warn` 에서는 카드를 만들고 지적마다 힌트 하나를 응답에 담습니다. `block` 에서는 서버가 사유 코드와 필드 경로를 담아 `400` 을 반환하며 카드를 만들지 않습니다. 코드는 다음과 같습니다. `weak_cons` 는 선택지의 단점이 모두 당신의 시간("takes 1 minute of your time") 또는 확인·검토 한 번 더뿐일 때. `option_markdown` 은 `label`, `what_happens`, `pros`, `cons` 에 표, 제목, 이미지, HTML, 코드 블록, Mermaid 블록이 있을 때(굵게, 기울임, 인라인 코드, 목록, 링크는 허용). `option_leak` 은 선택지 문구가 추천을 드러낼 때("recommended", "(rec)", 또는 한 라벨에만 굵게). `default_leak` 은 클래스 `spend`, `deploy`, `publish`, `irreversible`, `product_direction` 에서 `default_if_no_reply` 가 선택지를 지목할 때("No action until you pick." 로 쓰세요). 영어와 베트남어 표현을 대조합니다. 액션 카드와 면제 주제 카드는 검사하지 않습니다. 카드의 이슈 댓글에 질문 대상자에 대한 멘션이 없으면 서버가 멘션을 추가하고 `mention_missing`을 기록합니다. 거부되지 않습니다.
 
+워크스페이스 설정 `design_card_guard`는 `mode`, `doop_origin`, `design_url_property_id`, `design_workflow_id`를 가진 객체입니다. `mode`는 `off`, `warn`, `block` 중 하나이며, 키가 없거나 `mode`가 없으면 `off`입니다. `warn` 또는 `block`에서는 `doop_origin`(경로 없는 `https` 오리진)과 `design_url_property_id`(UUID)가 필수이고, `design_workflow_id`(UUID)는 선택입니다. 그 밖의 필드, `null` 값, 잘못된 타입은 서버가 `400`으로 거부합니다. 결정 액션으로 설정을 바꿀 때도 이 키를 지정할 수 있습니다. 지금은 설정을 읽고 검사하기만 하며, 아직 카드에 경고하거나 카드를 거부하지 않습니다.
+
 ## 명령 개요
 
 | 명령 | 용도 |
