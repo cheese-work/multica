@@ -272,10 +272,17 @@ describe("InlineCommentRun", () => {
     expect(screen.getByRole("button", { name: /View activity/ })).toHaveAttribute("aria-expanded", "false");
   });
 
-  it.each(["queued", "dispatched", "waiting_local_directory"] as const)("offers no full log before a %s run starts", (status) => {
+  it.each(["queued", "dispatched", "waiting_local_directory", "deferred"] as const)("offers no full log before a %s run starts", (status) => {
     vi.mocked(api.listTaskMessages).mockResolvedValue([]);
     setup(task({ status }));
     fireEvent.click(screen.getByRole("button", { name: /View activity/ }));
+    expect(screen.queryByRole("button", { name: "Open full log" })).not.toBeInTheDocument();
+  });
+
+  it("labels a deferred run with its own status, with no full log to open", () => {
+    vi.mocked(api.listTaskMessages).mockResolvedValue([]);
+    setup(task({ status: "deferred" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Deferred");
     expect(screen.queryByRole("button", { name: "Open full log" })).not.toBeInTheDocument();
   });
 

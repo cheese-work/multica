@@ -1,5 +1,6 @@
 import { chromium, type FullConfig } from "@playwright/test";
 import { TestApiClient } from "./fixtures";
+import { warmFetch } from "./warmup-fetch";
 
 /**
  * The suite runs against `next dev`, which compiles a route on its first
@@ -34,6 +35,8 @@ const ROUTES = [
 ];
 
 const WARMUP_SLUG = "e2e-warmup";
+// CHE-6481: a hung `next dev` compile must not hold the whole job.
+const WARMUP_FETCH_TIMEOUT_MS = 120_000;
 
 async function warmClientChunks(baseURL: string) {
   const api = new TestApiClient();
@@ -65,12 +68,7 @@ export default async function globalSetup(config: FullConfig) {
   const baseURL = config.projects[0]?.use.baseURL;
   if (!baseURL || !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(baseURL)) return;
   await Promise.all(
-    ROUTES.map((route) =>
-      fetch(`${baseURL}/${route}`, {
-        headers: { cookie: "multica_logged_in=1" },
-        redirect: "manual",
-      }).catch(() => undefined),
-    ),
+    ROUTES.map((route) => warmFetch(`${baseURL}/${route}`, WARMUP_FETCH_TIMEOUT_MS)),
   );
   await warmClientChunks(baseURL).catch(() => undefined);
 }

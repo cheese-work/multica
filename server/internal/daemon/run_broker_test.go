@@ -59,7 +59,7 @@ func brokerFakeTools(t *testing.T) {
 func buildMultica(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "multica")
-	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/multica").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "../../cmd/multica").CombinedOutput(); err != nil {
 		t.Fatalf("go build multica: %v\n%s", err, out)
 	}
 	return bin

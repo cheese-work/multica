@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { buildWakeupInput, emptyWakeupDraft, wakeupConditionsFor, wakesAssigneeOnComments, type WakeupDraft } from "./wakeup-draft";
+import { buildWakeupInput, emptyWakeupDraft, toggleWakeupEvent, wakeupConditionsFor, wakesAssigneeOnComments, type WakeupDraft } from "./wakeup-draft";
 
 const now = new Date(2026, 8, 24, 15, 0, 0);
 const draft = (patch: Partial<WakeupDraft>): WakeupDraft => ({
@@ -152,5 +152,28 @@ describe("wakeupConditionsFor", () => {
     expect(conditions).not.toContain("at");
     expect(conditions).not.toContain("recurring");
     expect(conditions).toEqual(expect.arrayContaining(["reply", "field", "run_end", "children", "pull_request", "custom"]));
+  });
+});
+
+// The server accepts system events (runtime.offline, server.deployed, ...) that the picker does not list.
+// A rule that holds one must keep it when the user toggles another event (CHE-6644, D2).
+describe("toggleWakeupEvent", () => {
+  it("keeps a stored event the picker does not list when another event is checked", () => {
+    expect(toggleWakeupEvent(["runtime.offline", "task.failed"], "comment.created", true)).toEqual([
+      "task.failed",
+      "comment.created",
+      "runtime.offline",
+    ]);
+  });
+
+  it("keeps a stored event the picker does not list when another event is unchecked", () => {
+    expect(toggleWakeupEvent(["runtime.offline", "task.failed", "comment.created"], "task.failed", false)).toEqual([
+      "runtime.offline",
+      "comment.created",
+    ]);
+  });
+
+  it("lists checked events in catalog order", () => {
+    expect(toggleWakeupEvent(["comment.created"], "task.failed", true)).toEqual(["task.failed", "comment.created"]);
   });
 });

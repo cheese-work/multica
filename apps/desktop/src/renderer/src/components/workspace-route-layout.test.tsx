@@ -92,6 +92,7 @@ vi.mock("@multica/views/workspace/use-workspace-seen", () => ({
 vi.mock("@multica/views/layout", () => ({
   WorkspacePresencePrefetch: () => null,
   MachinePauseBanner: () => <div data-testid="machine-pause-banner" />,
+  MachineBannerHeaderSlot: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 // The point of this whole test: assert the desktop layout mounts the

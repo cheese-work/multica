@@ -94,6 +94,7 @@ export function useStatusLabel(status: AgentTask["status"]): string {
     case "dispatched": return t(($) => $.execution_log.status_dispatched);
     case "waiting_local_directory":
       return t(($) => $.execution_log.status_waiting_local_directory);
+    case "deferred": return t(($) => $.execution_log.status_deferred);
     case "running": return t(($) => $.execution_log.status_running);
     case "completed": return t(($) => $.execution_log.status_completed);
     case "failed": return t(($) => $.execution_log.status_failed);

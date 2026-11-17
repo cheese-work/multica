@@ -11,6 +11,7 @@ import { useTaskMessages } from "@multica/core/chat/queries";
 import { useCancelIssueRun, useRetryIssueRun } from "@multica/core/issues/mutations";
 import { issueTimelineOptions } from "@multica/core/issues/queries";
 import { commentSupplementReceipts } from "@multica/core/issues/run-steering";
+import { PRE_RUN_STATUSES } from "@multica/core/issues/run-status";
 import { dispatchReasonCode } from "@multica/core/api";
 import type { AgentTask, TimelineEntry } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -257,8 +258,6 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
     </section>
   );
 }
-
-const PRE_RUN_STATUSES: AgentTask["status"][] = ["queued", "dispatched", "waiting_local_directory"];
 
 interface DeliveredSteer {
   id: string;

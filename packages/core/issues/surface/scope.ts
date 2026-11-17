@@ -6,7 +6,7 @@ export type IssueScope =
   | { type: "workspace"; actorKind?: WorkspaceIssueActorKind }
   | {
       type: "my";
-      relation: "all" | "assigned" | "created" | "involved";
+      relation: "all" | "assigned" | "created" | "requested" | "involved";
       userId: string;
     }
   | { type: "project"; projectId: string; actorKind?: WorkspaceIssueActorKind }
@@ -48,7 +48,10 @@ export function actorKindForViewVariant(
 export function myRelationForViewVariant(
   variant: string | null | undefined,
 ): Extract<IssueScope, { type: "my" }>["relation"] {
-  return variant === "assigned" || variant === "created" || variant === "involved"
+  return variant === "assigned" ||
+    variant === "created" ||
+    variant === "requested" ||
+    variant === "involved"
     ? variant
     : "all";
 }

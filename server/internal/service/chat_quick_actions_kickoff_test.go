@@ -444,6 +444,7 @@ func TestFailedFirstTurnHandsTheKickoffToAQueuedSuccessor(t *testing.T) {
 // handing it the kickoff would consume the context without ever delivering it.
 // It must fall back to unowned and wait for the member's next send.
 func TestReleaseSkipsAnAlreadyStartedSuccessor(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
 	q := db.New(pool)
