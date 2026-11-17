@@ -40,12 +40,15 @@ type heldProviderRetry struct {
 	holdSeconds  pgtype.Int4
 }
 
-// isHeldProviderRetryReason names the one reason the held retry covers. 5xx is
-// deliberately not in retryableReasons: retryShape and the held path read it, so
-// failTask mints one successor. 429 stays on its generic retry until M3b
-// (CHE-1741) can release a held row; the owner chose that in CHE-5284.
+// isHeldProviderRetryReason names the reasons the held retry covers: provider
+// 5xx (CHE-1736 M1.2) and 429/529 (CHE-5345, once M3b CHE-1741 could release a
+// held row). 5xx is deliberately not in retryableReasons: retryShape and the
+// held path read it, so failTask mints one successor. 429 stays in
+// retryableReasons as the fallback when the held path declines (wakeup-bound
+// run, no transaction handle) and for the orphan sweeper.
 func isHeldProviderRetryReason(reason string) bool {
-	return reason == taskfailure.ReasonAgentProviderServerError.String()
+	return reason == taskfailure.ReasonAgentProviderServerError.String() ||
+		reason == taskfailure.ReasonAgentProviderCapacityOrRateLimit.String()
 }
 
 // planHeldProviderRetry loads, before the transaction, what the held retry
