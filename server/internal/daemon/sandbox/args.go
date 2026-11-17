@@ -29,6 +29,11 @@ type Spec struct {
 	// directory is bound read-only at brokerDir and MULTICA_BROKER_SOCKET names
 	// the socket there, overriding any value in Env.
 	BrokerSocket string
+	// DaemonSocket is the host Unix socket of the run's restricted daemon API
+	// (/repo/checkout and /health). DaemonPort is the loopback port the run's
+	// MULTICA_DAEMON_PORT names; the bridge forwards it to the socket.
+	DaemonSocket string
+	DaemonPort   string
 }
 
 var (
@@ -80,6 +85,12 @@ func (s Spec) binds(bridgeExe string) []bind {
 		bs = append(bs,
 			bind{path: filepath.Dir(s.EgressSocket), dest: egressDir, ro: true},
 			bind{path: bridgeExe, dest: bridgeMount, ro: true})
+	}
+	if s.DaemonSocket != "" {
+		bs = append(bs, bind{path: filepath.Dir(s.DaemonSocket), dest: daemonDir, ro: true})
+		if s.EgressSocket == "" {
+			bs = append(bs, bind{path: bridgeExe, dest: bridgeMount, ro: true})
+		}
 	}
 	if s.BrokerSocket != "" {
 		bs = append(bs, bind{path: filepath.Dir(s.BrokerSocket), dest: brokerDir, ro: true})
@@ -136,11 +147,17 @@ func (s Spec) environ() []string {
 		if s.BrokerSocket != "" && strings.HasPrefix(kv, "MULTICA_BROKER_SOCKET=") {
 			continue
 		}
+		if s.DaemonSocket != "" && strings.HasPrefix(kv, "MULTICA_DAEMON_PORT=") {
+			continue
+		}
 		env = append(env, kv)
 	}
 	env = append(env, "HOME="+s.Home, "TMPDIR="+s.TempDir)
 	if s.EgressSocket != "" {
 		env = append(env, proxyEnv()...)
+	}
+	if s.DaemonSocket != "" {
+		env = append(env, "MULTICA_DAEMON_PORT="+s.DaemonPort)
 	}
 	if s.BrokerSocket != "" {
 		env = append(env, "MULTICA_BROKER_SOCKET="+brokerDir+"/"+filepath.Base(s.BrokerSocket))
@@ -153,7 +170,15 @@ func (l *Launcher) validate(spec Spec) error {
 		return errors.New("sandbox: empty command")
 	}
 	if spec.EgressSocket != "" {
-		if err := l.checkEgress(spec.EgressSocket); err != nil {
+		if err := checkSocket("egress", spec.EgressSocket); err != nil {
+			return err
+		}
+	}
+	if spec.DaemonSocket != "" {
+		if err := checkSocket("daemon", spec.DaemonSocket); err != nil {
+			return err
+		}
+		if err := checkDaemonPort(spec.DaemonPort); err != nil {
 			return err
 		}
 	}
