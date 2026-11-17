@@ -30,6 +30,11 @@ multica runtime usage <runtime-id> --output json
 multica runtime activity <runtime-id> --output json
 multica runtime update <runtime-id> --target-version <version> --output json
 multica runtime delete <runtime-id>
+multica runtime breaker list --output json
+multica runtime breaker reset <provider>
+multica daemon update-schedule get --runtime-id <id> --output json
+multica daemon update-schedule set --runtime-id <id> --cron '0 2 * * *' [--timezone Asia/Ho_Chi_Minh] [--window-minutes 30] [--enabled=false]
+multica daemon update-schedule clear --runtime-id <id>
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 multica repo checkout <url> --fresh
@@ -49,6 +54,11 @@ broker: create (head is always the task branch, base must be one the broker
 allows), edit title or body, mark ready, comment. A PR whose head is not the
 task branch of the task repository is refused. There is no merge and no
 review approval.
+
+`daemon update-schedule` stores one update schedule per machine (cron, time zone,
+window 10 to 30 minutes). Only the machine owner and the workspace owner can
+change it; a Desktop-launched daemon is refused. It stores the schedule only and
+never updates a daemon by itself.
 
 Runtime and repo commands affect active agent execution. Do not restart daemons,
 update runtimes, or check out arbitrary repos just to test.

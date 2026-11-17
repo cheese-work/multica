@@ -9,6 +9,8 @@ func init() {
 		"PUT /api/runtimes/{runtimeId}/pause":                    "runtime.pause",
 		"DELETE /api/runtimes/{runtimeId}/pause":                 "runtime.resume",
 		"POST /api/runtimes/{runtimeId}/update":                  "runtime.update",
+		"PUT /api/runtimes/{runtimeId}/update-schedule":          "runtime.update_schedule.set",
+		"DELETE /api/runtimes/{runtimeId}/update-schedule":       "runtime.update_schedule.clear",
 		"POST /api/runtimes/{runtimeId}/local-skills/import":     "runtime.local_skill.import",
 		"PUT /api/skills/{id}/files":                             "skill.update",
 		"DELETE /api/skills/{id}/files/{fileId}":                 "skill.update",
