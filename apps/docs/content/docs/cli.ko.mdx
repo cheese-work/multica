@@ -267,6 +267,8 @@ multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
 ```
 
+`multica agent get <agent-id> --output json`은 `background_use`도 반환합니다. 에이전트가 맡은 백그라운드 작업을 `{scope, job}` 목록으로 보여 줍니다(`scope`는 `workspace` 또는 `personal`). 워크스페이스 작업은 모두, 개인 설정은 내 것만 보입니다.
+
 가져올 때 같은 이름의 스킬이 있으면 기본적으로 중지하고 기존 내용을 수정하지 않습니다. 의도에 맞는 방식을 선택하세요.
 
 ```bash

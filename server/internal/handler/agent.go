@@ -146,6 +146,11 @@ type AgentResponse struct {
 	ArchivedBy                       *string                `json:"archived_by"`
 	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
 	// holds this agent's claims. Both null when scheduling runs.
+	// BackgroundUse lists the background jobs this agent serves (CHE-5439),
+	// set on GET only. Workspace entries plus the viewer's own personal
+	// entries; never another member's. Omitted when the agent serves none.
+	BackgroundUse []BackgroundUse `json:"background_use,omitempty"`
+
 	SchedulingPausedAt *string `json:"scheduling_paused_at"`
 	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 	// SchedulingPausedReason is the optional note given when the agent was paused.
@@ -1449,6 +1454,10 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("GetWorkspace failed for redact check", "workspace_id", uuidToString(agent.WorkspaceID), "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if resp.BackgroundUse, err = h.agentBackgroundUse(r.Context(), agent, ws.Settings, actorType, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load background agent use")
 		return
 	}
 	alwaysRedact := workspaceAlwaysRedactSecrets(ws.Settings)

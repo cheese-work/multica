@@ -267,6 +267,8 @@ multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
 ```
 
+`multica agent get <agent-id> --output json` renvoie aussi `background_use` : les tâches d'arrière-plan que l'agent assure, sous forme de liste `{scope, job}` (`scope` vaut `workspace` ou `personal`). Vous voyez toutes les tâches de l'espace de travail et uniquement vos propres choix personnels.
+
 Lorsqu'un import rencontre un skill du même nom, le comportement par défaut est de s'arrêter sans modifier le contenu existant. Choisissez selon votre intention :
 
 ```bash
