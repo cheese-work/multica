@@ -881,8 +881,10 @@ func (h *Handler) UpdateAgentApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := map[string]db.AgentApp{}
+	var beforeGrants, afterGrants []string
 	for _, row := range existing {
 		current[row.ToolkitSlug] = row
+		beforeGrants = append(beforeGrants, row.ToolkitSlug+"/"+row.AccountScope+"/"+row.Level)
 	}
 	catalog := h.ConnectedApps.Catalog(ctx, workspaceID)
 	keep := []string{}
@@ -912,6 +914,7 @@ func (h *Handler) UpdateAgentApps(w http.ResponseWriter, r *http.Request) {
 		}
 		keep = append(keep, slug)
 		wants = append(wants, want{slug, app.AccountScope, app.Level})
+		afterGrants = append(afterGrants, slug+"/"+app.AccountScope+"/"+app.Level)
 	}
 	if !isAdmin {
 		for slug, row := range current {
@@ -943,6 +946,13 @@ func (h *Handler) UpdateAgentApps(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := qtx.SetAgentComposioToolkitAllowlist(ctx, db.SetAgentComposioToolkitAllowlistParams{ID: agent.ID, Slugs: keep}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save agent apps")
+		return
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "agent.apps.update", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+		Before: agentAppsAuditFields(beforeGrants), After: agentAppsAuditFields(afterGrants),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.apps.update")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {

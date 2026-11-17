@@ -125,6 +125,13 @@ func (h *Handler) ArchiveProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to pause project autopilots")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "project.archive", WorkspaceID: project.WorkspaceID, TargetID: project.ID,
+		Before: archiveAuditFields(false), After: archiveAuditFields(true),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.archive")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive project")
 		return
@@ -155,9 +162,17 @@ func (h *Handler) RestoreProject(w http.ResponseWriter, r *http.Request) {
 	}
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore project")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
 	// Autopilots paused by the archive stay paused: resuming automation is
 	// an explicit decision, not a side effect of restoring.
-	restored, err := h.Queries.RestoreProject(r.Context(), db.RestoreProjectParams{
+	restored, err := qtx.RestoreProject(r.Context(), db.RestoreProjectParams{
 		ID:          project.ID,
 		WorkspaceID: project.WorkspaceID,
 	})
@@ -166,6 +181,17 @@ func (h *Handler) RestoreProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore project")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "project.restore", WorkspaceID: project.WorkspaceID, TargetID: project.ID,
+		Before: archiveAuditFields(true), After: archiveAuditFields(false),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.restore")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to restore project")
 		return
 	}

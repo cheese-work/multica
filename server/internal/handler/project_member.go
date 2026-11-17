@@ -516,6 +516,13 @@ func (h *Handler) AddProjectMembers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update search index")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "project.member.add", WorkspaceID: project.WorkspaceID, TargetID: project.ID,
+		Before: memberIDsAuditFields(nil), After: memberIDsAuditFields(ids),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.member.add")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit project members")
 		return
@@ -549,7 +556,14 @@ func (h *Handler) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "change the project lead before removing the current lead")
 		return
 	}
-	removed, err := h.Queries.DeleteProjectMember(r.Context(), db.DeleteProjectMemberParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	removed, err := qtx.DeleteProjectMember(r.Context(), db.DeleteProjectMemberParams{
 		ProjectID:   project.ID,
 		WorkspaceID: project.WorkspaceID,
 		UserID:      target,
@@ -560,6 +574,17 @@ func (h *Handler) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if removed == 0 {
 		writeError(w, http.StatusNotFound, "project member not found")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "project.member.remove", WorkspaceID: project.WorkspaceID, TargetID: project.ID,
+		Before: memberIDsAuditFields([]pgtype.UUID{target}), After: memberIDsAuditFields(nil),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.member.remove")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove project member")
 		return
 	}
 	if err := touchProjectSearchIndex(r, h.Queries, project); err != nil {

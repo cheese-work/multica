@@ -277,6 +277,102 @@ var e2Cases = []e2Case{
 			wantBefore: map[string]any{"route_grant_user_id": testUserID},
 		}
 	}},
+	// CHE-7023: v0.10.0 routes that change who sees a project, whether it runs
+	// automation, or which connected apps an agent may call.
+	{"project archive", "project.archive", "project", func(t *testing.T) e2Run {
+		project := dbfx.Project(t, e2Name("e2-archive"))
+		return e2Run{
+			targetID: project, wantCode: http.StatusOK,
+			do:         func() *httptest.ResponseRecorder { return archiveProjectForTest(t, testUserID, project) },
+			applied:    func(t *testing.T) bool { return e2ProjectArchived(t, project) },
+			wantBefore: map[string]any{"archived": false}, wantAfter: map[string]any{"archived": true},
+		}
+	}},
+	{"project restore", "project.restore", "project", func(t *testing.T) e2Run {
+		project := dbfx.Project(t, e2Name("e2-restore"))
+		dbfx.Exec(t, `UPDATE project SET archived_at = now() WHERE id = $1`, project)
+		return e2Run{
+			targetID: project, wantCode: http.StatusOK,
+			do:         func() *httptest.ResponseRecorder { return restoreProjectForTest(t, testUserID, project) },
+			applied:    func(t *testing.T) bool { return !e2ProjectArchived(t, project) },
+			wantBefore: map[string]any{"archived": true}, wantAfter: map[string]any{"archived": false},
+		}
+	}},
+	{"project member add", "project.member.add", "project", func(t *testing.T) e2Run {
+		project := dbfx.Project(t, e2Name("e2-member-add"))
+		user := createTestUserAndMember(t, "member")
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM project_member WHERE project_id = $1`, project)
+		})
+		return e2Run{
+			targetID: project, wantCode: http.StatusOK,
+			do: func() *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				testHandler.AddProjectMembers(w, e2Req(http.MethodPost, "/api/projects/"+project+"/members", map[string]any{"user_ids": []string{user}}, "id", project))
+				return w
+			},
+			applied: func(t *testing.T) bool {
+				return dbfx.Count(t, `SELECT count(*) FROM project_member WHERE project_id = $1 AND user_id = $2`, project, user) == 1
+			},
+			wantAfter: map[string]any{"member_user_ids": user},
+		}
+	}},
+	{"project member remove", "project.member.remove", "project", func(t *testing.T) e2Run {
+		project := dbfx.Project(t, e2Name("e2-member-del"))
+		user := createTestUserAndMember(t, "member")
+		dbfx.Exec(t, `INSERT INTO project_member (workspace_id, project_id, user_id, added_by) VALUES ($1, $2, $3, $4)`, testWorkspaceID, project, user, testUserID)
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM project_member WHERE project_id = $1`, project)
+		})
+		return e2Run{
+			targetID: project, wantCode: http.StatusNoContent,
+			do: func() *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				testHandler.RemoveProjectMember(w, e2Req(http.MethodDelete, "/api/projects/"+project+"/members/"+user, nil, "id", project, "userId", user))
+				return w
+			},
+			applied: func(t *testing.T) bool {
+				return dbfx.Count(t, `SELECT count(*) FROM project_member WHERE project_id = $1 AND user_id = $2`, project, user) == 0
+			},
+			wantBefore: map[string]any{"member_user_ids": user},
+		}
+	}},
+	{"project owner join", "project.member.add", "project", func(t *testing.T) e2Run {
+		project := dbfx.Project(t, e2Name("e2-join"))
+		dbfx.Exec(t, `UPDATE project SET visibility = 'private' WHERE id = $1`, project)
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM project_member WHERE project_id = $1`, project)
+		})
+		return e2Run{
+			targetID: project, wantCode: http.StatusOK,
+			do: func() *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				testHandler.JoinPrivateProject(w, e2Req(http.MethodPost, "/api/projects/"+project+"/join", nil, "id", project))
+				return w
+			},
+			applied: func(t *testing.T) bool {
+				return dbfx.Count(t, `SELECT count(*) FROM project_member WHERE project_id = $1 AND user_id = $2`, project, testUserID) == 1
+			},
+			wantAfter: map[string]any{"member_user_ids": testUserID},
+		}
+	}},
+	{"agent apps update", "agent.apps.update", "agent", func(t *testing.T) e2Run {
+		f := newAppsFixture(t)
+		return e2Run{
+			targetID: f.agentID, wantCode: http.StatusOK,
+			do: func() *httptest.ResponseRecorder {
+				return f.putAgentApps(t, testUserID, []map[string]string{{"toolkit_slug": "gmail", "account_scope": "personal", "level": "read"}})
+			},
+			applied: func(t *testing.T) bool {
+				return dbfx.Count(t, `SELECT count(*) FROM agent_app WHERE agent_id = $1`, f.agentID) == 1
+			},
+			wantAfter: map[string]any{"apps": "gmail/personal/read"},
+		}
+	}},
+}
+
+func e2ProjectArchived(t *testing.T, project string) bool {
+	return dbfx.Count(t, `SELECT count(*) FROM project WHERE id = $1 AND archived_at IS NOT NULL`, project) == 1
 }
 
 func e2AssertContains(t *testing.T, label string, got, want map[string]any) {

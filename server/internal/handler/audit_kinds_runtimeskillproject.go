@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -33,6 +35,37 @@ func init() {
 	for _, kind := range []string{"project.route_grant.set", "project.route_grant.remove"} {
 		auditKinds[kind] = auditKindSpec{TargetType: "project", Allow: []string{"route_grant_user_id"}}
 	}
+	// CHE-7023: v0.10.0 project lifecycle and membership, agent connected apps.
+	for _, kind := range []string{"project.archive", "project.restore"} {
+		auditKinds[kind] = auditKindSpec{TargetType: "project", Allow: []string{"archived"}}
+	}
+	for _, kind := range []string{"project.member.add", "project.member.remove"} {
+		auditKinds[kind] = auditKindSpec{TargetType: "project", Allow: []string{"member_user_ids"}}
+	}
+	auditKinds["agent.apps.update"] = auditKindSpec{TargetType: "agent", Allow: []string{"apps"}}
+}
+
+// archiveAuditFields snapshots a project's archived state.
+func archiveAuditFields(archived bool) map[string]any {
+	return map[string]any{"archived": archived}
+}
+
+// memberIDsAuditFields snapshots project member user ids as one sorted string.
+func memberIDsAuditFields(ids []pgtype.UUID) map[string]any {
+	s := make([]string, 0, len(ids))
+	for _, id := range ids {
+		s = append(s, uuidToString(id))
+	}
+	sort.Strings(s)
+	return map[string]any{"member_user_ids": strings.Join(s, ",")}
+}
+
+// agentAppsAuditFields snapshots an agent's app grants as sorted slug/scope/level
+// entries. Account ids and tokens are not part of the grant row.
+func agentAppsAuditFields(grants []string) map[string]any {
+	s := append([]string(nil), grants...)
+	sort.Strings(s)
+	return map[string]any{"apps": strings.Join(s, ";")}
 }
 
 // pauseAuditFields snapshots a machine pause; a zero pause means not paused.

@@ -188,6 +188,13 @@ func (h *Handler) JoinPrivateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update search index")
 		return
 	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "project.member.add", WorkspaceID: project.WorkspaceID, TargetID: project.ID,
+		Before: memberIDsAuditFields(nil), After: memberIDsAuditFields([]pgtype.UUID{owner.UserID}),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.member.add")
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit project join")
 		return
