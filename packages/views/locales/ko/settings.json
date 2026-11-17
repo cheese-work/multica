@@ -472,7 +472,8 @@
       "apps": "연결된 앱",
       "workflows": "워크플로",
       "provider_breakers": "공급자 차단기",
-      "background_agents": "백그라운드 에이전트"
+      "background_agents": "백그라운드 에이전트",
+      "personal_background_agents": "백그라운드 에이전트"
     },
     "groups": {
       "personal": "개인",
@@ -1621,7 +1622,8 @@
       "device": "이 기기에만",
       "device_workspace": "이 기기에만 · {{name}}",
       "workspace": "{{name}} 워크스페이스",
-      "workspace_only": "{{name}}에만 적용"
+      "workspace_only": "{{name}}에만 적용",
+      "personal": "개인"
     },
     "read_only": {
       "title": "보기 전용",
@@ -1803,5 +1805,28 @@
         "no_agent": "에이전트 없음: 각 단계가 자체 에이전트를 유지합니다."
       }
     }
+  },
+  "personal_background_agents": {
+    "title": "백그라운드 에이전트",
+    "description": "이 작은 작업을 대신 처리할 에이전트를 고릅니다. 이 선택은 나만 보고 사용하며, 내 DM에 적용되고 워크스페이스 선택보다 우선합니다.",
+    "jobs": {
+      "dm_title": {
+        "hint": "첫 메시지로 내 DM 이름을 정합니다."
+      },
+      "quick_actions": {
+        "hint": "내 DM에서 답변 아래에 후속 버튼을 제안합니다."
+      }
+    },
+    "using_workspace": "워크스페이스 설정 사용 중: {{agent}}",
+    "using_workspace_pick": "워크스페이스 설정 사용 중",
+    "use_workspace_pick": "워크스페이스 설정 사용",
+    "archived": "보관됨",
+    "archived_warning": "{{agent}}은(는) 보관되었습니다. 다른 에이전트를 고를 때까지 내 DM의 {{job}}은(는) 에이전트 없이 실행됩니다. 워크스페이스 에이전트와 대체 에이전트는 이어받지 않습니다. 대체 에이전트는 에이전트가 실패할 때만 실행됩니다.",
+    "use_workspace_button": "워크스페이스 설정 사용 ({{agent}})",
+    "load_error": "백그라운드 에이전트를 불러오지 못했습니다.",
+    "toast_save_failed": "백그라운드 에이전트를 저장하지 못했습니다.",
+    "routing_before": "라우팅은 워크스페이스 전체에 설정됩니다. 소유자와 관리자가 다음에서 변경합니다:",
+    "routing_link": "워크스페이스 → 백그라운드 에이전트",
+    "routing_after": "."
   }
 }

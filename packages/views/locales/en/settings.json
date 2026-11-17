@@ -475,7 +475,8 @@
       "apps": "Connected apps",
       "workflows": "Workflows",
       "provider_breakers": "Provider breakers",
-      "background_agents": "Background agents"
+      "background_agents": "Background agents",
+      "personal_background_agents": "Background agents"
     },
     "groups": {
       "personal": "Personal",
@@ -1632,7 +1633,8 @@
       "device": "This device only",
       "device_workspace": "This device · {{name}}",
       "workspace": "{{name}} workspace",
-      "workspace_only": "Only in {{name}}"
+      "workspace_only": "Only in {{name}}",
+      "personal": "Personal"
     },
     "read_only": {
       "title": "View only",
@@ -1817,5 +1819,28 @@
         "no_agent": "No agent: each step keeps its own agent."
       }
     }
+  },
+  "personal_background_agents": {
+    "title": "Background agents",
+    "description": "Pick the agent that does these small jobs for you. Only you see and use these picks. They apply to your DMs and win over the workspace pick.",
+    "jobs": {
+      "dm_title": {
+        "hint": "Names your DMs after the first message."
+      },
+      "quick_actions": {
+        "hint": "Suggests follow-up buttons under a reply in your DMs."
+      }
+    },
+    "using_workspace": "Using workspace: {{agent}}",
+    "using_workspace_pick": "Using the workspace pick",
+    "use_workspace_pick": "Use workspace pick",
+    "archived": "Archived",
+    "archived_warning": "{{agent}} is archived. {{job}} runs with no agent in your DMs until you pick another one. The workspace agent does not take over, and neither does the fallback: it only runs when the agent fails.",
+    "use_workspace_button": "Use the workspace pick ({{agent}})",
+    "load_error": "Couldn't load your background agents.",
+    "toast_save_failed": "Couldn't save your background agents.",
+    "routing_before": "Routing is set for the whole workspace. Owners and admins change it in",
+    "routing_link": "Workspace → Background agents",
+    "routing_after": "."
   }
 }
