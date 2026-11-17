@@ -10,14 +10,14 @@ diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
    pull_request:
      branches: [main]
    merge_group:
-@@ -15,8 +17,8 @@
+@@ -15,8 +17,8 @@ on:
          required: false
  
  concurrency:
--  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
--  cancel-in-progress: true
-+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
-+  cancel-in-progress: ${{ github.event_name != 'push' }}
+-  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dispatch' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.ref) }}
+-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
++  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dispatch' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref) }}
++  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.event_name != 'push' }}
  
  jobs:
    namespace-qualification:
