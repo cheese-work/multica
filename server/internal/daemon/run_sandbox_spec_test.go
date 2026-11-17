@@ -197,3 +197,25 @@ func TestBuildRunSandboxSpec_UncachedRepoGetsNoBindAndIsReported(t *testing.T) {
 		t.Fatalf("notes = %v, want one naming the uncached repo", notes)
 	}
 }
+
+// sandbox.Launcher.validate rejects a path that is not clean, so the builder
+// must clean PATH entries such as "/opt/bin/" before it binds them.
+func TestBuildRunSandboxSpec_PathEntriesAreCleaned(t *testing.T) {
+	f := newSpecFixture(t)
+	in := f.in
+	bin := filepath.Join(f.root, "tools", "bin")
+	in.Env = map[string]string{"PATH": bin + "/:" + filepath.Join(f.root, "tools") + "/./bin"}
+	got, _ := buildRunSandboxSpec(in)
+	n := 0
+	for _, ro := range got.ReadOnly {
+		if filepath.Clean(ro) != ro {
+			t.Errorf("ReadOnly %q is not clean", ro)
+		}
+		if ro == bin {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("cleaned PATH dir bound %d times in %v, want once", n, got.ReadOnly)
+	}
+}

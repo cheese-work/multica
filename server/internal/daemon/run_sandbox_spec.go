@@ -55,7 +55,11 @@ func buildRunSandboxSpec(in runSandboxInput) (sandbox.Spec, []string) {
 	var ro []string
 	seen := map[string]bool{}
 	for _, p := range cands {
-		if p == "" || p == "." || !filepath.IsAbs(p) || seen[p] || !exists(p) {
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p) // Launcher.validate rejects an unclean path
+		if !filepath.IsAbs(p) || seen[p] || !exists(p) {
 			continue
 		}
 		seen[p] = true
