@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -382,7 +384,7 @@ func (h *Handler) ConnectPersonalApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	url, err := h.Composio.BeginConnectReturning(r.Context(), member.UserID, req.ToolkitSlug, req.ReturnTo)
+	url, err := h.Composio.BeginConnectReturning(r.Context(), member.UserID, req.ToolkitSlug, req.ReturnTo, util.RequestOrigin(r))
 	if err != nil {
 		writeConnectError(w, r, err)
 		return
@@ -1093,7 +1095,7 @@ func (h *Handler) ListAppRequests(w http.ResponseWriter, r *http.Request) {
 // appRequestPageSize is how many decided requests one list page carries.
 const appRequestPageSize = 50
 
-func writeDecisionError(w http.ResponseWriter, err error) {
+func writeConnectedAppDecisionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, connectedapps.ErrRequestNotFound):
 		writeError(w, http.StatusNotFound, "request not found")
@@ -1137,7 +1139,7 @@ func (h *Handler) ApproveAppRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.ConnectedApps.Approve(r.Context(), workspaceID, member.UserID, id, req.Arguments)
 	if err != nil {
-		writeDecisionError(w, err)
+		writeConnectedAppDecisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, h.requestResponse(row, member.UserID))
@@ -1167,7 +1169,7 @@ func (h *Handler) RejectAppRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.ConnectedApps.Reject(r.Context(), workspaceID, member.UserID, id, req.Reason)
 	if err != nil {
-		writeDecisionError(w, err)
+		writeConnectedAppDecisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, h.requestResponse(row, member.UserID))
@@ -1215,7 +1217,7 @@ func (h *Handler) ResumeAfterDecision(ctx context.Context, req db.AppActionReque
 		return err
 	}
 	content := "[Multica] " + strings.TrimSpace(note)
-	sent, err := h.TaskService.SendDirectChatMessage(ctx, session, agent, actorID, content, nil, "member", actorID)
+	sent, err := h.TaskService.SendDirectChatMessage(ctx, session, agent, actorID, content, nil, "member", actorID, "", service.DirectChatSendOptions{})
 	if err != nil {
 		return err
 	}

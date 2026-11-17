@@ -52,6 +52,8 @@ type CallbackResult struct {
 	UserID string
 	// ReturnTo is the app path the flow started from, if any.
 	ReturnTo string
+	// Origin is the frontend origin the flow started from, if any.
+	Origin string
 }
 
 // Team reports whether the handshake connected a team account.

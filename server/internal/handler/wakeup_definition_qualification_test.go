@@ -98,7 +98,7 @@ func TestWakeupDefinitionAgentProposalIsStoredDisabledUntilAnAdminEnables(t *tes
 		s.del(root.RuleKey, strconv.FormatInt(int64(root.Revision), 10), agent).Want(http.StatusForbidden)
 		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"enabled": true}), agent).Want(http.StatusForbidden)
 		// A member's issue override does not switch the proposal on.
-		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"enabled": true}), asUser(member)).Want(http.StatusOK)
+		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"enabled": true}), wdAsUser(member)).Want(http.StatusOK)
 		if eff := k.issue().effective(root.RuleKey); eff.Enabled {
 			t.Fatalf("%s: proposal ran before an admin enabled it: %+v", s.kind, eff)
 		}

@@ -959,7 +959,7 @@ func TestClaimCarriesProjectWorkflow(t *testing.T) {
 		t.Fatal("a Default project without handoffs must not carry a workflow")
 	}
 	stale := db.AgentTaskQueue{AgentID: util.MustParseUUID(agentID), WorkflowStep: pgtype.Text{String: "waiting_for_merge", Valid: true}}
-	if testHandler.claimProjectWorkflow(context.Background(), quietIssue, &stale, false) != nil {
+	if testHandler.claimProjectWorkflow(context.Background(), quietIssue, &stale) != nil {
 		t.Fatal("a Default project without handoffs must not restrict a stale binding")
 	}
 
@@ -1020,28 +1020,26 @@ func TestClaimExplainsMovedWorkflowStep(t *testing.T) {
 	}
 	other := util.MustParseUUID(dbfx.Agent(t, "Workflow continuation observer", handlerTestRuntimeID(t)))
 	for _, observer := range []bool{false, true} {
-		for _, legacy := range []bool{false, true} {
-			t.Run(fmt.Sprintf("observer=%v/legacy=%v", observer, legacy), func(t *testing.T) {
-				claim := task
-				if observer {
-					claim.AgentID = other
+		t.Run(fmt.Sprintf("observer=%v", observer), func(t *testing.T) {
+			claim := task
+			if observer {
+				claim.AgentID = other
+			}
+			got := testHandler.claimProjectWorkflow(ctx, issue, &claim)
+			if got == nil {
+				t.Fatal("missing workflow brief")
+			}
+			for _, want := range []string{`bound to "waiting_for_merge"`, `"in_progress"`, "Do not change", "member"} {
+				if !strings.Contains(got.Brief, want) {
+					t.Errorf("brief missing %q:\n%s", want, got.Brief)
 				}
-				got := testHandler.claimProjectWorkflow(ctx, issue, &claim, legacy)
-				if got == nil {
-					t.Fatal("missing workflow brief")
+			}
+			for _, leak := range []string{"Implement it and open a PR.", "Your moves:", "multica issue status", "unless you are explicitly asked", "Before your run ends, either run"} {
+				if strings.Contains(got.Brief, leak) {
+					t.Errorf("stale run received %q:\n%s", leak, got.Brief)
 				}
-				for _, want := range []string{`bound to "waiting_for_merge"`, `"in_progress"`, "Do not change", "member"} {
-					if !strings.Contains(got.Brief, want) {
-						t.Errorf("brief missing %q:\n%s", want, got.Brief)
-					}
-				}
-				for _, leak := range []string{"Implement it and open a PR.", "Your moves:", "multica issue status", "unless you are explicitly asked", "Before your run ends, either run"} {
-					if strings.Contains(got.Brief, leak) {
-						t.Errorf("stale run received %q:\n%s", leak, got.Brief)
-					}
-				}
-			})
-		}
+			}
+		})
 	}
 	if got := taskWorkflowStep(t, taskID); got != "waiting_for_merge" {
 		t.Fatalf("claim rebound the task to %q", got)

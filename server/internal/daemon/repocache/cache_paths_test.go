@@ -60,7 +60,7 @@ func TestCheckoutReusesLegacyCache(t *testing.T) {
 			result := &WorktreeResult{Path: path, BranchName: branch}
 			var err error
 			if isolated {
-				result, err = cache.createOrUpdateIsolatedCheckoutContext(context.Background(), legacyPath, source, path, branch, baseRef, false)
+				result, err = cache.createOrUpdateIsolatedCheckoutContext(context.Background(), legacyPath, source, path, branch, baseRef, false, false, "", false)
 			} else {
 				_, err = createWorktreeContext(context.Background(), legacyPath, path, branch, baseRef)
 			}

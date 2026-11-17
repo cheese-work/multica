@@ -127,7 +127,7 @@ func TestRuntimeConcurrencyCapComposesWithSchedulingPause(t *testing.T) {
 	); err != nil {
 		t.Fatalf("pause agent: %v", err)
 	}
-	claimed, err := f.svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{f.runtimeID}, 8)
+	claimed, _, err := f.svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{f.runtimeID}, 8)
 	if err != nil {
 		t.Fatalf("ClaimTasksForRuntimes: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRuntimeConcurrencyCapComposesWithSchedulingPause(t *testing.T) {
 	); err != nil {
 		t.Fatalf("pause workspace: %v", err)
 	}
-	held, err := f.svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{f.runtimeID}, 8)
+	held, _, err := f.svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{f.runtimeID}, 8)
 	if err != nil {
 		t.Fatalf("ClaimTasksForRuntimes (workspace paused): %v", err)
 	}

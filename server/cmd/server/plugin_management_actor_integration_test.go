@@ -106,11 +106,11 @@ func newPluginConsentFixture(t *testing.T) *pluginConsentFixture {
 			t.Errorf("clean up plugin data: %v", err)
 		}
 	})
-	published, err := h.PluginService.PublishLocalBundle(context.Background(), workspaceID, userID, "consent")
+	published, err := h.PluginService.PublishLocalBundle(context.Background(), workspaceID, userID, "consent", nil)
 	if err != nil {
 		t.Fatalf("publish fixture: %v", err)
 	}
-	installed, err := h.PluginService.InstallPlugin(context.Background(), workspaceID, userID, published.Versions[0].ID, []string{"issues:read"})
+	installed, err := h.PluginService.InstallPlugin(context.Background(), workspaceID, userID, published.Versions[0].ID, []string{"issues:read"}, nil)
 	if err != nil {
 		t.Fatalf("install fixture: %v", err)
 	}

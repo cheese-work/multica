@@ -405,13 +405,18 @@ func (h *Handler) GetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) writeIssueWorkflow(w http.ResponseWriter, r *http.Request, status int, row db.IssueWorkflow) {
-	// Writes reach here after committing, so a failed access lookup lists no
-	// private project rather than failing the response.
+	writeJSON(w, status, h.issueWorkflowResponse(r.Context(), row, h.workflowProjectVisibility(r, row)))
+}
+
+// workflowProjectVisibility reports which projects the caller may see in a
+// workflow response. Writes reach here after committing, so a failed access
+// lookup lists no private project rather than failing the response.
+func (h *Handler) workflowProjectVisibility(r *http.Request, row db.IssueWorkflow) func(db.Project) bool {
 	visible := func(p db.Project) bool { return p.Visibility != projectaccess.VisibilityPrivate }
 	if hidden, err := h.hiddenProjects(r, uuidToString(row.WorkspaceID)); err == nil {
 		visible = func(p db.Project) bool { return hidden.CanSeeProject(p.ID) }
 	}
-	writeJSON(w, status, h.issueWorkflowResponse(r.Context(), row, visible))
+	return visible
 }
 
 func (h *Handler) issueWorkflowResponse(ctx context.Context, row db.IssueWorkflow, visible func(db.Project) bool) IssueWorkflowResponse {
@@ -1231,7 +1236,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
-	resp := h.issueWorkflowResponse(ctx, row)
+	resp := h.issueWorkflowResponse(ctx, row, h.workflowProjectVisibility(r, row))
 	if lintChecked {
 		// The saver sees every finding of this save; the stored readback
 		// leaves the agent-derived ones out.

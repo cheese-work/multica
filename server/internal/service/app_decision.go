@@ -47,11 +47,23 @@ func (s *TaskService) EnqueueAppDecisionRun(ctx context.Context, issueID, agentI
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("find waiting run: %w", err)
 	}
-	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, OriginDerived); err != nil {
+	if s.TxStarter == nil {
+		return fmt.Errorf("decision run requires transaction support")
+	}
+	// The fork's run guard takes the issue's budget lock inside a transaction
+	// and the debit lands in the same one, so a decision run counts against the
+	// issue's run budget like every other derived run.
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin decision run: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	q := s.Queries.WithTx(tx)
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "app decision"}); err != nil {
 		return err
 	}
 	overlay := s.buildRuntimeMCPOverlay(ctx, actorID, agent)
-	task, err := s.Queries.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{
+	task, err := q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agent.ID,
 		RuntimeID:            agent.RuntimeID,
@@ -69,6 +81,12 @@ func (s *TaskService) EnqueueAppDecisionRun(ctx context.Context, issueID, agentI
 	})
 	if err != nil {
 		return fmt.Errorf("create decision run: %w", err)
+	}
+	if err := noteRunInserted(ctx, q, issue.ID, task.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit decision run: %w", err)
 	}
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
