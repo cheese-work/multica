@@ -254,7 +254,7 @@ func (q *Queries) ListWorkspaceManagerUserIDs(ctx context.Context, workspaceID p
 }
 
 const lockMemberByUserAndWorkspace = `-- name: LockMemberByUserAndWorkspace :one
-SELECT id, workspace_id, user_id, role, created_at FROM member
+SELECT id, workspace_id, user_id, role, created_at, pinned_at FROM member
 WHERE user_id = $1 AND workspace_id = $2
 FOR SHARE
 `
@@ -275,6 +275,7 @@ func (q *Queries) LockMemberByUserAndWorkspace(ctx context.Context, arg LockMemb
 		&i.UserID,
 		&i.Role,
 		&i.CreatedAt,
+		&i.PinnedAt,
 	)
 	return i, err
 }
