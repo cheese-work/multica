@@ -262,3 +262,9 @@ test("shard jobs inherit the legacy backend-tests baseline until main has run th
   assert.deepEqual(baselineJobs.map((job) => job.name).sort(), ["backend-test-shards (handler-0)", "backend-test-shards (rest)", "frontend-build"])
   assert.deepEqual(jobBaselines["backend-test-shards (rest)"], { run: "run-2", sha: "b", job: "backend-tests" })
 })
+
+test("migration-checks, added by CHE-6563, has a zero warning baseline until main runs it", () => {
+  const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"migration-checks"/)
+})

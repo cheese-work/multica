@@ -33,7 +33,7 @@ test("required check names are unchanged and the aggregate backend-tests gates o
   assert.ok(aggregate, "missing backend-tests job");
   assert.match(policy, /required_checks:\n  - backend-tests\n  - security-gate\n/);
   assert.match(ci, /^  backend:\n/m);
-  assert.match(aggregate, /^    needs: \[changes, migration-prefix-check, backend-test-shards\]$/m);
+  assert.match(aggregate, /^    needs: \[changes, migration-prefix-check, migration-checks, backend-test-shards\]$/m);
   assert.doesNotMatch(aggregate, /services:|setup-go|test-go\.sh/, "the aggregate runs no tests");
   const guard = aggregate.match(/      - name: Require shard results[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
   assert.ok(guard, "aggregate must check the shard result");

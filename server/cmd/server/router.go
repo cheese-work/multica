@@ -2838,6 +2838,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
+			r.Get("/api/needs-you", h.GetNeedsYou) // CHE-5670: member reads own; a task token may name ?for=
 			r.With(humanOnly).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
 			r.With(humanOnly).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
