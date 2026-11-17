@@ -1,5 +1,6 @@
 export * from "./access";
 export * from "./queries";
+export * from "./affected-machines";
 export * from "./profiles";
 export * from "./mutations";
 export * from "./models";

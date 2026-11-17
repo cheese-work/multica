@@ -67,6 +67,22 @@ export interface RuntimePause {
   expires_at: string;
 }
 
+/**
+ * An off machine that holds queued tasks the viewer is affected by (CHE-2674).
+ * `event_id` changes with each new pause or offline period; a dismissed banner
+ * shows again when it does.
+ */
+export interface AffectedMachine {
+  machine_owner_id: string;
+  daemon_id: string;
+  device_name: string;
+  state: "paused" | "offline";
+  reason: RuntimePauseReason | null;
+  event_id: string;
+  expires_at: string | null;
+  waiting_tasks: number;
+}
+
 export interface RuntimeDevice {
   id: string;
   workspace_id: string;

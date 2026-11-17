@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
+import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
@@ -56,6 +57,7 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
+  AffectedMachine,
   RuntimePause,
   RuntimePauseReason,
   RuntimeProfile,
@@ -2341,6 +2343,14 @@ export class ApiClient {
       headers: workspaceHeader(workspaceSlug),
     });
     return parseWithFallback(raw, AgentRuntimeSchema.array(), [], { endpoint: "listRuntimes" });
+  }
+
+  // Off machines holding queued tasks the caller is affected by (CHE-2674).
+  async listAffectedMachines(): Promise<AffectedMachine[]> {
+    const raw = await this.fetch<unknown>("/api/runtimes/affected");
+    return parseWithFallback(raw, AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES, {
+      endpoint: "listAffectedMachines",
+    }).machines;
   }
 
   async listCloudRuntimeNodes(
