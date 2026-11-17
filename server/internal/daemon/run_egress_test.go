@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -201,5 +202,61 @@ func TestEgressTrustedHosts(t *testing.T) {
 		if got != strings.Join(c.want, ",") {
 			t.Errorf("egressTrustedHosts(%q, %q) = %s; want %s", c.server, c.provider, got, strings.Join(c.want, ","))
 		}
+	}
+}
+
+// readEnds reports whether c is closed by the other side within d.
+func readEnds(c net.Conn, d time.Duration) bool {
+	_ = c.SetReadDeadline(time.Now().Add(d))
+	_, err := c.Read(make([]byte, 1))
+	var ne net.Error
+	return err != nil && !(errors.As(err, &ne) && ne.Timeout())
+}
+
+// Close must end every connection the proxy accepted and wait for its handler,
+// so the logged destination list is complete (CHE-6502 review round 1).
+func TestRunEgress_CloseEndsHeldConnectionsBeforeLogging(t *testing.T) {
+	runEgressAllowLoopback = true
+	t.Cleanup(func() { runEgressAllowLoopback = false })
+	held := make(chan net.Conn, 1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			held <- c // never closed by the origin: the tunnel stays open
+		}
+	}()
+	log, buf := egressTestLog()
+	re, err := startRunEgress(sandbox.ModeOn, nil, log)
+	if err != nil || re == nil {
+		t.Fatalf("startRunEgress = %v, %v", re, err)
+	}
+	tunnel := connectViaSocket(t, re.Socket, ln.Addr().String())
+	<-held
+	idle, err := net.Dial("unix", re.Socket) // accepted, no request sent yet
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idle.Close() })
+
+	closed := make(chan struct{})
+	go func() { re.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not return with a tunnel and an idle connection held open")
+	}
+	if !readEnds(tunnel, time.Second) {
+		t.Error("established tunnel still open after Close")
+	}
+	if !readEnds(idle, time.Second) {
+		t.Error("idle connection still open after Close")
+	}
+	if n := strings.Count(buf.String(), "egress destination"); n != 1 {
+		t.Errorf("destination list has %d entries, want 1:\n%s", n, buf.String())
 	}
 }

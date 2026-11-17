@@ -54,6 +54,54 @@ type Proxy struct {
 	mu       sync.Mutex
 	dests    []Dest
 	external bool
+	conns    map[net.Conn]struct{} // client and upstream connections still open
+	shut     bool
+	wg       sync.WaitGroup // one per accepted connection's handler
+	ctxOnce  sync.Once
+	ctx      context.Context // cancelled by Shutdown; bounds upstream dials
+	cancel   context.CancelFunc
+}
+
+func (p *Proxy) baseCtx() context.Context {
+	p.ctxOnce.Do(func() { p.ctx, p.cancel = context.WithCancel(context.Background()) })
+	return p.ctx
+}
+
+// hold registers c so Shutdown can close it. It reports false, and closes c,
+// when the proxy is already shut down.
+func (p *Proxy) hold(c net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.shut {
+		_ = c.Close()
+		return false
+	}
+	if p.conns == nil {
+		p.conns = map[net.Conn]struct{}{}
+	}
+	p.conns[c] = struct{}{}
+	return true
+}
+
+func (p *Proxy) release(c net.Conn) {
+	p.mu.Lock()
+	delete(p.conns, c)
+	p.mu.Unlock()
+}
+
+// Shutdown stops serving: it closes every open connection, client and
+// upstream, and waits until every handler has returned. After it, Dests is
+// final. Close the listener first so no new connection arrives. Safe on repeat.
+func (p *Proxy) Shutdown() {
+	p.baseCtx()
+	p.mu.Lock()
+	p.shut = true
+	for c := range p.conns {
+		_ = c.Close()
+	}
+	p.mu.Unlock()
+	p.cancel()
+	p.wg.Wait()
 }
 
 // Dests returns a copy of the destination log, oldest first.
@@ -77,7 +125,21 @@ func (p *Proxy) Serve(ln net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go p.handle(c)
+		p.mu.Lock()
+		if p.shut {
+			p.mu.Unlock()
+			_ = c.Close()
+			return net.ErrClosed
+		}
+		p.wg.Add(1)
+		p.mu.Unlock()
+		go func() {
+			defer p.wg.Done()
+			if p.hold(c) {
+				defer p.release(c)
+				p.handle(c)
+			}
+		}()
 	}
 }
 
@@ -120,12 +182,16 @@ func (p *Proxy) handle(c net.Conn) {
 		return
 	}
 	d := net.Dialer{Timeout: dialTimeout, Control: p.control}
-	up, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(host, port))
+	up, err := d.DialContext(p.baseCtx(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		reply(c, http.StatusBadGateway)
 		return
 	}
 	defer up.Close()
+	if !p.hold(up) {
+		return
+	}
+	defer p.release(up)
 	_ = c.SetReadDeadline(time.Time{})
 	fmt.Fprint(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
 	tunnel(c, br, up)

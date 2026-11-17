@@ -94,6 +94,7 @@ func (re *runEgress) Close() {
 	re.closed = true
 	_ = re.ln.Close()
 	<-re.done
+	re.proxy.Shutdown() // closes open tunnels and waits for handlers: the list below is final
 	_ = os.RemoveAll(re.dir)
 	for _, d := range re.proxy.Dests() {
 		re.log.Info("egress destination", "host", d.Host, "port", d.Port,
