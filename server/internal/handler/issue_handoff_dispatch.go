@@ -25,6 +25,7 @@ const (
 	handoffPending    = "pending"
 	handoffDispatched = "dispatched"
 	handoffSkipped    = "skipped"
+	handoffFailed     = "failed"
 )
 
 type handoffIntentKey struct{}
@@ -130,6 +131,9 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 	if h.TxStarter == nil {
 		return db.IssueHandoffDispatch{}, errors.New("transaction starter is not configured")
 	}
+	if err := h.handoffHook("before_dispatch"); err != nil {
+		return db.IssueHandoffDispatch{}, err
+	}
 	intent, err := h.Queries.GetHandoffDispatch(ctx, intentID)
 	if err != nil {
 		return db.IssueHandoffDispatch{}, fmt.Errorf("read handoff intent: %w", err)
@@ -158,6 +162,9 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 		return db.IssueHandoffDispatch{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return db.IssueHandoffDispatch{}, err
+	}
+	if err := h.handoffHook("after_commit"); err != nil {
 		return db.IssueHandoffDispatch{}, err
 	}
 	if afterCommit != nil {
@@ -292,4 +299,11 @@ func intentRunContext(ctx context.Context, intent db.IssueHandoffDispatch) conte
 		ctx = service.WithStatusHandoffComment(ctx, intent.ContextCommentIds[0])
 	}
 	return ctx
+}
+
+func (h *Handler) handoffHook(point string) error {
+	if h.handoffDispatchHook == nil {
+		return nil
+	}
+	return h.handoffDispatchHook(point)
 }

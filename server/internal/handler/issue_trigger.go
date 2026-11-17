@@ -460,22 +460,28 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 // recordStopNotConfirmed leaves the reason a run did not start where people
 // read the issue: the gate is closed until the old run's daemon acks.
 func (h *Handler) recordStopNotConfirmed(ctx context.Context, issue db.Issue, actorType, actorID string, e *service.StopNotConfirmedError) {
-	details, _ := json.Marshal(map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+	h.recordIssueActivity(ctx, issue.WorkspaceID, issue.ID, actorType, actorID, "stop_not_confirmed",
+		map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+}
+
+// recordIssueActivity writes one timeline entry on the issue and publishes it.
+func (h *Handler) recordIssueActivity(ctx context.Context, workspaceID, issueID pgtype.UUID, actorType, actorID, action string, detail map[string]string) {
+	details, _ := json.Marshal(detail)
 	activity, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		ID:          dbid.NewV7(),
-		WorkspaceID: issue.WorkspaceID,
-		IssueID:     issue.ID,
+		WorkspaceID: workspaceID,
+		IssueID:     issueID,
 		ActorType:   strToText(actorType),
 		ActorID:     optionalActorUUID(actorID),
-		Action:      "stop_not_confirmed",
+		Action:      action,
 		Details:     details,
 	})
 	if err != nil {
-		slog.Warn("record stop-not-confirmed activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+		slog.Warn("record issue activity failed", "err", err, "action", action, "issue_id", uuidToString(issueID))
 		return
 	}
-	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
-		"issue_id": uuidToString(issue.ID),
+	h.publish(protocol.EventActivityCreated, uuidToString(workspaceID), actorType, actorID, map[string]any{
+		"issue_id": uuidToString(issueID),
 		"entry": map[string]any{
 			"type": "activity", "id": uuidToString(activity.ID), "action": activity.Action,
 			"actor_type": actorType, "actor_id": actorID, "details": json.RawMessage(details),
