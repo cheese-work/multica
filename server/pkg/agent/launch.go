@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,6 +45,15 @@ func newAgentCommandLogArgs(invocationArgs []string, trustedPositionals ...trust
 		trustedPositionals: append([]trustedAgentCommandPositional(nil), trustedPositionals...),
 	}
 }
+
+// LaunchHook rewrites a process just before it starts (sandbox wrapping).
+type LaunchHook interface {
+	Wrap(*exec.Cmd) error
+}
+
+// ErrLaunchHookCredentialBoundary: a launch hook and a credential boundary both
+// own the final command, so the combination is refused.
+var ErrLaunchHookCredentialBoundary = errors.New("agent: launch hook cannot be combined with a credential boundary")
 
 // Command is the identity of a runtime CLI: the executable Multica spawns plus
 // the argv prefix that belongs to the command itself rather than to any single
@@ -82,6 +92,46 @@ type Command struct {
 	// logger reports prefix/argument conflicts at the moment a process is
 	// built. Optional: a zero Command logs nothing.
 	logger *slog.Logger
+	// hook is the owning Config's launch hook (nil: plain launch).
+	hook LaunchHook
+}
+
+// launchHooks maps a built, not yet started *exec.Cmd to its hook. The entry
+// leaves on start (applyLaunchHook), or when the command's context ends, so a
+// command that is built and never started cannot leak.
+var launchHooks sync.Map // *exec.Cmd -> launchEntry
+
+type launchEntry struct {
+	hook LaunchHook
+	stop func() bool // detaches the context.AfterFunc
+}
+
+func registerLaunchHook(ctx context.Context, cmd *exec.Cmd, hook LaunchHook) *exec.Cmd {
+	if hook == nil {
+		return cmd
+	}
+	stop := context.AfterFunc(ctx, func() { launchHooks.Delete(cmd) })
+	launchHooks.Store(cmd, launchEntry{hook, stop})
+	return cmd
+}
+
+// applyLaunchHook runs the registered hook, if any, on cmd just before Start.
+// The entry is removed whether or not the hook succeeds.
+func applyLaunchHook(cmd *exec.Cmd) error {
+	v, ok := launchHooks.LoadAndDelete(cmd)
+	if !ok {
+		return nil
+	}
+	e := v.(launchEntry)
+	e.stop()
+	return e.hook.Wrap(cmd)
+}
+
+// launchHookEntries lists commands still waiting for their hook (tests).
+func launchHookEntries() []*exec.Cmd {
+	var out []*exec.Cmd
+	launchHooks.Range(func(k, _ any) bool { out = append(out, k.(*exec.Cmd)); return true })
+	return out
 }
 
 // NewCommand builds a Command from a resolved executable path and a launch
@@ -114,7 +164,7 @@ func (c Command) Argv(args ...string) []string {
 // reintroduce GH #7046. TestOnlyLaunchGoSpawnsRuntimeProcesses enforces it.
 func (c Command) exec(ctx context.Context, args ...string) *exec.Cmd {
 	warnLaunchPrefixOverlap(c.Prefix, args, c.logger)
-	return newRuntimeCmd(exec.CommandContext(ctx, c.Path, c.Argv(args...)...))
+	return registerLaunchHook(ctx, newRuntimeCmd(exec.CommandContext(ctx, c.Path, c.Argv(args...)...)), c.hook)
 }
 
 // newRuntimeCmd applies the process-lifecycle defaults every runtime process in
@@ -272,7 +322,7 @@ type invocationChooser func(execName, lookedUp string, args []string, logger *sl
 func (c Command) execVia(ctx context.Context, choose invocationChooser, lookedUp string, args []string, logger *slog.Logger) (*exec.Cmd, string, []string) {
 	warnLaunchPrefixOverlap(c.Prefix, args, logger)
 	argv0, cmdArgs := choose(c.Path, lookedUp, c.Argv(args...), logger)
-	return newRuntimeCmd(exec.CommandContext(ctx, argv0, cmdArgs...)), argv0, cmdArgs
+	return registerLaunchHook(ctx, newRuntimeCmd(exec.CommandContext(ctx, argv0, cmdArgs...)), c.hook), argv0, cmdArgs
 }
 
 // withFilteredPrefix returns a copy of the command whose prefix has been
@@ -315,7 +365,7 @@ func (c Command) String() string {
 // fallback, which is why the path is a parameter rather than read from
 // Config.ExecutablePath.
 func (c Config) commandAt(path string) Command {
-	return Command{Path: path, Prefix: c.LaunchPrefix, logger: c.Logger}
+	return Command{Path: path, Prefix: c.LaunchPrefix, logger: c.Logger, hook: c.Launch}
 }
 
 func (config Config) validateCredentialOptions(opts ExecOptions) error {
