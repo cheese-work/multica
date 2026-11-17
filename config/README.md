@@ -1,9 +1,12 @@
 # Tevo ownership policy
 
-`tevo-prod1-guard.json` is the canonical policy for CHE-6879. Cheese selected the
-25 prod-1-only repositories in decision reply
-`01a1e8eb-4150-753e-90eb-5c5d85725ddd` (17 Nov 2026 ICT).
-The build plugin is one of those 25; the remaining 24 have product codes.
+`tevo-prod1-guard.json` is the canonical policy for CHE-6879. The latest ownership
+handoff `01a1e905-220b-7025-87d7-ebc6a12ad975` (17 Nov 2026 ICT) replaces the
+initial 25-repository team roster. Its attached `allow.txt` (SHA256
+`bb9d848d4e5e145c9494c0ead31ea2061075ee09c8b04426bf9f09cfdf48c416`)
+lists 39 approved repositories, including ST008 and shared `tevo_iap`.
+TT016 and SA041 are explicitly denied. The policy includes those 39 plus six
+shared tooling exemptions below: 45 repositories and 33 product codes.
 No membership, contributor share or prefix grants ownership. Repository names
 are exact and case-insensitive. Unlisted Tevo repositories are denied.
 
@@ -26,11 +29,13 @@ selection and cannot be weakened by org, repo or path layers. Unknown push
 options, unresolved GitHub identities, and unexpanded aliases fail closed.
 Use canonical Git/GitHub commands when an alias is refused.
 
-Shared tooling exemptions were authorized per repository by the handoff:
+Shared tooling exemptions use the first handoff's explicit delegation to decide
+per tooling repository (`01a1e8eb-4150-753e-90eb-5c5d85725ddd`). Six are additional
+to the latest attachment; the others already appear in its 39:
 
 | Repository | Reason |
 | --- | --- |
-| `code-android-gradle-plugin` | Included in Cheese's 25 approved repositories; shared build tooling. |
+| `code-android-gradle-plugin` | Shared Android build plugin; additional tooling exemption. |
 | `code-android-template` | Shared Android template, expressly retained by the handoff. |
 | `code-android-template-fork` | Shared Android template fork, not a product. |
 | `flutter-template` | Shared Flutter template, expressly retained by the handoff. |
