@@ -379,6 +379,7 @@ multica runtime activity <runtime-id>
 
 ```bash
 multica daemon autostart enable
+multica daemon update-schedule set --runtime-id <runtime-id> --cron '0 2 * * *'
 multica runtime usage <runtime-id> --days 30
 multica runtime update <runtime-id> --target-version <version> --wait
 multica runtime profile create --display-name "Internal Claude wrapper" \
@@ -386,6 +387,8 @@ multica runtime profile create --display-name "Internal Claude wrapper" \
 ```
 
 `daemon autostart` registers the current profile to start at login; see [Start at login](/daemon-runtimes#autostart) for platform details. `runtime usage` covers 90 days by default, and `--days` goes up to 365. `runtime update` asks the daemon on that computer to update its CLI to the given version; `--wait` keeps polling until the update finishes. `runtime profile create` takes the compatible tool through `--runtime-type` (the older `--protocol-family` still works); fixed arguments can currently be set only in the web app.
+
+`daemon update-schedule get|set|clear --runtime-id <id>` reads or edits the update schedule of the machine that runtime runs on (see [Scheduled self-update](/daemon-runtimes#update-schedule)). `set` takes `--cron` (five fields, required), `--timezone` (IANA name, default `Asia/Ho_Chi_Minh`), `--window-minutes` (10 to 30, default 30) and `--enabled=false` to save the schedule paused. `get` also prints the next 3 fire times. Only the machine owner and the workspace owner can change it.
 
 Deleting a runtime that still has active agents bound to it is refused by default. `multica runtime delete <id> --cascade` unbinds those agents, preserves their configuration and history, and cancels their active runs.
 

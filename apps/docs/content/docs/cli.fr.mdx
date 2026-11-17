@@ -313,6 +313,7 @@ multica runtime activity <runtime-id>
 
 ```bash
 multica daemon autostart enable
+multica daemon update-schedule set --runtime-id <runtime-id> --cron '0 2 * * *'
 multica runtime usage <runtime-id> --days 30
 multica runtime update <runtime-id> --target-version <version> --wait
 multica runtime profile create --display-name "Wrapper Claude interne" \
@@ -320,6 +321,8 @@ multica runtime profile create --display-name "Wrapper Claude interne" \
 ```
 
 `daemon autostart` enregistre le profil courant pour qu'il démarre à l'ouverture de session ; les différences entre plateformes sont décrites dans [Démarrage à l'ouverture de session](/daemon-runtimes#autostart). `runtime usage` couvre 90 jours par défaut, et `--days` va jusqu'à 365. `runtime update` demande au daemon de cette machine de mettre sa CLI à jour vers la version indiquée ; `--wait` attend la fin de la mise à jour. `runtime profile create` indique l'outil compatible avec `--runtime-type` (l'ancien `--protocol-family` fonctionne encore) ; les arguments fixes ne se définissent pour l'instant que dans l'application web.
+
+`daemon update-schedule get|set|clear --runtime-id <id>` lit ou modifie le calendrier de mise à jour de la machine sur laquelle tourne ce runtime (voir [Mise à jour planifiée](/daemon-runtimes#update-schedule)). `set` accepte `--cron` (cinq champs, obligatoire), `--timezone` (nom IANA, `Asia/Ho_Chi_Minh` par défaut), `--window-minutes` (de 10 à 30, 30 par défaut) et `--enabled=false` pour enregistrer le calendrier en pause. `get` affiche aussi les 3 prochaines exécutions. Seuls le propriétaire de la machine et celui de l'espace de travail peuvent le modifier.
 
 La suppression d'un runtime auquel des agents actifs sont encore liés est refusée par défaut. `multica runtime delete <id> --cascade` dissocie ces agents, préserve leur configuration et leur historique, et annule leurs exécutions actives.
 

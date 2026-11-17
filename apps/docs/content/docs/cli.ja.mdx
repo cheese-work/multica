@@ -313,6 +313,7 @@ multica runtime activity <runtime-id>
 
 ```bash
 multica daemon autostart enable
+multica daemon update-schedule set --runtime-id <runtime-id> --cron '0 2 * * *'
 multica runtime usage <runtime-id> --days 30
 multica runtime update <runtime-id> --target-version <version> --wait
 multica runtime profile create --display-name "社内 Claude ラッパー" \
@@ -320,6 +321,8 @@ multica runtime profile create --display-name "社内 Claude ラッパー" \
 ```
 
 `daemon autostart` は現在のプロファイルをログイン時に起動するよう登録します。プラットフォームごとの違いは[ログイン時の自動起動](/daemon-runtimes#autostart)を参照してください。`runtime usage` は既定で 90 日分を集計し、`--days` は最大 365 です。`runtime update` はそのコンピューターのデーモンに CLI を指定のバージョンへ更新させ、`--wait` を付けると更新が終わるまで待ちます。`runtime profile create` は互換ツールを `--runtime-type` で指定します（古い `--protocol-family` も使えます）。固定引数は今のところ Web アプリでしか設定できません。
+
+`daemon update-schedule get|set|clear --runtime-id <id>` は、そのランタイムが動くマシンの更新スケジュールを表示・編集します（[スケジュール更新](/daemon-runtimes#update-schedule)を参照）。`set` は `--cron`（5 フィールド、必須）、`--timezone`（IANA 名、既定は `Asia/Ho_Chi_Minh`）、`--window-minutes`（10〜30、既定 30）、スケジュールを一時停止状態で保存する `--enabled=false` を受け付けます。`get` は次の 3 回の実行時刻も表示します。変更できるのはマシンのオーナーとワークスペースのオーナーだけです。
 
 アクティブなエージェントがまだ紐付いているランタイムの削除は、デフォルトで拒否されます。`multica runtime delete <id> --cascade` は、それらのエージェントをランタイムから解除して設定と履歴を保持し、アクティブな実行をキャンセルします。
 

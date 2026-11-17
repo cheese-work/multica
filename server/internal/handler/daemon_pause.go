@@ -143,6 +143,12 @@ func pauseToResponse(p db.DaemonPause) RuntimePauseResponse {
 // no access to a private runtime to pause its machine; a member who may not even
 // see the runtime still gets 404. The pause applies to the runtime's whole machine.
 func (h *Handler) requireDaemonPauseAccess(w http.ResponseWriter, r *http.Request) (db.AgentRuntime, db.Member, bool) {
+	return h.requireMachineOwnerAccess(w, r, "only the machine owner and the workspace owner can pause or resume a machine")
+}
+
+// requireMachineOwnerAccess is requireDaemonPauseAccess with the 403 text of the
+// caller's action.
+func (h *Handler) requireMachineOwnerAccess(w http.ResponseWriter, r *http.Request, forbiddenMsg string) (db.AgentRuntime, db.Member, bool) {
 	runtimeUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "runtimeId"), "runtime_id")
 	if !ok {
 		return db.AgentRuntime{}, db.Member{}, false
@@ -161,7 +167,7 @@ func (h *Handler) requireDaemonPauseAccess(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusNotFound, "runtime not found")
 			return rt, member, false
 		}
-		writeError(w, http.StatusForbidden, "only the machine owner and the workspace owner can pause or resume a machine")
+		writeError(w, http.StatusForbidden, forbiddenMsg)
 		return rt, member, false
 	}
 	if !rt.DaemonID.Valid {
