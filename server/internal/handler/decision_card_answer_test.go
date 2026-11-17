@@ -453,6 +453,71 @@ func TestDecisionGetCarriesTheAnswerCheeseGave(test *testing.T) {
 	}
 }
 
+// An agent that reads a decision must see how far its answer got, or it cannot
+// tell a delivered answer from a lost one (CHE-7017). receipt_state is the
+// receipt projection the DM card carries, not the state the card displays.
+func TestDecisionGetShowsAnswerDelivery(test *testing.T) {
+	fixture := newCardFixture(test)
+	id := uuidToString(fixture.decision.ID)
+	dbfx.Exec(test, `UPDATE decision_request SET ping_message_id = $2 WHERE id = $1`, fixture.decision.ID, fixture.messageID)
+	result, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "go ahead"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	read := func() (raw map[string]any, receipt *string, wokenAt, outcome *string) {
+		test.Helper()
+		var fetched struct {
+			ReceiptState *string `json:"receipt_state"`
+			Answer       *struct {
+				WokenAt     *string `json:"woken_at"`
+				WakeOutcome *string `json:"wake_outcome"`
+			} `json:"answer"`
+		}
+		call := testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK)
+		call.JSON(&fetched)
+		call.JSON(&raw)
+		if fetched.Answer == nil {
+			test.Fatalf("answered request has no answer on read: %+v", raw)
+		}
+		return raw, fetched.ReceiptState, fetched.Answer.WokenAt, fetched.Answer.WakeOutcome
+	}
+	keysPresent := func(raw map[string]any) {
+		test.Helper()
+		answer, _ := raw["answer"].(map[string]any)
+		for _, key := range []string{"woken_at", "wake_outcome"} {
+			if _, has := answer[key]; !has {
+				test.Fatalf("answer lacks key %q: %+v", key, answer)
+			}
+		}
+		if _, has := raw["receipt_state"]; !has {
+			test.Fatalf("read lacks key receipt_state: %+v", raw)
+		}
+	}
+
+	// 1. Recorded: nothing delivered yet.
+	raw, receipt, wokenAt, outcome := read()
+	keysPresent(raw)
+	if receipt == nil || *receipt != "recorded" || wokenAt != nil || outcome != nil {
+		test.Fatalf("recorded answer: receipt_state=%v woken_at=%v wake_outcome=%v", receipt, wokenAt, outcome)
+	}
+
+	// 2. Delivered without pickup. receipt_state is the receipt projection, so
+	// this case does not fold the card: only picked_up folds it.
+	dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'run_enqueued' WHERE id = $1`, result.Answer.ID)
+	raw, receipt, wokenAt, outcome = read()
+	keysPresent(raw)
+	if receipt == nil || *receipt != "delivered" || wokenAt == nil || outcome == nil || *outcome != "run_enqueued" {
+		test.Fatalf("delivered answer: receipt_state=%v woken_at=%v wake_outcome=%v", receipt, wokenAt, outcome)
+	}
+
+	// 3. A started task created after the answer is the pickup.
+	runID := dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, runID)
+	if _, receipt, _, _ = read(); receipt == nil || *receipt != "picked_up" {
+		test.Fatalf("picked-up answer: receipt_state=%v", receipt)
+	}
+}
+
 // newActionCardFixture is an open kind=action request: no options, an hour to run.
 func newActionCardFixture(test *testing.T) askedRecordFixture {
 	test.Helper()
