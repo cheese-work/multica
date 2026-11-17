@@ -83,3 +83,29 @@ test("a same-pid holder with a different backend_start is a different holder", (
   const r = evaluatePassivePreflight(b, { persistentAdvisoryKeys: advisoryLockHolderKeys(a) });
   assert.equal(r.admit, true);
 });
+
+test("runPassivePreflight denies persistent holder B that replaces transient holder A", () => {
+  let t = NOW;
+  const r = runPassivePreflight({
+    observe: () => {
+      // A (pid 10) is gone after the first sample; idle session holder B (pid 11) stays.
+      const pid = t === NOW ? "10" : "11";
+      return { ...state([pid], { xactStart: null, state: "idle" }), observedAtMs: t };
+    },
+    now: () => t, sleep: (ms) => { t += ms; },
+  });
+  assert.equal(r.admit, false);
+  assert.equal(r.reason, "a foreign advisory-lock holder is present");
+  assert.equal(r.evidence.advisoryLockHolders[0].pid, "11");
+});
+
+test("runPassivePreflight denies when new transient holders keep appearing past the window", () => {
+  let t = NOW;
+  let n = 0;
+  const r = runPassivePreflight({
+    observe: () => ({ ...state([String(100 + n++)], { xactStart: null, state: "idle" }), observedAtMs: t }),
+    now: () => t, sleep: (ms) => { t += ms; },
+  });
+  assert.equal(r.admit, false);
+  assert.equal(r.reason, "a foreign advisory-lock holder is present");
+});

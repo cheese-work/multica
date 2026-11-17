@@ -318,31 +318,34 @@ function describeAdvisoryLockHolders(state, persistentKeys) {
     });
 }
 
-const ADVISORY_DENY_REASON = "a foreign advisory-lock holder is present";
 const ADVISORY_RESAMPLE_INTERVAL_MS = 250;
 
 // runPassivePreflight wraps evaluatePassivePreflight: an advisory-lock
-// refusal is re-sampled until the threshold after the first sample, and only
-// a holder (pid + backend_start) present in every sample still denies. The
+// refusal is re-sampled every 250 ms. Each holder (pid + backend_start) is
+// tracked from the sample that first saw it. It admits once a sample shows no
+// advisory holder, and denies once any holder has been present for the full
+// threshold, so a persistent holder that replaces a transient one is still
+// caught. Holders that keep appearing past twice the threshold deny too. The
 // strict final gate does not use this.
 export function runPassivePreflight({ observe, now = () => Date.now(), sleep, opts = {} }) {
   const thresholdMs = opts.youngTransactionThresholdMs ?? YOUNG_TRANSACTION_THRESHOLD_MS;
   const startMs = now();
-  let state = observe();
-  let result = evaluatePassivePreflight(state, opts);
-  if (result.admit || result.reason !== ADVISORY_DENY_REASON) return result;
+  const firstSeenMs = new Map();
+  for (;;) {
+    const state = observe();
+    const nowMs = now();
+    const current = state.ok ? advisoryLockHolderKeys(state) : new Set();
+    for (const key of [...firstSeenMs.keys()]) if (!current.has(key)) firstSeenMs.delete(key);
+    for (const key of current) if (!firstSeenMs.has(key)) firstSeenMs.set(key, nowMs);
+    const persistent = new Set([...firstSeenMs].filter(([, seenMs]) => nowMs - seenMs >= thresholdMs).map(([key]) => key));
 
-  let persistent = advisoryLockHolderKeys(state);
-  while (now() - startMs < thresholdMs) {
+    const result = evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: persistent });
+    if (!result.admit || current.size === 0) return result;
+    if (nowMs - startMs >= 2 * thresholdMs) {
+      return evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: current });
+    }
     sleep(ADVISORY_RESAMPLE_INTERVAL_MS);
-    state = observe();
-    if (!state.ok) return evaluatePassivePreflight(state, opts);
-    const current = advisoryLockHolderKeys(state);
-    persistent = new Set([...persistent].filter((k) => current.has(k)));
-    result = evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: persistent });
-    if (result.admit || result.reason !== ADVISORY_DENY_REASON) return result;
   }
-  return result;
 }
 
 // evaluatePassivePreflight implements the design's gate 1: a coarse, cheap
