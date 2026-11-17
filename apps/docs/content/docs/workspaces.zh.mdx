@@ -40,21 +40,21 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ### 自动关闭
 
-工作区设置 `auto_close` 决定子 issue 进入 `agent_accepted` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
+工作区设置 `auto_close` 决定子任务进入 `agent_accepted` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
 
 | 值 | 效果 |
 | --- | --- |
 | `off` | 不变。该步骤的智能体运行。 |
 | `warn`（默认） | 该步骤的智能体照常运行。每次进入还会记录一条 `auto_close_would_close` 活动记录，写明满足的检查和随后的运行。 |
-| `block` | 服务器把 issue 移到 `done`，记录一条写明所读检查的 `auto_closed` 活动记录，并且不启动运行。 |
+| `block` | 服务器把任务移到 `done`，记录一条写明所读检查的 `auto_closed` 活动记录，并且不启动运行。 |
 
 关闭需要下面所有检查都通过。任何一项不满足或无法读取，该步骤的智能体照常运行。
 
-- issue 有父 issue。根 issue 永远不会被关闭。
+- 任务有父任务。根任务永远不会被关闭。
 - 最新的评审结论是不含 P0 或 P1 问题的 PASS，并且针对当前候选。有 PR 时，每个关联的 PR 都已在 PASS 所指的 head 上合并。没有 PR 时，PASS 之后没有新附件、CHANGES 结论、过期或被取代标记，也没有回到 `in_progress`。
-- 没有未完成的子 issue、没有未处理的决策请求，并且 issue 进入该步骤时没有处于启用状态的唤醒。
-- 描述中没有 `Blockers: Cheese stop` 行，且父 issue 的 `delivery_stop` 元数据不是 `stopped`。
-- issue 元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
+- 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
+- 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
+- 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
 - 工作流中有从 `agent_accepted` 到 `done` 的 `agent_done` 边。
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
