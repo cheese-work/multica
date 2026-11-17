@@ -3,6 +3,9 @@ package guard
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -215,4 +218,117 @@ func TestGitReaderOnARealRepository(t *testing.T) {
 	if !strings.Contains(note, "repo rules: "+RepoRulesFile+" at base tip") {
 		t.Errorf("note %q", note)
 	}
+}
+
+// A private repository: the lazy blob fetch that cat-file triggers needs the
+// credential helper too, or it runs unauthenticated and the guard falls back to REST.
+func TestQueueGitCredentialHelperReachesEveryNetworkCall(t *testing.T) {
+	f := newFake()
+	f.prs = append(f.prs, queuePR())
+	f.setRules(repo, "main", tipV1, keyedRules)
+	checkPR(t, f, queueEnv(nil))
+	for _, verb := range []string{"fetch", "ls-tree", "cat-file"} {
+		var seen int
+		for _, c := range f.calls {
+			if strings.HasPrefix(c, "git ") && strings.Contains(c, " "+verb+" ") {
+				seen++
+				if !strings.Contains(c, "credential.helper=!") {
+					t.Errorf("git %s runs without the credential helper: %s", verb, c)
+				}
+				if strings.Contains(c, "s3cret-token") {
+					t.Errorf("git %s carries the token: %s", verb, c)
+				}
+			}
+		}
+		if seen == 0 {
+			t.Errorf("no git %s call recorded", verb)
+		}
+	}
+}
+
+// A private repository over HTTP: a real git http-backend behind basic auth that
+// only accepts the token. The partial clone's lazy blob fetch (cat-file) must
+// authenticate too; a wrong token must fall back, not read the file.
+func TestGitReaderAuthenticatedPartialClone(t *testing.T) {
+	out, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Skip("no git")
+	}
+	backend := filepath.Join(strings.TrimSpace(string(out)), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Skip("no git-http-backend")
+	}
+	root := t.TempDir()
+	bare := filepath.Join(root, "o", "n.git")
+	work := t.TempDir()
+	sh := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if o, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, o)
+		}
+	}
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sh(bare, "init", "-q", "--bare", "-b", "main")
+	sh(bare, "config", "uploadpack.allowFilter", "true")
+	sh(bare, "config", "uploadpack.allowAnySHA1InWant", "true")
+	sh(work, "init", "-q", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(work, ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, RepoRulesFile), []byte(keyedRules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh(work, "add", ".")
+	sh(work, "commit", "-q", "-m", "rules")
+	sh(work, "push", "-q", bare, "main")
+
+	// Hermetic: no global or system credential helper may answer for the guard's own.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	const token = "s3cret-token"
+	cgiH := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pw, ok := r.BasicAuth(); !ok || pw != token {
+			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		cgiH.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	read := func(tok string) (*Rules, bool) {
+		var errb bytes.Buffer
+		t.Setenv("GH_TOKEN", tok) // the credential helper reads the process environment
+		env := func(k string) string {
+			return map[string]string{"GITHUB_SERVER_URL": srv.URL, "GH_TOKEN": tok}[k]
+		}
+		e := &Engine{Policy: DefaultPolicy(), Runner: ExecRunner{Real: func(string) string { return realGit() }}, Env: env, Err: &errb}
+		rules, _, handled, err := e.fetchRulesViaGit(context.Background(), "o/n", "main")
+		if err != nil {
+			t.Fatalf("err %v", err)
+		}
+		return rules, handled
+	}
+	want, _, _ := ParseRepoRules([]byte(keyedRules))
+	if rules, handled := read(token); !handled || !reflect.DeepEqual(rules, want) {
+		t.Fatalf("with the token: handled %v rules %+v, want %+v", handled, rules, want)
+	}
+	if _, handled := read("wrong"); handled {
+		t.Errorf("a wrong token still read the file")
+	}
+}
+
+// realGit is /usr/bin/git when present: some dev hosts put a credential-injecting
+// wrapper first on PATH, which would answer before the guard's helper.
+func realGit() string {
+	if _, err := os.Stat("/usr/bin/git"); err == nil {
+		return "/usr/bin/git"
+	}
+	return "git"
 }

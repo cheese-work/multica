@@ -39,7 +39,7 @@ func (e *Engine) queueGitContext(base string) bool {
 		return false
 	}
 	m := queueRefRe.FindStringSubmatch(e.getenv("MERGE_GROUP_HEAD_REF"))
-	return m != nil && m[1] == base
+	return len(m) == 2 && m[1] == base
 }
 
 // fetchRulesViaGit reads RepoRulesFile at the live tip of base in repo with a
@@ -47,7 +47,11 @@ func (e *Engine) queueGitContext(base string) bool {
 // Git could not answer (the caller falls back to REST). An error is a bad
 // file only.
 func (e *Engine) fetchRulesViaGit(ctx context.Context, repo, base string) (rules *Rules, revs []string, handled bool, err error) {
+	var lastErr string // stderr of the last failed git call, for the fallback line
 	fallback := func(why string) (*Rules, []string, bool, error) {
+		if lastErr != "" {
+			why += ": " + lastErr
+		}
 		fmt.Fprintf(e.Err, "guard: reading %s through git failed (%s); using the REST API\n", RepoRulesFile, why)
 		return nil, nil, false, nil
 	}
@@ -63,27 +67,40 @@ func (e *Engine) fetchRulesViaGit(ctx context.Context, repo, base string) (rules
 	if server == "" {
 		server = "https://github.com"
 	}
-	g := func(args ...string) (string, bool) { return e.git(ctx, append([]string{"-C", dir}, args...)...) }
-	fetch := []string{"-c", "credential.helper="}
-	if e.getenv("GH_TOKEN") != "" {
-		fetch = append(fetch, "-c", "credential.helper="+gitCredHelper)
+	run := func(args ...string) (string, bool) {
+		res, rerr := e.Runner.Run(ctx, "git", args...)
+		ok := rerr == nil && res.Exit == 0
+		if !ok {
+			lastErr = firstLine(res.Stderr, 160)
+			if rerr != nil {
+				lastErr = firstLine(rerr.Error(), 160)
+			}
+		}
+		return strings.TrimSpace(res.Stdout), ok
 	}
-	fetch = append(fetch, "fetch", "--no-tags", "--depth=1", "--filter=blob:none", "origin", "refs/heads/"+base)
+	g := func(args ...string) (string, bool) { return run(append([]string{"-C", dir}, args...)...) }
+	// Every call that can reach the network carries the helper: ls-tree and
+	// cat-file lazily fetch missing objects from the blob-less remote.
+	auth := []string{"-c", "credential.helper="}
+	if e.getenv("GH_TOKEN") != "" {
+		auth = append(auth, "-c", "credential.helper="+gitCredHelper)
+	}
+	net := func(args ...string) (string, bool) { return g(append(append([]string(nil), auth...), args...)...) }
 
-	if _, ok := e.git(ctx, "init", "-q", dir); !ok {
+	if _, ok := run("init", "-q", dir); !ok {
 		return fallback("git init")
 	}
 	if _, ok := g("remote", "add", "origin", server+"/"+repo+".git"); !ok {
 		return fallback("git remote add")
 	}
-	if _, ok := g(fetch...); !ok {
+	if _, ok := net("fetch", "--no-tags", "--depth=1", "--filter=blob:none", "origin", "refs/heads/"+base); !ok {
 		return fallback("git fetch")
 	}
 	tip, ok := g("rev-parse", "FETCH_HEAD")
 	if !ok || !shaRe.MatchString(tip) {
 		return fallback("git rev-parse")
 	}
-	entry, ok := g("ls-tree", tip, "--", RepoRulesFile)
+	entry, ok := net("ls-tree", tip, "--", RepoRulesFile)
 	if !ok {
 		return fallback("git ls-tree")
 	}
@@ -94,7 +111,7 @@ func (e *Engine) fetchRulesViaGit(ctx context.Context, repo, base string) (rules
 	if !strings.HasPrefix(entry, "100") || !strings.Contains(entry, " blob ") { // a symlink or a directory is not the file
 		return fallback("not a regular file")
 	}
-	raw, ok := g("cat-file", "-p", tip+":"+RepoRulesFile)
+	raw, ok := net("cat-file", "-p", tip+":"+RepoRulesFile)
 	if !ok {
 		return fallback("git cat-file")
 	}
