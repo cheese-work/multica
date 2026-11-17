@@ -59,6 +59,8 @@ var typeGroups = map[string]string{
 	"app_action_requested":  "",
 	"app_action_reminder":   "",
 	"app_connect_requested": "",
+	// A paused machine's last task finished; its owner may shut it down.
+	"machine_drained": "",
 }
 
 // legacyTypes are types earlier releases wrote and this server no longer
