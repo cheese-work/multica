@@ -773,6 +773,12 @@ jobs:
         id: goepoch
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
+      # CHE-7000: used memory every 5 s for the whole job; the step below turns
+      # it into one peak per shard. Survives the step: the runner reaps it at job end.
+      - name: Start memory sampler
+        run: |
+          (while true; do awk '/^MemTotal:/{t=$2} /^MemAvailable:/{print int((t-$2)/1024)}' /proc/meminfo >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+
       - name: Build
         if: ${{ matrix.partition == 'rest' }}
         run: cd server && go build -race ./...
@@ -829,6 +835,10 @@ jobs:
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: Report peak memory
+        if: ${{ !cancelled() }}
+        run: echo "::notice title=peak-mem::${{ matrix.partition }} $(sort -n "$RUNNER_TEMP/mem.log" | tail -1) MiB used of $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) MiB"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.
