@@ -122,8 +122,7 @@ type logRecord struct {
 // Exec runs tool with args under the policy and returns the exit code the
 // caller should use.
 func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, error) {
-	// Only git and gh act on a repository; the lockdown and the layer lookup
-	// below are about repositories, so sleep (plugin 2) skips both.
+	// Lockdown covers repository calls; sleep (plugin 2) is independent.
 	repoCall := tool != "sleep"
 	if repoCall && e.Policy.lockdown {
 		fmt.Fprintf(e.Err, "guard: refused: %s\n", lockdownMessage)
@@ -137,9 +136,10 @@ func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, err
 		return 2, nil
 	}
 	t := Target{}
-	// ponytail: one extra gh repo view and git call per guarded call when the
-	// policy has layers; cache per run if that shows up.
-	if repoCall && len(e.Policy.Layers) > 0 {
+	// Layer targeting uses gh selectors and the current clone. Git's workspace
+	// allowlist was already checked against its effective push destinations;
+	// commands such as clone/init need no existing GitHub repository.
+	if tool == "gh" && len(e.Policy.Layers) > 0 {
 		var ok bool
 		var why string
 		if t, ok, why = e.target(ctx, args); !ok {

@@ -28,6 +28,10 @@ The policy retains all default plugins. Its scope boundary runs before plugin
 selection and cannot be weakened by org, repo or path layers. Unknown push
 options, unresolved GitHub identities, and unexpanded aliases fail closed.
 Use canonical Git/GitHub commands when an alias is refused.
+When the allowlist is enabled, non-GitHub and local-path push destinations are
+also refused because their GitHub identity cannot be verified. Unlisted GitHub
+owners remain unrestricted. Git layer targeting does not require a clone or
+GitHub API lookup; only `gh` resolves repository layers.
 
 Shared tooling exemptions use the first handoff's explicit delegation to decide
 per tooling repository (`01a1e8eb-4150-753e-90eb-5c5d85725ddd`). Six are additional
