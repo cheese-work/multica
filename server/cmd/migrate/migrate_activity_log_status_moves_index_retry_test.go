@@ -43,7 +43,7 @@ func TestRunMigrationsRepairsInvalidActivityLogStatusMovesIndex(t *testing.T) {
 	pool := openTestPoolWithSearchPath(t, schema)
 
 	const indexName = "idx_activity_log_status_moves"
-	const version = "9999968_activity_log_status_moves_idx"
+	const version = "9999969_activity_log_status_moves_idx"
 	files := realMigrationFiles(t, []string{version}, "up")
 	body, err := os.ReadFile(files[0])
 	if err != nil {
