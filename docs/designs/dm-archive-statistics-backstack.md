@@ -277,20 +277,22 @@ The security review of CHE-1781 / CHE-1785 approved the earlier L7 head. This ta
 
 D5 stays: L7 code is not admitted until a different-lab reviewer signs a security APPROVE on this revised design head (CHE-2894 step 2).
 
-#### SEC-1 / SEC-2 / SEC-3 line references, re-verified at `f0297fa94`
+#### SEC-1 / SEC-2 / SEC-3 line references, re-verified at `ce8a292c6` (CHE-2912)
 
-The SEC items below cite lines from head `66f3907a3`. They are updated in place; this table records the change. Paths are under `server/`.
+The SEC items below cite lines from head `66f3907a3`. They are updated in place; this table records the change. Paths are under `server/`. SEC-2 rows give the lines after the CHE-2912 change.
 
 | Item | Was | Now |
 | --- | --- | --- |
 | SEC-1, ENG-2: continue agent check before the transaction | `chat_continue.go:41` | `internal/handler/chat_continue.go:56` (lock at `:96`) |
-| SEC-2 rule 1: `GetLastChatTaskSession` | `chat.sql:1367` | `pkg/db/queries/chat.sql:1505` (`retired_sessions` `:1546`, `latest_per_session` `:1573`) |
-| SEC-2 rule 1: claim fallback | `daemon.go:3200-3221` | `internal/handler/daemon.go:3812-3850`; chat pointer read `:3748-3758` |
-| SEC-2 rule 1: continuity reader (not named before) | - | `GetLatestChatTaskRolloutMissing` (`pkg/db/queries/agent.sql:1281`, read at `daemon.go:3855`) gets the same `purpose` filter |
-| SEC-2 rule 2: completion pointer writes | `task.go:4618`, `:4633` | `internal/service/task.go:5374`, `:5390` (`CompleteTaskWithRunContext`, `:5317`) |
-| SEC-2 rule 2: failure pointer writes | `task.go:5157`, `:5171`, `:5192` | `task.go:5948`, `:5962`, `:5983` (`failTask`, `:5797`) |
-| SEC-2 rule 2: cancel pointer advance | `task.go:3067` | `task.go:3573` (`CancelTaskWithResult`, `:3474`); also `RetireCancelledTaskSession` clears the pointer at `:4026` |
-| SEC-2 rule 2: mid-flight pin | `task_lifecycle.go:70` | `internal/handler/task_lifecycle.go:70` (pointer advance at `:130`), unchanged |
+| SEC-1 rule 5: recheck at claim | - | `internal/handler/daemon.go:3771-3781` (after `rejectClaimOnWorkspaceMismatch` `:3765`, before the resume and input reads); a failure goes through `failClaimedTaskBeforeLaunch` |
+| SEC-2 rule 1: `GetLastChatTaskSession` | `chat.sql:1367` | `pkg/db/queries/chat.sql:1810` (`retired_sessions` `:1860`, `latest_per_session` `:1891`), each CTE filters `purpose` |
+| SEC-2 rule 1: claim fallback | `daemon.go:3200-3221` | `internal/handler/daemon.go:3911-3950` (`GetLastChatTaskSession` `:3925`); chat pointer read `:3847-3858`, guarded by `resumeAllowed` (`:3783`) |
+| SEC-2 rule 1: pointer currency | - | `ChatSessionPointerIsCurrent` (`pkg/db/queries/chat.sql:1796`, called by `chatPointerIsCurrent`, `daemon.go:7649`) ignores compaction rows |
+| SEC-2 rule 1: continuity reader (not named before) | - | `GetLatestChatTaskRolloutMissing` (`pkg/db/queries/agent.sql:1608`, read at `daemon.go:3972`) has the same `purpose` filter |
+| SEC-2 rule 2: completion pointer writes | `task.go:4618`, `:4633` | `internal/service/task.go:5799`, `:5815`, inside `if !IsCompactionTask(t)` (`:5788`; `CompleteTaskWithRunContext`, `:5735`) |
+| SEC-2 rule 2: failure pointer writes | `task.go:5157`, `:5171`, `:5192` | `task.go:6619`, `:6633`, `:6654`, each guarded by `!IsCompactionTask(t)` (`failTask`, `:6432`) |
+| SEC-2 rule 2: cancel pointer advance | `task.go:3067` | `task.go:3869` (`CancelTaskWithResult`, `:3770`, skipped for compaction); `AdvanceCancelledChatSessionPointer` (`chat.sql:775`) also refuses a compaction task and ignores compaction rows as "newer"; `RetireCancelledTaskSession` clears the pointer at `:4322` (`:4297`), skipped for compaction |
+| SEC-2 rule 2: mid-flight pin | `task_lifecycle.go:70` | `internal/handler/task_lifecycle.go:70` (pointer advance at `:130`), unchanged; the statement is the guard |
 | SEC-3 rule 1: route guard trusts the token's owning user | `workspace.go:403-408` | `internal/middleware/workspace.go:235-249` (`RequireWorkspaceRoleFromURL`, `:206`) |
 | SEC-3 rule 1: governed-field pattern | `governed_instruction_fields.go:90` | unchanged; used by `UpdateWorkspace` at `internal/handler/workspace.go:501` |
 | SEC-3 rule 2: nested `settings` write | `workspace.go:487-504` | `internal/handler/workspace.go:529-536`, saved under the row lock at `:629` |
