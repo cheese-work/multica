@@ -31,11 +31,18 @@ export const WAKEUP_EVENT_TYPES = [
 
 const RUN_END_EVENTS = ["task.completed", "task.failed", "task.cancelled"];
 
-/** The events of a custom rule after one picker toggle. */
+/**
+ * The events of a custom rule after one picker toggle. The server also accepts
+ * system events the picker does not list; a stored rule keeps them, after the
+ * listed ones.
+ */
 export function toggleWakeupEvent(events: string[], event: string, checked: boolean): string[] {
-  return checked
-    ? WAKEUP_EVENT_TYPES.filter((e) => e === event || events.includes(e))
-    : events.filter((e) => e !== event);
+  if (!checked) return events.filter((e) => e !== event);
+  const listed = (e: string) => (WAKEUP_EVENT_TYPES as readonly string[]).includes(e);
+  return [
+    ...WAKEUP_EVENT_TYPES.filter((e) => e === event || events.includes(e)),
+    ...events.filter((e) => !listed(e)),
+  ];
 }
 
 export type WakeupCondition =
