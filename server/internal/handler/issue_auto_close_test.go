@@ -70,7 +70,9 @@ func newAutoClose(t *testing.T, mode string) autoClose {
 		"project_id": projectID, "status": "agent_review", "assignee_type": "agent", "assignee_id": reviewer,
 		"parent_issue_id": parentID, "metadata": testutil.Raw(`'{"post_close_work":"none"}'::jsonb`),
 	})
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	})
 	run := dbfx.Task(t, reviewer, testutil.Cols{
 		"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "workflow_step": "agent_review",
 		"dispatched_at": testutil.Raw("now() - interval '5 minutes'"), "started_at": testutil.Raw("now() - interval '4 minutes'"),
