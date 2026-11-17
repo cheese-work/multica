@@ -108,7 +108,6 @@ function commonResponse(pathname: string): unknown | undefined {
     };
     // Issue-page side panels added after the harness: empty objects let their parsers fall back.
     case "/api/decisions/issue-cards": case "/api/issues/unread": return {};
-    case "/api/runtimes/affected": return { machines: [] };
     default:
       return /^\/api\/issues\/[0-9a-f-]{36}\/(run-budget|wakeup-definitions)$/.test(pathname) ? {} : undefined;
   }

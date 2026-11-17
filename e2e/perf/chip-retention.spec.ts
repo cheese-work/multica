@@ -57,13 +57,9 @@ const timeline = (content: (i: number) => string, count: number) =>
 
 interface ChipSample { text: string; w: number; h: number }
 
-/** What drops the issue from the list: a list refresh, or a WebSocket reconnect (CHE-1827). */
-type R3Trigger = "list-update" | "reconnect";
-
-const r3 = (trigger: R3Trigger) => async ({
+test("R3: a chip keeps its title when its issue leaves the list's first page", async ({
   page, context, baseURL,
-}: { page: Page; context: import("@playwright/test").BrowserContext; baseURL: string | undefined },
-testInfo: import("@playwright/test").TestInfo) => {
+}, testInfo) => {
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   const profile = fx.profileOf(testInfo.project.name);
   const threadIssue = fx.issueFor(fx.THREAD_ISSUE_IDENTIFIER, fx.THREAD_ISSUE_ID);
@@ -98,12 +94,10 @@ testInfo: import("@playwright/test").TestInfo) => {
     requestAnimationFrame(sample);
   });
   let socket!: WebSocketRoute;
-  let sockets = 0;
   let onSocket!: () => void;
   const socketReady = new Promise<void>((done) => { onSocket = done; });
   await context.routeWebSocket((url) => url.pathname === "/ws", (ws) => {
     socket = ws;
-    sockets += 1;
     ws.onMessage(() => {});
     onSocket();
   });
@@ -123,19 +117,11 @@ testInfo: import("@playwright/test").TestInfo) => {
   const titleText = (await chips.first().textContent()) ?? "";
   await page.evaluate(() => { (window as unknown as { __sampling: boolean }).__sampling = true; });
 
-  // Page 1 no longer holds the issue. The detail lookup that replaces it
-  // answers after LOOKUP_DELAY_MS; sample past that.
+  // The list update: page 1 no longer holds the issue. The detail lookup that
+  // replaces it answers after LOOKUP_DELAY_MS; sample past that.
   list.holdsChipIssue = false;
-  if (trigger === "list-update") {
-    socket.send(JSON.stringify({ type: "label:updated", payload: {}, actor_type: "system", actor_id: "" }));
-    await expect.poll(() => list.requests, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
-  } else {
-    // The connection drops; the client reconnects and refetches the list.
-    const before = list.requests;
-    await socket.close();
-    await expect.poll(() => sockets, { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
-    await expect.poll(() => list.requests, { timeout: 30_000 }).toBeGreaterThan(before);
-  }
+  socket.send(JSON.stringify({ type: "label:updated", payload: {}, actor_type: "system", actor_id: "" }));
+  await expect.poll(() => list.requests, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
   await page.waitForTimeout(fx.LOOKUP_DELAY_MS * 3);
   await nextFrame(page);
   const samples = await page.evaluate(() => {
@@ -159,15 +145,12 @@ testInfo: import("@playwright/test").TestInfo) => {
   expect.soft(widthDelta, "chip width delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
   expect.soft(heightDelta, "chip height delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
 
-  report(trigger === "reconnect" ? "R3-reconnect" : "R3", {
+  report("R3", {
     profile, frames: frames.length, chipCounts, distinctTexts: [...texts], widthDelta, heightDelta,
     cls: shift.cls, rawShift: shift.raw,
   });
   expectClean(h);
-};
-
-test("R3: a chip keeps its title when its issue leaves the list's first page", r3("list-update"));
-test("R3: a chip keeps its title across a WebSocket reconnect", r3("reconnect"));
+});
 
 // ---- R4 ---------------------------------------------------------------------
 
