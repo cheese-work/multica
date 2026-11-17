@@ -169,7 +169,7 @@ func (h *Handler) resumeRefusal(ctx context.Context, id pgtype.UUID) {
 			if after != nil {
 				after(ctx)
 			}
-			h.publishResumeOutcome(ctx, row)
+			h.publishRefusalOutcome(ctx, row.WorkspaceID, row.ActionID)
 			return
 		case errors.Is(err, errResumeDone):
 			return
@@ -594,19 +594,19 @@ func (h *Handler) failResume(ctx context.Context, row db.RunBudgetRefusal, state
 		slog.Warn("run budget: record resume outcome failed", "err", err, "refusal_id", uuidToString(row.ID))
 		return
 	}
-	h.publishResumeOutcome(ctx, row)
+	h.publishRefusalOutcome(ctx, row.WorkspaceID, row.ActionID)
 }
 
-// publishResumeOutcome tells the open card that the run its approval was for has
+// publishRefusalOutcome tells the open card that the run its approval was for has
 // an outcome (CHE-6947): the card re-reads its receipt on this event. An approval
 // whose action row is gone has no card to tell.
-func (h *Handler) publishResumeOutcome(ctx context.Context, row db.RunBudgetRefusal) {
-	action, err := h.Queries.GetDecisionAction(ctx, db.GetDecisionActionParams{ID: row.ActionID, WorkspaceID: row.WorkspaceID})
+func (h *Handler) publishRefusalOutcome(ctx context.Context, workspaceID, actionID pgtype.UUID) {
+	action, err := h.Queries.GetDecisionAction(ctx, db.GetDecisionActionParams{ID: actionID, WorkspaceID: workspaceID})
 	if err == nil {
 		err = h.publishDecisionActionCardUpdated(ctx, action)
 	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Info("run budget: card update not published", "err", err, "refusal_id", uuidToString(row.ID))
+		slog.Info("run budget: card update not published", "err", err, "action_id", uuidToString(actionID))
 	}
 }
 
