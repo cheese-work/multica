@@ -38,6 +38,27 @@ Le créateur devient automatiquement `owner`.
 Après un changement de préfixe des tâches, chaque tâche passe immédiatement au nouveau numéro (`MUL-5` devient `NEW-5`), mais les anciens numéros figurant dans les PR, les noms de branches et l'historique des discussions ne sont pas mis à jour.
 </Callout>
 
+### Fermeture automatique
+
+Le paramètre d'espace de travail `auto_close` définit ce qui se passe quand une issue enfant entre dans l'étape `agent_accepted` sans plus rien à faire. L'agent de l'étape ne ferait que la fermer ; le serveur peut donc emprunter lui-même l'arête `agent_done` de l'étape vers `done`.
+
+| Valeur | Effet |
+| --- | --- |
+| `off` | Rien ne change. L'agent de l'étape s'exécute. |
+| `warn` (par défaut) | L'agent de l'étape s'exécute comme avant. Chaque entrée enregistre aussi une ligne d'activité `auto_close_would_close` qui nomme les contrôles satisfaits et l'exécution qui a suivi. |
+| `block` | Le serveur passe l'issue à `done`, enregistre une ligne d'activité `auto_closed` qui nomme les contrôles lus, et ne lance aucune exécution. |
+
+Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut pas être lu, l'agent de l'étape s'exécute comme avant.
+
+- L'issue a un parent. Les issues racines ne sont jamais fermées.
+- Le dernier verdict de revue est un PASS sans constat P0 ni P1, et il porte sur le candidat actuel. Avec une PR, chaque PR liée est fusionnée au head que nomme le PASS. Sans PR, aucune pièce jointe, aucun verdict CHANGES, aucune marque périmée ou remplacée, aucun retour à `in_progress` n'est venu après le PASS.
+- Aucune issue enfant ouverte, aucune demande de décision ouverte, et aucun réveil actif quand l'issue est entrée dans l'étape.
+- La description n'a pas de ligne `Blockers: Cheese stop`, et la métadonnée `delivery_stop` du parent n'est pas `stopped`.
+- La métadonnée d'issue `post_close_work` vaut `none`. L'auteur l'écrit : `multica issue metadata set <issue> --key post_close_work --value none --type string`. Toute autre valeur, par exemple une courte description du travail restant, conserve l'exécution.
+- Le workflow a une arête `agent_done` de `agent_accepted` vers `done`.
+
+Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
+
 ### Garde des demandes
 
 Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quand l'opération d'un agent demande à une personne d'agir sans ouvrir de demande de décision.
