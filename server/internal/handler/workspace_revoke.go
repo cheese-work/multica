@@ -235,6 +235,14 @@ func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, audi
 		return empty, err
 	}
 
+	// App requests waiting on the member would otherwise let a later OAuth
+	// connect, or a stale tab, resume an agent in a workspace they left.
+	if _, err := qtx.CancelPendingAppActionRequestsForApprover(ctx, db.CancelPendingAppActionRequestsForApproverParams{
+		WorkspaceID: workspaceID, ApproverUserID: userID,
+	}); err != nil {
+		return empty, err
+	}
+
 	// Member row deletion lives inside the same tx so a successful revoke is
 	// never followed by a failed member-delete (which would leave the user
 	// still a member with a dead runtime), and a failed revoke never leaves
@@ -289,6 +297,18 @@ func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, audi
 				return empty, auditWriteError{err}
 			}
 		}
+	}
+	// No FK cascade (repo rule): a departing member leaves every private
+	// project in the workspace and stops watching every project.
+	if err := qtx.DeleteProjectMembersByUser(ctx, db.DeleteProjectMembersByUserParams{
+		WorkspaceID: workspaceID, UserID: userID,
+	}); err != nil {
+		return empty, err
+	}
+	if err := qtx.DeleteProjectSubscribersByUser(ctx, db.DeleteProjectSubscribersByUserParams{
+		WorkspaceID: workspaceID, UserID: userID,
+	}); err != nil {
+		return empty, err
 	}
 	if err := qtx.DeleteMember(ctx, memberID); err != nil {
 		return empty, err
