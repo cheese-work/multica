@@ -46,7 +46,7 @@ func DaemonUpdateFireJob(pool *pgxpool.Pool, queries *db.Queries, cycler DaemonU
 		RunTimeout: time.Minute, StaleTimeout: 3 * time.Minute, HeartbeatInterval: 20 * time.Second,
 		AllowStaleReentry: true, MaxAttempts: 3,
 		RetryBackoff:    []time.Duration{20 * time.Second, 40 * time.Second},
-		MaxPlansPerTick: 1,
+		MaxPlansPerTick: 4, // 2 min of lateness holds at most 3 times of an every-minute cron
 		Scopes: func(ctx context.Context, _ time.Time) ([]Scope, error) {
 			rows, err := queries.ListEnabledDaemonUpdateSchedules(ctx)
 			if err != nil {
@@ -67,11 +67,6 @@ func DaemonUpdateFireJob(pool *pgxpool.Pool, queries *db.Queries, cycler DaemonU
 			if !ok {
 				return nil, nil
 			}
-			// A retry-eligible FAILED plan must come back unchanged, or its
-			// lease is stranded (same rule as the autopilot planner).
-			if latest.RetryEligible(now) && now.Sub(latest.PlanTime) <= maxDaemonUpdateLateness {
-				return []time.Time{latest.PlanTime}, nil
-			}
 			// Never replay a time from before the schedule was last saved.
 			after := sched.UpdatedAt.Time.UTC()
 			if latest.Found && latest.PlanTime.After(after) {
@@ -81,10 +76,18 @@ func DaemonUpdateFireJob(pool *pgxpool.Pool, queries *db.Queries, cycler DaemonU
 				after = floor.Add(-time.Nanosecond)
 			}
 			occs, err := service.NextOccurrencesUTC(sched.Cron, sched.Timezone, after, now)
-			if err != nil || len(occs) == 0 {
+			if err != nil {
 				return nil, err
 			}
-			return occs[len(occs)-1:], nil
+			// A retry-eligible FAILED plan must come back unchanged, or its
+			// lease is stranded (same rule as the autopilot planner); newer
+			// eligible times follow it. Every eligible time is returned, oldest
+			// first: a delayed tick must not lose the earlier ones. A later one
+			// that finds a cycle still open ends `skipped_open_cycle`.
+			if latest.RetryEligible(now) && now.Sub(latest.PlanTime) <= maxDaemonUpdateLateness {
+				occs = append([]time.Time{latest.PlanTime}, occs...)
+			}
+			return occs, nil
 		},
 		Handler: func(ctx context.Context, in HandlerInput) (HandlerResult, error) {
 			// The lease can come late (a retry, a slow tick): re-check the age at

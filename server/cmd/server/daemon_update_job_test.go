@@ -150,3 +150,28 @@ func TestDaemonUpdateFireJob_StalePlanSkipped(t *testing.T) {
 		t.Fatalf("lease rows for a stale cron time = %d, want 0", rows)
 	}
 }
+
+// A delayed tick can find several cron times inside the lateness window. Each is
+// leased and fired, oldest first; only a time older than the limit is skipped
+// (review of PR 1836).
+func TestDaemonUpdateFireJob_EveryEligibleCronTimeFiresInOrder(t *testing.T) {
+	ctx := context.Background()
+	daemonID, cycler, a, _ := setupDaemonUpdateFire(t, "* * * * *", "UTC")
+	if err := a.RunOnce(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	fires := cycler.firesOf(daemonID)
+	// The newest cron time is at most 60 s old and the one before it at most 120 s
+	// old, so an every-minute schedule always has at least two eligible times.
+	if len(fires) < 2 {
+		t.Fatalf("fires = %v, want every eligible cron time (at least 2)", fires)
+	}
+	for i := 1; i < len(fires); i++ {
+		if !fires[i].fireAt.After(fires[i-1].fireAt) {
+			t.Fatalf("fires out of order: %v", fires)
+		}
+	}
+	if age := time.Since(fires[0].fireAt); age > 2*time.Minute+5*time.Second {
+		t.Fatalf("fired a cron time %s old, over the 2 minute limit", age)
+	}
+}
