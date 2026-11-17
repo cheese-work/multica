@@ -103,6 +103,20 @@ func TestClaudeCacheWrite1hSplit(t *testing.T) {
 		}
 	})
 
+	t.Run("reported zero-total split stores 0, not NULL", func(t *testing.T) {
+		// The CLI did report a split (cache_creation present) but nothing was
+		// written in the main loop: 0 one-hour tokens is a real answer.
+		events := []json.RawMessage{splitAssistant(t, "z1", model, "", 0, 0)}
+		result := mustMarshal(t, map[string]any{
+			"type": "result", "subtype": "success", "result": "done",
+			"modelUsage": map[string]claudeResultModelUsage{model: {InputTokens: 1, CacheCreationInputTokens: 300}},
+		})
+		got := executeClaudeUsageFixture(t, claudeUsageFixtureBackend(t, events, result, false), len(events))
+		if g := got.Usage[model].CacheWrite1hTokens; !reflect.DeepEqual(g, i64(0)) {
+			t.Fatalf("1h = %v, want 0 (split reported, zero total)", g)
+		}
+	})
+
 	t.Run("no split field anywhere stays nil", func(t *testing.T) {
 		plain := mustMarshal(t, map[string]any{
 			"type": "assistant",

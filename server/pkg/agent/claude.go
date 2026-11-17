@@ -933,16 +933,26 @@ func i64Ptr(v int64) *int64 { return &v }
 // scaled by that model's main-loop 1-hour ratio; a model with no main-loop
 // split (a sub-agent-only model) takes the run-wide ratio. Without modelUsage
 // the main-loop 1-hour sum is the best figure there is. A run with no split in
-// any main-loop event leaves the field nil. ponytail: sub-agent TTL mix is
+// any main-loop event leaves the field nil; a split that reports zero
+// tokens yields 0. ponytail: sub-agent TTL mix is
 // assumed equal to the main loop's; exact only if the transcript is parsed.
 func applyClaudeCacheSplit(usage map[string]TokenUsage, split map[string]claudeCacheSplit, fromModelUsage bool) map[string]TokenUsage {
+	// An entry exists only for events that reported a split, so an empty map
+	// means no split at all (nil). A reported split with a zero total is a real
+	// answer: 0 one-hour tokens.
+	if len(split) == 0 {
+		return usage
+	}
 	var run claudeCacheSplit
 	for _, sp := range split {
 		run.OneHour += sp.OneHour
 		run.Total += sp.Total
 	}
-	if run.Total == 0 {
-		return usage
+	ratio := func(tokens int64, sp claudeCacheSplit) int64 {
+		if sp.Total == 0 {
+			return 0
+		}
+		return int64(math.Round(float64(tokens) * float64(sp.OneHour) / float64(sp.Total)))
 	}
 	for model, u := range usage {
 		if !fromModelUsage {
@@ -952,7 +962,7 @@ func applyClaudeCacheSplit(usage map[string]TokenUsage, split map[string]claudeC
 			if sp.Total == 0 {
 				sp = run
 			}
-			u.CacheWrite1hTokens = i64Ptr(int64(math.Round(float64(u.CacheWriteTokens) * float64(sp.OneHour) / float64(sp.Total))))
+			u.CacheWrite1hTokens = i64Ptr(ratio(u.CacheWriteTokens, sp))
 		}
 		usage[model] = u
 	}
