@@ -39,7 +39,7 @@ export function AgentBackgroundUseList({
               <span className="text-foreground">
                 {t(($) => $.background_use.jobs[u.job])}
               </span>
-              <span className="rounded bg-muted px-1.5 py-0.5 text-caption">
+              <span className="rounded-sm bg-muted px-1.5 py-0.5 text-caption">
                 {personal
                   ? t(($) => $.background_use.scope_personal)
                   : t(($) => $.background_use.scope_workspace)}
