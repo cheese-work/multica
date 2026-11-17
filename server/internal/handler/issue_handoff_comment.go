@@ -39,7 +39,8 @@ type handoffCommentSeed struct {
 }
 
 // attachedComments is the existing comments a move carries, in order. revisions
-// is set when a handoff preview bound them: what the person was shown.
+// is what the handoff preview showed the person. Every attached comment needs a
+// revision there: a comment with none is not bound to what was reviewed.
 type attachedComments struct {
 	ids       []pgtype.UUID
 	revisions map[pgtype.UUID]int64
@@ -71,7 +72,7 @@ func verifyAttachedComments(ctx context.Context, q *db.Queries, issue db.Issue, 
 		if err != nil {
 			return err
 		}
-		if want, bound := a.revisions[id]; a.revisions != nil && (!bound || want != c.Revision) {
+		if want, bound := a.revisions[id]; !bound || want != c.Revision {
 			return errAttachedCommentStale
 		}
 	}
@@ -105,9 +106,8 @@ func (h *Handler) prepareHandoffComment(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return nil, false
 	}
-	plan := &handoffCommentPlan{attach: &attachedComments{}}
+	plan := &handoffCommentPlan{attach: &attachedComments{revisions: map[pgtype.UUID]int64{}}}
 	if req.HandoffPreview != nil {
-		plan.attach.revisions = map[pgtype.UUID]int64{}
 		for key, rev := range req.HandoffPreview.CommentRevisions {
 			id, err := util.ParseUUID(key)
 			if err != nil {
@@ -132,7 +132,7 @@ func (h *Handler) prepareHandoffComment(w http.ResponseWriter, r *http.Request, 
 			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "attach_comment_ids names a comment that is not a comment of this issue")
 			return nil, false
 		}
-		if _, shown := plan.attach.revisions[id]; plan.attach.revisions != nil && !shown {
+		if _, shown := plan.attach.revisions[id]; !shown {
 			writeErrorCode(w, http.StatusBadRequest, "comment_revision_required", "handoff_preview.comment_revisions needs a revision for every attached comment")
 			return nil, false
 		}

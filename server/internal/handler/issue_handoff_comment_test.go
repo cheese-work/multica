@@ -123,7 +123,10 @@ func TestHandoffComment_AttachOrderKeptOnRun(t *testing.T) {
 	b := dbfx.Comment(t, issueID, "second written")
 	c := dbfx.Comment(t, issueID, "third written")
 
-	moveWithHandoffBody(t, issueID, map[string]any{"attach_comment_ids": []string{c, a, b}}).Want(http.StatusOK)
+	moveWithHandoffBody(t, issueID, map[string]any{
+		"attach_comment_ids": []string{c, a, b},
+		"handoff_preview":    previewFor(destID, map[string]int64{a: 1, b: 1, c: 1}),
+	}).Want(http.StatusOK)
 
 	runs := runsOf(t, issueID, destID)
 	if len(runs) != 1 {
@@ -219,6 +222,29 @@ func TestHandoffComment_AttachedCommentEditedAfterPreviewRefused(t *testing.T) {
 	}
 }
 
+// A move that attaches comments with no preview has no revision to bind them
+// to: refused before anything is written, so an edited comment cannot ride in.
+func TestHandoffComment_AttachWithoutPreviewRefused(t *testing.T) {
+	issueID, destID := handoffDispatchFixture(t)
+	a := dbfx.Comment(t, issueID, "edited after it was shown")
+	bumpCommentRevision(t, a)
+
+	resp := moveWithHandoffBody(t, issueID, map[string]any{
+		"handoff_comment":    map[string]any{"content": "x"},
+		"attach_comment_ids": []string{a},
+	})
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "comment_revision_required") {
+		t.Fatalf("move = %d %s, want 400 comment_revision_required", resp.Code, resp.Body.String())
+	}
+	if got := commentIDsOn(t, issueID); len(got) != 1 {
+		t.Errorf("comments = %d, want 1: a refused move writes no comment", len(got))
+	}
+	wantIssueStatus(t, issueID, "todo")
+	if runs := runsOf(t, issueID, destID); len(runs) != 0 {
+		t.Errorf("runs = %+v, want none", runs)
+	}
+}
+
 // A preview names a revision for every comment it attaches.
 func TestHandoffComment_PreviewWithoutRevisionForAttachedRefused(t *testing.T) {
 	issueID, destID := handoffDispatchFixture(t)
@@ -298,7 +324,7 @@ func TestVerifyAttachedComments_UnderLock(t *testing.T) {
 		"deleted":              {one(gone, 1), errAttachedCommentGone},
 		"foreign issue":        {one(foreign, 1), errAttachedCommentGone},
 		"edited":               {one(edited, 1), errAttachedCommentStale},
-		"unbound live":         {&attachedComments{ids: []pgtype.UUID{parseUUID(live)}}, nil},
+		"no revision named":    {&attachedComments{ids: []pgtype.UUID{parseUUID(live)}}, errAttachedCommentStale},
 	} {
 		if got := verifyAttachedComments(context.Background(), q, issue, tc.in); !errors.Is(got, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, got, tc.want)
