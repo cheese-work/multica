@@ -131,6 +131,41 @@ describe("machine banner audiences", () => {
     expect(screen.queryByRole("button", { name: /machine banner/ })).not.toBeInTheDocument();
   });
 
+  it("a failed refresh hides the affected rows and the icon, and recovery brings them back", async () => {
+    givenServer([affected()]);
+    const { client } = renderChrome();
+    expect(await screen.findByRole("status")).toHaveTextContent("x99 (Cheese's machine) is paused");
+    expect(screen.getByRole("button", { name: /^Hide machine banner: / })).toBeInTheDocument();
+
+    listAffected.mockRejectedValue(new Error("boom"));
+    await client.invalidateQueries();
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /machine banner/ })).not.toBeInTheDocument();
+
+    listAffected.mockResolvedValue([affected()]);
+    await client.invalidateQueries();
+    expect(await screen.findByRole("status")).toHaveTextContent("x99 (Cheese's machine) is paused");
+    expect(screen.getByRole("button", { name: /^Hide machine banner: / })).toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps the viewer's own paused machine but drops the stale waiting count", async () => {
+    me.id = "owner-1";
+    const paused = {
+      reason: "maintenance" as const,
+      paused_by: "owner-1",
+      paused_at: new Date(Date.now() - MIN).toISOString(),
+      expires_at: new Date(Date.now() + 20 * MIN).toISOString(),
+    };
+    givenServer([affected({ waiting_tasks: 4 })], [runtime({ pause: paused, daemon_running_tasks: 0 })]);
+    const { client } = renderChrome();
+    expect(await screen.findByRole("status")).toHaveTextContent("4 tasks wait for agents on it.");
+
+    listAffected.mockRejectedValue(new Error("boom"));
+    await client.invalidateQueries();
+    await waitFor(() => expect(screen.getByRole("status")).not.toHaveTextContent("tasks wait"));
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+
   it("the machine owner keeps Resume on their own machine", async () => {
     me.id = "owner-1";
     givenServer(

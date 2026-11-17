@@ -62,7 +62,9 @@ export function useMachineBanner() {
   const wsId = useWorkspaceId();
   const currentUserId = useAuthStore((state) => state.user?.id);
   const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
-  const { data: affected } = useQuery(affectedMachinesOptions(wsId));
+  const { data: affectedData, isError: affectedFailed } = useQuery(affectedMachinesOptions(wsId));
+  // A failed refresh keeps the last good rows in the cache; they may be stale, so drop them.
+  const affected = affectedFailed ? undefined : affectedData;
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const dismissed = useDismissedMachineEventsStore((state) => state.dismissed);
   const dismiss = useDismissedMachineEventsStore((state) => state.dismiss);
