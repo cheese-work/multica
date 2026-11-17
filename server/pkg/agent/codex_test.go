@@ -6786,3 +6786,32 @@ func TestCodexExecuteLegacyProtocolRealToolCallNotMisclassifiedAsFalseNegative(t
 	}
 	assertCodexAttemptCount(t, fakePath, "1")
 }
+
+func TestRenderCodexMcpServersBlockMapsBearerEnvReference(t *testing.T) {
+	t.Parallel()
+
+	block, _, err := renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"type":"http","url":"https://doop.example.test/mcp","headers":{"Authorization":"Bearer ${DOOP_AGENT_KEY}","x-api-key":"secret"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		`bearer_token_env_var = "DOOP_AGENT_KEY"`,
+		`http_headers = { x-api-key = "secret" }`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("expected %q in:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "${") {
+		t.Fatalf("Codex does not expand ${...}; literal reference must not be rendered:\n%s", block)
+	}
+
+	// Sole Authorization header: no empty http_headers table is left behind.
+	block, _, err = renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"url":"https://doop.example.test/mcp","headers":{"authorization":"Bearer ${DOOP_AGENT_KEY}"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(block, `bearer_token_env_var = "DOOP_AGENT_KEY"`) || strings.Contains(block, "http_headers") {
+		t.Fatalf("expected only bearer_token_env_var, got:\n%s", block)
+	}
+}
