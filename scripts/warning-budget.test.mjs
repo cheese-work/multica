@@ -268,3 +268,58 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
   const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
   assert.match(zero, /"migration-checks"/)
 })
+
+// CHE-7010: run the real script against a stubbed `gh` on PATH. The stub serves one job (a zero-baseline job, so no
+// baseline lookup) and fails the job-log endpoint with the given HTTP status for the first `times` calls.
+function runWithStubbedGh({ status, times, warning = false }) {
+  const dir = mkdtempSync(join(tmpdir(), "warning-budget-gh-"))
+  try {
+    const counter = join(dir, "log-calls")
+    writeFileSync(counter, "0")
+    const gh = join(dir, "gh")
+    writeFileSync(gh, `#!${process.execPath}
+const fs = require("node:fs")
+const endpoint = process.argv[3]
+const out = (value) => process.stdout.write(typeof value === "string" ? value : JSON.stringify(value))
+if (endpoint.endsWith("/logs")) {
+  const calls = Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) + 1
+  fs.writeFileSync(${JSON.stringify(counter)}, String(calls))
+  if (calls <= ${times}) { process.stderr.write("gh: stub failure (HTTP ${status})\\n"); process.exit(1) }
+  out(${JSON.stringify(warning ? "2026-11-17T00:00:00Z Warning: new diagnostic\n" : "all quiet\n")})
+} else if (endpoint.includes("/annotations")) out([])
+else if (endpoint.includes("/jobs")) out({ jobs: [{ id: 7, name: "gitleaks", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/repos/cheese-work/multica/check-runs/5" }] })
+else out({ id: 1, workflow_id: 2, created_at: "2026-11-17T00:00:00Z", html_url: "run-1", head_sha: "abc" })
+`, { mode: 0o755 })
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./warning-budget.mjs", import.meta.url))], {
+      cwd: dir, encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "1", GITHUB_STEP_SUMMARY: "" },
+    })
+    return { status: result.status, stderr: result.stderr, logCalls: Number(readFileSync(counter, "utf8")) }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test("gh api retries a transient 503 twice and then succeeds (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 2 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 3)
+})
+
+test("a real warning regression still fails the check after a retried call succeeds (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 2, warning: true })
+  assert.equal(result.logCalls, 3)
+  assert.equal(result.status, 1)
+})
+
+test("a persistent 5xx stops after 3 tries and fails (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 502, times: 99 })
+  assert.equal(result.status, 1)
+  assert.equal(result.logCalls, 3)
+})
+
+test("a 4xx is not retried (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 404, times: 99 })
+  assert.equal(result.status, 1)
+  assert.equal(result.logCalls, 1)
+})
