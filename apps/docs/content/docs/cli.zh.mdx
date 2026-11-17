@@ -376,6 +376,18 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 工作区设置 `decision_card_lint_mode`（`off`、`warn`、`block`；默认 `off`）检查选项卡片的措辞。`warn` 时创建卡片，并为每条发现在响应中附带一条提示。`block` 时服务器返回 `400`，附带原因代码和字段路径，且不创建卡片。代码如下：`weak_cons`，某个选项的每条缺点都只是你的时间（"takes 1 minute of your time"）或多一次检查或评审；`option_markdown`，`label`、`what_happens`、`pros` 或 `cons` 中含表格、标题、图片、HTML、代码块或 Mermaid 块（允许粗体、斜体、行内代码、列表和链接）；`option_leak`，选项文字暗示推荐项（"recommended"、"(rec)"，或只有一个标签加粗）；`default_leak`，在类别 `spend`、`deploy`、`publish`、`irreversible` 或 `product_direction` 下，`default_if_no_reply` 点名了某个选项（请写 "No action until you pick."）。英语和越南语措辞都会匹配。操作卡片和豁免主题卡片不受检查。 如果卡片的 issue 评论没有提及被询问的人，服务器会补上提及并记录 `mention_missing`，不会拒绝。
 
+## 后台智能体
+
+每个后台作业（`dm_title`、`quick_actions`、`compact`、`routing`）都作为主智能体的任务运行，必要时再由备用智能体运行。查看或设置工作区默认值，或你自己的链：
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # 恢复为工作区默认值
+```
+
+`--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
+
 ## 命令概览
 
 | 命令 | 用途 |
