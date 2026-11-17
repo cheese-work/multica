@@ -414,10 +414,16 @@ func (q *Queries) InsertDMProgressFollow(ctx context.Context, arg InsertDMProgre
 }
 
 const insertDMProgressMovedUnderEvents = `-- name: InsertDMProgressMovedUnderEvents :exec
-INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
-SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', $3::uuid
+WITH lane_events AS (
+    INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
+    SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', $3::uuid
+    FROM dm_progress_follow AS f
+    WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active'
+)
+INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, event_id)
+SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', gen_random_uuid()
 FROM dm_progress_follow AS f
-WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active'
+WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active' AND f.muted_at IS NULL
 `
 
 type InsertDMProgressMovedUnderEventsParams struct {
@@ -427,7 +433,10 @@ type InsertDMProgressMovedUnderEventsParams struct {
 }
 
 // CHE-3548: one "moved under" row per lane that actively follows the moved
-// issue. Follows are not touched; muted lanes still get the row.
+// issue. Follows are not touched; muted lanes still get the lane event. Every
+// unmuted lane also gets one pending row, so the dispatcher tells the DM (the
+// card item carries the kind only, never the new parent: its visibility to the
+// DM owner is not checked here).
 func (q *Queries) InsertDMProgressMovedUnderEvents(ctx context.Context, arg InsertDMProgressMovedUnderEventsParams) error {
 	_, err := q.db.Exec(ctx, insertDMProgressMovedUnderEvents, arg.IssueID, arg.WorkspaceID, arg.NewParentID)
 	return err

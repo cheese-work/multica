@@ -131,11 +131,20 @@ RETURNING *;
 
 -- name: InsertDMProgressMovedUnderEvents :exec
 -- CHE-3548: one "moved under" row per lane that actively follows the moved
--- issue. Follows are not touched; muted lanes still get the row.
-INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
-SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', sqlc.arg('new_parent_id')::uuid
+-- issue. Follows are not touched; muted lanes still get the lane event. Every
+-- unmuted lane also gets one pending row, so the dispatcher tells the DM (the
+-- card item carries the kind only, never the new parent: its visibility to the
+-- DM owner is not checked here).
+WITH lane_events AS (
+    INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
+    SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', sqlc.arg('new_parent_id')::uuid
+    FROM dm_progress_follow AS f
+    WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active'
+)
+INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, event_id)
+SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', gen_random_uuid()
 FROM dm_progress_follow AS f
-WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active';
+WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active' AND f.muted_at IS NULL;
 
 -- name: DeleteDMProgressForIssue :exec
 -- No FKs (repo rule): issue delete sweeps its follows, lane events and pending rows here.
