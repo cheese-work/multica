@@ -6815,3 +6815,20 @@ func TestRenderCodexMcpServersBlockMapsBearerEnvReference(t *testing.T) {
 		t.Fatalf("expected only bearer_token_env_var, got:\n%s", block)
 	}
 }
+
+func TestRenderCodexMcpServersBlockKeepsExistingBearerTokenEnvVar(t *testing.T) {
+	t.Parallel()
+
+	// An entry that already carries bearer_token_env_var is left as is: the
+	// Authorization header is not rewritten and no second token source is added.
+	block, _, err := renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"type":"http","url":"https://doop.example.test/mcp","bearer_token_env_var":"DOOP_AGENT_KEY","headers":{"Authorization":"Bearer ${OTHER_KEY}"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.Count(block, "bearer_token_env_var"); got != 1 || !strings.Contains(block, `bearer_token_env_var = "DOOP_AGENT_KEY"`) {
+		t.Fatalf("expected the original bearer_token_env_var kept exactly once, got:\n%s", block)
+	}
+	if strings.Contains(block, `"OTHER_KEY"`) {
+		t.Fatalf("header must not override the existing bearer_token_env_var:\n%s", block)
+	}
+}
