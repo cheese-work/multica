@@ -154,3 +154,45 @@ test("mergeOutcome reads GitHub's mergeable flag and refuses an unknown one", as
   assert.equal(mergeOutcome(false), "would-conflict");
   assert.throws(() => mergeOutcome(null), /not computed/);
 });
+
+// CHE-4963: the runner is a container with no `multica` CLI, and the App installation shares one API budget.
+test("low API budget: the run stops cleanly before any compare call", async () => {
+  const f = fakes({ prs: [pr(1), pr(2)] });
+  const compares = [];
+  f.gh.behindBy = async (sha) => compares.push(sha);
+  f.gh.remaining = async () => 3;
+  const lines = [];
+  await (await load()).syncPrs({ ...f, repo: "o/r", base: "main", print: (l) => lines.push(l) });
+  assert.deepEqual(compares, []);
+  assert.match(lines.join("\n"), /skipped: low API budget/);
+});
+
+test("enough API budget: the run proceeds", async () => {
+  const f = fakes({ prs: [pr(1)] });
+  f.gh.remaining = async () => 5000;
+  await run(f);
+  assert.deepEqual(f.log.updates, [[1, "sha1"]]);
+});
+
+test("a rate-limit 403 mid-run ends the run without failing and without touching later PRs", async () => {
+  const f = fakes({ prs: [pr(1), pr(2)] });
+  f.gh.behindBy = async () => {
+    throw new Error("gh api failed: HTTP 403: API rate limit exceeded for installation ID 1");
+  };
+  await run(f); // must not throw
+  assert.deepEqual(f.log.updates, []);
+});
+
+// Review of PR #1768: no bypass. Without a usable multica CLI and token the run fails closed, dry run included.
+test("fail closed: no multica token or no CLI stops the run before any PR is read", async () => {
+  const { requireMultica } = await load();
+  assert.throws(() => requireMultica({}, () => ({})), /MULTICA_TOKEN/);
+  assert.throws(() => requireMultica({ MULTICA_TOKEN: "t" }, () => ({ error: new Error("ENOENT") })), /multica CLI/);
+  assert.doesNotThrow(() => requireMultica({ MULTICA_TOKEN: "t" }, () => ({ status: 0 })));
+});
+
+test("the sync job builds the multica CLI and passes the token secret (no CLI-less fallback)", () => {
+  const y = readFileSync(new URL("../.github/workflows/pr-main-sync.yml", import.meta.url), "utf8");
+  assert.match(y, /go build -o "\$RUNNER_TEMP\/multica" \.\/cmd\/multica/);
+  assert.match(y, /MULTICA_TOKEN: \$\{\{ secrets\.PR_MAIN_SYNC_MULTICA_TOKEN \}\}/);
+});

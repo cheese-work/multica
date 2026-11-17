@@ -472,7 +472,8 @@
       "apps": "已连接应用",
       "workflows": "工作流",
       "provider_breakers": "服务商熔断器",
-      "background_agents": "后台智能体"
+      "background_agents": "后台智能体",
+      "personal_background_agents": "后台智能体"
     },
     "groups": {
       "personal": "个人",
@@ -1621,7 +1622,8 @@
       "device": "仅本设备",
       "device_workspace": "仅本设备 · {{name}}",
       "workspace": "{{name}} 工作区",
-      "workspace_only": "仅对 {{name}} 生效"
+      "workspace_only": "仅对 {{name}} 生效",
+      "personal": "个人"
     },
     "read_only": {
       "title": "你只能查看此页",
@@ -1715,6 +1717,54 @@
     "load_failed": "无法加载规则。",
     "save_failed": "无法保存规则。"
   },
+  "ci_watch": {
+    "title": "CI 监视器",
+    "disabled": "此服务器已禁用 CI 监视器",
+    "manager_only": "只有工作区所有者和管理员可以更改 CI 监视器。",
+    "load_error": "无法加载 CI 监视器设置。",
+    "save_error": "无法保存 CI 监视器设置。",
+    "mode": "模式",
+    "mode_off": "关闭",
+    "mode_shadow": "Shadow：仅记录将要执行的操作",
+    "mode_act": "Act：直接执行",
+    "branches": "分支",
+    "events": "事件",
+    "event_merge_group": "merge_group（仅观察）",
+    "workflows_include": "包含的工作流",
+    "workflows_exclude": "排除的工作流",
+    "protocol_mode": "P{{n}} 模式",
+    "mode_shadow_short": "Shadow",
+    "mode_act_short": "Act",
+    "unknown_note": "第一阶段中，未知故障保持 Shadow。",
+    "fix_owner": "修复负责人",
+    "fix_owner_none": "无",
+    "fix_owner_squads": "小队",
+    "fix_owner_agents": "智能体",
+    "notify_member": "通知成员",
+    "notify_member_none": "无",
+    "max_reruns": "每个原始运行的最大重跑次数",
+    "max_issues": "每日最大新建议题数",
+    "max_wakes": "每小时最大唤醒负责人次数",
+    "cap_error": "请输入 0 到 100000 的整数。",
+    "list_error": "每行一项，最多 50 项，每项不超过 200 个字符。",
+    "save": "保存更改",
+    "saving": "保存中…",
+    "discard": "放弃更改",
+    "unsaved": "有未保存的更改",
+    "events_title": "最近 50 个事件",
+    "events_empty": "暂无事件。",
+    "events_error": "无法加载事件。",
+    "col_time": "时间",
+    "col_workflow": "工作流",
+    "col_class": "分类",
+    "col_protocol": "协议",
+    "col_action": "操作",
+    "col_state": "状态",
+    "col_outcome": "结果",
+    "col_would_do": "本将执行",
+    "col_run": "运行",
+    "run_link": "运行 {{id}}"
+  },
   "background_agents": {
     "title": "后台智能体",
     "description": "智能体在后台为此工作区所有人执行的小任务。未设置智能体的任务使用其简单的兜底方式，绝不会直接调用模型。",
@@ -1755,5 +1805,32 @@
         "no_agent": "无智能体：每个步骤保持自己的智能体。"
       }
     }
+  },
+  "personal_background_agents": {
+    "title": "后台智能体",
+    "description": "选择替你完成这些小任务的智能体。只有你能看到并使用这些选择，它们适用于你的 DM，并优先于工作区的选择。",
+    "jobs": {
+      "dm_title": {
+        "hint": "根据第一条消息为你的 DM 命名。"
+      },
+      "quick_actions": {
+        "hint": "在你的 DM 中，于回复下方建议后续按钮。"
+      }
+    },
+    "using_workspace": "使用工作区设置：{{agent}}",
+    "using_workspace_pick": "使用工作区设置",
+    "use_workspace_pick": "使用工作区设置",
+    "archived": "已归档",
+    "archived_warning": "{{agent}} 已归档。在你选择其他智能体之前，你的 DM 中的{{job}}将在没有智能体的情况下运行。工作区智能体不会接手，备用智能体也不会：备用智能体只在智能体失败时运行。",
+    "use_workspace_button": "使用工作区设置（{{agent}}）",
+    "load_error": "无法加载你的后台智能体。",
+    "load_error_detail": "未做任何更改。你最近保存的选择仍然有效。",
+    "toast_save_failed": "无法保存你的后台智能体。",
+    "offline_title": "你已离线。",
+    "offline_body": "更改已暂停。下方是最后一次加载的选择，可能已过期。重新连接后选择器会恢复可用。",
+    "another_tab": "你在另一个标签页保存了更改。这是你最新的选择。",
+    "routing_before": "路由在整个工作区统一设置。所有者和管理员可在以下位置更改：",
+    "routing_link": "工作区 → 后台智能体",
+    "routing_after": "。"
   }
 }

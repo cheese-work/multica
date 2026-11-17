@@ -67,6 +67,13 @@ describe("issue surface scope", () => {
       createDefaults: { assignee_type: "member", assignee_id: "u1" },
     });
     expect(
+      buildIssueSurfaceQueryPlan({ type: "my", relation: "requested", userId: "u1" }),
+    ).toEqual({
+      scopeKey: "my:u1:requested",
+      queryFilter: { requested_by_id: "u1" },
+      createDefaults: {},
+    });
+    expect(
       buildIssueSurfaceQueryPlan({
         type: "actor",
         actorType: "agent",
@@ -112,6 +119,7 @@ describe("myRelationForViewVariant", () => {
     expect(myRelationForViewVariant("assigned")).toBe("assigned");
     expect(myRelationForViewVariant("created")).toBe("created");
     expect(myRelationForViewVariant("involved")).toBe("involved");
+    expect(myRelationForViewVariant("requested")).toBe("requested");
     expect(myRelationForViewVariant("any")).toBe("all");
     expect(myRelationForViewVariant(null)).toBe("all");
     expect(myRelationForViewVariant("members")).toBe("all");

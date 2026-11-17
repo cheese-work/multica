@@ -1576,6 +1576,26 @@ func WithStatusHandoffComment(ctx context.Context, commentID pgtype.UUID) contex
 	return context.WithValue(ctx, statusHandoffCommentKey{}, commentID)
 }
 
+type statusHandoffRestKey struct{}
+
+// WithStatusHandoffComments names every comment a status move carried, in
+// order: the first is the run's trigger comment, the rest are coalesced.
+func WithStatusHandoffComments(ctx context.Context, ids []pgtype.UUID) context.Context {
+	if len(ids) == 0 {
+		return ctx
+	}
+	ctx = WithStatusHandoffComment(ctx, ids[0])
+	if len(ids) > 1 {
+		ctx = context.WithValue(ctx, statusHandoffRestKey{}, ids[1:])
+	}
+	return ctx
+}
+
+func statusHandoffRest(ctx context.Context) []pgtype.UUID {
+	ids, _ := ctx.Value(statusHandoffRestKey{}).([]pgtype.UUID)
+	return ids
+}
+
 func statusHandoffComment(ctx context.Context) pgtype.UUID {
 	id, _ := ctx.Value(statusHandoffCommentKey{}).(pgtype.UUID)
 	return id
@@ -1722,6 +1742,9 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	if handoffComment.Valid {
 		triggerCommentID = handoffComment
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+		if len(coalescedCommentIDs) == 0 {
+			coalescedCommentIDs = statusHandoffRest(ctx)
+		}
 	}
 	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, triggerKind, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
@@ -1880,12 +1903,30 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	return task, nil
 }
 
+// EnqueueIssueTaskInTx enqueues the assignee's run for a just-created issue inside the
+// caller's transaction. The caller calls PublishTaskEnqueued only after commit.
+func (s *TaskService) EnqueueIssueTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue) (db.AgentTaskQueue, error) {
+	return s.EnqueueIssueTaskInTxAs(ctx, queries, issue, pgtype.UUID{})
+}
+
+// EnqueueIssueTaskInTxAs is EnqueueIssueTaskInTx with an explicit acting member: a
+// valid actor is both originator and accountable human, ahead of the issue creator.
+func (s *TaskService) EnqueueIssueTaskInTxAs(ctx context.Context, queries *db.Queries, issue db.Issue, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return task, err
+}
+
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	return s.EnqueueDecisionTaskInTxAs(ctx, queries, issue, agentID, squadID, triggerCommentID, commentIDs, handoff, pgtype.UUID{})
+}
+
+// EnqueueDecisionTaskInTxAs is EnqueueDecisionTaskInTx with an explicit acting member.
+func (s *TaskService) EnqueueDecisionTaskInTxAs(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
-		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, actorUserID, pgtype.UUID{}, OriginDerived)
 		return task, err
 	}
-	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 	return task, err
 }
 
@@ -2087,6 +2128,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if handoffComment.Valid {
 		triggerCommentID = handoffComment
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+		if len(coalescedCommentIDs) == 0 {
+			coalescedCommentIDs = statusHandoffRest(ctx)
+		}
 	}
 	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {

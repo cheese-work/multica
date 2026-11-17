@@ -115,3 +115,13 @@ multica chat wakeup cancel <wakeup-id>
 
 `multica chat sessions --issue <issue> --for <user-id>` lists the DM lanes a
 decision request can use. See [decisions.md](decisions.md).
+
+## DM triage
+
+```bash
+multica chat attention [--stale] --output json   # DMs that wait for you, oldest first; --stale = yellow (4h) or red (24h) only
+multica chat later <session> 2h                  # snooze a DM: 90m, 2h, 1d12h, seconds or an RFC3339 time (1s..168h)
+```
+
+Retry `chat later` with the same `--request-id <uuid>` so the retry does not
+extend the time.

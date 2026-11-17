@@ -468,6 +468,10 @@ deleted_ci_signature_owners AS (
 deleted_ci_flake_increments AS (
     DELETE FROM ci_flake_increment WHERE workspace_id = $1
 ),
+-- CHE-4279 storm-breaker event log: workspace-owned leaf, no FK.
+deleted_ci_watch_events AS (
+    DELETE FROM ci_watch_event WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -1071,6 +1075,16 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
+),
+-- CHE-4731 browser lease storage: workspace-owned leaves, no FK (migration 99960).
+deleted_browser_leases AS (
+    DELETE FROM browser_lease WHERE workspace_id = $1
+),
+deleted_browser_instances AS (
+    DELETE FROM browser_instance WHERE workspace_id = $1
+),
+deleted_browser_profiles AS (
+    DELETE FROM browser_profile WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;

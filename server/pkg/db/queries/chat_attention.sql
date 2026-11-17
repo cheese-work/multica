@@ -17,12 +17,12 @@ LEFT JOIN agent_task_queue t ON t.id = i.waiting_task_id
 WHERE i.user_id = $1 AND i.workspace_id = $2 AND i.resolved_at IS NULL;
 
 -- name: ListChatAttentionDecisions :many
--- Open decision requests, addressed by the chain of the DM they were asked in.
+-- Every open human decision request of the viewer. The chat join is a left join (CHE-5670 D6): a
+-- request whose chat row is missing is kept, with a NULL chain root.
 SELECT d.id, s.chain_root_session_id, d.answer_revision, d.created_at
 FROM decision_request d
-JOIN chat_session s ON s.id = d.chat_session_id
-WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open'
-  AND s.chain_root_session_id IS NOT NULL;
+LEFT JOIN chat_session s ON s.id = d.chat_session_id
+WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open' AND d.authority = 'human';
 
 -- name: ListChatAttentionLatestTurns :many
 -- C2: the unclassified turn of each chain, if its latest recorded turn ended with no outcome (CHE-4149).

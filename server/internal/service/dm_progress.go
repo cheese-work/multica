@@ -58,7 +58,9 @@ type DMLane struct {
 
 // ProgressVisible is the one gate between a DM owner and an issue's progress.
 // Issue read access is workspace membership today and no private issues exist,
-// so a private issue or project changes only this function (CHE-3369 I3.4).
+// so a private issue or project changes only this function (CHE-3369 I3.4) and
+// the member join in the ListDMProgressLaneIssues query, which applies it to a
+// whole lane at once.
 func ProgressVisible(ctx context.Context, q *db.Queries, owner pgtype.UUID, issue db.Issue) bool {
 	_, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: owner, WorkspaceID: issue.WorkspaceID})
 	return err == nil

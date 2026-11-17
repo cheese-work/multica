@@ -46,6 +46,9 @@ export function warningCounts(jobs) {
         continue
       }
       if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?\s+WARN\s/.test(line)) continue
+      // CHE-6346: backend-agent-tests fixtures log expected slog rejections (only the `script rejected` and `script timed out` messages) that
+      // appear as new warnings against a main baseline that predates the fixture. They are test inputs, not diagnostics.
+      if (job.name === "backend-agent-tests" && /^(?:\d{4}-\d\d-\d\dT\S+\s+)?time=\S+ level=WARN msg="script (?:rejected|timed out)"/.test(line)) continue
       const message = normalize(line)
       if (/^(?:\/|[A-Za-z]:\/|(?:\.\.?\/)?(?:apps|packages|server|scripts)\/).+\.[cm]?[jt]sx?$/.test(message)) {
         eslintFile = sourcePath(message)
@@ -160,7 +163,7 @@ export function runBudget() {
     return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
   }
   const currentJobs = jobs(current).map(collect)
-  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review"])
+  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review", "migration-checks"])
   const pending = new Set(currentJobs.map(({ name }) => name).filter((name) => !zeroBaselineJobs.has(name)))
   const jobBaselines = Object.fromEntries(currentJobs.map(({ name }) => [name, null]))
   const baselineJobs = []

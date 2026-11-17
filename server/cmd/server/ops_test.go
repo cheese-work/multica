@@ -115,9 +115,12 @@ func opsFetch(t *testing.T, token string) opsBody {
 	return body
 }
 
-type opsTotals struct{ unknownFail, allWait, unknownWait int }
+type opsTotals struct{ unknownFail, allWait, unknownWait, staleReclaims int }
 
 func (b opsBody) totals() (o opsTotals) {
+	for _, r := range b.Requeues {
+		o.staleReclaims += r.StaleReclaims
+	}
 	for _, f := range b.Failures {
 		if f.Machine == "__unknown__" && f.FailureReason == "timeout" {
 			o.unknownFail += f.TaskCount
@@ -149,7 +152,12 @@ func TestOpsPayloadAttributesUnknownMachine(t *testing.T) {
 		testPool.Exec(bg, `DELETE FROM ops_snapshot WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(bg, `DELETE FROM agent_task_event WHERE workspace_id = $1`, testWorkspaceID)
 	})
-	// The shared fixture workspace may already hold tasks from other tests: compare to a baseline.
+	// The shared fixture workspace may already hold tasks and events from other tests (CHE-6457):
+	// a stale_reclaim in another minute is a second requeue point. Compare to a baseline.
+	if _, err := testPool.Exec(ctx, `INSERT INTO agent_task_event (workspace_id, task_id, kind, at)
+		VALUES ($1, $2, 'stale_reclaim', now() - interval '30 min')`, testWorkspaceID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
 	adminToken := opsTokenFor(t, "admin")
 	base := opsFetch(t, adminToken).totals()
 	for _, q := range []string{
@@ -199,7 +207,7 @@ func TestOpsPayloadAttributesUnknownMachine(t *testing.T) {
 	if !snap {
 		t.Errorf("runs has no snapshot point for machine-a: %+v", body.Runs)
 	}
-	if len(body.Requeues) != 1 || body.Requeues[0].StaleReclaims != 1 {
-		t.Errorf("requeues = %+v, want one stale_reclaim", body.Requeues)
+	if got.staleReclaims-base.staleReclaims != 1 {
+		t.Errorf("stale reclaims grew by %d, want 1 (%+v)", got.staleReclaims-base.staleReclaims, body.Requeues)
 	}
 }

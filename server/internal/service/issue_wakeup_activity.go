@@ -16,23 +16,27 @@ import (
 // Runaway protection. A rule that starts this many runs within an hour, or
 // whose trigger chain leads back to itself, is paused with a visible reason.
 const (
-	wakeupHourlyRunLimit     = 12
-	wakeupDefaultMaxFires    = 20
-	wakeupChainLimit         = 32
-	wakeupLoopRepeats        = 2
-	wakeupActivityCreated    = "wakeup_created"
-	wakeupActivityTriggered  = "wakeup_triggered"
-	wakeupActivityTimedOut   = "wakeup_timed_out"
-	wakeupActivityCheckin    = "wakeup_checkin"
-	wakeupActivityPaused     = "wakeup_paused"
-	wakeupActivitySkipped    = "wakeup_skipped"
-	wakeupActivityRearmed    = "wakeup_rearmed"
-	wakeupPausedLoop         = "loop"
-	wakeupPausedRate         = "rate"
-	wakeupPausedMaxFires     = "max_fires"
-	wakeupTimeoutEventType   = "wakeup.timeout"
-	wakeupManualEventType    = "wakeup.manual"
-	wakeupConditionEventType = "condition.met"
+	wakeupHourlyRunLimit    = 12
+	wakeupDefaultMaxFires   = 20
+	wakeupChainLimit        = 32
+	wakeupLoopRepeats       = 2
+	wakeupActivityCreated   = "wakeup_created"
+	wakeupActivityTriggered = "wakeup_triggered"
+	wakeupActivityTimedOut  = "wakeup_timed_out"
+	wakeupActivityCheckin   = "wakeup_checkin"
+	wakeupActivityPaused    = "wakeup_paused"
+	wakeupActivitySkipped   = "wakeup_skipped"
+	wakeupActivityRearmed   = "wakeup_rearmed"
+	// CHE-6968: time_wakeup_skip deferral and its warn-mode previews.
+	wakeupActivityDeferred     = "wake_deferred"
+	wakeupActivityWouldDefer   = "wake_would_defer"
+	wakeupActivityWatchMissing = "wake_watch_missing"
+	wakeupPausedLoop           = "loop"
+	wakeupPausedRate           = "rate"
+	wakeupPausedMaxFires       = "max_fires"
+	wakeupTimeoutEventType     = "wakeup.timeout"
+	wakeupManualEventType      = "wakeup.manual"
+	wakeupConditionEventType   = "condition.met"
 )
 
 // wakeupPreview is the rule snapshot stored with timeline entries, so the
