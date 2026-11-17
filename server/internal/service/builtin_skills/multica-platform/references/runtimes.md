@@ -30,12 +30,15 @@ multica runtime usage <runtime-id> --output json
 multica runtime activity <runtime-id> --output json
 multica runtime update <runtime-id> --target-version <version> --output json
 multica runtime delete <runtime-id>
+multica runtime breaker list --output json
+multica runtime breaker reset <provider>
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 multica repo checkout <url> --fresh
 multica git push [origin] [HEAD|branch]
 multica git pr create --title T --base main [--body B] [--draft]
 multica git pr edit|ready|comment --number N [--title T] [--body B]
+multica git read-token
 ```
 
 `multica git push` pushes the checked-out task branch through the run's push
@@ -302,3 +305,11 @@ that is running you. If the work seems to need one, report it and stop.
 
 Never terminate a `multica` process by name: a matching process may be the
 daemon. Compare a PID with `multica daemon status --output json` first.
+
+`multica runtime breaker list` shows the provider circuit breakers in the
+workspace. `breaker reset <provider>` closes one now instead of waiting for its
+probe; the reset is audited with who ran it and the previous state.
+
+`multica git read-token` is for the `gh` wrapper in a restricted run, not for
+you to call. The broker holds the token in memory and replaces it near expiry;
+nothing is written to disk.

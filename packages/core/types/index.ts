@@ -58,6 +58,7 @@ export type {
   WorkspaceWorkingAgentMineRelation,
   TaskFailureReason,
   AgentRuntime,
+  AffectedMachine,
   RuntimeDevice,
   RuntimeUpdateInfo,
   RuntimePause,
