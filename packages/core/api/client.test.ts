@@ -3630,3 +3630,26 @@ describe("workspace scheduling pause", () => {
     expect(result.scheduling_paused_at).toBe(body.scheduling_paused_at);
   });
 });
+
+describe("personal background agents", () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("reads the caller's picks and treats an unset slot as empty", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ dm_title: { agent_id: "a1", fallback_agent_id: null } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").getMyBackgroundAgents("ws-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/ws-1/me/background-agents");
+    expect(result).toEqual({ dm_title: { agent_id: "a1", fallback_agent_id: "" } });
+  });
+
+  it("PUTs the patch as is and resolves null on a malformed response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json("nope"));
+    vi.stubGlobal("fetch", fetchMock);
+    const patch = { quick_actions: { agent_id: null, fallback_agent_id: null } };
+    const result = await new ApiClient("https://api.example.test").updateMyBackgroundAgents("ws-1", patch);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(patch);
+    expect(result).toBeNull();
+  });
+});
