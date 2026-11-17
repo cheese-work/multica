@@ -81,6 +81,7 @@ function commonResponse(pathname: string): unknown | undefined {
     case "/api/skills": case "/api/autopilots":
       return [];
     case "/api/labels": return { labels: [] };
+    case "/api/runtimes/affected": return { machines: [] };
     case "/api/decisions/open": return [];
     case "/api/chat/pending-tasks/has-any": return { has_pending: false };
     case `/api/workspaces/${WORKSPACE_ID}/members`: return [];
