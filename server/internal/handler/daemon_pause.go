@@ -126,14 +126,27 @@ func runtimeOnPausedDaemon(paused map[string]struct{}, rt db.AgentRuntime) bool 
 	return hit
 }
 
+// pauseReasonScheduledUpdate marks a pause a scheduled update cycle owns. The
+// manual API never accepts it.
+const pauseReasonScheduledUpdate = "scheduled_update"
+
 var validPauseReasons = map[string]bool{"maintenance": true, "incident": true, "suspended": true}
+
+// pauseExpiresAt is when the pause lifts on its own: the cycle's deadline when
+// it has one, else paused_at plus the reason's TTL.
+func pauseExpiresAt(p db.DaemonPause) pgtype.Timestamptz {
+	if p.ExpiresAt.Valid {
+		return p.ExpiresAt
+	}
+	return pgtype.Timestamptz{Time: p.PausedAt.Time.Add(pauseTTL(p.Reason)), Valid: p.PausedAt.Valid}
+}
 
 func pauseToResponse(p db.DaemonPause) RuntimePauseResponse {
 	return RuntimePauseResponse{
 		Reason:    p.Reason,
 		PausedBy:  uuidToPtr(p.PausedBy),
 		PausedAt:  timestampToString(p.PausedAt),
-		ExpiresAt: timestampToString(pgtype.Timestamptz{Time: p.PausedAt.Time.Add(pauseTTL(p.Reason)), Valid: p.PausedAt.Valid}),
+		ExpiresAt: timestampToString(pauseExpiresAt(p)),
 	}
 }
 
@@ -213,6 +226,11 @@ func (h *Handler) PauseDaemon(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err == nil {
+		err = qtx.RequestOpenCycleCancel(r.Context(), db.RequestOpenCycleCancelParams{
+			MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String, CancelRequested: pgtype.Text{String: cycleCancelManualPause, Valid: true},
+		})
+	}
+	if err == nil {
 		if err = h.writeAudit(r.Context(), qtx, r, auditInput{
 			Kind: "runtime.pause", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
 			Before: pauseAuditFields(before), After: pauseAuditFields(&pause),
@@ -283,6 +301,14 @@ func (h *Handler) beginMachinePauseTx(w http.ResponseWriter, r *http.Request, rt
 		slog.Error("machine pause workspace lock failed", "error", err, "runtime_id", uuidToString(rt.ID))
 		return fail(http.StatusInternalServerError, "failed to update machine pause")
 	}
+	// Lock order everywhere: workspace row, machine lock, pause row, cycle row.
+	if err := lockMachine(r.Context(), tx, machineOwnerID(rt), rt.DaemonID.String); err != nil {
+		if isRetryableLockFailure(err) {
+			return fail(http.StatusConflict, "the machine is being changed, try again")
+		}
+		slog.Error("machine pause machine lock failed", "error", err, "runtime_id", uuidToString(rt.ID))
+		return fail(http.StatusInternalServerError, "failed to update machine pause")
+	}
 	return tx, qtx, true
 }
 
@@ -300,6 +326,11 @@ func (h *Handler) ResumeDaemon(w http.ResponseWriter, r *http.Request) {
 	before, err := livePauseOf(r.Context(), qtx, rt)
 	if err == nil {
 		_, err = qtx.DeleteDaemonPause(r.Context(), db.DeleteDaemonPauseParams{MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String})
+	}
+	if err == nil {
+		err = qtx.RequestOpenCycleCancel(r.Context(), db.RequestOpenCycleCancelParams{
+			MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String, CancelRequested: pgtype.Text{String: cycleCancelManualResume, Valid: true},
+		})
 	}
 	if err == nil {
 		if err = h.writeAudit(r.Context(), qtx, r, auditInput{
@@ -448,11 +479,14 @@ func (h *Handler) heartbeatPause(ctx context.Context, runtimeID string, inFlight
 		slog.Warn("heartbeat pause lookup failed", "error", err, "runtime_id", runtimeID)
 		return nil
 	}
-	if inFlightTasks != nil && *inFlightTasks == 0 && !pause.DrainedNotifiedAt.Valid {
+	// The "safe to shut down" text says the daemon stays idle until a person
+	// resumes; a scheduled_update pause lifts itself, so it sends none.
+	if inFlightTasks != nil && *inFlightTasks == 0 && !pause.DrainedNotifiedAt.Valid && pause.Reason != pauseReasonScheduledUpdate {
 		h.noticeMachineDrained(ctx, pause)
 	}
 	pr := pauseToResponse(pause)
-	return &protocol.DaemonHeartbeatPaused{Reason: pr.Reason, PausedAt: pr.PausedAt, ExpiresAt: pr.ExpiresAt}
+	expiresInMs := max(time.Until(pauseExpiresAt(pause).Time).Milliseconds(), 0)
+	return &protocol.DaemonHeartbeatPaused{Reason: pr.Reason, PausedAt: pr.PausedAt, ExpiresAt: pr.ExpiresAt, ExpiresInMs: &expiresInMs}
 }
 
 var drainNoticeTimeout = 10 * time.Second
@@ -534,4 +568,95 @@ type RuntimePauseResponse struct {
 	PausedAt string  `json:"paused_at"`
 	// ExpiresAt is when the pause lifts on its own (see pauseTTL).
 	ExpiresAt string `json:"expires_at"`
+}
+
+// A person's pause or resume sets one of these on the machine's open update cycle.
+const (
+	cycleCancelManualPause  = "manual_pause"
+	cycleCancelManualResume = "manual_resume"
+)
+
+// lockMachine takes the per-machine lock (D18) that serializes opening an
+// update cycle with a person's pause or resume. It is held to the end of tx.
+func lockMachine(ctx context.Context, tx pgx.Tx, ownerID pgtype.UUID, daemonID string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "daemon_machine:"+machineKeyOf(ownerID, daemonID))
+	return err
+}
+
+// CycleMachine names the machine a scheduled update cycle runs on.
+// WorkspaceID is the workspace the cycle's pause row is attributed to.
+type CycleMachine struct {
+	OwnerID     pgtype.UUID
+	DaemonID    string
+	WorkspaceID pgtype.UUID
+}
+
+// OpenCycle opens the update cycle for a cron fire time in one transaction under
+// the machine lock, and no other path inserts an open cycle. The cycle ends up
+// `draining` holding the machine pause, or finished as `skipped_manual_pause`
+// (a live pause exists) or `skipped_open_cycle` (the machine's previous cycle is
+// still open; no pause is touched).
+func (h *Handler) OpenCycle(ctx context.Context, m CycleMachine, fireAt time.Time, window time.Duration) (db.DaemonUpdateCycle, error) {
+	return h.openCycle(ctx, m, fireAt, window, nil)
+}
+
+// openCycle is OpenCycle with a hook that runs after the cycle insert, before the
+// pause acquire, so a test can hold the lock there or fail the transaction.
+func (h *Handler) openCycle(ctx context.Context, m CycleMachine, fireAt time.Time, window time.Duration, afterInsert func() error) (db.DaemonUpdateCycle, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.DaemonUpdateCycle{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockMachine(ctx, tx, m.OwnerID, m.DaemonID); err != nil {
+		return db.DaemonUpdateCycle{}, err
+	}
+	qtx := h.Queries.WithTx(tx)
+	startedAt := time.Now().Truncate(time.Microsecond)
+	deadlineAt := startedAt.Add(window)
+	cycle := db.InsertDaemonUpdateCycleParams{
+		ID: dbid.NewV7(), MachineOwnerID: m.OwnerID, DaemonID: m.DaemonID,
+		FireAt:     pgtype.Timestamptz{Time: fireAt, Valid: true},
+		StartedAt:  pgtype.Timestamptz{Time: startedAt, Valid: true},
+		DeadlineAt: pgtype.Timestamptz{Time: deadlineAt, Valid: true},
+		State:      "fired",
+	}
+
+	if _, err := qtx.GetOpenDaemonUpdateCycle(ctx, db.GetOpenDaemonUpdateCycleParams{MachineOwnerID: m.OwnerID, DaemonID: m.DaemonID}); err == nil {
+		skipped, err := qtx.InsertSkippedDaemonUpdateCycle(ctx, db.InsertSkippedDaemonUpdateCycleParams{
+			ID: cycle.ID, MachineOwnerID: m.OwnerID, DaemonID: m.DaemonID,
+			FireAt: cycle.FireAt, StartedAt: cycle.StartedAt, DeadlineAt: cycle.DeadlineAt, Outcome: "skipped_open_cycle",
+		})
+		if err != nil {
+			return db.DaemonUpdateCycle{}, err
+		}
+		return skipped, tx.Commit(ctx)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.DaemonUpdateCycle{}, err
+	}
+
+	if _, err := qtx.InsertDaemonUpdateCycle(ctx, cycle); err != nil {
+		return db.DaemonUpdateCycle{}, err
+	}
+	if afterInsert != nil {
+		if err := afterInsert(); err != nil {
+			return db.DaemonUpdateCycle{}, err
+		}
+	}
+	var result db.DaemonUpdateCycle
+	_, err = qtx.AcquireCyclePause(ctx, db.AcquireCyclePauseParams{
+		MachineOwnerID: m.OwnerID, DaemonID: m.DaemonID, WorkspaceID: m.WorkspaceID,
+		CycleID: cycle.ID, ExpiresAt: cycle.DeadlineAt,
+		MaintenanceSecs: int32(maintenancePauseTTL.Seconds()), OtherSecs: int32(otherPauseTTL.Seconds()),
+	})
+	switch {
+	case err == nil:
+		result, err = qtx.SetDaemonUpdateCycleDraining(ctx, cycle.ID)
+	case errors.Is(err, pgx.ErrNoRows):
+		result, err = qtx.FinishDaemonUpdateCycleSkipped(ctx, db.FinishDaemonUpdateCycleSkippedParams{ID: cycle.ID, Outcome: "skipped_manual_pause"})
+	}
+	if err != nil {
+		return db.DaemonUpdateCycle{}, err
+	}
+	return result, tx.Commit(ctx)
 }

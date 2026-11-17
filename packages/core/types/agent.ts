@@ -56,7 +56,7 @@ export interface AgentInvocationTargetInput {
 export type RuntimeVisibility = "private" | "public";
 
 /** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
-export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
+export type RuntimePauseReason = "maintenance" | "incident" | "suspended" | "scheduled_update";
 
 /** Machine-wide pause (CHE-2430). Every runtime on the same daemon carries the same value. */
 export interface RuntimePause {

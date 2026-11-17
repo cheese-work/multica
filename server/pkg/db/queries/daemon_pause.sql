@@ -5,7 +5,8 @@ INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, pau
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (machine_owner_id, daemon_id) DO UPDATE
 SET workspace_id = EXCLUDED.workspace_id, reason = EXCLUDED.reason,
-    paused_by = EXCLUDED.paused_by, paused_at = now(), drained_notified_at = NULL
+    paused_by = EXCLUDED.paused_by, paused_at = now(), drained_notified_at = NULL,
+    cycle_id = NULL, expires_at = NULL
 RETURNING *;
 
 -- name: DeleteDaemonPause :execrows
@@ -19,7 +20,7 @@ WHERE machine_owner_id = $1 AND daemon_id = $2;
 SELECT * FROM daemon_pause
 WHERE machine_owner_id = ANY(@machine_owner_ids::uuid[])
   AND daemon_id = ANY(@daemon_ids::text[])
-  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now();
+  AND COALESCE(expires_at, paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END)) > now();
 
 -- name: CountRunningTasksByMachine :many
 -- Tasks still occupying a machine, in any workspace it serves: handed to the
@@ -75,7 +76,7 @@ WITH waiting AS (
     GROUP BY 1, 2
 )
 SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
-       dp.reason AS pause_reason, dp.paused_at AS paused_at,
+       dp.reason AS pause_reason, dp.paused_at AS paused_at, dp.expires_at AS pause_expires_at,
        m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
 FROM waiting w
 JOIN LATERAL (
@@ -88,7 +89,7 @@ JOIN LATERAL (
 ) m ON true
 LEFT JOIN daemon_pause dp
   ON dp.machine_owner_id = w.machine_owner_id AND dp.daemon_id = w.daemon_id
- AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now()
+ AND COALESCE(dp.expires_at, dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END)) > now()
 WHERE dp.machine_owner_id IS NOT NULL OR NOT m.any_online
 ORDER BY w.machine_owner_id, w.daemon_id;
 
@@ -98,7 +99,7 @@ ORDER BY w.machine_owner_id, w.daemon_id;
 SELECT dp.* FROM daemon_pause dp
 JOIN agent_runtime rt ON COALESCE(rt.owner_id, rt.workspace_id) = dp.machine_owner_id AND rt.daemon_id = dp.daemon_id
 WHERE rt.id = $1
-  AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now();
+  AND COALESCE(dp.expires_at, dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END)) > now();
 
 -- name: ClaimDaemonPauseDrainNotice :one
 -- Marks this pause (identified by its paused_at) as notified. No row means it
@@ -111,3 +112,58 @@ RETURNING *;
 -- Undoes the claim when the notice could not be written, so the next heartbeat retries.
 UPDATE daemon_pause SET drained_notified_at = NULL
 WHERE machine_owner_id = $1 AND daemon_id = $2 AND paused_at = $3;
+
+-- name: AcquireCyclePause :one
+-- A scheduled update cycle takes the machine's pause (CHE-5466, D10). One
+-- statement: insert, or take the row over only when the existing pause has
+-- expired. No row returned means a live pause exists and nothing changed.
+INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by, cycle_id, expires_at)
+VALUES (@machine_owner_id, @daemon_id, @workspace_id, 'scheduled_update', NULL, @cycle_id, @expires_at)
+ON CONFLICT (machine_owner_id, daemon_id) DO UPDATE
+SET workspace_id = EXCLUDED.workspace_id, reason = EXCLUDED.reason, paused_by = NULL,
+    paused_at = now(), drained_notified_at = NULL,
+    cycle_id = EXCLUDED.cycle_id, expires_at = EXCLUDED.expires_at
+WHERE COALESCE(daemon_pause.expires_at, daemon_pause.paused_at + make_interval(secs => CASE daemon_pause.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END)) <= now()
+RETURNING *;
+
+-- name: ReleaseCyclePause :execrows
+-- Releases the pause only while it is still this cycle's. 0 rows: a person's
+-- pause replaced it or it is gone; nothing changes.
+DELETE FROM daemon_pause
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND cycle_id = $3;
+
+-- name: GetOpenDaemonUpdateCycle :one
+-- The machine's open cycle, locked: the lock order is machine lock, pause row, cycle row.
+SELECT * FROM daemon_update_cycle
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND finished_at IS NULL
+FOR UPDATE;
+
+-- name: InsertDaemonUpdateCycle :one
+INSERT INTO daemon_update_cycle (id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state)
+VALUES (@id, @machine_owner_id, @daemon_id, @fire_at, @started_at, @deadline_at, @state)
+RETURNING *;
+
+-- name: InsertSkippedDaemonUpdateCycle :one
+-- A cron time that cannot open a cycle: written already finished, so it never
+-- takes the open-cycle slot.
+INSERT INTO daemon_update_cycle (id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, outcome, outcome_source, finished_at)
+VALUES (@id, @machine_owner_id, @daemon_id, @fire_at, @started_at, @deadline_at, @outcome, @outcome, 'server', now())
+RETURNING *;
+
+-- name: SetDaemonUpdateCycleDraining :one
+UPDATE daemon_update_cycle SET state = 'draining' WHERE id = $1 RETURNING *;
+
+-- name: FinishDaemonUpdateCycleSkipped :one
+UPDATE daemon_update_cycle
+SET state = @outcome, outcome = @outcome, outcome_source = 'server', finished_at = now()
+WHERE id = @id
+RETURNING *;
+
+-- name: RequestOpenCycleCancel :exec
+-- A person's pause or resume cancels the machine's open cycle. The first
+-- request stays.
+UPDATE daemon_update_cycle SET cancel_requested = COALESCE(cancel_requested, $3)
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND finished_at IS NULL;
+
+-- name: GetDaemonUpdateCycle :one
+SELECT * FROM daemon_update_cycle WHERE id = $1;

@@ -1127,6 +1127,8 @@ type DaemonPause struct {
 	PausedBy          pgtype.UUID        `json:"paused_by"`
 	PausedAt          pgtype.Timestamptz `json:"paused_at"`
 	DrainedNotifiedAt pgtype.Timestamptz `json:"drained_notified_at"`
+	CycleID           pgtype.UUID        `json:"cycle_id"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
 }
 
 type DaemonToken struct {
@@ -1137,6 +1139,33 @@ type DaemonToken struct {
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	OwnerID     pgtype.UUID        `json:"owner_id"`
+}
+
+type DaemonUpdateCycle struct {
+	ID                pgtype.UUID        `json:"id"`
+	MachineOwnerID    pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID          string             `json:"daemon_id"`
+	FireAt            pgtype.Timestamptz `json:"fire_at"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	DeadlineAt        pgtype.Timestamptz `json:"deadline_at"`
+	State             string             `json:"state"`
+	Attempt           int32              `json:"attempt"`
+	UpdateRequestID   pgtype.Text        `json:"update_request_id"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	FromCommit        pgtype.Text        `json:"from_commit"`
+	TargetCommit      pgtype.Text        `json:"target_commit"`
+	CancelRequested   pgtype.Text        `json:"cancel_requested"`
+	RequestStatus     pgtype.Text        `json:"request_status"`
+	RequestReason     pgtype.Text        `json:"request_reason"`
+	RequestOutput     pgtype.Text        `json:"request_output"`
+	RequestError      pgtype.Text        `json:"request_error"`
+	RequestReportedAt pgtype.Timestamptz `json:"request_reported_at"`
+	Outcome           pgtype.Text        `json:"outcome"`
+	OutcomeDetail     pgtype.Text        `json:"outcome_detail"`
+	OutcomeSource     pgtype.Text        `json:"outcome_source"`
+	Notes             []string           `json:"notes"`
+	LiveRunsAtEnd     pgtype.Int4        `json:"live_runs_at_end"`
+	FinishedAt        pgtype.Timestamptz `json:"finished_at"`
 }
 
 type DecisionAction struct {
