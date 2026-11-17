@@ -32,7 +32,7 @@ type decisionPark struct {
 
 // gatedHumanReadiness finds the Readiness property and its gated-human option.
 func gatedHumanReadiness(ctx context.Context, queries *db.Queries, issue db.Issue) (propertyID, optionID string, err error) {
-	properties, err := queries.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: issue.WorkspaceID})
+	properties, err := queries.ListIssuePropertyDefinitions(ctx, db.ListIssuePropertyDefinitionsParams{WorkspaceID: issue.WorkspaceID})
 	if err != nil {
 		return "", "", err
 	}
