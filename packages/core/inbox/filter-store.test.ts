@@ -68,6 +68,10 @@ beforeEach(() => {
 });
 
 describe("filterInboxItems", () => {
+  it("keeps the original reference when no filter is active", () => {
+    expect(filterInboxItems(ITEMS, EMPTY_INBOX_FILTERS)).toBe(ITEMS);
+  });
+
   it("shows each issue's newest notification when no filter is active", () => {
     const older = item("older", "todo", "high", { issue_id: "issue-1", created_at: "2026-08-23T00:00:00Z" });
     const newer = item("newer", "todo", "high", { issue_id: "issue-1" });
@@ -335,6 +339,37 @@ describe("mentions-me filtering", () => {
   });
 });
 
+// A fork selection persisted as `idleOnly` (CHE-6382) is read as `agent: "idle"`
+// (upstream v0.10.0). These are the fork's idle tests run through that bridge.
+describe("idle filtering from a stored fork selection", () => {
+  const stored = sanitizeInboxFilters({ idleOnly: true });
+
+  it("keeps only issues no agent is active on and counts as one filter", () => {
+    const rows = [
+      item("busy", "todo", "high", { issue_id: "issue-busy" }),
+      item("idle", "todo", "high", { issue_id: "issue-idle" }),
+      // Idle is a property of an issue; a row without one has none to report.
+      item("no-issue", null, null),
+    ];
+
+    expect(stored.agent).toBe("idle");
+    expect(
+      ids(filterInboxItems(rows, stored, { activeIssueIds: new Set(["issue-busy"]) })),
+    ).toEqual(["idle"]);
+    expect(inboxFilterCount(stored)).toBe(1);
+  });
+
+  it("keeps the open notification after an agent starts on its issue", () => {
+    const opened = item("opened", "todo", "high", { issue_id: "issue-opened" });
+    const other = item("other", "todo", "high", { issue_id: "issue-other" });
+    const activeIssueIds = new Set(["issue-opened", "issue-other"]);
+
+    expect(
+      ids(filterInboxItems([opened, other], stored, { activeIssueIds, pinnedAgentKey: "issue-opened" })),
+    ).toEqual(["opened"]);
+  });
+});
+
 describe("pinned row with agent filtering", () => {
   it("keeps the open notification after an agent starts on its issue", () => {
     const filters = { ...EMPTY_INBOX_FILTERS, agent: "idle" as const };
@@ -536,6 +571,11 @@ describe("useInboxFilterStore", () => {
 
     useInboxFilterStore.getState().toggleUnreadOnly("ws-1");
     expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]).toBeUndefined();
+    // The fork asserted a stored `false`; upstream drops an emptied entry.
+    // Readers fall back to EMPTY_INBOX_FILTERS (`useInboxFilters`), so the
+    // value they see is the same `false`.
+    const read = useInboxFilterStore.getState().filtersByWorkspace["ws-1"] ?? EMPTY_INBOX_FILTERS;
+    expect(read.unreadOnly).toBe(false);
   });
 });
 

@@ -594,7 +594,11 @@ export function filterInboxItems(
       (pinnedAgentKey != null && key === pinnedAgentKey);
     if (matchesUnread && matchesAgent) out.push(withCommentAnchor(row, group));
   }
-  return sortInboxNewestFirst(out);
+  sortInboxNewestFirst(out);
+  // Fork contract: a list that already is one row per issue, newest first,
+  // and that nothing narrowed comes back as the same array, so a caller's
+  // memo does not see a new reference.
+  return out.length === items.length && out.every((row, index) => row === items[index]) ? (items as InboxItem[]) : out;
 }
 
 export interface InboxFacetCounts {

@@ -47,7 +47,7 @@ function inboxTimelineTarget(item: InboxItem): string | undefined {
 
 /**
  * The row a group renders as, with `details.comment_id` naming the timeline
- * entry it opens at. Unread, it opens at the oldest unread comment or run, so
+ * entry it opens at. A row with its own comment keeps it. Otherwise, unread, it opens at the oldest unread comment or run, so
  * the issue reads forward from there; a reaction leads only when nothing
  * else unread has an entry, since the comment it marks is usually old.
  * Unread with no entry at all (a status change, an assignment), it opens
@@ -62,6 +62,10 @@ export function withCommentAnchor(
   { keepRequestTarget = true }: InboxAnchorOptions = {},
 ): InboxItem {
   if (keepRequestTarget && row.type.startsWith("app_") && row.details?.request_id) return row;
+  // Fork rule (CHE-6382/6399): a row that carries its own comment opens at it.
+  // Upstream opens an unread group at its oldest unread entry; replacing the
+  // fork rule with it is deferred to fork shrink 5a.
+  if (row.details?.comment_id) return row;
   const unread = group.filter((item) => item.read !== true);
   const anchor =
     unread.length > 0
