@@ -148,6 +148,9 @@ func TestStoreModeEnvKillForcesOff(t *testing.T) {
 	if r.Final != ModeOff {
 		t.Fatalf("final = %q, want off under the env kill", r.Final)
 	}
+	if len(r.Workspaces) != 0 {
+		t.Fatalf("env kill is a shutdown: no workspace may get reports, got %v", r.Workspaces)
+	}
 }
 
 func TestStoreModeIsReadFreshEachCall(t *testing.T) {

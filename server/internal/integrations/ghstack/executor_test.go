@@ -354,14 +354,19 @@ func TestModeLoweredWhileQueuedGivesNoWrite(t *testing.T) {
 	}
 }
 
-func TestModeLoweredToOffBeforeWriteReportsNothing(t *testing.T) {
+func TestModeLoweredToOffBeforeWriteStillReportsToEligibleWorkspaces(t *testing.T) {
 	f := chain2()
-	e, rep, _ := setup(t, f, res(ModeLink), res(ModeOff))
+	// Final drops to off (another bound workspace turned it off); the
+	// workspaces list still holds the ones whose own mode is report or link.
+	e, rep, _ := setup(t, f, res(ModeLink), res(ModeOff, WorkspaceMode{"w1", ModeReport}))
 	if err := e.Run(context.Background(), job(2)); err != nil {
 		t.Fatal(err)
 	}
-	if f.writeCount() != 0 || len(rep.codes()) != 0 {
-		t.Fatalf("off before write: writes=%v reports=%v", f.writes, rep.codes())
+	if f.writeCount() != 0 {
+		t.Fatalf("off before write must not write: %v", f.writes)
+	}
+	if !reflect.DeepEqual(rep.codes(), []Code{OutcomeWouldCreate}) {
+		t.Fatalf("reports = %v, want would_create (below link is a report outcome)", rep.codes())
 	}
 }
 
@@ -428,8 +433,37 @@ func TestDBeforeCConvergesToOneStackAcrossTwoJobs(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	// Which job wins the flight is the scheduler's choice: D first adds C and D
+	// in one write, C first adds them in two. Either way one stack results and
+	// no job reports a conflict.
+	if n := f.writeCount(); n < 1 || n > 2 {
+		t.Fatalf("writes = %v", f.writes)
+	}
+	if got := f.stacks[7]; !reflect.DeepEqual(got, []int{1, 2, 3, 4}) || len(f.stacks) != 1 {
+		t.Fatalf("stacks = %v", f.stacks)
+	}
+	for _, c := range rep.codes() {
+		if c == OutcomeConflict {
+			t.Fatalf("reports = %v", rep.codes())
+		}
+	}
+}
+
+func TestDThenCMakesOneWriteAndCIsANoop(t *testing.T) {
+	f := newFakeGH()
+	f.pr(1, "a", "main")
+	f.pr(2, "b", "a")
+	f.pr(3, "c", "b")
+	f.pr(4, "d", "c")
+	f.stacks[7] = []int{1, 2}
+	e, rep, _ := setup(t, f, res(ModeLink))
+	for _, n := range []int{4, 3} {
+		if err := e.Run(context.Background(), job(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if f.writeCount() != 1 {
-		t.Fatalf("two jobs must make one write, got %v", f.writes)
+		t.Fatalf("D adds C and D; C then has nothing to do, got %v", f.writes)
 	}
 	if got := f.stacks[7]; !reflect.DeepEqual(got, []int{1, 2, 3, 4}) || len(f.stacks) != 1 {
 		t.Fatalf("stacks = %v", f.stacks)

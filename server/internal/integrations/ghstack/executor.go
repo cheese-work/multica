@@ -188,9 +188,9 @@ func (e *Executor) Run(ctx context.Context, j Job) error {
 		if st.res, err = e.Modes.Resolve(ctx, j.InstallationID, j.Owner, j.Repo); err != nil {
 			return err
 		}
-		if st.res.Final == ModeOff {
-			return nil
-		}
+		// Below link, off included, is no write and a report outcome for the
+		// workspaces whose own mode is report or link (the store drops them
+		// under the env kill).
 		if st.res.Final != ModeLink {
 			e.report(ctx, st, map[Kind]Code{Create: OutcomeWouldCreate, Add: OutcomeWouldExtend}[act.Kind])
 			return nil

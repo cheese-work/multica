@@ -50,6 +50,9 @@ func (s *Store) Resolve(ctx context.Context, installationID int64, owner, repo s
 		return Resolution{}, fmt.Errorf("read bound workspaces: %w", err)
 	}
 	res.Final = FinalMode(slug, raws, EnvKill())
+	if EnvKill() {
+		res.Workspaces = nil // shutdown: no reports either
+	}
 	return res, nil
 }
 
