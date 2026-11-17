@@ -84,6 +84,11 @@ const (
 	// coexist on one task and a daemon with only the old capability never
 	// receives a PR event through the mid-run channel.
 	DaemonCapabilityTaskSupplementPREventV1 = "task-supplement-pr-event-v1"
+	// DaemonCapabilityTaskSupplementPREventV2 is v1 plus wakeup items: a
+	// condition wakeup's instruction delivered to a live run through the same
+	// typed delivery table (CHE-6971, scope amendment SA-1). The server records
+	// it only when the daemon offers it; PR items behave exactly as under v1.
+	DaemonCapabilityTaskSupplementPREventV2 = "task-supplement-pr-event-v2"
 	// DaemonCapabilityTaskSupplementChatV1 extends task-supplement-v1 to a DM
 	// chat run: a steered follow-up is claimed through the same supplement
 	// endpoints. Offered only for chat tasks, so an old daemon's chat run has

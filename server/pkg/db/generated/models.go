@@ -3681,16 +3681,21 @@ type TaskPrEventCapability struct {
 }
 
 type TaskPrEventDelivery struct {
-	TaskID        pgtype.UUID        `json:"task_id"`
-	EventID       pgtype.UUID        `json:"event_id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Status        string             `json:"status"`
-	FailureReason pgtype.Text        `json:"failure_reason"`
-	AttemptCount  int32              `json:"attempt_count"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	EventID        pgtype.UUID        `json:"event_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	Status         string             `json:"status"`
+	FailureReason  pgtype.Text        `json:"failure_reason"`
+	AttemptCount   int32              `json:"attempt_count"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	DeliveredAt    pgtype.Timestamptz `json:"delivered_at"`
+	ItemKind       string             `json:"item_kind"`
+	WakeupID       pgtype.UUID        `json:"wakeup_id"`
+	WakeupRevision pgtype.Int4        `json:"wakeup_revision"`
+	ReceiptIds     []pgtype.UUID      `json:"receipt_ids"`
+	Note           pgtype.Text        `json:"note"`
 }
 
 type TaskSupplement struct {
