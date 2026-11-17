@@ -93,6 +93,9 @@ func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Querie
 	if err != nil {
 		return err
 	}
+	// root_issue reads the parent the write leaves behind: UpdateIssue sets the
+	// parent from params, so a request that also changes the parent decides it.
+	facts.HasParent = params.ParentIssueID.Valid
 	return w.applyEntry(ctx, q, locked, params.Status.String, issueworkflow.EvaluateEntry(step.Entry, facts), facts)
 }
 

@@ -308,3 +308,35 @@ func TestEntryGateRootIssueRefusesChildInvestigating(t *testing.T) {
 	putIssue(t, c.issueID, map[string]any{"status": "investigating"}).Want(http.StatusOK)
 	wantIssueStatus(t, c.issueID, "investigating")
 }
+
+// The gate reads the parent the write leaves behind, not the one it replaces:
+// a root that gains a parent in the same request must be refused, and a child
+// that loses its parent in the same request may enter.
+func TestEntryGateRootIssueReadsParentOfTheWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 6831002
+	createTestCustomStatus(t, "investigating", "started")
+	steps := []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "todo"},
+		{"status_key": "investigating", "entry": []map[string]any{gate("root_issue", "block")}},
+		{"status_key": "in_progress"},
+		{"status_key": "blocked"},
+	}
+	c := newEdgeCase(t, installationID, steps)
+	childID := c.fx.child.ID
+	dbfx.Exec(t, `UPDATE issue SET parent_issue_id=NULL, project_id=(SELECT project_id FROM issue WHERE id=$2), status='blocked' WHERE id=$1`, childID, c.issueID)
+
+	res := putIssue(t, childID, map[string]any{"status": "investigating", "parent_issue_id": c.issueID}, func(r *http.Request) *http.Request { return asAgentTask(t, r) })
+	res.Want(http.StatusConflict)
+	if got := failedGuards(t, res); !reflect.DeepEqual(got, []string{"root_issue"}) {
+		t.Fatalf("failed guards = %v, want [root_issue]; body %s", got, res.Text())
+	}
+	wantIssueStatus(t, childID, "blocked")
+
+	dbfx.Exec(t, `UPDATE issue SET parent_issue_id=$2 WHERE id=$1`, childID, c.issueID)
+	putIssue(t, childID, map[string]any{"status": "investigating", "parent_issue_id": nil}).Want(http.StatusOK)
+	wantIssueStatus(t, childID, "investigating")
+}
