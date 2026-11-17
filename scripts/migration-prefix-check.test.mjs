@@ -152,7 +152,7 @@ test("PR-only scanner runs in parallel and required backend-tests fails closed",
   // CHE-4268: the scanner result is checked by the shard jobs, before their expensive steps; the
   // required aggregate also waits on the scanner and fails when any shard fails.
   assert.match(job("backend-test-shards"), /^    needs: \[changes, migration-prefix-check\]$/m);
-  assert.match(job("backend-tests"), /^    needs: \[changes, migration-prefix-check, backend-test-shards\]$/m);
+  assert.match(job("backend-tests"), /^    needs: \[changes, migration-prefix-check, migration-checks, backend-test-shards\]$/m);
   for (const name of ["backend-test-shards", "backend-tests"]) {
     assert.match(job(name), /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_backend == 'true' \}\}$/m);
   }
