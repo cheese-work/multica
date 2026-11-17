@@ -53,7 +53,7 @@ func readExplainWork(raw []byte) (explainWork, error) {
 		Plan explainNode `json:"Plan"`
 	}
 	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
-		return explainWork{}, fmt.Errorf("read plan: %v: %s", err, raw)
+		return explainWork{}, fmt.Errorf("read plan: %w: %s", err, raw)
 	}
 	top := plans[0].Plan
 	return explainWork{rowsExamined: int64(top.rows()), buffers: top.SharedHitBlocks + top.SharedReadBlocks}, nil
