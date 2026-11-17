@@ -37,11 +37,12 @@ Describe the work, pick an agent or squad under **Created by**, and click **Crea
 
 <IssueDraftDemo />
 
-- The agent restates your request faithfully and does not add requirements or acceptance criteria you did not give.
+- The agent keeps your request word for word and adds its own acceptance criteria and an estimate, each labelled with the agent's name. It also fills every field the dialog left empty: project (the best match for the request), priority (medium when the text gives no signal), start date (today), due date (start date plus the estimate), and the properties the agent's instructions require at creation. A workspace `owner` or `admin` can turn this off with the workspace setting `quick_create_fill` set to `off`; the agent then adds nothing you did not give.
 - If the request names an assignee ("give this to Lei Li"), the agent assigns them. Otherwise the assignee is whoever you picked under **Created by**: the agent itself, or the squad if you picked one. New issues start in `todo`, so when the assignee is an agent, it starts working on the issue as soon as it exists.
-- The project, priority, and due date you set in the dialog are used as-is; the agent does not infer different ones from the text. Project shows by default, and priority and due date are under the **⋯** menu. Choose which fields always show in **Settings → Preferences → Fields shown when creating issues**.
+- The project, priority, and due date you set in the dialog are used as-is; the agent does not infer different ones from the text. Project shows by default, and priority and due date are under the **⋯** menu. Choose which fields always show in **Settings → Preferences → Fields shown when creating issues**. A value you pick always wins over the fill.
 - With **Create another** on, the dialog stays open after each submission so you can write the next one.
 - **Created by** lists only the agents and squads you are allowed to assign. If the agent's runtime has a multica CLI that is too old, the dialog asks you to upgrade the daemon or switch to manual create.
+- The server records how each new issue was made in `created_via`: `dialog` (this dialog), `agent` (an agent run created it on its own) or `cli` (a person used the CLI). The issue's **Details** panel shows it as **Created via**, and `multica issue get --output json` returns it. Issues made before this field existed, and issues made from a web or desktop form, have an empty value. You cannot set it.
 
 ## Choose an assignee
 
@@ -169,7 +170,7 @@ Save a combination of filters and display settings you use often as a view: clic
 | **Only visible to me** | Only you | You |
 | **Visible to workspace members** | Every workspace member | You, plus workspace `owner` and `admin` |
 
-The display settings saved in a view are its **Default display**: members see the view that way the first time they open it, then adjust it for themselves without affecting anyone else. A view lives on the page it was created on: one created in a project belongs to that project, and views created in **My Issues** are always private.
+The display settings saved in a view are its **Default display**: members see the view that way the first time they open it, then adjust it for themselves without affecting anyone else. A view lives on the page it was created on: one created in a project belongs to that project, and views created in **My Issues** are always private. In **My Issues**, **Relation to me** includes **Requested by me**, which lists issues an agent created on your behalf.
 
 Drag views in the view bar to reorder them; ordering and visibility in **Manage views** affect only you. Right-click a view to edit it, delete it, or **Pin to sidebar**.
 

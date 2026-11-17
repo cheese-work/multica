@@ -158,3 +158,35 @@ describe("tab-coordinator external scroll sources", () => {
     registerActiveHostElement(null);
   });
 });
+
+describe("tab-coordinator bound view-state writer (CHE-3234)", () => {
+  beforeEach(() => {
+    __resetTabCoordinatorForTests();
+    useTabStore.getState().reset();
+    useTabStore.getState().switchWorkspace("acme");
+    initTabCoordinator();
+  });
+
+  const viewOf = (tabId: string) =>
+    useTabStore.getState().byWorkspace.acme.tabs.find((t) => t.id === tabId)!.memento.view;
+
+  it("files a late write under the originating route after a tab switch", () => {
+    const tabId = useTabStore.getState().openTab("/acme/chat", "Chat", { activate: true });
+    const write = createScrollRestorationAdapter(tabId).bindViewStateWriter?.();
+    useTabStore.getState().openTab("/acme/issues", "Issues", { activate: true });
+
+    write?.("chat::s1", "v1");
+
+    expect(viewOf(tabId)).toEqual({ "/acme/chat::chat::s1": "v1" });
+  });
+
+  it("files a late write under the originating route after in-tab navigation", () => {
+    const tabId = useTabStore.getState().openTab("/acme/chat", "Chat", { activate: true });
+    const write = createScrollRestorationAdapter(tabId).bindViewStateWriter?.();
+    useTabStore.getState().navigateActiveSession("/acme/issues");
+
+    write?.("chat::s1", "v1");
+
+    expect(viewOf(tabId)).toEqual({ "/acme/chat::chat::s1": "v1" });
+  });
+});

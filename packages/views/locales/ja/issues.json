@@ -617,6 +617,10 @@
     "add_property_action": "プロパティを追加",
     "prop_created_by": "作成者",
     "prop_requested_by": "依頼者",
+    "prop_created_via": "作成経路",
+    "created_via_dialog": "作成ダイアログ",
+    "created_via_agent": "エージェント",
+    "created_via_cli": "CLI",
     "prop_created": "作成日",
     "prop_updated": "更新日",
     "activity_section": "アクティビティ",
@@ -923,6 +927,7 @@
     "status_queued": "待機中",
     "status_dispatched": "開始中",
     "status_waiting_local_directory": "ローカルディレクトリ待機中",
+    "status_deferred": "保留中",
     "status_running": "作業中",
     "status_completed": "完了",
     "status_failed": "失敗",
@@ -1175,6 +1180,7 @@
     "variant_my_any": "何らかの関わり",
     "variant_my_assigned": "自分に割り当て",
     "variant_my_created": "自分が作成",
+    "variant_my_requested": "自分が依頼",
     "variant_my_involved": "関与中"
   },
   "plugins": {

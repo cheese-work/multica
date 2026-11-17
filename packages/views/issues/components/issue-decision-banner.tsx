@@ -5,13 +5,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueDecisionCardsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { issueTasksOptions } from "@multica/core/issues/queries";
+import { ACTIVE_TASK } from "@multica/core/issues/run-status";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 import { DecisionRequestCard } from "../../chat/components/decision-request-card";
-
-const ACTIVE_TASK = new Set(["queued", "dispatched", "waiting_local_directory", "deferred", "running"]);
 
 const ict = (iso: string) => {
   const date = new Date(iso);

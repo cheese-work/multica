@@ -49,6 +49,18 @@ test("a byte-order mark at a GitHub log chunk boundary does not expose a timesta
   assert.deepEqual(warningCounts([{ name: "backend-tests", log, annotations: [] }]), {})
 })
 
+test("expected slog WARN lines from backend-agent-tests fixtures are not warnings, but a real warning there still is (CHE-6346)", () => {
+  const slog = 'time=2026-11-16T10:00:00.000Z level=WARN msg="script rejected" task_id=task-1 reason=script_not_allowlisted script=ghost'
+  assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: slog, annotations: [] }]), {})
+  assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: `${slog}\nWarning: compiler diagnostic`, annotations: [] }]), { "backend-agent-tests: Warning: compiler diagnostic": 1 })
+  assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: slog, annotations: [] }])).length, 1)
+  // Only the two fixture messages are expected; any other slog WARN in the job is still a new warning.
+  const timedOut = 'time=2026-11-16T10:00:00.000Z level=WARN msg="script timed out" task_id=task-1 script=slow timeout=500ms'
+  assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: timedOut, annotations: [] }]), {})
+  const unrelated = 'time=2026-11-16T10:00:00.000Z level=WARN msg="new unexpected warning" task_id=task-1'
+  assert.equal(Object.keys(warningCounts([{ name: "backend-agent-tests", log: unrelated, annotations: [] }])).length, 1)
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
@@ -249,4 +261,10 @@ test("shard jobs inherit the legacy backend-tests baseline until main has run th
   assert.equal(pending.size, 0)
   assert.deepEqual(baselineJobs.map((job) => job.name).sort(), ["backend-test-shards (handler-0)", "backend-test-shards (rest)", "frontend-build"])
   assert.deepEqual(jobBaselines["backend-test-shards (rest)"], { run: "run-2", sha: "b", job: "backend-tests" })
+})
+
+test("migration-checks, added by CHE-6563, has a zero warning baseline until main runs it", () => {
+  const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"migration-checks"/)
 })

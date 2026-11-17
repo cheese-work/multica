@@ -2,12 +2,16 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // askGuardHit runs the guard for one agent operation and reports whether the
@@ -41,11 +45,90 @@ func validateAskGuardSetting(value any) error {
 	if !ok {
 		return nil
 	}
-	v, present := config[askguard.SettingKey]
-	if !present {
+	for _, key := range []string{askguard.SettingKey, askguard.ReversibleSettingKey} {
+		v, present := config[key]
+		if !present {
+			continue
+		}
+		s, _ := v.(string)
+		if _, err := askguard.ParseMode(s); err != nil {
+			return fmt.Errorf("%s must be off, warn or block", key)
+		}
+	}
+	return nil
+}
+
+const reversibleAskFix = "Standing Delivery Authorization (CHE-584) lets agents decide and execute reversible work without asking: do it and record it. Ask a person only for spend, deploy, publish, irreversible or product_direction, or use an approval-gated action request"
+
+// refuseReversibleAsk (CHE-5754) refuses a plain agent question whose class is
+// reversible: the ask is for work Standing Delivery Authorization already
+// allows. Action, proposal and batch requests are the approval-gated path
+// (CHE-5167) and stay open. The reversible_ask_guard setting decides: off allows,
+// warn logs, block refuses. Set it to off to revert; no data changes.
+func (handler *Handler) refuseReversibleAsk(ctx context.Context, issue db.Issue, input decisionRequestInput) error {
+	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction {
 		return nil
 	}
-	s, _ := v.(string)
-	_, err := askguard.ParseMode(s)
-	return err
+	workspace, err := handler.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	mode, err := askguard.ReversibleModeFromSettings(workspace.Settings)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case askguard.ModeBlock:
+		return decisionIntentRefusal{http.StatusUnprocessableEntity, "this asks a person to approve reversible work; " + reversibleAskFix}
+	case askguard.ModeWarn:
+		slog.Warn("ask guard: reversible decision request", "issue_id", uuidToString(issue.ID))
+	}
+	return nil
+}
+
+const reversibleCommentFix = "Standing Delivery Authorization (CHE-584) lets agents decide and execute reversible work without asking: do it and record it. To ask a person for spend, deploy, publish, irreversible or product_direction run: multica decision request ...; add --notify-only to multica issue comment add if the comment needs no answer"
+
+// askGuardReversibleComment (CHE-5754) is the issue-comment path of the
+// reversible ask guard. A plain comment has no class, so no text is read. The
+// structural facts are: an agent task, no typed kind (notify-only, decision
+// intent, record and veto never reach here), an issue waiting on a person
+// (blocked or need_decision), a parent comment written by a member, and no
+// agent or squad mention. Such a reply is addressed to that member, which is
+// the CHE-5281 shape. A top-level report, a reply under an agent and a handoff
+// that mentions an agent or squad are never refused. block refuses with 422,
+// warn logs, off allows. A run with no task or in a chat lane only warns: it
+// has no run to recover through a refusal. Set the setting to off to revert;
+// no data changes.
+func (handler *Handler) askGuardReversibleComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, task *db.AgentTaskQueue, parent *db.Comment, content string) bool {
+	if (issue.Status != "blocked" && issue.Status != "need_decision") || parent == nil || parent.AuthorType != "member" || mentionsAgentOrSquad(content) {
+		return true
+	}
+	workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
+	var mode askguard.Mode
+	if err == nil {
+		mode, err = askguard.ReversibleModeFromSettings(workspace.Settings)
+	}
+	if err != nil {
+		slog.Warn("reversible ask guard failed", "error", err, "issue_id", uuidToString(issue.ID))
+		writer.Header().Set("Retry-After", "5")
+		writeError(writer, http.StatusServiceUnavailable, "ask guard unavailable; retry the same request")
+		return false
+	}
+	switch {
+	case mode == askguard.ModeBlock && task != nil && !task.ChatSessionID.Valid:
+		writeError(writer, http.StatusUnprocessableEntity, "this plain comment on a "+issue.Status+" issue waits on a person for work Standing Delivery Authorization may already allow; "+reversibleCommentFix)
+		return false
+	case mode != askguard.ModeOff:
+		slog.Warn("ask guard: plain comment on a waiting issue", "issue_id", uuidToString(issue.ID), "status", issue.Status)
+	}
+	return true
+}
+
+func mentionsAgentOrSquad(content string) bool {
+	for _, m := range util.ParseMentions(content) {
+		if m.Type == "agent" || m.Type == "squad" {
+			return true
+		}
+	}
+	return false
 }

@@ -9,6 +9,10 @@ const PREVIEWED_ACTION_TYPES = [
   "issue.project.set",
   "agent.env.patch",
   "agent.copy",
+  "issue.run_guard.allow",
+  "agent.pause",
+  "agent.resume",
+  "doop.deploy_lift",
 ] as const;
 
 /** The Run budget group: actions that change how many runs an issue may use. */
@@ -55,7 +59,9 @@ export function approvableConfigChange(action: Pick<DecisionRequestAction, "acti
   if (!(CONFIG_CHANGE_FIELDS as readonly string[]).includes(change.field)) return undefined;
   if ((change.field === "workspace.settings") !== (change.keys.length > 0)) return undefined;
   if (!["json", "text", "lines"].includes(change.diff_kind)) return undefined;
-  if (change.field === "workflow.instructions" && !(workflowStepTarget(change))) return undefined;
+  // A one-step instructions edit must name its step. workflow.steps.set may edit
+  // several steps' instructions at once; its diff shows every changed step.
+  if (change.field === "workflow.instructions" && action.action_type !== "workflow.steps.set" && !(workflowStepTarget(change))) return undefined;
   const wellFormed = change.diff.every((hunk) => hunk.lines.every((line) => line.length > 0 && " +-".includes(line[0]!)));
   return wellFormed ? change : undefined;
 }

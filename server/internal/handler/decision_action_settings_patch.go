@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -110,7 +111,9 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateGuardPolicySetting(map[string]any{key: value})
 	case key == decisiontx.SettingCannotDoMode || key == decisiontx.SettingCannotDo:
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
-	case key == askguard.SettingKey:
+	case key == decisiontx.SettingCardLintMode:
+		err = validateCardLintSetting(map[string]any{key: value})
+	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
 	case key == decisiontx.SettingHeldMode:
@@ -135,6 +138,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		if text, _ := value.(string); text != "auto" && text != "author" {
 			err = fmt.Errorf("mermaid_orientation must be auto or author")
 		}
+	case key == issueworkflow.SettingsKeyWorkflowByType:
+		err = issueworkflow.ValidateWorkflowByType(raw)
 	case key == "pr_event_capture":
 		flags, isObject := value.(map[string]any)
 		if !isObject {

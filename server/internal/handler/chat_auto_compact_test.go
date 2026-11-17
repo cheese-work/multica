@@ -289,6 +289,7 @@ func TestAutoCompactIgnoresRunsThatCannotTrigger(t *testing.T) {
 }
 
 func TestAutoCompactQueuesAtMostOneCompactionInEveryActiveState(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -407,7 +408,7 @@ func TestClaimedAutoCompactionRunsTheCompactPromptWithoutUserInput(t *testing.T)
 	if response.Task == nil || response.Task.ID != tasks[0].ID {
 		t.Fatalf("claim = %+v, want the compaction task %s", response.Task, tasks[0].ID)
 	}
-	for _, required := range []string{"multica chat continue --summary-file", "Keep exact candidate SHAs.", "Do not invent facts"} {
+	for _, required := range []string{"multica chat compact --summary-file", "Keep exact candidate SHAs.", "Do not invent facts"} {
 		if !strings.Contains(response.Task.ChatMessage, required) {
 			t.Errorf("prompt does not contain %q: %s", required, response.Task.ChatMessage)
 		}

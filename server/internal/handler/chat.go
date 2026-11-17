@@ -179,6 +179,9 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
 	if !listsOwnChatSessions(r.Header.Get("X-Actor-Source")) {
+		if h.listRequesterStaleDMs(w, r, workspaceID) {
+			return
+		}
 		session, ok := h.callingChatSession(w, r)
 		if !ok {
 			return

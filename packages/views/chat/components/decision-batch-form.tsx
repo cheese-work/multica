@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, KeyRound, Loader2 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
@@ -6,6 +6,8 @@ import { api } from "@multica/core/api";
 import type { PasskeyDecisionOutcome } from "@multica/core/api/passkey-schema";
 import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { chatKeys } from "@multica/core/chat/queries";
+import { usePersistedDraft } from "@multica/core/drafts";
+import { type DecisionBatchChoices, useDecisionBatchChoicesStore } from "@multica/core/issues/stores/decision-batch-choices-store";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, isPlainShortcut, shortcutMatchesEvent, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionBatchItem } from "@multica/core/types";
@@ -15,6 +17,7 @@ import { AppLink } from "../../navigation";
 
 type Pick = "approve" | "reject";
 const PICKS: readonly Pick[] = ["approve", "reject"];
+const EMPTY_CHOICES: DecisionBatchChoices = { choices: {} };
 
 // What the batch approve signs: the hash of the approved items' payload hashes, sorted (the server's batchPayloadSHA256).
 async function batchPayloadSha256(hashes: string[]) {
@@ -24,7 +27,8 @@ async function batchPayloadSha256(hashes: string[]) {
 }
 
 // Direction B v9 batch card: each item has its own Approve / Reject, none chosen on open; one button covers the batch
-// and one passkey signs the approved items. Choices live in state only, so a reload never brings back an armed Approve.
+// and one passkey signs the approved items. Choices are unsent input and are kept per batch; they only select,
+// so a reload brings back the selection but never sends or signs anything.
 export function DecisionBatchForm({ batchId, items }: { batchId: string; items: DecisionBatchItem[] }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
@@ -32,7 +36,7 @@ export function DecisionBatchForm({ batchId, items }: { batchId: string; items: 
   const queryClient = useQueryClient();
   const sendChord = useShortcut("send");
   const sendKey = formatShortcut(sendChord);
-  const [choices, setChoices] = useState<Record<string, Pick>>({});
+  const [{ choices }, setDraft, clearDraft] = usePersistedDraft(useDecisionBatchChoicesStore, batchId, EMPTY_CHOICES);
   const [outcomes, setOutcomes] = useState<Record<string, PasskeyDecisionOutcome>>({});
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -47,12 +51,17 @@ export function DecisionBatchForm({ batchId, items }: { batchId: string; items: 
   const left = items.length - Object.keys(choices).length;
   const rejected = items.length - left - approved.length;
 
-  const choose = (id: string, pick: Pick | undefined) => setChoices((current) => {
-    const next = { ...current };
+  // Once the server shows the batch decided (another tab, the DM), the stored choices have no use.
+  const serverDecided = !items.every((item) => item.state === "pending");
+  useEffect(() => {
+    if (serverDecided) clearDraft();
+  }, [serverDecided, clearDraft]);
+  const choose = (id: string, pick: Pick | undefined) => {
+    const next = { ...choices };
     if (pick) next[id] = pick;
     else delete next[id];
-    return next;
-  });
+    setDraft({ choices: next });
+  };
   const move = (event: KeyboardEvent, id: string, from: Pick) => {
     const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
     if (!step) return;
@@ -76,6 +85,7 @@ export function DecisionBatchForm({ batchId, items }: { batchId: string; items: 
       }
       const result = await api.approveDecisionBatch(batchId, { ...signed, choices });
       setOutcomes(Object.fromEntries(result.items.map((outcome) => [outcome.id, outcome])));
+      clearDraft();
     } catch {
       // A refusal applied nothing; a lost response is settled by reading the card again.
       setFailed(true);

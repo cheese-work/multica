@@ -612,7 +612,11 @@
     "description_show_less": "收起",
     "description_more_lines_other": "還有 {{count}} 行",
     "status_summary_label": "狀態摘要",
-    "prop_requested_by": "請求人"
+    "prop_requested_by": "請求人",
+    "prop_created_via": "建立方式",
+    "created_via_dialog": "建立對話框",
+    "created_via_agent": "智慧體",
+    "created_via_cli": "CLI"
   },
   "timeline": {
     "loading": "載入中…",
@@ -871,6 +875,7 @@
     "status_queued": "排隊中",
     "status_dispatched": "啟動中",
     "status_waiting_local_directory": "等待本地目錄釋放",
+    "status_deferred": "已延後",
     "status_running": "正在工作",
     "status_completed": "已完成",
     "status_failed": "失敗",
@@ -1123,6 +1128,7 @@
     "variant_my_any": "任何相關",
     "variant_my_assigned": "分配給我",
     "variant_my_created": "我建立的",
+    "variant_my_requested": "我請求的",
     "variant_my_involved": "我參與的"
   },
   "plugins": {

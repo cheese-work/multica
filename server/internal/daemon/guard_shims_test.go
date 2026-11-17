@@ -18,6 +18,8 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/gatesuite"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 )
 
 var (
@@ -39,7 +41,7 @@ func guardMulticaBin(t *testing.T) string {
 			return
 		}
 		guardBinPath = filepath.Join(guardBinDir, "multica")
-		build := exec.Command("go", "build", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
+		build := exec.Command("go", "build", "-buildvcs=false", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
 		build.Env = append(os.Environ(), "HOME="+guardBuildHome)
 		out, err := build.CombinedOutput()
 		if err != nil {
@@ -376,5 +378,65 @@ func TestRunTaskLaunchesAgentWithGuardShims(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// With broker enforcement on, the guard shims sit in front of the broker shims
+// on the agent PATH (CHE-4595, AGENTS.md "Daemon Tool Shims"): gh and git hit
+// the guard first, which then hands over to the broker shims, never around
+// them.
+func TestRunTaskFrontsBrokerShimsWithGuardShims(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script agent fixture is POSIX-only")
+	}
+	brokerFakeTools(t)
+	mc := guardMulticaBin(t)
+	origResolve, origExe := resolveSelfExecutable, multicaExe
+	resolveSelfExecutable = func() (string, error) { return mc, nil }
+	multicaExe = func() (string, error) { return mc, nil }
+	runIsolated = true
+	t.Cleanup(func() {
+		resolveSelfExecutable, multicaExe, runIsolated = origResolve, origExe, false
+	})
+	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
+	seen := filepath.Join(t.TempDir(), "path")
+	fake := filepath.Join(t.TempDir(), "claude-fixture")
+	writeTestExecutable(t, fake, []byte("#!/bin/sh\n"+
+		"case \"$*\" in *--version*) echo '9.9.9'; exit 0;; esac\n"+
+		"printf '%s' \"$PATH\" > '"+seen+"'\nexit 0\n"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	d := &Daemon{
+		client: NewClient(srv.URL), logger: logger,
+		workspaces: make(map[string]*workspaceState), activeEnvRoots: make(map[string]int),
+		runtimeIndex: map[string]Runtime{"test-rt": {ID: "test-rt", Provider: "claude"}},
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(), AgentTimeout: 5 * time.Second, ServerBaseURL: srv.URL,
+			SandboxMode: sandbox.ModeOn, Broker: brokerTestConfig(t, gh),
+			Agents: map[string]AgentEntry{"claude": {Path: fake}},
+		},
+	}
+	task := Task{
+		ID: "test-task", WorkspaceID: "test-ws", RuntimeID: "test-rt", IssueID: "test-issue",
+		AgentID: "test-agent", AuthToken: "mat_test_guard",
+		Agent: &AgentData{ID: "test-agent", Name: "test"},
+	}
+	d.activeStores, d.deletingStores = make(map[string]int), make(map[string]bool)
+	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
+	_, _ = d.runTask(context.Background(), task, "claude", 0, logger)
+
+	out, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatalf("agent never started with a recorded PATH: %v", err)
+	}
+	parts := filepath.SplitList(string(out))
+	if len(parts) < 2 {
+		t.Fatalf("PATH = %q", out)
+	}
+	if filepath.Base(parts[0]) != "guard-bin" || filepath.Base(parts[1]) != "bin" || !strings.HasPrefix(filepath.Base(filepath.Dir(parts[1])), "mbr-") {
+		t.Fatalf("PATH starts %q then %q, want guard-bin then the broker shim dir (mbr-*/bin)", parts[0], parts[1])
 	}
 }

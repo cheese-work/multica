@@ -168,6 +168,7 @@ describe("builtinSidebarRequest", () => {
       sort: { field: "updated_at", direction: "desc" },
     });
     expect(request("my_issues", "created")?.scope).toEqual({ kind: "my", relation: "created" });
+    expect(request("my_issues", "requested")?.scope).toEqual({ kind: "my", relation: "requested" });
     expect(request("my_issues", "all")?.scope).toEqual({ kind: "my", relation: "any" });
     expect(request("my_agents", "assigned")?.scope).toEqual({ kind: "my", relation: "involved" });
   });

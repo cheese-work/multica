@@ -154,6 +154,7 @@ func init() {
 	Register(&Definition{Type: "agent.resume", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Resume an agent", Summary: "Lets a paused agent start new runs again."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Raise an issue's run cap", Summary: "Raises the run cap of the issue's open budget window."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
 	Register(&Definition{Type: "issue.project.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Move an issue to another project", Summary: "Moves the issue to the proposed project, which sets the workflow and run budget the issue follows."}, MinClass: "reversible", Target: TargetIssue, Normalize: normalizeIssueProjectSet})
+	Register(&Definition{Type: "issue.run_guard.allow", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Allow more weekly runs on an issue", Summary: "Adds 10 runs to the issue's weekly run guard for 7 days and runs the refused trigger once."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunGuardAllow})
 	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Top up an issue's runs", Summary: "Resets the runs used in the issue's open budget window to zero."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
 	Register(&Definition{Type: "issue.workflow.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Change an issue's workflow", Summary: "Moves the issue to another workflow, which gives it a wider run budget."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeIssueWorkflowSet})
 	Register(&Definition{Type: "agent.instructions.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's instructions", Summary: "Replaces the agent's instructions with the proposed text."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
@@ -427,6 +428,42 @@ func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawM
 	}
 	if err := checkRunBudgetWindowID(params.WindowID); err != nil {
 		return nil, nil, err
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
+}
+
+// RunGuardAllowRuns is how many runs one approved weekly run guard card adds.
+const RunGuardAllowRuns = 10
+
+// RunGuardAllowParams names the issue, the refusal the card answers and the
+// runs it grants. The runs are fixed: a card never asks for more.
+//
+// The refusal key is not "refusal_id": that key is the run budget's own, and
+// the approval checks it against a budget window this action does not have.
+type RunGuardAllowParams struct {
+	IssueID   string `json:"issue_id"`
+	RefusalID string `json:"guard_refusal_id"`
+	Runs      int    `json:"runs"`
+}
+
+func normalizeRunGuardAllow(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("issue.run_guard.allow takes no secret slots")
+	}
+	var params RunGuardAllowParams
+	if err := decodeStrict(raw, &params); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	if params.IssueID, err = canonicalUUID("issue_id", params.IssueID); err != nil {
+		return nil, nil, err
+	}
+	if params.RefusalID, err = canonicalUUID("guard_refusal_id", params.RefusalID); err != nil {
+		return nil, nil, err
+	}
+	if params.Runs != RunGuardAllowRuns {
+		return nil, nil, invalid("runs must be 10")
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err

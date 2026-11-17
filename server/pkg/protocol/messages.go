@@ -310,6 +310,22 @@ type ChatMessagePayload struct {
 	MessageKind   string `json:"message_kind,omitempty"`
 }
 
+// ProgressCardPayload is the typed content of a progress card
+// (dm_progress_delivery.payload). It holds IDs, statuses and change kinds only:
+// titles are resolved at read time under the access gate (CHE-3369 I6).
+type ProgressCardPayload struct {
+	Items []ProgressCardItem `json:"items"`
+}
+
+// ProgressCardItem is one issue's net change since the last card: FromStatus is
+// the status the DM was last told, Status the current one.
+type ProgressCardItem struct {
+	IssueID    string   `json:"issue_id"`
+	Status     string   `json:"status"`
+	FromStatus string   `json:"from_status"`
+	Kinds      []string `json:"kinds"`
+}
+
 // Chat message kinds (chat_message.message_kind). Additive: unknown values
 // degrade to ChatMessageKindMessage on older readers.
 const (
@@ -327,6 +343,10 @@ const (
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).
 	ChatMessageKindNoResponse = "no_response"
+	// ChatMessageKindProgressCard is the server-authored DM progress card
+	// (CHE-3369). Its content is a titleless fallback line; the typed payload
+	// lives in dm_progress_delivery.
+	ChatMessageKindProgressCard = "progress_card"
 	// ChatMessageKindOnboardingKickoff is the server-authored, hidden first
 	// turn used to start Mika's onboarding conversation. It is persisted so
 	// the runtime receives a normal immutable chat input batch. User-facing
@@ -471,7 +491,9 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID           string `json:"runtime_id"`
+	RuntimeID string `json:"runtime_id"`
+	// Seq numbers a WebSocket heartbeat frame; the ack echoes it. Zero over HTTP.
+	Seq                 uint64 `json:"seq,omitempty"`
 	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
 	// InFlightTasks is the number of tasks the whole daemon is running or
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
@@ -558,6 +580,9 @@ type DaemonHeartbeatAckPayload struct {
 	// Paused is the machine's live pause (CHE-2673). Absent when the machine
 	// takes work. The server claim gate holds either way; the daemon mirrors it.
 	Paused *DaemonHeartbeatPaused `json:"paused,omitempty"`
+	// Seq echoes DaemonHeartbeatRequestPayload.Seq of the heartbeat this ack
+	// answers (WebSocket). Zero from a server that does not echo it.
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // DaemonHeartbeatPaused is the desired pause state a heartbeat ack carries.
@@ -565,6 +590,10 @@ type DaemonHeartbeatPaused struct {
 	Reason    string `json:"reason"`
 	PausedAt  string `json:"paused_at"`
 	ExpiresAt string `json:"expires_at"`
+	// ExpiresInMs ends the pause that many ms after the heartbeat that carried
+	// it was sent, on the daemon's monotonic clock, so host clock skew cannot
+	// stretch it. Nil from a server that does not send it.
+	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
@@ -576,6 +605,11 @@ const HeartbeatStatusRuntimeGone = "runtime_gone"
 type DaemonHeartbeatPendingUpdate struct {
 	ID            string `json:"id"`
 	TargetVersion string `json:"target_version"`
+	// StartWithinMs and FinishWithinMs are measured from the send time of the
+	// heartbeat whose ack carried them, on the daemon's monotonic clock. Nil
+	// from a server that does not send them (and from a manual update).
+	StartWithinMs  *int64 `json:"start_within_ms,omitempty"`
+	FinishWithinMs *int64 `json:"finish_within_ms,omitempty"`
 }
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to

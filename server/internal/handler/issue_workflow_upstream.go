@@ -24,7 +24,7 @@ const upstreamCheckPropertyName = "Upstream check"
 // property; "" when the property is undefined or unset. A read failure is an
 // error, so the create is refused rather than let through uncited.
 func upstreamCheckValue(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, properties []byte) (string, error) {
-	defs, err := q.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: workspaceID})
+	defs, err := q.ListIssuePropertyDefinitions(ctx, db.ListIssuePropertyDefinitionsParams{WorkspaceID: workspaceID})
 	if err != nil {
 		return "", err
 	}

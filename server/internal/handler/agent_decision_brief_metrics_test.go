@@ -21,7 +21,9 @@ type briefMetrics struct {
 		VetoRate        float64 `json:"veto_rate"`
 		ExcludedClasses int     `json:"excluded_class_decisions"`
 	} `json:"jev"`
-	JevAsks []struct {
+	JevInScope *int   `json:"jev_in_scope"`
+	JevSince   string `json:"jev_since"`
+	JevAsks    []struct {
 		ID        string `json:"id"`
 		CreatedAt string `json:"created_at"`
 		Answer    string `json:"answer"`
@@ -201,6 +203,81 @@ func TestAgentDecisionBriefReturnsJevAsksWithCheeseAnswer(t *testing.T) {
 func TestAgentDecisionBriefRejectsBadJevAskID(t *testing.T) {
 	w := httptest.NewRecorder()
 	testHandler.GetAgentDecisionBrief(w, newRequest(http.MethodGet, "/api/agent-decisions/brief?jev_ask=not-a-uuid", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+func insertAskOf(t *testing.T, class, status string, created time.Time) {
+	t.Helper()
+	var id string
+	dbfx.QueryRow(t, `INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ask, ask_json, escalation_class, status, origin, created_at)
+		VALUES ($1, gen_random_uuid(), gen_random_uuid(), $2, gen_random_uuid(), 'Pick', '{}', $3, $4, 'asked', $5) RETURNING id::text`,
+		testWorkspaceID, testUserID, class, status, created).Scan(&id)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_request WHERE id=$1`, id) })
+}
+
+func readMetricsSince(t *testing.T, since string) briefMetrics {
+	t.Helper()
+	w := httptest.NewRecorder()
+	testHandler.GetAgentDecisionBrief(w, newRequest(http.MethodGet, "/api/agent-decisions/brief?since="+url.QueryEscape(since), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("brief status=%d: %s", w.Code, w.Body)
+	}
+	var out briefMetrics
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The shadow log never holds budget or API-error attempts, so the server counts every
+// ask Jev could take (a decidable class, not cancelled) created since the log began.
+func TestAgentDecisionBriefCountsInScopeAsksSince(t *testing.T) {
+	enableAgentDecisions(t, true)
+	since := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	insertAskOf(t, "reversible", "open", since.Add(time.Minute))
+	insertAskOf(t, "spend", "answered", since.Add(2*time.Minute))
+	insertAskOf(t, "irreversible", "open", since.Add(time.Minute))      // excluded class
+	insertAskOf(t, "product_direction", "open", since.Add(time.Minute)) // not decidable
+	insertAskOf(t, "reversible", "cancelled", since.Add(time.Minute))
+	insertAskOf(t, "reversible", "open", since.Add(-time.Minute)) // before the window
+	m := readMetricsSince(t, since.Format(time.RFC3339))
+	if m.JevInScope == nil || *m.JevInScope != 2 {
+		t.Fatalf("jev_in_scope = %v, want 2", m.JevInScope)
+	}
+	if m.JevSince != since.Format(time.RFC3339) {
+		t.Fatalf("jev_since = %q", m.JevSince)
+	}
+}
+
+// A logged ask older than the first log row still sits inside the window.
+func TestAgentDecisionBriefWindowReachesBackToOldestLoggedAsk(t *testing.T) {
+	enableAgentDecisions(t, true)
+	since := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	old := insertJevAsk(t, since.Add(-30*time.Minute), nil)
+	insertAskOf(t, "reversible", "open", since.Add(time.Minute))
+	w := httptest.NewRecorder()
+	testHandler.GetAgentDecisionBrief(w, newRequest(http.MethodGet, "/api/agent-decisions/brief?jev_ask="+old+"&since="+url.QueryEscape(since.Format(time.RFC3339)), nil))
+	var m briefMetrics
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.JevInScope == nil || *m.JevInScope != 2 || m.JevSince != since.Add(-30*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("in scope %v since %q, want 2 and the old ask's time", m.JevInScope, m.JevSince)
+	}
+}
+
+func TestAgentDecisionBriefOmitsInScopeCountWithoutSince(t *testing.T) {
+	m := readMetrics(t)
+	if m.JevInScope != nil {
+		t.Fatalf("jev_in_scope = %d without since, want it absent", *m.JevInScope)
+	}
+}
+
+func TestAgentDecisionBriefRejectsBadSince(t *testing.T) {
+	w := httptest.NewRecorder()
+	testHandler.GetAgentDecisionBrief(w, newRequest(http.MethodGet, "/api/agent-decisions/brief?since=yesterday", nil))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d, want 400", w.Code)
 	}

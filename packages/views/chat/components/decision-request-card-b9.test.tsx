@@ -208,6 +208,46 @@ describe("DecisionRequestCard direction B v9", () => {
     expect(await screen.findByRole("textbox", { name: "Message" })).toHaveValue("half a thought");
   });
 
+  describe("the Approve / Reject choice is an unsent input (CHE-3509)", () => {
+    it.each(["Approve", "Reject"])("keeps %s across an unmount and sends nothing by itself", async (name) => {
+      const user = userEvent.setup();
+      const { unmount } = view(open);
+      await user.click(await choice(name));
+      unmount();
+      view(open);
+      expect(await choice(name)).toHaveAttribute("aria-checked", "true");
+      expect(api.approveDecisionAction).not.toHaveBeenCalled();
+      expect(api.rejectDecisionAction).not.toHaveBeenCalled();
+      expect(signPasskeyChallenge).not.toHaveBeenCalled();
+    });
+
+    it("keeps the choice after a failed reject, then clears it once the decision is recorded", async () => {
+      api.rejectDecisionAction.mockRejectedValueOnce(new Error("offline"));
+      const user = userEvent.setup();
+      const first = view(open);
+      await user.click(await choice("Reject"));
+      await user.click(await primary(/^Confirm Reject/));
+      await waitFor(() => expect(api.rejectDecisionAction).toHaveBeenCalledOnce());
+      first.unmount();
+      const second = view(open);
+      expect(await choice("Reject")).toHaveAttribute("aria-checked", "true");
+      second.unmount();
+
+      view(decided("rejected"));
+      expect(useDecisionAnswerDraftStore.getState().getDraft("request")).toBeUndefined();
+    });
+
+    it("a second tap on the kept choice clears it for good", async () => {
+      const user = userEvent.setup();
+      const { unmount } = view(open);
+      await user.click(await choice("Reject"));
+      await user.click(await choice("Reject"));
+      unmount();
+      view(open);
+      expect(await choice("Reject")).toHaveAttribute("aria-checked", "false");
+    });
+  });
+
   describe("decided cards collapse to one block with the state as icon and word", () => {
     it.each([
       ["approved and applied", decided("executed"), "approved", "Approved", "Applied."],

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -26,6 +27,7 @@ func structuredAskFixture() map[string]any {
 		"default_if_no_reply": "Do not deploy.",
 		"source_issue_id":     "11111111-1111-4111-8111-111111111111",
 		"source_comment_id":   "44444444-4444-4444-8444-444444444444",
+		"state_claims":        []map[string]any{{"claim": "The release is ready.", "readback_command": "gh release view v1", "observed_at": time.Now().Format(time.RFC3339)}},
 	}
 }
 

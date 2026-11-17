@@ -119,7 +119,7 @@ func (handler *Handler) issueApproval(ctx context.Context, userID, actionID pgty
 	case errors.Is(err, passkey.ErrNoPasskey):
 		return passkey.Issued{}, errNoPasskey
 	case errors.Is(err, passkey.ErrBusy):
-		return passkey.Issued{}, errBusyRetry
+		return passkey.Issued{}, atStep("challenge", errBusyRetry)
 	}
 	return issued, err
 }

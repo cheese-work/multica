@@ -75,9 +75,9 @@ DELETE FROM github_pull_request_check_run WHERE pr_id = $1;
 
 -- name: InsertGitHubPRCheckRun :exec
 INSERT INTO github_pull_request_check_run (
-    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, red_cause
+    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, red_cause, app_id
 ) VALUES (
-    $1, $2, $3, $4, $5, sqlc.narg('conclusion'), sqlc.narg('details_url'), $6, sqlc.narg('red_cause')
+    $1, $2, $3, $4, $5, sqlc.narg('conclusion'), sqlc.narg('details_url'), $6, sqlc.narg('red_cause'), sqlc.narg('app_id')
 );
 
 -- name: ListStaleUndecidedGitHubPRs :many
@@ -184,11 +184,12 @@ SELECT installation_id, repo_owner, repo_name, pr_number, oldest_fetched_at
 FROM picked
 ORDER BY installation_rank, last_touched_at;
 -- name: ListStaleConflictWatchedGitHubPRs :many
--- Second sweep source: open/draft PRs linked to an issue with an enabled
--- "wake on merge conflict" rule. A decided snapshot leaves the undecided sweep,
+-- Second sweep source: open/draft PRs linked to any issue (CHE-6111: the
+-- built-in pr_needs_attention wake needs a fresh snapshot, so no per-issue
+-- "wake on merge conflict" rule is required). A decided snapshot leaves the undecided sweep,
 -- but a base-branch move can turn it conflicting without any event for this
--- PR, so watched PRs are re-fetched on the TTL regardless. The candidate set
--- comes from the enabled rules, whose count is capped. Like the undecided
+-- PR, so watched PRs are re-fetched on the TTL regardless. The batch is
+-- bounded by max_rows. Like the undecided
 -- sweep, an address cursor rotates the bounded batch, so addresses whose
 -- fetches keep failing (their snapshot never gets newer) cannot pin it.
 WITH candidates AS (
@@ -196,14 +197,7 @@ WITH candidates AS (
     FROM github_pull_request AS pr
     WHERE pr.state IN ('open', 'draft')
       AND (pr.snapshot_fetched_at IS NULL OR pr.snapshot_fetched_at < sqlc.arg('older_than'))
-      AND pr.id IN (
-          SELECT ipr.pull_request_id
-          FROM issue_wakeup AS w
-          JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
-          WHERE w.enabled
-            AND w.condition->>'type' = 'pull_request'
-            AND w.condition->>'event' = 'conflicts'
-      )
+      AND pr.id IN (SELECT ipr.pull_request_id FROM issue_pull_request AS ipr)
     GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
 )
 SELECT installation_id, repo_owner, repo_name, pr_number
@@ -276,17 +270,13 @@ installation_id, repo_owner, repo_name, pr_number
 LIMIT sqlc.arg('max_rows');
 
 -- name: ListConflictWatchedGitHubPRNumbersInRepo :many
--- Open/draft PRs in one repository that an enabled "wake on merge conflict"
--- rule watches. A merge into the repository can make them conflicting without
--- an event of their own, so the merge webhook re-fetches them.
+-- Open/draft PRs in one repository that are linked to an issue (CHE-6111). A
+-- merge into the repository can make them conflicting without an event of
+-- their own, so the merge webhook re-fetches them.
 SELECT DISTINCT pr.pr_number
-FROM issue_wakeup AS w
-JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
+FROM issue_pull_request AS ipr
 JOIN github_pull_request AS pr ON pr.id = ipr.pull_request_id
-WHERE w.enabled
-  AND w.condition->>'type' = 'pull_request'
-  AND w.condition->>'event' = 'conflicts'
-  AND pr.installation_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
+WHERE pr.installation_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
   AND pr.state IN ('open', 'draft')
   AND pr.pr_number <> $4
 ORDER BY pr.pr_number

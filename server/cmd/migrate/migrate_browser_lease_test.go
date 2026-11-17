@@ -38,8 +38,13 @@ func browserLeaseVersionsFor(direction string) []string {
 // inline index.
 func TestBrowserLeaseMigrationsFollowRepoRules(t *testing.T) {
 	t.Parallel()
+	assertBrowserMigrationsFollowRepoRules(t, slices.Concat(browserLeaseVersions, browserInstanceRegistryVersions))
+}
+
+func assertBrowserMigrationsFollowRepoRules(t *testing.T, versions []string) {
+	t.Helper()
 	comment := regexp.MustCompile(`(?m)--.*$`)
-	for _, version := range browserLeaseVersions {
+	for _, version := range versions {
 		for _, direction := range []string{"up", "down"} {
 			f := filepath.Join("..", "..", "migrations", version+"."+direction+".sql")
 			raw, err := os.ReadFile(f)

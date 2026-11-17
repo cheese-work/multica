@@ -246,6 +246,7 @@ export type MyIssuesFilter = Pick<
   | "assignee_ids"
   | "assignee_types"
   | "creator_id"
+  | "requested_by_id"
   | "project_id"
   | "involves_user_id"
 >;

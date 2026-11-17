@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -192,5 +193,59 @@ func TestWatchFenceFiresOnStateOrEpochChange(t *testing.T) {
 				t.Fatalf("onFence fired %d times, want once", len(fired))
 			}
 		})
+	}
+}
+
+// The server accepts launch-scopes-ended only from a fenced task, so the
+// server fence goes before that report. A failed server fence still leaves the
+// run restricted, stopped and drained, and reports nothing ended.
+func TestRunFenceServerFenceGoesBeforeLaunchScopesReport(t *testing.T) {
+	for name, fenceErr := range map[string]error{"server fence ok": nil, "server fence fails": errors.New("HTTP 500")} {
+		t.Run(name, func(t *testing.T) {
+			var log []string
+			f := RunFence{
+				Broker:          fakeBroker{log: &log},
+				Restrict:        func() { log = append(log, "restrict") },
+				StopRun:         func() error { log = append(log, "stop"); return nil },
+				EndLaunchScopes: func(context.Context) error { log = append(log, "ended"); return nil },
+				ServerFence:     func(context.Context) error { log = append(log, "server-fence"); return fenceErr },
+			}
+			err := f.Run(context.Background())
+			want := []string{"restrict", "fence", "server-fence", "stop", "ended", "drain"}
+			if fenceErr != nil {
+				want = []string{"restrict", "fence", "server-fence", "stop", "drain"}
+				if !errors.Is(err, fenceErr) {
+					t.Fatalf("Run = %v, want the server fence error", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !reflect.DeepEqual(log, want) {
+				t.Fatalf("order %v, want %v", log, want)
+			}
+		})
+	}
+}
+
+// KeepRun is the downgrade handshake's fence: the process that asked must live
+// to receive the response, so the run is neither stopped nor reported ended.
+func TestRunFenceKeepRunSkipsStopAndLaunchScopesReport(t *testing.T) {
+	var log []string
+	step := func(s string) { log = append(log, s) }
+	f := RunFence{
+		Broker:          fakeBroker{log: &log},
+		Restrict:        func() { step("restrict") },
+		StopRun:         func() error { step("stop"); return nil },
+		EndLaunchScopes: func(context.Context) error { step("end"); return nil },
+		ServerFence:     func(context.Context) error { step("server-fence"); return nil },
+		KeepRun:         true,
+	}
+	if err := f.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range log {
+		if s == "stop" || s == "end" {
+			t.Fatalf("steps %v: KeepRun must not stop the run or report scopes ended", log)
+		}
 	}
 }

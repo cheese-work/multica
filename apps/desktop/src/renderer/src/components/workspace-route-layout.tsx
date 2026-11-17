@@ -10,7 +10,7 @@ import { getCurrentSlug, setCurrentWorkspace } from "@multica/core/platform";
 import { isWorkspaceDeletePending } from "@multica/core/workspace/pending-delete";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
-import { MachinePauseBanner, WorkspacePresencePrefetch } from "@multica/views/layout";
+import { MachineBannerHeaderSlot, MachinePauseBanner, WorkspacePresencePrefetch } from "@multica/views/layout";
 import { SourceBackfillModal } from "@multica/views/onboarding";
 import { useTabStore } from "@/stores/tab-store";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
@@ -176,10 +176,12 @@ export function WorkspaceRouteLayout() {
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
       <WorkspacePresencePrefetch />
-      {/* Owner-only warning while one of their machines is paused; web mounts
+      {/* Warns about paused or offline machines that affect the viewer; web mounts
        *  it in DashboardLayout, which desktop does not use. */}
       <MachinePauseBanner />
-      <Outlet />
+      <MachineBannerHeaderSlot>
+        <Outlet />
+      </MachineBannerHeaderSlot>
       {/* Source-attribution backfill: same Dialog the web shell mounts
        *  inside DashboardLayout. Desktop's WorkspaceRouteLayout doesn't
        *  wrap DashboardLayout, so the modal has to be wired in directly

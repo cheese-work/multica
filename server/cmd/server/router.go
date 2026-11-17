@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attachmentpreview"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
@@ -478,6 +479,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	// Fail closed until W3-4 (signer), W3-8/9 (user gate) and W3-10/11 (decisions) fill the seams.
+	h.BrowserLeases = &browserlease.Service{
+		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: browserlease.DenyAll{},
+		Registry: browserlease.NameRegistry{Queries: queries},
+	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
@@ -485,6 +491,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	invitationRateLimits.Recipient.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_RECIPIENT_24H", invitationRateLimits.Recipient.Limit)
 	h.InvitationRateLimiters = handler.NewMemoryInvitationRateLimiters(invitationRateLimits)
 	h.Metrics = opts.BusinessMetrics
+	configureMergeReceiptOIDC(h)
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
@@ -1618,6 +1625,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
+	// Merge receipts from the pinned CI workflow (CHE-5594). No Multica auth: the
+	// GitHub Actions OIDC token is the credential and the policy pins the workflow.
+	r.Put("/api/github/merge-receipts/ci", h.PutMergeReceiptCI)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
 	// Slack OAuth callback (no Multica auth in the path — it is hit by Slack's
 	// browser redirect; the workspace/agent/initiator are recovered from the
@@ -1711,11 +1721,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
+		r.Post("/tasks/{taskId}/elevation/downgrade", h.StartTaskDowngrade)
+		r.Post("/tasks/{taskId}/elevation/downgrade/deliver", h.DeliverTaskDowngrade)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Post("/tasks/{taskId}/silence-alert", h.ReportSilenceAlert)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
+
+		// Browser leases (CHE-4732). Daemon credential only; see browser_lease.go. Release is CHE-4734's, above.
+		r.Post("/tasks/{id}/browser-leases", h.MintBrowserLease)
+		r.Post("/tasks/{id}/browser-leases/{leaseId}/renew", h.RenewBrowserLease)
 
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
 		r.Get("/issues/{issueId}/gc-check", h.GetIssueGCCheck)
@@ -1934,6 +1950,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// unchanged machine write stays accepted.
 					r.Put("/background-agents", h.UpdateBackgroundAgents)
 					r.Delete("/background-agents", h.ResetBackgroundAgents)
+					// CHE-4281: CI watcher settings and event log. Human owner/admin only;
+					// the handlers answer "disabled" while the ci_watcher flag is off.
+					r.With(handler.RequireHumanActor).Get("/ci-watch/repos/{repo}", h.GetCIWatchConfig)
+					r.With(handler.RequireHumanActor).Put("/ci-watch/repos/{repo}", h.PutCIWatchConfig)
+					r.With(handler.RequireHumanActor).Get("/ci-watch/repos/{repo}/events", h.ListCIWatchEvents)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
@@ -2211,6 +2232,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+			// Receipt facts for merge_eligibility dispatch (CHE-5594): a person who is owner/admin only.
+			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/merge-receipts", h.PutMergeReceipt)
+			// A Multica-only veto holds the PR and drops its receipt (CHE-5594): same gates.
+			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/merge-vetoes", h.PutMergeVeto)
+			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Delete("/api/github/merge-vetoes", h.DeleteMergeVeto)
 			// GitHub intake delivery metadata (CHE-2669): read-only, any member.
 			r.Get("/api/github/intake", h.ListGitHubIntake)
 
@@ -2683,6 +2709,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
+				r.Get("/affected", h.ListAffectedMachines)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
 					r.Get("/usage", h.GetRuntimeUsage)
@@ -2812,6 +2839,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
+			r.Get("/api/needs-you", h.GetNeedsYou) // CHE-5670: member reads own; a task token may name ?for=
 			r.With(humanOnly).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
 			r.With(humanOnly).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
@@ -2829,6 +2857,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// thread (?id for a specific one, else the thread the session is in).
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
+			// Closed segments of the caller's own DM (CHE-2819 L2b): same handlers as
+			// /api/chat/sessions/{id}/segment(s); the task token names the DM.
+			r.Get("/api/chat/segments", h.ListChatSegments)
+			r.Get("/api/chat/segment", h.GetChatSegment)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.

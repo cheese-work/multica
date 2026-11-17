@@ -85,6 +85,7 @@ func TestDecisionRequestFromChatTaskCarriesExpiry(test *testing.T) {
 		"why_human": "The login needs your account.", "steps": []string{"Open the runner page and sign in."},
 		"done_when": "The runner shows Connected.", "default_if_no_reply": "The runner stays off.",
 		"source_issue_id": fixture.issueID, "source_comment_id": fixture.sourceID,
+		"state_claims": testStateClaimMaps(),
 	}
 	before := time.Now()
 	var view dmDecisionView

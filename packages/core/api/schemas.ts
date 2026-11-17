@@ -791,7 +791,7 @@ export interface CreateIssueViewRequest {
   name: string;
   scope_type: "workspace" | "my" | "project";
   scope_id?: string | null;
-  scope_variant?: "assigned" | "created" | "involved" | "any" | "members" | "agents" | null;
+  scope_variant?: "assigned" | "created" | "requested" | "involved" | "any" | "members" | "agents" | null;
   visibility: "private" | "workspace";
   definition_version: number;
   query: Record<string, unknown>;
@@ -1860,6 +1860,7 @@ export const IssueSchema = z.lazy(() => z.object({
   creator_id: z.string(),
   // Additive: older backends do not send it, and nothing breaks without it.
   requested_by_id: z.string().nullable().optional().catch(undefined),
+  created_via: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
   // status_name above, and older backends do not send it at all.
