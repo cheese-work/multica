@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"testing"
 
@@ -172,4 +173,69 @@ func decodeReceipt(test *testing.T, body string) *RunBudgetReceipt {
 		test.Fatal(err)
 	}
 	return out.Receipt
+}
+
+// One receipt on every read of a decided action: the approve response (the
+// resume worker has already run), the outcome endpoint and the card.
+func TestRunBudgetReceiptIsServedOnEveryReadOfTheAction(test *testing.T) {
+	action := pendingBudgetAction(test, raiseAction, func(issueID, windowID string) string {
+		id := insertTestRefusal(test, issueID, windowID)
+		// The hook records the status the issue was in when it refused the run.
+		dbfx.Exec(test, `UPDATE run_budget_refusal SET status = (SELECT status FROM issue WHERE id = $2) WHERE id = $1`, id, issueID)
+		return id
+	})
+	handler := withVerifier(acceptingVerifier)
+	approved := decodeReceipt(test, action.approve(test, handler, action.claim(test, map[string]string{}), http.StatusOK))
+	if approved == nil || approved.Outcome != "run_queued" {
+		test.Fatalf("approve receipt = %+v; want the worker's outcome run_queued", approved)
+	}
+	if read := decodeReceipt(test, action.outcome(test, handler, http.StatusOK)); !reflect.DeepEqual(read, approved) {
+		test.Fatalf("outcome receipt = %+v; approve receipt = %+v", read, approved)
+	}
+	if card := action.cardAction(test); card == nil || !reflect.DeepEqual(card.Receipt, approved) {
+		test.Fatalf("card receipt = %+v; approve receipt = %+v", card, approved)
+	}
+	if listed := action.issueCardReceipt(test); !reflect.DeepEqual(listed, approved) {
+		test.Fatalf("issue-cards receipt = %+v; approve receipt = %+v", listed, approved)
+	}
+}
+
+// issueCardReceipt is the receipt the issue page reads for the action's card.
+func (action pendingAction) issueCardReceipt(test *testing.T) *RunBudgetReceipt {
+	test.Helper()
+	request := newRequest(http.MethodGet, "/api/decisions/issue-cards?issue="+action.issueID, nil)
+	request.Header.Set("X-User-ID", action.humanID)
+	var cards []DecisionRequestCard
+	testutil.Call(test, testHandler.ListIssueDecisionCards, request).Want(http.StatusOK).JSON(&cards)
+	for _, card := range cards {
+		if card.Action != nil && card.Action.ID == action.actionID {
+			return card.Action.Receipt
+		}
+	}
+	test.Fatalf("issue-cards has no card for action %s: %+v", action.actionID, cards)
+	return nil
+}
+
+func TestPendingActionCardHasNoReceipt(test *testing.T) {
+	action := newPendingRaise(test, 30).pendingAction
+	if card := action.cardAction(test); card == nil || card.Receipt != nil {
+		test.Fatalf("pending card = %+v; want no receipt", card)
+	}
+}
+
+func TestBatchApproveItemsCarryTheReceipt(test *testing.T) {
+	setWorkspacePRMergeStatusForTest(test, "none") // the batch fixture's workflow has a pr.merged edge
+	run := newTopUpBatchRun(test, 2)
+	var out struct {
+		Items []decisionActionOutcome `json:"items"`
+	}
+	decodeJSON(test, run.approve(test, withVerifier(acceptingVerifier), run.claim(test), http.StatusOK), &out)
+	if len(out.Items) != 2 {
+		test.Fatalf("items = %+v; want 2", out.Items)
+	}
+	for index, item := range out.Items {
+		if item.Receipt == nil || item.Receipt.Outcome != "cap_applied" || item.Receipt.NewWindow == nil || !*item.Receipt.NewWindow {
+			test.Fatalf("item %d receipt = %+v; want a top-up receipt", index, item.Receipt)
+		}
+	}
 }

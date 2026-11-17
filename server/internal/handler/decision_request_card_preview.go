@@ -509,6 +509,7 @@ func (handler *Handler) fillCardReadback(ctx context.Context, card *DecisionRequ
 		card.EffectReason = *reason
 	}
 	card.Revocable = handler.revocableNow(ctx, action)
+	card.Receipt = runBudgetReceipt(ctx, handler.Queries, action)
 	decidedAt := action.ApprovedAt
 	switch {
 	case action.State == "expired":

@@ -159,10 +159,13 @@ type decisionActionOutcome struct {
 	Receipt *RunBudgetReceipt `json:"receipt,omitempty"`
 }
 
-func newDecisionActionOutcome(action db.DecisionAction) decisionActionOutcome {
+// decisionActionOutcome reads the action as it stands now: the approve response
+// comes after the resume worker has run, so its receipt already has the worker's outcome.
+func (handler *Handler) decisionActionOutcome(ctx context.Context, action db.DecisionAction) decisionActionOutcome {
 	return decisionActionOutcome{
 		ID: uuidToString(action.ID), State: action.State, Result: action.Result,
 		ErrorCode: action.ErrorCode.String, ErrorMessage: action.ErrorMessage.String,
+		Receipt: runBudgetReceipt(ctx, handler.Queries, action),
 	}
 }
 
@@ -270,7 +273,7 @@ func (handler *Handler) GetDecisionActionOutcome(writer http.ResponseWriter, req
 		writeDecisionActionError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+	writeJSON(writer, http.StatusOK, handler.decisionActionOutcome(ctx, action))
 }
 
 // GetDecisionAction returns the card view of one action to the request's
