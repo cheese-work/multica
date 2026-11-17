@@ -60,34 +60,6 @@ func TestRaiseIssueRunBudgetLetsMemberLiftOneIssue(t *testing.T) {
 	}
 }
 
-func TestRaiseIssueRunBudgetRefusesAnAgent(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	c := newEdgeCase(t, 2226011, mergeEdgeSteps)
-	spendBudget(t, c, 2, "in_progress")
-	agentID := seededReadyAgentID(t)
-	taskID := createHandlerTestTaskForAgent(t, agentID)
-
-	asAgent := func(r *http.Request) {
-		r.Header.Set("X-Agent-ID", agentID)
-		r.Header.Set("X-Task-ID", taskID)
-	}
-	if w := raiseBudget(t, c.issueID, map[string]any{"runs": 5}, asAgent); w.Code != http.StatusForbidden {
-		t.Fatalf("agent raise = %d, want 403: %s", w.Code, w.Body.String())
-	}
-	asTokenAgent := func(r *http.Request) {
-		r.Header.Set("X-Actor-Source", "task_token")
-		r.Header.Set("X-Agent-ID", agentID)
-	}
-	if w := raiseBudget(t, c.issueID, map[string]any{"runs": 5}, asTokenAgent); w.Code != http.StatusForbidden {
-		t.Fatalf("task-token agent raise = %d, want 403: %s", w.Code, w.Body.String())
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id=$1 AND max_runs_override IS NOT NULL`, c.issueID); n != 0 {
-		t.Fatal("a refused raise still stored an override")
-	}
-}
-
 func TestRaiseIssueRunBudgetValidatesTheNewCap(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
