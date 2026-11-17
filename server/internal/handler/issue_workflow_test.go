@@ -256,6 +256,7 @@ func lookupStatusIcon(t *testing.T, key string) string {
 // category default. Before the field existed the key was dropped by JSON
 // decoding and the apply still reported success.
 func TestCreateIssueWorkflowNewStatusCarriesIcon(t *testing.T) {
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
 	seedTestCatalog(t)
 	resetDefaultWorkflow(t)
 	statusName := "Icon " + workflowTestSuffix()
@@ -286,6 +287,7 @@ func TestCreateIssueWorkflowNewStatusCarriesIcon(t *testing.T) {
 // An icon outside the catalog vocabulary fails the workflow write instead of
 // being written through or silently replaced.
 func TestCreateIssueWorkflowNewStatusRejectsUnknownIcon(t *testing.T) {
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
 	seedTestCatalog(t)
 	resetDefaultWorkflow(t)
 	statusName := "Bad icon " + workflowTestSuffix()
@@ -304,6 +306,7 @@ func TestCreateIssueWorkflowNewStatusRejectsUnknownIcon(t *testing.T) {
 // rewriting its icon: the catalog row is shared by every workflow, and a
 // per-workflow write would silently revert a local edit.
 func TestCreateIssueWorkflowNewStatusReuseKeepsIcon(t *testing.T) {
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
 	seedTestCatalog(t)
 	resetDefaultWorkflow(t)
 	statusName := "Reused " + workflowTestSuffix()
