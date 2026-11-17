@@ -1139,6 +1139,17 @@ type DaemonToken struct {
 	OwnerID     pgtype.UUID        `json:"owner_id"`
 }
 
+type DaemonUpdateSchedule struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	Enabled        bool               `json:"enabled"`
+	Cron           string             `json:"cron"`
+	Timezone       string             `json:"timezone"`
+	WindowMinutes  int32              `json:"window_minutes"`
+	UpdatedBy      pgtype.UUID        `json:"updated_by"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DecisionAction struct {
 	ID                         pgtype.UUID        `json:"id"`
 	WorkspaceID                pgtype.UUID        `json:"workspace_id"`
