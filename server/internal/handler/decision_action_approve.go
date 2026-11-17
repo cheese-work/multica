@@ -336,15 +336,11 @@ func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx,
 	if _, err := queries.LockDecisionSessionNowait(ctx, db.LockDecisionSessionNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ChatSessionID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return locked, atStep("chat_session", err)
 	}
-	// The asking agent is only read, so it is locked FOR SHARE like every other
-	// decision path (delivery, lifecycle, wake receipt). FOR UPDATE would let any
-	// of them refuse the click on a hot agent (CHE-6720). Only an action's
-	// target agent, which the executor writes, takes FOR UPDATE.
-	if plan.target != located.AskingAgentID {
-		if _, err := queries.LockDecisionAskingAgent(ctx, db.LockDecisionAskingAgentParams{WorkspaceID: caller.workspaceID, ID: located.AskingAgentID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return locked, atStep("agents", err)
-		}
-	}
+	// The asking agent is not locked: an approval only reads it, the request and
+	// action rows below serialize everything it writes, and claimTask holds the
+	// agent row FOR UPDATE while it queues on the runtime's capacity lock, so a
+	// lock here refuses the click on any agent with work to claim (CHE-6720).
+	// Only the action's target agent, which the executor writes, is locked.
 	if locked.agents, err = queries.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{WorkspaceID: caller.workspaceID, Ids: distinctUUIDs(plan.target)}); err != nil {
 		return locked, atStep("agents", err)
 	}
