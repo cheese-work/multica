@@ -949,6 +949,9 @@ type SendChatMessageRequest struct {
 	ClientMessageID string `json:"client_message_id"`
 	// AskIDs are the open asks this message answers (attention T2b).
 	AskIDs []string `json:"ask_ids"`
+	// SubmissionID makes the send idempotent per payload: a retry with the same
+	// id and payload replays the original acceptance, a different payload is a 409.
+	SubmissionID *string `json:"submission_id"`
 }
 
 type SendChatMessageResponse = service.ChatSubmissionResponse
@@ -966,7 +969,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Content == "" {
+	if req.Content == "" && req.SubmissionID == nil {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
@@ -991,6 +994,18 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var submissionID pgtype.UUID
+	if req.SubmissionID != nil {
+		submissionID, ok = parseUUIDOrBadRequest(w, *req.SubmissionID, "submission_id")
+		if !ok {
+			return
+		}
+		if decisionRequestID.Valid {
+			writeError(w, http.StatusBadRequest, "submission_id cannot be combined with decision_request_id")
+			return
+		}
+	}
+
 	// Load chat session and re-check the private-agent gate on every send.
 	// The session's creator passed the gate at create time, but their
 	// workspace role (or the agent's owner) may have changed since — keep
@@ -998,6 +1013,34 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// can no longer reach. Agent senders bypass to preserve A2A collaboration.
 	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
 	if !ok {
+		return
+	}
+	// An accepted submission replays its original acceptance after current
+	// authorization only: not archive, readiness or runtime state, so a retry
+	// after the agent changed still recovers the first attempt.
+	if submissionID.Valid {
+		submitter, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load chat agent")
+			return
+		}
+		submitterType, submitterID := h.resolveActor(r, userID, workspaceID)
+		if !h.canInvokeAgent(r.Context(), submitter, submitterType, submitterID, h.invokeOriginatorFromRequest(r, submitterType, submitterID), workspaceID) {
+			h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+			return
+		}
+		accepted, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, submitterType, parseUUID(submitterID), submissionID)
+		if err != nil {
+			h.writeChatSubmissionError(w, err)
+			return
+		}
+		if accepted != nil {
+			writeJSON(w, http.StatusCreated, accepted)
+			return
+		}
+	}
+	if req.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
 	// A refusal below (archived session, archived agent, no permission) must not hide a send
@@ -1075,8 +1118,12 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if decisionRequestID.Valid {
 		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs, req.ClientMessageID)
 	} else {
-		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"),
-			service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs})
+		opts := service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs}
+		if submissionID.Valid {
+			sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, submissionID)
+		} else {
+			sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts)
+		}
 	}
 	if err != nil {
 		var refusal decisionIntentRefusal
@@ -1085,6 +1132,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch {
+		case errors.Is(err, service.ErrChatSubmissionConflict):
+			h.writeChatSubmissionError(w, err)
+		case submissionID.Valid && errors.Is(err, service.ErrChatSessionNotFound):
+			writeError(w, http.StatusNotFound, "chat session not found")
 		case errors.Is(err, service.ErrChatSessionArchived):
 			writeError(w, http.StatusConflict, "chat session is archived")
 		case errors.Is(err, service.ErrChatTaskAgentArchived):
@@ -1101,6 +1152,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("send chat message failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to send chat message")
 		}
+		return
+	}
+	if sent.Replayed && sent.Acceptance != nil { // an accepted submission: its original response
+		writeJSON(w, http.StatusCreated, sent.Acceptance)
 		return
 	}
 	msg := sent.Message

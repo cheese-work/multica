@@ -79,7 +79,11 @@ func TestLocalAttachmentAPIStillRequiresMembership(t *testing.T) {
 		"filename": "private.png", "url": "/uploads/" + key,
 		"content_type": "image/png", "size_bytes": len(body),
 	})
-	foreignToken, err := generateTestJWT(uuid.NewString(), "outsider@example.test", "Outsider")
+	// The fork rejects a JWT whose user does not exist (session generation), so the
+	// outsider is a real user who belongs to no workspace.
+	outsiderEmail := uuid.NewString() + "@example.test"
+	outsiderID := fixture.User(t, "Outsider", outsiderEmail)
+	foreignToken, err := generateTestJWT(outsiderID, outsiderEmail, "Outsider")
 	if err != nil {
 		t.Fatal(err)
 	}

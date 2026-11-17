@@ -3078,22 +3078,6 @@ func (s *TaskService) SendDirectChatMessage(
 	return s.sendDirectChatMessageWith(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, sentVia, opts, nil)
 }
 
-// sendDirectChatMessage is the idempotent-submission entry (chat_submission.go);
-// it sends as a plain direct-chat turn, with no client message id or attention options.
-func (s *TaskService) sendDirectChatMessage(
-	ctx context.Context,
-	session db.ChatSession,
-	agent db.Agent,
-	initiatorUserID pgtype.UUID,
-	content string,
-	attachmentIDs []pgtype.UUID,
-	uploaderType string,
-	uploaderID pgtype.UUID,
-	submission *chatSubmission,
-) (*DirectChatSendResult, error) {
-	return s.sendDirectChatMessageWith(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, "", DirectChatSendOptions{}, submission)
-}
-
 func (s *TaskService) sendDirectChatMessageWith(
 	ctx context.Context,
 	session db.ChatSession,

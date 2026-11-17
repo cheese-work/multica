@@ -53,12 +53,15 @@ func TestChatSubmissionNormalControl(t *testing.T) {
 	if first["queued"] != false || second["queued"] != true || first["task_id"] == second["task_id"] {
 		t.Fatalf("queue contract first=%v second=%v", first, second)
 	}
-	resp := authRequest(t, "GET", "/api/chat/sessions/"+sessionID+"/messages", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("history status=%d", resp.StatusCode)
+	// The fork refuses CLI-JWT reads of chat history; read as the interactive user.
+	status, raw := interactiveChatRequest(t, "/api/chat/sessions/"+sessionID+"/messages")
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d", status)
 	}
 	var history []map[string]any
-	readJSON(t, resp, &history)
+	if err := json.Unmarshal(raw, &history); err != nil {
+		t.Fatal(err)
+	}
 	if len(history) != 1 {
 		t.Fatalf("visible history count=%d", len(history))
 	}
@@ -153,12 +156,15 @@ func TestChatSubmissionResponseLossReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay := submissionSend(t, sessionID, body)
-	resp := authRequest(t, "GET", "/api/chat/sessions/"+sessionID+"/messages", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("history status=%d", resp.StatusCode)
+	// The fork refuses CLI-JWT reads of chat history; read as the interactive user.
+	status, raw := interactiveChatRequest(t, "/api/chat/sessions/"+sessionID+"/messages")
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d", status)
 	}
 	var history []map[string]any
-	readJSON(t, resp, &history)
+	if err := json.Unmarshal(raw, &history); err != nil {
+		t.Fatal(err)
+	}
 	var messages, tasks int
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM chat_message WHERE chat_session_id=$1 AND role='user'`, sessionID).Scan(&messages); err != nil {
 		t.Fatal(err)
