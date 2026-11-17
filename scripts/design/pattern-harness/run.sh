@@ -311,4 +311,21 @@ cap wecom-tab --height 1200 \
   --component packages/views/settings/components/wecom-tab.tsx \
   --token text-body --token text-caption --token text-micro
 
+# SS5 (CHE-5538)
+cap create-agent-dialog --height 1000 \
+  --component packages/views/agents/components/create-agent-dialog.tsx \
+  --token text-body --token text-caption --token text-title-sm
+cap concurrency-picker \
+  --component packages/views/agents/components/inspector/concurrency-picker.tsx \
+  --token text-caption --token text-muted-foreground --token tabular-nums
+cap skill-attach \
+  --component packages/views/agents/components/inspector/skill-attach.tsx \
+  --token text-micro --token text-muted-foreground
+cap visibility-picker \
+  --component packages/views/agents/components/inspector/visibility-picker.tsx \
+  --token text-caption --token text-muted-foreground
+cap instructions-editor \
+  --component packages/views/agents/components/instructions-editor.tsx \
+  --token text-body --token text-caption --token text-muted-foreground
+
 rm -rf "$build"
