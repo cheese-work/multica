@@ -32,6 +32,6 @@ func (d *Daemon) startRunAPI(dir string) (sock string, stop func(), err error) {
 		return "", nil, err
 	}
 	srv := &http.Server{Handler: d.runAPIMux(time.Now())}
-	go srv.Serve(ln)
+	go func() { _ = srv.Serve(ln) }()        // returns http.ErrServerClosed on stop
 	return sock, func() { srv.Close() }, nil // Close closes ln, which unlinks the socket
 }

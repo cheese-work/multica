@@ -27,7 +27,7 @@ func fakeDaemonAPI(t *testing.T) (sock string) {
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "daemon:"+r.Method+" "+r.URL.Path)
 	})}
-	go srv.Serve(ln)
+	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { srv.Close() })
 	return sock
 }
