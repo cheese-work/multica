@@ -295,6 +295,25 @@ describe("ApiClient edit guards", () => {
   });
 });
 
+describe("ApiClient requested_by_id list param", () => {
+  it("sends requested_by_id on both list calls", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify({ issues: [], total: 0, groups: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await client.listIssues({ requested_by_id: "u1" });
+    await client.listGroupedIssues({ group_by: "assignee", requested_by_id: "u1" });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("requested_by_id=u1");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("requested_by_id=u1");
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",

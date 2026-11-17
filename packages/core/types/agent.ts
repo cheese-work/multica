@@ -311,6 +311,7 @@ export type WorkspaceWorkingAgentType = "issue" | "autopilot" | "chat";
 export type WorkspaceWorkingAgentMineRelation =
   | "assigned"
   | "created"
+  | "requested"
   | "involved"
   | "any";
 
