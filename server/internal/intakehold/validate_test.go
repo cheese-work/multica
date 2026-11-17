@@ -11,7 +11,7 @@ func TestValidate(t *testing.T) {
 	if err := Validate([]byte("[" + validEntry + "]")); err != nil {
 		t.Fatalf("valid entry: %v", err)
 	}
-	if err := Validate([]byte(`[{"project_id":"5e621e12-eeb4-40a5-9571-25657d5b0ec5","mode":"off","starts_at":"2026-11-17T16:14:52+07:00","ends_at":"2026-11-23T00:00:00+07:00"}]`)); err != nil {
+	if err := Validate([]byte(`[{"project_id":"5e621e12-eeb4-40a5-9571-25657d5b0ec5","mode":"off","starts_at":"2026-11-17T16:14:52+07:00","ends_at":"2026-11-23T00:00:00+07:00","source":"s"}]`)); err != nil {
 		t.Fatalf("minimal entry: %v", err)
 	}
 	if err := Validate([]byte(`[]`)); err != nil {
@@ -32,6 +32,11 @@ func TestValidate(t *testing.T) {
 		"uppercase type":          strings.Replace(validEntry, `"fix"`, `"Fix"`, 1),
 		"empty label":             strings.Replace(validEntry, `"exempt_labels":["bug"]`, `"exempt_labels":[""]`, 1),
 		"types not strings":       strings.Replace(validEntry, `"exempt_types":["fix","bug"]`, `"exempt_types":[1]`, 1),
+		"missing source":          strings.Replace(validEntry, `,"source":"01a1e8c9-a7af-7a16-9f67-bf2678c8b047"`, "", 1),
+		"null source":             strings.Replace(validEntry, `"source":"01a1e8c9-a7af-7a16-9f67-bf2678c8b047"`, `"source":null`, 1),
+		"uppercase project uuid":  strings.Replace(validEntry, "5e621e12-eeb4-40a5-9571-25657d5b0ec5", "5E621E12-EEB4-40A5-9571-25657D5B0EC5", 1),
+		"braced issue uuid":       strings.Replace(validEntry, "01a1e90c-cb5a-7e37-abba-ead8e1db017f", "{01a1e90c-cb5a-7e37-abba-ead8e1db017f}", 1),
+		"unhyphenated autopilot":  strings.Replace(validEntry, "1dc08d8e-58e4-4ab3-9ebc-3596324a5e4d", "1dc08d8e58e44ab39ebc3596324a5e4d", 1),
 		"empty source":            strings.Replace(validEntry, `"source":"01a1e8c9-a7af-7a16-9f67-bf2678c8b047"`, `"source":""`, 1),
 		"two entries one project": "[" + validEntry + "," + validEntry + "]",
 	}

@@ -76,7 +76,7 @@ func TestHeldFalse(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			i, e := issue(), entry()
 			edit(&i, e)
-			var use *Entry = e
+			use := e
 			if name == "no entry" {
 				use = nil
 			}

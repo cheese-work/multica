@@ -294,3 +294,12 @@ func TestIntakeHoldMalformedStoredValueHoldsNothing(test *testing.T) {
 		test.Fatalf("a malformed stored value produced %v", field)
 	}
 }
+
+// A stored entry with no source would let a release record an empty key, which
+// the rule reads as no release. Such an entry holds nothing.
+func TestIntakeHoldStoredEntryWithoutSourceHoldsNothing(test *testing.T) {
+	fixture := newHoldFixture(test, func(entry map[string]any) { delete(entry, "source") })
+	if field := readHold(test, fixture.issue(test, "feat: no source")); field != nil {
+		test.Fatalf("an entry with no source produced %v", field)
+	}
+}

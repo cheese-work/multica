@@ -21,6 +21,8 @@ var badIntakeHold = map[string]string{
 	"ends before starts":      `[{"project_id":"` + intakeHoldProject + `","mode":"block","starts_at":"2026-11-25T00:00:00Z","ends_at":"2026-11-18T00:00:00Z","source":"s"}]`,
 	"project not a uuid":      `[{"project_id":"p","mode":"block","starts_at":"2026-11-18T00:00:00Z","ends_at":"2026-11-25T00:00:00Z","source":"s"}]`,
 	"class outside the five":  intakeHoldEntry(`,"exempt_escalation_classes":["fun"]`),
+	"missing source":          `[{"project_id":"` + intakeHoldProject + `","mode":"block","starts_at":"2026-11-18T00:00:00Z","ends_at":"2026-11-25T00:00:00Z"}]`,
+	"uppercase project uuid":  `[{"project_id":"7328545D-F16F-4BDB-9DEB-27F5D70B1210","mode":"block","starts_at":"2026-11-18T00:00:00Z","ends_at":"2026-11-25T00:00:00Z","source":"s"}]`,
 	"two entries one project": `[` + intakeHoldEntry(``)[1:len(intakeHoldEntry(``))-1] + `,` + intakeHoldEntry(``)[1:len(intakeHoldEntry(``))-1] + `]`,
 }
 

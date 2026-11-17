@@ -112,7 +112,7 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 ## 暂缓处理项目中的新请求 [#intake-hold]
 
-工作区可以在一段时间内，把新的顶层请求留在 **Backlog**，让人先阅读并放行，再由智能体开始工作。规则是工作区设置 `intake_hold`：一个列表，每个项目一条。每条包含 `project_id`、`mode`、`starts_at`、`ends_at`、`exempt_types`、`exempt_labels`、`exempt_escalation_classes`、`exempt_autopilot_ids`、`exempt_issue_ids` 和 `source`。智能体通过工作区设置补丁修改它，由所有者用通行密钥批准。没有条目的项目不受影响。
+工作区可以在一段时间内，把新的顶层请求留在 **Backlog**，让人先阅读并放行，再由智能体开始工作。规则是工作区设置 `intake_hold`：一个列表，每个项目一条。每条包含 `project_id`、`mode`、`starts_at`、`ends_at`、`exempt_types`、`exempt_labels`、`exempt_escalation_classes`、`exempt_autopilot_ids`、`exempt_issue_ids` 和 `source`。智能体通过工作区设置补丁修改它，由所有者用通行密钥批准。没有条目的项目不受影响。 `source` 为必填项，所有 ID 须为带连字符的小写 UUID；违反任一规则的值在保存时会被拒绝。
 
 模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。暂缓生效后，智能体或令牌把被暂缓的任务移出 Backlog，会被拒绝，返回 HTTP 409 和代码 `intake_hold`。本次发布只新增设置和读取字段，尚不拒绝任何操作。
 

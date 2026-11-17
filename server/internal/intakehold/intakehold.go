@@ -242,23 +242,21 @@ func Validate(raw []byte) error {
 	if decoder.More() {
 		return fmt.Errorf("%s: trailing data", SettingKey)
 	}
-	var fields []map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &fields)
 	seen := map[string]bool{}
 	for i := range entries {
 		entry := &entries[i]
 		fail := func(format string, args ...any) error {
 			return fmt.Errorf("%s[%d]: %s", SettingKey, i, fmt.Sprintf(format, args...))
 		}
-		if _, err := uuid.Parse(entry.ProjectID); err != nil {
-			return fail("project_id is not a UUID")
+		if !canonicalUUID(entry.ProjectID) {
+			return fail("project_id is not a lowercase hyphenated UUID")
 		}
 		if seen[entry.ProjectID] {
 			return fail("two entries for project %s", entry.ProjectID)
 		}
 		seen[entry.ProjectID] = true
-		if source, present := fields[i]["source"]; present && entry.Source == "" {
-			return fail("source, when present, is a non-empty string (%s)", source)
+		if entry.Source == "" {
+			return fail("source is required: it is the key a release records")
 		}
 		if !slices.Contains([]string{ModeOff, ModeWarn, ModeBlock}, entry.Mode) {
 			return fail("mode must be off, warn or block")
@@ -285,12 +283,18 @@ func Validate(raw []byte) error {
 			}
 		}
 		for _, id := range slices.Concat(entry.ExemptAutopilotIDs, entry.ExemptIssueIDs) {
-			if _, err := uuid.Parse(id); err != nil {
-				return fail("%q is not a UUID", id)
+			if !canonicalUUID(id) {
+				return fail("%q is not a lowercase hyphenated UUID", id)
 			}
 		}
 	}
 	return nil
+}
+
+// canonicalUUID is true for the one spelling the rule compares as a string.
+func canonicalUUID(s string) bool {
+	parsed, err := uuid.Parse(s)
+	return err == nil && parsed.String() == s
 }
 
 // ParseStored returns the entry of a project from a stored value. A malformed
