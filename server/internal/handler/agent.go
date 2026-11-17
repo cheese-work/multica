@@ -2769,7 +2769,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if shouldClearComposioAllowlist || params.ComposioToolkitAllowlist != nil {
-		if err := syncAgentAppsFromAllowlist(r.Context(), h.Queries, updated, params.ComposioToolkitAllowlist, parseUUID(requestUserID(r))); err != nil {
+		if err := syncAgentAppsFromAllowlist(r.Context(), updateQueries, updated, params.ComposioToolkitAllowlist, parseUUID(requestUserID(r))); err != nil {
 			slog.Warn("update agent: sync agent apps failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to update agent apps")
 			return
