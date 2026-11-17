@@ -547,12 +547,13 @@ var concurrentIndexCleanups = map[string]string{
 	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",
 	"916_ask_recovery_notice_comment_index":                     "idx_ask_recovery_notice_comment",
 	"918_ask_repair_root_task_index":                            "idx_ask_repair_root_task",
-	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
 	"99970_system1_label_labeller_key_idx":                      "system1_label_labeller_key",
 	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
 	"999h_weekly_run_guard_refusal_open_uidx":                   "weekly_run_guard_refusal_open_uidx",
 	"999i_weekly_run_guard_allowance_issue_idx":                 "weekly_run_guard_allowance_issue_idx",
 	"999j_weekly_run_guard_refusal_action_idx":                  "weekly_run_guard_refusal_action_idx",
+	"99996_dm_progress_pending_lineage_created_idx":             "dm_progress_pending_lineage_created_idx",
+	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
 }
 
 type requiredConcurrentIndex struct {
