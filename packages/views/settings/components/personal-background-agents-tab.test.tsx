@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { renderWithI18n } from "../../test/i18n";
 import { PersonalBackgroundAgentsTab } from "./personal-background-agents-tab";
@@ -131,6 +131,61 @@ describe("PersonalBackgroundAgentsTab", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("combobox", { name: "DM title: Agent" })).toBeInTheDocument();
+  });
+
+  it("shows the load error with Retry when the personal read is rejected (503), not an endless loading line", async () => {
+    mine.mockRejectedValueOnce(new Error("503"));
+    mount();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load your background agents.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Nothing was changed.");
+    expect(screen.queryByText("Loading settings…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("combobox", { name: "DM title: Agent" })).toBeInTheDocument();
+  });
+
+  it("offline: keeps the last picks, pauses the selects and says so", async () => {
+    const online = vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+    try {
+      mount();
+      const select = await screen.findByRole("combobox", { name: "DM title: Agent" });
+      expect(select).toHaveTextContent("Luna");
+      expect(select).toBeDisabled();
+      expect(screen.getByRole("status")).toHaveTextContent("You are offline.");
+    } finally {
+      online.mockRestore();
+    }
+  });
+
+  it("shows the another-tab banner when a refocus read differs from what this tab knew, not after its own save", async () => {
+    mount();
+    await screen.findByRole("combobox", { name: "DM title: Agent" });
+    expect(screen.queryByText(/saved a change in another tab/)).not.toBeInTheDocument();
+
+    mine.mockResolvedValue({ dm_title: { agent_id: "a-haiku", fallback_agent_id: "" } } as never);
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    expect(await screen.findByText("You saved a change in another tab. These are your latest picks.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "DM title: Agent" })).toHaveTextContent("Haiku router");
+
+    // Own save clears the banner.
+    write.mockResolvedValue({ dm_title: { agent_id: "a-luna", fallback_agent_id: "" } } as never);
+    await userEvent.click(screen.getByRole("combobox", { name: "DM title: Agent" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Luna" }));
+    await waitFor(() => expect(screen.queryByText(/saved a change in another tab/)).not.toBeInTheDocument());
+  });
+
+  it("does not show the another-tab banner for this tab's own save", async () => {
+    write.mockResolvedValue({ dm_title: { agent_id: "a-haiku", fallback_agent_id: "" } } as never);
+    mount();
+    await userEvent.click(await screen.findByRole("combobox", { name: "DM title: Agent" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Haiku router" }));
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "DM title: Agent" })).toHaveTextContent("Haiku router"),
+    );
+    expect(screen.queryByText(/saved a change in another tab/)).not.toBeInTheDocument();
   });
 
   it("reports a failed save and re-reads", async () => {

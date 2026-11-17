@@ -1838,7 +1838,11 @@
     "archived_warning": "{{agent}} is archived. {{job}} runs with no agent in your DMs until you pick another one. The workspace agent does not take over, and neither does the fallback: it only runs when the agent fails.",
     "use_workspace_button": "Use the workspace pick ({{agent}})",
     "load_error": "Couldn't load your background agents.",
+    "load_error_detail": "Nothing was changed. Your last saved picks still apply.",
     "toast_save_failed": "Couldn't save your background agents.",
+    "offline_title": "You are offline.",
+    "offline_body": "Changes are paused. The picks below are the last ones loaded and may be out of date. Selects turn back on when you reconnect.",
+    "another_tab": "You saved a change in another tab. These are your latest picks.",
     "routing_before": "Routing is set for the whole workspace. Owners and admins change it in",
     "routing_link": "Workspace → Background agents",
     "routing_after": "."

@@ -1824,7 +1824,11 @@
     "archived_warning": "{{agent}} 已封存。在你選擇其他智慧體之前，你的 DM 中的{{job}}將在沒有智慧體的情況下執行。工作區智慧體不會接手，備用智慧體也不會：備用智慧體只在智慧體失敗時執行。",
     "use_workspace_button": "使用工作區設定（{{agent}}）",
     "load_error": "無法載入你的背景智慧體。",
+    "load_error_detail": "未做任何變更。你最近儲存的選擇仍然有效。",
     "toast_save_failed": "無法儲存你的背景智慧體。",
+    "offline_title": "你已離線。",
+    "offline_body": "變更已暫停。下方是最後一次載入的選擇，可能已過期。重新連線後選擇器會恢復可用。",
+    "another_tab": "你在另一個分頁儲存了變更。這是你最新的選擇。",
     "routing_before": "路由在整個工作區統一設定。擁有者與管理員可在以下位置變更：",
     "routing_link": "工作區 → 背景智慧體",
     "routing_after": "。"

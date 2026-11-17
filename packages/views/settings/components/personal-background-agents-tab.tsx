@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, clientErrorMessage } from "@multica/core/api";
@@ -18,6 +19,7 @@ import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsRow, SettingsSection, SettingsTab } from "./settings-layout";
 import { settingsHref } from "./settings-navigation";
+import { useOnline } from "./use-online";
 
 // Select values cannot be "" (the empty selection); agent ids are UUIDs.
 const NONE = "none";
@@ -40,20 +42,34 @@ export function PersonalBackgroundAgentsTab() {
   const navigation = useNavigation();
   const qc = useQueryClient();
   const queryKey = ["background-agents", wsId, "me"];
-  const { data, isFetching, refetch } = useQuery({
+  const online = useOnline();
+  const { data, isFetching, isError, refetch } = useQuery({
     queryKey,
     queryFn: () => api.getMyBackgroundAgents(wsId),
     staleTime: 0,
     refetchOnMount: "always",
+    // Focus is repo-wide off. Here a refocus is how a save made in another tab shows up.
+    refetchOnWindowFocus: "always",
   });
+  // Only you write your picks, so a read that differs from what this tab last knew
+  // came from another tab of yours. A null seed means "the next read is not news".
+  const known = useRef<string | null>(null);
+  const [anotherTab, setAnotherTab] = useState(false);
+  useEffect(() => {
+    if (!data) return;
+    const next = JSON.stringify(data);
+    if (known.current !== null && known.current !== next) setAnotherTab(true);
+    known.current = next;
+  }, [data]);
   // Members can read the workspace picks; they only show what an unset row uses.
   const { data: workspace } = useQuery({
     queryKey: ["background-agents", wsId],
     queryFn: () => api.getBackgroundAgents(wsId),
   });
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  // A malformed response resolves to null: unreadable, never "nothing set".
-  const unreadable = data === null && !isFetching;
+  // A malformed response resolves to null and a rejected read (503, offline) is an error:
+  // both are unreadable, never "nothing set" and never an endless loading line.
+  const unreadable = (isError && !data) || (data === null && !isFetching);
   const mine: BackgroundAgents | undefined = data ?? undefined;
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? t(($) => $.background_agents.unknown_agent);
@@ -61,8 +77,14 @@ export function PersonalBackgroundAgentsTab() {
   async function save(patch: Record<string, Record<string, string | null>>) {
     try {
       const saved = await api.updateMyBackgroundAgents(wsId, patch);
-      if (saved) qc.setQueryData(queryKey, saved);
-      else await qc.invalidateQueries({ queryKey });
+      setAnotherTab(false);
+      if (saved) {
+        known.current = JSON.stringify(saved);
+        qc.setQueryData(queryKey, saved);
+      } else {
+        known.current = null;
+        await qc.invalidateQueries({ queryKey });
+      }
     } catch (error) {
       toast.error(clientErrorMessage(error) ?? t(($) => $.personal_background_agents.toast_save_failed));
       await qc.invalidateQueries({ queryKey });
@@ -90,7 +112,7 @@ export function PersonalBackgroundAgentsTab() {
         <Select
           items={items}
           value={current === "" ? NONE : current}
-          disabled={isFetching || !mine || pickAgentFirst}
+          disabled={isFetching || !online || !mine || pickAgentFirst}
           onValueChange={(next) => {
             const id = next === NONE ? "" : (next ?? "");
             if (id === current) return;
@@ -136,11 +158,24 @@ export function PersonalBackgroundAgentsTab() {
     >
       {unreadable ? (
         <div role="alert" className="flex items-center justify-between gap-3 text-caption text-destructive">
-          <span>{t(($) => $.personal_background_agents.load_error)}</span>
+          <span>
+            {t(($) => $.personal_background_agents.load_error)} {t(($) => $.personal_background_agents.load_error_detail)}
+          </span>
           <Button type="button" size="sm" variant="outline" onClick={() => void refetch()}>
             {t(($) => $.background_agents.retry)}
           </Button>
         </div>
+      ) : null}
+      {!online ? (
+        <div role="status" className="space-y-0.5 rounded-lg border p-3 text-caption">
+          <p className="font-medium">{t(($) => $.personal_background_agents.offline_title)}</p>
+          <p className="text-muted-foreground">{t(($) => $.personal_background_agents.offline_body)}</p>
+        </div>
+      ) : null}
+      {anotherTab ? (
+        <p role="status" className="rounded-lg border p-3 text-caption">
+          {t(($) => $.personal_background_agents.another_tab)}
+        </p>
       ) : null}
       {!unreadable && !mine ? (
         <p role="status" className="text-caption text-muted-foreground">
@@ -176,6 +211,7 @@ export function PersonalBackgroundAgentsTab() {
                   type="button"
                   size="sm"
                   variant="outline"
+                  disabled={!online}
                   onClick={() => void save({ [job]: { agent_id: null, fallback_agent_id: null } })}
                 >
                   {t(($) => $.personal_background_agents.use_workspace_button, {

@@ -1824,7 +1824,11 @@
     "archived_warning": "{{agent}} 已归档。在你选择其他智能体之前，你的 DM 中的{{job}}将在没有智能体的情况下运行。工作区智能体不会接手，备用智能体也不会：备用智能体只在智能体失败时运行。",
     "use_workspace_button": "使用工作区设置（{{agent}}）",
     "load_error": "无法加载你的后台智能体。",
+    "load_error_detail": "未做任何更改。你最近保存的选择仍然有效。",
     "toast_save_failed": "无法保存你的后台智能体。",
+    "offline_title": "你已离线。",
+    "offline_body": "更改已暂停。下方是最后一次加载的选择，可能已过期。重新连接后选择器会恢复可用。",
+    "another_tab": "你在另一个标签页保存了更改。这是你最新的选择。",
     "routing_before": "路由在整个工作区统一设置。所有者和管理员可在以下位置更改：",
     "routing_link": "工作区 → 后台智能体",
     "routing_after": "。"
