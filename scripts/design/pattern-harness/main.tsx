@@ -64,7 +64,7 @@ import {
   seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
   WakeupFieldsPage, WakeupPickersPage, WorkspaceWakeupRulesPage, ConfigChangeViewerPage,
   DecisionArtifactsPage, DecisionRequestCardPage, NeedsYouListPage, QuickAgentBarPage, DelegatedWritesPage,
-  DingTalkTabPage, LarkTabPage, SlackTabPage, TelegramTabPage, WecomTabPage,
+  WecomTabPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -1143,10 +1143,6 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "needs-you-list": NeedsYouListPage,
   "quick-agent-bar": QuickAgentBarPage,
   "delegated-writes-section": DelegatedWritesPage,
-  "dingtalk-tab": DingTalkTabPage,
-  "lark-tab": LarkTabPage,
-  "slack-tab": SlackTabPage,
-  "telegram-tab": TelegramTabPage,
   "wecom-tab": WecomTabPage,
   buttons: Buttons,
   dialogs: Dialogs,

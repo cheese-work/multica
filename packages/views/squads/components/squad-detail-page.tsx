@@ -248,6 +248,7 @@ export function SquadDetailPage() {
     if (squadError) {
       return (
         <ObjectPage
+          type="squad"
           layoutId={layoutId}
           segments={segments}
           leaf={
@@ -274,6 +275,7 @@ export function SquadDetailPage() {
     }
     return (
       <ObjectPage
+        type="squad"
         layoutId={layoutId}
         segments={segments}
         leaf={<Skeleton className="h-4 w-32" />}
@@ -306,6 +308,7 @@ export function SquadDetailPage() {
 
   return (
     <ObjectPage
+      type="squad"
       layoutId={layoutId}
       segments={segments}
       leaf={
@@ -1143,7 +1146,7 @@ function InlineEditPopover({
   );
 }
 
-// Two-step add-member dialog (mirrors CreateAgentDialog's compact layout):
+// Two-step add-member dialog:
 // 1) pick a target — Members + Agents in one searchable popover, each row
 //    with an avatar so visual recognition matches the issue assignee picker;
 // 2) optionally describe the role they'll play in this squad. Description

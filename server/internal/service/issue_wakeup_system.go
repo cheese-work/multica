@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	inboxwriter "github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -1365,7 +1365,8 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	var activities []wakeupActivity
-	var inbox []db.InboxItem
+	var pendingInbox inboxwriter.Deferred
+	var inbox []db.InboxItem // legacy-type rows Deliver refuses
 	note := func(action string, details map[string]any) error {
 		a, err := recordWakeupActivity(ctx, q, w, action, "system", pgtype.UUID{}, details)
 		if err == nil {
@@ -1378,6 +1379,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 		s.publishWakeupActivities(activities...)
+		if s.Tasks != nil {
+			pendingInbox.Flush(s.Tasks.Bus)
+		}
 		for _, item := range inbox {
 			s.publishSystemInbox(item, issue.Status)
 		}
@@ -1531,11 +1535,21 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 					details["note"] = body.String
 				}
 				raw, _ := json.Marshal(details)
-				item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
+				params := db.CreateInboxItemParams{
 					ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
 					Type: kind, Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: body,
 					ActorType: pgtype.Text{String: "system", Valid: true}, Details: raw, DedupeKey: n.Key,
-				})
+				}
+				var item db.InboxItem
+				var inserted bool
+				var err error
+				if isPRWakeup {
+					// agent_blocked is a legacy inbox type: Deliver refuses it, so the
+					// fork's per-PR notice keeps writing it through CreateIfEligible.
+					item, inserted, err = inboxwriter.CreateIfEligible(ctx, q, params)
+				} else {
+					item, inserted, err = inboxwriter.Deliver(ctx, q, &pendingInbox, inboxwriter.Notification{Params: params, IssueStatus: &issue.Status})
+				}
 				if err != nil {
 					return err
 				}
@@ -1544,7 +1558,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 				}
 				if inserted {
 					facts["outcome"] = "notified"
-					inbox = append(inbox, item)
+					if isPRWakeup {
+						inbox = append(inbox, item)
+					}
 				}
 			}
 		}
@@ -1619,6 +1635,20 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	attr, err := s.childDoneRunAs(ctx, issue, agent)
 	if err != nil {
 		return err
+	}
+	// Recorded without a run, like an assignee whose agent cannot run.
+	if err = s.Tasks.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		if !errors.Is(err, ErrProjectAccessDenied) {
+			return err
+		}
+		facts["outcome"], facts["reason"] = "none", string(dispatch.ReasonProjectAccessBlocked)
+		if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+			return err
+		}
+		if err = note(wakeupActivityTriggered, facts); err != nil {
+			return err
+		}
+		return commit()
 	}
 	waiting, err := hasWaitingRunFor(ctx, q, issue.ID, agent.ID, attr.UserID, config, current)
 	if err != nil {

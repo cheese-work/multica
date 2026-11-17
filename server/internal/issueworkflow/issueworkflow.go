@@ -149,17 +149,6 @@ func keysOf(steps []Step) []string {
 	return keys
 }
 
-// MiddleKeys returns the workflow's own steps, without the fixed statuses.
-func MiddleKeys(keys []string) []string {
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if !IsFixed(key) {
-			out = append(out, key)
-		}
-	}
-	return out
-}
-
 // BuiltInDefaultKeys is Default before a workspace stores its own.
 func BuiltInDefaultKeys() []string {
 	return ArrangeKeys([]string{issuestatus.Backlog, issuestatus.InProgress, issuestatus.InReview, issuestatus.Blocked})
@@ -577,14 +566,12 @@ func ValidateHandoff(s Step, def Definition) error {
 	}
 	switch s.Handler.Type {
 	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
-	case HandlerAgent, HandlerMember:
+	case HandlerAgent, HandlerSquad, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
 		}
-	case HandlerSquad, HandlerCreator:
-		// A squad routes work itself, so a handoff to one would compete with
-		// its own assignment. (MUL-7420)
-		return invalid("hand off to an agent, a member or the project lead")
+	case HandlerCreator:
+		return invalid("hand off to an agent, a squad, a member or the project lead")
 	default:
 		return invalid("unknown handler type %q", s.Handler.Type)
 	}
@@ -882,6 +869,12 @@ type BriefInput struct {
 	ProjectName     string
 	StatusKey       string
 	IssueIdentifier string
+	// BoundStep is the task's effective step when its binding must be respected.
+	// A different StatusKey renders a continuation brief without status moves.
+	// Empty preserves the normal handoff, preview and unbound-run brief.
+	BoundStep string
+	// MovedBy names whoever last changed the status, when known.
+	MovedBy string
 	// StatusName resolves a catalog key to its display name.
 	StatusName func(key string) string
 	// HandlerName describes who a step hands off to, e.g. "Sentinel" or
@@ -913,6 +906,7 @@ type BriefInput struct {
 // names are kept to one line.
 func Brief(in BriefInput) string {
 	step, _ := in.Workflow.Step(in.StatusKey)
+	stepMoved := in.BoundStep != "" && in.BoundStep != in.StatusKey
 	name := func(key string) string {
 		if in.StatusName == nil {
 			return key
@@ -928,12 +922,22 @@ func Brief(in BriefInput) string {
 		title = fmt.Sprintf("%s (%s)", title, project)
 	}
 	fmt.Fprintf(&b, "This project's workflow — %s\n", title)
-	b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
-	if !in.Workflow.Has(issuestatus.InReview) {
-		fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
+	if !stepMoved {
+		b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
+		if !in.Workflow.Has(issuestatus.InReview) {
+			fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
+		}
+		b.WriteString(".\n")
 	}
-	b.WriteString(".\n")
-	if in.Observer {
+	if stepMoved {
+		mover := briefLine(in.MovedBy)
+		if mover == "" {
+			mover = "someone else"
+		}
+		fmt.Fprintf(&b, "This run remains bound to %s, but %s is now at %s (last moved by %s).\n",
+			statusLabel(name(in.BoundStep), in.BoundStep), in.IssueIdentifier, statusLabel(name(in.StatusKey), in.StatusKey), mover)
+		b.WriteString("Do not change the issue's status in this run, including when starting or finishing work; this overrides the status rules in your runtime instructions. Do not retry a refused status change. Leave a comment if something needs attention. A member can review the current state and explicitly rerun the work.\n")
+	} else if in.Observer {
 		assignee := "is unassigned"
 		if who := briefLine(in.AssigneeName); who != "" {
 			assignee = "is assigned to " + who
@@ -967,6 +971,9 @@ func Brief(in BriefInput) string {
 			b.WriteString("   ← current")
 		}
 		b.WriteString("\n")
+	}
+	if stepMoved {
+		return b.String()
 	}
 	if in.Observer {
 		b.WriteString("\nMoving the issue into a step that hands off reassigns it to that step's handler and starts their run.\n")

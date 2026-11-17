@@ -392,7 +392,7 @@ describe("SettingsPage information architecture", () => {
     );
   });
 
-  it("lists Connected apps with the personal pages only when Composio is available", () => {
+  it("lists Connected apps with the workspace connections only when Composio is available", () => {
     const first = renderWithI18n(<SettingsPage />);
     expect(screen.queryByRole("link", { name: "Connected apps" })).toBeNull();
     first.unmount();
@@ -401,8 +401,9 @@ describe("SettingsPage information architecture", () => {
     navigationState.search = "tab=integrations&connected=notion";
     renderWithI18n(<SettingsPage />);
     const personal = within(nav()).getByRole("region", { name: /Personal/ });
+    expect(within(personal).queryByRole("link", { name: "Connected apps" })).toBeNull();
     expect(
-      within(personal).getByRole("link", { name: "Connected apps" }),
+      within(nav()).getByRole("link", { name: "Connected apps" }),
     ).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("ConnectedAppsTab")).toBeInTheDocument();
   });

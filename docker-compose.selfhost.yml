@@ -222,6 +222,9 @@ services:
       # storage disabled without affecting the existing process-wide JEV_API_KEY.
       MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:-}
       MULTICA_JEV_SECRET_KEY_PREVIOUS: ${MULTICA_JEV_SECRET_KEY_PREVIOUS:-}
+      # Community theme store (Settings → Appearance → Manage). Always on; the
+      # registry URL points it at another registry's index.json.
+      MULTICA_THEME_REGISTRY_URL: ${MULTICA_THEME_REGISTRY_URL:-}
       # WeCom smart-bot integration. MULTICA_WECOM_SECRET_KEY is the
       # opt-in: unset = integration disabled. It encrypts each installation's
       # smart-bot secret at rest. The server needs it to unseal a bot's
@@ -264,6 +267,9 @@ services:
       # 401 = healthy) before it lets skipped recurring autopilots run again.
       # Empty (the default) leaves the probe unconfigured; see .env.example.
       MULTICA_PROVIDER_RECOVERY_BASE_URL: ${MULTICA_PROVIDER_RECOVERY_BASE_URL:-}
+      # Tool steps shown in the streamed reply: auto (default; details in
+      # private chats, kind of work in groups), off, summary or detail.
+      MULTICA_TELEGRAM_TOOL_PROGRESS: ${MULTICA_TELEGRAM_TOOL_PROGRESS:-}
     restart: unless-stopped
 
   frontend:

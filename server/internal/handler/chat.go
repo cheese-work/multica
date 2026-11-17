@@ -94,6 +94,9 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "you do not have access to this agent")
 		return
 	}
+	if !h.requireChatProjectVisible(w, r, workspaceID, projectID, agent.ID) {
+		return
+	}
 
 	// Create inside a tx that first takes a FOR KEY SHARE lock on the workspace
 	// row: it conflicts with DeleteWorkspace's FOR UPDATE, so a session cannot be
@@ -467,6 +470,9 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		}
 		projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
 		if !ok {
+			return
+		}
+		if !h.requireChatProjectVisible(w, r, workspaceID, projectID, session.AgentID) {
 			return
 		}
 	}
@@ -855,6 +861,10 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	// draft-restore protocol: FinalizeDeferredCancelledChat takes the same
 	// chat_session lock before inserting a restore, so it cannot slip one past
 	// this sweep (see LockChatSessionForTask in chat.sql).
+	if err := qtx.DeleteChatSubmissionReceiptsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat submission receipts")
+		return
+	}
 	if err := qtx.DeleteChatDraftRestoresBySession(r.Context(), session.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete chat session draft restores")
 		return
@@ -941,28 +951,7 @@ type SendChatMessageRequest struct {
 	AskIDs []string `json:"ask_ids"`
 }
 
-type SendChatMessageResponse struct {
-	MessageID     string `json:"message_id"`
-	TaskID        string `json:"task_id"`
-	SupportsQueue bool   `json:"supports_queue"`
-	Queued        bool   `json:"queued"`
-	// AttachmentIDs are the attachment rows actually bound to this message by
-	// the server. The client diffs these against the ids it requested so it
-	// can warn the user when an attachment silently failed to bind — no extra
-	// round-trip needed. No `omitempty`: a send that requested attachments but
-	// bound none must serialize `[]` (not be omitted), otherwise the client
-	// can't tell "all binds failed" from "older server without this field" and
-	// would silently skip the very warning this exists for. When no
-	// attachments were requested the value is nil → `null`, which the client's
-	// guard short-circuits on the requested-ids check.
-	AttachmentIDs []string `json:"attachment_ids"`
-	// CreatedAt anchors the chat StatusPill timer the instant the user
-	// hits send. Without it the front-end falls back to its local clock
-	// and the timer "snaps backwards" later when WS events deliver the
-	// real created_at. Returning it here means the pill renders 0s from
-	// the start with a stable anchor.
-	CreatedAt string `json:"created_at"`
-}
+type SendChatMessageResponse = service.ChatSubmissionResponse
 
 func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
@@ -2247,6 +2236,12 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		// A run on a private project is listed as restricted to members
+		// outside the project (MUL-8472); its id alone must not let them
+		// stop it.
+		if !h.requireTaskVisible(w, r, workspaceID, task, http.StatusNotFound, "task not found") {
+			return
+		}
 		// Issue / autopilot / quick_create tasks are all visible on the
 		// agent Activity tab + workspace snapshot, which gate private
 		// agents. Mirror that gate here.

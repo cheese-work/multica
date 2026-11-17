@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import BalancedSequencer from "./test/balanced-sequencer";
 
 export default defineConfig({
   plugins: [react()],
@@ -13,5 +14,6 @@ export default defineConfig({
     // the 520 files this package runs in parallel) they cross 5s and fail with
     // "Test timed out in 5000ms" although nothing is wrong.
     testTimeout: 15_000,
+    sequence: { sequencer: BalancedSequencer },
   },
 });

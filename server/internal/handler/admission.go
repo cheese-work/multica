@@ -79,6 +79,7 @@ const (
 	ReasonAdmissionDeferred                   = dispatch.ReasonAdmissionDeferred
 	ReasonInternalError                       = dispatch.ReasonInternalError
 	ReasonProviderHold                        = dispatch.ReasonProviderHold
+	ReasonProjectAccessBlocked                = dispatch.ReasonProjectAccessBlocked
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name
@@ -160,6 +161,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the PR head is not admissible (a check is failing, pending or missing, or the PR has a merge conflict); the review is deferred"
 	case ReasonProviderHold:
 		return "the target's model provider is on a workspace policy hold"
+	case ReasonProjectAccessBlocked:
+		return "the agent's owner is not a member of this private project"
 	default:
 		return "the run was blocked"
 	}
