@@ -112,19 +112,23 @@ func TestCommentTargetUnavailableNoticeCoversUnresolvedIds(t *testing.T) {
 	// squad id resolves to no squad — both block with target_unavailable, not
 	// invocation_not_allowed, yet the author still deserves a saved receipt.
 	content := fmt.Sprintf("[@Typo alias](mention://agent/e3e3e4c-79f7-4e77-8c0d-7d0a6d462005) [@Gone team](mention://squad/%s) [@Fine](mention://agent/%s) go", uuid.NewString(), allowedID)
+	// Fork wins: an unresolved agent id is refused before the save (422);
+	// only the unresolved squad keeps the persisted receipt.
+	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusUnprocessableEntity)
+	if countIssueComments(t, issueID) != 0 {
+		t.Fatal("refused submission saved a comment")
+	}
+	content = fmt.Sprintf("[@Gone team](mention://squad/%s) [@Fine](mention://agent/%s) go", uuid.NewString(), allowedID)
 	var posted CommentResponse
 	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusCreated).JSON(&posted)
-	if findCommentOutcome(t, posted.TriggerOutcomes, "e3e3e4c-79f7-4e77-8c0d-7d0a6d462005").ReasonCode != ReasonTargetUnavailable {
-		t.Fatalf("malformed mention is not target_unavailable: %+v", posted.TriggerOutcomes)
-	}
 	var notice string
 	dbfx.QueryRow(t, `SELECT content FROM comment WHERE parent_id = $1 AND author_type = 'system'`, posted.ID).Scan(&notice)
-	for _, alias := range []string{"Typo alias", "Gone team"} {
+	for _, alias := range []string{"Gone team"} {
 		if !strings.Contains(notice, alias) {
 			t.Errorf("notice omitted unresolved target %q: %q", alias, notice)
 		}
 	}
-	if strings.Contains(notice, "Fine") || strings.Count(notice, "Target not found or permission not granted") != 2 {
+	if strings.Contains(notice, "Fine") || strings.Count(notice, "Target not found or permission not granted") != 1 {
 		t.Errorf("notice miscounts targets: %q", notice)
 	}
 	if len(util.ParseMentions(notice)) != 0 {

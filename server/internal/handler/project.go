@@ -1265,7 +1265,18 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	terms := splitSearchTerms(q)
 
-	hidden, ok := h.requestHiddenProjects(w, r, workspaceID)
+	// The private-project lookup runs before the bounded search transaction, so
+	// it shares the search deadline: a locked project table must fail fast with
+	// the same 503, never hold the request open.
+	hiddenCtx, cancelHidden := context.WithTimeout(ctx, effectiveSearchStatementTimeout())
+	hidden, hiddenErr := h.hiddenProjects(r.WithContext(hiddenCtx), workspaceID)
+	cancelHidden()
+	if hiddenErr != nil && ctx.Err() == nil && errors.Is(hiddenErr, context.DeadlineExceeded) {
+		slog.Warn("search projects access lookup timed out", "workspace_id", workspaceID, "timeout", effectiveSearchStatementTimeout())
+		writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
+		return
+	}
+	hidden, ok = h.requestHiddenProjectsResult(w, r, workspaceID, hidden, hiddenErr)
 	if !ok {
 		return
 	}

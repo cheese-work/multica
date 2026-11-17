@@ -70,6 +70,12 @@ func (h *Handler) hiddenProjectsForAgentRun(ctx context.Context, workspaceID pgt
 // returns ok=false when access cannot be resolved, so callers fail closed.
 func (h *Handler) requestHiddenProjects(w http.ResponseWriter, r *http.Request, workspaceID string) (projectaccess.Hidden, bool) {
 	hidden, err := h.hiddenProjects(r, workspaceID)
+	return h.requestHiddenProjectsResult(w, r, workspaceID, hidden, err)
+}
+
+// requestHiddenProjectsResult finishes requestHiddenProjects for a caller that
+// ran the lookup itself (to bound it with its own deadline).
+func (h *Handler) requestHiddenProjectsResult(w http.ResponseWriter, r *http.Request, workspaceID string, hidden projectaccess.Hidden, err error) (projectaccess.Hidden, bool) {
 	if err != nil {
 		if writeQueryCancellation(w, r, err) {
 			return projectaccess.Hidden{}, false

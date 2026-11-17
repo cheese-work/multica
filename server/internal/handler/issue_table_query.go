@@ -653,7 +653,7 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 		case "assigned":
 			where = append(where, fmt.Sprintf("i.assignee_type = 'member' AND i.assignee_id = %s::uuid", addArg(userUUID)))
 		case "created":
-			where = append(where, fmt.Sprintf("i.creator_type = 'member' AND i.creator_id = %s::uuid", addArg(userUUID)))
+			where = append(where, issueCreatedByUserPredicate(addArg(userUUID)))
 		case "requested":
 			where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(userUUID)))
 		case "involved":
@@ -663,7 +663,7 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 			createdRef := addArg(userUUID)
 			requestedRef := addArg(userUUID)
 			involved := appendIssueTableInvolvedPredicate(nil, addArg, userUUID)[0]
-			where = append(where, fmt.Sprintf("((i.assignee_type = 'member' AND i.assignee_id = %s::uuid) OR (i.creator_type = 'member' AND i.creator_id = %s::uuid) OR i.requested_by_id = %s::uuid OR %s)", assignedRef, createdRef, requestedRef, involved))
+			where = append(where, fmt.Sprintf("((i.assignee_type = 'member' AND i.assignee_id = %s::uuid) OR %s OR i.requested_by_id = %s::uuid OR %s)", assignedRef, issueCreatedByUserPredicate(createdRef), requestedRef, involved))
 		default:
 			writeError(w, http.StatusBadRequest, "invalid scope.relation")
 			return issueTableSQL{}, false

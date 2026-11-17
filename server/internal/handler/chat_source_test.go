@@ -14,11 +14,11 @@ import (
 
 func TestChatThreadSourceResponse(t *testing.T) {
 	agentID, sessionID, runtimeID := newChatSourceSession(t)
-	taskID := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": sessionID, "status": "completed"})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": sessionID, "status": "running"})
 	fake := &fakeChatHistoryReader{page: channel.HistoryPage{ChannelType: "slack", ChannelID: "C1", ChannelName: "engineering", Permalink: "https://example.slack.com/archives/C1/p200000000", ThreadID: "200.000000", Messages: []channel.HistoryMessage{{ID: "201.000000", Text: "retained"}}, NextCursor: "201.000000"}}
 	withSlackHistory(t, fake)
 	var got ChatChannelHistoryResponse
-	testutil.Call(t, testHandler.GetChatThread, taskActorReq("/api/chat/thread?id=200.000000&channel_id=C2&limit=1", taskID)).Want(http.StatusOK).JSON(&got)
+	testutil.Call(t, testHandler.GetChatThread, historyReq(t, "/api/chat/thread?id=200.000000&channel_id=C2&limit=1", taskID)).Want(http.StatusOK).JSON(&got)
 	if got.ChannelID != "C1" || got.ChannelName != "engineering" || got.Permalink != fake.page.Permalink || got.ThreadID != "200.000000" || got.NextCursor != "201.000000" || len(got.Messages) != 1 || fake.gotThreadID != "200.000000" {
 		t.Fatalf("source mapping: %+v", got)
 	}

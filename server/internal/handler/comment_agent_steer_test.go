@@ -83,7 +83,7 @@ func TestAgentCommentSteersAnAgentItMayInvoke(t *testing.T) {
 		{name: "pi named turn", provider: "pi", wantSteered: true, body: func(f agentSteerFixture) map[string]any {
 			return map[string]any{"content": agentMention("Target", f.agentID) + " only fix web", "steer_task_ids": []string{f.taskID}}
 		}},
-		{name: "pi chain that may not invoke the target", provider: "pi", noOriginator: true, body: func(f agentSteerFixture) map[string]any {
+		{name: "pi chain that may not invoke the target is refused", provider: "pi", noOriginator: true, rejected: true, body: func(f agentSteerFixture) map[string]any {
 			return map[string]any{"content": agentMention("Target", f.agentID) + " only fix web", "steer": true}
 		}},
 		{name: "own running turn", self: true, body: func(f agentSteerFixture) map[string]any {
