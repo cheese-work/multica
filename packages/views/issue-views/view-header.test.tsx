@@ -10,10 +10,12 @@ import { useIssueViewRenameStore } from "@multica/core/issue-views/rename-store"
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
 import type { IssueSurfaceController } from "../issues/surface/use-issue-surface-controller";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
 import { IssueViewHeader } from "./view-header";
 
 const copyLink = vi.hoisted(() => vi.fn());
 const rename = vi.hoisted(() => vi.fn());
+const create = vi.hoisted(() => vi.fn());
 const active = vi.hoisted(() => ({ view: null as IssueView | null }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
@@ -32,7 +34,7 @@ vi.mock("./use-view-actions", () => ({
     rename,
     save: vi.fn(),
     remove: vi.fn(),
-    create: vi.fn(),
+    create,
   }),
 }));
 vi.mock("../issues/components/filter-chips-bar", () => ({
@@ -41,11 +43,20 @@ vi.mock("../issues/components/filter-chips-bar", () => ({
 }));
 vi.mock("../issues/components/issues-header", () => ({
   IssueDisplayControls: () => null,
-  IssueFilterMenu: ({ trigger, open }: { trigger: React.ReactNode; open?: boolean }) => (
-    <>
-      {trigger}
+  IssueFilterMenu: ({
+    trigger,
+    open,
+    leadingSections,
+  }: {
+    trigger: React.ReactNode;
+    open?: boolean;
+    leadingSections?: React.ReactNode;
+  }) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger render={<span>{trigger}</span>} />
+      <DropdownMenuContent>{leadingSections}</DropdownMenuContent>
       {open && <div role="menu" aria-label="Filter menu" />}
-    </>
+    </DropdownMenu>
   ),
 }));
 
@@ -86,11 +97,16 @@ function savedView(definition: Partial<Pick<IssueView, "query" | "display">> = {
   } as unknown as IssueView;
 }
 
-function renderHeader(kind: "workspace" | "my", store: string, adapter = adapterFor("/acme/issues")) {
+function renderHeader(
+  kind: "workspace" | "my",
+  store: string,
+  adapter = adapterFor("/acme/issues"),
+  ctrl = controller,
+) {
   return renderWithI18n(
     <NavigationProvider value={adapter}>
       <ViewStoreProvider store={getIssueSurfaceViewStore(store)}>
-        <IssueViewHeader controller={controller} base={{ kind }} />
+        <IssueViewHeader controller={ctrl} base={{ kind }} />
       </ViewStoreProvider>
     </NavigationProvider>,
   );
@@ -99,6 +115,7 @@ function renderHeader(kind: "workspace" | "my", store: string, adapter = adapter
 beforeEach(() => {
   copyLink.mockClear();
   rename.mockClear();
+  create.mockClear();
   active.view = null;
   useIssueViewRenameStore.setState({ target: null });
   myIssuesViewStore.setState({ scope: "assigned" });
@@ -175,5 +192,39 @@ describe("IssueViewHeader setup of a new view", () => {
     renderHeader("workspace", "header-setup-defined");
 
     expect(screen.queryByTestId("view-setup-bar")).toBeNull();
+  });
+});
+
+describe("IssueViewHeader My Issues relation", () => {
+  it("offers Requested by me after Created by me and selects it", async () => {
+    renderHeader("my", "header-my-relation", adapterFor("/acme/my-issues"));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /filter/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /Relation to me/ }));
+    const options = await screen.findAllByRole("menuitemradio");
+    expect(options.map((o) => o.textContent)).toEqual([
+      "Assigned to me",
+      "Created by me",
+      "Requested by me",
+      "Any relation",
+    ]);
+
+    screen.getByRole("menuitemradio", { name: "Requested by me" }).focus();
+    await user.keyboard("{Enter}");
+    expect(myIssuesViewStore.getState().scope).toBe("requested");
+  });
+
+  it("saves a view from Requested by me with scope_variant requested", async () => {
+    myIssuesViewStore.setState({ scope: "requested" });
+    renderHeader("my", "header-my-save", adapterFor("/acme/my-issues"), {
+      ...controller,
+      hasActiveFilters: true,
+    } as IssueSurfaceController);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save as view" }));
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: { scope_type: "my" }, scopeVariant: "requested" }),
+    );
   });
 });

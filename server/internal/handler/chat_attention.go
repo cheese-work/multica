@@ -79,19 +79,25 @@ type attentionVisibility struct {
 }
 
 func (h *Handler) attentionVisibility(r *http.Request, userID, workspaceID string) (*attentionVisibility, *attentionFailure) {
-	rows, err := h.Queries.ListAttentionChainAgents(r.Context(), db.ListAttentionChainAgentsParams{WorkspaceID: parseUUID(workspaceID), UserID: parseUUID(userID)})
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	return h.attentionVisibilityFor(r.Context(), userID, workspaceID, actorType, actorID)
+}
+
+// attentionVisibilityFor is attentionVisibility for an explicit actor: a task token reading
+// another member's summary asks what that member can open, not what the agent can.
+func (h *Handler) attentionVisibilityFor(ctx context.Context, userID, workspaceID, actorType, actorID string) (*attentionVisibility, *attentionFailure) {
+	rows, err := h.Queries.ListAttentionChainAgents(ctx, db.ListAttentionChainAgentsParams{WorkspaceID: parseUUID(workspaceID), UserID: parseUUID(userID)})
 	if err != nil {
 		return nil, &attentionFailure{http.StatusInternalServerError, "failed to resolve agent access"}
 	}
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	v := &attentionVisibility{visible: map[string]bool{}, hidden: []pgtype.UUID{}}
 	access := map[string]bool{} // by agent
 	for _, row := range rows {
 		agentID := uuidToString(row.AgentID)
 		ok, seen := access[agentID]
 		if !seen {
-			agent, err := h.Queries.GetAgent(r.Context(), row.AgentID)
-			ok = err == nil && h.canAccessPrivateAgent(r.Context(), agent, actorType, actorID, workspaceID)
+			agent, err := h.Queries.GetAgent(ctx, row.AgentID)
+			ok = err == nil && h.canAccessPrivateAgent(ctx, agent, actorType, actorID, workspaceID)
 			access[agentID] = ok
 		}
 		if ok {

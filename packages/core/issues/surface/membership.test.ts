@@ -167,6 +167,15 @@ describe("listFilterDependsOn", () => {
     ).toBe(false);
   });
 
+  it("judges requested_by_id filters definitively", () => {
+    const issue = makeIssue({ creator_id: "agent-1", requested_by_id: "me" });
+    expect(issueMatchesListFilter(issue, "requested", { requested_by_id: "me" })).toBe(true);
+    expect(issueMatchesListFilter(issue, "requested", { requested_by_id: "bob" })).toBe(false);
+    expect(
+      issueMatchesListFilter({ title: "partial" }, "requested", { requested_by_id: "me" }),
+    ).toBe("unknown");
+  });
+
   it("project filters react to project changes", () => {
     expect(
       listFilterDependsOn("project:p1", { project_id: "p1" }, { ...none, project: true }),

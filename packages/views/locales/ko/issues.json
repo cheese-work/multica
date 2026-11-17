@@ -927,6 +927,7 @@
     "status_queued": "대기 중",
     "status_dispatched": "시작 중",
     "status_waiting_local_directory": "로컬 디렉터리 대기 중",
+    "status_deferred": "보류됨",
     "status_running": "작업 중",
     "status_completed": "완료됨",
     "status_failed": "실패함",
@@ -1179,6 +1180,7 @@
     "variant_my_any": "모든 관련",
     "variant_my_assigned": "나에게 할당됨",
     "variant_my_created": "내가 생성함",
+    "variant_my_requested": "내가 요청함",
     "variant_my_involved": "참여 중"
   },
   "plugins": {

@@ -34,7 +34,7 @@ test("required check names are unchanged and the aggregate backend-tests gates o
   assert.ok(aggregate, "missing backend-tests job");
   assert.match(policy, /required_checks:\n  - backend-tests\n  - security-gate\n/);
   assert.match(ci, /^  backend:\n/m);
-  assert.match(aggregate, /^    needs: \[changes, migration-prefix-check, backend-test-shards\]$/m);
+  assert.match(aggregate, /^    needs: \[changes, migration-prefix-check, migration-checks, backend-test-shards\]$/m);
   assert.doesNotMatch(aggregate, /services:|setup-go|test-go\.sh/, "the aggregate runs no tests");
   const guard = aggregate.match(/      - name: Require shard results[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
   assert.ok(guard, "aggregate must check the shard result");
@@ -60,4 +60,16 @@ test("the Test step fails the shard when test-go.sh fails, despite the tee pipe"
   const command = run.replace(/bash scripts\/test-go\.sh .*? 2>&1/, "false 2>&1");
   const result = spawnSync("bash", [...flags.split(" "), "-c", command], { env: { ...process.env, RUNNER_TEMP: tmpdir() } });
   assert.notEqual(result.status, 0, `step must fail when tests fail (ran: bash ${flags} -c '${command}')`);
+});
+
+// CHE-6481: the `rest` shard's Decision card E2E step hung until the 60 min job limit in two runs and
+// left no log. Every wait in it must be bounded, and a hang must fail the step so the log dump runs.
+test("the decision card E2E step is bounded and its log dump runs when it fails", () => {
+  const step = shards.match(/      - name: Decision card E2E\n[\s\S]*?(?=^      - name: )/m)?.[0] ?? "";
+  assert.ok(step, "missing Decision card E2E step");
+  const minutes = Number(step.match(/^        timeout-minutes: (\d+)$/m)?.[1]);
+  assert.ok(minutes > 0 && minutes <= 15, `step timeout-minutes must be 1..15, got ${minutes}`);
+  const globalTimeout = Number(step.match(/playwright test [^\n]*--global-timeout=(\d+)/)?.[1]);
+  assert.ok(globalTimeout > 0 && globalTimeout < minutes * 60_000, "playwright --global-timeout must be set and end before the step timeout");
+  assert.match(shards, /- name: Show decision card E2E logs\n        if: \$\{\{ failure\(\) && matrix\.partition == 'rest' \}\}/);
 });

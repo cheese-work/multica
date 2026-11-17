@@ -198,3 +198,24 @@ func TestCIWatchSchemaUpDownUpAndUniqueKeys(t *testing.T) {
 		t.Fatalf("tables after up-down-up = %d, want 7", got)
 	}
 }
+
+// CHE-4279 (S7): one P4 notification per (repo, signature, day).
+func TestCIWatchEventNotifyIndexIsOneConcurrentBuild(t *testing.T) {
+	t.Parallel()
+	const version, index = "999c_ci_watch_event_notify_uidx", "ci_watch_event_notify_uidx"
+	if got := concurrentIndexCleanups[version]; got != index {
+		t.Errorf("cleanup index = %q, want %q", got, index)
+	}
+	req := requiredConcurrentIndexes[version]
+	if req.IndexRegclass != index || req.TableRegclass != "ci_watch_event" || !req.Unique || req.Predicate == "" {
+		t.Errorf("requirement = %+v", req)
+	}
+	up := stripSQLComments(readWakeupMigration(t, version, "up"))
+	if strings.Count(up, ";") != 1 || !strings.Contains(up, "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "+index) {
+		t.Errorf("up must be one concurrent re-runnable build:\n%s", up)
+	}
+	down := stripSQLComments(readWakeupMigration(t, version, "down"))
+	if strings.Count(down, ";") != 1 || !strings.Contains(down, "DROP INDEX CONCURRENTLY IF EXISTS "+index) {
+		t.Errorf("down must be one concurrent drop:\n%s", down)
+	}
+}

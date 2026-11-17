@@ -791,7 +791,7 @@ export interface CreateIssueViewRequest {
   name: string;
   scope_type: "workspace" | "my" | "project";
   scope_id?: string | null;
-  scope_variant?: "assigned" | "created" | "involved" | "any" | "members" | "agents" | null;
+  scope_variant?: "assigned" | "created" | "requested" | "involved" | "any" | "members" | "agents" | null;
   visibility: "private" | "workspace";
   definition_version: number;
   query: Record<string, unknown>;

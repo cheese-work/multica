@@ -901,6 +901,12 @@ type CiSignatureOwner struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	State         string             `json:"state"`
 	ClosedAt      pgtype.Timestamptz `json:"closed_at"`
+	Kind          string             `json:"kind"`
+	FailCount     int32              `json:"fail_count"`
+	LastRunUrl    string             `json:"last_run_url"`
+	DigestClass   string             `json:"digest_class"`
+	LastDigestAt  pgtype.Timestamptz `json:"last_digest_at"`
+	CheckKey      string             `json:"check_key"`
 }
 
 type CiWatchAction struct {
@@ -952,6 +958,8 @@ type CiWatchConfig struct {
 	MaxOwnerWakesPerHour    int32              `json:"max_owner_wakes_per_hour"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	AuthorizedByMemberID    pgtype.UUID        `json:"authorized_by_member_id"`
+	AuthorizedAt            pgtype.Timestamptz `json:"authorized_at"`
 }
 
 type CiWatchConfigAudit struct {
@@ -964,6 +972,20 @@ type CiWatchConfigAudit struct {
 	OldValue    pgtype.Text        `json:"old_value"`
 	NewValue    pgtype.Text        `json:"new_value"`
 	ChangedAt   pgtype.Timestamptz `json:"changed_at"`
+}
+
+type CiWatchEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	Kind          string             `json:"kind"`
+	RunID         int64              `json:"run_id"`
+	Day           pgtype.Date        `json:"day"`
+	PausedUntil   pgtype.Timestamptz `json:"paused_until"`
+	Detail        string             `json:"detail"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type ClientUsageDaily struct {
@@ -1459,6 +1481,15 @@ type DmProgressDataIncident struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type DmProgressDelivery struct {
+	LineageID     pgtype.UUID        `json:"lineage_id"`
+	Seq           int64              `json:"seq"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	Payload       []byte             `json:"payload"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type DmProgressFollow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -1657,6 +1688,7 @@ type GithubPullRequestCheckRun struct {
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	IsStatusContext bool        `json:"is_status_context"`
 	RedCause        pgtype.Text `json:"red_cause"`
+	AppID           pgtype.Int8 `json:"app_id"`
 }
 
 type GithubPullRequestCheckSuite struct {
@@ -1667,6 +1699,41 @@ type GithubPullRequestCheckSuite struct {
 	Conclusion pgtype.Text        `json:"conclusion"`
 	Status     string             `json:"status"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubReleaseDeploy struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	SourceSha   string             `json:"source_sha"`
+	ImageDigest string             `json:"image_digest"`
+	OldSha      string             `json:"old_sha"`
+	RunID       int64              `json:"run_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	LabeledAt   pgtype.Timestamptz `json:"labeled_at"`
+	ClaimedAt   pgtype.Timestamptz `json:"claimed_at"`
+}
+
+type GithubReleaseIntake struct {
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	RunID          int64              `json:"run_id"`
+	OldSha         string             `json:"old_sha"`
+	SourceSha      string             `json:"source_sha"`
+	ImageDigest    string             `json:"image_digest"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type GithubReleasePending struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	RunID       int64              `json:"run_id"`
+	OldSha      string             `json:"old_sha"`
+	SourceSha   string             `json:"source_sha"`
+	ImageDigest string             `json:"image_digest"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type GithubRouteGrant struct {

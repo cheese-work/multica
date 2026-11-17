@@ -41,7 +41,7 @@ func guardMulticaBin(t *testing.T) string {
 			return
 		}
 		guardBinPath = filepath.Join(guardBinDir, "multica")
-		build := exec.Command("go", "build", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
+		build := exec.Command("go", "build", "-buildvcs=false", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
 		build.Env = append(os.Environ(), "HOME="+guardBuildHome)
 		out, err := build.CombinedOutput()
 		if err != nil {
