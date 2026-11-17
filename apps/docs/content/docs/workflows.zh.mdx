@@ -110,6 +110,18 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 如果**设置**中没有**工作流**，说明当前工作区还不能使用这个功能，状态仍在**设置 → 任务状态**中管理。
 
+## 暂缓处理项目中的新请求 [#intake-hold]
+
+工作区可以在一段时间内，把新的顶层请求留在 **Backlog**，让人先阅读并放行，再由智能体开始工作。规则是工作区设置 `intake_hold`：一个列表，每个项目一条。每条包含 `project_id`、`mode`、`starts_at`、`ends_at`、`exempt_types`、`exempt_labels`、`exempt_escalation_classes`、`exempt_autopilot_ids`、`exempt_issue_ids` 和 `source`。智能体通过工作区设置补丁修改它，由所有者用通行密钥批准。没有条目的项目不受影响。
+
+模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。暂缓生效后，智能体或令牌把被暂缓的任务移出 Backlog，会被拒绝，返回 HTTP 409 和代码 `intake_hold`。本次发布只新增设置和读取字段，尚不拒绝任何操作。
+
+`GET /api/issues/{id}` 返回 `intake_hold` 字段，包含 `source`、`held`、`owned`、`reason`、`ends_at` 和 `exempt_after`。`owned` 在 `ends_at` 之后仍为 true，因此可以区分暂缓覆盖过的任务和从未覆盖的任务。有父任务的任务和没有条目的项目不返回该字段，列表接口也不返回。`reason` 取 `held`、`ended`、`not_started`、`mode_off`、`created_before_start`、`left_backlog`、`released_by_member`、`exempt_type`、`exempt_label`、`exempt_escalation_class`、`exempt_autopilot` 或 `exempt_issue_id`。标题没有类型的任务（例如 `plain words`）会被暂缓。优先级不豁免任何任务。
+
+智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。
+
+人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。
+
 ## 相关指引
 
 - [项目](/projects) — 组织使用同一套流程的任务。
