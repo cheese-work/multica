@@ -61,18 +61,7 @@ func (h *Handler) SweepHandoffIntents(ctx context.Context, now time.Time) {
 func (h *Handler) pruneHandoffIntents(ctx context.Context, now time.Time) {}
 
 func (h *Handler) recoverHandoffIntent(ctx context.Context, intent db.IssueHandoffDispatch) {
-	// An intent whose run exists has nothing to supersede: dispatch settles it.
-	if _, err := h.Queries.GetTaskByHandoffDispatch(ctx, intent.ID); errors.Is(err, pgx.ErrNoRows) {
-		superseded, err := h.Queries.HandoffDispatchSuperseded(ctx, db.HandoffDispatchSupersededParams{
-			IssueID: intent.IssueID, TargetType: intent.TargetType, TargetID: intent.TargetID,
-			StatusHistoryID: intent.StatusHistoryID, CreatedAt: intent.CreatedAt,
-		})
-		if err == nil && superseded.Bool {
-			h.skipHandoffIntent(ctx, intent.ID, "superseded")
-			return
-		}
-	}
-	_, err := h.dispatchHandoffIntent(ctx, intent.ID)
+	_, err := h.dispatchHandoffIntentOpt(ctx, intent.ID, true)
 	if err == nil {
 		return
 	}

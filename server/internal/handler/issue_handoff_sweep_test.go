@@ -226,3 +226,39 @@ func TestSweepHandoffIntents_SettlesTheDestinationsCommentReceipt(t *testing.T) 
 		t.Fatalf("pending receipts after the sweep dispatch = %d, want 0", n)
 	}
 }
+
+// Review P1 (x99-codex-terra): supersession is judged inside the issue-locked
+// dispatch transaction. A status move that commits after the sweep claimed the
+// intent, even to the same assignee, must not be followed by the stale handoff.
+func TestSweepHandoffIntents_MoveBetweenClaimAndDispatchMakesNoRun(t *testing.T) {
+	issueID, _ := handoffDispatchFixture(t)
+	failDispatchAt(t, "before_dispatch")
+	moveIntoHandoffStep(t, issueID, nil)
+	intent := wantOneIntent(t, issueID)
+	dueIntent(t, intent.ID)
+	// The sweep has claimed the intent; the move lands just before its dispatch.
+	moved := false
+	testHandler.handoffDispatchHook = func(point string) error {
+		if point != "before_dispatch" || moved {
+			return nil
+		}
+		moved = true
+		testHandler.handoffDispatchHook = nil
+		time.Sleep(10 * time.Millisecond) // the later move gets a later timestamp
+		issueWriters[0].write(t, issueID, map[string]any{"status": "in_review"}, nil).Want(200)
+		return nil
+	}
+
+	sweepHandoffs()
+
+	var runs int
+	dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE handoff_dispatch_id = $1`, intent.ID).Scan(&runs)
+	if runs != 0 {
+		t.Fatalf("runs made for the stale intent = %d, want 0", runs)
+	}
+	var state, reason string
+	dbfx.QueryRow(t, `SELECT state, COALESCE(skip_reason, '') FROM issue_handoff_dispatch WHERE id = $1`, intent.ID).Scan(&state, &reason)
+	if state != "skipped" || reason != "superseded" {
+		t.Fatalf("intent = (%s, %q), want (skipped, superseded)", state, reason)
+	}
+}
