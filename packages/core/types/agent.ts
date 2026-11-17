@@ -151,6 +151,8 @@ export interface RuntimeDevice {
   update_schedule?: RuntimeUpdateSchedule | null;
   /** Result of the machine's last update cycle; null until one ran. */
   last_update_outcome?: RuntimeUpdateOutcome | null;
+  /** When that outcome was written (RFC 3339); null until a cycle ran. */
+  last_update_outcome_at?: string | null;
   /**
    * Runtime-wide cap on tasks running at once across every agent bound to
    * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
