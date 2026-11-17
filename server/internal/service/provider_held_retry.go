@@ -38,6 +38,7 @@ type heldProviderRetry struct {
 	overlay      runtimeMCPOverlayData
 	holdProvider pgtype.Text
 	holdSeconds  pgtype.Int4
+	workspaceID  pgtype.UUID
 }
 
 // isHeldProviderRetryReason names the reasons the held retry covers: provider
@@ -68,6 +69,7 @@ func (s *TaskService) planHeldProviderRetry(ctx context.Context, reason string, 
 	plan := heldProviderRetry{
 		engaged:     true,
 		reason:      reason,
+		workspaceID: agent.WorkspaceID,
 		maxAttempts: pgtype.Int4{Int32: retryAttemptCeiling(reason, parent.MaxAttempts), Valid: true},
 		overlay:     s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent),
 	}
@@ -132,6 +134,15 @@ func createHeldProviderRetry(ctx context.Context, qtx *db.Queries, tx pgx.Tx, fa
 		ChangedCondition: "recovery_reserved",
 		RecoveryTaskID:   childID,
 	}, func(ctx context.Context, sp pgx.Tx) error {
+		// The release controller treats a missing breaker row as unknown state
+		// and releases nothing, and only a trip or a success writes one. Make the
+		// breaker known (closed) so a first failure's held row can get a canary
+		// instead of expiring. Rolls back with the savepoint.
+		if err := db.New(sp).EnsureProviderBreaker(ctx, db.EnsureProviderBreakerParams{
+			WorkspaceID: plan.workspaceID, Provider: plan.holdProvider.String,
+		}); err != nil {
+			return fmt.Errorf("ensure provider breaker for held retry: %w", err)
+		}
 		created, err := create(ctx, db.New(sp), db.CreateRetryTaskParams{
 			NewTaskID:            childID,
 			ID:                   failed.ID,

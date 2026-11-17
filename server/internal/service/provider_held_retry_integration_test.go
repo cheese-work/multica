@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -356,4 +357,50 @@ func TestHeldRetryUnassignedIssueGetsNoHeldRetry(t *testing.T) {
 	if s.children != 0 || s.reservations != 0 || s.receipts != 0 {
 		t.Fatalf("children=%d reservations=%d receipts=%d, want 0, 0, 0 for an unassigned issue", s.children, s.reservations, s.receipts)
 	}
+}
+
+// CHE-5345 review P1: a first provider failure leaves no provider_breaker row
+// (only a trip or a success writes one), and the release controller releases
+// nothing without a row. The held retry must therefore leave the breaker known
+// (closed) so the controller can release it, whichever reason held it. Fake
+// time: the controller tick passes its own now. The 10-minute cooldown in
+// fire_at survives the release.
+func TestHeldRetryReleasesWithoutPreexistingBreaker(t *testing.T) {
+	forEachHeldRetryReason(t, func(t *testing.T, o ownerFixture, reason string) {
+		ctx := context.Background()
+		if _, err := o.Pool.Exec(ctx, `UPDATE agent SET model='gpt-5.5' WHERE id=$1`, o.agentID); err != nil {
+			t.Fatal(err)
+		}
+		id := o.runningTask(t, nil)
+		s := o.failWith(t, id, reason)
+		s.wantFailed(t, reason)
+		var child, provider string
+		var fireAt pgtype.Timestamptz
+		if err := o.Pool.QueryRow(ctx, `
+			SELECT id::text, context->'provider_hold'->>'provider', fire_at
+			FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1`, id).Scan(&child, &provider, &fireAt); err != nil {
+			t.Fatalf("no held retry: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = o.Pool.Exec(ctx, `DELETE FROM provider_breaker WHERE workspace_id=$1 AND provider=$2`, o.WorkspaceID, provider)
+		})
+		if provider == heldUnknownProvider {
+			t.Fatalf("held provider=%q, want the agent's known provider", provider)
+		}
+		now := time.Now().Add(providerCapacityRetryWait + time.Minute)
+		if err := o.svc.TaskSvc.ReleaseProviderHeldTasks(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+		var held bool
+		var released pgtype.Timestamptz
+		if err := o.Pool.QueryRow(ctx, `SELECT context ? 'provider_hold', fire_at FROM agent_task_queue WHERE id=$1`, child).Scan(&held, &released); err != nil {
+			t.Fatal(err)
+		}
+		if held {
+			t.Fatalf("held retry %s still held after a release tick with no breaker row, want one canary released", child)
+		}
+		if !released.Time.Equal(fireAt.Time) {
+			t.Fatalf("release moved fire_at %s -> %s, want the cooldown kept", fireAt.Time, released.Time)
+		}
+	})
 }
