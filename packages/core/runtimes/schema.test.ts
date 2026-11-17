@@ -92,6 +92,12 @@ describe("runtime machine pause response contract", () => {
     );
   });
 
+  it("keeps a scheduled_update pause owned by an update cycle (CHE-5466)", () => {
+    expect(AgentRuntimeSchema.parse({ ...base, pause: { ...pause, reason: "scheduled_update", paused_by: null } }).pause?.reason).toBe(
+      "scheduled_update",
+    );
+  });
+
   it("falls back to a null paused_by and empty times", () => {
     const parsed = AgentRuntimeSchema.parse({ ...base, pause: { reason: "maintenance", paused_by: 7 } });
     expect(parsed.pause).toEqual({ reason: "maintenance", paused_by: null, paused_at: "", expires_at: "" });

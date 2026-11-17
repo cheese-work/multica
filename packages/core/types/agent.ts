@@ -56,7 +56,7 @@ export interface AgentInvocationTargetInput {
 export type RuntimeVisibility = "private" | "public";
 
 /** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
-export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
+export type RuntimePauseReason = "maintenance" | "incident" | "suspended" | "scheduled_update";
 
 /** Last update cycle result of a machine; `unknown` is an outcome a newer server added. */
 export type RuntimeUpdateOutcome =

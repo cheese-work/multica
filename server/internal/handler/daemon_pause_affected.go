@@ -71,7 +71,7 @@ func affectedMachineToResponse(row db.ListAffectedMachinesRow) AffectedMachineRe
 	}
 	key := machineKeyOf(row.MachineOwnerID, row.DaemonID)
 	if row.PauseReason.Valid {
-		pause := pauseToResponse(db.DaemonPause{Reason: row.PauseReason.String, PausedAt: row.PausedAt})
+		pause := pauseToResponse(db.DaemonPause{Reason: row.PauseReason.String, PausedAt: row.PausedAt, ExpiresAt: row.PauseExpiresAt})
 		machine.State = "paused"
 		machine.Reason = &row.PauseReason.String
 		machine.ExpiresAt = &pause.ExpiresAt
