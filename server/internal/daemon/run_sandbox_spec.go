@@ -40,7 +40,7 @@ func buildRunSandboxSpec(in runSandboxInput) (sandbox.Spec, []string) {
 	var notes []string
 	cands := []string{agentInstallRoot(in.AgentExe)}
 	cands = append(cands, filepath.SplitList(in.Env["PATH"])...)
-	cands = append(cands, in.GuardShimDir, in.BrokerShimDir, filepath.Dir(in.DaemonExe))
+	cands = append(cands, in.GuardShimDir, in.BrokerShimDir, in.DaemonExe)
 	for _, r := range in.Repos {
 		if r.Bare == "" {
 			notes = append(notes, fmt.Sprintf("sandbox: repository %s is not in the cache at launch; its objects directory is not bound", r.URL))
@@ -55,7 +55,7 @@ func buildRunSandboxSpec(in runSandboxInput) (sandbox.Spec, []string) {
 	var ro []string
 	seen := map[string]bool{}
 	for _, p := range cands {
-		if p == "" || p == "." || !filepath.IsAbs(p) || seen[p] || !isDir(p) {
+		if p == "" || p == "." || !filepath.IsAbs(p) || seen[p] || !exists(p) {
 			continue
 		}
 		seen[p] = true
@@ -95,7 +95,7 @@ func agentInstallRoot(exe string) string {
 	return filepath.Dir(rp)
 }
 
-func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func under(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")

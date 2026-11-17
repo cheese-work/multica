@@ -85,7 +85,7 @@ func TestBuildRunSandboxSpec_Table(t *testing.T) {
 			if tc.broker {
 				wantRO = append(wantRO, in.BrokerShimDir)
 			}
-			wantRO = append(wantRO, filepath.Dir(in.DaemonExe), repocache.ObjectsDir(in.Repos[0].Bare))
+			wantRO = append(wantRO, in.DaemonExe, repocache.ObjectsDir(in.Repos[0].Bare))
 			want := sandbox.Spec{
 				WorkDir: in.WorkDir, TempDir: in.TempDir, Home: in.Home,
 				ReadOnly: wantRO, Env: []string{"FOO=bar", "PATH=" + in.Env["PATH"]},
