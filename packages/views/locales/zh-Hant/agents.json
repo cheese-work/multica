@@ -1129,5 +1129,22 @@
     "paused_by_note": "{{name}} 已暫停 · {{time}}",
     "paused_at_note": "已暫停 {{time}}",
     "paused_reason_note": "原因：{{reason}}"
+  },
+  "background_use": {
+    "title": "背景代理",
+    "intro": "此代理在背景處理小任務。在這些任務中它不是聊天代理。",
+    "scope_workspace": "工作區",
+    "scope_personal": "個人 · 你的設定",
+    "link_workspace": "工作區 → 背景代理",
+    "link_personal": "個人 → 背景代理",
+    "member_note": "工作區任務由擁有者與管理員設定。你只能看到自己的個人選擇，看不到其他人的。",
+    "jobs": {
+      "dm_title": "私訊標題",
+      "quick_actions": "快速動作",
+      "compact": "壓縮",
+      "routing": "路由"
+    },
+    "access_note": "此代理是工作區背景代理。將存取權限縮小為「僅自己」或「指定人員」會使其不再符合工作區背景任務的條件。這些任務之後會使用備用代理；未設定備用代理時走無代理路徑。",
+    "access_note_readonly": "只有代理擁有者可以變更存取權限。縮小為「僅自己」或「指定人員」會使其不再符合工作區背景任務的條件。這些任務之後會使用備用代理；未設定備用代理時走無代理路徑。"
   }
 }

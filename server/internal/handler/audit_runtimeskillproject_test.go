@@ -168,6 +168,28 @@ var e2Cases = []e2Case{
 			wantAfter:  map[string]any{"file_count": float64(0)},
 		}
 	}},
+	{"skill version restore", "skill.update", "skill", func(t *testing.T) e2Run {
+		id := e2Skill(t, "e2-restore")
+		dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": id, "path": "notes.md", "content": "later notes"})
+		dbfx.Exec(t, `INSERT INTO skill_version (workspace_id, skill_id, version, name, content, content_hash, source)
+			SELECT workspace_id, id, 1, name, content, 'e2-restore', 'update' FROM skill WHERE id = $1`, id)
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM skill_version WHERE skill_id = $1`, id)
+		})
+		return e2Run{
+			targetID: id, wantCode: http.StatusOK,
+			do: func() *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				testHandler.RestoreSkillVersion(w, e2Req(http.MethodPost, "/api/skills/"+id+"/versions/1/restore", nil, "id", id, "version", "1"))
+				return w
+			},
+			applied: func(t *testing.T) bool {
+				return dbfx.Count(t, `SELECT count(*) FROM skill_file WHERE skill_id = $1`, id) == 0
+			},
+			wantBefore: map[string]any{"file_count": float64(1)},
+			wantAfter:  map[string]any{"file_count": float64(0)},
+		}
+	}},
 	{"skill label add", "skill.label.attach", "skill", func(t *testing.T) e2Run {
 		id, label := e2Skill(t, "e2-label-add"), e2SkillLabel(t)
 		return e2Run{

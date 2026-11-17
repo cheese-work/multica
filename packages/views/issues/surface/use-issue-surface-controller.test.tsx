@@ -502,6 +502,20 @@ describe("useIssueSurfaceController", () => {
     });
   });
 
+  it("maps my requested scope to the unified personal query contract", async () => {
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: { type: "my", relation: "requested", userId: "user-1" },
+          modes: ["list"],
+        }),
+      { wrapper: makeWrapper(qc, "my:user-1:requested") },
+    );
+
+    await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
+    expect(result.current.tableQuerySpec.scope).toEqual({ kind: "my", relation: "requested" });
+  });
+
   it("keeps actor scopes keyed by actor in the unified query shape", async () => {
     const { result } = renderHook(
       () =>

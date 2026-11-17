@@ -857,7 +857,46 @@ func normalizeCodexMcpServerConfig(server map[string]any) map[string]any {
 		}
 	}
 	normalized["experimental_use_rmcp_client"] = true
+	mapCodexBearerEnvReference(normalized)
 	return normalized
+}
+
+var codexBearerEnvRefRe = regexp.MustCompile(`^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+// mapCodexBearerEnvReference rewrites an `Authorization: Bearer ${VAR}` header
+// into Codex's `bearer_token_env_var = "VAR"`. Codex does not expand `${...}`
+// in `http_headers`, so the literal string would be sent as the token.
+func mapCodexBearerEnvReference(server map[string]any) {
+	if _, set := server["bearer_token_env_var"]; set {
+		return
+	}
+	headers, ok := server["http_headers"].(map[string]any)
+	if !ok {
+		return
+	}
+	for k, v := range headers {
+		if !strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		str, _ := v.(string)
+		m := codexBearerEnvRefRe.FindStringSubmatch(str)
+		if m == nil {
+			return
+		}
+		server["bearer_token_env_var"] = m[1]
+		rest := make(map[string]any, len(headers))
+		for hk, hv := range headers {
+			if hk != k {
+				rest[hk] = hv
+			}
+		}
+		if len(rest) == 0 {
+			delete(server, "http_headers")
+		} else {
+			server["http_headers"] = rest
+		}
+		return
+	}
 }
 
 func isMulticaMcpSelectorKey(k string) bool {

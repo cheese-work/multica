@@ -136,6 +136,7 @@ const mockToastError = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
 const mockModalOpen = vi.hoisted(() => vi.fn());
 const mockGetAgent = vi.hoisted(() => vi.fn());
+const mockGetBackgroundUse = vi.hoisted(() => vi.fn());
 const mockUpdateAgent = vi.hoisted(() => vi.fn());
 const mockArchiveAgent = vi.hoisted(() => vi.fn());
 const mockCancelAgentTasks = vi.hoisted(() => vi.fn());
@@ -159,6 +160,10 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryFn: () => mockGetAgent(agentId),
     enabled: !!wsId && !!agentId,
     retry: false,
+  }),
+  agentBackgroundUseOptions: (wsId: string, agentId: string) => ({
+    queryKey: ["agents", wsId, "detail", agentId, "background-use"],
+    queryFn: () => mockGetBackgroundUse(agentId),
   }),
   cacheAgentResponse: (
     queryClient: QueryClient,
@@ -221,6 +226,7 @@ vi.mock("@multica/core/paths", () => ({
     agentDetail: (id: string) => `/acme/agents/${id}`,
     newAgentManual: () => "/acme/agents/new/manual",
     chat: () => "/acme/chat",
+    settings: () => "/acme/settings",
   }),
 }));
 vi.mock("@multica/core/api", () => {
@@ -317,6 +323,7 @@ beforeEach(() => {
   runtimesRef.current = [];
   agentsRef.current = [baseAgent];
   mockGetAgent.mockRejectedValue(new ApiError("not found", 404, "Not Found"));
+  mockGetBackgroundUse.mockResolvedValue([]);
   mockUpdateAgent.mockResolvedValue({ ...baseAgent, model: "new-model" });
   mockArchiveAgent.mockResolvedValue(undefined);
   mockCancelAgentTasks.mockResolvedValue({ cancelled: 2 });
@@ -828,5 +835,59 @@ describe("AgentDetailPage more actions", () => {
     expect(
       within(openMoreActions()).queryByRole("menuitem", { name: /Cancel all/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentDetailPage background agent notice (CHE-5439)", () => {
+  const uses = [
+    { scope: "workspace", job: "dm_title" },
+    { scope: "workspace", job: "quick_actions" },
+    { scope: "personal", job: "quick_actions" },
+  ];
+
+  it("lists each job with its scope and links it to its settings tab", async () => {
+    membersRef.current = [{ user_id: "user-1", role: "admin" }];
+    mockGetBackgroundUse.mockResolvedValue(uses);
+    renderPage();
+
+    const banner = (await screen.findByText("Background agent")).closest(
+      "[role='status']",
+    ) as HTMLElement;
+    const rows = within(banner).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining("DM title"),
+      expect.stringContaining("Quick actions"),
+      expect.stringContaining("Quick actions"),
+    ]);
+    expect(within(rows[0]!).getByText("Workspace")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("Personal · yours")).toBeInTheDocument();
+    expect(
+      within(rows[0]!).getByRole("link", { name: "Workspace → Background agents" }),
+    ).toHaveAttribute("href", "/acme/settings?tab=background-agents");
+    expect(
+      within(rows[2]!).getByRole("link", { name: "Personal → Background agents" }),
+    ).toHaveAttribute("href", "/acme/settings?tab=personal-background-agents");
+  });
+
+  it("gives a plain member no link for workspace jobs, only for their own personal job", async () => {
+    mockGetBackgroundUse.mockResolvedValue(uses);
+    renderPage();
+
+    const banner = (await screen.findByText("Background agent")).closest(
+      "[role='status']",
+    ) as HTMLElement;
+    expect(
+      within(banner).queryByRole("link", { name: "Workspace → Background agents" }),
+    ).toBeNull();
+    expect(
+      within(banner).getByRole("link", { name: "Personal → Background agents" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no notice for an agent that serves no background job", async () => {
+    renderPage();
+    await screen.findByRole("button", { name: "Assign work" });
+    await waitFor(() => expect(mockGetBackgroundUse).toHaveBeenCalled());
+    expect(screen.queryByText("Background agent")).toBeNull();
   });
 });

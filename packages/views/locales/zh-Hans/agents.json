@@ -1129,5 +1129,22 @@
     "paused_by_note": "{{name}} 已暂停 · {{time}}",
     "paused_at_note": "已暂停 {{time}}",
     "paused_reason_note": "原因：{{reason}}"
+  },
+  "background_use": {
+    "title": "后台智能体",
+    "intro": "该智能体在后台处理小任务。在这些任务中它不作为聊天智能体。",
+    "scope_workspace": "工作区",
+    "scope_personal": "个人 · 你的设置",
+    "link_workspace": "工作区 → 后台智能体",
+    "link_personal": "个人 → 后台智能体",
+    "member_note": "工作区任务由所有者和管理员设置。你只能看到自己的个人选择，看不到其他人的。",
+    "jobs": {
+      "dm_title": "私信标题",
+      "quick_actions": "快捷操作",
+      "compact": "压缩",
+      "routing": "路由"
+    },
+    "access_note": "该智能体是工作区后台智能体。将访问权限缩小为“仅自己”或“指定人员”会使其不再符合工作区后台任务的条件。这些任务随后会使用备用智能体；未设置备用智能体时走无智能体路径。",
+    "access_note_readonly": "只有智能体所有者可以更改访问权限。缩小为“仅自己”或“指定人员”会使其不再符合工作区后台任务的条件。这些任务随后会使用备用智能体；未设置备用智能体时走无智能体路径。"
   }
 }

@@ -33,6 +33,11 @@ type HandoffPreviewBinding struct {
 	PreviousAssigneeID   *string `json:"previous_assignee_id"`
 	HandlerType          *string `json:"handler_type"`
 	HandlerID            *string `json:"handler_id"`
+	// CommentRevisions is the revision of each comment the confirmation showed
+	// as handoff context (CHE-5489). With a binding present, every comment in
+	// attach_comment_ids needs one, and it must still be the comment's revision
+	// under the status transaction's lock.
+	CommentRevisions map[string]int64 `json:"comment_revisions,omitempty"`
 }
 
 func sameOptional(a *string, b string) bool {

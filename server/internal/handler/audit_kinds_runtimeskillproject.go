@@ -18,6 +18,9 @@ func init() {
 	for _, kind := range []string{"runtime.pause", "runtime.resume"} {
 		auditKinds[kind] = auditKindSpec{TargetType: "runtime", Allow: []string{"paused", "reason"}}
 	}
+	for _, kind := range []string{"runtime.update_schedule.set", "runtime.update_schedule.clear"} {
+		auditKinds[kind] = auditKindSpec{TargetType: "runtime", Allow: []string{"scheduled", "enabled", "cron", "timezone", "window_minutes"}}
+	}
 	auditKinds["runtime.update"] = auditKindSpec{TargetType: "runtime", Allow: []string{"target_version"}}
 	// name and description are request text: digest only.
 	auditKinds["runtime.local_skill.import"] = auditKindSpec{

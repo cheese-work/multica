@@ -1,5 +1,6 @@
 "use client";
 
+import { createContext, useContext } from "react";
 import type { CSSProperties } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { SidebarTrigger, useSidebarSafe } from "@multica/ui/components/ui/sidebar";
@@ -22,6 +23,13 @@ import { useAppShell } from "./app-shell-context";
  * spells its own gutter is the bug coming back.
  */
 export const PAGE_GUTTER = "px-[var(--page-padding-x,var(--space-md,1rem))]";
+
+/**
+ * What every `PageHeader` shows at its right end. The shell that mounts the
+ * pages fills it (the machine banner icon); a header rendered outside a shell,
+ * as in isolated tests, shows nothing and needs no providers for it.
+ */
+export const PageHeaderTrailingContext = createContext<React.ReactNode>(null);
 
 /**
  * The centred column a detail page reads inside: `runtimes`, and the agent and
@@ -159,6 +167,7 @@ interface PageHeaderProps {
  */
 export function PageHeader({ children, leading, className }: PageHeaderProps) {
   const titleBar = usePageHeaderTitleBar();
+  const trailing = useContext(PageHeaderTrailingContext);
   return (
     <header
       data-mc="page-header"
@@ -172,6 +181,7 @@ export function PageHeader({ children, leading, className }: PageHeaderProps) {
     >
       {leading ?? <CollapsedNavTrigger />}
       {children}
+      {trailing}
     </header>
   );
 }

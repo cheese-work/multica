@@ -355,6 +355,17 @@ export function useSettingsSearchIndex(
         title: t(($) => $.background_agents.jobs[job].label),
         description: t(($) => $.background_agents.jobs[job].hint),
       })),
+      {
+        tab: "personal-background-agents",
+        title: t(($) => $.personal_background_agents.title),
+        description: t(($) => $.personal_background_agents.description),
+      },
+      ...(["dm_title", "quick_actions"] as const).map((job) => ({
+        tab: "personal-background-agents",
+        anchor: `personal-background-agents-${job}`,
+        title: t(($) => $.background_agents.jobs[job].label),
+        description: t(($) => $.personal_background_agents.jobs[job].hint),
+      })),
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",

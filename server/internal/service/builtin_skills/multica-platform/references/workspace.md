@@ -187,3 +187,18 @@ One line per verb. Run `multica <command> --help` for flags. Read verbs have no 
 | `multica guard plugin list` | List the plugins of every scope in the stored policy |
 | `multica guard plugin get <name>` | Show every scope's definition of one plugin |
 | `multica guard plugin set --file <policy.json>` | Validate a policy and write the action file for `decision request --action-file`; changes nothing until approved |
+
+## CI failure watcher
+
+Workspace admin. Settings are per repo (`<owner/name>`).
+
+- `multica ci-watch get <owner/name>` shows the watcher settings.
+- `multica ci-watch set <owner/name> [flags]` changes settings; only the flags
+  you pass are sent. Flags: `--mode off|shadow|act`, `--p1-mode` to
+  `--p4-mode shadow|act`, `--branches`, `--events`, `--workflows-include`,
+  `--workflows-exclude` (comma-separated), `--fix-owner-kind squad|agent` with
+  `--fix-owner-id`, `--clear-fix-owner`, `--notify-member <user-id>`,
+  `--clear-notify-member`, `--max-reruns`, `--max-new-issues`,
+  `--max-owner-wakes`.
+- `multica ci-watch events <owner/name> [--limit N]` lists recent watcher
+  events (1 to 200, server default 50).

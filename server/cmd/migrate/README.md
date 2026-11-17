@@ -368,3 +368,10 @@ Examples:
 The up and down SQL bytes are unchanged from `v0.10.0`. None of the 52 upstream migrations already on this tree under fork names is touched,
 and none reappears under its upstream name. A later sync must not reintroduce the upstream filenames under their original prefixes.
 Irreversible down files: `999k04_connected_apps` (drops 7 tables) and `999k46_issue_view_preference_projects_page` (deletes saved `projects_page` preferences).
+
+## Upstream-merge renumber map and parity checks
+
+CI job `migration-checks` (required through `backend-tests`, on `pull_request` and `merge_group`) runs two checks (CHE-6210 A2c):
+
+- **Order.** Runs only when the change adds `server/cmd/migrate/renumber-map.json`: a JSON array of `{"from": "<upstream stem>", "to": "<stem on this tree>"}` in upstream order. It fails when a `to` stem does not sort after every unmapped `up` file (byte order of the file name, as the runner sorts), when the `to` stems leave array order, when a `down` file is missing, or when a stem in this file's registries names no migration. Use a letter-suffix prefix after `999j_`: the numeric suggestion of `scripts/migration-prefix-check.mjs` sorts before it. Run locally: `node scripts/migration-order-check.mjs`.
+- **Parity.** Runs when the change touches `server/migrations` or this directory. `scripts/migration-parity.sh <base>` applies the tree to an empty database, applies the base commit and then the tree to a second one, and fails on any difference in normalized `pg_dump --schema-only`. When the map exists it also rolls the mapped `down` files back and lists schema differences from the base. Schema parity does not prove data preservation.

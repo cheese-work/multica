@@ -673,7 +673,8 @@
       "voice_input": "音声入力",
       "provider_breakers": "プロバイダーのブレーカー",
       "background_agents": "バックグラウンドエージェント",
-      "wakeups": "ウェイクアップ"
+      "wakeups": "ウェイクアップ",
+      "personal_background_agents": "バックグラウンドエージェント"
     },
     "groups": {
       "personal": "個人",
@@ -1833,7 +1834,8 @@
       "device": "このデバイスのみ",
       "device_workspace": "このデバイスのみ · {{name}}",
       "workspace": "{{name}} ワークスペース",
-      "workspace_only": "{{name}} のみに適用"
+      "workspace_only": "{{name}} のみに適用",
+      "personal": "個人"
     },
     "read_only": {
       "title": "閲覧のみ",
@@ -2349,5 +2351,32 @@
         "no_agent": "エージェントなし: 各ステップは自分のエージェントのままです。"
       }
     }
+  },
+  "personal_background_agents": {
+    "title": "バックグラウンドエージェント",
+    "description": "これらの小さな作業を行うエージェントを選びます。この選択はあなただけに表示・使用され、あなたの DM に適用され、ワークスペースの選択より優先されます。",
+    "jobs": {
+      "dm_title": {
+        "hint": "最初のメッセージからあなたの DM に名前を付けます。"
+      },
+      "quick_actions": {
+        "hint": "あなたの DM で返信の下にフォローアップボタンを提案します。"
+      }
+    },
+    "using_workspace": "ワークスペースの設定を使用中: {{agent}}",
+    "using_workspace_pick": "ワークスペースの設定を使用中",
+    "use_workspace_pick": "ワークスペースの設定を使う",
+    "archived": "アーカイブ済み",
+    "archived_warning": "{{agent}} はアーカイブされています。別のエージェントを選ぶまで、あなたの DM の{{job}}はエージェントなしで実行されます。ワークスペースのエージェントも代替エージェントも引き継ぎません。代替はエージェントが失敗したときだけ実行されます。",
+    "use_workspace_button": "ワークスペースの設定を使う ({{agent}})",
+    "load_error": "バックグラウンドエージェントを読み込めませんでした。",
+    "load_error_detail": "変更は行われていません。最後に保存した設定が引き続き適用されます。",
+    "toast_save_failed": "バックグラウンドエージェントを保存できませんでした。",
+    "offline_title": "オフラインです。",
+    "offline_body": "変更は一時停止中です。以下は最後に読み込んだ設定で、古い可能性があります。再接続すると選択を再び操作できます。",
+    "another_tab": "別のタブで変更を保存しました。以下が最新の設定です。",
+    "routing_before": "ルーティングはワークスペース全体で設定されます。オーナーと管理者が次の場所で変更できます:",
+    "routing_link": "ワークスペース → バックグラウンドエージェント",
+    "routing_after": "。"
   }
 }

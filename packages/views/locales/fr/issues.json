@@ -1017,6 +1017,7 @@
     "status_queued": "En file d'attente",
     "status_dispatched": "Démarrage",
     "status_waiting_local_directory": "En attente du répertoire local",
+    "status_deferred": "Différée",
     "status_running": "Au travail",
     "status_completed": "Terminée",
     "status_failed": "En échec",
@@ -1328,6 +1329,7 @@
     "variant_my_any": "Toute relation",
     "variant_my_assigned": "Qui me sont assignés",
     "variant_my_created": "Que j'ai créés",
+    "variant_my_requested": "Que j'ai demandés",
     "variant_my_involved": "Travail de mes agents"
   },
   "plugins": {
@@ -1673,6 +1675,8 @@
       "max_fires": "Arrêté après {{count}} exécutions",
       "loop": "En pause : il réveillait des règles qui le réveillaient à leur tour",
       "rate": "En pause : plus de 12 exécutions en une heure",
+      "run_budget": "En pause : l'issue a épuisé son budget d'exécutions ; une hausse le réactive",
+      "weekly_run_guard": "En pause : l'issue a atteint la limite hebdomadaire d'exécutions ; réactivé à un nouvel événement de PR ou quand le compteur baisse",
       "hint": "Réactivez-le pour reprendre ; le compteur repart de zéro."
     },
     "detail": {
@@ -1696,7 +1700,9 @@
     "paused_reason": {
       "max_fires": "limite de {{count}} exécutions atteinte",
       "loop": "il réveillait des règles qui le réveillaient à leur tour",
-      "rate": "plus de 12 exécutions en une heure"
+      "rate": "plus de 12 exécutions en une heure",
+      "run_budget": "l'issue a épuisé son budget d'exécutions",
+      "weekly_run_guard": "l'issue a atteint la limite hebdomadaire d'exécutions"
     },
     "paused_banner": "Réveils suspendus par {{name}} à {{time}}",
     "paused_banner_anonymous": "Réveils suspendus à {{time}}",

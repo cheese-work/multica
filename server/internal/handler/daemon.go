@@ -5187,7 +5187,9 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	offered := service.TaskStartCapabilities{
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
 		ChatSupplement: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementChatV1),
-		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
+		PREvent: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1) ||
+			slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV2),
+		PREventV2:      slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV2),
 		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1) || slices.Contains(req.Capabilities, protocol.DaemonCapabilityMuseAppProcessCleanupV1),
 	}
 	var task *db.AgentTaskQueue

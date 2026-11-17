@@ -26,9 +26,18 @@ export const taskOwner = (author, agents, issue) => {
   return owner;
 };
 
+// The App installation shares one API budget (CHE-4242): a run costs about one compare call per ready PR.
+const rateLimited = (e) => /rate limit/i.test(e.message);
+
 export async function syncPrs({ gh, multica, repo, base, only, print = console.log }) {
   const failures = [];
-  for (const pr of (await gh.openPrs()).filter((p) => !only || only.includes(p.number))) {
+  const prs = (await gh.openPrs()).filter((p) => !only || only.includes(p.number));
+  if (gh.remaining) {
+    const need = prs.filter((p) => !p.draft).length * 2 + 50;
+    const left = await gh.remaining();
+    if (left < need) return print(`skipped: low API budget (${left} left, need ${need})`);
+  }
+  for (const pr of prs) {
     try {
       // Fork branches are not ours to push to; a PR with no linked issue cannot be checked for an active run.
       // A draft is synced on the first main-build run after it is marked ready (CHE-4963): keeps PR CI load down.
@@ -48,6 +57,7 @@ export async function syncPrs({ gh, multica, repo, base, only, print = console.l
       // A dry run reports the same split without writing: "would-conflict" opens (prints) the task it would create.
       if ((result === "conflict" || result === "would-conflict") && !(await multica.findConflictTask(pr.number))) await multica.createConflictTask(pr, id);
     } catch (e) {
+      if (rateLimited(e)) return print(`#${pr.number}: stopped, API rate limit hit; the next main push retries`);
       print(`#${pr.number}: error ${e.message}`);
       failures.push(e);
     }
@@ -71,9 +81,17 @@ export const mergeOutcome = (mergeable) => {
   return mergeable ? "would-merge" : "would-conflict";
 };
 
+// Active-run check and conflict tasks need the multica CLI and a token. Without them the run fails closed (dry run too):
+// a sync with no active-run check could merge main under an author's running agent.
+export const requireMultica = (env = process.env, probe = () => spawnSync("multica", ["--version"])) => {
+  if (!env.MULTICA_TOKEN) throw new Error("MULTICA_TOKEN is not set: the active-run check and conflict tasks need it");
+  if (probe().error) throw new Error("multica CLI not found on PATH: the active-run check and conflict tasks need it");
+};
+
 export const taskTitle = (n) => `main-sync conflict: PR #${n}`;
 
 export const ghFor = (repo, base, dryRun) => ({
+  remaining: async () => Number(must("gh", ["api", "rate_limit", "--jq", ".resources.core.remaining"])),
   openPrs: async () => must("gh", ["api", "--paginate", `repos/${repo}/pulls?state=open&per_page=100`, "--jq", ".[] | @json"]).split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   behindBy: async (sha) => Number(must("gh", ["api", `repos/${repo}/compare/${base}...${sha}`, "--jq", ".behind_by"])),
   updateBranch: async (number, expectedHeadSha) => {
@@ -119,5 +137,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const base = arg("--base", "main");
   const dryRun = process.argv.includes("--dry-run");
   const only = arg("--pr")?.split(",").map(Number);
+  requireMultica();
   await syncPrs({ gh: ghFor(repo, base, dryRun), multica: multicaCli(repo, dryRun), repo, base, only });
 }

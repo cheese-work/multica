@@ -310,6 +310,8 @@ multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
 ```
 
+`multica agent get <agent-id> --output json` 还会返回 `background_use`：该智能体承担的后台任务，格式为 `{scope, job}` 列表（`scope` 为 `workspace` 或 `personal`）。你能看到所有工作区任务，以及仅属于你自己的个人选择。
+
 导入时遇到同名 skill，默认会停止且不修改现有内容。按意图选择：
 
 ```bash
@@ -356,6 +358,7 @@ multica runtime activity <runtime-id>
 
 ```bash
 multica daemon autostart enable
+multica daemon update-schedule set --runtime-id <runtime-id> --cron '0 2 * * *'
 multica runtime usage <runtime-id> --days 30
 multica runtime update <runtime-id> --target-version <version> --wait
 multica runtime profile create --display-name "内部 Claude 封装" \
@@ -363,6 +366,8 @@ multica runtime profile create --display-name "内部 Claude 封装" \
 ```
 
 `daemon autostart` 为当前 profile 登记开机自启，平台差异见[开机自启](/daemon-runtimes#autostart)。`runtime usage` 默认统计 90 天，`--days` 最多 365。`runtime update` 让那台电脑上的守护进程把 CLI 更新到指定版本，`--wait` 等待更新结束；更新失败、更新超时或等待本身超时时，命令会以非零状态退出。`runtime profile create` 用 `--runtime-type` 指定兼容的工具（旧的 `--protocol-family` 仍可用）；固定参数目前只能在网页端填写。
+
+`daemon update-schedule get|set|clear --runtime-id <id>` 读取或编辑该运行时所在机器的更新计划（见[定时自更新](/daemon-runtimes#update-schedule)）。`set` 接受 `--cron`（五个字段，必填）、`--timezone`（IANA 名称，默认 `Asia/Ho_Chi_Minh`）、`--window-minutes`（10 到 30，默认 30）和用于把计划保存为暂停状态的 `--enabled=false`。`get` 还会显示接下来 3 次的执行时间。只有机器所有者和工作区所有者可以修改。
 
 删除仍绑定活跃智能体的运行时时，命令默认拒绝。`multica runtime delete <id> --cascade` 会解绑这些智能体、保留其配置与历史记录，并取消它们的活动运行。
 
@@ -400,7 +405,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `--lead` 接受成员或智能体的名称。`--default-branch-hint` 只告诉智能体仓库的默认分支，不会切换分支。
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。该设置存储为 `background_agents` 的 `routing` 任务。这些标志是 `multica workspace background-agents set routing` 的别名，旧的 `/routing-agent` API 路由也会作为别名保留一个版本。
-- `multica workspace update --time-wakeup-skip-mode off|warn|block` 设置工作区的定时唤醒跳过模式（`settings.time_wakeup_skip.mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改，每次修改都会记入活动日志。`off` 关闭检查；`warn` 和 `block` 开启检查。
+- `multica workspace update --time-wakeup-skip-mode off|warn|block` 设置工作区的定时唤醒跳过模式（`settings.time_wakeup_skip.mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改，每次修改都会记入活动日志。`off` 关闭检查并运行所有被推迟的定时唤醒；`warn` 只记录 `block` 会怎么做，触发照常运行；`block` 会推迟未变化的已声明触发，并要求智能体在定时唤醒上传入 `--watch <inputs>` 或 `--watch always`。
 - `multica workspace update --ask-guard-mode off|warn|block` 设置提问守卫模式（`settings.ask_guard_mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改。命令会输出保存后的工作区，`multica workspace get` 也会在 `settings` 下显示该模式。`off` 关闭守卫；`warn` 只统计遗漏并放行；`block` 拒绝。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 - `--mode script --script <name> [--arg <value>]...` 在智能体的任务令牌下运行一个白名单脚本，不启动模型会话。`--script` 和 `--arg` 需要 `--mode script`，`--mode script` 需要 `--script`。`--description` 从不被执行。守护进程没有白名单时，所有脚本任务都会安全失败。`--output json` 以 `script_config` 显示脚本名和参数。`autopilot update --mode <其他>` 会清除脚本。 任务结束时，服务器会尽力删除任务令牌。如果删除失败，令牌在过期前仍然有效，没有更早的撤销机制。运行结果的 `script` 下记录脚本名、参数列表的 SHA-256、退出码和耗时；删除失败时还会设置 `token_revoke_failed`。
@@ -679,7 +684,7 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 运行预算的下一步：issue 上 80 % 的提醒会带上数字和一条可直接运行的命令，例如 `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。被预算拒绝的运行会返回错误码 `run_budget_exhausted`，并带有 `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card` 和 `next_command`。`multica issue budget get <issue> --output json` 同样返回 `open_card` 和 `next_command`。当 issue 的当前窗口已有提额或新窗口卡片处于打开状态时，`next_command` 会提示等待该卡片，再次执行 `multica issue budget raise` 会返回同一张卡片，而不是再开一张。使用任务令牌时，issue 任务的 `--for` 默认是工作区所有者，帮助中只列出 `raise`；`top-up` 仍供成员使用。工作区内任意 issue 上的任务都可以为另一个 issue（例如自身无法运行任务的超预算 issue）打开 `raise` 卡片。卡片仍需有人用通行密钥批准，批准前不会应用任何更改。服务器、成员或智能体每打开一张卡片，就会新增一条 `run_budget_ask` 活动记录，记录操作者类型、操作者和动作类型。
 
-已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。
+已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。 对已回答的决定，它还显示 `answer.woken_at` 和 `answer.wake_outcome`（回答何时、以何种方式送达智能体，送达前为 null）以及 `receipt_state`（`recorded`、`delivered`、`picked_up` 或 `disclaimed`）。`receipt_state` 是回答的回执状态，不是卡片显示的状态：卡片只在 `picked_up` 时折叠，回答后 2 分钟内显示 `recorded` 或 `delivered`，之后显示“Not picked up”。
 
 `issue.project.set` 把 issue 移到另一个项目：`multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。卡片显示移动前后的项目、工作流、运行上限和已用运行次数，并说明这次移动是否扩大运行预算。扩大预算的移动是 `spend` 卡片，其他移动是 `reversible`。只有工作区所有者可以批准。若请求之后 issue 已离开原项目，或目标工作流的预算变大，卡片会被拒绝。
 

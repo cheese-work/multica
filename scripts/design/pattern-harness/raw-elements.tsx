@@ -131,15 +131,20 @@ export function seedRawElements(qc: QueryClient) {
   })]);
   seedSS2(set);
   seedSS3(set);
+  seedSS5(set);
   for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
 }
 
 const Label = ({ children }: { children: ReactNode }) => <p className="mb-1 mt-4 text-caption text-muted-foreground first:mt-0">{children}</p>;
 
 /** Runs `pick` once after mount, e.g. to click a toggle so the expanded state is captured. */
-function After({ pick, children }: { pick: (root: HTMLElement) => HTMLElement | null | undefined; children: ReactNode }) {
+function After({ pick, delay = 0, children }: { pick: (root: HTMLElement) => HTMLElement | null | undefined; delay?: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { pick(ref.current!)?.click(); }, [pick]);
+  useEffect(() => {
+    // Popover triggers (SS5) only open once their handlers are attached, so those pages pass a delay.
+    const t = setTimeout(() => pick(ref.current!)?.click(), delay);
+    return () => clearTimeout(t);
+  }, [pick, delay]);
   return <div ref={ref}>{children}</div>;
 }
 

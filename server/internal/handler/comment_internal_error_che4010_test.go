@@ -37,7 +37,8 @@ func postMentionComment(t *testing.T, issueID, agentID, authorAgentID string) Co
 
 // TestCreateComment_StageQueueFullMentionReportsTypedReason (CHE-4010): the
 // incident path over HTTP. A mention whose enqueue is refused by a full review
-// stage answers blocked + stage_queue_full, never internal_error.
+// stage is already queued server-side (CHE-7011), so it answers deferred +
+// stage_queue_full, never blocked or internal_error.
 func TestCreateComment_StageQueueFullMentionReportsTypedReason(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -55,8 +56,8 @@ func TestCreateComment_StageQueueFullMentionReportsTypedReason(t *testing.T) {
 	resp := postMentionComment(t, issueID, agentID, createHandlerTestAgent(t, "Stage Full Author", nil))
 
 	got := findCommentOutcome(t, resp.TriggerOutcomes, agentID)
-	if got.Status != DispatchBlocked || got.ReasonCode != ReasonStageQueueFull {
-		t.Errorf("outcome = %+v, want blocked/stage_queue_full", got)
+	if got.Status != DispatchDeferred || got.ReasonCode != ReasonStageQueueFull {
+		t.Errorf("outcome = %+v, want deferred/stage_queue_full", got)
 	}
 	if strings.Contains(logs.String(), "internal_error") {
 		t.Errorf("a typed refusal must not log internal_error; logs:\n%s", logs.String())

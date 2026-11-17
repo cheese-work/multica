@@ -167,7 +167,7 @@ function viewTableScope(view: SidebarViewFields): IssueTableScope | null {
       return view.scope_id ? { kind: "project", project_id: view.scope_id, ...typed } : null;
     case "my": {
       const variant = view.scope_variant ?? "any";
-      return variant === "assigned" || variant === "created" || variant === "involved" || variant === "any"
+      return variant === "assigned" || variant === "created" || variant === "requested" || variant === "involved" || variant === "any"
         ? { kind: "my", relation: variant }
         : null;
     }

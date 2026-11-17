@@ -266,6 +266,8 @@ export interface ListIssuesParams {
   assignee_types?: IssueAssigneeType[];
   creator_id?: string;
   created_by_user_id?: string;
+  /** Issues an agent created on this member's behalf (`issue.requested_by_id`). */
+  requested_by_id?: string;
   project_id?: string;
   /** Actor-aware table facets. OR within each field. */
   assignee_filters?: IssueActorRef[];
@@ -340,6 +342,8 @@ export interface ListGroupedIssuesParams {
   assignee_ids?: string[];
   creator_id?: string;
   created_by_user_id?: string;
+  /** See `ListIssuesParams.requested_by_id`. */
+  requested_by_id?: string;
   project_id?: string;
   /** See `ListIssuesParams.involves_user_id` — same semantics. */
   involves_user_id?: string;
@@ -401,7 +405,7 @@ export type IssueTableScope =
   | { kind: "project"; project_id: string; assignee_types?: IssueAssigneeType[] }
   | { kind: "assignee"; actor: IssueActorRef }
   | { kind: "creator"; actor: IssueActorRef }
-  | { kind: "my"; relation: "assigned" | "created" | "involved" | "any" };
+  | { kind: "my"; relation: "assigned" | "created" | "requested" | "involved" | "any" };
 
 export type IssueTableRelation = "assigned" | "created" | "my_agents" | "subscribed";
 

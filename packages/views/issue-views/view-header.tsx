@@ -103,11 +103,12 @@ export type IssueViewHeaderBase =
 
 const ASSIGNEE_TYPES: IssuesScope[] = ["all", "members", "agents"];
 const PROJECT_HIDDEN_FIELDS: NegatableFilterDimension[] = ["project"];
-const MY_RELATIONS: Exclude<MyIssuesScope, "agents">[] = ["assigned", "created", "all"];
+const MY_RELATIONS: Exclude<MyIssuesScope, "agents">[] = ["assigned", "created", "requested", "all"];
 const MY_SAVE_VARIANT: Record<MyIssuesScope, NonNullable<CreateIssueViewRequest["scope_variant"]>> = {
   all: "any",
   assigned: "assigned",
   created: "created",
+  requested: "requested",
   agents: "involved",
 };
 
@@ -258,9 +259,11 @@ export function IssueViewHeader({
           ? "variant_my_assigned"
           : value === "created"
             ? "variant_my_created"
-            : value === "involved"
-              ? "variant_my_involved"
-              : "variant_my_any"
+            : value === "requested"
+              ? "variant_my_requested"
+              : value === "involved"
+                ? "variant_my_involved"
+                : "variant_my_any"
       ],
     );
 

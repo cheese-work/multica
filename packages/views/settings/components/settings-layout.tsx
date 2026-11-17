@@ -35,6 +35,7 @@ export type SettingsSaveStatus = "idle" | "saving" | "saved" | "error";
  */
 export type SettingsScope =
   | "account"
+  | "personal"
   | "device"
   | "device-workspace"
   | "workspace"
@@ -53,14 +54,16 @@ export function SettingsScopeBadge({ scope }: { scope: SettingsScope }) {
   if (scope === "workspace" || scope === "workspace-only" || scope === "device-workspace") {
     return <WorkspaceScopeBadge scope={scope} />;
   }
-  const Icon = scope === "account" ? UserRound : Laptop;
+  const Icon = scope === "account" || scope === "personal" ? UserRound : Laptop;
   return (
     <span data-slot="settings-scope" className={SCOPE_BADGE_CLASS}>
       <Icon aria-hidden="true" className="size-3" />
       <span className="truncate">
         {scope === "account"
           ? t(($) => $.layout.scope.account)
-          : t(($) => $.layout.scope.device)}
+          : scope === "personal"
+            ? t(($) => $.layout.scope.personal)
+            : t(($) => $.layout.scope.device)}
       </span>
     </span>
   );
