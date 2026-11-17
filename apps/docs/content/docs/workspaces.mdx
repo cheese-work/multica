@@ -51,7 +51,7 @@ The workspace setting `auto_close` controls what happens when a child issue ente
 A close needs every check below. If one fails or cannot be read, the step's agent runs as today.
 
 - The issue has a parent. Root issues are never closed.
-- The newest review verdict is a PASS with no P0 or P1 finding, and it is for the current candidate. With a PR, every linked PR is merged at the head the PASS names. Without a PR, no attachment, CHANGES verdict, stale or superseded mark, or return to `in_progress` came after the PASS.
+- The newest review verdict is a PASS with no P0 or P1 finding, and it is for the current candidate. With a PR, every linked PR is merged at the head the PASS names. Without a PR, the candidate is the issue's text: no attachment, description change, or comment (other than the reviewer's) came after the PASS, and neither did a CHANGES verdict, stale or superseded mark, or return to `in_progress`.
 - No open child issue, no open decision request, and no wakeup that was live when the issue entered the step.
 - The description has no `Blockers: Cheese stop` line, and the parent's `delivery_stop` metadata is not `stopped`.
 - The issue metadata `post_close_work` is `none`. The author writes it: `multica issue metadata set <issue> --key post_close_work --value none --type string`. Any other value, such as a short description of the work that remains, keeps the run.

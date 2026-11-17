@@ -1,7 +1,7 @@
 -- name: GetLatestIssueVerdict :one
 -- CHE-6969: the verdict of record is the newest verdict row; its details carry
 -- the findings, the reviewed pull request and the head it names.
-SELECT action, details, created_at FROM activity_log
+SELECT action, details, created_at, actor_id FROM activity_log
 WHERE issue_id = $1 AND action IN ('review_passed', 'review_changes_requested')
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
@@ -14,9 +14,22 @@ WHERE issue_id = sqlc.arg('issue_id') AND created_at > sqlc.arg('since')
   AND (action IN ('review_changes_requested', 'review_verdict_stale', 'review_superseded')
        OR (action = 'status_changed' AND details->>'to' = 'in_progress'));
 
--- name: CountIssueAttachmentsSince :one
-SELECT count(*)::bigint FROM attachment
-WHERE issue_id = sqlc.arg('issue_id') AND created_at > sqlc.arg('since');
+-- name: CountIssueTextCandidateChangesSince :one
+-- With no pull request the candidate is the issue's own text. A change after
+-- the verdict is a new attachment, a description revision, or a comment that
+-- was posted, edited or deleted. The reviewer's comments and the platform's
+-- are not candidate text.
+SELECT (
+    (SELECT count(*) FROM attachment a
+     WHERE a.issue_id = sqlc.arg('issue_id') AND a.created_at > sqlc.arg('since'))
+  + (SELECT count(*) FROM issue_description_revision r
+     WHERE r.issue_id = sqlc.arg('issue_id') AND r.created_at > sqlc.arg('since'))
+  + (SELECT count(*) FROM comment c
+     WHERE c.issue_id = sqlc.arg('issue_id')
+       AND (c.created_at > sqlc.arg('since') OR c.updated_at > sqlc.arg('since') OR c.deleted_at > sqlc.arg('since'))
+       AND c.author_type <> 'system'
+       AND NOT (c.author_type = 'agent' AND c.author_id IS NOT DISTINCT FROM sqlc.narg('reviewer_id')::uuid))
+)::bigint;
 
 -- name: ListIssuePullRequestHeads :many
 -- Every pull request linked to the issue, GitHub and self-hosted, with the head

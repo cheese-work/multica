@@ -11,18 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countIssueAttachmentsSince = `-- name: CountIssueAttachmentsSince :one
-SELECT count(*)::bigint FROM attachment
-WHERE issue_id = $1 AND created_at > $2
+const countIssueTextCandidateChangesSince = `-- name: CountIssueTextCandidateChangesSince :one
+SELECT (
+    (SELECT count(*) FROM attachment a
+     WHERE a.issue_id = $1 AND a.created_at > $2)
+  + (SELECT count(*) FROM issue_description_revision r
+     WHERE r.issue_id = $1 AND r.created_at > $2)
+  + (SELECT count(*) FROM comment c
+     WHERE c.issue_id = $1
+       AND (c.created_at > $2 OR c.updated_at > $2 OR c.deleted_at > $2)
+       AND c.author_type <> 'system'
+       AND NOT (c.author_type = 'agent' AND c.author_id IS NOT DISTINCT FROM $3::uuid))
+)::bigint
 `
 
-type CountIssueAttachmentsSinceParams struct {
-	IssueID pgtype.UUID        `json:"issue_id"`
-	Since   pgtype.Timestamptz `json:"since"`
+type CountIssueTextCandidateChangesSinceParams struct {
+	IssueID    pgtype.UUID        `json:"issue_id"`
+	Since      pgtype.Timestamptz `json:"since"`
+	ReviewerID pgtype.UUID        `json:"reviewer_id"`
 }
 
-func (q *Queries) CountIssueAttachmentsSince(ctx context.Context, arg CountIssueAttachmentsSinceParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssueAttachmentsSince, arg.IssueID, arg.Since)
+// With no pull request the candidate is the issue's own text. A change after
+// the verdict is a new attachment, a description revision, or a comment that
+// was posted, edited or deleted. The reviewer's comments and the platform's
+// are not candidate text.
+func (q *Queries) CountIssueTextCandidateChangesSince(ctx context.Context, arg CountIssueTextCandidateChangesSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssueTextCandidateChangesSince, arg.IssueID, arg.Since, arg.ReviewerID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -68,7 +82,7 @@ func (q *Queries) CountIssueWakeupsLiveAtEntry(ctx context.Context, issueID pgty
 }
 
 const getLatestIssueVerdict = `-- name: GetLatestIssueVerdict :one
-SELECT action, details, created_at FROM activity_log
+SELECT action, details, created_at, actor_id FROM activity_log
 WHERE issue_id = $1 AND action IN ('review_passed', 'review_changes_requested')
 ORDER BY created_at DESC, id DESC
 LIMIT 1
@@ -78,6 +92,7 @@ type GetLatestIssueVerdictRow struct {
 	Action    string             `json:"action"`
 	Details   []byte             `json:"details"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ActorID   pgtype.UUID        `json:"actor_id"`
 }
 
 // CHE-6969: the verdict of record is the newest verdict row; its details carry
@@ -85,7 +100,12 @@ type GetLatestIssueVerdictRow struct {
 func (q *Queries) GetLatestIssueVerdict(ctx context.Context, issueID pgtype.UUID) (GetLatestIssueVerdictRow, error) {
 	row := q.db.QueryRow(ctx, getLatestIssueVerdict, issueID)
 	var i GetLatestIssueVerdictRow
-	err := row.Scan(&i.Action, &i.Details, &i.CreatedAt)
+	err := row.Scan(
+		&i.Action,
+		&i.Details,
+		&i.CreatedAt,
+		&i.ActorID,
+	)
 	return i, err
 }
 

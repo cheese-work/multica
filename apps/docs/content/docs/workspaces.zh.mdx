@@ -51,7 +51,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 关闭需要下面所有检查都通过。任何一项不满足或无法读取，该步骤的智能体照常运行。
 
 - 任务有父任务。根任务永远不会被关闭。
-- 最新的评审结论是不含 P0 或 P1 问题的 PASS，并且针对当前候选。有 PR 时，每个关联的 PR 都已在 PASS 所指的 head 上合并。没有 PR 时，PASS 之后没有新附件、CHANGES 结论、过期或被取代标记，也没有回到 `in_progress`。
+- 最新的评审结论是不含 P0 或 P1 问题的 PASS，并且针对当前候选。有 PR 时，每个关联的 PR 都已在 PASS 所指的 head 上合并。没有 PR 时，候选是任务的文本：PASS 之后没有新附件、描述变更、评论（评审者自己的除外）、CHANGES 结论、过期或被取代标记，也没有回到 `in_progress`。
 - 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
 - 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
 - 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。

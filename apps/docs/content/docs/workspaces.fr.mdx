@@ -51,7 +51,7 @@ Le paramètre d'espace de travail `auto_close` définit ce qui se passe quand un
 Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut pas être lu, l'agent de l'étape s'exécute comme avant.
 
 - La tâche a un parent. Les tâches racines ne sont jamais fermées.
-- Le dernier verdict de revue est un PASS sans constat P0 ni P1, et il porte sur le candidat actuel. Avec une PR, chaque PR liée est fusionnée au head que nomme le PASS. Sans PR, aucune pièce jointe, aucun verdict CHANGES, aucune marque périmée ou remplacée, aucun retour à `in_progress` n'est venu après le PASS.
+- Le dernier verdict de revue est un PASS sans constat P0 ni P1, et il porte sur le candidat actuel. Avec une PR, chaque PR liée est fusionnée au head que nomme le PASS. Sans PR, le candidat est le texte de la tâche : aucune pièce jointe, aucun changement de description, aucun commentaire (hors ceux du relecteur) n'est venu après le PASS, ni verdict CHANGES, marque périmée ou remplacée, ni retour à `in_progress`.
 - Aucune tâche enfant ouverte, aucune demande de décision ouverte, et aucun réveil actif quand la tâche est entrée dans l'étape.
 - La description n'a pas de ligne `Blockers: Cheese stop`, et la métadonnée `delivery_stop` du parent n'est pas `stopped`.
 - La métadonnée de la tâche `post_close_work` vaut `none`. L'auteur l'écrit : `multica issue metadata set <issue> --key post_close_work --value none --type string`. Toute autre valeur, par exemple une courte description du travail restant, conserve l'exécution.

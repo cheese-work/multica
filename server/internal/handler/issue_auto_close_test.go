@@ -75,7 +75,17 @@ func newAutoClose(t *testing.T, mode string) autoClose {
 		"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "workflow_step": "agent_review",
 		"dispatched_at": testutil.Raw("now() - interval '5 minutes'"), "started_at": testutil.Raw("now() - interval '4 minutes'"),
 	})
+	// The issue's own text is older than any verdict a test seeds.
+	dbfx.Exec(t, `UPDATE issue_description_revision SET created_at = now() - interval '2 hours' WHERE issue_id = $1`, issueID)
 	return autoClose{reviewLoop{reviewer, runtimeID, issueID, projectID, run}, acceptor, parentID}
+}
+
+// comment plants a comment by author, created and last edited the given ages ago.
+func (c autoClose) comment(t *testing.T, authorType, authorID, created, edited string) {
+	t.Helper()
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, created_at, updated_at)
+		SELECT workspace_id, id, $2, $3::uuid, 'plan text', now() - $4::interval, now() - $5::interval FROM issue WHERE id = $1`,
+		c.issueID, authorType, authorID, created, edited)
 }
 
 // seedVerdict records an earlier verdict row, as a reviewer's write would.
@@ -192,6 +202,15 @@ func TestAutoClose_EachFailedPredicateKeepsTheHandlerRun(t *testing.T) {
 			dbfx.Exec(t, `INSERT INTO attachment (workspace_id, issue_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
 				SELECT workspace_id, id, 'agent', $2, 'plan-r2.md', 'https://example.test/plan-r2.md', 'text/markdown', 1 FROM issue WHERE id = $1`, c.issueID, c.agentID)
 		}},
+		"stale PASS: a revised candidate in a comment": {func(t *testing.T, c autoClose) {
+			c.comment(t, "agent", c.acceptor, "1 minute", "1 minute")
+		}},
+		"stale PASS: a candidate comment edited after the PASS": {func(t *testing.T, c autoClose) {
+			c.comment(t, "agent", c.acceptor, "3 hours", "1 minute")
+		}},
+		"stale PASS: a revised description": {func(t *testing.T, c autoClose) {
+			dbfx.Exec(t, `UPDATE issue SET description = 'plan r2', revision = revision + 1 WHERE id = $1`, c.issueID)
+		}},
 		"CHANGES after PASS": {func(t *testing.T, c autoClose) {
 			c.seedVerdict(t, "review_changes_requested", `[{"severity":"P1","summary":"x"}]`, "", "1 minute")
 		}},
@@ -243,6 +262,28 @@ func TestAutoClose_EachFailedPredicateKeepsTheHandlerRun(t *testing.T) {
 			c.wantHandlerRun(t)
 		})
 	}
+}
+
+// A no-PR candidate is the issue's text: description, comments, attachments.
+// Only the reviewer's own comments and the platform's follow a PASS without
+// changing the candidate.
+func TestAutoClose_TextCandidateUnchangedSinceThePassCloses(t *testing.T) {
+	c := newAutoClose(t, "block")
+	c.seedVerdict(t, "review_passed", "[]", "", "1 hour")
+	c.comment(t, "agent", c.acceptor, "3 hours", "3 hours")
+	c.comment(t, "agent", c.agentID, "1 minute", "1 minute")
+	c.comment(t, "system", c.acceptor, "1 minute", "1 minute")
+	c.enter(t)
+	c.wantClosed(t)
+}
+
+// Freshness that cannot be read keeps the handler run.
+func TestAutoClose_UnreadableVerdictKeepsTheHandlerRun(t *testing.T) {
+	c := newAutoClose(t, "block")
+	c.seedVerdict(t, "review_passed", "[]", "", "1 hour")
+	dbfx.Exec(t, `UPDATE activity_log SET details = '{"findings":"not json"}'::jsonb WHERE issue_id = $1 AND action = 'review_passed'`, c.issueID)
+	c.enter(t)
+	c.wantHandlerRun(t)
 }
 
 func TestAutoClose_WorkflowWithoutDoneEdgeIsNeverClosed(t *testing.T) {

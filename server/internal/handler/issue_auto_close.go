@@ -161,8 +161,9 @@ func (h *Handler) hasDoneEdge(ctx context.Context, issue db.Issue) (bool, error)
 // autoCloseVerdictHolds: the newest verdict row is a PASS without a P0/P1
 // finding (a PASS write may carry findings, so the action name is not enough),
 // nothing voided it since, and the candidate is the one it reviewed: every
-// linked PR merged at the head the PASS names, or, with no PR, no attachment
-// newer than the PASS.
+// linked PR merged at the head the PASS names, or, with no PR, no attachment,
+// description revision or comment (other than the reviewer's) newer than the
+// PASS. Anything unreadable keeps the handler run.
 func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (bool, error) {
 	verdict, err := h.Queries.GetLatestIssueVerdict(ctx, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && verdict.Action != activityPassed) {
@@ -196,7 +197,7 @@ func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (bo
 		return false, err
 	}
 	if len(prs) == 0 {
-		newer, err := h.Queries.CountIssueAttachmentsSince(ctx, db.CountIssueAttachmentsSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt})
+		newer, err := h.Queries.CountIssueTextCandidateChangesSince(ctx, db.CountIssueTextCandidateChangesSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt, ReviewerID: verdict.ActorID})
 		return newer == 0, err
 	}
 	for _, pr := range prs {
