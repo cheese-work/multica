@@ -4,8 +4,11 @@
 -- name: RecordTaskPREventCapability :execrows
 -- Called in the start transaction, after the task is running. A missing row is
 -- the fail-closed value for old daemons, old servers and unsupported providers.
+-- v2 (v1 plus wakeup items, CHE-6971 SA-1) is recorded only when the daemon
+-- offered it; otherwise the caller's v1 offer records v1.
 INSERT INTO task_pr_event_capability (task_id, workspace_id, issue_id, capability)
-SELECT t.id, r.workspace_id, t.issue_id, 'task-supplement-pr-event-v1'
+SELECT t.id, r.workspace_id, t.issue_id,
+       CASE WHEN @offer_v2::boolean THEN 'task-supplement-pr-event-v2' ELSE 'task-supplement-pr-event-v1' END
 FROM agent_task_queue t
 JOIN agent_runtime r ON r.id = t.runtime_id
 WHERE t.id = @task_id
@@ -27,7 +30,7 @@ WITH locked_task AS MATERIALIZED (
     JOIN task_pr_event_capability cap ON cap.task_id = t.id
     WHERE t.id = @task_id
       AND t.status = 'running'
-      AND cap.capability = 'task-supplement-pr-event-v1'
+      AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
     FOR UPDATE OF t
 ), claimed_event AS (
     UPDATE issue_pr_event e
@@ -56,7 +59,7 @@ WITH next AS MATERIALIZED (
     WHERE d.task_id = @task_id
       AND d.status = 'pending'
       AND t.status = 'running'
-      AND cap.capability = 'task-supplement-pr-event-v1'
+      AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
     ORDER BY d.created_at, d.event_id
     FOR UPDATE OF d SKIP LOCKED
     LIMIT 1
@@ -250,5 +253,5 @@ FROM agent_task_queue t
 JOIN task_pr_event_capability cap ON cap.task_id = t.id
 WHERE t.issue_id = @issue_id
   AND t.status = 'running'
-  AND cap.capability = 'task-supplement-pr-event-v1'
+  AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
 ORDER BY t.created_at;

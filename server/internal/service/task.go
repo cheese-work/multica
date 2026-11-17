@@ -5508,7 +5508,8 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 type TaskStartCapabilities struct {
 	Supplement     bool
 	ChatSupplement bool
-	PREvent        bool
+	PREvent        bool // the daemon offered typed PR-event delivery (v1 or v2)
+	PREventV2      bool // it offered v2: v1 plus wakeup items
 	ProcessCleanup bool
 }
 
@@ -5583,7 +5584,7 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			return fmt.Errorf("start claimed task: %w", err)
 		}
 		if offered.PREvent {
-			if _, err := qtx.RecordTaskPREventCapability(ctx, task.ID); err != nil {
+			if _, err := qtx.RecordTaskPREventCapability(ctx, db.RecordTaskPREventCapabilityParams{TaskID: task.ID, OfferV2: offered.PREventV2}); err != nil {
 				return fmt.Errorf("record PR event capability: %w", err)
 			}
 		}
