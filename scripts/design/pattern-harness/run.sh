@@ -295,18 +295,6 @@ cap delegated-writes-section --height 1200 \
   --token GOVERNED_FIELDS --token text-caption --token text-muted-foreground
 
 # SS4 (CHE-5537)
-cap dingtalk-tab --height 1500 \
-  --component packages/views/settings/components/dingtalk-tab.tsx \
-  --token text-body --token text-caption --token text-micro
-cap lark-tab --height 1500 \
-  --component packages/views/settings/components/lark-tab.tsx \
-  --token text-body --token text-caption --token text-micro
-cap slack-tab --height 1200 \
-  --component packages/views/settings/components/slack-tab.tsx \
-  --token text-body --token text-caption --token text-micro
-cap telegram-tab --height 1200 \
-  --component packages/views/settings/components/telegram-tab.tsx \
-  --token text-body --token text-caption --token text-micro
 cap wecom-tab --height 1200 \
   --component packages/views/settings/components/wecom-tab.tsx \
   --token text-body --token text-caption --token text-micro

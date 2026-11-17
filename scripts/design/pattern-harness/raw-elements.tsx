@@ -32,16 +32,8 @@ import { NeedsYouList } from "../../../packages/views/chat/components/needs-you-
 import { QuickAgentBar } from "../../../packages/views/chat/components/quick-agent-bar";
 import { DelegatedWritesSection } from "../../../packages/views/settings/components/delegated-writes-section";
 import { chatKeys } from "@multica/core/chat/queries";
-import { TelegramTab } from "../../../packages/views/settings/components/telegram-tab";
-import { SlackTab } from "../../../packages/views/settings/components/slack-tab";
-import { LarkTab } from "../../../packages/views/settings/components/lark-tab";
 import { WecomTab } from "../../../packages/views/settings/components/wecom-tab";
-import { DingTalkTab } from "../../../packages/views/settings/components/dingtalk-tab";
-import { telegramKeys } from "@multica/core/telegram";
-import { slackKeys } from "@multica/core/slack";
-import { larkKeys } from "@multica/core/lark";
 import { wecomKeys } from "@multica/core/wecom";
-import { dingtalkKeys } from "@multica/core/dingtalk";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
 const WS = "ws-harness";
@@ -455,7 +447,7 @@ export function DelegatedWritesPage() {
   );
 }
 
-// ---- SS4 (CHE-5537): dingtalk-tab, lark-tab, slack-tab, telegram-tab, wecom-tab ----
+// ---- SS4 (CHE-5537): wecom-tab (dingtalk/lark/slack/telegram tabs removed upstream in v0.10.0) ----
 // Each tab reads one installation list for the one workspace the harness has, so each variant gets its own
 // client (seeded, never stale) and the page stacks the states: not enabled, empty, listed.
 const T0 = "2026-11-13T02:30:00Z";
@@ -465,11 +457,6 @@ const inst = (id: string, agent: string, extra: Record<string, unknown> = {}) =>
 const OFF = { installations: [], configured: false };
 const EMPTY = { installations: [], configured: true, install_supported: true };
 const listed = (installations: unknown[], extra: Record<string, unknown> = {}) => ({ installations, configured: true, install_supported: true, ...extra });
-const TG = listed([
-  inst("tg1", AGENT, { bot_username: "design_capture_bot" }),
-  inst("tg2", "agent-ux", { bot_username: "terra_review_bot", status: "revoked" }),
-]);
-const SL = listed([inst("sl1", AGENT, { team_id: "T01", bot_user_id: "U01" }), inst("sl2", "agent-ops", { team_id: "T01", bot_user_id: "U02", status: "revoked" })]);
 const LARK_LIST = listed([
   inst("lk1", AGENT, { app_id: "cli_a1", bot_open_id: "ou_1", region: "feishu", first_message_received_at: "2026-11-13T03:10:00Z" }),
   inst("lk2", "agent-ux", { app_id: "cli_a2", bot_open_id: "ou_2", region: "lark", first_message_received_at: "2026-11-13T03:10:00Z" }),
@@ -479,7 +466,6 @@ const WC = listed([
   { id: "wc1", workspace_id: WS, agent_id: AGENT, bot_id: "aibot-1", installer_user_id: "u1", status: "active" },
   { id: "wc2", workspace_id: WS, agent_id: "agent-ops", bot_id: "aibot-2", installer_user_id: "u1", status: "revoked" },
 ], { scan_install_supported: true });
-const DT = listed([inst("dt1", AGENT, { bound_dingtalk_user_ids: ["staff-1"] }), inst("dt2", "agent-ux"), inst("dt3", "agent-ops", { status: "revoked" })]);
 const DT_GROUPS = {
   group_discovery_supported: true,
   groups: [
@@ -523,21 +509,6 @@ function IntegrationTabPage({ keyOf, off, empty, full, fullLabel, children, extr
   );
 }
 
-export function TelegramTabPage() {
-  return <IntegrationTabPage keyOf={telegramKeys.installations} off={OFF} empty={EMPTY} full={TG} fullLabel="owner: 1 active bot, 1 revoked"><TelegramTab /></IntegrationTabPage>;
-}
-export function SlackTabPage() {
-  return <IntegrationTabPage keyOf={slackKeys.installations} off={OFF} empty={EMPTY} full={SL} fullLabel="owner: 1 active app, 1 revoked"><SlackTab /></IntegrationTabPage>;
-}
-export function LarkTabPage() {
-  return <IntegrationTabPage keyOf={larkKeys.installations} off={OFF} empty={EMPTY} full={LARK_LIST} fullLabel="owner: Feishu verified, Lark verified, 1 revoked"><LarkTab /></IntegrationTabPage>;
-}
 export function WecomTabPage() {
   return <IntegrationTabPage keyOf={wecomKeys.installations} off={OFF} empty={EMPTY} full={WC} fullLabel="owner: 1 active bot, 1 revoked"><WecomTab /></IntegrationTabPage>;
-}
-export function DingTalkTabPage() {
-  return (
-    <IntegrationTabPage keyOf={dingtalkKeys.installations} off={OFF} empty={EMPTY} full={DT} fullLabel="owner: 2 active robots with groups and identity states, 1 revoked"
-      extra={(qc) => qc.setQueryData(dingtalkKeys.groups(WS), DT_GROUPS)}><DingTalkTab /></IntegrationTabPage>
-  );
 }

@@ -16,8 +16,9 @@ import path from "node:path";
 // The composer draft test renders the real composers with react-test-renderer
 // and every native module mocked: it checks that a draft survives unmount and
 // remount, not native rendering.
-// The run cancel button has headless callback/prop tests with native modules
-// mocked; these do not verify native rendering.
+// The run cancel button, inbox and timeline list have headless
+// callback/prop tests with native modules mocked; these do not verify
+// native rendering.
 // The form-draft tests (`data/stores/use-form-drafts.test.ts` and
 // `*-screen.test.tsx`) opt into jsdom per file. The screen tests render the real
 // screens with react-native swapped for DOM stubs (`data/stores/test-support/`);
@@ -42,6 +43,8 @@ export default defineConfig({
       "components/issue/run-cancel-button.test.ts",
       "components/composer/composer-draft.test.tsx",
       "components/issue/issue-detail-load-error.test.tsx",
+      "components/inbox/inbox-screen.test.ts",
+      "components/issue/timeline-list.test.ts",
     ],
     passWithNoTests: true,
   },

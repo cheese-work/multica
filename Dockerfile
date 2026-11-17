@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM golang:1.27.3-alpine AS deps
+FROM golang:1.27.4-alpine AS deps
 
 RUN apk add --no-cache git
 
