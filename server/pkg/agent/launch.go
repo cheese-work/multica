@@ -99,32 +99,29 @@ type Command struct {
 // launchHooks maps a built, not yet started *exec.Cmd to its hook. The entry
 // leaves on start (applyLaunchHook), or when the command's context ends, so a
 // command that is built and never started cannot leak.
-var launchHooks sync.Map // *exec.Cmd -> launchEntry
-
-type launchEntry struct {
-	hook LaunchHook
-	stop func() bool // detaches the context.AfterFunc
-}
+var launchHooks sync.Map // *exec.Cmd -> LaunchHook
 
 func registerLaunchHook(ctx context.Context, cmd *exec.Cmd, hook LaunchHook) *exec.Cmd {
 	if hook == nil {
 		return cmd
 	}
-	stop := context.AfterFunc(ctx, func() { launchHooks.Delete(cmd) })
-	launchHooks.Store(cmd, launchEntry{hook, stop})
+	// Store first: on an already-done ctx AfterFunc runs the delete at once,
+	// and it must not be able to run before the store.
+	launchHooks.Store(cmd, hook)
+	// The AfterFunc stays registered after a start; its later delete of the
+	// already-removed key is a no-op, and it is released when ctx ends.
+	context.AfterFunc(ctx, func() { launchHooks.Delete(cmd) })
 	return cmd
 }
 
 // applyLaunchHook runs the registered hook, if any, on cmd just before Start.
 // The entry is removed whether or not the hook succeeds.
 func applyLaunchHook(cmd *exec.Cmd) error {
-	v, ok := launchHooks.LoadAndDelete(cmd)
+	hook, ok := launchHooks.LoadAndDelete(cmd)
 	if !ok {
 		return nil
 	}
-	e := v.(launchEntry)
-	e.stop()
-	return e.hook.Wrap(cmd)
+	return hook.(LaunchHook).Wrap(cmd)
 }
 
 // launchHookEntries lists commands still waiting for their hook (tests).

@@ -217,3 +217,57 @@ func TestOnlyLaunchGoSpawnsRuntimeProcesses(t *testing.T) {
 		}
 	}
 }
+
+// Review round 1 P1: the Hermes ACP terminal/create path starts task commands
+// too. Every branch (argv, shell) must pass the hook, and the runtime launch
+// prefix must not leak into them.
+func TestLaunchHookSeesACPTerminalCommands(t *testing.T) {
+	for _, params := range []string{
+		`{"command":"/bin/echo","args":["hi"]}`,
+		`{"command":"echo hi"}`,
+	} {
+		hook := &recordingHook{}
+		cwd := t.TempDir()
+		c := &hermesClient{
+			cfg:         Config{Launch: hook, LaunchPrefix: []string{"--runtime-prefix"}},
+			terminalCtx: context.Background(),
+			terminalCwd: cwd,
+			terminalEnv: os.Environ(),
+			terminals:   make(map[string]*acpTerminal),
+		}
+		created, err := c.acpTerminalCreate([]byte(params))
+		if err != nil {
+			t.Fatalf("%s: create: %v", params, err)
+		}
+		id := created["terminalId"].(string)
+		if _, err := c.acpTerminalResponse("terminal/wait_for_exit", []byte(`{"terminalId":"`+id+`"}`)); err != nil {
+			t.Fatal(err)
+		}
+		calls := hook.snapshot()
+		if len(calls) != 1 {
+			t.Fatalf("%s: hook calls = %d, want 1", params, len(calls))
+		}
+		if calls[0].dir != cwd {
+			t.Errorf("%s: hook Dir = %q, want %q", params, calls[0].dir, cwd)
+		}
+	}
+}
+
+// Review round 1 P2: a context that is already cancelled at registration must
+// not leave an entry behind (cleanup must not run before the store).
+func TestLaunchHookEntryDroppedWhenContextAlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 20000; i++ {
+		cmd := NewCommand("/bin/true", nil)
+		cmd.hook = &recordingHook{}
+		_ = cmd.exec(ctx)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(launchHookEntries()) != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := len(launchHookEntries()); n != 0 {
+		t.Fatalf("entries = %d with an already-cancelled context, want 0", n)
+	}
+}
