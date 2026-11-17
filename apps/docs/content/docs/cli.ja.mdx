@@ -151,6 +151,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
+ブロック中のタスクが何を待っているかを記録するには、移動に `--blocked-on <ref>` を付けます：`multica issue status MUL-124 blocked --blocked-on pr:merged`。このフラグは `blocked` のときだけ使えます。ref は `status_changed` アクティビティとタスクのメタデータキー `blocked_on` に保存され、タスクが `blocked` を離れると削除されます。フラグなしの `blocked` への移動はこれまでどおりです。ref の各形式は、ウェイクアップ条件フラグの対象です：
+
+| ref | 対応するフラグ |
+| --- | --- |
+| `issue:<id>[@done\|ended\|in_review\|blocked]` | `--until-issue`、`--until-issue-state` |
+| `pr:<checks\|merged\|conflicts\|dequeued>` | `--until-pr` |
+| `children[@<stage>]` | `--until-children-done`、`--stage` |
+| `gh-run:<owner>/<repo>:<run-id>` | `--until-gh-run` |
+| `decision:<request-id>` | `--decision` で結び付けたウェイクアップ |
+
+ref はワークスペースに対して検証されます。別のワークスペースのタスクや決定リクエスト、および他の形式は拒否されます。人は ref の形式ではありません。担当者と終了イベントは、これまでどおりタスク説明の `Blockers:` 行に書き、ref は `--blocked-on <ref>` の形で示してください。
+
 ### タスクをルーティングする
 
 `issue route` は、タスクのステータスを変更し、その理由を 1 回の呼び出しで記録します。ルーティングステップが、タスクの次の行き先を決めるときに使います。`--status`、`--reason`（1〜500 文字）、`--confidence`（0〜1）は必須です。
@@ -480,7 +492,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成） |
 | | `update <id>` | タスクのフィールドを更新 | `create` と同系のフィールドに加え `--position`、`--no-start`、`--duplicate-of` |
 | | `assign <id>` | 割り当てまたは割り当て解除 | `--to`（メンバー、エージェント、スクワッドを名前であいまいマッチ）、`--to-id`、`--unassign`、`--no-start` |
-| | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of` |
+| | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of`、`--blocked-on` |
 | | `reorder <id>` | カラム内で移動 | |
 | | `search <query>` | タスクを検索 | `--limit`、`--include-closed` |
 | | `children <id>` | サブタスクをステージごとに一覧 | |
