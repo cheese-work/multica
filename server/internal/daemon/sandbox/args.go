@@ -34,6 +34,9 @@ type Spec struct {
 	// MULTICA_DAEMON_PORT names; the bridge forwards it to the socket.
 	DaemonSocket string
 	DaemonPort   string
+	// NoDaemonAPI opts out of the daemon API forward: output-only runs and the
+	// self-check. Without it, an enforcement-on launch needs DaemonSocket.
+	NoDaemonAPI bool
 }
 
 var (
@@ -173,6 +176,9 @@ func (l *Launcher) validate(spec Spec) error {
 		if err := checkSocket("egress", spec.EgressSocket); err != nil {
 			return err
 		}
+	}
+	if spec.DaemonSocket == "" && !spec.NoDaemonAPI {
+		return errors.New("sandbox: no daemon socket: an enforced launch needs the daemon API forward (or NoDaemonAPI)")
 	}
 	if spec.DaemonSocket != "" {
 		if err := checkSocket("daemon", spec.DaemonSocket); err != nil {

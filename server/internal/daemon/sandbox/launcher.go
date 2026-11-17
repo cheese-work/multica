@@ -124,7 +124,7 @@ func (l *Launcher) SelfCheck(ctx context.Context) error {
 	defer os.RemoveAll(dir)
 	run, err := l.build(ctx, Spec{
 		WorkDir: dir + "/work", TempDir: dir + "/tmp", Home: dir + "/home",
-		Argv: []string{"/bin/true"},
+		Argv: []string{"/bin/true"}, NoDaemonAPI: true,
 	}.mkdirs())
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrSelfCheck, err)

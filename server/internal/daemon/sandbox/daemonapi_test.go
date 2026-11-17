@@ -195,3 +195,48 @@ func TestBridgeRefusesHalfAForwardPairOrNone(t *testing.T) {
 		t.Errorf("exit code = %d, want 4", code)
 	}
 }
+
+// Review P1 (PR 1810): omitting the daemon forward must stop an enforcement-on
+// launch, not only a wrong one. The agent never starts, with or without egress.
+func TestDaemonAPIOmittedStopsEnforcedLaunchBeforeAgent(t *testing.T) {
+	l := bridgeLauncher()
+	requireSandbox(t, l)
+	egress, _ := fakeEgress(t)
+	for name, sock := range map[string]string{"no sockets": "", "egress only": egress} {
+		ly := newLayout(t)
+		marker := filepath.Join(ly.work, "agent-ran")
+		spec := ly.spec("touch " + marker)
+		spec.NoDaemonAPI, spec.EgressSocket = false, sock
+		out, err := runSandbox(t, l, spec)
+		if err == nil {
+			t.Errorf("%s: launch without a daemon socket succeeded:\n%s", name, out)
+		}
+		if _, statErr := os.Stat(marker); statErr == nil {
+			t.Errorf("%s: agent ran without a daemon forwarder", name)
+		}
+		if _, err := l.Args(spec); err == nil {
+			t.Errorf("%s: Args accepted a spec with no daemon socket", name)
+		}
+	}
+}
+
+// The opt-out stays available, and off/audit never need the forward.
+func TestDaemonAPIOptOutAndOffAuditStayUnchanged(t *testing.T) {
+	l := bridgeLauncher()
+	requireSandbox(t, l)
+	ly := newLayout(t)
+	spec := ly.spec("echo ran")
+	spec.NoDaemonAPI = true
+	if out, err := runSandbox(t, l, spec); err != nil || !strings.Contains(out, "ran") {
+		t.Errorf("opt-out launch: %v\n%s", err, out)
+	}
+	for _, mode := range []Mode{ModeOff, ModeAudit} {
+		lm := bridgeLauncher()
+		lm.Mode = mode
+		spec := ly.spec("echo ran")
+		spec.NoDaemonAPI = false
+		if out, err := runSandbox(t, lm, spec); err != nil || !strings.Contains(out, "ran") {
+			t.Errorf("%s: %v\n%s", mode, err, out)
+		}
+	}
+}
