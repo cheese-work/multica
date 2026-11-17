@@ -4,7 +4,7 @@ import { Bell, BellOff, Clock3, Hourglass, ListChecks, RefreshCw, TriangleAlert 
 import { useQuery } from "@tanstack/react-query";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { TimelineEntry, WakeupCondition, WakeupPreview } from "@multica/core/types";
+import type { TimelineEntry, WakeupCondition, WakeupPausedReason, WakeupPreview } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { TranscriptButton } from "../../common/task-transcript";
@@ -64,7 +64,7 @@ interface WakeupDetails {
   actor_type?: string;
   actor_id?: string;
   woke?: boolean;
-  /** Why it paused ("max_fires", "loop", "rate") or, on a skip, the sentence. */
+  /** Why it paused ("max_fires", "loop", "rate", "run_budget", "weekly_run_guard") or, on a skip, the sentence. */
   reason?: string;
   reason_code?: string;
   limit?: number;
@@ -205,7 +205,7 @@ export function formatWakeupActivity(
         ? t(($) => $.activity.wakeup_timed_out_wake, { condition, agent })
         : t(($) => $.activity.wakeup_timed_out_end, { condition });
     case "wakeup_paused":
-      return text.paused({ paused_reason: (details.reason as "max_fires" | "loop" | "rate" | undefined) ?? "rate", max_fires: details.limit ?? null, fire_count: details.limit ?? 0 }) ?? "";
+      return text.paused({ paused_reason: (details.reason as WakeupPausedReason | undefined) ?? "rate", max_fires: details.limit ?? null, fire_count: details.limit ?? 0 }) ?? "";
     case "wakeup_checkin": {
       const count = entry.coalesced_count ?? 1;
       const note = details.note ?? "";

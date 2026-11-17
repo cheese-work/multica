@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -156,6 +157,11 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// weeklyResume holds where the weekly-guard resume sweep stopped (CHE-6193).
+	weeklyResume struct {
+		sync.Mutex
+		after *weeklyResumeCursor
+	}
 	// AuditDefinition, when set, runs inside the definition write's transaction
 	// just before it commits; an error rolls the write back (CHE-5647).
 	AuditDefinition WakeupDefinitionAuditFn
@@ -896,6 +902,9 @@ func (s *IssueWakeupService) tickWith(ctx context.Context, workspaceIDs []pgtype
 	sweepErr := s.sweepDefinitions(sweepCtx, workspaceIDs)
 	sweepCancel()
 	var errs []error
+	if err := s.resumeWeeklyGuardWakeups(ctx, workspaceIDs); err != nil {
+		errs = append(errs, fmt.Errorf("resume weekly-guard wakeups: %w", err))
+	}
 	if drainErr != nil {
 		errs = append(errs, fmt.Errorf("drain scoped wakeup events: %w", drainErr))
 	}
@@ -1021,13 +1030,22 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if err := dispatch(ctx, w); err != nil {
 		// The refusal rolled the dispatch back, and its deferral record with it.
 		err = s.Tasks.recordStageRefusal(ctx, err)
+		// CHE-6193: a run guard's refusal disables the rule once; it is a
+		// guard block, not a failure, so nothing else is recorded for it.
+		disabled := false
+		if reason := guardBlockReason(err); reason != "" && w.SystemRule.String != SystemRulePRMergeOwed {
+			var derr error
+			if disabled, derr = s.disableGuardBlocked(ctx, w, reason); derr != nil {
+				errs = append(errs, fmt.Errorf("disable guard-blocked wakeup %s: %w", util.UUIDToString(w.ID), derr))
+			}
+		}
 		// A busy counter is a hold, not a failure: record why, report no error.
-		if !errors.Is(err, errAggregateCounterBusy) {
+		if !disabled && !errors.Is(err, errAggregateCounterBusy) {
 			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		}
 		// A pr_merge_owed attempt records its own failure, fenced by the row's
 		// (id, revision); an id-only note here could write a newer generation.
-		if w.SystemRule.String != SystemRulePRMergeOwed {
+		if !disabled && w.SystemRule.String != SystemRulePRMergeOwed {
 			outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 			reason := err.Error()
 			if IsProjectInactive(err) {
