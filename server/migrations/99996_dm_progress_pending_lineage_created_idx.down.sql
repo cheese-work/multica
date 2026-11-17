@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS dm_progress_pending_lineage_created_idx;

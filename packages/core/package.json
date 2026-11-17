@@ -59,6 +59,7 @@
     "./issues/swimlane-layout": "./issues/swimlane-layout.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",
     "./issues/decision-action-preview": "./issues/decision-action-preview.ts",
+    "./issues/run-status": "./issues/run-status.ts",
     "./issues/queries": "./issues/queries.ts",
     "./issues/graph-core": "./issues/graph-core.ts",
     "./issues/graph-queries": "./issues/graph-queries.ts",

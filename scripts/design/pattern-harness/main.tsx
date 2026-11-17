@@ -64,6 +64,7 @@ import {
   seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
   WakeupFieldsPage, WakeupPickersPage, WorkspaceWakeupRulesPage, ConfigChangeViewerPage,
   DecisionArtifactsPage, DecisionRequestCardPage, NeedsYouListPage, QuickAgentBarPage, DelegatedWritesPage,
+  CreateAgentDialogPage, ConcurrencyPickerPage, SkillAttachPage, VisibilityPickerPage, InstructionsEditorPage,
   DingTalkTabPage, LarkTabPage, SlackTabPage, TelegramTabPage, WecomTabPage,
 } from "./raw-elements";
 import "./globals.css";
@@ -1143,6 +1144,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "needs-you-list": NeedsYouListPage,
   "quick-agent-bar": QuickAgentBarPage,
   "delegated-writes-section": DelegatedWritesPage,
+  "create-agent-dialog": CreateAgentDialogPage,
+  "concurrency-picker": ConcurrencyPickerPage,
+  "skill-attach": SkillAttachPage,
+  "visibility-picker": VisibilityPickerPage,
+  "instructions-editor": InstructionsEditorPage,
   "dingtalk-tab": DingTalkTabPage,
   "lark-tab": LarkTabPage,
   "slack-tab": SlackTabPage,

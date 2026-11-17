@@ -219,7 +219,7 @@ func decisionWaitEligible(ctx context.Context, queries *db.Queries, issue db.Iss
 	if issue.Status == "need_decision" {
 		return true, nil
 	}
-	properties, err := queries.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: issue.WorkspaceID, IncludeArchived: false})
+	properties, err := queries.ListIssuePropertyDefinitions(ctx, db.ListIssuePropertyDefinitionsParams{WorkspaceID: issue.WorkspaceID, IncludeArchived: false})
 	if err != nil {
 		return false, err
 	}

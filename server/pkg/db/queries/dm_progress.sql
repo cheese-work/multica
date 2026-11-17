@@ -20,6 +20,16 @@ WHERE session.id = $1
   AND session.channel_origin_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id);
 
+-- name: LockNativeChatSessionShare :one
+-- The dispatcher's route read: the share lock holds the DM open (no archive or
+-- continue can commit) until the card commits, so a batch never lands in a DM
+-- that closed meanwhile.
+SELECT session.* FROM chat_session session
+WHERE session.id = $1
+  AND session.channel_origin_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+FOR SHARE OF session;
+
 -- name: EnsureDMProgressLane :exec
 INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id)
 VALUES ($1, $2, $3)
@@ -121,11 +131,20 @@ RETURNING *;
 
 -- name: InsertDMProgressMovedUnderEvents :exec
 -- CHE-3548: one "moved under" row per lane that actively follows the moved
--- issue. Follows are not touched; muted lanes still get the row.
-INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
-SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', sqlc.arg('new_parent_id')::uuid
+-- issue. Follows are not touched; muted lanes still get the lane event. Every
+-- unmuted lane also gets one pending row, so the dispatcher tells the DM (the
+-- card item carries the kind only, never the new parent: its visibility to the
+-- DM owner is not checked here).
+WITH lane_events AS (
+    INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
+    SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', sqlc.arg('new_parent_id')::uuid
+    FROM dm_progress_follow AS f
+    WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active'
+)
+INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, event_id)
+SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', gen_random_uuid()
 FROM dm_progress_follow AS f
-WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active';
+WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active' AND f.muted_at IS NULL;
 
 -- name: DeleteDMProgressForIssue :exec
 -- No FKs (repo rule): issue delete sweeps its follows, lane events and pending rows here.
@@ -137,7 +156,7 @@ WITH gone AS (
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2;
 
 -- name: DeleteDMProgressForLineage :exec
--- No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows and lane here.
+-- No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows, deliveries and lane here.
 -- Callers hold the chat_session lock, so a new follow cannot slip in between.
 WITH gone AS (
     DELETE FROM dm_progress_follow AS f WHERE f.lineage_id = $1 AND f.workspace_id = $2
@@ -145,18 +164,107 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.lineage_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
+), gone_deliveries AS (
+    DELETE FROM dm_progress_delivery AS d WHERE d.lineage_id = $1 AND d.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps all five tables here.
+-- No FKs (repo rule): workspace delete sweeps all six tables here.
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
 ), gone_events AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.workspace_id = $1
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.workspace_id = $1
+), gone_deliveries AS (
+    DELETE FROM dm_progress_delivery AS d WHERE d.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;
+
+-- name: ListDMProgressPendingLanes :many
+-- Driven by the lane table (one probe of the pending key per lane, never a scan
+-- of the backlog). A lane held for any reason but routing is skipped. One run
+-- takes a bounded random slice, so no lane starves the others and the run fits
+-- its deadline.
+SELECT l.lineage_id FROM dm_progress_lane l
+WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
+  AND EXISTS (SELECT 1 FROM dm_progress_pending p WHERE p.lineage_id = l.lineage_id)
+ORDER BY random() LIMIT 200;
+
+-- name: LockDMProgressLaneSkipLocked :one
+-- Dispatcher entry: a lane another dispatcher (or a follow write) holds is
+-- skipped, not waited for (CHE-3369 I1.3).
+SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED;
+
+-- name: GetDMProgressLaneWindow :one
+-- The dispatcher's due-ness gate: the oldest pending row and the oldest row
+-- that may jump the batch wait (its follow has not spent the hourly allowance),
+-- from the pending rows and follows alone. No issue or member lookup. Denied
+-- rows count here, so the gate is never later than the exact due time.
+SELECT min(p.created_at)::timestamptz AS oldest_at,
+       min(p.created_at) FILTER (WHERE p.immediate AND (f.last_immediate_at IS NULL OR f.last_immediate_at <= sqlc.arg('now')::timestamptz - interval '60 minutes'))::timestamptz AS immediate_at
+FROM dm_progress_pending p
+LEFT JOIN dm_progress_follow f ON f.issue_id = p.issue_id AND f.lineage_id = p.lineage_id AND f.state = 'active'
+WHERE p.lineage_id = $1;
+
+-- name: ListDMProgressLaneIssues :many
+-- One row per distinct issue with pending rows in a lane, oldest first, in one
+-- statement: the denial verdict (follow gone or muted, issue gone, owner not a
+-- member of the issue's workspace), the current status and what the DM was last
+-- told. The member join mirrors service.ProgressVisible; change both together.
+-- event_ids name exactly the rows this read saw, so a row committed later
+-- survives the delete.
+SELECT g.issue_id,
+       g.first_at::timestamptz AS first_at,
+       g.kinds::text[] AS kinds,
+       g.event_ids::uuid[] AS event_ids,
+       (CASE WHEN f.last_immediate_at IS NULL OR f.last_immediate_at <= sqlc.arg('now')::timestamptz - interval '60 minutes' THEN g.immediate_at END)::timestamptz AS immediate_at,
+       COALESCE(CASE WHEN f.issue_id IS NULL THEN 'not_following'
+                     WHEN f.muted_at IS NOT NULL THEN 'muted'
+                     WHEN i.id IS NULL THEN 'issue_gone'
+                     WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
+       COALESCE(i.status, '')::text AS status,
+       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status
+FROM (
+    SELECT p.issue_id,
+           min(p.created_at) AS first_at,
+           array_agg(DISTINCT p.event_kind) AS kinds,
+           array_agg(p.event_id) AS event_ids,
+           min(p.created_at) FILTER (WHERE p.immediate) AS immediate_at
+    FROM dm_progress_pending p
+    WHERE p.lineage_id = $1
+    GROUP BY p.issue_id
+) g
+JOIN dm_progress_lane l ON l.lineage_id = $1
+LEFT JOIN dm_progress_follow f ON f.issue_id = g.issue_id AND f.lineage_id = $1 AND f.state = 'active'
+LEFT JOIN issue i ON i.id = g.issue_id
+LEFT JOIN member m ON m.user_id = l.owner_user_id AND m.workspace_id = i.workspace_id
+ORDER BY g.first_at, g.issue_id;
+
+-- name: DeleteDMProgressPendingEvents :exec
+DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY(sqlc.arg('event_ids')::uuid[]);
+
+-- name: InsertDMProgressDelivery :exec
+INSERT INTO dm_progress_delivery (lineage_id, seq, workspace_id, chat_message_id, payload)
+VALUES ($1, $2, $3, $4, $5);
+
+-- name: AdvanceDMProgressLane :exec
+-- A card went out: stamp the lane and take the next seq. A lane held back only
+-- for routing is released.
+UPDATE dm_progress_lane
+SET last_card_at = $2, next_seq = next_seq + 1, suspended_reason = NULL
+WHERE lineage_id = $1;
+
+-- name: SuspendDMProgressLane :exec
+UPDATE dm_progress_lane SET suspended_reason = $2 WHERE lineage_id = $1;
+
+-- name: MarkDMProgressFollowRendered :exec
+-- The card told the DM this issue's current status; an immediate card also
+-- spends the follow's hourly immediate allowance (I2.2).
+UPDATE dm_progress_follow
+SET last_rendered_status = $3,
+    last_immediate_at = CASE WHEN sqlc.arg('immediate')::boolean THEN sqlc.arg('at')::timestamptz ELSE last_immediate_at END
+WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active';
