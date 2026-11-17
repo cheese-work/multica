@@ -16,6 +16,7 @@ export const useWorkspacePaths = () => ({}) as Record<string, never>;
 export const memberListOptions = (wsId?: string) => empty("members", wsId);
 export const agentListOptions = (_wsId?: string) => empty("agents");
 export const squadListOptions = (_wsId?: string) => empty("squads");
+export const assigneeFrequencyOptions = (wsId?: string) => empty("assignee-frequency", wsId);
 export const isAgentRuntimeBound = () => true;
 // Initials circle from the real ui avatar, so avatar-only views (quick-agent-bar) show their real shape (CHE-5536).
 export const ActorAvatar = ({ actorId = "", actorType, size, className }: { actorId?: string; actorType?: string; size?: AvatarSize; className?: string }) =>
