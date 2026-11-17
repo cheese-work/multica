@@ -25,5 +25,6 @@ ALTER TABLE task_pr_event_delivery
             AND receipt_ids IS NULL AND note IS NULL)
         OR (item_kind = 'wakeup'
             AND wakeup_id IS NOT NULL AND wakeup_revision IS NOT NULL
-            AND cardinality(receipt_ids) > 0)
+            AND receipt_ids IS NOT NULL AND cardinality(receipt_ids) > 0
+            AND note IS NOT NULL)
     ) NOT VALID;

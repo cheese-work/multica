@@ -56,7 +56,7 @@ func TestTaskPREventWakeupItemMigration(t *testing.T) {
 	}
 
 	const ids = `gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid()`
-	const wakeupCols = `, wakeup_id, wakeup_revision, receipt_ids)`
+	const wakeupCols = `, wakeup_id, wakeup_revision, receipt_ids, note)`
 	rejected := func(name, tail string) {
 		t.Helper()
 		if _, err := tx.Exec(ctx, "SAVEPOINT s"); err != nil {
@@ -88,14 +88,18 @@ func TestTaskPREventWakeupItemMigration(t *testing.T) {
 		`, note) VALUES (`+ids+`, 'pending', 'pr_event', 'x')`)
 	// Wakeup items need their wakeup columns and a non-empty receipt list.
 	rejected("wakeup item without wakeup columns", `) VALUES (`+ids+`, 'pending', 'wakeup')`)
-	rejected("wakeup item with empty receipt_ids", wakeupCols+` VALUES (`+ids+`, 'pending', 'wakeup', gen_random_uuid(), 1, ARRAY[]::uuid[])`)
-	rejected("wakeup item without wakeup_revision", `, wakeup_id, receipt_ids) VALUES (`+ids+`, 'pending', 'wakeup', gen_random_uuid(), ARRAY[gen_random_uuid()])`)
+	rejected("wakeup item with empty receipt_ids", wakeupCols+` VALUES (`+ids+`, 'pending', 'wakeup', gen_random_uuid(), 1, ARRAY[]::uuid[], 'n')`)
+	rejected("wakeup item without wakeup_revision", `, wakeup_id, receipt_ids, note) VALUES (`+ids+`, 'pending', 'wakeup', gen_random_uuid(), ARRAY[gen_random_uuid()], 'n')`)
+	rejected("wakeup item without wakeup_id", `, wakeup_revision, receipt_ids, note) VALUES (`+ids+`, 'pending', 'wakeup', 1, ARRAY[gen_random_uuid()], 'n')`)
+	// NULL passes a CHECK (UNKNOWN), so each of these needs its own IS NOT NULL.
+	rejected("wakeup item without receipt_ids", `, wakeup_id, wakeup_revision, note) VALUES (`+ids+`, 'pending', 'wakeup', gen_random_uuid(), 1, 'n')`)
+	rejected("wakeup item without note", `, wakeup_id, wakeup_revision, receipt_ids) VALUES (`+ids+`, 'pending', 'wakeup', gen_random_uuid(), 1, ARRAY[gen_random_uuid()])`)
 	rejected("unknown item kind", `) VALUES (`+ids+`, 'pending', 'other')`)
-	rejected("unknown status", wakeupCols+` VALUES (`+ids+`, 'bogus', 'wakeup', gen_random_uuid(), 1, ARRAY[gen_random_uuid()])`)
+	rejected("unknown status", wakeupCols+` VALUES (`+ids+`, 'bogus', 'wakeup', gen_random_uuid(), 1, ARRAY[gen_random_uuid()], 'n')`)
 	// Accepted shapes.
 	accepted("PR item", `) VALUES (`+ids+`, 'pending', 'pr_event')`)
 	for _, status := range []string{"pending", "delivering", "delivered", "failed", "fallback"} {
-		accepted("wakeup item "+status, wakeupCols+` VALUES (`+ids+`, '`+status+`', 'wakeup', gen_random_uuid(), 1, ARRAY[gen_random_uuid()])`)
+		accepted("wakeup item "+status, wakeupCols+` VALUES (`+ids+`, '`+status+`', 'wakeup', gen_random_uuid(), 1, ARRAY[gen_random_uuid()], 'n')`)
 	}
 
 	// A v2 capability row is what the down migration must rewrite.
