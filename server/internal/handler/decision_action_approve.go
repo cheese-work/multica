@@ -255,7 +255,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		PayloadSHA256: body.PayloadSHA256, Assertion: body.Assertion,
 	})
 	if err != nil {
-		return empty, err
+		return empty, atStep("passkey", err)
 	}
 	finished, err := handler.executeApproved(ctx, transaction, caller, plan, locked, targets, body.Secrets, credential)
 	if err != nil {
@@ -529,7 +529,7 @@ func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Que
 		finish.ErrorMessage = pgtype.Text{String: failure.Message, Valid: true}
 		return finish, nil
 	case err != nil:
-		return finish, err
+		return finish, atStep("executor", err)
 	}
 	if _, err := transaction.Exec(ctx, "RELEASE SAVEPOINT action_exec"); err != nil {
 		return finish, err
