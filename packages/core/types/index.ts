@@ -62,6 +62,8 @@ export type {
   RuntimeDevice,
   RuntimeUpdateInfo,
   RuntimePause,
+  RuntimeUpdateOutcome,
+  RuntimeUpdateSchedule,
   RuntimePauseReason,
   RuntimeProfile,
   RuntimeProtocolFamily,
