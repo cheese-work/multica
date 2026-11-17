@@ -409,9 +409,16 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		rec.activity = &row
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
-	if rec != nil && rec.comment != nil && recordStatus {
-		if err := createHandoffComment(ctx, q, rec, issue); err != nil {
+	if rec != nil && recordStatus {
+		if err := verifyAttachedComments(ctx, q, issue, rec.attach); err != nil {
 			return db.Issue{}, nil, err
+		}
+		if rec.comment != nil {
+			if err := createHandoffComment(ctx, q, rec, issue); err != nil {
+				return db.Issue{}, nil, err
+			}
+			// The comment bumped the issue revision; return the committed one.
+			issue.Revision = rec.created.IssueRevision
 		}
 	}
 	// The intent to run the handler is written with the write that hands the
@@ -4946,12 +4953,17 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	commentSeed, attached, ok := h.prepareHandoffComment(w, r, prevIssue, req, actorType, actorID)
+	commentPlan, ok := h.prepareHandoffComment(w, r, prevIssue, req, actorType, actorID)
 	if !ok {
 		return
 	}
-	if !suppressRun {
-		existingContext = append(existingContext, attached...)
+	var commentSeed *handoffCommentSeed
+	var attached *attachedComments
+	if commentPlan != nil {
+		commentSeed, attached = commentPlan.seed, commentPlan.attach
+	}
+	if attached != nil && !suppressRun {
+		existingContext = append(existingContext, attached.ids...)
 	}
 	if assigneeSupplied || handoff != nil {
 		var ok bool
@@ -4988,7 +5000,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
-		statusRec.comment = commentSeed
+		statusRec.comment, statusRec.attach = commentSeed, attached
 		if handoff != nil && handed.agent != "" {
 			armHandoffIntent(statusRec, r, actorType, actorID, existingContext, req.HandoffNote, handed.write)
 		}
@@ -5024,7 +5036,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {

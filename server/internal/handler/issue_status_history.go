@@ -42,6 +42,9 @@ type statusRecord struct {
 	// change; created is the row it wrote (CHE-5489).
 	comment *handoffCommentSeed
 	created *db.CreateCommentRow
+	// attach is the existing comments the move carries; the transaction checks
+	// them again under the issue lock.
+	attach *attachedComments
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {

@@ -2,11 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-5489 (S2): a status move can create its handoff comment, and name
@@ -177,5 +180,128 @@ func TestHandoffComment_StaleOrForeignRefusedNothingWritten(t *testing.T) {
 				t.Errorf("runs = %+v, want none", runs)
 			}
 		})
+	}
+}
+
+func previewFor(destID string, revisions map[string]int64) map[string]any {
+	return map[string]any{
+		"previous_assignee_type": nil, "previous_assignee_id": nil,
+		"handler_type": "agent", "handler_id": destID, "comment_revisions": revisions,
+	}
+}
+
+func bumpCommentRevision(t *testing.T, commentID string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE comment SET revision = revision + 1 WHERE id = $1`, commentID)
+}
+
+// A comment edited after the preview was shown is not what the person
+// confirmed: the whole move is refused and nothing is written.
+func TestHandoffComment_AttachedCommentEditedAfterPreviewRefused(t *testing.T) {
+	issueID, destID := handoffDispatchFixture(t)
+	a := dbfx.Comment(t, issueID, "as previewed")
+	bumpCommentRevision(t, a)
+
+	resp := moveWithHandoffBody(t, issueID, map[string]any{
+		"handoff_comment":    map[string]any{"content": "x"},
+		"attach_comment_ids": []string{a},
+		"handoff_preview":    previewFor(destID, map[string]int64{a: 1}),
+	})
+	if resp.Code != http.StatusConflict || !strings.Contains(resp.Body.String(), "stale_comment") {
+		t.Fatalf("move = %d %s, want 409 stale_comment", resp.Code, resp.Body.String())
+	}
+	if got := commentIDsOn(t, issueID); len(got) != 1 {
+		t.Errorf("comments = %d, want 1: a refused move writes no comment", len(got))
+	}
+	wantIssueStatus(t, issueID, "todo")
+	if runs := runsOf(t, issueID, destID); len(runs) != 0 {
+		t.Errorf("runs = %+v, want none", runs)
+	}
+}
+
+// A preview names a revision for every comment it attaches.
+func TestHandoffComment_PreviewWithoutRevisionForAttachedRefused(t *testing.T) {
+	issueID, destID := handoffDispatchFixture(t)
+	a := dbfx.Comment(t, issueID, "no revision named")
+
+	resp := moveWithHandoffBody(t, issueID, map[string]any{
+		"attach_comment_ids": []string{a},
+		"handoff_preview":    previewFor(destID, map[string]int64{}),
+	})
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "comment_revision_required") {
+		t.Fatalf("move = %d %s, want 400 comment_revision_required", resp.Code, resp.Body.String())
+	}
+	wantIssueStatus(t, issueID, "todo")
+}
+
+// The revision the preview named still matches: the move goes through.
+func TestHandoffComment_AttachedRevisionMatchesAccepted(t *testing.T) {
+	issueID, destID := handoffDispatchFixture(t)
+	a := dbfx.Comment(t, issueID, "as previewed")
+
+	moveWithHandoffBody(t, issueID, map[string]any{
+		"attach_comment_ids": []string{a},
+		"handoff_preview":    previewFor(destID, map[string]int64{a: 1}),
+	}).Want(http.StatusOK)
+	if runs := runsOf(t, issueID, destID); len(runs) != 1 || runs[0].TriggerCommentID != a {
+		t.Fatalf("runs = %+v, want one run on %s", runs, a)
+	}
+}
+
+// The comment bumps the issue revision. The move returns the revision it
+// committed, so the next write that names it is not a conflict.
+func TestHandoffComment_ReturnsCommittedIssueRevision(t *testing.T) {
+	issueID, _ := handoffDispatchFixture(t)
+
+	var moved struct {
+		Revision int64 `json:"revision"`
+	}
+	moveWithHandoffBody(t, issueID, map[string]any{"handoff_comment": map[string]any{"content": "done here"}}).
+		Want(http.StatusOK).JSON(&moved)
+
+	var stored int64
+	if err := testPool.QueryRow(context.Background(), `SELECT revision FROM issue WHERE id = $1`, issueID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if moved.Revision != stored {
+		t.Fatalf("response revision = %d, stored = %d", moved.Revision, stored)
+	}
+	issueWriters[0].write(t, issueID, map[string]any{"title": "renamed", "expected_revision": moved.Revision}, nil).Want(http.StatusOK)
+}
+
+// The status transaction checks the attached comments again under the issue
+// lock: a comment deleted or edited between the first check and the commit
+// refuses the move. A retrospective test (added after the code): the race
+// window cannot be held open through HTTP.
+func TestVerifyAttachedComments_UnderLock(t *testing.T) {
+	issueID, _ := handoffDispatchFixture(t)
+	q := testHandler.Queries
+	issue, err := q.GetIssueInWorkspace(context.Background(), db.GetIssueInWorkspaceParams{ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := dbfx.Comment(t, issueID, "live")
+	gone := dbfx.Comment(t, issueID, "gone")
+	dbfx.Exec(t, `UPDATE comment SET deleted_at = now() WHERE id = $1`, gone)
+	edited := dbfx.Comment(t, issueID, "edited")
+	bumpCommentRevision(t, edited)
+	foreign := dbfx.Comment(t, dbfx.Issue(t, "che5489 verify other"), "elsewhere")
+
+	one := func(id string, rev int64) *attachedComments {
+		return &attachedComments{ids: []pgtype.UUID{parseUUID(id)}, revisions: map[pgtype.UUID]int64{parseUUID(id): rev}}
+	}
+	for name, tc := range map[string]struct {
+		in   *attachedComments
+		want error
+	}{
+		"live at its revision": {one(live, 1), nil},
+		"deleted":              {one(gone, 1), errAttachedCommentGone},
+		"foreign issue":        {one(foreign, 1), errAttachedCommentGone},
+		"edited":               {one(edited, 1), errAttachedCommentStale},
+		"unbound live":         {&attachedComments{ids: []pgtype.UUID{parseUUID(live)}}, nil},
+	} {
+		if got := verifyAttachedComments(context.Background(), q, issue, tc.in); !errors.Is(got, tc.want) {
+			t.Errorf("%s: err = %v, want %v", name, got, tc.want)
+		}
 	}
 }
