@@ -42,3 +42,21 @@ func TestApproveRunGuardCardBusyRetryBodyNamesTheRefusingStep(test *testing.T) {
 		})
 	}
 }
+
+// CHE-6720: the C00 log named step=agents. The asking agent is only read by an
+// approval, and every decision path (delivery, lifecycle, wake receipt, class
+// raise) holds it FOR SHARE, so a share holder on a hot agent must not refuse
+// the click, however long it holds.
+func TestApproveRunGuardCardIgnoresAShareLockOnTheAskingAgent(test *testing.T) {
+	if testHandler == nil {
+		test.Skip("database not available")
+	}
+	delays := decisionActionRetryDelays
+	decisionActionRetryDelays = []time.Duration{time.Millisecond}
+	test.Cleanup(func() { decisionActionRetryDelays = delays })
+	c, _ := weeklyCardCase(test, 6720200)
+	action := c.pendingAllow(test)
+	holdRow(test, `SELECT 1 FROM agent WHERE id = (SELECT requested_by_agent_id FROM decision_action WHERE id = $1) FOR SHARE`, action.actionID)
+	verify := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) { return pgtype.UUID{}, nil }
+	action.approve(test, withVerifier(verify), action.claim(test, map[string]string{}), http.StatusOK)
+}
