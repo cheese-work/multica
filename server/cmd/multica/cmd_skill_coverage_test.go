@@ -31,9 +31,9 @@ func leafPaths(c *cobra.Command, prefix []string, out *[]string) {
 // new verb cannot land without agents being able to learn it.
 func TestEveryCommandIsDocumentedInTheBuiltinSkill(t *testing.T) {
 	var corpus strings.Builder
-	root := filepath.Join("..", "..", "internal", "service", "builtin_skills")
+	root := filepath.Join(testLaunchDir, "..", "..", "internal", "service", "builtin_skills")
 	// The runtime brief is the other place an agent learns a verb.
-	briefRoot := filepath.Join("..", "..", "internal", "daemon", "execenv")
+	briefRoot := filepath.Join(testLaunchDir, "..", "..", "internal", "daemon", "execenv")
 	for _, dir := range []string{root, briefRoot} {
 		err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() || strings.HasSuffix(p, "_test.go") {

@@ -21,6 +21,8 @@ multica env start <name>          # waits until ready, prints the URL
 multica env start <name> --wait=false
 multica env list --output json
 multica env stop <name>
+# Long form: `multica environment list`, `multica environment start <name>`,
+# `multica environment stop <name>`. `env` is its alias.
 ```
 
 These need the run's `MULTICA_DAEMON_PORT` and `MULTICA_TOKEN`, so they work

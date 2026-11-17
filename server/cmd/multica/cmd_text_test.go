@@ -30,6 +30,10 @@ func TestTextFlagRequests(t *testing.T) {
 		stdin, file           bool
 		required, emptyAbsent bool
 		omittedPresent        bool
+		// extraFileFlag: the fork registers --context-file on workspace update
+		// for the digest-guarded write only (it needs --expected-before-digest),
+		// so the flag exists but does not take the plain-text file cases.
+		extraFileFlag bool
 	}{
 		{
 			name: "issue create", args: []string{"issue", "create", "--title", "text fixture"},
@@ -84,7 +88,7 @@ func TestTextFlagRequests(t *testing.T) {
 		{
 			name: "workspace update context", args: []string{"workspace", "update", issueID, "--name", "text fixture"},
 			method: "PATCH", path: "/api/workspaces/" + issueID, flag: "context", field: "context",
-			stdin: true,
+			stdin: true, extraFileFlag: true,
 		},
 	}
 	type textCase struct {
@@ -110,7 +114,7 @@ func TestTextFlagRequests(t *testing.T) {
 			if got := registered.Flags().Lookup(command.flag+"-stdin") != nil; got != command.stdin {
 				t.Fatalf("stdin registration = %v, want %v", got, command.stdin)
 			}
-			if got := registered.Flags().Lookup(command.flag+"-file") != nil; got != command.file {
+			if got := registered.Flags().Lookup(command.flag+"-file") != nil; got != (command.file || command.extraFileFlag) {
 				t.Fatalf("file registration = %v, want %v", got, command.file)
 			}
 			cases := []textCase{

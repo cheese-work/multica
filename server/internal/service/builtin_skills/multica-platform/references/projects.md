@@ -276,3 +276,13 @@ does. Ask before running one the user did not request.
 
 `multica project delete <id>` is destructive. Read `project get <id>` and the
 issues in the project first; do not delete a project that still has live work.
+
+## Project members
+
+```bash
+multica project member list <project-id>
+multica project member add <project-id> <member>...     # name, email or user id
+multica project member remove <project-id> <member>
+```
+
+A change here alters who can see a private project. Ask before running `add` or `remove` when the user did not request it.
