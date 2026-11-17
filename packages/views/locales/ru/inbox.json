@@ -38,7 +38,8 @@
     "received_today": "Сегодня",
     "received_last_7_days": "Последние 7 дней",
     "received_last_30_days": "Последние 30 дней",
-    "agent_idle": "Простаивает"
+    "agent_idle": "Простаивает",
+    "mentions_only": "Mentions me"
   },
   "context_menu": {
     "mark_read": "Отметить как прочитанное",
@@ -109,7 +110,8 @@
     "app_action_requested": "Требуется ваше подтверждение",
     "app_action_reminder": "Срок подтверждения скоро истечёт",
     "app_connect_requested": "Подключить приложение",
-    "app_action_result": "Результат действия приложения"
+    "app_action_result": "Результат действия приложения",
+    "machine_drained": "Safe to shut down"
   },
   "labels": {
     "set_status_to": "Установлен статус",

@@ -99,7 +99,8 @@
     "back_to_list": "Все проекты",
     "empty_issues_add_existing": "Добавить существующую задачу",
     "archive_action": "Архивировать проект",
-    "restore_action": "Восстановить проект"
+    "restore_action": "Восстановить проект",
+    "section_wakeups": "Wakeups"
   },
   "resources": {
     "section_header": "Ресурсы",

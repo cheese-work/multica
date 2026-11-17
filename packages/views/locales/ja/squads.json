@@ -27,7 +27,13 @@
     "success": "スカッドをアーカイブしました"
   },
   "name_editor": {
-    "placeholder": "スクワッド名"
+    "title": "スクワッド名を変更",
+    "placeholder": "スクワッド名",
+    "required": "名前を入力してください",
+    "cancel": "キャンセル",
+    "save": "保存",
+    "saved": "保存しました",
+    "save_failed": "保存できませんでした"
   },
   "add_member_dialog": {
     "title": "メンバーを追加",
@@ -154,5 +160,12 @@
       "role_testing": "テスト",
       "role_product": "プロダクト"
     }
+  },
+  "description_dialog": {
+    "title": "説明を編集",
+    "placeholder_empty": "説明を追加",
+    "cancel": "キャンセル",
+    "responsibility_placeholder": "このスクワッドの担当は何ですか？",
+    "save": "保存"
   }
 }

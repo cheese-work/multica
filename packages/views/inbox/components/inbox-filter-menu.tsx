@@ -15,7 +15,6 @@ import {
   inboxFacetCounts,
   inboxFilterCount,
   inboxFilterValues,
-  type InboxFilterKey,
   type InboxFilterSupport,
   type InboxListDimension,
   useInboxFilters,
@@ -62,6 +61,7 @@ import {
   INBOX_TYPE_ICONS,
   useInboxFilterChips,
   useInboxFilterLabels,
+  type InboxMenuKey as InboxFilterKey,
 } from "./inbox-filter-options";
 
 const EMPTY_ISSUE_IDS: ReadonlySet<string> = new Set();

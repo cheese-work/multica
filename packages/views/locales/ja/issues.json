@@ -1932,7 +1932,8 @@
       "override_error": "ワークフローを変更できませんでした",
       "no_workflow": "ワークフローなし",
       "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う",
-      "flowchart": "フローチャート"
+      "flowchart": "フローチャート",
+      "follows_project": "（プロジェクトに従う）"
     },
     "list_separator": "、",
     "handoff": {

@@ -27,7 +27,13 @@
     "success": "已归档小队"
   },
   "name_editor": {
-    "placeholder": "小队名称"
+    "title": "重命名小队",
+    "placeholder": "小队名称",
+    "required": "名称不能为空",
+    "cancel": "取消",
+    "save": "保存",
+    "saved": "已保存",
+    "save_failed": "保存失败"
   },
   "add_member_dialog": {
     "title": "添加成员",
@@ -154,5 +160,12 @@
       "role_testing": "测试",
       "role_product": "产品"
     }
+  },
+  "description_dialog": {
+    "title": "编辑描述",
+    "placeholder_empty": "添加描述",
+    "cancel": "取消",
+    "responsibility_placeholder": "这个小队负责什么？",
+    "save": "保存"
   }
 }

@@ -27,7 +27,13 @@
     "success": "Squad archivé"
   },
   "name_editor": {
-    "placeholder": "Nom du squad"
+    "title": "Renommer le squad",
+    "placeholder": "Nom du squad",
+    "required": "Le nom est obligatoire",
+    "cancel": "Annuler",
+    "save": "Enregistrer",
+    "saved": "Enregistré",
+    "save_failed": "Échec de l'enregistrement"
   },
   "add_member_dialog": {
     "title": "Ajouter un membre",
@@ -156,5 +162,12 @@
       "role_testing": "Tests",
       "role_product": "Produit"
     }
+  },
+  "description_dialog": {
+    "title": "Modifier la description",
+    "placeholder_empty": "Ajouter une description",
+    "cancel": "Annuler",
+    "responsibility_placeholder": "De quoi ce squad est-il responsable ?",
+    "save": "Enregistrer"
   }
 }

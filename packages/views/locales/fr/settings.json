@@ -680,7 +680,8 @@
       "workflows": "Workflows",
       "voice_input": "Saisie vocale",
       "provider_breakers": "Disjoncteurs des fournisseurs",
-      "background_agents": "Agents d'arrière-plan"
+      "background_agents": "Agents d'arrière-plan",
+      "wakeups": "Réveils"
     },
     "groups": {
       "personal": "Personnel",

@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import type { TimelineEntry } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
-import { RESOURCES } from "../../test/i18n";
+import { getTestResources } from "../../test/i18n";
 import { useT } from "../../i18n";
 import { useWakeupText } from "./wakeup-presentation";
 import * as activity from "./wakeup-activity";
+
+const RESOURCES = getTestResources();
 
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),

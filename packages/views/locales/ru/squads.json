@@ -27,7 +27,13 @@
     "success": "Команда архивирована"
   },
   "name_editor": {
-    "placeholder": "Название команды"
+    "title": "Rename squad",
+    "placeholder": "Squad name",
+    "required": "Name is required",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saved": "Saved",
+    "save_failed": "Failed to save"
   },
   "add_member_dialog": {
     "title": "Добавить участника",
@@ -159,5 +165,12 @@
       }
     },
     "title": "Объедините агентов в команду для совместной работы"
+  },
+  "description_dialog": {
+    "title": "Edit description",
+    "placeholder_empty": "Add a description",
+    "cancel": "Cancel",
+    "responsibility_placeholder": "What is this squad responsible for?",
+    "save": "Save"
   }
 }

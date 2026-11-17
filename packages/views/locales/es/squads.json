@@ -27,7 +27,13 @@
     "success": "Squad archivado"
   },
   "name_editor": {
-    "placeholder": "Nombre del squad"
+    "title": "Rename squad",
+    "placeholder": "Squad name",
+    "required": "Name is required",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saved": "Saved",
+    "save_failed": "Failed to save"
   },
   "add_member_dialog": {
     "title": "Añadir miembro",
@@ -156,5 +162,12 @@
       "role_testing": "Pruebas",
       "role_product": "Producto"
     }
+  },
+  "description_dialog": {
+    "title": "Edit description",
+    "placeholder_empty": "Add a description",
+    "cancel": "Cancel",
+    "responsibility_placeholder": "What is this squad responsible for?",
+    "save": "Save"
   }
 }

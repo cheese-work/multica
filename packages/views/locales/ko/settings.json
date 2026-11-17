@@ -672,7 +672,8 @@
       "workflows": "워크플로",
       "voice_input": "음성 입력",
       "provider_breakers": "공급자 차단기",
-      "background_agents": "백그라운드 에이전트"
+      "background_agents": "백그라운드 에이전트",
+      "wakeups": "깨우기"
     },
     "groups": {
       "personal": "개인",

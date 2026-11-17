@@ -99,7 +99,8 @@
     "back_to_list": "Todos los proyectos",
     "empty_issues_add_existing": "Añadir tarea existente",
     "archive_action": "Archivar proyecto",
-    "restore_action": "Restaurar proyecto"
+    "restore_action": "Restaurar proyecto",
+    "section_wakeups": "Wakeups"
   },
   "resources": {
     "section_header": "Recursos",

@@ -150,19 +150,13 @@ describe("CodeTab — GitHub", () => {
       connect();
       roleRef.current = role;
       installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org" });
-      mockGetConnectURL.mockResolvedValue({ configured: true, url: "https://github.com/apps/x" });
-      const open = vi.spyOn(window, "open").mockImplementation(() => null);
       const user = userEvent.setup();
       render(<CodeTab />, { wrapper: Wrapper });
 
       await user.click(screen.getByRole("button", { name: "Add account or organization" }));
 
-      await waitFor(() =>
-        expect(open).toHaveBeenCalledWith("https://github.com/apps/x", "_blank", "noopener"),
-      );
-      expect(mockGetConnectURL).toHaveBeenCalledWith("workspace-1");
+      expect(mockConnectGitHub).toHaveBeenCalledOnce();
       expect(mockDeleteInstallation).not.toHaveBeenCalled();
-      open.mockRestore();
     },
   );
 

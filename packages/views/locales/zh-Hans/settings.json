@@ -672,7 +672,8 @@
       "workflows": "工作流",
       "voice_input": "语音输入",
       "provider_breakers": "服务商熔断器",
-      "background_agents": "后台智能体"
+      "background_agents": "后台智能体",
+      "wakeups": "唤醒"
     },
     "groups": {
       "personal": "个人",

@@ -215,7 +215,19 @@
     "rename_required": "Имя обязательно",
     "edit_description_title": "Изменить описание",
     "description_placeholder": "Чем занимается этот агент?",
-    "cancel": "Отмена"
+    "cancel": "Отмена",
+    "section_presets": "Presets",
+    "preset_default": "Default",
+    "preset_stale": "Stale",
+    "preset_stale_reason": {
+      "unknown_preset": "No longer exists",
+      "ambiguous": "Name matches more than one preset",
+      "context_args": "Context args not supported",
+      "thinking_level": "Thinking level not supported",
+      "service_tier": "Service tier not supported",
+      "model": "Model not available",
+      "lab_lock": "Locked to another lab"
+    }
   },
   "overview": {
     "attention_title": "Запуски требуют внимания",
@@ -1059,7 +1071,24 @@
     "context_load_verified": "Проверено",
     "context_load_verified_other_version": "Проверено только на {{version}}",
     "context_load_unverified": "Не проверено",
-    "context_load_not_delivered": "Не передано"
+    "context_load_not_delivered": "Не передано",
+    "details_preset": "Preset",
+    "details_preset_skipped": "Skipped",
+    "details_preset_claimed": "Claimed",
+    "details_preset_applied": "Applied",
+    "details_preset_not_reported": "Not reported",
+    "details_preset_agent_defaults": "Agent defaults",
+    "details_init_context": "Init context",
+    "details_init_context_total": "{{tokens}} est. tokens total",
+    "details_init_context_part": "{{tokens}} est. tokens",
+    "details_init_context_part_budget": "{{tokens}} / {{budget}} est. tokens",
+    "details_init_context_over_budget": "Over budget",
+    "silence_warn": "No output for {{minutes}} min",
+    "silence_warn_unknown": "No output for a while",
+    "tool_stalled": "Still running past {{minutes}} min",
+    "tool_stalled_unknown": "Still running past the limit",
+    "tool_stalled_ended": "Ran past {{minutes}} min with no result",
+    "tool_stalled_ended_unknown": "Ran past the limit with no result"
   },
   "task_failure": {
     "cancelled_by_system": "Отменено системой",
@@ -1142,5 +1171,44 @@
       }
     },
     "title": "Создайте первого ИИ-коллегу"
+  },
+  "actions": {
+    "selected_one": "{{count}} selected",
+    "clear_selection": "Clear selection",
+    "selected_few": "{{count}} selected",
+    "selected_many": "{{count}} selected",
+    "selected_other": "{{count}} selected"
+  },
+  "auto_compact": {
+    "title": "Auto-compact",
+    "hint": "Leave a field empty to use the workspace value.",
+    "inherit_placeholder": "Workspace default",
+    "save_failed": "Could not save the auto-compact setting."
+  },
+  "scheduling": {
+    "paused_badge": "Paused",
+    "pause_action": "Pause agent",
+    "resume_action": "Resume agent",
+    "pause_title": "Pause {{name}}?",
+    "pause_description": "A paused agent claims no new runs. Queued work waits until you resume.",
+    "impact_running": "{{count}} running",
+    "impact_queued": "{{count}} queued",
+    "impact_issues": "{{count}} open issues",
+    "impact_wakeups": "{{count}} enabled wakeups",
+    "impact_loading": "Checking what this leaves waiting…",
+    "impact_failed": "Could not read the impact. You can still pause.",
+    "cancel_active": "Also cancel active runs now",
+    "cancel_active_hint": "Off: running runs finish. On: running and queued runs are cancelled after the pause.",
+    "resume_title": "Resume {{name}}?",
+    "resume_description": "The agent claims runs again, including work queued while it was paused.",
+    "keep": "Keep as is",
+    "paused_toast": "Agent paused",
+    "resumed_toast": "Agent resumed",
+    "failed_toast": "Could not change agent scheduling",
+    "reason_label": "Reason (optional)",
+    "reason_placeholder": "Reason (optional)",
+    "paused_by_note": "Paused by {{name}} · {{time}}",
+    "paused_at_note": "Paused {{time}}",
+    "paused_reason_note": "Reason: {{reason}}"
   }
 }

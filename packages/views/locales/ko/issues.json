@@ -1932,7 +1932,8 @@
       "override_error": "워크플로를 변경할 수 없습니다",
       "no_workflow": "워크플로 없음",
       "card_title": "“{{workflow}}” · “{{project}}” 기준",
-      "flowchart": "플로차트"
+      "flowchart": "플로차트",
+      "follows_project": "(프로젝트 기준)"
     },
     "list_separator": ", ",
     "handoff": {

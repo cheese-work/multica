@@ -570,6 +570,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
             aria-expanded={editingId === anchor.id}
             label={L.edit(index + 1, annotations[index]?.note ?? "")}
             data-testid="annotation-marker" data-annotation-marker={anchor.id} data-active={activeId === anchor.id || editingId === anchor.id}
+            // eslint-disable-next-line no-restricted-syntax -- numbered annotation marker, a count dot
             className="size-6 rounded-full text-caption tabular-nums aria-expanded:ring-2 aria-expanded:ring-brand data-[active=true]:ring-2 data-[active=true]:ring-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             onMouseEnter={() => setActiveId(anchor.id)} onMouseLeave={() => setActiveId((id) => id === anchor.id ? null : id)}
             onFocus={() => setActiveId(anchor.id)} onBlur={() => setActiveId((id) => id === anchor.id ? null : id)}

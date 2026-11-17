@@ -680,7 +680,8 @@
       "workflows": "Workflows",
       "voice_input": "Voice input",
       "provider_breakers": "Provider breakers",
-      "background_agents": "Background agents"
+      "background_agents": "Background agents",
+      "wakeups": "Wakeups"
     },
     "groups": {
       "personal": "Personal",

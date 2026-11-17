@@ -21,11 +21,10 @@ function mount() {
   const view = render(
     <I18nProvider locale="en" resources={{ en: { common: enCommon, skills: enSkills } }}>
       <QueryClientProvider client={qc}>
-        <CreateSkillDialog onClose={vi.fn()} onCreated={vi.fn()} />
+        <CreateSkillDialog method="manual" onClose={vi.fn()} onCreated={vi.fn()} />
       </QueryClientProvider>
     </I18nProvider>,
   );
-  fireEvent.click(screen.getByRole("button", { name: /Create manually/ }));
   return view;
 }
 

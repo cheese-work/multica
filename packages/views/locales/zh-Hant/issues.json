@@ -1877,7 +1877,8 @@
       "override_default": "預設工作流",
       "override_error": "無法更改工作流",
       "no_workflow": "無工作流",
-      "flowchart": "流程圖"
+      "flowchart": "流程圖",
+      "follows_project": "（跟隨專案）"
     },
     "list_separator": "、",
     "handoff": {

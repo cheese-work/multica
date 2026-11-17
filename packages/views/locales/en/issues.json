@@ -2020,7 +2020,8 @@
       "override_error": "Couldn’t change the workflow",
       "no_workflow": "No workflow",
       "card_title": "{{workflow}} · from {{project}}",
-      "flowchart": "Flowchart"
+      "flowchart": "Flowchart",
+      "follows_project": "(from project)"
     },
     "list_separator": ", ",
     "handoff": {

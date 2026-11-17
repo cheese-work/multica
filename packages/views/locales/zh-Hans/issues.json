@@ -1932,7 +1932,8 @@
       "override_error": "无法更改工作流",
       "no_workflow": "无工作流",
       "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",
-      "flowchart": "流程图"
+      "flowchart": "流程图",
+      "follows_project": "（跟随项目）"
     },
     "list_separator": "、",
     "handoff": {

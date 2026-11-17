@@ -27,7 +27,13 @@
     "success": "스쿼드를 보관했습니다"
   },
   "name_editor": {
-    "placeholder": "스쿼드 이름"
+    "title": "스쿼드 이름 변경",
+    "placeholder": "스쿼드 이름",
+    "required": "이름을 입력하세요",
+    "cancel": "취소",
+    "save": "저장",
+    "saved": "저장했습니다",
+    "save_failed": "저장하지 못했습니다"
   },
   "add_member_dialog": {
     "title": "멤버 추가",
@@ -154,5 +160,12 @@
       "role_testing": "테스트",
       "role_product": "프로덕트"
     }
+  },
+  "description_dialog": {
+    "title": "설명 수정",
+    "placeholder_empty": "설명 추가",
+    "cancel": "취소",
+    "responsibility_placeholder": "이 스쿼드는 무엇을 담당하나요?",
+    "save": "저장"
   }
 }

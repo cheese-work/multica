@@ -672,7 +672,8 @@
       "workflows": "ワークフロー",
       "voice_input": "音声入力",
       "provider_breakers": "プロバイダーのブレーカー",
-      "background_agents": "バックグラウンドエージェント"
+      "background_agents": "バックグラウンドエージェント",
+      "wakeups": "ウェイクアップ"
     },
     "groups": {
       "personal": "個人",

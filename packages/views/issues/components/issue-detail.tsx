@@ -2078,51 +2078,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     return map;
   }, [timelineView.threadReplies]);
 
-  // The anchor a deep-link target renders under. A failed run's notification
-  // names its task, but a run that left a reply (its failure notice included)
-  // renders under the reply's id, in a thread slot and at the top level alike.
-  const highlightTargetId = useMemo(() => {
-    if (!highlightCommentId) return undefined;
-    const topLevel = items.find((it) => it.kind === "run" && it.run.task.id === highlightCommentId);
-    if (topLevel) return topLevel.id;
-    for (const runs of commentRuns.values()) {
-      const run = runs.find((candidate) => candidate.task.id === highlightCommentId);
-      if (!run) continue;
-      const reply = run.hasReply && run.commentId
-        ? displayTimeline.find((entry) => entry.id === run.commentId)
-        : undefined;
-      return reply && !isDeletedComment(reply) ? reply.id : run.task.id;
-    }
-    return highlightCommentId;
-  }, [highlightCommentId, items, commentRuns, displayTimeline]);
-
-  // Thread root of a deep-link target. A run sits in a slot inside the thread
-  // it answers, so it unfolds and scrolls with that thread exactly like a
-  // reply does.
-  const highlightRootId = useMemo(() => {
-    if (!highlightTargetId) return undefined;
-    const replyRoot = replyToRoot.get(highlightTargetId);
-    if (replyRoot) return replyRoot;
-    for (const [rootId, runs] of commentRuns) {
-      if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
-    }
-    return undefined;
-  }, [highlightTargetId, highlightCommentId, replyToRoot, commentRuns]);
-
-  // The root whose thread contains the current deep-link/highlight request,
-  // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
-  // `highlightedId` (only set once the target DOM node is actually found,
-  // see the landing effect below) and NOT from a DOM query. A target inside a
-  // currently-collapsed/compact thread has no DOM node yet; gating the pin on
-  // its own landing result is circular (the thread never opens because the
-  // node isn't there, and the node never mounts because the thread never
-  // opens). Deriving the pin from the request itself breaks that cycle.
-  const targetRootId = useMemo(() => {
-    if (!highlightCommentId) return null;
-    if (timelineView.threadReplies.has(highlightCommentId)) return highlightCommentId;
-    return highlightRootId ?? null;
-  }, [highlightCommentId, highlightRootId, timelineView.threadReplies]);
-
   // Readiness predicate handed to `useInPageFind` below (01-DESIGN "no query
   // effect or MutationObserver callback can walk pre-reveal DOM"). Declared
   // as a ref-backed stable callback because `find` (below) is created BEFORE
@@ -2195,6 +2150,51 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     () => flattenGroups(timelineView.groups, effectiveExpandedResolved),
     [timelineView.groups, effectiveExpandedResolved],
   );
+
+  // The anchor a deep-link target renders under. A failed run's notification
+  // names its task, but a run that left a reply (its failure notice included)
+  // renders under the reply's id, in a thread slot and at the top level alike.
+  const highlightTargetId = useMemo(() => {
+    if (!highlightCommentId) return undefined;
+    const topLevel = rootItems.find((it) => it.kind === "run" && it.run.task.id === highlightCommentId);
+    if (topLevel) return topLevel.id;
+    for (const runs of commentRuns.values()) {
+      const run = runs.find((candidate) => candidate.task.id === highlightCommentId);
+      if (!run) continue;
+      const reply = run.hasReply && run.commentId
+        ? displayTimeline.find((entry) => entry.id === run.commentId)
+        : undefined;
+      return reply && !isDeletedComment(reply) ? reply.id : run.task.id;
+    }
+    return highlightCommentId;
+  }, [highlightCommentId, rootItems, commentRuns, displayTimeline]);
+
+  // Thread root of a deep-link target. A run sits in a slot inside the thread
+  // it answers, so it unfolds and scrolls with that thread exactly like a
+  // reply does.
+  const highlightRootId = useMemo(() => {
+    if (!highlightTargetId) return undefined;
+    const replyRoot = replyToRoot.get(highlightTargetId);
+    if (replyRoot) return replyRoot;
+    for (const [rootId, runs] of commentRuns) {
+      if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
+    }
+    return undefined;
+  }, [highlightTargetId, highlightCommentId, replyToRoot, commentRuns]);
+
+  // The root whose thread contains the current deep-link/highlight request,
+  // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
+  // `highlightedId` (only set once the target DOM node is actually found,
+  // see the landing effect below) and NOT from a DOM query. A target inside a
+  // currently-collapsed/compact thread has no DOM node yet; gating the pin on
+  // its own landing result is circular (the thread never opens because the
+  // node isn't there, and the node never mounts because the thread never
+  // opens). Deriving the pin from the request itself breaks that cycle.
+  const targetRootId = useMemo(() => {
+    if (!highlightCommentId) return null;
+    if (timelineView.threadReplies.has(highlightCommentId)) return highlightCommentId;
+    return highlightRootId ?? null;
+  }, [highlightCommentId, highlightRootId, timelineView.threadReplies]);
 
   // Committed reveal-before-DOM-walk generation (01-DESIGN "Find and target
   // reveal lifecycle"). `revealAll` covers BOTH forcing reasons that require

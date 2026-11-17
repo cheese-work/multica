@@ -43,7 +43,11 @@ import { DUE_DATE_LABEL_KEY } from "../../issues/components/filter-field-options
 import { useStatusOptions } from "../../issues/utils/status-options";
 import { useT } from "../../i18n";
 
-export const INBOX_FILTER_ICONS: Record<InboxFilterKey, IconComponent> = {
+/** Menu entries: every chip dimension plus the "Mentions me" toggle, which has no chip. */
+export type InboxMenuKey = InboxFilterKey | "mentions";
+
+export const INBOX_FILTER_ICONS: Record<InboxMenuKey, IconComponent> = {
+  mentions: AtSign,
   unread: Eye,
   type: Bell,
   actor: UserRound,
@@ -76,7 +80,8 @@ export const INBOX_AGENT_ICONS: Record<InboxAgentFilter, IconComponent> = {
 export function useInboxFilterLabels() {
   const { t } = useT("inbox");
   const { t: tIssues } = useT("issues");
-  const dimension: Record<InboxFilterKey, string> = {
+  const dimension: Record<InboxMenuKey, string> = {
+    mentions: t(($) => $.filters.mentions_only),
     unread: tIssues(($) => $.filters.section_read_state),
     type: t(($) => $.filters.type),
     actor: t(($) => $.filters.from),

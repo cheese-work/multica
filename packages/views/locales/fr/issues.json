@@ -2020,7 +2020,8 @@
       "override_error": "Impossible de modifier le workflow",
       "no_workflow": "Aucun workflow",
       "card_title": "{{workflow}} · selon {{project}}",
-      "flowchart": "Organigramme"
+      "flowchart": "Organigramme",
+      "follows_project": "(selon le projet)"
     },
     "list_separator": ", ",
     "handoff": {
