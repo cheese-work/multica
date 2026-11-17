@@ -349,3 +349,22 @@ after `main` already held `678_issue_workflow_owner` and
 
 The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
 so a database that already applied the old names re-runs them safely.
+
+## Upstream v0.10.0 migrations renumbering
+
+The merge of upstream `v0.10.0` (CHE-6210) brings 47 migrations, upstream `614`–`660`, above the merge base.
+The runner applies `up` files in byte order of the file name, and the lexically last migration on this tree is `999j_weekly_run_guard_refusal_action_idx`.
+No all-digit prefix sorts after `999j_`, so the incoming migrations take the letter-suffix prefixes `999k01`–`999k47`, in upstream order
+(`renumber-map.json` holds the full `{from, to}` map; `node scripts/migration-order-check.mjs` checks it). The same file names a stem,
+so every registry key in `main.go` that named an incoming stem (25 `concurrentIndexCleanups` entries) uses the new stem.
+
+Examples:
+
+- `614_project_creator` is now `999k01_project_creator`
+- `617_connected_apps` is now `999k04_connected_apps`
+- `659_issue_view_preference_projects_page` is now `999k46_issue_view_preference_projects_page`
+- `660_inbox_item_snoozed_at` is now `999k47_inbox_item_snoozed_at`
+
+The up and down SQL bytes are unchanged from `v0.10.0`. None of the 52 upstream migrations already on this tree under fork names is touched,
+and none reappears under its upstream name. A later sync must not reintroduce the upstream filenames under their original prefixes.
+Irreversible down files: `999k04_connected_apps` (drops 7 tables) and `999k46_issue_view_preference_projects_page` (deletes saved `projects_page` preferences).
