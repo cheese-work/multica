@@ -145,14 +145,14 @@ function pages(endpoint, key) {
   }
 }
 
-// Only a failed gh process carries stderr; it reports a server error as "... (HTTP 502)".
+// Only a failed gh process carries stderr; it reports a server error as "... (HTTP 502)" or, with no JSON body, "gh: HTTP 503".
 // Other exceptions (4xx, malformed JSON) are real faults even when their message mentions HTTP 5xx.
 function isServerError(error) {
-  return typeof error?.stderr === "string" && /\(HTTP 5\d\d\)/.test(error.stderr)
+  return typeof error?.stderr === "string" && /\bHTTP 5\d\d\b/.test(error.stderr)
 }
 
 function isRateLimit(error) {
-  return typeof error?.stderr === "string" && /\(HTTP (?:403|429)\)/.test(error.stderr) && /rate limit/i.test(error.stderr)
+  return typeof error?.stderr === "string" && /\bHTTP (?:403|429)\b/.test(error.stderr) && /rate limit/i.test(error.stderr)
 }
 
 export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log }) {

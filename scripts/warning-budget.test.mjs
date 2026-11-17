@@ -271,7 +271,7 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
 
 // CHE-7010: run the real script against a stubbed `gh` on PATH. The stub serves one job (a zero-baseline job, so no
 // baseline lookup) and fails the job-log endpoint with the given HTTP status for the first `times` calls.
-function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600 }) {
+function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600, bare = false }) {
   const dir = mkdtempSync(join(tmpdir(), "warning-budget-gh-"))
   try {
     const counter = join(dir, "log-calls")
@@ -285,7 +285,7 @@ if (endpoint === "rate_limit") out({ resources: { core: { reset: Math.floor(Date
 else if (endpoint.endsWith("/logs")) {
   const calls = Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) + 1
   fs.writeFileSync(${JSON.stringify(counter)}, String(calls))
-  if (calls <= ${times}) { process.stderr.write("gh: ${message} (HTTP ${status})\\n"); process.exit(1) }
+  if (calls <= ${times}) { process.stderr.write(${JSON.stringify(bare ? `gh: HTTP ${status}` : `gh: ${message} (HTTP ${status})`)} + "\\n"); process.exit(1) }
   out(${JSON.stringify(warning ? "2026-11-17T00:00:00Z Warning: new diagnostic\n" : "all quiet\n")})
 } else if (endpoint.includes("/annotations")) out([])
 else if (endpoint.includes("/jobs")) out({ jobs: [{ id: 7, name: "gitleaks", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/repos/cheese-work/multica/check-runs/5" }] })
@@ -364,4 +364,11 @@ test("a 403 that is not a rate limit still fails loudly (CHE-7032)", () => {
   assert.equal(result.status, 1)
   assert.equal(result.logCalls, 1)
   assert.doesNotMatch(result.stdout + result.stderr, /not checked/)
+})
+
+// CHE-7032: with no JSON error body, gh prints "gh: HTTP 503" without parentheses (seen in run 44143433633).
+test("a transient 503 in gh's bare 'gh: HTTP 503' format is retried (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 2, bare: true })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 3)
 })
