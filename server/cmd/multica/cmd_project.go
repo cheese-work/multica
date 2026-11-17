@@ -663,9 +663,7 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	var result map[string]any
-	// A members-only change empties body above; still PUT so the project is
-	// returned, unless the split endpoint supplies the result.
-	if len(body) > 0 || (split == nil && !clearSplit) {
+	if len(body) > 0 {
 		if err := client.PutJSON(ctx, "/api/projects/"+projectRef.ID, body, &result); err != nil {
 			return fmt.Errorf("update project: %w", err)
 		}
