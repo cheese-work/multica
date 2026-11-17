@@ -37,11 +37,8 @@ type explainNode struct {
 }
 
 func (n explainNode) rows() float64 {
-	loops := n.ActualLoops
-	if loops < 1 {
-		loops = 1
-	}
-	total := (n.ActualRows + n.RemovedByFilter + n.RemovedByRecheck + n.RemovedByJoin) * loops
+	// A node that never ran (Actual Loops 0) examined nothing.
+	total := (n.ActualRows + n.RemovedByFilter + n.RemovedByRecheck + n.RemovedByJoin) * n.ActualLoops
 	for _, child := range n.Plans {
 		total += child.rows()
 	}
@@ -104,8 +101,8 @@ func TestExplainOracleCountsEveryNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 1*1 + (10+5+1+4)*2 + (0+9)*1 (a node that never ran counts once) + 3*4
-	if want := (explainWork{rowsExamined: 1 + 40 + 9 + 12, buffers: 10}); got != want {
+	// 1*1 + (10+5+1+4)*2 + (0+9)*0 (a node that never ran examined nothing) + 3*4
+	if want := (explainWork{rowsExamined: 1 + 40 + 0 + 12, buffers: 10}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
