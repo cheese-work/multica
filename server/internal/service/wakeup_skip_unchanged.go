@@ -226,3 +226,14 @@ func declaredInputValue(ctx context.Context, db rowQuerier, issueID pgtype.UUID,
 	}
 	return value, nil
 }
+
+// markWakeupDeferred stamps the pending fires of a deferred wakeup and reports
+// whether any was not stamped before, so one deferral writes one timeline row.
+func markWakeupDeferred(ctx context.Context, db rowQuerier, ids []pgtype.UUID) (bool, error) {
+	var fresh bool
+	err := db.QueryRow(ctx, `WITH marked AS (
+			UPDATE issue_wakeup_receipt r SET payload = r.payload || jsonb_build_object('deferred_at', now())
+			WHERE r.id = ANY($1) AND NOT (r.payload ? 'deferred_at') RETURNING r.id
+		) SELECT EXISTS(SELECT 1 FROM marked)`, ids).Scan(&fresh)
+	return fresh, err
+}

@@ -93,7 +93,10 @@ type WakeupInput struct {
 	WatchInputs []string `json:"watch_inputs"`
 }
 
-const watchInputsAccepted = "accepted values are issue, pr, children, thread:<comment-uuid>, on at, every and cron wakeups only"
+const watchInputsAccepted = "accepted values are issue, pr, children, thread:<comment-uuid>, or always alone, on at, every and cron wakeups only"
+
+// watchAlways declares a wakeup that must run on every fire (CHE-6968).
+const watchAlways = "always"
 
 func validWatchInput(v string) bool {
 	if v == "issue" || v == "pr" || v == "children" {
@@ -239,7 +242,8 @@ func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Ti
 	}
 	if len(in.WatchInputs) > 0 {
 		timeRule := in.Kind == "at" || in.Kind == "every" || in.Kind == "cron"
-		if !timeRule || slices.ContainsFunc(in.WatchInputs, func(v string) bool { return !validWatchInput(v) }) {
+		alwaysAlone := !slices.Contains(in.WatchInputs, watchAlways) || len(in.WatchInputs) == 1
+		if !timeRule || !alwaysAlone || slices.ContainsFunc(in.WatchInputs, func(v string) bool { return v != watchAlways && !validWatchInput(v) }) {
 			return pgtype.Timestamptz{}, fmt.Errorf("%w: %s", ErrWakeupWatchInput, watchInputsAccepted)
 		}
 	}
@@ -588,6 +592,16 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 	if err := s.refuseTimerOpenPR(ctx, tx, issueID, in); err != nil {
 		return out, err
 	}
+	// CHE-6968: an agent's time wakeup states what it watches (member creates are exempt).
+	missingWatch := false
+	if enable == nil && source.Valid && len(in.WatchInputs) == 0 && (in.Kind == "at" || in.Kind == "every" || in.Kind == "cron") {
+		switch timeWakeupSkipMode(ctx, q, issue.WorkspaceID) {
+		case "block":
+			return out, fmt.Errorf("%w: a time wakeup an agent creates must declare what it watches: pass --watch <inputs> or --watch always; %s", ErrWakeupWatchInput, watchInputsAccepted)
+		case "warn":
+			missingWatch = true
+		}
+	}
 	maxFires := pgtype.Int4{Int32: in.MaxFires, Valid: in.MaxFires > 0}
 	if !maxFires.Valid && in.Kind == "event" && in.Mode == "continuous" {
 		maxFires = pgtype.Int4{Int32: wakeupDefaultMaxFires, Valid: true}
@@ -738,6 +752,13 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 			return out, e
 		}
 		activities = append(activities, created)
+		if missingWatch {
+			missing, e := recordWakeupActivity(ctx, q, out, wakeupActivityWatchMissing, actorType, actorID, map[string]any{"wakeup_id": util.UUIDToString(out.ID), "missing": "--watch", "reason": "an agent time wakeup must declare --watch <inputs> or --watch always in block mode"})
+			if e != nil {
+				return out, e
+			}
+			activities = append(activities, missing)
+		}
 	}
 	// Subscribe and inspect the concrete source under the same row lock. This
 	// closes the already-terminal race even if the caller exits immediately.
@@ -1532,6 +1553,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		next = pgtype.Timestamptz{}
 	}
 	heartbeatFP, declaredFP, watchdogFP := "", "", ""
+	var wouldDefer map[string]any
 	// A firing the agent already knows about starts no run. One that a run of
 	// the agent waiting to start can take along keeps its inputs for that run
 	// (JoinWaitingWakeups).
@@ -1669,19 +1691,24 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				}
 				if unchanged && mode == "warn" {
 					slog.Info("time wakeup skip (warn): declared inputs unchanged, running", "wakeup_id", util.UUIDToString(w.ID), "issue_id", util.UUIDToString(issue.ID), "last_task_id", util.UUIDToString(lastTask))
+					wouldDefer = map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask)}
 				}
 				if unchanged && mode == "block" {
-					if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+					// CHE-6968: defer, never consume. The fire stays pending and the
+					// rule stays on with its expiry; the next pass runs it once a
+					// declared input changed, the setting left block, or the rule
+					// expired (timedOut skips this branch).
+					fresh, err := markWakeupDeferred(ctx, tx, ids)
+					if err != nil {
 						return err
 					}
-					if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+					if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next}); err != nil {
 						return err
 					}
-					details := skippedUnchangedDetails("declared_inputs", lastTask)
-					details["wakeup_id"] = util.UUIDToString(w.ID)
-					details["inputs"] = w.WatchInputs
-					if err := note(wakeupActivitySkipped, details); err != nil {
-						return err
+					if fresh {
+						if err := note(wakeupActivityDeferred, map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask)}); err != nil {
+							return err
+						}
 					}
 					return commit()
 				}
@@ -1897,6 +1924,12 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	}
 	if err := settle(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
 		return err
+	}
+	if wouldDefer != nil {
+		wouldDefer["task_id"] = util.UUIDToString(task.ID)
+		if err := note(wakeupActivityWouldDefer, wouldDefer); err != nil {
+			return err
+		}
 	}
 	if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastTaskID: lastTask}); err != nil {
 		return err
