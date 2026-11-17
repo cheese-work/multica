@@ -617,9 +617,17 @@ export interface MikaBootstrapResponse extends Agent {
   onboarding_session?: ChatSession;
 }
 
+/** One background job an agent serves (CHE-5439). `personal` is the viewer's own pick. */
+export interface AgentBackgroundUse {
+  scope: "workspace" | "personal";
+  job: "dm_title" | "quick_actions" | "compact" | "routing";
+}
+
 export interface Agent {
   id: string;
   workspace_id: string;
+  /** Present on a single-agent GET only; omitted when the agent serves no job. */
+  background_use?: AgentBackgroundUse[];
   /** Set while an owner/admin has paused claims for this agent (CHE-5066). */
   scheduling_paused_at?: string | null;
   scheduling_paused_by?: string | null;

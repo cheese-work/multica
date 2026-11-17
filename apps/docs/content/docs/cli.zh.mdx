@@ -267,6 +267,8 @@ multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
 ```
 
+`multica agent get <agent-id> --output json` 还会返回 `background_use`：该智能体承担的后台任务，格式为 `{scope, job}` 列表（`scope` 为 `workspace` 或 `personal`）。你能看到所有工作区任务，以及仅属于你自己的个人选择。
+
 导入时遇到同名 skill，默认会停止且不修改现有内容。按意图选择：
 
 ```bash

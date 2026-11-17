@@ -290,6 +290,8 @@ multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
 ```
 
+`multica agent get <agent-id> --output json` also returns `background_use`: the background jobs the agent serves, as a list of `{scope, job}` (`scope` is `workspace` or `personal`). You see every workspace job and only your own personal picks.
+
 When an import hits a skill with the same name, the default is to stop without modifying existing content. Pick by intent:
 
 ```bash

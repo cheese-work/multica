@@ -5,6 +5,7 @@ import { useRegisterCommandBarContext } from "../../search/register-context";
 import {
   AlertCircle,
   Archive,
+  Bot,
   Copy,
   Hash,
   Link2,
@@ -23,6 +24,7 @@ import {
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, UpdateAgentRequest } from "@multica/core/types";
+import { AgentBackgroundUseList } from "./agent-background-notice";
 import {
   type AgentPresenceDetail,
   isAgentRuntimeBound,
@@ -34,6 +36,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useModalStore } from "@multica/core/modals";
 import { useWorkspacePaths } from "@multica/core/paths";
 import {
+  agentBackgroundUseOptions,
   agentDetailOptions,
   agentListOptions,
   cacheAgentResponse,
@@ -171,6 +174,11 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
     canEdit,
     isLoading: permissionsLoading,
   } = useAgentPermissions(agent, wsId);
+
+  const { data: backgroundUse = [] } = useQuery({
+    ...agentBackgroundUseOptions(wsId, agentId),
+    enabled: !!agent,
+  });
 
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmCancelRuns, setConfirmCancelRuns] = useState(false);
@@ -640,6 +648,17 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
         }
       >
         {t(($) => $.detail.runtime_required_banner)}
+      </Notice>
+    ),
+    backgroundUse.length > 0 && (
+      <Notice
+        key="background"
+        icon={<Bot className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />}
+      >
+        <AgentBackgroundUseList
+          uses={backgroundUse}
+          canEditWorkspace={myRole === "owner" || myRole === "admin"}
+        />
       </Notice>
     ),
   ].filter(Boolean);
