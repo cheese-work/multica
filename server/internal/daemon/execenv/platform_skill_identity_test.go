@@ -137,7 +137,7 @@ func TestPlatformSkillDomainsMatchDescription(t *testing.T) {
 			break
 		}
 	}
-	_, after, ok := strings.Cut(description, "does not fully cover: ")
+	_, after, ok := strings.Cut(description, "the brief does not cover: ")
 	domains, _, ok2 := strings.Cut(after, ". ")
 	if !ok || !ok2 {
 		t.Fatalf("cannot find the domain list in the description %q; update this parser with the new wording", description)
@@ -168,7 +168,7 @@ func assertPlatformSkillHints(t *testing.T, provider, brief, slug string) {
 	if provider == "traecli" {
 		platformHint = "read `.traecli/skills/" + slug + "/SKILL.md` and open the reference(s)"
 	}
-	for _, want := range []string{platformHint, "Before creating sub-issues, read `references/sub-issues.md` in the `" + slug + "` skill"} {
+	for _, want := range []string{platformHint, "Before creating sub-issues, read `references/issues.md` in the `" + slug + "` skill"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("brief missing platform hint %q", want)
 		}
