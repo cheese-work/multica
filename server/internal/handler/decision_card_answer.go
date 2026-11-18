@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -34,7 +35,7 @@ type decisionCardAnswerInput struct {
 	Text   string `json:"text"`
 	// A gated class also carries the revisions the person saw and the passkey
 	// assertion over them.
-	AnswerRevision int32           `json:"answer_revision,omitempty"`
+	AnswerRevision *int32          `json:"answer_revision,omitempty"`
 	PolicyRevision int32           `json:"policy_revision,omitempty"`
 	Assertion      json.RawMessage `json:"assertion,omitempty"`
 	// A batch card's option answer also closes the cards it covers. It carries
@@ -116,8 +117,8 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	if located.HumanUserID != userID {
-		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can answer"}
+	if err := refuseDeadAnswer(located, userID, input, time.Now()); err != nil {
+		return empty, err
 	}
 	if input.Option != "" && located.AskJson == nil && located.Kind != "action" {
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "this request has no options to click; type an answer"}
@@ -167,7 +168,10 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if decision.ChatSessionID != located.ChatSessionID || decision.HumanUserID != userID || decision.IssueCommentID != located.IssueCommentID {
 		return empty, decisionIntentRefusal{http.StatusConflict, "decision context changed; retry"}
 	}
-	if decision.Origin != "asked" || decision.Status != "open" {
+	if err := refuseDeadAnswer(decision, userID, input, time.Now()); err != nil {
+		return empty, err
+	}
+	if decision.Origin != "asked" {
 		return empty, decisionIntentRefusal{http.StatusConflict, "this request cannot accept another answer"}
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, workspaceID, issue.Status)
