@@ -19,6 +19,7 @@ vi.mock("@multica/core/issues/use-issue-deletion", () => ({
 vi.mock("@multica/core/issues/mutations", () => ({
   useBatchUpdateIssues: () => ({ mutateAsync: batchUpdate, isPending: false }),
   useBatchDeleteIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateIssue: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/issue-workflows", () => ({
