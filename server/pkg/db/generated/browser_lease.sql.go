@@ -690,6 +690,44 @@ func (q *Queries) GetBrowserLeaseForTask(ctx context.Context, arg GetBrowserLeas
 	return i, err
 }
 
+const getBrowserLoginLeaseForUser = `-- name: GetBrowserLoginLeaseForUser :one
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE id = $1 AND workspace_id = $2 AND user_id = $3 AND class = 'H'
+`
+
+type GetBrowserLoginLeaseForUserParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetBrowserLoginLeaseForUser(ctx context.Context, arg GetBrowserLoginLeaseForUserParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, getBrowserLoginLeaseForUser, arg.ID, arg.WorkspaceID, arg.UserID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getBrowserProfile = `-- name: GetBrowserProfile :one
 SELECT id, workspace_id, name, class, created_at FROM browser_profile
 WHERE id = $1 AND workspace_id = $2
@@ -727,6 +765,47 @@ type GetOpenBrowserLeaseForTaskParams struct {
 
 func (q *Queries) GetOpenBrowserLeaseForTask(ctx context.Context, arg GetOpenBrowserLeaseForTaskParams) (BrowserLease, error) {
 	row := q.db.QueryRow(ctx, getOpenBrowserLeaseForTask, arg.WorkspaceID, arg.TaskID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getOpenBrowserLoginLeaseForUser = `-- name: GetOpenBrowserLoginLeaseForUser :one
+
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE workspace_id = $1 AND user_id = $2 AND class = 'H' AND state <> 'ended'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetOpenBrowserLoginLeaseForUserParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+// Class H login lease held by a member (CHE-5989, W3-3b).
+func (q *Queries) GetOpenBrowserLoginLeaseForUser(ctx context.Context, arg GetOpenBrowserLoginLeaseForUserParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, getOpenBrowserLoginLeaseForUser, arg.WorkspaceID, arg.UserID)
 	var i BrowserLease
 	err := row.Scan(
 		&i.ID,

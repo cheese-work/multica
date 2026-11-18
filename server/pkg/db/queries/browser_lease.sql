@@ -198,3 +198,15 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id))
   AND (sqlc.narg(profile_id)::uuid IS NULL OR profile_id = sqlc.narg(profile_id))
 RETURNING *;
+
+-- Class H login lease held by a member (CHE-5989, W3-3b).
+
+-- name: GetOpenBrowserLoginLeaseForUser :one
+SELECT * FROM browser_lease
+WHERE workspace_id = $1 AND user_id = $2 AND class = 'H' AND state <> 'ended'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetBrowserLoginLeaseForUser :one
+SELECT * FROM browser_lease
+WHERE id = $1 AND workspace_id = $2 AND user_id = $3 AND class = 'H';
