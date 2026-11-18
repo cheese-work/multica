@@ -147,6 +147,8 @@ multica issue comment add MUL-123 --content-file note.md --steer-active
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+`in_review`、`blocked`、`need_decision` のタスクへのエージェントのコメントは、次に動く人を示す必要があります。人が動くなら `--ask <member-id>`、誰も動かないなら `--no-ask` を付けます。メンバーのメンション、`--notify-only`、決定リクエストでも満たせます。この2つのフラグは互いに、また `--notify-only` や決定フラグとも併用できません。同じ移動では `multica issue status` に `--waiting-on member:<member-id>` または `--waiting-on none` が必要で、`in_review`、`blocked`、`need_decision` でのみ使えます。ワークスペース設定 `waiting_audience_guard` と `waiting_on_guard` が、対象の欠落を許可・記録・拒否のどれにするかを決めます。
+
 `multica decision request` の `--recovers <event-id>` は、そのリクエストが ask ガードのイベント（拒否された操作や復旧通知に示されたもの）への回答であることを示します。サーバーは、イベントがこの課題にあり、リクエストが問い合わせる本人に対して発生したものである場合に限り、リクエストと同じトランザクションでそのイベントを解消します。ある人へのリクエストが別の人のイベントを解消することはなく、`--recovers` のないリクエストは何も解消しません。別の課題や別の人のイベントは `400` で拒否されます。1 つのリクエストが復旧できるイベントは 1 件だけです。同じリクエストの再試行が 2 件目のイベントを指定すると `400` で拒否されます。
 
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
@@ -513,7 +515,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成） |
 | | `update <id>` | タスクのフィールドを更新 | `create` と同系のフィールドに加え `--position`、`--no-start`、`--duplicate-of` |
 | | `assign <id>` | 割り当てまたは割り当て解除 | `--to`（メンバー、エージェント、スクワッドを名前であいまいマッチ）、`--to-id`、`--unassign`、`--no-start` |
-| | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of`、`--blocked-on` |
+| | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of`、`--blocked-on`、`--waiting-on` |
 | | `reorder <id>` | カラム内で移動 | |
 | | `search <query>` | タスクを検索 | `--limit`、`--include-closed` |
 | | `children <id>` | サブタスクをステージごとに一覧 | |

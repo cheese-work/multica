@@ -147,6 +147,8 @@ multica issue comment add MUL-123 --content-file note.md --steer-active
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+`in_review`, `blocked`, `need_decision` 태스크에 에이전트가 남기는 댓글은 다음에 움직일 사람을 밝혀야 합니다. 사람이 움직이면 `--ask <member-id>`, 아무도 움직이지 않으면 `--no-ask`를 씁니다. 멤버 멘션, `--notify-only`, 결정 요청도 인정됩니다. 두 플래그는 서로, 그리고 `--notify-only`나 결정 플래그와 함께 쓸 수 없습니다. 같은 이동에는 `multica issue status`에 `--waiting-on member:<member-id>` 또는 `--waiting-on none`이 필요하며 `in_review`, `blocked`, `need_decision`에서만 허용됩니다. 워크스페이스 설정 `waiting_audience_guard`와 `waiting_on_guard`가 대상 누락을 허용, 기록, 거부 중 무엇으로 처리할지 정합니다.
+
 `multica decision request`의 `--recovers <event-id>`는 요청이 ask 가드 이벤트(거부된 작업이나 복구 알림에 표시된 이벤트)에 대한 응답임을 나타냅니다. 서버는 이벤트가 이 이슈에 있고 요청이 묻는 사람을 위해 발생한 경우에만, 요청과 같은 트랜잭션에서 그 이벤트를 해제합니다. 한 사람에 대한 요청은 다른 사람의 이벤트를 해제하지 않으며, `--recovers`가 없는 요청은 아무것도 해제하지 않습니다. 다른 이슈나 다른 사람의 이벤트는 `400`으로 거부됩니다.하나의 요청은 이벤트 하나만 복구합니다. 같은 요청을 재시도하면서 두 번째 이벤트를 지정하면 `400`으로 거부됩니다.
 
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
@@ -513,7 +515,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `create` | 태스크 생성 | `--title`(필수), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment`(반복 가능), `--property`(반복 가능), `--allow-duplicate`(같은 제목의 닫히지 않은 태스크가 있어도 생성) |
 | | `update <id>` | 태스크 필드 업데이트 | `create`와 같은 종류의 필드에 `--position`, `--no-start`, `--duplicate-of` 추가 |
 | | `assign <id>` | 할당 또는 할당 해제 | `--to`(이름으로 멤버, 에이전트, 스쿼드 fuzzy match), `--to-id`, `--unassign`, `--no-start` |
-| | `status <id> <status>` | 상태 변경 | `--no-start`, `--duplicate-of`, `--blocked-on` |
+| | `status <id> <status>` | 상태 변경 | `--no-start`, `--duplicate-of`, `--blocked-on`, `--waiting-on` |
 | | `reorder <id>` | 열 안에서 이동 | |
 | | `search <query>` | 태스크 검색 | `--limit`, `--include-closed` |
 | | `children <id>` | 단계별로 묶은 하위 태스크 목록 | |
