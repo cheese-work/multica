@@ -268,3 +268,9 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
   const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
   assert.match(zero, /"migration-checks"/)
 })
+
+test("decision-card-e2e, added by CHE-6847, has a zero warning baseline until main runs it", () => {
+  const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"decision-card-e2e"/)
+})
