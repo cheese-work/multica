@@ -280,11 +280,14 @@ type Handler struct {
 	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
-	Passkeys              *passkey.Service
-	EmailService          *service.EmailService
-	UpdateStore           UpdateStore
-	ModelListStore        ModelListStore
-	DaemonUpdate          *DaemonUpdateSource // daemon build baked into this image; nil when absent
+	Passkeys       *passkey.Service
+	EmailService   *service.EmailService
+	UpdateStore    UpdateStore
+	ModelListStore ModelListStore
+	DaemonUpdate   *DaemonUpdateSource // daemon build baked into this image; nil when absent
+	// UpdateCycleReady runs when a draining update cycle has 0 live runs and an
+	// online runtime before its start cutoff; the updating step (CHE-5711) sets it.
+	UpdateCycleReady      func(context.Context, db.DaemonUpdateCycle) error
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service

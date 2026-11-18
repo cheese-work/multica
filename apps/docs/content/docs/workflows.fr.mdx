@@ -110,6 +110,18 @@ Pour supprimer un workflow, passez d’abord les projets qui l’utilisent à un
 
 Si **Paramètres** ne contient pas **Workflows**, la fonctionnalité n’est pas encore disponible dans cet espace de travail ; les statuts se gèrent toujours dans **Paramètres → États des tâches**.
 
+## Retenir les nouvelles demandes d’un projet [#intake-hold]
+
+Un espace de travail peut garder les nouvelles demandes de premier niveau dans **Backlog** pendant une fenêtre de temps, pour que des personnes les lisent et les libèrent avant que les agents ne commencent. La règle est le réglage d’espace de travail `intake_hold` : une liste avec une entrée par projet. Chaque entrée contient `project_id`, `mode`, `starts_at`, `ends_at`, `exempt_types`, `exempt_labels`, `exempt_escalation_classes`, `exempt_autopilot_ids`, `exempt_issue_ids` et `source`. Un agent la modifie avec le correctif des réglages de l’espace de travail, qu’un propriétaire approuve avec une clé d’accès. Un projet sans entrée n’est pas concerné. `source` est obligatoire et chaque ID est un UUID en minuscules avec tirets ; une valeur qui enfreint l'une de ces règles est refusée à l'enregistrement.
+
+Les modes sont `off` (rien n’est retenu), `warn` et `block`. Une tâche est retenue tant que toutes ces conditions sont vraies : la fenêtre de l’entrée est ouverte (de `starts_at` inclus à `ends_at` exclu) ; la tâche a été créée à `starts_at` ou après ; elle n’a pas de parent ; elle est dans Backlog, ou y a été mise en attente par une demande de décision ; aucune personne ne l’a libérée ; aucune exemption ne s’applique. Quand la retenue est appliquée, le déplacement hors de Backlog d’une tâche retenue par un agent ou un jeton est refusé avec le code HTTP 409 et le code `intake_hold`. Cette version ajoute seulement le réglage et le champ de lecture ; rien n’est encore refusé.
+
+`GET /api/issues/{id}` renvoie un champ `intake_hold` avec `source`, `held`, `owned`, `reason`, `ends_at` et `exempt_after`. `owned` reste vrai après `ends_at`, ce qui distingue une tâche que la retenue a couverte d’une tâche qu’elle n’a jamais couverte. Le champ est absent pour une tâche qui a un parent et pour un projet sans entrée. Les endpoints de liste ne le renvoient pas. `reason` vaut `held`, `ended`, `not_started`, `mode_off`, `created_before_start`, `left_backlog`, `released_by_member`, `exempt_type`, `exempt_label`, `exempt_escalation_class`, `exempt_autopilot` ou `exempt_issue_id`. Une tâche dont le titre n’a pas de type, comme `plain words`, est retenue. La priorité n’exempte rien.
+
+Quand un agent a besoin de la décision d’une personne sur une dépense, un déploiement, une publication, une action irréversible ou une orientation produit, il la demande par une demande de décision. Si l’entrée liste cette classe dans `exempt_escalation_classes`, la réponse de la personne lève la retenue de cette seule tâche, 10 minutes après la réponse. Jusque-là, `held` reste vrai et `exempt_after` indique l’heure à laquelle l’exemption commence. Une réponse retirée n’exempte rien, et une demande `reversible` n’exempte jamais.
+
+Une personne libère une tâche de deux façons. Soit elle la déplace hors de Backlog dans l’application web, l’application de bureau ou la CLI, connectée en son nom ; soit elle la déplace hors d’un statut où la tâche avait été mise en attente depuis Backlog, et le serveur enregistre la libération. Un jeton qui appartient à un agent ou à un runtime cloud ne libère jamais une tâche.
+
 ## Guides associés
 
 - [Projets](/projects) — regrouper les tâches qui suivent un workflow.

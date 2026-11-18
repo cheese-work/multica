@@ -33,7 +33,9 @@ test("fallback patch applies to ci.yml: push to main triggers CI and a later pus
   // So every push gets its own group, keyed by SHA.
   const group = triggers.match(/^  group: (.+)$/m)[1];
   assert.match(group, /github\.event_name == 'push' && github\.sha/);
-  assert.match(triggers, /cancel-in-progress: \$\{\{ github\.event_name != 'push' \}\}/);
+  // CHE-7067: dispatch runs still share the one `ci-dispatch` group and never cancel; push never cancels.
+  assert.match(group, /^\$\{\{ github\.event_name == 'workflow_dispatch' && 'ci-dispatch' \|\| /);
+  assert.match(triggers, /cancel-in-progress: \$\{\{ github\.event_name != 'workflow_dispatch' && github\.event_name != 'push' \}\}/);
 });
 
 test("ruleset payload keeps main guarded by required non-strict checks and drops only merge_queue", () => {

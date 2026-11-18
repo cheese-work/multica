@@ -23,6 +23,13 @@ type prEventServer struct {
 	mu              sync.Mutex
 	prEventCalls    atomic.Int32
 	acks            []string
+	// allowFailed lets a test expect delivered=false acks; ackBodies records
+	// every ack body in order.
+	allowFailed bool
+	ackBodies   []struct {
+		Delivered bool   `json:"delivered"`
+		Error     string `json:"error"`
+	}
 }
 
 func (s *prEventServer) handler(t *testing.T) http.HandlerFunc {
@@ -37,12 +44,14 @@ func (s *prEventServer) handler(t *testing.T) http.HandlerFunc {
 			s.serveOnce(w, &s.prEvent)
 		case strings.Contains(r.URL.Path, "/supplements/") || strings.Contains(r.URL.Path, "/pr-events/"):
 			var body struct {
-				Delivered bool `json:"delivered"`
+				Delivered bool   `json:"delivered"`
+				Error     string `json:"error"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if !body.Delivered {
+			if !body.Delivered && !s.allowFailed {
 				t.Errorf("ack %s: delivered=false", r.URL.Path)
 			}
+			s.ackBodies = append(s.ackBodies, body)
 			s.acks = append(s.acks, r.URL.Path)
 		default:
 			t.Errorf("unexpected request %s", r.URL.Path)
@@ -61,16 +70,23 @@ func (s *prEventServer) serveOnce(w http.ResponseWriter, body *map[string]string
 
 func runPREventLoop(t *testing.T, s *prEventServer, negotiated bool) []string {
 	t.Helper()
+	return runPREventLoopWith(t, s, negotiated, false, nil)
+}
+
+// runPREventLoopWith also sets whether the run echoed v2 (wakeup items) and
+// the error the provider returns for every injection.
+func runPREventLoopWith(t *testing.T, s *prEventServer, negotiated, wakeups bool, injectErr error) []string {
+	t.Helper()
 	d := taskSupplementTestDaemon(t, s.handler(t))
 	var injected []string
 	session := &agent.Session{
 		SupplementReady: func() bool { return true },
 		Supplement: func(_ context.Context, instruction string) error {
 			injected = append(injected, instruction)
-			return nil
+			return injectErr
 		},
 	}
-	ctx, cancel := context.WithTimeout(withTaskPREvents(context.Background(), negotiated), 2*time.Second)
+	ctx, cancel := context.WithTimeout(withTaskWakeupItems(withTaskPREvents(context.Background(), negotiated), wakeups), 2*time.Second)
 	defer cancel()
 	wakeup, unsubscribe := d.taskSupplementSignals.subscribe("task-pr")
 	defer unsubscribe()
@@ -178,6 +194,7 @@ func TestClientStartTaskReadsPREventNegotiation(t *testing.T) {
 	}{
 		{"both", `{"supplement_capability":"task-supplement-v1","pr_event_capability":"task-supplement-pr-event-v1"}`, TaskNegotiation{Supplement: true, PREvent: true}},
 		{"old server", `{"supplement_capability":"task-supplement-v1"}`, TaskNegotiation{Supplement: true}},
+		{"v2 echo", `{"supplement_capability":"task-supplement-v1","pr_event_capability":"task-supplement-pr-event-v2"}`, TaskNegotiation{Supplement: true, PREvent: true, PREventWakeups: true}},
 		{"neither", `{}`, TaskNegotiation{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

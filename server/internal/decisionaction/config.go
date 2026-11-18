@@ -72,6 +72,7 @@ var settingsKeys = []string{
 	"agent_comment_wake_policy_enabled", "mermaid_orientation",
 	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "reversible_ask_guard", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode",
 	"workflow_by_type",
+	"intake_hold",
 }
 
 // SettingsKeys lists the allow table keys.

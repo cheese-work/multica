@@ -460,6 +460,9 @@ type TaskPREvent struct {
 	OldHeadSHA string `json:"old_head_sha"`
 	BaseSHA    string `json:"base_sha"`
 	CheckName  string `json:"check_name"`
+	// WakeupID and Text are set only on a kind "wakeup" item (v2).
+	WakeupID string `json:"wakeup_id"`
+	Text     string `json:"text"`
 }
 
 func (c *Client) ClaimTaskPREvent(ctx context.Context, taskID string) (*TaskPREvent, error) {
@@ -521,6 +524,9 @@ var errStartClaimRejected = errors.New("task start claim rejected")
 type TaskNegotiation struct {
 	Supplement bool
 	PREvent    bool
+	// PREventWakeups is set only for a v2 echo: the run may be handed
+	// kind "wakeup" items (CHE-6971). A v1 echo leaves it false.
+	PREventWakeups bool
 }
 
 func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (TaskNegotiation, error) {
@@ -547,7 +553,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		negotiated = TaskNegotiation{
 			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
 				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
-			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1 ||
+				response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV2,
+			PREventWakeups: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV2,
 		}
 		return nil
 	}

@@ -151,6 +151,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
+ブロック中のタスクが何を待っているかを記録するには、移動に `--blocked-on <ref>` を付けます：`multica issue status MUL-124 blocked --blocked-on pr:merged`。このフラグは `blocked` のときだけ使えます。ref は `status_changed` アクティビティとタスクのメタデータキー `blocked_on` に保存され、タスクが `blocked` を離れると削除されます。フラグなしの `blocked` への移動はこれまでどおりです。ref の各形式は、ウェイクアップ条件フラグの対象です：
+
+| ref | 対応するフラグ |
+| --- | --- |
+| `issue:<id>[@done\|ended\|in_review\|blocked]` | `--until-issue`、`--until-issue-state` |
+| `pr:<checks\|merged\|conflicts\|dequeued>` | `--until-pr` |
+| `children[@<stage>]` | `--until-children-done`、`--stage` |
+| `gh-run:<owner>/<repo>:<run-id>` | `--until-gh-run` |
+| `decision:<request-id>` | `--decision` で結び付けたウェイクアップ |
+
+ref はワークスペースに対して検証されます。別のワークスペースのタスクや決定リクエスト、および他の形式は拒否されます。人は ref の形式ではありません。担当者と終了イベントは、これまでどおりタスク説明の `Blockers:` 行に書き、ref は `--blocked-on <ref>` の形で示してください。
+
 ### タスクをルーティングする
 
 `issue route` は、タスクのステータスを変更し、その理由を 1 回の呼び出しで記録します。ルーティングステップが、タスクの次の行き先を決めるときに使います。`--status`、`--reason`（1〜500 文字）、`--confidence`（0〜1）は必須です。
@@ -352,6 +364,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。設定は `background_agents` の `routing` ジョブとして保存されます。これらのフラグは `multica workspace background-agents set routing` の別名で、従来の `/routing-agent` API ルートも 1 リリースの間は別名として残ります。
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` は、ワークスペースの時刻ウェイクアップのスキップモード（`settings.time_wakeup_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみで、変更はすべてアクティビティログに記録されます。`off` は確認をオフにし、保留中の時刻ウェイクアップをすべて実行します。`warn` は `block` なら何をするかを記録し、起動は通常どおり実行します。`block` は変化のない宣言済みの起動を保留し、エージェントには時刻ウェイクアップで `--watch <inputs>` または `--watch always` を必須にします。
+- `multica workspace update --auto-close-mode off|warn|block` は自動クローズのモード（`settings.auto_close.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーだけです。クローズに必要なチェックは [ワークスペース](/docs/workspaces) を参照してください。レビュー後にやることが残っていないとき、タスクの作成者は `multica issue metadata set <issue> --key post_close_work --value none --type string` を記録します。
 - `multica workspace update --ask-guard-mode off|warn|block` は、質問ガードのモード（`settings.ask_guard_mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。コマンドは保存後のワークスペースを表示し、`multica workspace get` でも `settings` にモードが表示されます。`off` でガードをオフにし、`warn` は違反を数えるだけで通し、`block` は拒否します。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 - `--mode script --script <name> [--arg <value>]...` は、モデルセッションなしでエージェントのタスクトークンの下、許可リストにあるスクリプトを 1 つ実行します。`--script` と `--arg` には `--mode script` が必要で、`--mode script` には `--script` が必要です。`--description` は実行されません。デーモンに許可リストがない場合、すべてのスクリプトタスクは安全側で失敗します。`--output json` はスクリプト名と引数を `script_config` として表示します。`autopilot update --mode <他のモード>` はスクリプトを消去します。 タスク終了時、サーバーはタスクトークンの削除をベストエフォートで行います。削除に失敗した場合、トークンは有効期限まで有効なままで、それより早く失効させる仕組みはありません。実行結果の `script` にスクリプト名、引数リストの SHA-256、終了コード、所要時間が記録され、削除に失敗した場合は `token_revoke_failed` が設定されます。
@@ -485,7 +498,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成） |
 | | `update <id>` | タスクのフィールドを更新 | `create` と同系のフィールドに加え `--position`、`--no-start`、`--duplicate-of` |
 | | `assign <id>` | 割り当てまたは割り当て解除 | `--to`（メンバー、エージェント、スクワッドを名前であいまいマッチ）、`--to-id`、`--unassign`、`--no-start` |
-| | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of` |
+| | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of`、`--blocked-on` |
 | | `reorder <id>` | カラム内で移動 | |
 | | `search <query>` | タスクを検索 | `--limit`、`--include-closed` |
 | | `children <id>` | サブタスクをステージごとに一覧 | |
@@ -565,6 +578,9 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `guard` | `check-pr <pr-url\|number\|branch>` | プルリクエストをポリシーとリポジトリの `.github/agent-rules.yml` に照らして、変更せずに検査します。ファイルは PR の保護されたベースブランチの現在の先端からデータとして読み、PR ブランチからは読みません。ファイルがなければルールは増えず、不正な形式のファイルや読めないベースは検査を失敗させます。CI のチェックとして使います | 終了コード: 0 は合格、1 はルール違反、2 は拒否。`-R owner/name` でリポジトリを指定 |
 | `guard` | `plugin list\|get\|set` | 保存済みのガードポリシーを読む（`list`、`get <name>`）か、置き換える決定アクションファイルを書き出す（`set --file <policy.json> --out <action.json>`、または `--dry-run`）。ポリシーはワークスペースのプラグインとレビュールールに加え、org・リポジトリ・パスの各レイヤーを持つ。深いレイヤーは浅いレイヤーをキーごとに上書きし、`locked` を付けたレイヤーまたはワークスペースは、そのキーを深いレイヤーから固定する。`set` は何も送信せず、人が passkey で `workspace.settings.patch` を承認する。デーモンは承認済みポリシーを、作業ツリー外のファイル `MULTICA_GUARD_POLICY` と `MULTICA_GUARD_POLICY_SHA256` として各実行に渡す | 出力：JSON 行（`--output table` で表）。`set` は `before_sha256` と `after_sha256` を表示 |
 
+`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。Cheese Work の正規ファイルは `config/tevo-prod1-guard.json` です。
+
+
 ### 判断の提案
 
 タスクトークンは、人がパスキーで承認する管理対象アクションを提案できます。提案自体は何も変更しません。
@@ -579,7 +595,7 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 実行予算の次の一手: issue の 80 % 通知には、数値とそのまま実行できるコマンドが付きます。例: `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。予算が拒否した実行は、エラーコード `run_budget_exhausted` と `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card`、`next_command` を返します。`multica issue budget get <issue> --output json` も `open_card` と `next_command` を返します。issue の現在のウィンドウに引き上げまたは追加ウィンドウのカードが開いている間、`next_command` はそのカードを待つよう伝え、`multica issue budget raise` を再度実行しても新しいカードは開かず同じカードを返します。タスクトークンでは、issue タスクの `--for` は既定でワークスペースのオーナーになり、ヘルプには `raise` だけが表示されます。`top-up` はメンバーが引き続き使えます。ワークスペース内の任意の issue のタスクは、別の issue（たとえば自身ではタスクを実行できない予算超過の issue）の `raise` カードを開けます。カードには引き続き人によるパスキー承認が必要で、承認前には何も適用されません。サーバー、メンバー、エージェントがカードを開くたびに、アクターの種別、アクター、アクション種別を記録する `run_budget_ask` アクティビティ行が 1 件追加されます。
 
-適用済みのアクションは、取り消し可能な間、本人が取り消せます。`multica decision revoke <request-id> --why "<理由>"` を実行します。アクションが取り消し可能なのは、適用済みで、その種類に正確な逆操作があり、まだ取り消されていない場合だけです。このリリースで逆操作を持つのは `agent.pause`（逆操作は `agent.resume`）のみで、承認によってエージェントが一時停止され、その後に誰も一時停止状態を変更していない場合に限ります。それ以外のアクション種別は取り消せないままです。取り消せるのは依頼の宛先の本人だけで、承認と同じロール規則が適用されます。passkey が必要なアクションはアプリで取り消します。サーバーは取り消した人、日時、理由を記録し、逆操作を実行して、依頼したエージェントを結果 `revoked` で起こします。却下、期限切れ、未適用、議論のみ、または取り消し済みの判断は取り消せません。`multica decision get <request-id>` は `revocable` を表示し、取り消し後は `revoke` レコード（`at`、`by`、`reason`）も表示します。 回答済みの判断では、`answer.woken_at` と `answer.wake_outcome`（回答がいつ、どのようにエージェントに届いたか。届くまでは null）、および `receipt_state`（`recorded`、`delivered`、`picked_up`、`disclaimed`）も表示します。`receipt_state` は回答の受信状態であり、カードの表示状態ではありません。カードが折りたたまれるのは `picked_up` のときだけで、回答から 2 分間は `recorded` または `delivered` を表示し、その後は「Not picked up」を表示します。
+適用済みのアクションは、取り消し可能な間、本人が取り消せます。`multica decision revoke <request-id> --why "<理由>"` を実行します。アクションが取り消し可能なのは、適用済みで、その種類に正確な逆操作があり、まだ取り消されていない場合だけです。このリリースで逆操作を持つのは `agent.pause`（逆操作は `agent.resume`）のみで、承認によってエージェントが一時停止され、その後に誰も一時停止状態を変更していない場合に限ります。それ以外のアクション種別は取り消せないままです。取り消せるのは依頼の宛先の本人だけで、承認と同じロール規則が適用されます。passkey が必要なアクションはアプリで取り消します。サーバーは取り消した人、日時、理由を記録し、逆操作を実行して、依頼したエージェントを結果 `revoked` で起こします。却下、期限切れ、未適用、議論のみ、または取り消し済みの判断は取り消せません。`multica decision get <request-id>` は `revocable` を表示し、取り消し後は `revoke` レコード（`at`、`by`、`reason`）も表示します。 回答済みの判断では、`answer.woken_at` と `answer.wake_outcome`（回答がいつ、どのようにエージェントに届いたか。届くまでは null）、および `receipt_state`（`recorded`、`delivered`、`picked_up`、`disclaimed`）も表示します。`receipt_state` は回答の受信状態であり、カードの表示状態ではありません。アクション、取り下げ、辞退のない回答済みの決定では、カードが折りたたまれるのは `picked_up` のときだけです。`recorded` または `delivered` のときは、回答から 2 分間その状態を表示し、その後は「Not picked up」を表示して、折りたたまれません。
 
 `issue.project.set` は Issue を別のプロジェクトへ移動します: `multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。カードには移動前後のプロジェクト、ワークフロー、実行上限、使用済み実行数が表示され、移動が実行予算を広げるかどうかも示されます。予算を広げる移動は `spend` カード、それ以外は `reversible` です。承認できるのはワークスペースのオーナーのみです。依頼後に Issue が元のプロジェクトを離れた場合、または移動先ワークフローの予算が増えた場合、カードは拒否されます。
 

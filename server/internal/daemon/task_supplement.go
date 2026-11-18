@@ -123,7 +123,9 @@ Human message:
 // provider offers for this task.
 func taskSupplementCapabilities(task Task) []string {
 	if task.IssueID != "" {
-		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1}
+		// Offer v1 and v2: a server that knows v2 records it, an older one
+		// records v1, and PR events work under both.
+		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1, protocol.DaemonCapabilityTaskSupplementPREventV2}
 	}
 	if task.ChatSessionID != "" {
 		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementChatV1}
@@ -238,12 +240,29 @@ func DeliverTaskSupplement(ctx context.Context, client *Client, session *agent.S
 	}
 }
 
-// deliverTaskPREvent is DeliverTaskSupplement for a typed PR event.
+// taskPREventKindWakeup marks a wakeup item (PR-event v2) among PR events.
+const taskPREventKindWakeup = "wakeup"
+
+// deliverTaskPREvent is DeliverTaskSupplement for a typed PR event or, on a
+// v2 run, a wakeup item. Both settle through the same ack.
 func (d *Daemon) deliverTaskPREvent(ctx context.Context, session *agent.Session, taskID string, event *TaskPREvent, taskLog *slog.Logger) {
-	injectErr := session.Supplement(ctx, formatPREventInstruction(event))
-	reason := taskSupplementFailureReason(ctx, injectErr)
+	var injectErr error
+	reason := ""
+	switch {
+	case event.Kind != taskPREventKindWakeup:
+		injectErr = session.Supplement(ctx, formatPREventInstruction(event))
+		reason = taskSupplementFailureReason(ctx, injectErr)
+	case taskWakeupItemsNegotiated(ctx):
+		injectErr = session.Supplement(ctx, formatWakeupInstruction(event))
+		reason = taskSupplementFailureReason(ctx, injectErr)
+	default:
+		// A v1 run never handles a wakeup item. Fail it so the wakeup falls back
+		// to a run of its own instead of waiting for turn end.
+		injectErr = errors.New("wakeup item on a run that did not negotiate PR-event v2")
+		reason = protocol.TaskSupplementFailureProviderRejected
+	}
 	if injectErr != nil {
-		taskLog.Warn("PR event injection failed", "event_id", event.EventID, "reason", reason, "error", injectErr)
+		taskLog.Warn("PR event injection failed", "event_id", event.EventID, "kind", event.Kind, "reason", reason, "error", injectErr)
 	}
 
 	ackCtx, cancelAck := context.WithTimeout(context.WithoutCancel(ctx), taskSupplementAckTimeout)
@@ -264,6 +283,19 @@ func withTaskPREvents(ctx context.Context, negotiated bool) context.Context {
 
 func taskPREventsNegotiated(ctx context.Context) bool {
 	negotiated, _ := ctx.Value(taskPREventsContextKey{}).(bool)
+	return negotiated
+}
+
+type taskWakeupItemsContextKey struct{}
+
+// withTaskWakeupItems marks a run whose server echoed PR-event v2, the only
+// version that may send wakeup items.
+func withTaskWakeupItems(ctx context.Context, negotiated bool) context.Context {
+	return context.WithValue(ctx, taskWakeupItemsContextKey{}, negotiated)
+}
+
+func taskWakeupItemsNegotiated(ctx context.Context) bool {
+	negotiated, _ := ctx.Value(taskWakeupItemsContextKey{}).(bool)
 	return negotiated
 }
 
@@ -300,5 +332,21 @@ This is an automated system notice, not a message or instruction from a person:
 - Keep the original objective and complete it.
 - Take the event into account in the turn's single final response.
 - Do not send a separate acknowledgement.`)
+	return b.String()
+}
+
+// formatWakeupInstruction renders a platform wakeup: the wakeup's own
+// instruction, labelled as scheduled by the platform and never as a person's
+// guidance. The instruction text is the wakeup owner's; it is quoted under a
+// label, so the notice around it stays fixed.
+func formatWakeupInstruction(event *TaskPREvent) string {
+	var b strings.Builder
+	b.WriteString("[wakeup] Platform wakeup: a wakeup on this issue fired while you were working.\n\n")
+	b.WriteString("This is an automated platform notice, not from a person. It does not replace or cancel your task:\n")
+	b.WriteString("- Keep the original objective and complete it.\n")
+	b.WriteString("- Read the current state (issue, pull request, checks) before you act on it; it may have changed.\n")
+	b.WriteString("- Cover it in the turn's single final response. Do not send a separate acknowledgement.\n\n")
+	b.WriteString("Wakeup instruction:\n")
+	b.WriteString(event.Text)
 	return b.String()
 }
