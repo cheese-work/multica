@@ -27,10 +27,10 @@ const KeyVersion = "v1"
 // the match key: the asker's explanation, checks and provenance. Another agent
 // rewrites them on every re-ask and none changes what a choice does. A field
 // added to Ask later is in the key by default, so the key gets stricter, never
-// weaker. state_claims (CHE-5950) joined after the CHE-5682 plan: each claim
-// carries a fresh observed_at, so it is the asker's evidence like probes.
+// weaker. state_claims (CHE-5950) is not excluded: a changed live fact is a
+// different ask.
 var KeyExcludedAskFields = []string{
-	"context_eli10", "agent_did", "stakes_if_wrong", "recommendation", "recommended_option", "confidence", "probes", "state_claims",
+	"context_eli10", "agent_did", "stakes_if_wrong", "recommendation", "recommended_option", "confidence", "probes",
 	"source_issue_id", "source_comment_id",
 }
 
