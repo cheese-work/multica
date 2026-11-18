@@ -3,6 +3,7 @@ package handler
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -153,4 +154,108 @@ func (h *Handler) askGuardAllowsWaitingComment(w http.ResponseWriter, r *http.Re
 		return false
 	}
 	return true
+}
+
+const waitingMoveKind = "waiting_move"
+
+const waitingMoveFix = "multica issue status <id> <status> --waiting-on member:<member-id> if a person acts next, or --waiting-on none if no one does; a decision request or member mention in this task also counts"
+
+func isWaitingStatus(status string) bool {
+	return status == "in_review" || status == "blocked" || status == "need_decision"
+}
+
+// askGuardAllowsWaitingMove is S5 (CHE-7290): an agent that moves an issue into
+// in_review, blocked or need_decision must say who acts next with waiting_on,
+// "member:<user id>" or "none". A task that already made a typed ask, a
+// decision request or a comment with a member mention on this issue, is
+// exempt. It reads typed fields and structural links only, never the text of
+// earlier comments, so a plain ask posted while the issue was in progress is
+// judged at the move. The waiting_on_guard setting decides: off allows, warn
+// records a hit, block records it and refuses with 422. A chat-lane run or a
+// call with no task only warns, as in S4. Set the setting to off to revert.
+func (h *Handler) askGuardAllowsWaitingMove(w http.ResponseWriter, r *http.Request, issue db.Issue, actorType, newStatus string, waitingOn *string) bool {
+	if actorType != "agent" {
+		return true
+	}
+	if waitingOn != nil && !h.validWaitingOn(w, r, issue, *waitingOn) {
+		return false
+	}
+	if newStatus == "" || newStatus == issue.Status || !isWaitingStatus(newStatus) || waitingOn != nil {
+		return true
+	}
+	var task *db.AgentTaskQueue
+	if t, ok := h.taskFromRequestHeader(r); ok {
+		task = &t
+	}
+	if task != nil && h.taskMadeTypedAsk(r, issue, *task) {
+		return true
+	}
+	workspace, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID)
+	var mode askguard.Mode
+	if err == nil {
+		mode, err = askguard.WaitingOnModeFromSettings(workspace.Settings)
+	}
+	if err == nil && mode != askguard.ModeOff {
+		op := askguard.Op{IssueID: issue.ID, Kind: waitingMoveKind, Payload: []byte(issue.Status + "->" + newStatus), TaskID: pgtype.UUID{Valid: true}}
+		if task != nil {
+			op.TaskID = task.ID
+		}
+		err = askguard.Guard{Queries: h.Queries, Metrics: h.Metrics}.RecordWarn(r.Context(), issue.WorkspaceID, op)
+	}
+	if err != nil {
+		slog.Warn("waiting on guard failed", "error", err, "issue_id", uuidToString(issue.ID))
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "ask guard unavailable; retry the same request")
+		return false
+	}
+	if mode == askguard.ModeBlock && task != nil && !task.ChatSessionID.Valid {
+		writeError(w, http.StatusUnprocessableEntity, "moving this issue to "+newStatus+" names no one to act next; run: "+waitingMoveFix)
+		return false
+	}
+	return true
+}
+
+// validWaitingOn accepts "none" or "member:<user id of a workspace member>".
+func (h *Handler) validWaitingOn(w http.ResponseWriter, r *http.Request, issue db.Issue, value string) bool {
+	if value == "none" {
+		return true
+	}
+	id, found := strings.CutPrefix(value, "member:")
+	if found {
+		memberID, err := util.ParseUUID(id)
+		if err == nil {
+			_, err = h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: memberID, WorkspaceID: issue.WorkspaceID})
+		}
+		if err == nil {
+			return true
+		}
+	}
+	writeError(w, http.StatusBadRequest, "waiting_on must be member:<id of a member of this workspace> or none")
+	return false
+}
+
+// taskMadeTypedAsk reports whether the task already posted a decision request
+// or intent, or a comment with a member mention, on this issue. Mentions are
+// structural links; no comment text is judged. A failed read counts as no ask,
+// so the rule fails toward telling the agent to declare.
+func (h *Handler) taskMadeTypedAsk(r *http.Request, issue db.Issue, task db.AgentTaskQueue) bool {
+	rows, err := h.DB.Query(r.Context(),
+		`SELECT content, decision_request_id IS NOT NULL OR decision_intent_id IS NOT NULL FROM comment
+		 WHERE source_task_id = $1 AND issue_id = $2 AND deleted_at IS NULL`, task.ID, issue.ID)
+	if err != nil {
+		slog.Warn("waiting on guard: read task comments failed", "error", err, "issue_id", uuidToString(issue.ID))
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var content string
+		var decision bool
+		if err := rows.Scan(&content, &decision); err != nil {
+			return false
+		}
+		if decision || len(askguard.MentionedMembers(content)) > 0 {
+			return true
+		}
+	}
+	return false
 }

@@ -33,6 +33,11 @@ const ReversibleSettingKey = "reversible_ask_guard"
 // warn and reverts without touching SettingKey.
 const WaitingAudienceSettingKey = "waiting_audience_guard"
 
+// WaitingOnSettingKey holds the mode of S5 (CHE-7290): an agent's move into a
+// waiting status must say who acts next. Its own key, so S5 starts in warn and
+// reverts without touching SettingKey or WaitingAudienceSettingKey.
+const WaitingOnSettingKey = "waiting_on_guard"
+
 type Mode string
 
 const (
@@ -63,6 +68,11 @@ func ReversibleModeFromSettings(raw []byte) (Mode, error) {
 // WaitingAudienceModeFromSettings reads WaitingAudienceSettingKey the same way.
 func WaitingAudienceModeFromSettings(raw []byte) (Mode, error) {
 	return modeFromSettings(raw, WaitingAudienceSettingKey)
+}
+
+// WaitingOnModeFromSettings reads WaitingOnSettingKey the same way.
+func WaitingOnModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, WaitingOnSettingKey)
 }
 
 func modeFromSettings(raw []byte, key string) (Mode, error) {

@@ -4447,6 +4447,9 @@ type UpdateIssueRequest struct {
 	// KeepForStep keeps HandoffAssignee for the target step on this issue:
 	// later entries of the step go to it. Needs HandoffAssignee. (CHE-5490)
 	KeepForStep bool `json:"keep_for_step,omitempty"`
+	// WaitingOn says who acts next when an agent moves the issue into a waiting
+	// status: "member:<user id>" or "none" (S5, CHE-7290).
+	WaitingOn *string `json:"waiting_on,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -5004,6 +5007,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if params.Status.Valid && params.Status.String != statusKeyForGuard {
 		// A project move remapped the status; guard the key actually written.
 		statusKeyForGuard = params.Status.String
+	}
+	if !h.askGuardAllowsWaitingMove(w, r, prevIssue, actorType, statusKeyForGuard, req.WaitingOn) {
+		return
 	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
