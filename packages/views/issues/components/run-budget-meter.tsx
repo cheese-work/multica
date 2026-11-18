@@ -19,14 +19,14 @@ type Kind = "raise" | "top_up";
 type Asked = { kind: "idle" } | { kind: "busy" } | { kind: "failed" } | { kind: "asked"; actionId: string };
 
 /** The action a request opened, approved in place with a passkey. The server accepts only an owner. */
-function InlineApproval({ actionId, onOutcome }: { actionId: string; onOutcome: () => void }) {
+function InlineApproval({ actionId, issueId, onOutcome }: { actionId: string; issueId: string; onOutcome: () => void }) {
   const { data } = useQuery({
     queryKey: ["decision-action", actionId],
     queryFn: () => api.getDecisionAction(actionId),
     retry: false,
   });
   if (!data) return null;
-  return <DecisionActionApproval actionId={data.id} payloadSha256={data.payload_sha256} onOutcome={onOutcome} />;
+  return <DecisionActionApproval actionId={data.id} issueId={issueId} payloadSha256={data.payload_sha256} onOutcome={onOutcome} />;
 }
 
 /**
@@ -105,7 +105,7 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
       )}
       {asked.kind === "asked" && members !== undefined &&
         (isOwner ? (
-          <InlineApproval actionId={asked.actionId} onOutcome={refresh} />
+          <InlineApproval actionId={asked.actionId} issueId={issueId} onOutcome={refresh} />
         ) : (
           <p className="text-caption text-muted-foreground">{t(($) => $.run_budget.asked)}</p>
         ))}

@@ -234,7 +234,13 @@ func recordRunBudgetRaise(ctx context.Context, q *db.Queries, issue db.Issue, ev
 	if err != nil || usage == nil {
 		return err
 	}
-	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRaise, eventKey, delta, delta)
+	if err := recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRaise, eventKey, delta, delta); err != nil || delta <= 0 {
+		return err
+	}
+	// CHE-6193: a raise re-enables the wakeups the budget paused. The weekly
+	// guard's pauses stay: a budget raise does not lift that guard.
+	_, err = q.ResumeGuardPausedWakeups(ctx, db.ResumeGuardPausedWakeupsParams{IssueID: issue.ID, PausedReason: pgtype.Text{String: wakeupPausedRunBudget, Valid: true}})
+	return err
 }
 
 // debitRun charges the run just inserted to the open window.

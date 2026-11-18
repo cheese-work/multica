@@ -4396,6 +4396,7 @@ func newIssueStatusTestCmd() *cobra.Command {
 	cmd.Flags().String("duplicate-of", "", "")
 	cmd.Flags().String("override-reason", "", "")
 	cmd.Flags().StringArray("finding", nil, "")
+	cmd.Flags().String("blocked-on", "", "")
 	cmd.Flags().String("output", "table", "")
 	return cmd
 }

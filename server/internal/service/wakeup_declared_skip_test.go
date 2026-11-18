@@ -57,12 +57,13 @@ func TestDeclaredInputsBlockSkipsUnchangedFire(t *testing.T) {
 	if got := wakeRuns(t, e.f, id); got != 1 {
 		t.Fatalf("runs = %d, want 1", got)
 	}
-	if got := e.declaredSkips(t); got != 1 {
-		t.Fatalf("declared_inputs skip entries = %d, want 1", got)
+	// CHE-6968: block defers the unchanged fire instead of consuming it.
+	if got := e.acts(t, "wake_deferred"); got != 1 {
+		t.Fatalf("wake_deferred entries = %d, want 1", got)
 	}
 	var details []byte
 	var lastTask string
-	e.f.QueryRow(t, `SELECT details, (SELECT id::text FROM agent_task_queue WHERE issue_id=$1 LIMIT 1) FROM activity_log WHERE issue_id=$1 AND action='wakeup_skipped'`, e.issue).Scan(&details, &lastTask)
+	e.f.QueryRow(t, `SELECT details, (SELECT id::text FROM agent_task_queue WHERE issue_id=$1 LIMIT 1) FROM activity_log WHERE issue_id=$1 AND action='wake_deferred'`, e.issue).Scan(&details, &lastTask)
 	var d struct {
 		Rule       string   `json:"rule"`
 		WakeupID   string   `json:"wakeup_id"`
@@ -72,8 +73,8 @@ func TestDeclaredInputsBlockSkipsUnchangedFire(t *testing.T) {
 	if err := json.Unmarshal(details, &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.Rule != "declared_inputs" || d.WakeupID != util.UUIDToString(id) || len(d.Inputs) != 1 || d.Inputs[0] != "issue" || d.LastTaskID != lastTask {
-		t.Fatalf("details = %s, want rule, wakeup_id %s, inputs [issue], last_task_id %s", details, util.UUIDToString(id), lastTask)
+	if d.WakeupID != util.UUIDToString(id) || len(d.Inputs) != 1 || d.Inputs[0] != "issue" || d.LastTaskID != lastTask {
+		t.Fatalf("details = %s, want wakeup_id %s, inputs [issue], last_task_id %s", details, util.UUIDToString(id), lastTask)
 	}
 	// A third fire is skipped too: the skip itself is not a run to compare to.
 	wakeTick(t, e.f, e.s, id)

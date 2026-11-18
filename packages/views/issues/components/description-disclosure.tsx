@@ -38,7 +38,6 @@ function useSettledMeasurement(
   contentVersion: string | number | undefined,
 ) {
   const [measurement, setMeasurement] = useState<DescriptionMeasurement | null>(null);
-  const [refreshing, setRefreshing] = useState(true);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -47,11 +46,9 @@ function useSettledMeasurement(
     let disposed = false;
     const schedule = () => {
       cancelAnimationFrame(frame);
-      setRefreshing(true);
       frame = requestAnimationFrame(() => {
         if (!disposed) {
           setMeasurement(measureDescription(root));
-          setRefreshing(false);
         }
       });
     };
@@ -66,7 +63,6 @@ function useSettledMeasurement(
     // This layout-effect read lands before paint. It avoids briefly exposing a
     // full long editor while the asynchronous observers settle subsequent work.
     setMeasurement(measureDescription(root));
-    setRefreshing(false);
 
     return () => {
       disposed = true;
@@ -79,7 +75,7 @@ function useSettledMeasurement(
     };
   }, [contentVersion, rootRef]);
 
-  return { measurement, refreshing };
+  return measurement;
 }
 
 /**
@@ -97,15 +93,17 @@ export function DescriptionDisclosure({
   collapseDisabledReason,
 }: DescriptionDisclosureProps) {
   const editorRef = useRef<HTMLDivElement>(null);
-  const { measurement, refreshing } = useSettledMeasurement(editorRef, contentVersion);
+  const measurement = useSettledMeasurement(editorRef, contentVersion);
   const canDisclose = measurement?.hasOverflow === true;
   // Initial measurement is a layout-effect read. Later invalidations retain
   // the last geometry so short descriptions never flicker into a collapsed UI.
   const collapsed = !expanded && (measurement === null || canDisclose);
   const editorId = `${id}-description-editor`;
   const previewText = measurement?.previewText;
+  // Keep the last measured row count while a re-measure is pending, so the
+  // label does not flip to the bare "Show more" and back (CHE-1830, H5).
   const buttonLabel =
-    measurement && !refreshing && measurement.hiddenRows > 0
+    measurement && measurement.hiddenRows > 0
       ? `${labels.showMore} ${labels.moreLines(measurement.hiddenRows)}`
       : labels.showMore;
 

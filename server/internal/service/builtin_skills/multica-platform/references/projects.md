@@ -233,6 +233,10 @@ issue inside a workflow needs none of them.
 All of these except the reads change what every later issue in those projects
 does. Ask before running one the user did not request.
 
+## Intake hold
+
+The workspace setting `intake_hold` keeps new top-level requests of a project in `backlog` for a time window (`mode` `off`, `warn` or `block`; one entry per project). An agent changes it only through the workspace settings patch, which an owner approves with a passkey. Read `intake_hold` on `GET /api/issues/{id}` (`source`, `held`, `owned`, `reason`, `ends_at`, `exempt_after`) before you move an issue out of `backlog`; the field is absent for an issue with a parent and for a project with no entry. A held issue is released by a person's own status move, or by a person's answer to an escalation request of a listed class (spend, deploy, publish, irreversible, product_direction), 10 minutes after the answer. When the hold is enforced, an agent's move of a held issue is refused with 409 `intake_hold`. See `workflows.mdx`, section "Hold new requests in a project".
+
 ## Deleting a project
 
 `multica project delete <id>` is destructive. Read `project get <id>` and the

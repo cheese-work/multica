@@ -773,6 +773,79 @@ func (q *Queries) DeleteIssueWakeupReceipts(ctx context.Context, id pgtype.UUID)
 	return err
 }
 
+const disableGuardBlockedWakeup = `-- name: DisableGuardBlockedWakeup :one
+UPDATE issue_wakeup SET enabled=false,paused_reason= $1,last_error=NULL,updated_at=clock_timestamp()
+WHERE id= $2 AND enabled AND paused_reason IS NULL
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, purpose, decision_request_id, followup_instance_id, watch_inputs
+`
+
+type DisableGuardBlockedWakeupParams struct {
+	PausedReason pgtype.Text `json:"paused_reason"`
+	ID           pgtype.UUID `json:"id"`
+}
+
+// CHE-6193: a run guard refused the rule's run. Disable it once; a rule that is
+// already off or paused returns no row, so only one timeline line is written.
+// next_fire_at stays, so a re-enabled schedule rule fires at once, not never.
+func (q *Queries) DisableGuardBlockedWakeup(ctx context.Context, arg DisableGuardBlockedWakeupParams) (IssueWakeup, error) {
+	row := q.db.QueryRow(ctx, disableGuardBlockedWakeup, arg.PausedReason, arg.ID)
+	var i IssueWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.CreatedBy,
+		&i.SourceTaskID,
+		&i.ParentCommentID,
+		&i.Instruction,
+		&i.Kind,
+		&i.Mode,
+		&i.EventTypes,
+		&i.FilterAgentID,
+		&i.FilterTaskID,
+		&i.IntervalSeconds,
+		&i.CronExpression,
+		&i.Timezone,
+		&i.NextFireAt,
+		&i.Enabled,
+		&i.DisabledAt,
+		&i.Revision,
+		&i.LastTaskID,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.ExpiresAt,
+		&i.ExpirySeconds,
+		&i.OnTimeout,
+		&i.TimedOutAt,
+		&i.SystemRule,
+		&i.CustomizedAt,
+		&i.Condition,
+		&i.ConditionState,
+		&i.MaxFires,
+		&i.FireCount,
+		&i.PausedReason,
+		&i.DefaultRuleKey,
+		&i.DefaultScopeKind,
+		&i.DefaultScopeID,
+		&i.ConfigFingerprint,
+		&i.CapacityReason,
+		&i.AggregateBlockedScopeKind,
+		&i.AggregateBlockedScopeID,
+		&i.AggregateRetryAt,
+		&i.ContentRevision,
+		&i.WorkflowStep,
+		&i.Purpose,
+		&i.DecisionRequestID,
+		&i.FollowupInstanceID,
+		&i.WatchInputs,
+	)
+	return i, err
+}
+
 const disableIssueWakeups = `-- name: DisableIssueWakeups :exec
 UPDATE issue_wakeup SET enabled=false,disabled_at=clock_timestamp(),updated_at=clock_timestamp()
 WHERE issue_id= $1 AND disabled_at IS NULL AND system_rule IS NULL AND followup_instance_id IS NULL
@@ -1946,6 +2019,100 @@ func (q *Queries) ListWakeupRuns(ctx context.Context, arg ListWakeupRunsParams) 
 	return items, nil
 }
 
+const listWeeklyGuardPausedWakeups = `-- name: ListWeeklyGuardPausedWakeups :many
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, purpose, decision_request_id, followup_instance_id, watch_inputs FROM issue_wakeup
+WHERE NOT enabled AND paused_reason='weekly_run_guard'
+ AND ($1::uuid[] IS NULL OR workspace_id = ANY($1::uuid[]))
+ AND ($2::timestamptz IS NULL OR (updated_at,id) > ($2::timestamptz, $3::uuid))
+ORDER BY updated_at,id LIMIT $4::int
+`
+
+type ListWeeklyGuardPausedWakeupsParams struct {
+	WorkspaceIds   []pgtype.UUID      `json:"workspace_ids"`
+	AfterUpdatedAt pgtype.Timestamptz `json:"after_updated_at"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+	PageSize       int32              `json:"page_size"`
+}
+
+// Rules the weekly run guard paused, oldest pause first, for the resume sweep.
+// One page per call: the caller walks the set across passes (CHE-6193).
+func (q *Queries) ListWeeklyGuardPausedWakeups(ctx context.Context, arg ListWeeklyGuardPausedWakeupsParams) ([]IssueWakeup, error) {
+	rows, err := q.db.Query(ctx, listWeeklyGuardPausedWakeups,
+		arg.WorkspaceIds,
+		arg.AfterUpdatedAt,
+		arg.AfterID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueWakeup{}
+	for rows.Next() {
+		var i IssueWakeup
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.CreatedBy,
+			&i.SourceTaskID,
+			&i.ParentCommentID,
+			&i.Instruction,
+			&i.Kind,
+			&i.Mode,
+			&i.EventTypes,
+			&i.FilterAgentID,
+			&i.FilterTaskID,
+			&i.IntervalSeconds,
+			&i.CronExpression,
+			&i.Timezone,
+			&i.NextFireAt,
+			&i.Enabled,
+			&i.DisabledAt,
+			&i.Revision,
+			&i.LastTaskID,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FilterActorType,
+			&i.FilterActorID,
+			&i.ExpiresAt,
+			&i.ExpirySeconds,
+			&i.OnTimeout,
+			&i.TimedOutAt,
+			&i.SystemRule,
+			&i.CustomizedAt,
+			&i.Condition,
+			&i.ConditionState,
+			&i.MaxFires,
+			&i.FireCount,
+			&i.PausedReason,
+			&i.DefaultRuleKey,
+			&i.DefaultScopeKind,
+			&i.DefaultScopeID,
+			&i.ConfigFingerprint,
+			&i.CapacityReason,
+			&i.AggregateBlockedScopeKind,
+			&i.AggregateBlockedScopeID,
+			&i.AggregateRetryAt,
+			&i.ContentRevision,
+			&i.WorkflowStep,
+			&i.Purpose,
+			&i.DecisionRequestID,
+			&i.FollowupInstanceID,
+			&i.WatchInputs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceWakeupSummaryRows = `-- name: ListWorkspaceWakeupSummaryRows :many
 WITH ranked AS (
  SELECT w.issue_id,w.id,w.agent_id,a.name AS agent_name,w.kind,w.mode,w.event_types,w.filter_actor_type,
@@ -2578,6 +2745,44 @@ type ReserveWakeupReceiptsParams struct {
 func (q *Queries) ReserveWakeupReceipts(ctx context.Context, arg ReserveWakeupReceiptsParams) error {
 	_, err := q.db.Exec(ctx, reserveWakeupReceipts, arg.TaskID, arg.Ids)
 	return err
+}
+
+const resumeGuardPausedWakeup = `-- name: ResumeGuardPausedWakeup :execrows
+UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,updated_at=clock_timestamp()
+WHERE id= $1 AND NOT enabled AND paused_reason= $2
+`
+
+type ResumeGuardPausedWakeupParams struct {
+	ID           pgtype.UUID `json:"id"`
+	PausedReason pgtype.Text `json:"paused_reason"`
+}
+
+// Re-enable one rule while it still carries the pause the caller judged.
+func (q *Queries) ResumeGuardPausedWakeup(ctx context.Context, arg ResumeGuardPausedWakeupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resumeGuardPausedWakeup, arg.ID, arg.PausedReason)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const resumeGuardPausedWakeups = `-- name: ResumeGuardPausedWakeups :execrows
+UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,updated_at=clock_timestamp()
+WHERE issue_id= $1 AND NOT enabled AND paused_reason= $2
+`
+
+type ResumeGuardPausedWakeupsParams struct {
+	IssueID      pgtype.UUID `json:"issue_id"`
+	PausedReason pgtype.Text `json:"paused_reason"`
+}
+
+// Re-enable the issue's rules a guard paused for this reason (a budget raise).
+func (q *Queries) ResumeGuardPausedWakeups(ctx context.Context, arg ResumeGuardPausedWakeupsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resumeGuardPausedWakeups, arg.IssueID, arg.PausedReason)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resumeRateLimitedSystemWakeup = `-- name: ResumeRateLimitedSystemWakeup :execrows

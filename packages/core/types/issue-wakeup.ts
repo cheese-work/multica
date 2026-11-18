@@ -51,7 +51,7 @@ export interface IssueWakeup {
   default_rule_key?: string | null;
 }
 
-export type WakeupPausedReason = "max_fires" | "loop" | "rate";
+export type WakeupPausedReason = "max_fires" | "loop" | "rate" | "run_budget" | "weekly_run_guard";
 
 /** Structured predicates the platform evaluates (see WakeupCondition in Go). */
 export type WakeupCondition =

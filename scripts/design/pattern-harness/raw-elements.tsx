@@ -42,6 +42,12 @@ import { slackKeys } from "@multica/core/slack";
 import { larkKeys } from "@multica/core/lark";
 import { wecomKeys } from "@multica/core/wecom";
 import { dingtalkKeys } from "@multica/core/dingtalk";
+import { CreateAgentDialog } from "../../../packages/views/agents/components/create-agent-dialog";
+import { ConcurrencyPicker } from "../../../packages/views/agents/components/inspector/concurrency-picker";
+import { SkillAttach } from "../../../packages/views/agents/components/inspector/skill-attach";
+import { VisibilityPicker } from "../../../packages/views/agents/components/inspector/visibility-picker";
+import { InstructionsEditor } from "../../../packages/views/agents/components/instructions-editor";
+import { runtimeModelsKeys } from "../../../packages/core/runtimes/models";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
 const WS = "ws-harness";
@@ -139,15 +145,20 @@ export function seedRawElements(qc: QueryClient) {
   })]);
   seedSS2(set);
   seedSS3(set);
+  seedSS5(set);
   for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
 }
 
 const Label = ({ children }: { children: ReactNode }) => <p className="mb-1 mt-4 text-caption text-muted-foreground first:mt-0">{children}</p>;
 
 /** Runs `pick` once after mount, e.g. to click a toggle so the expanded state is captured. */
-function After({ pick, children }: { pick: (root: HTMLElement) => HTMLElement | null | undefined; children: ReactNode }) {
+function After({ pick, delay = 0, children }: { pick: (root: HTMLElement) => HTMLElement | null | undefined; delay?: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { pick(ref.current!)?.click(); }, [pick]);
+  useEffect(() => {
+    // Popover triggers (SS5) only open once their handlers are attached, so those pages pass a delay.
+    const t = setTimeout(() => pick(ref.current!)?.click(), delay);
+    return () => clearTimeout(t);
+  }, [pick, delay]);
   return <div ref={ref}>{children}</div>;
 }
 
@@ -539,5 +550,116 @@ export function DingTalkTabPage() {
   return (
     <IntegrationTabPage keyOf={dingtalkKeys.installations} off={OFF} empty={EMPTY} full={DT} fullLabel="owner: 2 active robots with groups and identity states, 1 revoked"
       extra={(qc) => qc.setQueryData(dingtalkKeys.groups(WS), DT_GROUPS)}><DingTalkTab /></IntegrationTabPage>
+  );
+}
+
+// ---- SS5 (CHE-5538): create-agent-dialog, concurrency-picker, skill-attach, visibility-picker, instructions-editor ----
+const RT_SS5 = {
+  id: "rt-ss5", workspace_id: WS, daemon_id: "d-x99", name: "x99 (Claude)", runtime_mode: "local", provider: "claude", launch_header: "",
+  status: "online", device_info: "Linux x86_64", metadata: {}, owner_id: "u1", visibility: "private", pause: null,
+  daemon_running_tasks: 0, last_seen_at: NOW, created_at: "2026-11-01T00:00:00Z", updated_at: NOW,
+};
+const MODELS_SS5 = { supported: true, cached: false, models: [
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5", provider: "anthropic", default: true },
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", provider: "anthropic" },
+  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5", provider: "anthropic" },
+] };
+const skill = (id: string, name: string, description: string) => ({
+  id, workspace_id: WS, name, description, config: {}, created_by: "u1", created_at: NOW, updated_at: NOW,
+});
+const SKILLS_SS5 = [
+  skill("sk1", "ponytail", "Pick the laziest solution that works."),
+  skill("sk2", "tdd", "Test-driven development: red, green, refactor."),
+  skill("sk3", "code-review", "Review a change against standards and spec."),
+];
+const AGENT_SS5 = {
+  id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", skills: [{ id: "sk1", name: "ponytail", description: SKILLS_SS5[0]!.description }],
+};
+
+function seedSS5(set: (key: readonly unknown[], data: unknown) => void) {
+  set(stub.skillListOptions(WS).queryKey, SKILLS_SS5);
+  set(runtimeModelsKeys.forRuntime(RT_SS5.id), MODELS_SS5);
+}
+
+export function CreateAgentDialogPage() {
+  return (
+    <div className="p-6">
+      <CreateAgentDialog
+        runtimes={[RT_SS5] as never}
+        members={[{ id: "m1", user_id: "u1", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }] as never}
+        currentUserId="u1"
+        onClose={noop}
+        onCreate={async () => {}}
+      />
+    </div>
+  );
+}
+
+export function ConcurrencyPickerPage() {
+  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-label]");
+  return (
+    <div className="max-w-[420px] p-6">
+      <Label>read-only (cannot edit)</Label>
+      <ConcurrencyPicker value={6} canEdit={false} onChange={noop} />
+      <Label>editable chip</Label>
+      <ConcurrencyPicker value={6} onChange={noop} />
+      <Label>popover open: range hint, number field, Save</Label>
+      <div className="min-h-[120px]">
+        <After pick={open} delay={400}><ConcurrencyPicker value={6} onChange={noop} /></After>
+      </div>
+    </div>
+  );
+}
+
+export function VisibilityPickerPage() {
+  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-label]");
+  return (
+    <div className="max-w-[420px] p-6">
+      <Label>read-only badge: workspace, private</Label>
+      <div className="flex gap-2">
+        <VisibilityPicker value="workspace" canEdit={false} onChange={noop} />
+        <VisibilityPicker value="private" canEdit={false} onChange={noop} />
+      </div>
+      <Label>editable chips: workspace, private</Label>
+      <div className="flex gap-2">
+        <VisibilityPicker value="workspace" onChange={noop} />
+        <VisibilityPicker value="private" onChange={noop} />
+      </div>
+      <Label>popover open (workspace selected)</Label>
+      <div className="min-h-[160px]">
+        <After pick={open} delay={400}><VisibilityPicker value="workspace" onChange={noop} /></After>
+      </div>
+    </div>
+  );
+}
+
+export function SkillAttachPage() {
+  const all = { ...AGENT_SS5, skills: SKILLS_SS5.map(({ id, name, description }) => ({ id, name, description })) };
+  return (
+    <div className="grid max-w-[520px] gap-2 p-6">
+      <Variant label="2 workspace skills left to attach: dashed + Attach chip" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
+        <SkillAttach agent={AGENT_SS5 as never} />
+      </Variant>
+      <Variant label="canEdit false: nothing renders" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
+        <SkillAttach agent={AGENT_SS5 as never} canEdit={false} />
+      </Variant>
+      <Variant label="every skill already attached: nothing renders" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
+        <SkillAttach agent={all as never} />
+      </Variant>
+    </div>
+  );
+}
+
+export function InstructionsEditorPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
+  return (
+    <div className="max-w-[640px] p-6">
+      <Label>collapsed, empty (placeholder)</Label>
+      <InstructionsEditor value="" onChange={noop} />
+      <Label>collapsed, 2-line preview of the value</Label>
+      <InstructionsEditor value={"You are the design capture agent.\nCapture each raw-element file at 1440 and 390.\nNever replace earlier captures."} onChange={noop} />
+      <Label>expanded: markdown editor and Collapse button</Label>
+      <After pick={expand}><InstructionsEditor value="Capture each file at 1440 and 390." onChange={noop} /></After>
+    </div>
   );
 }

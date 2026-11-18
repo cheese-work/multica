@@ -181,7 +181,7 @@ func (handler *Handler) ApproveDecisionActionBatch(writer http.ResponseWriter, r
 		} else {
 			handler.finishApprovalAfterCommit(ctx, action)
 		}
-		outcome.Items[index] = newDecisionActionOutcome(action)
+		outcome.Items[index] = handler.decisionActionOutcome(ctx, action)
 	}
 	writeJSON(writer, http.StatusOK, outcome)
 }
