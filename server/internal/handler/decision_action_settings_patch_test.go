@@ -152,14 +152,14 @@ func (request settingsRequest) assertNotApplied(test *testing.T) {
 }
 
 func TestSettingsPatchAppliesNamedKeysOnly(test *testing.T) {
-	patch := map[string]any{"compact_prompt": "new", "mermaid_orientation": "author", "github_wake_on_pr_merge": nil, "ask_guard_mode": "warn"}
+	patch := map[string]any{"compact_prompt": "new", "mermaid_orientation": "author", "github_wake_on_pr_merge": nil, "ask_guard_mode": "warn", "owner_script_guard": "block"}
 	request, _ := requestSettings(test, http.StatusCreated, patch, nil)
 	_, keyID := request.action.enrollPasskey(test)
 	verify := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) { return parseUUID(keyID), nil }
 	request.approveOwner(test, withVerifier(verify), http.StatusOK)
 
 	got := storedSettings(test)
-	if string(got["compact_prompt"]) != `"new"` || string(got["mermaid_orientation"]) != `"author"` || string(got["ask_guard_mode"]) != `"warn"` {
+	if string(got["compact_prompt"]) != `"new"` || string(got["mermaid_orientation"]) != `"author"` || string(got["ask_guard_mode"]) != `"warn"` || string(got["owner_script_guard"]) != `"block"` {
 		test.Fatalf("named keys not written: %v", got)
 	}
 	if _, present := got["github_wake_on_pr_merge"]; present {
@@ -224,6 +224,7 @@ func TestSettingsPatchRequestRefusals(test *testing.T) {
 		{"mermaid_orientation outside enum", http.StatusBadRequest, "invalid_params", map[string]any{"mermaid_orientation": "sideways"}, nil},
 		{"ask_guard_mode outside the modes", http.StatusBadRequest, "invalid_params", map[string]any{"ask_guard_mode": "bogus"}, nil},
 		{"ask_guard_mode is not a string", http.StatusBadRequest, "invalid_params", map[string]any{"ask_guard_mode": true}, nil},
+		{"design_card_guard with a bad mode", http.StatusBadRequest, "invalid_params", map[string]any{"design_card_guard": map[string]any{"mode": "on"}}, nil},
 		{"no keys", http.StatusBadRequest, "invalid_params", map[string]any{}, nil},
 		{"agent after digest is wrong", http.StatusBadRequest, "after_digest_mismatch", ok, func(params map[string]any) { params["after_sha256"] = strings.Repeat("0", 64) }},
 		{"agent base digest is stale", http.StatusConflict, "precondition_drift", ok, func(params map[string]any) { params["base_sha256"] = strings.Repeat("0", 64) }},

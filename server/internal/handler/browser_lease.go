@@ -65,6 +65,8 @@ func writeBrowserLeaseError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusConflict, "decision_required", err.Error())
 	case errors.Is(err, browserlease.ErrDecisionInvalid):
 		writeErrorCode(w, http.StatusForbidden, "decision_invalid", err.Error())
+	case errors.Is(err, browserlease.ErrClass3Denied), errors.Is(err, browserlease.ErrClass3Unchecked):
+		writeErrorCode(w, http.StatusForbidden, "class3_denied", err.Error())
 	case errors.Is(err, browserlease.ErrClassNotMintable):
 		writeErrorCode(w, http.StatusUnprocessableEntity, "class_not_mintable", err.Error())
 	case errors.Is(err, browserlease.ErrLeaseExists):

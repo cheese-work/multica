@@ -1,8 +1,9 @@
 -- Browser lease storage (CHE-4731, W3-2). Mint, renew and queue logic arrives in W3-3.
 
 -- name: CreateBrowserProfile :one
-INSERT INTO browser_profile (workspace_id, name, class)
-VALUES ($1, $2, $3)
+-- hosts are the site hosts a login profile reaches, recorded once at creation (CHE-4782, W3-19).
+INSERT INTO browser_profile (workspace_id, name, class, hosts)
+VALUES (sqlc.arg(workspace_id), sqlc.arg(name), sqlc.arg(class), COALESCE(sqlc.narg(hosts)::text[], '{}'))
 RETURNING *;
 
 -- name: GetBrowserProfile :one
@@ -220,3 +221,14 @@ SELECT CASE WHEN MIN(request.expires_at) IS NULL THEN -1
 FROM browser_lease lease
 JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
 WHERE lease.state IN ('queued', 'active') AND request.expires_at IS NOT NULL;
+
+-- name: IsBrowserGrantIssueClosed :one
+-- A once-per-issue grant ends when its issue reaches a done or closed status (CHE-4782, W3-19).
+-- A missing issue counts as closed: the grant covers nothing.
+SELECT COALESCE((
+    SELECT i.status IN ('done', 'cancelled') OR EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed', 'cancelled')
+    )
+    FROM issue i WHERE i.id = $1 AND i.workspace_id = $2
+), true)::bool AS closed;

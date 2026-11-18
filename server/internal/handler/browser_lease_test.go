@@ -359,7 +359,7 @@ func TestAnsweredDecisionRevokesItsBrowserLeasesAtExpiry(t *testing.T) {
 // and the loop sleeps its recheck interval instead of polling every few milliseconds
 // (CHE-4742 review round 3). A due deadline reports 0 and a future one its distance.
 func TestLeaseExpiryDeadlineIdleDueAndFuture(t *testing.T) {
-	dbfx.Exec(t, `UPDATE browser_lease SET state = 'ended' WHERE state IN ('queued', 'active')`)
+	dbfx.Exec(t, `UPDATE browser_lease SET state = 'ended', epoch = COALESCE(epoch, 1), ended_at = now(), end_reason = 'test_cleanup' WHERE state IN ('queued', 'active')`)
 	ctx := context.Background()
 	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait != -1 {
 		t.Fatalf("idle deadline = %v, err %v, want -1", wait, err)
