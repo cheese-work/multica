@@ -106,7 +106,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	hints = append(hints, heldHints...)
 	lintMode := "off"
 	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
-		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
+		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings, request.Header.Get("X-Agent-ID"))
 		if !ok {
 			return
 		}

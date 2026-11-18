@@ -35,20 +35,30 @@ type CannotDo struct {
 	Tool       string   `json:"tool,omitempty"`
 	Subcommand []string `json:"subcommand,omitempty"`
 	HumanStep  string   `json:"human_step"`
+	// AllowedAgents (agent ids) may run a matching command; any other asker is refused.
+	AllowedAgents []string `json:"allowed_agents,omitempty"`
 }
 
 // builtinCannotDo is the catalog of a workspace that sets no agent_cannot_do.
 var builtinCannotDo = []CannotDo{
 	{Key: "daemon_restart", Tool: "multica", Subcommand: []string{"daemon", "restart"}, HumanStep: "Cheese runs `multica daemon restart` on the daemon host; an agent run cannot restart its own daemon."},
 	{Key: "daemon_stop", Tool: "multica", Subcommand: []string{"daemon", "stop"}, HumanStep: "Cheese runs `multica daemon stop` on the daemon host; an agent run cannot stop its own daemon."},
+	// c00 seed: the doop restart card of 18 Nov 2026 asked an X99 agent for a C00-only command. ponytail: the command shape is read from the plan, not the card (not found); change it in agent_cannot_do if C00 uses another.
+	{Key: "c00_restart", Tool: "docker", Subcommand: []string{"compose", "restart"}, HumanStep: "A C00 agent restarts the service; assign the issue to it, or Cheese runs the command on C00.", AllowedAgents: []string{c00HermesDevops}},
 }
+
+// c00HermesDevops is the workspace agent that runs on C00 (c00-hermes-devops).
+const c00HermesDevops = "b2b52f93-32e6-4caf-80ad-1b48cf60b821"
 
 // hasSpace reports a space or control character: a canonical command token has none.
 func hasSpace(token string) bool {
 	return strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0
 }
 
-var catalogKey = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+var (
+	catalogKey = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+	agentID    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
 
 // CannotDoFromSettings reads the mode (default off) and the catalog (default
 // the built-in entries; an explicit list, even empty, replaces them) from a
@@ -83,7 +93,7 @@ func ParseCannotDo(raw []byte) ([]CannotDo, error) {
 	decoder.DisallowUnknownFields()
 	var catalog []CannotDo
 	if err := decoder.Decode(&catalog); err != nil || catalog == nil {
-		return nil, fmt.Errorf("%s must be a list of {key, tool, subcommand, human_step}", SettingCannotDo)
+		return nil, fmt.Errorf("%s must be a list of {key, tool, subcommand, human_step, allowed_agents}", SettingCannotDo)
 	}
 	seen := map[string]bool{}
 	for index, entry := range catalog {
@@ -106,6 +116,13 @@ func ParseCannotDo(raw []byte) ([]CannotDo, error) {
 			if word == "" || hasSpace(word) || strings.HasPrefix(word, "-") {
 				return nil, fmt.Errorf("%s.subcommand words must be non-empty, without whitespace, and not flags", field)
 			}
+		}
+		agents := map[string]bool{}
+		for _, id := range entry.AllowedAgents {
+			if !agentID.MatchString(id) || agents[id] {
+				return nil, fmt.Errorf("%s.allowed_agents must be distinct agent ids (lower-case UUIDs)", field)
+			}
+			agents[id] = true
 		}
 		seen[entry.Key] = true
 	}
@@ -153,10 +170,45 @@ func (option AskOption) validateAfterChoice(prefix string) error {
 	return nil
 }
 
+// hasWords reports that the command's leading words start with prefix.
+func hasWords(words []string, prefix ...string) bool {
+	return len(words) >= len(prefix) && slices.Equal(words[:len(prefix)], prefix)
+}
+
+// relayOnlyFix names the typed server_action that replaces the commands when
+// each one only moves or assigns an issue (T2); "" when any command does more.
+func relayOnlyFix(commands [][]string) string {
+	status, assign := false, false
+	for _, argv := range commands {
+		tool, words, wrapper := guard.CanonicalCommand(argv)
+		switch {
+		case tool != "multica" || wrapper:
+			return ""
+		case hasWords(words, "issue", "status"):
+			status = true
+		case hasWords(words, "issue", "assign"):
+			assign = true
+		default:
+			return ""
+		}
+	}
+	switch {
+	case status && assign:
+		return "issue.status.set or issue.assign"
+	case status:
+		return "issue.status.set"
+	case assign:
+		return "issue.assign"
+	}
+	return ""
+}
+
 // CheckCannotDo compares the typed fields of each option with the catalog.
 // Mode off checks nothing; warn returns hints; block returns the first refusal
 // as an AskError with one line: the option label, the catalog key and the human step.
-func (ask Ask) CheckCannotDo(mode string, catalog []CannotDo) (hints []string, err error) {
+// asker is the asking agent's id ("" for a card with no agent): an entry with
+// allowed_agents refuses every other asker.
+func (ask Ask) CheckCannotDo(mode string, catalog []CannotDo, asker string) (hints []string, err error) {
 	if mode == "off" {
 		return nil, nil
 	}
@@ -176,8 +228,19 @@ func (ask Ask) CheckCannotDo(mode string, catalog []CannotDo) (hints []string, e
 				return nil, err
 			}
 		}
+		if fix := relayOnlyFix(option.AgentCommands); fix != "" {
+			if err := report(prefix, fmt.Sprintf("%q only moves an issue; send it as a typed option instead: after_choice record_only, options[].action %s", option.Label, fix)); err != nil {
+				return nil, err
+			}
+		}
 		for _, argv := range option.AgentCommands {
 			tool, words, wrapper := guard.CanonicalCommand(argv)
+			if tool == "multica" && !wrapper && (hasWords(words, "decision", "propose") || hasWords(words, "issue", "budget", "raise") || hasWords(words, "issue", "budget", "top-up")) {
+				if err := report(prefix, fmt.Sprintf("%q needs a passkey card; attach the action with --action-file; the passkey goes on this card", option.Label)); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if wrapper {
 				if err := report(prefix, fmt.Sprintf("%q runs its command through %q; give the command itself as argv", option.Label, tool)); err != nil {
 					return nil, err
@@ -185,7 +248,7 @@ func (ask Ask) CheckCannotDo(mode string, catalog []CannotDo) (hints []string, e
 				continue
 			}
 			for _, entry := range catalog {
-				if entry.Tool != "" && (guard.Match{Tool: entry.Tool, Subcommand: entry.Subcommand}).Covers(tool, words) {
+				if entry.Tool != "" && (guard.Match{Tool: entry.Tool, Subcommand: entry.Subcommand}).Covers(tool, words) && !slices.Contains(entry.AllowedAgents, asker) {
 					if err := report(prefix, entry.refusal(option.Label)); err != nil {
 						return nil, err
 					}
@@ -204,5 +267,8 @@ func (ask Ask) CheckCannotDo(mode string, catalog []CannotDo) (hints []string, e
 }
 
 func (entry CannotDo) refusal(label string) string {
+	if len(entry.AllowedAgents) > 0 {
+		return fmt.Sprintf("%q promises an agent action (%s) that only agents %s may run; set after_choice to human_steps and put this in human_steps: %s, or send options[].action issue.assign to one of them", label, entry.Key, strings.Join(entry.AllowedAgents, ", "), entry.HumanStep)
+	}
 	return fmt.Sprintf("%q promises an agent action (%s) that an agent run cannot do; set after_choice to human_steps and put this in human_steps: %s", label, entry.Key, entry.HumanStep)
 }

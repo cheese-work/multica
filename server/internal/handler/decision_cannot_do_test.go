@@ -227,3 +227,53 @@ func TestCIDecisionReturnsCannotDoHintsInWarnMode(test *testing.T) {
 	}
 	test.Fatalf("hints = %q, want one about daemon_restart", created.Hints)
 }
+
+func TestDecisionRequestBlockRefusesRelayOnlyCommands(t *testing.T) {
+	setCannotDo(t, "block", "")
+	for name, tc := range map[string]struct {
+		argv []string
+		want string
+	}{
+		"status":  {[]string{"$MULTICA_CLI_PATH", "issue", "status", "CHE-1", "done"}, "issue.status.set"},
+		"propose": {[]string{"multica", "decision", "propose"}, "--action-file"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRequestCoreFixture(t, false)
+			res := testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, cannotDoAsk(fixture, agentRunOption(tc.argv...)))).Want(http.StatusBadRequest)
+			if !strings.Contains(res.Text(), tc.want) {
+				t.Errorf("400 body lacks %q: %s", tc.want, res.Text())
+			}
+			fixture.assertCounts(t, 0)
+		})
+	}
+	fixture := newRequestCoreFixture(t, false)
+	testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, cannotDoAsk(fixture, agentRunOption("multica", "issue", "get", "CHE-1")))).Want(http.StatusCreated)
+}
+
+func TestDecisionRequestAllowedAgentsMatchTheAsker(t *testing.T) {
+	fixture := newRequestCoreFixture(t, false)
+	catalog := func(id string) string {
+		return `[{"key":"c00_restart","tool":"docker","subcommand":["compose","restart"],"human_step":"Run it on C00.","allowed_agents":["` + id + `"]}]`
+	}
+	ask := func() map[string]any { return cannotDoAsk(fixture, agentRunOption("docker", "compose", "restart", "doop")) }
+
+	setCannotDo(t, "block", catalog(createHandlerTestAgent(t, "other c00 agent", []byte("[]"))))
+	res := testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, ask())).Want(http.StatusBadRequest)
+	if !strings.Contains(res.Text(), "c00_restart") || !strings.Contains(res.Text(), "issue.assign") {
+		t.Errorf("400 body = %s", res.Text())
+	}
+	setCannotDo(t, "block", catalog(fixture.agentID))
+	testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, ask())).Want(http.StatusCreated)
+}
+
+func TestWorkspaceSettingsRefuseAllowedAgentsOutsideTheWorkspace(t *testing.T) {
+	entry := func(id string) map[string]any {
+		return map[string]any{"agent_cannot_do": []any{map[string]any{"key": "k", "tool": "gh", "human_step": "x", "allowed_agents": []any{id}}}}
+	}
+	if err := testHandler.validateCannotDoAgents(context.Background(), parseUUID(testWorkspaceID), entry("33333333-3333-4333-8333-333333333333")); err == nil {
+		t.Error("unknown agent accepted")
+	}
+	if err := testHandler.validateCannotDoAgents(context.Background(), parseUUID(testWorkspaceID), entry(createHandlerTestAgent(t, "listed agent", []byte("[]")))); err != nil {
+		t.Errorf("workspace agent refused: %v", err)
+	}
+}
