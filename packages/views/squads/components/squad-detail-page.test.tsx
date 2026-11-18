@@ -1,6 +1,6 @@
 import type React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Issue, Squad, SquadMember, SquadMemberStatus } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -301,54 +301,55 @@ describe("SquadDetailPage", () => {
     expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", { instructions: "Ship small." });
   });
 
-  it("renames the squad in place and keeps the name when it is cleared", async () => {
+  // Fork wins (CHE-7026): the fork edits the name in a rename popover and the
+  // description in an edit dialog; upstream v0.10.0's in-place fields were not kept.
+  it("renames the squad from the popover and refuses an empty name", async () => {
     const user = userEvent.setup();
     renderPage();
 
-    const name = screen.getByRole("textbox", { name: "Squad name" });
+    await user.click(screen.getByRole("button", { name: "Strike Team" }));
+    const name = screen.getByPlaceholderText("Squad name");
     await user.clear(name);
-    await user.type(name, "  Night Shift ");
-    await user.tab();
-    expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", { name: "Night Shift" });
+    await user.type(name, "Night Shift{Enter}");
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", { name: "Night Shift" }));
 
     mocks.api.updateSquad.mockClear();
-    await user.clear(screen.getByRole("textbox", { name: "Squad name" }));
-    await user.tab();
+    await user.click(screen.getByRole("button", { name: "Strike Team" }));
+    await user.clear(screen.getByPlaceholderText("Squad name"));
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Name is required")).toBeInTheDocument();
     expect(mocks.api.updateSquad).not.toHaveBeenCalled();
-    expect(screen.getByRole("textbox", { name: "Squad name" })).toHaveValue("Strike Team");
   });
 
   it("discards a name edit on Escape", async () => {
     const user = userEvent.setup();
     renderPage();
 
-    const name = screen.getByRole("textbox", { name: "Squad name" });
-    await user.type(name, " typo");
+    await user.click(screen.getByRole("button", { name: "Strike Team" }));
+    await user.type(screen.getByPlaceholderText("Squad name"), " typo");
     await user.keyboard("{Escape}");
-    await user.tab();
     expect(mocks.api.updateSquad).not.toHaveBeenCalled();
-    expect(screen.getByRole("textbox", { name: "Squad name" })).toHaveValue("Strike Team");
+    expect(screen.queryByPlaceholderText("Squad name")).toBeNull();
   });
 
-  it("edits the description in place: blur saves, Escape discards", async () => {
+  it("edits the description in the dialog: Save writes, Escape discards", async () => {
     const user = userEvent.setup();
     renderPage();
 
     await user.click(screen.getByRole("button", { name: "Ships the risky stuff" }));
-    const field = screen.getByRole("textbox", { name: "What is this squad responsible for?" });
-    expect(field).toHaveFocus();
+    const field = screen.getByPlaceholderText("What is this squad responsible for?");
     await user.type(field, " carefully");
-    await user.tab();
-    expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", {
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", {
       description: "Ships the risky stuff carefully",
-    });
+    }));
 
     mocks.api.updateSquad.mockClear();
     await user.click(screen.getByRole("button", { name: /Ships the risky stuff/ }));
-    await user.type(screen.getByRole("textbox", { name: "What is this squad responsible for?" }), " never");
+    await user.type(screen.getByPlaceholderText("What is this squad responsible for?"), " never");
     await user.keyboard("{Escape}");
     expect(mocks.api.updateSquad).not.toHaveBeenCalled();
-    expect(screen.queryByRole("textbox", { name: "What is this squad responsible for?" })).toBeNull();
+    expect(screen.queryByPlaceholderText("What is this squad responsible for?")).toBeNull();
   });
 
   it("keeps a description draft whose save failed so it can be retried", async () => {
@@ -356,18 +357,19 @@ describe("SquadDetailPage", () => {
     mocks.api.updateSquad.mockRejectedValueOnce(new Error("offline"));
     renderPage();
 
-    await user.click(screen.getByRole("button", { name: "Ships the risky stuff" }));
-    await user.type(screen.getByRole("textbox", { name: "What is this squad responsible for?" }), " carefully");
-    await user.tab();
-    expect(mocks.api.updateSquad).toHaveBeenCalledTimes(1);
-    expect(await screen.findByRole("button", { name: "Ships the risky stuff" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Ships the risky stuff" }));
-    expect(screen.getByRole("textbox", { name: "What is this squad responsible for?" })).toHaveValue(
+    await user.click(screen.getByRole("button", { name: /Ships the risky stuff/ }));
+    // Escape keeps the keyed draft by design, so start from the saved text.
+    const field = screen.getByPlaceholderText("What is this squad responsible for?");
+    await user.clear(field);
+    await user.type(field, "Ships the risky stuff carefully");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledTimes(1));
+    // The dialog stays open with the draft intact; a second Save retries it.
+    expect(screen.getByPlaceholderText("What is this squad responsible for?")).toHaveValue(
       "Ships the risky stuff carefully",
     );
-    await user.tab();
-    expect(mocks.api.updateSquad).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledTimes(2));
     expect(mocks.api.updateSquad).toHaveBeenLastCalledWith("sq-1", {
       description: "Ships the risky stuff carefully",
     });
