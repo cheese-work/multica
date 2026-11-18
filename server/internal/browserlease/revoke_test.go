@@ -61,14 +61,16 @@ type leaseOpt func(*leaseSeed)
 
 type leaseSeed struct {
 	task, user, agent, profile pgtype.UUID
+	decision                   pgtype.UUID // invalid: the lease names no decision
 	state                      string
 	instance                   pgtype.UUID
 }
 
-func withUser(id pgtype.UUID) leaseOpt    { return func(s *leaseSeed) { s.user = id } }
-func withProfile(id pgtype.UUID) leaseOpt { return func(s *leaseSeed) { s.profile = id } }
-func queued() leaseOpt                    { return func(s *leaseSeed) { s.state = "queued" } }
-func ended() leaseOpt                     { return func(s *leaseSeed) { s.state = "ended" } }
+func withUser(id pgtype.UUID) leaseOpt     { return func(s *leaseSeed) { s.user = id } }
+func withProfile(id pgtype.UUID) leaseOpt  { return func(s *leaseSeed) { s.profile = id } }
+func withDecision(id pgtype.UUID) leaseOpt { return func(s *leaseSeed) { s.decision = id } }
+func queued() leaseOpt                     { return func(s *leaseSeed) { s.state = "queued" } }
+func ended() leaseOpt                      { return func(s *leaseSeed) { s.state = "ended" } }
 
 // lease inserts a lease straight into the table (the grant path is W3-3). Each lease gets its
 // own instance: one lease holds an instance at a time (index 99963).
@@ -82,17 +84,17 @@ func (w *world) lease(opts ...leaseOpt) db.BrowserLease {
 	var query string
 	switch s.state {
 	case "queued":
-		query = `INSERT INTO browser_lease (workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, class, state, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,'S0','queued', now() + interval '15 minutes') RETURNING id`
+		query = `INSERT INTO browser_lease (workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, expires_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'S0','queued', now() + interval '15 minutes') RETURNING id`
 	case "ended":
-		query = `INSERT INTO browser_lease (workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, class, state, epoch, granted_at, ended_at, end_reason, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,'S0','ended', 1, now(), now(), 'release', now() + interval '15 minutes') RETURNING id`
+		query = `INSERT INTO browser_lease (workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, granted_at, ended_at, end_reason, expires_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'S0','ended', 1, now(), now(), 'release', now() + interval '15 minutes') RETURNING id`
 	default:
-		query = `INSERT INTO browser_lease (workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, class, state, epoch, granted_at, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,'S0','active', 1, now(), now() + interval '15 minutes') RETURNING id`
+		query = `INSERT INTO browser_lease (workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, granted_at, expires_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'S0','active', 1, now(), now() + interval '15 minutes') RETURNING id`
 	}
 	if err := w.pool.QueryRow(context.Background(), query,
-		w.workspace, s.instance, s.profile, s.agent, s.task, newID(), s.user).Scan(&id); err != nil {
+		w.workspace, s.instance, s.profile, s.agent, s.task, newID(), s.user, s.decision).Scan(&id); err != nil {
 		w.t.Fatalf("insert lease: %v", err)
 	}
 	l, err := w.q.GetBrowserLease(context.Background(), db.GetBrowserLeaseParams{ID: id, WorkspaceID: w.workspace})
@@ -299,5 +301,64 @@ func TestRegisterRevokesOnTaskEnd(t *testing.T) {
 				t.Fatalf("published %d revoke events, want 1", len(rec.got))
 			}
 		})
+	}
+}
+
+func TestRevokeDecisionEndsEveryLeaseBoundToIt(t *testing.T) {
+	for _, reason := range []string{ReasonDecisionWithdrawn, ReasonDecisionExpired} {
+		t.Run(reason, func(t *testing.T) {
+			w := newWorld(t)
+			r, rec := newRevoker(t, w)
+			decision, other := newID(), newID()
+			active := w.lease(withDecision(decision))
+			waiting := w.lease(withDecision(decision), queued())
+			elsewhere := w.lease(withDecision(other))
+			none := w.lease()
+
+			got, err := r.RevokeDecision(context.Background(), w.workspace, decision, reason)
+			if err != nil {
+				t.Fatalf("RevokeDecision: %v", err)
+			}
+			if len(got) != 2 {
+				t.Fatalf("revoked %d leases, want the 2 bound to the decision", len(got))
+			}
+			row, _ := w.reload(active)
+			if row.State != "ended" || row.EndReason.String != reason {
+				t.Fatalf("active lease state=%q reason=%q", row.State, row.EndReason.String)
+			}
+			if _, ok := w.reload(waiting); ok {
+				t.Fatal("queued lease still exists")
+			}
+			for name, l := range map[string]db.BrowserLease{"other decision": elsewhere, "no decision": none} {
+				if row, _ := w.reload(l); row.State != "active" {
+					t.Fatalf("%s lease state=%q, want active", name, row.State)
+				}
+			}
+			if len(rec.got) != 2 {
+				t.Fatalf("published %d revoke events, want 2", len(rec.got))
+			}
+			for _, e := range rec.got {
+				if p, _ := e.Payload.(map[string]any); p["reason"] != reason {
+					t.Fatalf("event reason = %v, want %s", p["reason"], reason)
+				}
+			}
+			// A second trigger finds nothing live and emits nothing.
+			again, err := r.RevokeDecision(context.Background(), w.workspace, decision, reason)
+			if err != nil || len(again) != 0 || len(rec.got) != 2 {
+				t.Fatalf("second call: leases=%d events=%d err=%v", len(again), len(rec.got), err)
+			}
+		})
+	}
+}
+
+func TestRevokeDecisionNeedsADecision(t *testing.T) {
+	w := newWorld(t)
+	r, _ := newRevoker(t, w)
+	keep := w.lease()
+	if _, err := r.RevokeDecision(context.Background(), w.workspace, pgtype.UUID{}, ReasonDecisionWithdrawn); err == nil {
+		t.Fatal("RevokeDecision without a decision succeeded: it would revoke every lease of the workspace")
+	}
+	if row, _ := w.reload(keep); row.State != "active" {
+		t.Fatalf("lease state=%q, want active", row.State)
 	}
 }

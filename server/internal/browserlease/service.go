@@ -31,6 +31,7 @@ type Service struct {
 	Decisions Decisions
 	Registry  Registry
 	Signer    Signer
+	Class3    *Class3Deny
 	Now       func() time.Time
 }
 
@@ -56,15 +57,16 @@ func (s *Service) now() time.Time {
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 func isHookDenial(err error) bool {
-	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrClassNotMintable) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid)
+	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrClassNotMintable) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid) ||
+		errors.Is(err, ErrClass3Denied) || errors.Is(err, ErrClass3Unchecked)
 }
 
-// check applies the class rules, runs the user gate, then the decision for a class that needs
-// one (S0 asks no one), and returns when the lease must end at the latest. Mint, renew and the
-// queued grant all come through here, so a profile moved to a class that is not leased (H, S1)
-// ends or drops its leases. leaseClass is the class the lease was granted under: a profile that
-// changed class since (S0 to S2 or back) would otherwise keep the old host, token and decision
-// rule, so any change ends or drops the lease.
+// check applies the class rules, runs the user gate, the class-3 check for a login profile, then the
+// decision for a class that needs one (S0 asks no one), and returns when the lease must end at the
+// latest. Mint, renew and the queued grant all come through here, so a profile moved to a class that
+// is not leased (H, S1) ends or drops its leases. leaseClass is the class the lease was granted
+// under: a profile that changed class since (S0 to S2 or back) would otherwise keep the old host,
+// token and decision rule, so any change ends or drops the lease.
 func (s *Service) check(ctx context.Context, subj Subject, leaseClass string) (time.Time, error) {
 	now := s.now()
 	limit := now.Add(MaxLeaseDuration)
@@ -76,6 +78,11 @@ func (s *Service) check(ctx context.Context, subj Subject, leaseClass string) (t
 	}
 	if !needsDecision(subj.Profile.Class) {
 		return limit, nil
+	}
+	// Class 3 is forbidden to every agent lease: no decision can allow it, so it is checked
+	// before one is asked for, and again at every renew and queued grant.
+	if err := s.Class3.checkClass3(subj.Profile.Hosts); err != nil {
+		return limit, err
 	}
 	exp, err := s.Decisions.Validate(ctx, subj)
 	if err != nil {

@@ -118,6 +118,10 @@ func TestBackgroundSweepQuickActionsGivesNoPills(t *testing.T) {
 	b.svc.BackgroundWriters = map[string]BackgroundWriter{
 		purpose: func(context.Context, *db.Queries, db.AgentTaskQueue, []byte) error { written++; return nil },
 	}
+	// The enqueue re-reads the stored chain (CHE-4114): quick_actions needs its own.
+	b.rows.Exec(t, `UPDATE member_setting SET value = value || jsonb_build_object($3::text, jsonb_build_object('agent_id', $4::text))
+		WHERE workspace_id = $1 AND user_id = $2 AND key = 'background_agents'`,
+		b.workspaceID, b.userID, string(bgagents.QuickActions), b.primary)
 	enqueue := func() db.AgentTaskQueue {
 		task, err := b.svc.EnqueueBackgroundChain(context.Background(), b.quickActionsInput(),
 			[]bgagents.Candidate{{Slot: bgagents.Primary, AgentID: b.primary}})

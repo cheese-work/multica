@@ -54,7 +54,7 @@ func TestCompactSettle_SummaryOwnedByTheTaskIsNotAFailure(t *testing.T) {
 	}
 	for _, end := range []string{"completed", "failed"} {
 		t.Run(end, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			task := dm.startedCompaction(t)
 			dm.summarise(t, task.ID)
 			if end == "failed" {
@@ -75,7 +75,7 @@ func TestCompactSettle_NoSummaryOfItsOwnStillPostsTheFailureNotice(t *testing.T)
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	task := dm.startedCompaction(t)
 	other := dbfx.Task(t, dm.agentID, testutil.Cols{
 		"runtime_id": dm.runtimeID, "chat_session_id": dm.sessionID, "status": "completed",
@@ -97,7 +97,7 @@ func TestCompactRearm_SucceededCompactionDoesNotHoldTheGuard(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	task := dm.startedCompaction(t)
 	dm.summarise(t, task.ID)
 	dm.complete(t, task.ID, 0, 0)
@@ -116,7 +116,7 @@ func TestCompactRearm_FailedAttemptInTheSameEpochKeepsTheGuard(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	task := dm.startedCompaction(t)
 	dm.fail(t, task.ID)
 	dm.complete(t, dm.sendRunning(t, "again"), 171_000, 200_000)
@@ -132,7 +132,7 @@ func TestCompactRearm_OrdinaryTaskThatWroteASummaryDoesNotTrigger(t *testing.T) 
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	run := dm.sendRunning(t, "please compact")
 	dbfx.Exec(t, `UPDATE agent_task_queue SET chat_compaction_epoch = 0 WHERE id = $1`, run)
 	dm.summarise(t, run)

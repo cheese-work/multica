@@ -3767,6 +3767,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, false); failure != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
 		}
+		// SEC-1 rule 5: a compaction task's authority is judged again here, after
+		// the epoch rebase and before any payload or carry-over read. The setting
+		// may have moved since enqueue; a failed claim delivers no transcript.
+		isCompaction := service.IsCompactionTask(*task)
+		if isCompaction {
+			if refusal := h.decideChatTask(r.Context(), h.Queries, chatOpCompact, *task, cs, resp.WorkspaceID); refusal != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.failClaimedTaskBeforeLaunch(
+					r.Context(), task, refusal.Message, taskfailure.ReasonInvalidTaskIdentity,
+					"error_compaction_agent_not_current", http.StatusConflict, "compaction agent is no longer current",
+				)
+			}
+		}
+		// SEC-2: a compaction task starts with a fresh provider session and
+		// workdir, like a user-requested fresh start, but never inherits the DM's
+		// pointer, fallback session or a retry's workdir.
+		resumeAllowed := !task.ForceFreshSession && !isCompaction
 		resp.ChatSessionID = uuidToString(cs.ID)
 		resp.ThreadName = cs.Title
 		// Legacy compatibility: agent creation no longer creates intro chats,
@@ -3830,7 +3846,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
-		if !task.ForceFreshSession && !task.ChannelContextRevision.Valid {
+		if resumeAllowed && !task.ChannelContextRevision.Valid {
 			// Resume chat sessions only when the stored pointer was produced
 			// by the same runtime as the claiming task. When the chat_session
 			// pointer is missing (legacy NULL runtime_id), stale (last task
@@ -3894,7 +3910,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// Input ownership is the claim's fail-closed boundary. Resume-history
 		// reads belong after it: a task that cannot load its input is preserved
 		// for redelivery and must not spend two more queries before returning.
-		if !task.ForceFreshSession {
+		if resumeAllowed {
 			contextRevision := pgtype.Int8{}
 			if task.ChannelContextRevision.Valid {
 				contextRevision = task.ChannelContextRevision
@@ -3964,7 +3980,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if err == nil && missing {
 				resp.PriorSessionResumeUnavailable = true
 			}
-		} else if task.RetryOfTaskID.Valid {
+		} else if task.RetryOfTaskID.Valid && !isCompaction {
 			// Same as the issue branch. The retry lineage is what separates this
 			// from a user-requested fresh start (the Lark fresh-session command),
 			// which still inherits nothing.
