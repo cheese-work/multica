@@ -142,4 +142,3 @@ func browserErrorText(body []byte) string {
 	}
 	return s
 }
-

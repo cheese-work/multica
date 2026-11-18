@@ -2,10 +2,10 @@ package handler
 
 import (
 	"encoding/json"
-	"os"
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
