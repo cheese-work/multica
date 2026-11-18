@@ -2,7 +2,8 @@
 
 import { lazy, Suspense, type ReactNode } from "react";
 import { useModalStore } from "@multica/core/modals";
-import { IssueLimitUpgradeDialog } from "./issue-limit-upgrade-dialog";
+import { getProjectFoldersExtension } from "../extensions";
+import { LimitRecoveryDialog } from "./limit-recovery-dialog";
 
 // Modals are opened on demand; keeping them (and the editor they bring) out of
 // the initial dashboard bundle keeps first paint on the list pages light.
@@ -74,7 +75,7 @@ export function ModalRegistry() {
       );
       break;
     case "create-project":
-      activeModal = <CreateProjectModal onClose={close} />;
+      activeModal = <CreateProjectModal onClose={close} data={data} />;
       break;
     case "create-squad":
       activeModal = <CreateSquadModal onClose={close} />;
@@ -111,10 +112,13 @@ export function ModalRegistry() {
       break;
   }
 
+  const FoldersHost = getProjectFoldersExtension()?.Host;
+
   return (
     <>
       <Suspense fallback={null}>{activeModal}</Suspense>
-      <IssueLimitUpgradeDialog />
+      <LimitRecoveryDialog />
+      {FoldersHost && <FoldersHost />}
     </>
   );
 }

@@ -53,6 +53,7 @@ import { ChatPresetPicker } from "./chat-preset-picker";
 import { OpenDecisionsBadge } from "./open-decisions-badge";
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
+import { ChatWakeupHeaderButton, useChatWakeups } from "./chat-wakeups";
 
 /**
  * Per-session header for the conversation pane, read as a breadcrumb: the
@@ -111,6 +112,7 @@ export function ChatSessionHeader({
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
+  const wakeups = useChatWakeups(session.id);
 
   const isArchived = session.status === "archived";
   const menuItems = getChatSessionMenuItems({ archived: isArchived });
@@ -292,6 +294,7 @@ export function ChatSessionHeader({
             {isArchived ? null : (
               <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />
             )}
+            <ChatWakeupHeaderButton sessionId={session.id} wakeups={wakeups} />
 
             {isArchived ? null : (
               <ChatContextMeter

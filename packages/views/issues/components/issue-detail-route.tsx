@@ -126,9 +126,12 @@ export function IssueDetailRoute({ routeId, onDelete, deliverable }: IssueDetail
     canonicalId, issue, isResolving, notFound, loadFailed, isRetrying, retry, authoritative, hasLoaded,
   } = useCanonicalIssue(wsId, routeId);
   const highlight = useHighlightHash();
-  const landingToken = useInboxSelectionStore((s) =>
-    s.landing && s.landing.issueId === canonicalId ? s.landing.token : 0,
+  const landing = useInboxSelectionStore((s) =>
+    s.landing && s.landing.issueId === canonicalId ? s.landing : null,
   );
+  const completeLanding = useInboxSelectionStore((s) => s.completeLanding);
+  const landingToken = landing?.token ?? 0;
+  const onHighlightLanded = useCallback(() => completeLanding(landingToken), [completeLanding, landingToken]);
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const { searchParams } = navigation;
@@ -182,6 +185,8 @@ export function IssueDetailRoute({ routeId, onDelete, deliverable }: IssueDetail
         highlightAppRequestId={landsHere ? highlight.appRequestId : undefined}
         highlightRequestToken={landingToken}
         authoritative={authoritative}
+        highlightRequestPending={!!landing && !landing.landed}
+        onHighlightLanded={onHighlightLanded}
         openDeliverable={deliverable}
         onDeliverableLinkDone={deliverable ? onDeliverableLinkDone : undefined}
       />

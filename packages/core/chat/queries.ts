@@ -58,8 +58,13 @@ export const chatKeys = {
   /** Durable deferred-cancellation draft restores for a session (#5219). */
   draftRestores: (sessionId: string) => [...chatKeys.draftRestoresAll(), sessionId] as const,
   wakeupsAll: () => ["chat", "wakeups"] as const,
-  /** Pending agent-scheduled wakeups for a DM (the "Scheduled" chip). */
+  /**
+   * A conversation's wakeups: active ones plus those that ended recently. Also
+   * feeds the fork's "Scheduled" chip (pending agent-scheduled follow-ups).
+   */
   wakeups: (sessionId: string) => [...chatKeys.wakeupsAll(), sessionId] as const,
+  /** The caller's wakeups across their conversations in this workspace. */
+  myWakeups: (wsId: string) => [...chatKeys.all(wsId), "my-wakeups"] as const,
   /** Aggregate of in-flight chat tasks for the current user — FAB reads this. */
   pendingTasks: (wsId: string) => [...chatKeys.all(wsId), "pending-tasks"] as const,
   /** Per-user pinned agents for the quick-agent bar. */
@@ -297,15 +302,26 @@ export function chatDraftRestoresOptions(sessionId: string) {
 }
 
 /**
- * Pending agent-scheduled wakeups for a DM. A turn that schedules or cancels
- * one ends in chat:done and a fire arrives as chat:message; both invalidate
- * this key, as does a reconnect. A cancel here updates it directly.
+ * Kept fresh by chat:wakeup_changed; the countdowns tick client-side. A turn
+ * that schedules or cancels a wakeup ends in chat:done and a fire arrives as
+ * chat:message; both invalidate this key (fork), as does a reconnect. A cancel
+ * updates it directly.
  */
 export function chatWakeupsOptions(sessionId: string) {
   return queryOptions({
     queryKey: chatKeys.wakeups(sessionId),
     queryFn: () => api.listChatSessionWakeups(sessionId),
     enabled: !!sessionId,
+    staleTime: Infinity,
+  });
+}
+
+export function myChatWakeupsOptions(wsId: string) {
+  return queryOptions({
+    queryKey: chatKeys.myWakeups(wsId),
+    queryFn: () => api.listMyChatWakeups(),
+    enabled: !!wsId,
+    staleTime: Infinity,
   });
 }
 

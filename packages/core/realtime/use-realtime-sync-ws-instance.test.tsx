@@ -167,6 +167,8 @@ describe("useRealtimeSync — ws instance change", () => {
     // Should invalidate workspace-scoped and event-fed account-level keys,
     // plus the cross-workspace inbox summary.
     // Plus the issue unread marks, plus the skill version history.
+    // (chatKeys.wakeupsAll() is already invalidated once; upstream v0.11.0 added
+    // the same key, which this fork carried before and counts a single time.)
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see

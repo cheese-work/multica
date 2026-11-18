@@ -433,7 +433,9 @@
         "seen": "已讀",
         "unseen": "未讀"
       }
-    }
+    },
+    "wakeup_preview": "回來匯報",
+    "wakeup_active": "等待回來匯報"
   },
   "header": {
     "agent_settings": "AI 代理設定",
@@ -464,7 +466,6 @@
     "watching_until": "監聽事項 · 截止 {{time}}"
   },
   "annotations": {
-    "one_request": "請每次只發送針對一個決策請求的評論。",
     "source_label": "{{name}} 的消息",
     "save": "保存",
     "note_label": "評論 {{number}}",
@@ -689,6 +690,51 @@
     "hide_instruction": "收合指令",
     "instruction_region": "給智慧體的指令",
     "instruction_note": "給智慧體的指令（原文）。智慧體會收到全部內容。",
-    "issue_fallback": "事項"
+    "issue_fallback": "事項",
+    "panel_title": "喚醒",
+    "panel_empty": "這個對話沒有喚醒",
+    "panel_ended": "最近結束",
+    "limits_hint": "每個喚醒都會結束：等待預設 24 小時，最長 7 天。到期時如果還沒等到，Agent 會回來一次，告訴你目前的進展。",
+    "strip_waiting": "等待中：{{title}}",
+    "card": "會回來匯報：{{title}}",
+    "ends": "{{relative}}到期",
+    "reminder_at": "{{relative}}提醒",
+    "next_check": "{{relative}}再檢查",
+    "last_check": "上次檢查：{{note}}",
+    "cancel": "取消喚醒",
+    "cancel_failed": "無法取消喚醒",
+    "retry": "重試",
+    "retry_failed": "無法重試此喚醒",
+    "status": {
+      "active": "等待中",
+      "fired": "已回報",
+      "expired": "已到期",
+      "cancelled": "已取消",
+      "failed": "未能執行"
+    },
+    "report": {
+      "waiting": "等待回報",
+      "running": "正在回報…",
+      "failed": "回報失敗"
+    },
+    "failure": {
+      "permission_revoked": "發起人已無權執行此智慧代理",
+      "access_lost": "所關注的內容已移入私有專案",
+      "dispatch_failed": "智慧代理無法執行"
+    },
+    "kind": {
+      "condition": "條件滿足時",
+      "at": "定時提醒",
+      "check": "定期檢查"
+    },
+    "divider": {
+      "condition": "喚醒回報 · 條件滿足",
+      "at": "喚醒回報 · 到點",
+      "check": "喚醒回報 · 檢查",
+      "expired": "喚醒回報 · 已到期",
+      "generic": "喚醒回報"
+    },
+    "queue_label": "喚醒：{{title}}",
+    "queue_fallback": "喚醒"
   }
 }

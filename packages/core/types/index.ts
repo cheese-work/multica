@@ -99,6 +99,11 @@ export type {
   SetAgentSkillsRequest,
   RuntimeUsage,
   RuntimeHourlyActivity,
+  RuntimeRateLimitWindowKind,
+  RuntimeRateLimitStatus,
+  RuntimeRateLimitWindow,
+  RuntimeRateLimits,
+  RuntimeRateLimitsResponse,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
   DashboardUsageDaily,
@@ -213,7 +218,6 @@ export type {
   ChatAttentionSource,
   ChatContinueResponse,
   ChatSessionUsage,
-  ChatWakeup,
   ChatUsageModel,
   ChatUsageTokens,
   ChatForkResponse,
@@ -243,6 +247,9 @@ export type {
   CancelTaskResponse,
   ChatDraftRestore,
   ChatDraftRestoresResponse,
+  ChatWakeup,
+  ChatWakeupKind,
+  ChatWakeupStatus,
 } from "./chat";
 export type { StorageAdapter } from "./storage";
 export type {
@@ -392,6 +399,9 @@ export type {
   AutopilotRunSource,
   AutopilotQuotaUsage,
   WebhookEventFilter,
+  WebhookPayloadCondition,
+  WebhookPayloadConditionFailure,
+  WebhookPayloadConditionValue,
   CreateAutopilotRequest,
   UpdateAutopilotRequest,
   CreateAutopilotTriggerRequest,
@@ -445,7 +455,6 @@ export type {
   WorkspaceEntitlementLimit,
   WorkspaceSubscriptionEntitlements,
   WorkspaceSubscriptionSummary,
-  IssueLimitUsage,
   WorkspaceSeatCapacity,
   WorkspaceSeatPurchaseSummary,
   WorkspaceSubscriptionPrice,
@@ -458,9 +467,13 @@ export type {
   PurchaseWorkspaceSeatsResponse,
   WorkspaceSubscriptionSeatReconcileResult,
   CreateWorkspaceSubscriptionPortalResponse,
+  PaidFeature,
+  WorkspaceFeatureState,
+  WorkspaceFeatures,
 } from "./billing";
 export type { IssueWakeup, IssueWakeupInput, SystemWakeup, WorkspaceSystemWakeup, WakeupPreview, IssueWakeupSummaryRow, WakeupCondition, WakeupPausedReason, WakeupRun, PausedWakeup, WakeupSource, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupDefinitionScopeKind, WakeupCapabilities, WakeupEffectiveRule } from "./issue-wakeup";
 
 export type { WorkspaceWakeup, WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupScope } from "./issue-wakeup";
 
 export type { ProviderBreaker, ProviderBreakerState } from "./provider-breaker";
+export type { WeixinInstallation, ListWeixinInstallationsResponse, WeixinLogin } from "./weixin";

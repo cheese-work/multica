@@ -53,7 +53,7 @@ const nextConfig: NextConfig = {
   ...(process.env.NEXT_SKIP_TYPECHECK === "true"
     ? { typescript: { ignoreBuildErrors: true } }
     : {}),
-  transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
+  transpilePackages: ["@multica/core", "@multica/ui", "@multica/views", "@multica/ee"],
   outputFileTracingIncludes: {
     "/changelog": ["./.fork-changelog/entries.json"],
   },

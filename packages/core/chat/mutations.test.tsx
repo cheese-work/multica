@@ -2,20 +2,21 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import {
-  useCancelChatWakeup,
+  useCancelChatSessionWakeup,
   useConsumeChatDraftRestore,
   useMarkChatSessionUnread,
+  useMarkAllChatSessionsRead,
   useSetChatSessionArchived,
   useSetChatSessionProject,
 } from "./mutations";
-import { chatKeys } from "./queries";
+import { chatKeys, chatSessionsOptions } from "./queries";
 import type { ChatSession } from "../types";
 
 vi.mock("../hooks", () => ({
@@ -45,6 +46,99 @@ function createWrapper(qc: QueryClient) {
     return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
+
+describe("useMarkAllChatSessionsRead", () => {
+  let qc: QueryClient;
+  let markChatSessionRead: ReturnType<typeof vi.fn<(id: string) => Promise<void>>>;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    markChatSessionRead = vi.fn();
+    setApiInstance({ markChatSessionRead } as unknown as ApiClient);
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("reads each session and zeroes their unread", async () => {
+    markChatSessionRead.mockResolvedValue(undefined);
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [
+      makeSession({ id: "s1", unread_count: 3 }),
+      makeSession({ id: "s2", unread_count: 4 }),
+      makeSession({ id: "s3", unread_count: 0, has_unread: false }),
+    ]);
+
+    const { result } = renderHook(() => useMarkAllChatSessionsRead(), {
+      wrapper: createWrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync(["s1", "s2"]);
+    });
+
+    expect(markChatSessionRead.mock.calls.map(([id]) => id)).toEqual(["s1", "s2"]);
+    const rows = qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))!;
+    expect(rows.map((s) => s.unread_count)).toEqual([0, 0, 0]);
+    expect(rows.every((s) => !s.has_unread)).toBe(true);
+  });
+
+  // One failed read must not stop the others; the failed row gets its unread
+  // back and the one that went through stays read.
+  it("restores only the sessions whose read failed", async () => {
+    markChatSessionRead.mockImplementation(async (id) => {
+      if (id === "s1") throw new Error("boom");
+    });
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [
+      makeSession({ id: "s1", unread_count: 2 }),
+      makeSession({ id: "s2", unread_count: 5 }),
+    ]);
+
+    const { result } = renderHook(() => useMarkAllChatSessionsRead(), {
+      wrapper: createWrapper(qc),
+    });
+    await act(async () => {
+      await expect(result.current.mutateAsync(["s1", "s2"])).rejects.toThrow();
+    });
+
+    expect(markChatSessionRead).toHaveBeenCalledTimes(2);
+    const rows = qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))!;
+    expect(rows.map((s) => [s.id, s.unread_count, s.has_unread])).toEqual([
+      ["s1", 2, true],
+      ["s2", 0, false],
+    ]);
+  });
+
+  // Offline: the read and the follow-up refetch both fail, so the rollback is
+  // all that keeps the badge (and the menu item) from hiding real unread.
+  it("keeps unread when the read and the refetch both fail", async () => {
+    const listChatSessions = vi.fn().mockRejectedValue(new Error("offline"));
+    markChatSessionRead.mockRejectedValue(new Error("offline"));
+    setApiInstance({ listChatSessions, markChatSessionRead } as unknown as ApiClient);
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [
+      makeSession({ id: "s1", unread_count: 2 }),
+    ]);
+
+    const { result } = renderHook(
+      () => {
+        useQuery(chatSessionsOptions(WS_ID));
+        return useMarkAllChatSessionsRead();
+      },
+      { wrapper: createWrapper(qc) },
+    );
+    await act(async () => {
+      await expect(result.current.mutateAsync(["s1"])).rejects.toThrow();
+    });
+    await waitFor(() => {
+      expect(listChatSessions).toHaveBeenCalled();
+      expect(qc.isFetching()).toBe(0);
+    });
+
+    const row = qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))![0]!;
+    expect(row.unread_count).toBe(2);
+    expect(row.has_unread).toBe(true);
+  });
+});
 
 describe("useSetChatSessionArchived", () => {
   let qc: QueryClient;
@@ -260,7 +354,7 @@ describe("useConsumeChatDraftRestore", () => {
   });
 });
 
-describe("useCancelChatWakeup", () => {
+describe("useCancelChatSessionWakeup", () => {
   afterEach(() => setApiInstance(undefined as unknown as ApiClient));
 
   function setup(cancel: ReturnType<typeof vi.fn>) {
@@ -278,7 +372,7 @@ describe("useCancelChatWakeup", () => {
     const cancel = vi.fn().mockResolvedValue(undefined);
     const { qc, wrapper } = setup(cancel);
     qc.setQueryData(chatKeys.wakeups("s1"), [wakeup("w1"), wakeup("w2")]);
-    const { result } = renderHook(() => useCancelChatWakeup(), { wrapper });
+    const { result } = renderHook(() => useCancelChatSessionWakeup(), { wrapper });
 
     await act(() => result.current.mutateAsync({ sessionId: "s1", wakeupId: "w1" }));
 
@@ -290,7 +384,7 @@ describe("useCancelChatWakeup", () => {
     const cancel = vi.fn().mockRejectedValue(new Error("boom"));
     const { qc, wrapper } = setup(cancel);
     qc.setQueryData(chatKeys.wakeups("s1"), [wakeup("w1")]);
-    const { result } = renderHook(() => useCancelChatWakeup(), { wrapper });
+    const { result } = renderHook(() => useCancelChatSessionWakeup(), { wrapper });
 
     await act(() => result.current.mutateAsync({ sessionId: "s1", wakeupId: "w1" }).catch(() => undefined));
 

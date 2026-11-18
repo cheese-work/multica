@@ -473,6 +473,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       draftAttachments: Attachment[] = [],
       decisionRequestId?: string,
       askIds?: string[],
+      options?: { queue?: boolean },
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -553,7 +554,14 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await sendWithPendingId(sessionId, finalContent, { attachmentIds, decisionRequestId, askIds });
+        // The "after the run" preference asks for a queued follow-up (no
+        // server-side steer); the default steers when the run can take it.
+        result = await sendWithPendingId(sessionId, finalContent, {
+          attachmentIds,
+          decisionRequestId,
+          askIds,
+          queue: options?.queue ?? runningAgentReply === "after_run",
+        });
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
         // Unknown delivery (timeout, network, 5xx): the message may be stored.
@@ -605,8 +613,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
         chat_session_id: sessionId,
         role: "user",
         content: finalContent,
-        task_id: result.task_id,
-        created_at: result.created_at,
+        task_id: result.message_task_id ?? result.task_id,
+        created_at: result.message_created_at ?? result.created_at,
         attachments: draftAttachments,
       };
       // Single door into the message caches (MUL-5711): idempotent by id, so
@@ -614,14 +622,16 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // arrival order, and this richer row (it carries the draft attachments)
       // is never downgraded by the echo, which has no attachments field.
       upsertChatMessageToCaches(qc, sessionId, sent, { seedIfMissing: true });
-      seedAcceptedPendingTask(qc, sessionId, {
-        task_id: result.task_id,
-        created_at: result.created_at,
-        message_id: result.message_id,
-        content: finalContent,
-        supports_queue: result.supports_queue,
-        queued: result.queued,
-      });
+      if (result.steered !== true) {
+        seedAcceptedPendingTask(qc, sessionId, {
+          task_id: result.task_id,
+          created_at: result.created_at,
+          message_id: result.message_id,
+          content: finalContent,
+          supports_queue: result.supports_queue,
+          queued: result.queued,
+        });
+      }
       // This send just committed the new session's server-derived title.
       if (sessionId !== activeSessionId) {
         void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));

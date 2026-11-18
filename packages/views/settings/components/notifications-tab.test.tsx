@@ -23,6 +23,8 @@ vi.mock("../../navigation", () => ({
     </a>
   ),
 }));
+// The same spy as `state.mutate`, for the assertions that read it by name.
+const mutate = state.mutate;
 vi.mock("@multica/core/notification-preferences/mutations", () => ({
   useUpdateNotificationPreferences: () => ({ mutate: state.mutate }),
 }));
@@ -73,6 +75,24 @@ describe("Inbox notification settings", () => {
     ]);
     expect(within(inbox).getByRole("switch", { name: "Priority & Due date" })).not.toBeChecked();
     expect(within(inbox).getByRole("switch", { name: "Comments" })).toBeChecked();
+  });
+
+  it("leaves status changes off until you turn them on", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    const statusChanges = within(screen.getByRole("region", { name: "Inbox" })).getByRole("switch", {
+      name: "Status changes",
+    });
+    expect(statusChanges).not.toBeChecked();
+
+    await user.click(statusChanges);
+    expect(mutate).toHaveBeenCalledWith({ status_changes: "all" }, expect.anything());
+  });
+
+  it("shows status changes on once you turned them on", () => {
+    renderTab({ status_changes: "all" });
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    expect(within(inbox).getByRole("switch", { name: "Status changes" })).toBeChecked();
   });
 
   it.each<{ preferences: Record<string, string>; shown: string }>([
@@ -180,7 +200,7 @@ describe("notification delivery scope", () => {
     const control = screen.getByRole("switch", { name: "Only decisions and issues assigned to me" });
     expect(control).toBeChecked();
     await userEvent.click(control);
-    expect(state.mutate).toHaveBeenCalledWith({ mentions: "muted" }, expect.any(Object));
+    expect(state.mutate).toHaveBeenCalledWith({ mentions: "muted", unassigned_activity: "all" }, expect.any(Object));
     expect(screen.getByRole("switch", { name: "Mentions" })).not.toBeChecked();
   });
 });

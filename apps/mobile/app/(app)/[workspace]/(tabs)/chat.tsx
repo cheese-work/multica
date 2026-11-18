@@ -29,6 +29,11 @@
  * (packages/views/chat/components/chat-window.tsx ~262-345):
  *   seed messages → seed pendingTask → flip activeSessionId → POST →
  *   patch pendingTask with server task_id + created_at.
+ *
+ * During a reply on a queue-capable server, Send asks to add the message to
+ * that reply (`steer`) and the composer's Queue action keeps it for the next
+ * turn. The server decides whether steering applies; an accepted steer keeps
+ * the running head instead of seeding a new turn.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -82,7 +87,7 @@ import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-sto
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
-  seedAcceptedPendingTask,
+  reconcileAcceptedChatSend,
 } from "@/data/realtime/chat-ws-updaters";
 import {
   ArchivedSendInterceptedError,
@@ -91,6 +96,7 @@ import {
   unarchiveThenSendOnce,
 } from "@/lib/chat-dm-stats-archive";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
+import { queuedChatMessages } from "@/lib/chat-queued-messages";
 import {
   dispatchReasonCode,
 } from "@/lib/dispatch-reason";
@@ -175,6 +181,7 @@ export default function ChatTab() {
     pendingChatTaskOptions(activeSessionId),
   );
   const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
+  const queuedMessages = queuedChatMessages(pendingTask, messages);
   // Live execution trace for the in-flight task. `task:message` WS events
   // append rows to this same cache key via `appendTaskMessage`, so the
   // list/pill stay in sync without a polling fetch. `enabled` is gated by
@@ -419,6 +426,7 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
+      options: { queue?: boolean } = {},
     ) => {
       if (!currentAgent) return;
       if (accessRevoked) {
@@ -485,34 +493,24 @@ export default function ChatTab() {
       }
 
       try {
-        // A retry of the same text reuses its client_message_id (A22), so a
-        // timeout that hid a delivered send cannot store a second message.
+        // One request per tap, never replayed: a send whose outcome is unknown
+        // fails visibly and keeps the draft, so a retry is the user's choice.
+        // That retry reuses its client_message_id (A22), so a timeout that
+        // hid a delivered send cannot store a second message.
         const result = await sendWithPendingId(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          queue: options.queue,
         });
-        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
-          old?.map((message) =>
-            message.id === optimistic.id
-              ? {
-                  ...message,
-                  id: result.message_id,
-                  task_id: result.task_id,
-                  created_at: result.created_at,
-                }
-              : message,
-          ),
-        );
-        seedAcceptedPendingTask(qc, {
+        // Replace the local bubble before reconciling pending state. When the
+        // server says this is a follow-up, its real message id lets the shared
+        // queue filter hide it immediately instead of waiting for the refetch.
+        reconcileAcceptedChatSend(qc, {
           chat_session_id: sessionId,
-          task_id: result.task_id,
-          created_at: result.created_at,
-          message_id: result.message_id,
-          content,
+          optimistic_message_id: optimistic.id,
           optimistic_task_id: optimisticTaskId,
-          supports_queue: result.supports_queue,
-          queued: result.queued,
+          content,
+          result,
         });
-        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         // This send just committed the new session's server-derived title.
         if (isNewSession) {
           void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
@@ -551,6 +549,7 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
+      options: { queue?: boolean } = {},
     ) => {
       if (activeSession?.status === "archived") {
         const archivedSession = activeSession;
@@ -574,7 +573,7 @@ export default function ChatTab() {
           const confirmUnarchiveAndSend = () => {
             unarchiveThenSendOnce(
               () => handleUnarchive(archivedSession),
-              () => executeSend(content, attachmentIds),
+              () => executeSend(content, attachmentIds, options),
             ).then(resolve, reject);
           };
 
@@ -609,7 +608,7 @@ export default function ChatTab() {
         });
       }
 
-      return executeSend(content, attachmentIds);
+      return executeSend(content, attachmentIds, options);
     },
     [activeSession, sessions, t, handleUnarchive, executeSend],
   );
@@ -753,6 +752,7 @@ export default function ChatTab() {
           quickActionsDisabled={sending || disabled}
           pendingTask={pendingTask}
           liveTaskMessages={liveTaskMessages}
+          queuedMessages={queuedMessages}
           availability={presenceAvailability}
         />
         {undoToast ? (
@@ -823,6 +823,7 @@ export default function ChatTab() {
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}
+          allowSendWhileSending={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}
           archived={isArchived}

@@ -16,6 +16,8 @@ export interface ChatPinnedAgent {
  *   Mika but never rendered as a member message.
  * - "onboarding_opening" — Mika's reply to the kickoff; chat renders the
  *   onboarding starter cards under it instead of quick-action chips.
+ * - "wakeup" — the input of a turn a chat wakeup started. Its content is
+ *   withheld; chat renders a divider naming the wakeup (`wakeup_id`).
  */
 export type ChatMessageKind =
   | "message"
@@ -27,7 +29,8 @@ export type ChatMessageKind =
   | "compact_notice"
   | "decision_request"
   | "decision_cancel_notice"
-  | "decision_reference";
+  | "decision_reference"
+  | "wakeup";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in
@@ -329,6 +332,8 @@ export interface ChatMessage {
   scheduled_wakeup?: ChatScheduledWakeup | null;
   /** Delivery receipt of a user message steered into a running task; absent otherwise. */
   supplement?: ChatSupplement;
+  /** Set on a wakeup turn's input (message_kind "wakeup"). */
+  wakeup_id?: string | null;
 }
 
 export interface ChatMessagesCursor {
@@ -363,6 +368,11 @@ export interface ChatSearchPage {
 }
 
 export interface SendChatMessageResponse {
+  /** Accepted into the running reply without creating another turn. */
+  steered?: boolean;
+  message_created_at?: string;
+  /** Input owner of the user message; may differ from the active retry. */
+  message_task_id?: string;
   message_id: string;
   task_id: string;
   /** True when the server supports queued follow-up sends. */
@@ -457,6 +467,8 @@ export interface ChatQueuedTask {
   created_at: string;
   message_id?: string;
   content?: string;
+  /** Set when a chat wakeup started this turn; `content` is then empty. */
+  wakeup_id?: string;
 }
 
 /**
@@ -513,6 +525,8 @@ export interface ChatPendingTask {
   wait_reason?: string;
   /** Explicit capability gate; absent on servers predating follow-up queues. */
   supports_queue?: boolean;
+  /** This caller can add text to the exact running turn; absent on older servers. */
+  can_supplement?: boolean;
   /**
    * Whether a queued follow-up can be steered into the head task. `starting`
    * means the run has not negotiated yet: wait, do not read it as unsupported.
@@ -526,15 +540,55 @@ export interface ChatPendingTask {
   queued_tasks?: ChatQueuedTask[];
 }
 
-/** `GET /api/chat/sessions/{id}/wakeups`: a pending one-shot turn an agent scheduled in this DM. */
+export type ChatWakeupKind = "condition" | "at" | "check";
+export type ChatWakeupStatus =
+  | "active"
+  | "fired"
+  | "expired"
+  | "cancelled"
+  | "failed";
+
+/**
+ * A promise an agent made in a chat to come back and report: when a condition
+ * holds ("condition"), at a time ("at"), or on periodic checks ("check"). Every
+ * wakeup ends; `expires_at` is its deadline, and the agent comes back once more
+ * when the deadline passes first.
+ */
 export interface ChatWakeup {
   id: string;
+  chat_session_id: string;
+  /** Only on the cross-conversation list. */
+  chat_session_title?: string;
   agent_id: string;
-  /** RFC 3339 instant the turn fires; for an issue watch, when it gives up. */
-  fire_at: string;
+  title: string;
   instruction: string;
-  status: string;
-  /** Set when this is an issue watch rather than a time wakeup. */
+  kind: ChatWakeupKind;
+  condition?: Record<string, unknown> | null;
+  interval_seconds: number | null;
+  fire_at: string | null;
+  next_eval_at: string;
+  expires_at: string;
+  status: ChatWakeupStatus;
+  end_reason: string | null;
+  ended_at: string | null;
+  check_count: number;
+  last_check_note: string | null;
+  last_checked_at: string | null;
+  last_task_id: string | null;
+  last_task_status?: string;
+  last_fired_at: string | null;
+  last_error: string | null;
+  source_message_id: string | null;
+  /** The turn that created it; its reply shows the wakeup card. */
+  source_task_id: string | null;
+  created_at: string;
+  updated_at: string;
+  /**
+   * Fork scheduled follow-up fields (the DM "Scheduled" chip): set when the
+   * wakeup is an issue watch rather than a time wakeup. Absent on rows served
+   * by upstream-shaped servers. `fire_at` is also nullable here, so fork
+   * consumers must guard null.
+   */
   issue_id?: string;
   event?: string;
   until_status?: string;

@@ -43,6 +43,7 @@ import type {
   ChatPendingTask,
   ChatQuickAction,
   ChatSession,
+  ChatWakeup,
   TaskMessagePayload,
 } from "@multica/core/types";
 import type { ChatTimelineItem } from "@multica/core/chat";
@@ -79,6 +80,7 @@ import { ChatSupplementStatus } from "./chat-supplement-status";
 import { useChatFirstItemIndex } from "./use-chat-first-item-index";
 import { predecessorChain } from "../lib/predecessor-chain";
 import { openAsksBefore, type OpenAsk } from "../lib/open-asks";
+import { ChatWakeupCards, ChatWakeupDivider, useWakeupsBySourceTask } from "./chat-wakeups";
 
 // ─── Public component ────────────────────────────────────────────────────
 
@@ -144,6 +146,8 @@ interface ChatMessageListProps {
   jumpToMessageId?: string | null;
   /** Fires once per target: "landed" after the scroll, "missing" if it cannot be found. */
   onJumpSettled?: (outcome: "landed" | "missing") => void;
+  /** The conversation's wakeups: dividers for wakeup turns, cards under the replies that made them. */
+  wakeups?: ChatWakeup[];
 }
 
 /** How long a jumped-to message keeps its highlight. */
@@ -485,6 +489,7 @@ export function ChatMessageList({
   quickActionsPendingMessageId = null,
   jumpToMessageId = null,
   onJumpSettled,
+  wakeups,
 }: ChatMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
@@ -639,6 +644,8 @@ export function ChatMessageList({
   const fadeStyle = useScrollFade(scrollRef, 16);
 
   const pendingTaskId = pendingTask?.task_id ?? null;
+  const wakeupsBySourceTask = useWakeupsBySourceTask(wakeups);
+  const wakeupById = useMemo(() => new Map((wakeups ?? []).map((w) => [w.id, w])), [wakeups]);
 
   // The session's newest assistant turn — the only one whose quick actions can
   // be refreshed (regeneration resumes the newest provider state). Computed off
@@ -1174,6 +1181,10 @@ export function ChatMessageList({
               latestAssistantMessageId={latestAssistantMessageId}
               quickActionsPendingMessageId={quickActionsPendingMessageId}
               starterCardsMessageId={starterCardsMessageId}
+              wakeup={item.kind === "message" && item.message.wakeup_id
+                ? wakeupById.get(item.message.wakeup_id)
+                : undefined}
+              createdWakeups={item.taskId ? wakeupsBySourceTask.get(item.taskId) : undefined}
             />
             {forkedFromSessionId && item.kind === "message" && item.message.id === forkLastMessageId && (
               <ForkDivider sourceId={forkedFromSessionId} source={forkSource} copiedCount={forkMessageCount} />
@@ -1264,6 +1275,8 @@ const MessageBubble = memo(function MessageBubble({
   latestAssistantMessageId,
   quickActionsPendingMessageId,
   starterCardsMessageId,
+  wakeup,
+  createdWakeups,
 }: {
   item: ChatRenderItem;
   isPending: boolean;
@@ -1276,10 +1289,15 @@ const MessageBubble = memo(function MessageBubble({
   latestAssistantMessageId: string | null;
   quickActionsPendingMessageId: string | null;
   starterCardsMessageId: string | null;
+  /** The wakeup behind a wakeup turn's input row. */
+  wakeup?: ChatWakeup;
+  /** Wakeups this row's turn created. */
+  createdWakeups?: ChatWakeup[];
 }) {
   // The live row and the persisted assistant row both land here under one key,
   // and both render <AssistantMessage> — same component type, same position —
-  // so React reconciles rather than remounts at task completion.
+  // so React reconciles rather than remounts at task completion. The wakeup
+  // cards follow it as a sibling in both forms for the same reason.
   if (item.kind === "live") {
     return (
       <WithWakeupRail agentId={wakeupAgentId}>
@@ -1290,6 +1308,7 @@ const MessageBubble = memo(function MessageBubble({
           onQuickAction={onQuickAction}
           quickActionsDisabled={quickActionsDisabled}
         />
+        {createdWakeups && <ChatWakeupCards wakeups={createdWakeups} />}
       </WithWakeupRail>
     );
   }
@@ -1323,6 +1342,11 @@ const MessageBubble = memo(function MessageBubble({
   // A fired wakeup is a system event, not something the member typed.
   if (message.scheduled_wakeup) {
     return <WakeupEventRow wakeup={message.scheduled_wakeup} />;
+  }
+
+  // A wakeup turn's input is the runtime's, not something the person wrote.
+  if (message.message_kind === "wakeup") {
+    return <ChatWakeupDivider message={message} wakeup={wakeup} />;
   }
 
   if (message.role === "user") {
@@ -1383,6 +1407,7 @@ const MessageBubble = memo(function MessageBubble({
         quickActionsPending={quickActionsPendingMessageId === message.id}
         showStarterCards={message.id === starterCardsMessageId}
       />
+      {createdWakeups && <ChatWakeupCards wakeups={createdWakeups} />}
     </WithWakeupRail>
   );
 });

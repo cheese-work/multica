@@ -395,7 +395,9 @@
       "toolbar_aria_few": "Actions for {{count}} selected chats",
       "toolbar_aria_many": "Actions for {{count}} selected chats",
       "toolbar_aria_other": "Actions for {{count}} selected chats"
-    }
+    },
+    "wakeup_preview": "Вернулся с отчётом",
+    "wakeup_active": "Ждёт, чтобы вернуться с отчётом"
   },
   "header": {
     "agent_settings": "Настройки агента",
@@ -760,6 +762,51 @@
     "hide_instruction": "Hide instruction",
     "instruction_region": "Instruction for the agent",
     "instruction_note": "Instruction for the agent, verbatim. The agent receives all of this.",
-    "issue_fallback": "issue"
+    "issue_fallback": "issue",
+    "panel_title": "Напоминания",
+    "panel_empty": "В этом чате нет напоминаний",
+    "panel_ended": "Недавно завершённые",
+    "limits_hint": "У каждого напоминания есть срок: ожидание длится 24 часа по умолчанию и не дольше 7 дней. Если срок наступит раньше, агент вернётся один раз и расскажет, как обстоят дела.",
+    "strip_waiting": "Ожидание: {{title}}",
+    "card": "Вернётся с отчётом: {{title}}",
+    "ends": "истекает {{relative}}",
+    "reminder_at": "напомнит {{relative}}",
+    "next_check": "следующая проверка {{relative}}",
+    "last_check": "Последняя проверка: {{note}}",
+    "cancel": "Отменить напоминание",
+    "cancel_failed": "Не удалось отменить напоминание",
+    "retry": "Повторить",
+    "retry_failed": "Не удалось повторить пробуждение",
+    "status": {
+      "active": "Ожидание",
+      "fired": "Отчёт отправлен",
+      "expired": "Срок истёк",
+      "cancelled": "Отменено",
+      "failed": "Не удалось запустить"
+    },
+    "report": {
+      "waiting": "Ожидает отчёта",
+      "running": "Отчитывается…",
+      "failed": "Не удалось отчитаться"
+    },
+    "failure": {
+      "permission_revoked": "Тот, кто просил, больше не может запускать этого агента",
+      "access_lost": "Отслеживаемое перенесено в закрытый проект",
+      "dispatch_failed": "Агент не смог запуститься"
+    },
+    "kind": {
+      "condition": "Когда это произойдёт",
+      "at": "Напоминание",
+      "check": "Регулярная проверка"
+    },
+    "divider": {
+      "condition": "Вернулся с отчётом · условие выполнено",
+      "at": "Вернулся с отчётом · напоминание",
+      "check": "Вернулся с отчётом · проверка",
+      "expired": "Вернулся с отчётом · срок истёк",
+      "generic": "Вернулся с отчётом"
+    },
+    "queue_label": "Напоминание: {{title}}",
+    "queue_fallback": "Напоминание"
   }
 }

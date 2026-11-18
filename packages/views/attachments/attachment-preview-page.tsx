@@ -31,6 +31,7 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
+import { getPreviewKind } from "../editor/utils/preview";
 import { useT } from "../i18n";
 import { useRestoredViewState, useViewStateWriter } from "../platform";
 import {
@@ -61,12 +62,20 @@ export function AttachmentPreviewPage({
   const query = useQuery({
     queryKey: ["attachment-preview-page", attachmentId] as const,
     queryFn: () => api.getAttachment(attachmentId),
+    // Permission-checked page (fork): always re-fetch on mount so a revoked
+    // read grant never serves cached media.
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const attachment = query.isFetchedAfterMount && !query.isError && query.data?.id ? query.data : null;
+  const attachment =
+    query.isFetchedAfterMount && !query.isError && query.data?.id === attachmentId
+      ? query.data
+      : null;
+  const isImage = attachment &&
+    getPreviewKind(attachment.content_type, attachment.filename) === "image";
+  const imagePending = isImage && query.fetchStatus !== "idle";
 
   // Set document.title so desktop's MutationObserver-based tab title picks
   // up the filename. Web shows the same string in the browser tab.
@@ -82,10 +91,11 @@ export function AttachmentPreviewPage({
     [writeViewState],
   );
 
-  if (attachment) {
+  if (attachment && !(isImage && (imagePending || query.isError))) {
     return (
       <AttachmentPreviewStandalone
         attachment={attachment}
+        currentImageMetadata={isImage ? attachment : undefined}
         renderHtmlFrame={renderPageHtmlFrame}
         initialHtmlAddress={normalizeHtmlPreviewAddress(
           restoredAddress ?? initialAddress ?? "",
@@ -97,7 +107,7 @@ export function AttachmentPreviewPage({
 
   return (
     <div className="dark flex h-full w-full items-center justify-center gap-2 bg-black/95 px-4 text-body text-muted-foreground">
-      {query.isLoading || (!query.isFetchedAfterMount && query.isFetching) ? (
+      {query.isPending || imagePending || (!query.isFetchedAfterMount && query.isFetching) ? (
         <>
           <Loader2 className="size-4 animate-spin" />
           {t(($) => $.attachment.preview_loading)}

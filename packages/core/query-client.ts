@@ -44,7 +44,7 @@ function deferInvalidationWhenHidden(qc: QueryClient): QueryClient {
 }
 
 export function createQueryClient(): QueryClient {
-  return deferInvalidationWhenHidden(new QueryClient({
+  const client = deferInvalidationWhenHidden(new QueryClient({
     defaultOptions: {
       queries: {
         staleTime: Infinity,
@@ -58,6 +58,14 @@ export function createQueryClient(): QueryClient {
       },
     },
   }));
+  // Keep the policy on the app client so custom clients and explicit query
+  // overrides retain their retry settings. Status checks also work across
+  // mocked API modules and different client error classes.
+  client.setQueryDefaults(["inbox"], {
+    retry: (failureCount, error) =>
+      (error as { status?: number } | null)?.status !== 503 && failureCount < 1,
+  });
+  return client;
 }
 
 /**

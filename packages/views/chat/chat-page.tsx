@@ -30,6 +30,7 @@ import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
+import { ChatWakeupStrip, useChatWakeups } from "./components/chat-wakeups";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
@@ -104,6 +105,7 @@ export function ChatPage() {
   useQuickActionsPendingTimeout(c.activeSessionId ?? null, quickActionsPending);
   // Toast when an accepted refresh later fails in the daemon (async half).
   useQuickActionsFailureToast(c.activeSessionId ?? null);
+  const wakeups = useChatWakeups(c.activeSessionId);
   const regenerateQuickActions = useRegenerateChatQuickActions();
   const urlSession = searchParams.get("session") || null;
   const urlAgent = searchParams.get("agent") || null;
@@ -535,6 +537,7 @@ export function ChatPage() {
               : undefined
           }
           quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+          wakeups={wakeups}
         />
       ) : (
         <EmptyState
@@ -563,8 +566,11 @@ export function ChatPage() {
         <ChatAppRequests sessionId={c.activeSessionId} />
       </div>
 
+      <ChatWakeupStrip sessionId={c.activeSessionId} wakeups={wakeups} />
+
       <ChatQueue
         tasks={queuedTasks}
+        wakeups={wakeups}
         headStatus={c.pendingTask?.status}
         headSupplement={c.pendingTask?.head_supplement}
         onSteer={c.handleSteerQueuedTask}
@@ -587,6 +593,7 @@ export function ChatPage() {
         onStop={c.handleStop}
         isRunning={!!c.pendingTaskId}
         allowSubmitWhileRunning={c.pendingTask?.supports_queue === true}
+        canSteerWhileRunning={c.pendingTask?.can_supplement}
         disabled={
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
