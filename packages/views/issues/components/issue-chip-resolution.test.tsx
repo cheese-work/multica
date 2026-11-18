@@ -192,6 +192,43 @@ describe("IssueChip resolution", () => {
     expect(screen.queryByTestId("status-icon")).not.toBeInTheDocument();
   });
 
+  describe("retention across list updates (CHE-1830 H3)", () => {
+    const listKey = issueKeys.listSorted(issue.workspace_id);
+    const withIssue: ListIssuesCache = { byStatus: { unstarted: { issues: [issue], total: 1 } } };
+    const withoutIssue: ListIssuesCache = { byStatus: { unstarted: { issues: [], total: 0 } } };
+    /** Lets the query cache's batched notification reach React. */
+    const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    beforeEach(() => {
+      queryClient.setQueryData<ListIssuesCache>(listKey, withIssue);
+      // The detail lookup that replaces the list entry never answers in these tests.
+      vi.mocked(api.getIssue).mockReset().mockReturnValue(new Promise(() => {}));
+    });
+
+    it("keeps the title when a list update drops the issue from the first page", async () => {
+      render(chip());
+      expect(screen.getByText(issue.title)).toBeInTheDocument();
+
+      queryClient.setQueryData<ListIssuesCache>(listKey, withoutIssue);
+      await settle();
+
+      expect(screen.getByText(issue.title)).toBeInTheDocument();
+      expect(screen.getByTestId("status-icon")).toBeInTheDocument();
+    });
+
+    it("keeps the title through a reconnect refetch of the list", async () => {
+      render(chip());
+      expect(screen.getByText(issue.title)).toBeInTheDocument();
+
+      // Reconnect: the list is invalidated and its refetch lands without the issue.
+      void queryClient.invalidateQueries({ queryKey: listKey });
+      queryClient.setQueryData<ListIssuesCache>(listKey, withoutIssue);
+      await settle();
+
+      expect(screen.getByText(issue.title)).toBeInTheDocument();
+    });
+  });
+
   describe("bare identifier lookup", () => {
     // The shape rich-content renders for an autolinked key: resolve the
     // identifier, then hand the resolved UUID to the chip.
