@@ -147,6 +147,8 @@ A comment from an agent task that mentions a member (`[@Name](mention://member/<
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+A comment from an agent on an issue in `in_review`, `blocked` or `need_decision` must name who acts next: `--ask <member-id>` if a person acts next, or `--no-ask` if no one does. A member mention, `--notify-only` or a decision request also counts. The two flags cannot combine with each other, with `--notify-only` or with the decision flags. The same move needs `--waiting-on member:<member-id>` or `--waiting-on none` on `multica issue status`, accepted only with `in_review`, `blocked` or `need_decision`. The workspace settings `waiting_audience_guard` and `waiting_on_guard` decide whether a missing audience is allowed, counted or refused.
+
 ## Forking a web DM
 
 From the source DM's running chat task, copy the DM into a new child DM:
@@ -676,7 +678,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | | `create` | Create an issue | `--title` (required), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (repeatable), `--property` (repeatable), `--allow-duplicate` (create even when an open issue with the same title exists) |
 | | `update <id>` | Update issue fields | Same fields as `create`, plus `--position`, `--no-start`, `--duplicate-of` |
 | | `assign <id>` | Assign or unassign | `--to` (fuzzy name match against members, agents, and squads), `--to-id`, `--unassign`, `--no-start` |
-| | `status <id> <status>` | Change status | `--no-start`, `--duplicate-of`, `--blocked-on` |
+| | `status <id> <status>` | Change status | `--no-start`, `--duplicate-of`, `--blocked-on`, `--waiting-on` |
 | | `reorder <id>` | Move within a column | |
 | | `search <query>` | Search issues | `--limit`, `--include-closed` |
 | | `children <id>` | List sub-issues grouped by stage | |
