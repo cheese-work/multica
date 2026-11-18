@@ -1469,7 +1469,8 @@ describe("SearchCommand", () => {
       await user.type(input(), prompt);
 
       await waitFor(() => expect(selectedValue()).toBe("hand-to-agent"), { timeout: 2000 });
-      expect(screen.getByText("No results found.")).toBeInTheDocument();
+      // Fork wins (CHE-7026): the empty state names the query.
+      expect(screen.getByText(`No results for “${prompt}”`)).toBeInTheDocument();
       fireEvent.keyDown(input(), { key: "Enter" });
 
       expect(mockOpenModal).toHaveBeenCalledWith("quick-create-issue", { prompt });

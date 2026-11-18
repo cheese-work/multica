@@ -10,6 +10,7 @@ vi.mock("./dashboard-guard", () => ({
 vi.mock("../modals/registry", () => ({ ModalRegistry: () => null }));
 vi.mock("../onboarding/source-backfill-modal", () => ({ SourceBackfillModal: () => null }));
 vi.mock("./app-rail", () => ({ AppRail: () => null }));
+vi.mock("./bottom-bar", () => ({ AppBottomBar: () => null }));
 vi.mock("./compact-nav-sheet", () => ({ CompactNavSheet: () => null }));
 vi.mock("./navigation-progress", () => ({ NavigationProgress: () => null }));
 vi.mock("./route-data-prefetch", () => ({

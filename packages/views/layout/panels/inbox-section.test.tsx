@@ -197,7 +197,8 @@ describe("InboxSection", () => {
     expect(screen.getByRole("link", { name: /^Autopilot paused/ })).toHaveAttribute("href", "/acme/inbox?issue=n3");
   });
 
-  it("opens the issue at its oldest unread comment, or its newest once read", () => {
+  // Fork wins (CHE-7026): a row that carries its own comment opens at it (withCommentAnchor, CHE-6382/6399).
+  it("opens the issue at the comment its newest notification carries", () => {
     renderSection([
       item({ id: "n1", issue_id: "issue-a", title: "Unread thread", details: { comment_id: "c-2" }, created_at: "2026-11-10T09:00:00Z" }),
       item({ id: "n2", issue_id: "issue-a", title: "Unread thread", details: { comment_id: "c-1" }, created_at: "2026-11-10T08:00:00Z" }),
@@ -205,7 +206,7 @@ describe("InboxSection", () => {
       item({ id: "n4", issue_id: "issue-b", title: "Read thread", read: true, details: { comment_id: "c-3" }, created_at: "2026-11-09T08:00:00Z" }),
     ]);
 
-    expect(screen.getByRole("link", { name: /^Unread thread/ })).toHaveAttribute("href", "/acme/issues/issue-a#comment-c-1");
+    expect(screen.getByRole("link", { name: /^Unread thread/ })).toHaveAttribute("href", "/acme/issues/issue-a#comment-c-2");
     expect(screen.getByRole("link", { name: /^Read thread/ })).toHaveAttribute("href", "/acme/issues/issue-b#comment-c-4");
   });
 
