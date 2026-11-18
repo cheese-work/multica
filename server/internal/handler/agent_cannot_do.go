@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/designguard"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -84,6 +85,25 @@ func validateCardLintSetting(value any) error {
 		return err
 	}
 	_, err = decisiontx.CardLintModeFromSettings(raw)
+	return err
+}
+
+// validateDesignGuardSetting checks design_card_guard of a workspace settings
+// object with the reader the design guard uses. An absent key is valid; null is not.
+func validateDesignGuardSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	setting, present := config[designguard.SettingKey]
+	if !present {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{designguard.SettingKey: setting})
+	if err != nil {
+		return err
+	}
+	_, err = designguard.ParseSettings(raw)
 	return err
 }
 
