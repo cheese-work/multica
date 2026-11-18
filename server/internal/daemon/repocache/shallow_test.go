@@ -87,7 +87,7 @@ func TestShallowFetchCannotShallowGuardedCache(t *testing.T) {
 
 // An isolated checkout seeds from the cache while an external Git process,
 // which takes no repo lock, may fetch shallow into it. The guard must stay in
-// place for the whole seeding, and objects must still be hardlinked (local) or
+// place for the whole seeding, and objects must still be hard-linked (local) or
 // borrowed (shared): `git clone` would drop both for a source holding a
 // `shallow` entry (CHE-7318).
 func TestIsolatedSeedingKeepsShallowGuardInPlace(t *testing.T) {
