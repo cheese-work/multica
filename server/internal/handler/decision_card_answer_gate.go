@@ -51,7 +51,7 @@ func (handler *Handler) verifyGatedAnswer(ctx context.Context, queries *db.Queri
 		return errAssertionRequired
 	case handler.Passkeys == nil:
 		return errApprovalUnavailable
-	case input.AnswerRevision != decision.AnswerRevision || input.PolicyRevision != workspace.PolicyRevision:
+	case input.AnswerRevision == nil || *input.AnswerRevision != decision.AnswerRevision || input.PolicyRevision != workspace.PolicyRevision:
 		return errStaleAnswer
 	case sessionID == "":
 		return errSessionUnbound
