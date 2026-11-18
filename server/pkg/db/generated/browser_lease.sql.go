@@ -952,6 +952,22 @@ func (q *Queries) LockBrowserLeaseQueue(ctx context.Context, dollar_1 string) er
 	return err
 }
 
+const nextDecisionBrowserLeaseDeadline = `-- name: NextDecisionBrowserLeaseDeadline :one
+SELECT COALESCE(GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0), -1)::float8 AS wait_seconds
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active') AND request.expires_at IS NOT NULL
+`
+
+// Seconds until the earliest expires_at among decisions that still have a queued or active
+// lease (CHE-4742). -1 when none; 0 when one is already due.
+func (q *Queries) NextDecisionBrowserLeaseDeadline(ctx context.Context) (float64, error) {
+	row := q.db.QueryRow(ctx, nextDecisionBrowserLeaseDeadline)
+	var wait_seconds float64
+	err := row.Scan(&wait_seconds)
+	return wait_seconds, err
+}
+
 const registerBrowserInstance = `-- name: RegisterBrowserInstance :one
 
 INSERT INTO browser_instance (workspace_id, name, host, gateway, allowed_classes)

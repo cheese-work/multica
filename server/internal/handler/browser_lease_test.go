@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,8 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type allowHooks struct{}
@@ -296,9 +299,10 @@ func TestEndedDecisionRevokesItsBrowserLeases(t *testing.T) {
 	}
 }
 
-// An approved (answered) decision that reaches its expires_at revokes its leases through the
-// decision worker's own pass; another decision's lease stays live (CHE-4742 review P1).
-func TestAnsweredDecisionPastExpiryRevokesItsBrowserLeases(t *testing.T) {
+// An approved (answered) decision revokes its leases at its expires_at, at once: the deadline
+// loop runs alone (no decision worker pass), the lease stays live until the deadline, and the
+// revoke event is published. Another decision's lease stays live (CHE-4742 review P1).
+func TestAnsweredDecisionRevokesItsBrowserLeasesAtExpiry(t *testing.T) {
 	fixture := newAskedRecordFixture(t)
 	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
 	if err != nil {
@@ -315,24 +319,34 @@ func TestAnsweredDecisionPastExpiryRevokesItsBrowserLeases(t *testing.T) {
 	bound := seedDecisionBoundBrowserLease(t, task, decision)
 	elsewhere := seedDecisionBoundBrowserLease(t, task, uuid.NewString())
 
-	dbfx.Exec(t, `DELETE FROM decision_worker_lease`)
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_worker_lease`) })
-	// One worker for both passes: its consequences lease is held for 30 s after the first.
-	worker := NewDecisionWorker(testHandler)
-	pass := func() {
-		t.Helper()
-		if ran, err := worker.ProcessPass(context.Background()); err != nil || !ran {
-			t.Fatalf("decision worker pass ran=%v err=%v", ran, err)
+	revoked := make(chan string, 4)
+	testHandler.Bus.Subscribe(protocol.EventBrowserLeaseRevoked, func(e events.Event) {
+		if p, ok := e.Payload.(map[string]any); ok && p["lease_id"] == bound {
+			revoked <- fmt.Sprint(p["reason"])
 		}
+	})
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '2 seconds' WHERE id = $1`, decision)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); NewDecisionWorker(testHandler).RunLeaseExpiry(ctx) }()
+	t.Cleanup(func() { stop(); <-done })
+
+	select {
+	case reason := <-revoked:
+		t.Fatalf("lease revoked before its decision expired (reason %s)", reason)
+	case <-time.After(1 * time.Second):
 	}
-	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, decision)
-	pass()
 	if state, _ := browserLeaseState(t, bound); state != "active" {
 		t.Fatalf("lease revoked before its decision expired: state = %q", state)
 	}
-
-	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, decision)
-	pass()
+	select {
+	case reason := <-revoked:
+		if reason != browserlease.ReasonDecisionExpired {
+			t.Fatalf("revoke reason = %q, want %s", reason, browserlease.ReasonDecisionExpired)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no revoke event within 2 s after the decision deadline")
+	}
 	if state, reason := browserLeaseState(t, bound); state != "ended" || reason != browserlease.ReasonDecisionExpired {
 		t.Fatalf("bound lease state=%q reason=%q, want ended %s", state, reason, browserlease.ReasonDecisionExpired)
 	}

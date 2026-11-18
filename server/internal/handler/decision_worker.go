@@ -32,13 +32,15 @@ type DecisionWorker struct {
 	notify  chan struct{}
 	done    chan struct{}
 	pass    sync.Mutex
+	// leaseWake tells RunLeaseExpiry that a lease with a possibly earlier deadline exists.
+	leaseWake chan struct{}
 }
 
 func NewDecisionWorker(handler *Handler) *DecisionWorker {
 	token := dbid.NewV7()
 	return &DecisionWorker{
 		handler: handler, holder: uuidToString(token), token: token,
-		notify: make(chan struct{}, 1), done: make(chan struct{}),
+		notify: make(chan struct{}, 1), done: make(chan struct{}), leaseWake: make(chan struct{}, 1),
 	}
 }
 
@@ -57,6 +59,7 @@ func (worker *DecisionWorker) Run(ctx context.Context) {
 		return
 	}
 	defer close(worker.done)
+	go worker.RunLeaseExpiry(ctx)
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -90,6 +93,52 @@ func (worker *DecisionWorker) WaitWithTimeout(timeout time.Duration) bool {
 		return true
 	case <-timer.C:
 		return false
+	}
+}
+
+// WakeLeaseExpiry makes RunLeaseExpiry re-read the next deadline after a lease is minted.
+func (worker *DecisionWorker) WakeLeaseExpiry() {
+	if worker == nil {
+		return
+	}
+	select {
+	case worker.leaseWake <- struct{}{}:
+	default:
+	}
+}
+
+// leaseExpiryRecheck bounds each sleep, so a decision whose expires_at moved is noticed.
+const leaseExpiryRecheck = 5 * time.Second
+
+// RunLeaseExpiry revokes the leases of a decision at its expires_at, even an answered one
+// (CHE-4742). It sleeps until the earliest live deadline instead of waiting for a worker
+// tick; revoking is idempotent, so any server instance may run it.
+func (worker *DecisionWorker) RunLeaseExpiry(ctx context.Context) {
+	if worker == nil {
+		return
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-worker.leaseWake:
+		case <-timer.C:
+		}
+		wait := leaseExpiryRecheck
+		if err := worker.handler.revokeLeasesOfExpiredDecisions(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("decision lease expiry failed", "error", err)
+		} else if seconds, err := worker.handler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err == nil && seconds >= 0 {
+			wait = min(wait, time.Duration(seconds*float64(time.Second))+10*time.Millisecond)
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(wait)
 	}
 }
 
@@ -290,7 +339,6 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
 		}))
 	}
-	failures = errors.Join(failures, handler.revokeLeasesOfExpiredDecisions(ctx))
 	failures = errors.Join(failures, handler.deliverAgentDecisionNotices(ctx), handler.reconcileAskGuard(ctx), handler.deliverAskRecoveries(ctx), handler.repairAsks(ctx))
 	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
