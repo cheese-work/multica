@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -1043,41 +1044,63 @@ type searchResult struct {
 // comment to its side table. content is the folded text; content_accents is the
 // lowered unfolded text where folding changed it, for the exact-diacritic rank.
 //
-// A comment that matches none of the patterns sets no flag in the aggregate
-// below, so the trigram predicate (CHE-3164) drops it here, where the GIN index
-// on content_folded can serve it, instead of after reading every comment of the
-// workspace. The patterns are the same ones the flags use.
-func searchCommentSource(wsParam string, likeParams []string) string {
+// Only comments of driving issues are read (CHE-7336): the other terms may sit in
+// other comments of the same issue, so a comment is kept when it matches any
+// pattern, but only inside an issue that holds the driving term. A comment that
+// matches none of the patterns sets no flag in the aggregate below, so the
+// trigram predicate (CHE-3164) drops it here, where the GIN index on
+// content_folded can serve it. Without a driving term no comment is read.
+func searchCommentSource(wsParam string, likeParams []string, hasDriving bool) string {
+	where := "FALSE"
+	if hasDriving {
+		where = fmt.Sprintf("issue_id IN (SELECT issue_id FROM driving_issues) AND (%s)",
+			foldedLikeAny("content_folded", likeParams))
+	}
 	return fmt.Sprintf(`comment AS (
 			SELECT comment_id AS id, issue_id, workspace_id, created_at,
 				content_folded AS content, content_accents
 			FROM comment_search_text
-			WHERE workspace_id = %s AND (%s)
-		)`, wsParam, foldedLikeAny("content_folded", likeParams))
+			WHERE workspace_id = %s AND %s
+		)`, wsParam, where)
+}
+
+// searchDrivingIssuesCTE lists the issues that hold the driving pattern in the
+// title, the description or a comment, or whose number was searched. Every
+// eligible issue holds every term of a multi-term query, or the whole phrase,
+// which contains every term, so every eligible issue is in this list. One arm
+// per folded column lets the planner pick that column's trigram GIN index.
+func searchDrivingIssuesCTE(wsParam, drivingParam, numParam string) string {
+	arms := []string{
+		fmt.Sprintf("SELECT issue_id FROM issue_search_text WHERE workspace_id = %s AND title_folded LIKE %s", wsParam, drivingParam),
+		fmt.Sprintf("SELECT issue_id FROM issue_search_text WHERE workspace_id = %s AND description_folded LIKE %s", wsParam, drivingParam),
+		fmt.Sprintf("SELECT issue_id FROM comment_search_text WHERE workspace_id = %s AND content_folded LIKE %s", wsParam, drivingParam),
+	}
+	if numParam != "" {
+		arms = append(arms, fmt.Sprintf("SELECT id FROM issue WHERE workspace_id = %s AND number = %s", wsParam, numParam))
+	}
+	return "driving_issues AS MATERIALIZED (\n\t\t" + strings.Join(arms, "\n\t\tUNION\n\t\t") + "\n\t)"
 }
 
 // searchIssueSource exposes the stored folded text as title and description,
 // next to the raw text that the exact-diacritic ranking compares against.
 //
-// Only issues that can be eligible are read (CHE-3164): a title or description
-// that matches a pattern (one arm per folded column, so each OR stays cheap
-// enough for the planner to pick that column's GIN index), an issue that has a
-// matching comment (comment_matches), or the issue whose number was searched.
-// Every eligibility rule below needs at least one of these, so the flags that
-// follow are computed on those rows instead of every issue of the workspace.
-func searchIssueSource(wsParam string, likeParams []string, numParam string) string {
-	candidates := fmt.Sprintf(`SELECT issue_id FROM issue_search_text
-			WHERE workspace_id = %[1]s AND (%[2]s)
-			UNION
-			SELECT issue_id FROM issue_search_text
-			WHERE workspace_id = %[1]s AND (%[3]s)
-			UNION
-			SELECT issue_id FROM comment_matches`,
-		wsParam, foldedLikeAny("title_folded", likeParams), foldedLikeAny("description_folded", likeParams))
-	if numParam != "" {
-		candidates += fmt.Sprintf(`
+// Only issues that can be eligible are read (CHE-3164, CHE-7336). With a driving
+// term these are the driving issues. Without one (every term has fewer than 3
+// characters, so no pattern can use a trigram index and each matches most rows)
+// they are the issues whose title matches a pattern, plus the issue whose number
+// was searched. Every eligibility rule below needs at least one of these, so the
+// flags that follow are computed on those rows instead of every issue of the
+// workspace.
+func searchIssueSource(wsParam string, likeParams []string, hasDriving bool, numParam string) string {
+	candidates := "SELECT issue_id FROM driving_issues"
+	if !hasDriving {
+		candidates = fmt.Sprintf(`SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %s AND (%s)`, wsParam, foldedLikeAny("title_folded", likeParams))
+		if numParam != "" {
+			candidates += fmt.Sprintf(`
 			UNION
 			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
+		}
 	}
 	return fmt.Sprintf(`(
 		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
@@ -1151,6 +1174,43 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	numParam := ""
 	if hasNum {
 		numParam = nextArg(queryNum)
+	}
+
+	// A pattern of fewer than 3 characters cannot use the trigram indexes and
+	// matches almost every row (CHE-7336), so candidates are chosen by the longest
+	// term of 3 or more characters. A single term is the phrase, which was the only
+	// pattern before, so a short one keeps its candidates when it is a number
+	// (issue 12 and text that mentions 12).
+	const shortTermLen = 2
+	drivingParam, longest := "", shortTermLen
+	if len(terms) == 1 {
+		if hasNum || utf8.RuneCountInString(terms[0]) > longest {
+			drivingParam = phraseContainsParam
+		}
+	} else {
+		for index, term := range terms {
+			if n := utf8.RuneCountInString(term); n > longest {
+				drivingParam, longest = termContainsParams[index], n
+			}
+		}
+	}
+
+	// A short term of a multi-term query matches nearly every comment, so reading
+	// each of them to set its flag costs a sort and an aggregate over the whole
+	// workspace. Comments are read for the patterns that can be served by a trigram
+	// index only; a short term asks the question "does any comment hold it" once, as
+	// a hashed lookup, in the eligibility rule below.
+	commentReadParams := []string{phraseContainsParam}
+	shortTerm := make([]bool, len(termContainsParams))
+	for index, term := range terms {
+		if len(termContainsParams) == 0 {
+			break
+		}
+		if utf8.RuneCountInString(term) <= shortTermLen {
+			shortTerm[index] = true
+			continue
+		}
+		commentReadParams = append(commentReadParams, termContainsParams[index])
 	}
 
 	terminalStatusesParam := ""
@@ -1256,7 +1316,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) lowered_issue_description ON TRUE
 		WHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		searchIssueSource(wsParam, textLikeParams, numParam), titleMatchExpr, issueWhere)
+		searchIssueSource(wsParam, textLikeParams, drivingParam != "", numParam), titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1274,12 +1334,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	commentCandidateFlags := []string{"aggregated_comments.comment_phrase"}
 	commentTerms := make([]string, 0, len(termContainsParams))
 	for index, termParam := range termContainsParams {
+		commentTerms = append(commentTerms, fmt.Sprintf("%s LIKE %s", loweredCommentContent, termParam))
+		if shortTerm[index] {
+			continue
+		}
 		alias := fmt.Sprintf("comment_term_%d", index)
 		commentFlagColumns = append(commentFlagColumns,
 			fmt.Sprintf("BOOL_OR(%s LIKE %s) AS %s", loweredCommentContent, termParam, alias),
 		)
 		commentCandidateFlags = append(commentCandidateFlags, "aggregated_comments."+alias)
-		commentTerms = append(commentTerms, fmt.Sprintf("%s LIKE %s", loweredCommentContent, termParam))
 	}
 
 	commentSnippetPredicate := fmt.Sprintf("%s LIKE %s", loweredCommentContent, phraseContainsParam)
@@ -1326,7 +1389,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
-		searchCommentSource(wsParam, textLikeParams),
+		searchCommentSource(wsParam, commentReadParams, drivingParam != ""),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
@@ -1349,10 +1412,14 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	if len(termContainsParams) > 1 {
 		var allTerms []string
 		for index := range termContainsParams {
+			commentHasTerm := fmt.Sprintf("COALESCE(cm.comment_term_%d, FALSE)", index)
+			if shortTerm[index] {
+				commentHasTerm = fmt.Sprintf(
+					"im.issue_id IN (SELECT issue_id FROM comment_search_text WHERE workspace_id = %s AND content_folded LIKE %s)",
+					wsParam, termContainsParams[index])
+			}
 			allTerms = append(allTerms, fmt.Sprintf(
-				"(im.title_term_%[1]d OR im.description_term_%[1]d OR COALESCE(cm.comment_term_%[1]d, FALSE))",
-				index,
-			))
+				"(im.title_term_%[1]d OR im.description_term_%[1]d OR %[2]s)", index, commentHasTerm))
 		}
 		eligibleParts = append(eligibleParts, "("+strings.Join(allTerms, " AND ")+")")
 	}
@@ -1452,7 +1519,14 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		LIMIT %s OFFSET %s
 	)`, limitParam, offsetParam)
 
-	query := fmt.Sprintf(`WITH %s,
+	// The driving issues feed both comment_matches and issue_matches, so they
+	// come first. Without a driving term nothing refers to them.
+	drivingCTE := ""
+	if drivingParam != "" {
+		drivingCTE = searchDrivingIssuesCTE(wsParam, drivingParam, numParam) + ",\n\t"
+	}
+
+	query := fmt.Sprintf(`WITH %s%s,
 	%s,
 	%s,
 	%s
@@ -1467,6 +1541,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
 	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
+		drivingCTE,
 		commentMatchesCTE,
 		issueMatchesCTE,
 		rankedCandidatesCTE,
