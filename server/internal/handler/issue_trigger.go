@@ -113,6 +113,15 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		h.skipHandoffIntent(ctx, intentID, "stop_not_confirmed")
 		return false
 	}
+	if trigger.BlockedEntry {
+		skip, after := h.blockedEntryOnDispatch(ctx, issue, trigger.AgentID, intentID)
+		if skip {
+			return false
+		}
+		if after != nil {
+			defer func() { after(started) }()
+		}
+	}
 	if entersAutoCloseStep(issue.Status) {
 		closed, after := h.autoCloseOnEntry(ctx, issue, intentID)
 		if closed {
