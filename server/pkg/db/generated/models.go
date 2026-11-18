@@ -1543,6 +1543,7 @@ type DmProgressFollow struct {
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	Reasons            []string           `json:"reasons"`
 	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
+	EventWatermark     pgtype.Timestamptz `json:"event_watermark"`
 }
 
 type DmProgressLane struct {

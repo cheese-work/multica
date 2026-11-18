@@ -35,17 +35,33 @@ INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id)
 VALUES ($1, $2, $3)
 ON CONFLICT (lineage_id) DO NOTHING;
 
--- name: LockDMProgressLane :one
-SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
+-- name: GetDMProgressLane :one
+-- Plain read: the follow path never locks the lane row (lock order issue ->
+-- follow -> lane; only the dispatcher locks it).
+SELECT * FROM dm_progress_lane WHERE lineage_id = $1;
+
+-- name: LockIssueForFollow :one
+-- Follow writes take the issue row first. FOR UPDATE waits for a status change
+-- that is in flight and holds later ones back until the follow commits, so the
+-- snapshot read here and the capture triggers split the events with no gap and
+-- no duplicate. It also conflicts with LockIssueAsParent, so a follow and a
+-- child create on the same parent never interleave.
+SELECT status FROM issue WHERE id = $1 AND workspace_id = $2 FOR UPDATE;
+
+-- name: LockIssueAsParent :exec
+-- A child create takes its parent FOR KEY SHARE before it lists the parent's
+-- follows: it does not block status or other updates of the parent, only a
+-- follow write (LockIssueForFollow) on it.
+SELECT id FROM issue WHERE id = $1 FOR KEY SHARE;
 
 -- name: InsertDMProgressFollow :one
 -- Adds reasons to the follow of (issue, lineage). An active follow gains the
 -- reasons and keeps its mute. An unfollowed row is a negative override: only an
 -- explicit follow (origin or manual) reactivates it, with exactly the new
--- reasons, mute and baseline status; an inherited one returns no row. The
+-- reasons, mute, baseline status and event watermark; an inherited one returns no row. The
 -- reporting root is set at creation and never changes (a trigger enforces it).
-INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status, reporting_root_id)
-VALUES ($1, $2, $3, $4, sqlc.arg('reasons')::text[], sqlc.narg('muted_at'), $5, sqlc.arg('reporting_root_id'))
+INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status, reporting_root_id, event_watermark)
+VALUES ($1, $2, $3, $4, sqlc.arg('reasons')::text[], sqlc.narg('muted_at'), $5, sqlc.arg('reporting_root_id'), clock_timestamp())
 ON CONFLICT (issue_id, lineage_id) DO UPDATE
 SET reasons = CASE
         WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.reasons
@@ -53,6 +69,7 @@ SET reasons = CASE
     END,
     muted_at = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.muted_at ELSE dm_progress_follow.muted_at END,
     last_rendered_status = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.last_rendered_status ELSE dm_progress_follow.last_rendered_status END,
+    event_watermark = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.event_watermark ELSE dm_progress_follow.event_watermark END,
     state = 'active'
 WHERE dm_progress_follow.state = 'active' OR sqlc.arg('explicit')::boolean
 RETURNING *;
@@ -92,7 +109,7 @@ ORDER BY issue_id
 LIMIT $3;
 
 -- name: ListActiveDMProgressFollowsForIssue :many
--- Lineage order, so a caller locking each lane in turn always locks in one order.
+-- Lineage order, so callers walk a parent's follows in one order.
 SELECT * FROM dm_progress_follow
 WHERE issue_id = $1 AND state = 'active'
 ORDER BY lineage_id;
@@ -195,7 +212,7 @@ WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
 ORDER BY random() LIMIT 200;
 
 -- name: LockDMProgressLaneSkipLocked :one
--- Dispatcher entry: a lane another dispatcher (or a follow write) holds is
+-- Dispatcher entry: a lane another dispatcher holds is
 -- skipped, not waited for (CHE-3369 I1.3).
 SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED;
 
@@ -243,6 +260,15 @@ LEFT JOIN dm_progress_follow f ON f.issue_id = g.issue_id AND f.lineage_id = $1 
 LEFT JOIN issue i ON i.id = g.issue_id
 LEFT JOIN member m ON m.user_id = l.owner_user_id AND m.workspace_id = i.workspace_id
 ORDER BY g.first_at, g.issue_id;
+
+-- name: DeleteDMProgressPendingBeforeWatermark :exec
+-- Rows at or before an active follow's watermark are in its snapshot already
+-- (a re-follow after unfollow leaves them behind). Dispatcher only: it holds
+-- the lane, then reads follows.
+DELETE FROM dm_progress_pending p
+USING dm_progress_follow f
+WHERE p.lineage_id = $1 AND f.issue_id = p.issue_id AND f.lineage_id = p.lineage_id
+  AND f.state = 'active' AND p.created_at <= f.event_watermark;
 
 -- name: DeleteDMProgressPendingEvents :exec
 DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY(sqlc.arg('event_ids')::uuid[]);

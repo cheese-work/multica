@@ -94,34 +94,59 @@ func dmLane(ctx context.Context, q *db.Queries, sessionID, creator, workspaceID 
 	return DMLane{Lineage: root, Owner: creator}, true
 }
 
+// Lock order of the follow path (CHE-3473 M11): issue, then follow, then lane.
+//
+//   - issue: a follow write takes its issue FOR UPDATE (LockIssueForFollow); a
+//     child create takes the parent FOR KEY SHARE (LockIssueAsParent) before it
+//     lists the parent's follows. The two conflict, so a follow and a child
+//     create on one parent never interleave: the child either sees the follow
+//     or commits before the follow is taken. A status write also conflicts with
+//     the follow lock, which is what puts the follow's snapshot and the capture
+//     triggers on opposite sides of one cut (the follow's event watermark).
+//   - follow: row writes after the issue lock.
+//   - lane: the follow path never locks the lane row, only reads it or inserts
+//     it when missing. The dispatcher alone locks it (FOR UPDATE SKIP LOCKED),
+//     then reads and stamps follows, so a follow write never waits behind a
+//     dispatch and the two cannot deadlock.
+
 // AddProgressFollow adds reasons to the follow of issue in lane. root is the
 // reporting root a new follow gets (the issue itself for an origin or manual
 // follow); an existing follow keeps the root it was created with. It takes the
-// lane row lock, so it serializes with every other write to the lane. The bool
-// is false when the owner cannot read the issue, or when the reasons are all
-// inherited and the issue was explicitly unfollowed (a negative override).
+// issue lock (see the lock order above) and reads the issue's status under it as
+// the follow's snapshot; the follow's event watermark is taken in the same
+// statement. The bool is false when the owner cannot read the issue, when the
+// issue is gone, or when the reasons are all inherited and the issue was
+// explicitly unfollowed (a negative override).
 func AddProgressFollow(ctx context.Context, q *db.Queries, lane DMLane, issue db.Issue, reasons []string, root pgtype.UUID, mutedAt pgtype.Timestamptz) (db.DmProgressFollow, bool, error) {
 	if !ProgressVisible(ctx, q, lane.Owner, issue) {
 		return db.DmProgressFollow{}, false, nil
 	}
-	if err := q.EnsureDMProgressLane(ctx, db.EnsureDMProgressLaneParams{LineageID: lane.Lineage, WorkspaceID: issue.WorkspaceID, OwnerUserID: lane.Owner}); err != nil {
-		return db.DmProgressFollow{}, false, err
+	status, err := q.LockIssueForFollow(ctx, db.LockIssueForFollowParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.DmProgressFollow{}, false, nil
 	}
-	locked, err := q.LockDMProgressLane(ctx, lane.Lineage)
 	if err != nil {
 		return db.DmProgressFollow{}, false, err
 	}
-	if locked.OwnerUserID != lane.Owner || locked.WorkspaceID != issue.WorkspaceID {
+	existing, err := q.GetDMProgressLane(ctx, lane.Lineage)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return db.DmProgressFollow{}, false, err
+	}
+	if err == nil && (existing.OwnerUserID != lane.Owner || existing.WorkspaceID != issue.WorkspaceID) {
 		return db.DmProgressFollow{}, false, nil
 	}
 	follow, err := q.InsertDMProgressFollow(ctx, db.InsertDMProgressFollowParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, LineageID: lane.Lineage, OwnerUserID: lane.Owner,
 		Reasons: reasons, Explicit: slices.ContainsFunc(reasons, func(r string) bool { return !isInherited(r) }),
-		MutedAt: mutedAt, LastRenderedStatus: issue.Status, ReportingRootID: root,
+		MutedAt: mutedAt, LastRenderedStatus: status, ReportingRootID: root,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.DmProgressFollow{}, false, nil
 	}
+	if err != nil {
+		return db.DmProgressFollow{}, false, err
+	}
+	err = q.EnsureDMProgressLane(ctx, db.EnsureDMProgressLaneParams{LineageID: lane.Lineage, WorkspaceID: issue.WorkspaceID, OwnerUserID: lane.Owner})
 	return follow, err == nil, err
 }
 
@@ -156,6 +181,11 @@ func followNewIssue(ctx context.Context, q *db.Queries, p IssueCreateParams, iss
 // included (I3.2). Callers run it on child creation and on any later child
 // event. A child the member unfollowed is not followed again (M12).
 func InheritProgressFollows(ctx context.Context, q *db.Queries, parent, child db.Issue) error {
+	// Before the list below, so a follow of the parent cannot commit between the
+	// list and this transaction's commit (see the lock order above).
+	if err := q.LockIssueAsParent(ctx, parent.ID); err != nil {
+		return err
+	}
 	parentFollows, err := q.ListActiveDMProgressFollowsForIssue(ctx, parent.ID)
 	if err != nil {
 		return err
@@ -172,11 +202,7 @@ func InheritProgressFollows(ctx context.Context, q *db.Queries, parent, child db
 	}
 	loops := chain.Bool
 	for _, listed := range parentFollows {
-		// The list above predates the lane lock, so a mute or unfollow can commit
-		// while we wait for it. Re-read the parent under the lock.
-		if _, err := q.LockDMProgressLane(ctx, listed.LineageID); err != nil {
-			return err
-		}
+		// A mute or unfollow can commit after the list above: re-read the follow.
 		current, err := q.GetActiveDMProgressFollow(ctx, db.GetActiveDMProgressFollowParams{IssueID: parent.ID, LineageID: listed.LineageID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue

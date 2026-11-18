@@ -115,6 +115,11 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 		return nil
 	}
 
+	// Rows an active follow's snapshot already holds (its event watermark) are
+	// not events: a re-follow leaves them behind.
+	if err := q.DeleteDMProgressPendingBeforeWatermark(ctx, lineage); err != nil {
+		return err
+	}
 	issues, err := q.ListDMProgressLaneIssues(ctx, db.ListDMProgressLaneIssuesParams{LineageID: lineage, Now: at})
 	if err != nil {
 		return err
