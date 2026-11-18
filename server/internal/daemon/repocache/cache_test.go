@@ -1179,7 +1179,11 @@ func TestIsolatedCheckoutCloneWithoutHardlinksIsIndependent(t *testing.T) {
 	baseCommit := gitRefCommit(t, barePath, getRemoteDefaultBranch(barePath))
 	checkoutPath := filepath.Join(t.TempDir(), "repo")
 
-	if out, err := runGitCombinedOutput(localCloneArgs("windows", barePath, checkoutPath)...); err != nil {
+	// Production lifts the cache's shallow guard around this clone.
+	restoreGuard := liftShallowGuard(barePath)
+	out, err := runGitCombinedOutput(localCloneArgs("windows", barePath, checkoutPath)...)
+	restoreGuard()
+	if err != nil {
 		t.Fatalf("windows-shaped local clone failed: %s: %v", strings.TrimSpace(string(out)), err)
 	}
 	if out, err := runGitCombinedOutput("-C", checkoutPath, "checkout", "--detach", baseCommit); err != nil {

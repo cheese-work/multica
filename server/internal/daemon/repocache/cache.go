@@ -620,6 +620,10 @@ func gitCloneBareContext(ctx context.Context, url, dest string) error {
 		os.RemoveAll(dest)
 		return err
 	}
+	if err := installShallowGuard(dest); err != nil {
+		os.RemoveAll(dest)
+		return err
+	}
 	// `git clone --bare` populates refs/heads/* as a snapshot and defaults to
 	// a mirror-style fetch refspec. Convert the bare repo to the standard
 	// remote-tracking layout immediately so subsequent fetches write to
@@ -677,10 +681,50 @@ func runGitFetchContext(ctx context.Context, barePath string) error {
 			return fmt.Errorf("git fetch --unshallow: %s: %w", strings.TrimSpace(string(out)), err)
 		}
 	}
+	if err := installShallowGuard(barePath); err != nil {
+		return err
+	}
 	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "origin"); err != nil {
 		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// installShallowGuard makes the cache refuse shallow fetches from any Git
+// process, shimmed or not, linked worktree or the bare directory itself
+// (CHE-7318). Git turns a complete repository shallow by renaming a new
+// `shallow` file into place, and dies with "shallow file has changed since we
+// read it" when that path already exists. An empty directory there keeps
+// `rev-parse --is-shallow-repository` false and leaves fetch, gc, worktree add
+// working. The cost: `git clone --local` and `--shared` treat a source with a
+// `shallow` entry as shallow and drop their hardlinks or alternates, so
+// createIsolatedCheckoutContext lifts the guard around that one clone.
+func installShallowGuard(barePath string) error {
+	p := filepath.Join(barePath, "shallow")
+	if fi, err := os.Lstat(p); err == nil {
+		if fi.IsDir() {
+			return nil
+		}
+		// A leftover file here is not a shallow marker: runGitFetchContext
+		// already unshallowed a cache that was.
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("install shallow guard: %w", err)
+		}
+	}
+	if err := os.Mkdir(p, 0o755); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("install shallow guard: %w", err)
+	}
+	return nil
+}
+
+// liftShallowGuard removes the guard and returns a func that puts it back.
+// Callers hold the cache's repo lock.
+func liftShallowGuard(barePath string) (restore func()) {
+	p := filepath.Join(barePath, "shallow")
+	if fi, err := os.Lstat(p); err != nil || !fi.IsDir() || os.Remove(p) != nil {
+		return func() {}
+	}
+	return func() { _ = os.Mkdir(p, 0o755) }
 }
 
 // ensureRemoteTrackingLayout upgrades a bare repo from the legacy mirror
@@ -1303,11 +1347,14 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 	if shared {
 		cloneArgs = sharedCloneArgs(barePath, checkoutPath)
 	}
-	if out, err := runGitCombinedOutputContext(ctx, cloneArgs...); err != nil {
+	restoreGuard := liftShallowGuard(barePath)
+	out, cloneErr := runGitCombinedOutputContext(ctx, cloneArgs...)
+	restoreGuard()
+	if cloneErr != nil {
 		// Do not remove checkoutPath here. A different repository with the
 		// same basename could have won the path race after our pre-check; Git
 		// then fails safely, and deleting the path would destroy its checkout.
-		return "", fmt.Errorf("git clone --local: %s: %w", strings.TrimSpace(string(out)), err)
+		return "", fmt.Errorf("git clone --local: %s: %w", strings.TrimSpace(string(out)), cloneErr)
 	}
 	cleanup := true
 	defer func() {
