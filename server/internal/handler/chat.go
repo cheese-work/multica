@@ -286,6 +286,7 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		a, ok := byCanonical[sessions[i].ID]
 		if !ok {
 			sessions[i].StaleLevel = service.AttentionNone
+			sessions[i].AttentionKeys, sessions[i].AttentionAskIDs = []string{}, []string{} // wire: [] not null
 			continue
 		}
 		sessions[i].StaleLevel = a.StaleLevel
