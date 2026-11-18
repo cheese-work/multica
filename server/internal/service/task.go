@@ -10275,6 +10275,8 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"revision":         issue.Revision,
 		"metadata":         util.JSONObjectOrEmpty(issue.Metadata),
 		"properties":       util.JSONObjectOrEmpty(issue.Properties),
+		// Mirrors handler.IssueResponse.CreatedVia (a plain string there).
+		"created_via": issue.CreatedVia.String,
 	}
 }
 

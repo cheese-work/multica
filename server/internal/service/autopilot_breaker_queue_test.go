@@ -15,7 +15,9 @@ import (
 // queue (the claim gate holds it until the probe is due) instead of being
 // skipped.
 func TestAutopilotScheduledRunQueuesDuringProviderBreakerHold(t *testing.T) {
-	for _, mode := range []string{"run_only", "create_issue"} {
+	// An issue task is stamped `deferred` by the provider hold (b8d118fb0d); a
+	// run_only task has no issue and stays `queued`.
+	for mode, wantStatus := range map[string]string{"run_only": "queued", "create_issue": "deferred"} {
 		t.Run(mode, func(t *testing.T) {
 			fx, owner := newPrincipalFixture(t)
 			agentID := fx.privateAgentOwnedBy(t, owner, "breaker")
@@ -28,8 +30,8 @@ func TestAutopilotScheduledRunQueuesDuringProviderBreakerHold(t *testing.T) {
 			if run.Status == "skipped" || run.Status == "failed" {
 				t.Fatalf("first dispatch status = %q (%v), want a queued run", run.Status, run.FailureReason)
 			}
-			if n := fx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id = $1 AND status = 'queued'`, agentID); n != 1 {
-				t.Fatalf("queued tasks = %d, want 1", n)
+			if n := fx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id = $1 AND status = $2`, agentID, wantStatus); n != 1 {
+				t.Fatalf("%s tasks = %d, want 1", wantStatus, n)
 			}
 		})
 	}
