@@ -178,6 +178,9 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 	if err := w.checkEntry(ctx, h, q, locked, params); err != nil {
 		return err
 	}
+	if err := w.checkIntakeHold(ctx, q, locked, params); err != nil {
+		return err
+	}
 	w.stopRuns, w.stopFrom = nil, service.TaskAssignee{}
 	if w.stopPrevious && handoff != nil &&
 		(locked.AssigneeType != params.AssigneeType || locked.AssigneeID != params.AssigneeID) {
