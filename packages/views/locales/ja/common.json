@@ -186,5 +186,30 @@
       "open_card": "カードを開く",
       "unreadable": "この承認は利用できないか、すでに存在しません。エージェントにもう一度提案してもらってください。"
     }
+  },
+  "budget_receipt": {
+    "applied_runs": "適用しました。{{issue}} は現在 {{limit}} 回中 {{used}} 回の実行を示しています。",
+    "runs_used": "使用した実行回数",
+    "change": "{{limit}} 回中 {{used}} 回 → {{limitAfter}} 回中 {{usedAfter}} 回",
+    "change_new_window": "{{limit}} 回中 {{used}} 回 → {{limitAfter}} 回中 {{usedAfter}} 回（新しいウィンドウ）",
+    "outcome": {
+      "run_queued": "実行をキューに入れました。",
+      "run_started": "実行を開始しました。",
+      "status_restored": "ステータスを元に戻しました。",
+      "still_blocked_runs": "まだブロック中：実行回数が残っていません。",
+      "still_blocked_tokens": "まだブロック中：トークン予算を使い切りました。",
+      "still_blocked": "まだブロック中です。",
+      "later_window": "再開していません：新しい予算ウィンドウに置き換わりました。",
+      "status_moved": "再開していません：タスクが別のステータスに移りました。",
+      "window_changed": "再開していません：予算ウィンドウが変わりました。",
+      "issue_closed": "再開していません：タスクはクローズされています。",
+      "agent_archived": "再開していません：エージェントはアーカイブされています。",
+      "restore_refused": "再開していません：ステータスを元に戻せませんでした。",
+      "unknown_origin": "再開していません：ブロック前のステータスが不明です。ステータスを手動で変更してください。",
+      "assignee_changed": "再開していません：担当者が変わりました。",
+      "source_unknown": "再開していません：元のトリガーが不明です。",
+      "source_not_delivered": "再開していません：元のトリガーに残りの作業がありません。",
+      "superseded": "再開していません。"
+    }
   }
 }

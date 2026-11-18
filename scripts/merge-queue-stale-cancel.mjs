@@ -2,6 +2,7 @@
 // Usage: node scripts/merge-queue-stale-cancel.mjs --repo owner/name [--dry-run]
 // Each run is a full sweep. Fail closed: a wrong cancel can eject a PR from the queue, never merge one.
 // Any API error stops the sweep (no further cancels) and exits non-zero; there is no retry loop.
+// The one exception: a run GitHub refuses to cancel (409 on cancel and on force-cancel) is skipped.
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -29,6 +30,24 @@ export async function isOnMain(api, repo, sha) {
   return status === "identical" || status === "behind";
 }
 
+// A run stuck in `queued` that GitHub never started answers cancel with 409; force-cancel clears it.
+// A 409 on force-cancel too means GitHub refuses to cancel this run at all: skip it (returns false) so
+// it cannot block the runs behind it. Any other error still stops the sweep.
+async function cancelRun(api, repo, id) {
+  try {
+    await api.post(`/repos/${repo}/actions/runs/${id}/cancel`);
+  } catch (e) {
+    if (e.status !== 409) throw e;
+    try {
+      await api.post(`/repos/${repo}/actions/runs/${id}/force-cancel`);
+    } catch (e2) {
+      if (e2.status !== 409) throw e2;
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function sweep({ api, repo, dryRun = false, now = Date.now, print = console.log }) {
   const runs = [];
   for (const status of ["in_progress", "queued"]) {
@@ -45,7 +64,10 @@ export async function sweep({ api, repo, dryRun = false, now = Date.now, print =
     if (dryRun) {
       print(`would cancel ${run.html_url} (${run.head_branch}, ${run.status})`);
     } else {
-      await api.post(`/repos/${repo}/actions/runs/${run.id}/cancel`);
+      if (!(await cancelRun(api, repo, run.id))) {
+        print(`skipped uncancellable run ${run.id}`);
+        continue;
+      }
       print(`cancelled ${run.html_url} (${run.head_branch}, ${run.status})`);
     }
     cancelled++;
@@ -54,9 +76,11 @@ export async function sweep({ api, repo, dryRun = false, now = Date.now, print =
   return cancelled;
 }
 
+export const httpStatus = (stderr) => Number(/\(HTTP (\d{3})\)/.exec(stderr)?.[1]) || undefined;
+
 const gh = (args) => {
   const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
-  if (r.status !== 0) throw new Error(`gh api ${args.join(" ")} failed: ${r.stderr}`);
+  if (r.status !== 0) throw Object.assign(new Error(`gh api ${args.join(" ")} failed: ${r.stderr}`), { status: httpStatus(r.stderr) });
   return r.stdout;
 };
 export const ghApi = {

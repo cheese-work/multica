@@ -335,7 +335,7 @@ type CardAction = NonNullable<RequestCard["action"]>;
 
 // Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
 // member list yet or any other role the button is absent. The server still refuses a non-owner.
-type ApprovalWiring = { hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
+type ApprovalWiring = { issueId: string; hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
 
 function OwnerGatedApproval({ action, previewSha256, approveDisabled, ...wiring }: { action: CardAction; previewSha256?: string; approveDisabled: boolean } & ApprovalWiring) {
   const workspace = useCurrentWorkspace();
@@ -409,8 +409,8 @@ function ActionPreview({
         </dl>
       )}
       {ownerOnly
-        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ hideControls, handle, onControls }} />
-        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ issueId, hideControls, handle, onControls }} />
+        : <DecisionActionApproval actionId={action.id} issueId={issueId} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
     </div>
   );
 }

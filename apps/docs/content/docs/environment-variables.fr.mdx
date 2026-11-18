@@ -232,6 +232,17 @@ Lorsque la clé d'API et l'URL de base sont toutes deux vides, cette couche est 
 Ceci ne concerne que la couche d'assistance. L'exécution d'un agent suit un chemin de données distinct : lorsqu'un agent répond dans une discussion, votre daemon exécute l'outil de codage IA de cet agent avec les propres identifiants de l'outil, et ne lui transmet pas les paramètres `MULTICA_LLM_*` ci-dessus. (Les variables de connexion à Multica propres à l'exécution, dont l'agent a besoin, sont injectées séparément par le daemon.) Vider les variables ci-dessus n'a aucun effet sur ce chemin — contrôlez-le via la configuration du runtime de l'agent.
 </Callout>
 
+## Garde de conception (doop)
+
+Ce groupe configure la façon dont Multica lit les attestations de conception de doop pour le paramètre d'espace de travail `design_card_guard`. Un seul GET HTTPS avec un jeton porteur partagé lit une attestation.
+
+| Variable | Défaut | Description |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | vide | Origine de doop, par exemple `https://doop.example.com`. Elle doit être en `https` et sans chemin |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | vide | Jeton partagé d'au moins 32 caractères. Il doit être égal à `DOOP_ATTESTATION_READ_TOKEN` côté doop |
+
+Si l'une des variables est absente ou inutilisable, le lecteur n'est pas configuré et chaque lecture échoue comme non configurée. Chaque lecture a un délai de 3 secondes, ne suit aucune redirection et accepte un corps de 256 Kio au plus.
+
 ## Configuration du daemon
 
 Les variables ci-dessous sont lues sur l'ordinateur qui exécute vos agents, et non dans le conteneur de l'API.
