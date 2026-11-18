@@ -298,7 +298,7 @@ function inboxCommands() {
 }
 
 describe("InboxPage", () => {
-  it("chooses a fresh anchor after returning to the list and reopening the same issue", () => {
+  it("chooses a fresh anchor after returning to the list and reopening the same issue", async () => {
     reset();
     layout.width = PHONE;
     searchParams = new URLSearchParams("issue=issue-1");
@@ -310,7 +310,10 @@ describe("InboxPage", () => {
       listData.active = listData.active.map((current) => ({ ...current, read: true }));
     });
     const { rerender } = render(<InboxPage />);
-    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c1");
+    // The detail is lazy: the first test to open it waits for the chunk.
+    await screen.findByTestId("issue-detail");
+    // Fork wins (CHE-7026): the row keeps its own newest comment (withCommentAnchor, CHE-6382/6399).
+    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c2");
     rerender(<InboxPage />);
     const back = issueDetailProps.at(-1)?.leadingAction as { props: { onClick: () => void } };
     act(() => back.props.onClick());
@@ -333,9 +336,10 @@ describe("InboxPage", () => {
     });
     const { rerender } = render(<InboxPage />);
     expect(markReadMutate).toHaveBeenCalledWith("n3", expect.anything());
-    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c1");
+    // Fork wins (CHE-7026): a row with its own comment opens at it (withCommentAnchor, CHE-6382/6399).
+    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c3");
     rerender(<InboxPage />);
-    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c1");
+    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c3");
   });
 
   it("picks the landing again when the open row is clicked again", () => {
@@ -351,11 +355,11 @@ describe("InboxPage", () => {
     });
     const { rerender } = render(<InboxPage />);
     fireEvent.click(screen.getByTestId("row"));
-    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c1");
+    // Fork wins (CHE-7026): the row keeps its own newest comment, read or not.
+    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c2");
     rerender(<InboxPage />);
-    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c1");
+    expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c2");
 
-    // Everything is read by now, so a fresh click opens at the newest comment.
     fireEvent.click(screen.getByTestId("row"));
     expect(issueDetailProps.at(-1)?.highlightCommentId).toBe("c2");
   });
