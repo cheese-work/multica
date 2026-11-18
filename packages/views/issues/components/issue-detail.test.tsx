@@ -306,6 +306,7 @@ vi.mock("../../editor", async () => ({
       onReady,
       selectionAction,
       onUploadFile,
+      ariaLabel,
     }: any,
     ref: any,
   ) {
@@ -370,6 +371,7 @@ vi.mock("../../editor", async () => ({
           onUpdate?.(e.target.value, baseRef.current);
         }}
         placeholder={placeholder}
+        aria-label={ariaLabel}
         data-testid="rich-text-editor"
         data-flush-on-unmount={flushPendingOnUnmount ? "true" : undefined}
       />
