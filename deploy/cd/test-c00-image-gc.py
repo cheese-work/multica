@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +72,10 @@ elif args[:1] == ["inspect"]:
     out = json.dumps([c for c in s["containers"] if c["Id"] in args[1:]])
 elif args[:2] == ["image", "rm"]:
     i = args[2]
+    if s.get("probe_lock"):
+        import subprocess
+        held = subprocess.run(["flock", "-n", s["probe_lock"], "true"]).returncode != 0
+        s["lock_probe"] = "held" if held else "free"
     if i in s.get("rm_fail", []):
         sys.stderr.write("conflict: image is referenced\n")
         rc = 1
@@ -260,6 +265,44 @@ class GcTests(unittest.TestCase):
         self.world([image("c", 1)])
         p, r = self.run_gc(target=10**18)
         self.assertEqual((p.returncode, r["status"]), (0, "OK"))
+
+    def test_deploy_lock_held_by_a_controller_blocks_every_removal(self):
+        # rollback holds this lock without creating staging, so staging absence proves nothing
+        self.world([image("a", 10), image("c", 1)])
+        holder = subprocess.Popen(["flock", str(self.state_dir / "deploy.lock"), "sleep", "30"])
+        self.addCleanup(holder.kill)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            probe = subprocess.run(["flock", "-n", str(self.state_dir / "deploy.lock"), "true"])
+            if probe.returncode != 0:
+                break
+            time.sleep(0.05)
+        p, r = self.run_gc()
+        self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"), p.stderr)
+        self.assertIn("lock", r["reason"])
+        self.assertEqual(self.removed_calls(), [])
+
+    def test_gc_holds_the_deploy_lock_while_it_removes(self):
+        # a controller started mid-run must wait: the lock is held across every rm
+        self.world([image("a", 10), image("c", 1)], probe_lock=str(self.state_dir / "deploy.lock"))
+        p, r = self.run_gc()
+        self.assertEqual(r["removed"], [iid("a")], p.stderr)
+        self.assertEqual(json.loads(self.stub_state.read_text())["lock_probe"], "held")
+
+    def test_unresolved_keep_ref_blocks_before_any_removal(self):
+        self.world([image("a", 10), image("c", 1)])
+        p, r = self.run_gc("--keep-ref", f"{BACKEND}@sha256:{'8' * 64}")
+        self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"), p.stderr)
+        self.assertIn("keep ref", r["reason"])
+        self.assertEqual(self.removed_calls(), [])
+
+    def test_keep_ref_by_registry_digest_resolves_to_the_local_image_id(self):
+        # a manifest digest is not a config ID; it only protects through RepoDigests
+        digest = f"{BACKEND}@sha256:{'7' * 64}"
+        self.world([image("a", 10, digests=[digest]), image("c", 1)])
+        p, r = self.run_gc("--keep-ref", digest)
+        self.assertEqual(self.ids(), {iid("a"), iid("c")}, p.stderr)
+        self.assertEqual(r["removed"], [])
 
     def test_nothing_removed_is_target_unmet_not_success(self):
         self.world([image("c", 1)])

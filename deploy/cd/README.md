@@ -1143,7 +1143,11 @@ Keep references are read from live state: `cutover-state.json` `image_tuple`
 image of every container, which covers the retained predecessor colour. Compose
 labels are ignored on purpose: `cd-deploy.yml` deletes its `cd-deploy-<ts>`
 staging directory after each deploy. A `cd-deploy-*` directory under
-`--deploy-root` blocks the run (active deploy, or a failed cleanup). The
+`--deploy-root` blocks the run (active deploy, or a failed cleanup). The run also
+takes the controller's `deploy.lock` (non-blocking) in `--cutover-state-dir` and
+holds it across discovery and every removal, which covers a rollback that creates
+no staging; a busy lock is BLOCKED. Every `--keep-ref` must resolve to a local
+image by ID, tag or RepoDigest, else BLOCKED. The
 historical `manifest.json` and `release-record.json` are not read.
 
 Exit 0 only when used bytes are at or below `--target-bytes`; 3 TARGET_UNMET, 2

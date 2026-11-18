@@ -13,7 +13,10 @@ stopped container, see rollback-failed-readback.sh), and --keep-ref. Compose
 labels are NOT a reference source: cd-deploy.yml deletes its staging directory
 after every deploy, so they point at paths that are gone by design. The
 historical manifest.json / release-record.json are not read; pass a ref you
-trust with --keep-ref instead.
+trust with --keep-ref instead. Every keep ref must resolve to a local image
+(by config ID, tag, or RepoDigest, which is how a registry manifest digest maps
+to a local config ID) or the run is BLOCKED. The deploy lock in
+--cutover-state-dir is held across discovery and removal; if it is busy, BLOCKED.
 
 Exit: 0 target met, 1 a removal failed or an unexpected error, 2 BLOCKED (no
 mutation), 3 TARGET_UNMET. A timer that runs this and exits 0 has met the target.
@@ -22,6 +25,7 @@ usage: c00-image-gc.py --cutover-state-dir DIR --deploy-root DIR --run-dir DIR
 """
 import argparse
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -96,7 +100,10 @@ def freeze(args, now):
             raise Blocked(f"active tuple ref {ref} resolves to no local image; the current deployment identity is unknown")
         keep.update(hit)
     for ref in args.keep_ref:
-        keep.update(i["Id"] for i in images if matches(ref, i))
+        hit = [i["Id"] for i in images if matches(ref, i)]
+        if not hit:
+            raise Blocked(f"keep ref {ref} resolves to no local image; pass a ref that exists locally or drop it")
+        keep.update(hit)
 
     cids = docker("ps", "-aq", "--no-trunc").split()
     for c in (json.loads(docker("inspect", *cids)) if cids else []):
@@ -163,6 +170,13 @@ def main(argv=None):
                "candidates": [], "skipped": [], "removed": [], "failed": []}
     code = 0
     try:
+        # Same lock deploy.sh and cutover.sh (deploy and rollback) take; staging alone cannot
+        # show a rollback. Held until exit, so it covers discovery and every removal.
+        lock = open(Path(args.cutover_state_dir) / "deploy.lock", "a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            raise Blocked(f"deploy lock {lock.name} is held or unavailable ({e}); a deploy or rollback may be running")
         receipt["candidates"], receipt["skipped"] = freeze(args, now)
         (run / "manifest.json").write_text(json.dumps(receipt["candidates"], indent=1))
         if args.apply:
