@@ -61,6 +61,20 @@ test("expected slog WARN lines from backend-agent-tests fixtures are not warning
   assert.equal(Object.keys(warningCounts([{ name: "backend-agent-tests", log: unrelated, annotations: [] }])).length, 1)
 })
 
+test("decision-card-e2e's two known warnings are allowed, any other warning there still counts (CHE-7313)", () => {
+  const ts = "2026-11-18T10:00:00.0000000Z"
+  const noCache = `${ts} ⚠ No build cache found. Please configure build caching for faster rebuilds. Read more: https://nextjs.org/docs/messages/no-cache`
+  const initdb = `${ts} initdb: warning: enabling "trust" authentication for local connections`
+  const both = `${noCache}\n${initdb}`
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log: both, annotations: [] }]), {})
+  // A third, different warning is still a regression, and the two known lines do not hide it.
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log: `${both}\n${ts} Warning: something new`, annotations: [] }]), { "decision-card-e2e: Warning: something new": 1 })
+  // The exemption is exact: a variant of a known line is still counted.
+  assert.equal(Object.keys(warningCounts([{ name: "decision-card-e2e", log: `${ts} initdb: warning: enabling "trust" authentication for remote connections`, annotations: [] }])).length, 1)
+  // The same two lines in any other job are still counted.
+  assert.equal(Object.keys(warningCounts([{ name: "frontend-build", log: both, annotations: [] }])).length, 2)
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
@@ -401,7 +415,7 @@ else if (endpoint.includes("/actions/workflows/3/runs?")) {
   const status = new URLSearchParams(endpoint.split("?")[1]).get("status")
   // Like GitHub: status=success lists only runs whose overall conclusion is success.
   out({ workflow_runs: status === "success" ? [] : [{ id: 1, event: "push", head_branch: "main", conclusion: "failure", created_at: "2026-11-18T03:20:00Z", head_sha: "main", html_url: "failed-main-run" }] })
-} else if (endpoint.includes("/jobs?")) out({ jobs: [{ id: endpoint.includes("/runs/1/") ? 11 : 12, name: "decision-card-e2e", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/check-runs/5" }] })
+} else if (endpoint.includes("/jobs?")) out({ jobs: [{ id: endpoint.includes("/runs/1/") ? 11 : 12, name: "frontend-build", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/check-runs/5" }] })
 else if (endpoint.includes("/annotations?")) out([])
 else if (endpoint.endsWith("/logs")) out("")
 else throw new Error("Unexpected API request " + endpoint)
@@ -412,7 +426,7 @@ else throw new Error("Unexpected API request " + endpoint)
     })
     assert.equal(result.status, 0, result.stderr)
     const report = JSON.parse(readFileSync(join(dir, "warning-budget-report.json"), "utf8"))
-    assert.deepEqual(report.job_baselines["decision-card-e2e"], { run: "failed-main-run", sha: "main", job: "decision-card-e2e" })
+    assert.deepEqual(report.job_baselines["frontend-build"], { run: "failed-main-run", sha: "main", job: "frontend-build" })
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

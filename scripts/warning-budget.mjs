@@ -25,6 +25,11 @@ function sourcePath(path) {
   return path.replaceAll("\\", "/").replace(/^.*\/multica\/multica\//, "").replace(/^\.\//, "")
 }
 
+const knownDecisionCardE2eWarnings = new Set([
+  "⚠ No build cache found. Please configure build caching for faster rebuilds. Read more: https://nextjs.org/docs/messages/no-cache",
+  'initdb: warning: enabling "trust" authentication for local connections',
+])
+
 export function warningCounts(jobs) {
   const counts = {}
   for (const job of jobs) {
@@ -50,6 +55,9 @@ export function warningCounts(jobs) {
       // appear as new warnings against a main baseline that predates the fixture. They are test inputs, not diagnostics.
       if (job.name === "backend-agent-tests" && /^(?:\d{4}-\d\d-\d\dT\S+\s+)?time=\S+ level=WARN msg="script (?:rejected|timed out)"/.test(line)) continue
       const message = normalize(line)
+      // CHE-7313: decision-card-e2e always prints these two known lines (Next.js build cache notice, Postgres initdb trust auth).
+      // Exact match on the normalized line, for this job only; any other warning there still counts.
+      if (job.name === "decision-card-e2e" && knownDecisionCardE2eWarnings.has(message)) continue
       if (/^(?:\/|[A-Za-z]:\/|(?:\.\.?\/)?(?:apps|packages|server|scripts)\/).+\.[cm]?[jt]sx?$/.test(message)) {
         eslintFile = sourcePath(message)
         continue
