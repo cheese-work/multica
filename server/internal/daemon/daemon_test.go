@@ -23,6 +23,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 	"github.com/pelletier/go-toml/v2"
@@ -325,8 +326,15 @@ func TestRepoCheckoutModeFor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name, provider, goos, want string
+		mode                       sandbox.Mode
 	}{
 		{name: "Linux Codex isolates Git metadata", provider: "codex", goos: "linux", want: repoCheckoutModeIsolated},
+		{name: "audit keeps today's Codex value", provider: "codex", goos: "linux", mode: sandbox.ModeAudit, want: repoCheckoutModeIsolated},
+		{name: "audit keeps Claude empty", provider: "claude", goos: "linux", mode: sandbox.ModeAudit},
+		{name: "on shares objects for Codex", provider: "codex", goos: "linux", mode: sandbox.ModeOn, want: repoCheckoutModeShared},
+		{name: "on shares objects for Claude", provider: "claude", goos: "linux", mode: sandbox.ModeOn, want: repoCheckoutModeShared},
+		{name: "on shares objects for any provider", provider: "gemini", goos: "linux", mode: sandbox.ModeOn, want: repoCheckoutModeShared},
+		{name: "on non-Linux keeps today's value", provider: "claude", goos: "darwin", mode: sandbox.ModeOn},
 		{name: "Windows Codex isolates Git metadata", provider: "codex", goos: "windows", want: repoCheckoutModeIsolated},
 		{name: "macOS Codex keeps worktree", provider: "codex", goos: "darwin"},
 		{name: "Linux Claude keeps worktree", provider: "claude", goos: "linux"},
@@ -335,7 +343,7 @@ func TestRepoCheckoutModeFor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := repoCheckoutModeFor(tt.provider, tt.goos); got != tt.want {
+			if got := repoCheckoutModeFor(tt.provider, tt.goos, tt.mode); got != tt.want {
 				t.Fatalf("repoCheckoutModeFor(%q, %q) = %q, want %q", tt.provider, tt.goos, got, tt.want)
 			}
 		})
