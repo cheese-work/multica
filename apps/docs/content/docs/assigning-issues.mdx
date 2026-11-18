@@ -99,6 +99,10 @@ Use `--no-start` when the assignment should record ownership without creating a 
 
 If an assignment or status change starts no run — for example because the issue is in Triage or the agent has no runtime — the command says why on stderr. `issue batch update` shows the same note in its reason column.
 
+## Paused agents
+
+An owner or admin can pause an agent through a decision action (`agent.pause`; `agent.resume` undoes it). A paused agent cannot be assigned, and neither can a squad it leads: the request fails with `agent_paused` and the hint "pick another agent by role". Mentions of a paused agent start no run, and its issue wakeups are skipped and logged. Pause stops new runs only; a running task finishes.
+
 ## Next steps
 
 - [@-mention agents in comments](/mentioning-agents) — handle a new question without changing the assignee.

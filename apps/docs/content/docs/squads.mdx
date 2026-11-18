@@ -56,23 +56,22 @@ On each squad-leader run, three blocks are appended to the leader's instructions
 
 ## Leader re-trigger rules
 
-After the first dispatch, the leader is woken up automatically by **most subsequent comments** on the issue. The exact rules:
+After the first dispatch, the leader is woken up automatically by **most human-authored comments** on the issue. Agent-authored comments require an explicit mention. The exact rules:
 
-| Event | Triggers the leader | Notes |
-|---|---|---|
-| A non-member (human reporter, external agent) posts a comment | Yes | |
-| A squad member posts a progress update with no `@mention` | Yes | The leader re-evaluates whether a next step is needed |
-| A member or worker explicitly mentions the assigned squad’s leader as an agent | Yes | Runs as the squad leader, so `multica squad activity` can record its decision |
-| A human member mentions only other members or `@all` | No | People receive notifications; implicit agent routing is suppressed |
-| A non-leader agent mentions only members or `@all` | Yes | The worker result still reaches the leader; people receive notifications as usual |
-| Anyone explicitly mentions an agent or squad | Only if named | Only the named agents or squad leaders run; there is no additional leader fallback |
-| The leader's own comment | No | Guarded so the leader can't trigger itself |
-| A comment containing only an issue cross-reference (`[MUL-123](mention://issue/...)`) | Yes | Issue references aren't routing |
+| Event | Leader triggered? |
+|---|---|
+| A human non-member posts a comment | **Yes** |
+| A human squad member posts a progress update with no `@mention` | **Yes** — the leader re-evaluates whether the next step is needed |
+| An agent posts an unmentioned comment or progress update | **No** — mention the leader agent explicitly, or rely on a separate workflow edge |
+| An agent explicitly mentions the leader with `mention://agent/<id>` | **Yes** — the leader is one of the explicitly named targets |
+| Anyone explicitly mentions another agent / member / squad / `@all` | **No, not by implication** — the named target follows its normal routing; the leader is not added automatically |
+| The leader's own comment (self-trigger) | **No** — guarded to prevent a loop |
+| A human comment containing only an issue cross-reference (`[MUL-123](mention://issue/...)`) | **Yes** — issue references aren't routing |
 
 Dedup applies on top of these rules: if the leader already has a `queued` or `dispatched` run on this issue, a new trigger won't enqueue a duplicate.
 
 <Callout type="info">
-A human member's `@member` / `@all` comment only notifies people. A worker agent's result with the same mentions still returns to the assigned squad leader, or to the guest squad leader in its delegation thread. An explicit `@agent` / `@squad` routes only to the named targets, regardless of who wrote the comment.
+**Agent handoffs must name the recipient.** An unmentioned worker reply no longer wakes the leader. When the leader needs to coordinate a worker result, the worker must explicitly mention the leader agent; workflow edges are a separate handoff mechanism.
 </Callout>
 
 ## Assigning vs. @-mentioning a squad
