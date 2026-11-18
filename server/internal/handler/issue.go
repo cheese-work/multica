@@ -398,16 +398,37 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err != nil {
 		return issue, nil, err
 	}
+	if params.Status.Valid {
+		blockedOn := ""
+		if rec != nil {
+			blockedOn = rec.blockedOn
+		}
+		if issue, err = recordBlockedOn(ctx, q, issue, blockedOn); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record blocked_on: %w", err)
+		}
+	}
 	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
 		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit)
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit, rec.blockedOn)
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
 		rec.activity = &row
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
+	}
+	if rec != nil && recordStatus {
+		if err := verifyAttachedComments(ctx, q, issue, rec.attach); err != nil {
+			return db.Issue{}, nil, err
+		}
+		if rec.comment != nil {
+			if err := createHandoffComment(ctx, q, rec, issue); err != nil {
+				return db.Issue{}, nil, err
+			}
+			// The comment bumped the issue revision; return the committed one.
+			issue.Revision = rec.created.IssueRevision
+		}
 	}
 	// The intent to run the handler is written with the write that hands the
 	// issue to it, so a crash after the commit leaves it behind to find.
@@ -4327,6 +4348,13 @@ type UpdateIssueRequest struct {
 	// HandoffCommentID names the comment that explains a status move. The
 	// status history keeps it only when the comment belongs to the issue.
 	HandoffCommentID *string `json:"handoff_comment_id,omitempty"`
+	// HandoffComment is created in the status transaction. It starts no
+	// comment-triggered run for the old or the new assignee. AttachCommentIDs
+	// name existing comments, in order. With HandoffCommentID they are the
+	// run's handoff context: the new comment first, then HandoffCommentID,
+	// then the attached ids. Single updates only. (CHE-5489)
+	HandoffComment   *HandoffCommentRequest `json:"handoff_comment,omitempty"`
+	AttachCommentIDs []string               `json:"attach_comment_ids,omitempty"`
 	// HandoffAssignee hands this one status move to the named assignee instead
 	// of the step's handler. Valid only with a status change into a step that
 	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
@@ -4379,6 +4407,10 @@ type UpdateIssueRequest struct {
 	// no explicit null. Write-only: read the relation back from
 	// GET /api/issues/{id}/duplicates. Not accepted by batch updates.
 	DuplicateOfIssueID *string `json:"duplicate_of_issue_id,omitempty"`
+	// BlockedOn names what a move to blocked waits for (CHE-6972); see
+	// issue_blocked_on.go. Refused on any other status. Not accepted by batch
+	// updates.
+	BlockedOn *string `json:"blocked_on,omitempty"`
 }
 
 func mergeIssueChannelMediaDescription(current, incoming string, base *string, attachments []db.Attachment) string {
@@ -4703,6 +4735,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		statusKeyForGuard = statusKey
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
 	}
+	blockedOn, ok := h.parseBlockedOn(r.Context(), w, &req, rawFields, prevIssue.WorkspaceID, statusKeyForGuard)
+	if !ok {
+		return
+	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {
 			return
@@ -4917,7 +4953,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// refuses a comment that is not a live comment of this issue; a move that
 	// starts no run keeps the lenient drop-and-mark of the status history.
 	dispatchCtx := h.actingTaskContext(r)
-	var intentComment string
+	// existingContext is the run's handoff context before the new comment: the
+	// legacy handoff_comment_id, then attach_comment_ids in order.
+	var existingContext []pgtype.UUID
 	if req.HandoffCommentID != nil && !suppressRun {
 		ok, err := service.HandoffCommentBelongsTo(r.Context(), h.Queries, prevIssue, *req.HandoffCommentID)
 		if err != nil {
@@ -4926,12 +4964,23 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		switch {
 		case ok:
-			dispatchCtx = service.WithStatusHandoffComment(dispatchCtx, parseUUID(*req.HandoffCommentID))
-			intentComment = *req.HandoffCommentID
+			existingContext = append(existingContext, parseUUID(*req.HandoffCommentID))
 		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
 			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
 			return
 		}
+	}
+	commentPlan, ok := h.prepareHandoffComment(w, r, prevIssue, req, actorType, actorID)
+	if !ok {
+		return
+	}
+	var commentSeed *handoffCommentSeed
+	var attached *attachedComments
+	if commentPlan != nil {
+		commentSeed, attached = commentPlan.seed, commentPlan.attach
+	}
+	if attached != nil && !suppressRun {
+		existingContext = append(existingContext, attached.ids...)
 	}
 	if assigneeSupplied || handoff != nil {
 		var ok bool
@@ -4961,15 +5010,16 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
 	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
-		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger, blockedOn: blockedOn}
 		if handoff != nil {
 			statusRec.enterHandoff(handoff)
 		}
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
+		statusRec.comment, statusRec.attach = commentSeed, attached
 		if handoff != nil && handed.agent != "" {
-			armHandoffIntent(statusRec, r, actorType, actorID, intentComment, req.HandoffNote, handed.write)
+			armHandoffIntent(statusRec, r, actorType, actorID, existingContext, req.HandoffNote, handed.write)
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
 		// Status-only fallback label (CHE-4439 decision 14): an agent run
@@ -4981,6 +5031,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 				Caller: workflowCaller{run: callerRun, agent: true}, RunStep: callerRun.WorkflowStep.String,
 			})
 		}
+	}
+	if commentSeed != nil && statusRec == nil {
+		writeErrorCode(w, http.StatusConflict, "handoff_comment_unsupported_move", "handoff_comment cannot ride a duplicate-mark move")
+		return
 	}
 	if actorType == "member" {
 		writeCtx = withMemberRouteOverride(writeCtx)
@@ -4999,7 +5053,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -5178,12 +5232,17 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
 		intentID := recIntentID(statusRec)
+		dispatchCtx = service.WithStatusHandoffComments(dispatchCtx, handoffContextIDs(statusRec, existingContext))
 		if h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote) && !intentID.Valid {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
 	} else if statusRec != nil {
 		h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 	}
+	// The new comment's explicit mentions start their own runs, under the
+	// comment's author. Published after the handoff run so the handler's run
+	// is the one the move is known by.
+	h.publishHandoffComment(r.Context(), issue, statusRec, actorType, actorID)
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
 	// conditions): the write recorded the change; process it now. A failure
@@ -6017,7 +6076,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				statusRec.enterHandoff(handoff)
 				if handed.agent != "" {
-					armHandoffIntent(statusRec, r, actorType, actorID, "", req.Updates.HandoffNote, handed.write)
+					armHandoffIntent(statusRec, r, actorType, actorID, nil, req.Updates.HandoffNote, handed.write)
 				}
 			}
 			writeCtx = withStatusRecord(writeCtx, statusRec)

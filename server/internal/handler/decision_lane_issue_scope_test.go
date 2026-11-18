@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -99,6 +100,35 @@ func TestDecisionRequestReaskLimit(test *testing.T) {
 	}
 	dbfx.Exec(test, `UPDATE decision_request SET created_at = now() - interval '25 hours' WHERE issue_id = $1`, fixture.issueID)
 	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+}
+
+// A re-ask reads the state again, so its observed_at differs. The guard must
+// still see the same question (CHE-7007).
+func TestDecisionRequestReaskIgnoresReadAtTime(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	lane := fixture.newDMLane(test, "discussed here")
+	fixture.discussIn(test, lane)
+	at := func(age time.Duration) string { return time.Now().Add(-age).Format(time.RFC3339) }
+	body := fixture.body()
+	body["session_id"] = lane
+	first := fixture.details
+	first.StateClaims = []decisiontx.StateClaim{{Claim: "The change is ready.", ReadbackCommand: "gh pr view 1 --json isDraft", ObservedAt: at(60 * time.Second)}}
+	body["ask"] = first
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	fixture.taskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	second := fixture.details
+	second.Probes = []string{}
+	second.StateClaims = []decisiontx.StateClaim{{Claim: "The change is ready.", ReadbackCommand: "gh pr view 1 --json isDraft", ObservedAt: at(52 * time.Second)}}
+	body["ask"] = second
+	var refusal map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusConflict).JSON(&refusal)
+	if message, _ := refusal["error"].(string); !strings.Contains(message, "ICT") {
+		test.Fatalf("refusal must name the time of the earlier ask: %v", refusal)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, fixture.issueID) != 1 {
+		test.Fatal("refused re-ask left a second request")
+	}
 }
 
 func TestDecisionLanesAreOrderedByIssueRelevance(test *testing.T) {

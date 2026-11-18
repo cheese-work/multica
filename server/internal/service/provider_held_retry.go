@@ -38,14 +38,18 @@ type heldProviderRetry struct {
 	overlay      runtimeMCPOverlayData
 	holdProvider pgtype.Text
 	holdSeconds  pgtype.Int4
+	workspaceID  pgtype.UUID
 }
 
-// isHeldProviderRetryReason names the one reason the held retry covers. 5xx is
-// deliberately not in retryableReasons: retryShape and the held path read it, so
-// failTask mints one successor. 429 stays on its generic retry until M3b
-// (CHE-1741) can release a held row; the owner chose that in CHE-5284.
+// isHeldProviderRetryReason names the reasons the held retry covers: provider
+// 5xx (CHE-1736 M1.2) and 429/529 (CHE-5345, once M3b CHE-1741 could release a
+// held row). 5xx is deliberately not in retryableReasons: retryShape and the
+// held path read it, so failTask mints one successor. 429 stays in
+// retryableReasons as the fallback when the held path declines (wakeup-bound
+// run, no transaction handle) and for the orphan sweeper.
 func isHeldProviderRetryReason(reason string) bool {
-	return reason == taskfailure.ReasonAgentProviderServerError.String()
+	return reason == taskfailure.ReasonAgentProviderServerError.String() ||
+		reason == taskfailure.ReasonAgentProviderCapacityOrRateLimit.String()
 }
 
 // planHeldProviderRetry loads, before the transaction, what the held retry
@@ -65,6 +69,7 @@ func (s *TaskService) planHeldProviderRetry(ctx context.Context, reason string, 
 	plan := heldProviderRetry{
 		engaged:     true,
 		reason:      reason,
+		workspaceID: agent.WorkspaceID,
 		maxAttempts: pgtype.Int4{Int32: retryAttemptCeiling(reason, parent.MaxAttempts), Valid: true},
 		overlay:     s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent),
 	}
@@ -129,6 +134,15 @@ func createHeldProviderRetry(ctx context.Context, qtx *db.Queries, tx pgx.Tx, fa
 		ChangedCondition: "recovery_reserved",
 		RecoveryTaskID:   childID,
 	}, func(ctx context.Context, sp pgx.Tx) error {
+		// The release controller treats a missing breaker row as unknown state
+		// and releases nothing, and only a trip or a success writes one. Make the
+		// breaker known (closed) so a first failure's held row can get a canary
+		// instead of expiring. Rolls back with the savepoint.
+		if err := db.New(sp).EnsureProviderBreaker(ctx, db.EnsureProviderBreakerParams{
+			WorkspaceID: plan.workspaceID, Provider: plan.holdProvider.String,
+		}); err != nil {
+			return fmt.Errorf("ensure provider breaker for held retry: %w", err)
+		}
 		created, err := create(ctx, db.New(sp), db.CreateRetryTaskParams{
 			NewTaskID:            childID,
 			ID:                   failed.ID,

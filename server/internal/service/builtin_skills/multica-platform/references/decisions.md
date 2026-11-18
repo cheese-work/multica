@@ -446,11 +446,17 @@ re-enable a skill for itself.
 }
 ```
 
-## Shadow predictor report
+## System 1 shadow predictor
 
-```bash
-multica decision shadow-report [--since <RFC3339>] [--until <RFC3339>]
-```
+Read-only commands; output is JSON only.
 
-Reads the System 1 shadow predictor report (JSON only). The window defaults to
-the 24 hours before `--until`; `--until` defaults to now.
+- `multica decision shadow-report [--since <RFC3339>] [--until <RFC3339>]` reads
+  the shadow predictor report. The window defaults to the 24 h before `--until`;
+  `--until` defaults to now.
+- `multica system1 report [--scope <scope>]` reads the qualification report,
+  optionally for one scope such as `test_first_waiver` or `ci:<repo>:P1`.
+- `multica system1 label-queue --kind burn_in|eval --scope <scope>` reads the
+  blind label queue: observation ids and typed features, never a prediction.
+- `multica system1 label submit --kind burn_in|eval --observation <id> --label <value> [--supersedes <label-id>]`
+  writes one label for one observation from the queue. `--supersedes` names the
+  live label it corrects.
