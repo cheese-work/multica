@@ -49,3 +49,9 @@ INSERT INTO issue_step_watchdog_action (id, workspace_id, issue_id, occurrence_k
 VALUES (@id, @workspace_id, @issue_id, @occurrence_key, @action, @outcome, @details)
 ON CONFLICT (issue_id, occurrence_key, action) DO NOTHING
 RETURNING id;
+
+-- name: StepWatchdogActionClaimed :one
+-- CHE-6116 S2. True when (issue, occurrence, action) already has its ledger row.
+SELECT EXISTS (
+  SELECT 1 FROM issue_step_watchdog_action
+  WHERE issue_id = @issue_id AND occurrence_key = @occurrence_key AND action = @action) AS claimed;

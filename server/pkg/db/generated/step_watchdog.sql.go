@@ -127,3 +127,23 @@ func (q *Queries) ListStepWatchdogCandidates(ctx context.Context, arg ListStepWa
 	}
 	return items, nil
 }
+
+const stepWatchdogActionClaimed = `-- name: StepWatchdogActionClaimed :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_step_watchdog_action
+  WHERE issue_id = $1 AND occurrence_key = $2 AND action = $3) AS claimed
+`
+
+type StepWatchdogActionClaimedParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	OccurrenceKey string      `json:"occurrence_key"`
+	Action        string      `json:"action"`
+}
+
+// CHE-6116 S2. True when (issue, occurrence, action) already has its ledger row.
+func (q *Queries) StepWatchdogActionClaimed(ctx context.Context, arg StepWatchdogActionClaimedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, stepWatchdogActionClaimed, arg.IssueID, arg.OccurrenceKey, arg.Action)
+	var claimed bool
+	err := row.Scan(&claimed)
+	return claimed, err
+}

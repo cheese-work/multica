@@ -75,6 +75,9 @@ func TestStepWatchdogOnBlocksBudgetRefusedOnce(t *testing.T) {
 		if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE '%weekly run guard%'`, issueID); n != 1 {
 			t.Errorf("%d notices, want 1", n)
 		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE '%36 runs in the last 7 days%'`, issueID); n != 1 {
+			t.Errorf("%d notices name the run count and window, want 1", n)
+		}
 		if n := ledgerCount(t, issueID, "block_budget"); n != 1 {
 			t.Errorf("%d block_budget rows, want 1", n)
 		}
@@ -194,6 +197,47 @@ func TestStepWatchdogShadowRecordsOnlyWouldAct(t *testing.T) {
 		}
 		if n := dbfx.Count(t, `SELECT count(*) FROM issue_step_watchdog_action WHERE issue_id = $1`, issueID); n != 0 {
 			t.Errorf("%d ledger rows, want 0", n)
+		}
+	})
+}
+
+// A sweep is bounded, so what it already handled must not fill the next batch.
+func TestStepWatchdogSweepProgressesPastHandledCandidates(t *testing.T) {
+	f := newWatchdogFixture(t)
+	t.Setenv("MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS", "25")
+	const limit = 2
+
+	t.Run("claimed shadow rows", func(t *testing.T) {
+		setWatchdogMode(t, "shadow")
+		var ids []string
+		for _, age := range []time.Duration{30, 29, 28} {
+			ids = append(ids, f.stalledIssue(t, age*time.Hour, 36))
+		}
+		for i := 0; i < 2; i++ {
+			if err := testHandler.sweepStepWatchdog(context.Background(), limit); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, id := range ids {
+			if n := ledgerCount(t, id, "would_act"); n != 1 {
+				t.Errorf("issue %s: %d would_act rows after two bounded sweeps, want 1", id, n)
+			}
+		}
+	})
+
+	t.Run("steps the mode does not act on yet", func(t *testing.T) {
+		setWatchdogMode(t, "on")
+		for _, age := range []time.Duration{30, 29, 28} {
+			f.stalledIssue(t, age*time.Hour, 0) // admission open: a later slice's case
+		}
+		budget := f.stalledIssue(t, 25*time.Hour, 36)
+		if err := testHandler.sweepStepWatchdog(context.Background(), limit); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		dbfx.QueryRow(t, `SELECT status FROM issue WHERE id = $1`, budget).Scan(&status)
+		if status != "blocked" {
+			t.Errorf("status = %q, want blocked: older issues the watchdog does not act on hid it", status)
 		}
 	})
 }

@@ -52,9 +52,13 @@ type stepClass struct {
 // assignee, a finished or backlog status, an active run, a Cheese stop and a
 // need_decision issue with a decision request are filtered in the query; a step
 // without a handler is filtered here, because only the workflow knows it. The
-// query is paged by keyset so older issues in a step with no handler cannot fill
-// the batch and hide a candidate behind them.
-func (h *Handler) stepWatchdogCandidates(ctx context.Context, limit int32) ([]stepCandidate, error) {
+// query is paged by keyset, and keep (nil keeps all) drops what the caller will
+// not act on, so older issues that are skipped or already handled cannot fill the
+// batch and hide a candidate behind them.
+// ponytail: a tick scans every kept-out candidate before it reaches the limit,
+// so its cost grows with the stalled issues the watchdog skips; keep a cursor
+// across ticks if that is ever measured.
+func (h *Handler) stepWatchdogCandidates(ctx context.Context, limit int32, keep func(stepCandidate) (bool, error)) ([]stepCandidate, error) {
 	var out []stepCandidate
 	afterAt, afterID := pgtype.Timestamptz{Valid: true}, pgtype.UUID{Valid: true} // year 1, nil UUID: before every row
 	olderThan := pgtype.Timestamptz{Time: time.Now().Add(-stepWatchdogMinAge), Valid: true}
@@ -72,6 +76,12 @@ func (h *Handler) stepWatchdogCandidates(ctx context.Context, limit int32) ([]st
 			cand, ok, err := h.stepCandidateFor(ctx, row)
 			if err != nil {
 				return nil, err
+			}
+			if ok && keep != nil {
+				ok, err = keep(cand)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if ok {
 				out = append(out, cand)
@@ -158,43 +168,68 @@ func stepWatchdogModeFromSettings(settings []byte) string {
 // on this status occurrence: nothing was written.
 var errStepWatchdogClaimed = errors.New("step watchdog: action already claimed")
 
-// sweepStepWatchdog acts on up to limit candidates. A failure on one candidate
-// does not stop the rest.
+// sweepStepWatchdog acts on up to limit candidates. A candidate in an off
+// workspace, one this mode has nothing to do for, and one whose action is already
+// claimed are not counted, so repeated sweeps move past them. A failure on one
+// candidate does not stop the rest.
 func (h *Handler) sweepStepWatchdog(ctx context.Context, limit int32) error {
-	cands, err := h.stepWatchdogCandidates(ctx, limit)
-	if err != nil {
-		return err
+	var failures error
+	fail := func(c stepCandidate, err error) {
+		slog.Warn("step watchdog: candidate failed", "err", err, "issue_id", uuidToString(c.Issue.ID))
+		failures = errors.Join(failures, err)
 	}
 	modes := map[pgtype.UUID]string{}
-	var failures error
-	for _, c := range cands {
+	classes := map[pgtype.UUID]stepClass{}
+	keep := func(c stepCandidate) (bool, error) {
 		mode, ok := modes[c.Issue.WorkspaceID]
 		if !ok {
 			ws, err := h.Queries.GetWorkspace(ctx, c.Issue.WorkspaceID)
 			if err != nil {
-				failures = errors.Join(failures, err)
-				continue
+				fail(c, err)
+				return false, nil
 			}
 			mode = stepWatchdogModeFromSettings(ws.Settings)
 			modes[c.Issue.WorkspaceID] = mode
 		}
 		if mode == stepWatchdogOff {
-			continue
+			return false, nil
 		}
 		class, err := h.classifyStep(ctx, c)
-		if err == nil {
-			err = h.actOnStep(ctx, c, class, mode)
-		}
 		if err != nil {
-			slog.Warn("step watchdog: candidate failed", "err", err, "issue_id", uuidToString(c.Issue.ID))
-			failures = errors.Join(failures, err)
+			fail(c, err)
+			return false, nil
+		}
+		action := "would_act"
+		if mode == stepWatchdogOn {
+			if class.Case != stepCaseBlockBudget {
+				return false, nil // re-dispatch and notice are later slices
+			}
+			action = string(class.Case)
+		}
+		claimed, err := h.Queries.StepWatchdogActionClaimed(ctx, db.StepWatchdogActionClaimedParams{
+			IssueID: c.Issue.ID, OccurrenceKey: c.OccurrenceKey, Action: action,
+		})
+		if err != nil {
+			fail(c, err)
+			return false, nil
+		}
+		classes[c.Issue.ID] = class
+		return !claimed, nil
+	}
+	cands, err := h.stepWatchdogCandidates(ctx, limit, keep)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, c := range cands {
+		if err := h.actOnStep(ctx, c, classes[c.Issue.ID], modes[c.Issue.WorkspaceID]); err != nil {
+			fail(c, err)
 		}
 	}
 	return failures
 }
 
 // actOnStep acts once per (issue, status occurrence, action). Only the budget
-// block acts in on mode so far; the other cases are later slices.
+// block acts in on mode so far; sweepStepWatchdog keeps the other cases out.
 func (h *Handler) actOnStep(ctx context.Context, c stepCandidate, class stepClass, mode string) error {
 	switch {
 	case mode == stepWatchdogShadow:
@@ -316,10 +351,16 @@ func (h *Handler) blockBudgetRefused(ctx context.Context, c stepCandidate, class
 		if locked.Revision != params.ExpectedRevision.Int64 {
 			return fmt.Errorf("step watchdog: issue changed since it was read: %w", pgx.ErrNoRows)
 		}
+		runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{
+			IssueID: issue.ID, Since: pgtype.Timestamptz{Time: time.Now().Add(-service.WeeklyRunGuardWindow), Valid: true},
+		})
+		if err != nil {
+			return err
+		}
 		created, err := q.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true},
-			Content: fmt.Sprintf("Step watchdog: this issue sat in %s since %s with no run, and the %s refuses its handler's run. Blocked (reason %s).",
-				issue.Status, c.InStepSince.UTC().Format(time.RFC3339), label, reason),
+			Content: fmt.Sprintf("Step watchdog: this issue sat in %s since %s with no run, and the %s refuses its handler's run (%d runs in the last 7 days). Blocked (reason %s).",
+				issue.Status, c.InStepSince.UTC().Format(time.RFC3339), label, runs, reason),
 			Type: "system",
 		})
 		if err != nil {
