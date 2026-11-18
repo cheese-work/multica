@@ -250,3 +250,47 @@ func TestRevokerWithAuditNeedsAPool(t *testing.T) {
 		t.Fatal("a Revoker with Audit and no Pool must refuse rather than skip the audit row")
 	}
 }
+
+// CHE-4742 and CHE-4782 added revoke by decision (withdrawn answer, expired decision). Each
+// lease it ends or drops must write one revoke row that names the decision and the reason.
+func TestRevokeDecisionAuditsEachLeaseWithDecisionAndReason(t *testing.T) {
+	for _, reason := range []string{ReasonDecisionWithdrawn, ReasonDecisionExpired} {
+		t.Run(reason, func(t *testing.T) {
+			w := newWorld(t)
+			log := &auditLog{}
+			r, _ := newAuditedRevoker(t, w, log)
+			decision := newID()
+			w.lease(withDecision(decision))
+			w.lease(withDecision(decision), queued())
+			w.lease(withDecision(newID())) // another decision: stays live, no row
+			w.lease()                      // no decision: stays live, no row
+
+			if _, err := r.RevokeDecision(context.Background(), w.workspace, decision, reason); err != nil {
+				t.Fatal(err)
+			}
+			wantKinds(t, log, AuditRevoke, AuditRevoke)
+			for _, e := range log.entries {
+				if e.lease.DecisionID != decision || e.lease.EndReason.String != reason {
+					t.Fatalf("revoke row decision=%v reason=%q, want %v %q", e.lease.DecisionID, e.lease.EndReason.String, decision, reason)
+				}
+			}
+		})
+	}
+}
+
+func TestRevokeDecisionAuditFailureLeavesLeasesLive(t *testing.T) {
+	w := newWorld(t)
+	log := &auditLog{failOn: AuditRevoke}
+	r, rec := newAuditedRevoker(t, w, log)
+	decision := newID()
+	active := w.lease(withDecision(decision))
+	if _, err := r.RevokeDecision(context.Background(), w.workspace, decision, ReasonDecisionWithdrawn); err == nil {
+		t.Fatal("audit failure was swallowed")
+	}
+	if row, _ := w.reload(active); row.State != "active" {
+		t.Fatalf("lease state = %q, want active after the rolled-back revoke", row.State)
+	}
+	if len(rec.got) != 0 {
+		t.Fatalf("published %d events for a rolled-back revoke", len(rec.got))
+	}
+}

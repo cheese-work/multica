@@ -186,5 +186,30 @@
       "open_card": "Ouvrir la carte",
       "unreadable": "Cette approbation n'est pas disponible pour vous ou n'existe plus. Demandez à l'agent de la proposer à nouveau."
     }
+  },
+  "budget_receipt": {
+    "applied_runs": "Appliqué. {{issue}} affiche maintenant {{used}} exécutions sur {{limit}}.",
+    "runs_used": "Exécutions utilisées",
+    "change": "{{used}} sur {{limit}} → {{usedAfter}} sur {{limitAfter}}",
+    "change_new_window": "{{used}} sur {{limit}} → {{usedAfter}} sur {{limitAfter}} (nouvelle fenêtre)",
+    "outcome": {
+      "run_queued": "Exécution en file d'attente.",
+      "run_started": "Exécution démarrée.",
+      "status_restored": "Statut rétabli.",
+      "still_blocked_runs": "Toujours bloqué : plus d'exécutions disponibles.",
+      "still_blocked_tokens": "Toujours bloqué : budget de jetons épuisé.",
+      "still_blocked": "Toujours bloqué.",
+      "later_window": "Non repris : une fenêtre de budget plus récente a remplacé celle-ci.",
+      "status_moved": "Non repris : la tâche a changé de statut.",
+      "window_changed": "Non repris : la fenêtre de budget a changé.",
+      "issue_closed": "Non repris : la tâche est fermée.",
+      "agent_archived": "Non repris : l'agent est archivé.",
+      "restore_refused": "Non repris : le statut n'a pas pu être rétabli.",
+      "unknown_origin": "Non repris : le statut avant le blocage est inconnu. Changez le statut à la main.",
+      "assignee_changed": "Non repris : l'assigné a changé.",
+      "source_unknown": "Non repris : le déclencheur d'origine est inconnu.",
+      "source_not_delivered": "Non repris : le déclencheur d'origine n'a plus de travail à faire.",
+      "superseded": "Non repris."
+    }
   }
 }
