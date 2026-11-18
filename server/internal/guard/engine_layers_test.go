@@ -75,6 +75,30 @@ func TestLayersRefuseWhenTargetUnknown(t *testing.T) {
 	}
 }
 
+func TestGitOutsideCloneWithLayers(t *testing.T) {
+	for _, args := range [][]string{
+		{"clone", "https://github.com/tevo-studio/sa039-astrology.git"},
+		{"init"},
+		{"--version"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			pol := layered(Layer{Scope: ScopeOrg, Org: "tevo-studio"})
+			pol.RepositoryAllowlist = map[string][]string{"tevo-studio": {"sa039-astrology"}}
+			f := newFake()
+			f.repoViewFails = true // no clone to resolve through gh repo view
+			var out, errs bytes.Buffer
+			e := Engine{Policy: pol, Runner: f, Out: &out, Err: &errs}
+			code, err := e.Exec(context.Background(), "git", args)
+			if err != nil || code != 0 || len(f.streamed) != 1 || errs.Len() != 0 {
+				t.Fatalf("git %v: exit=%d err=%v streamed=%v stderr=%q", args, code, err, f.streamed, &errs)
+			}
+			if f.callsWith("gh ") != 0 {
+				t.Fatalf("git needed a GitHub lookup: %v", f.calls)
+			}
+		})
+	}
+}
+
 func TestInvalidPolicyFailsClosed(t *testing.T) {
 	p, _ := writePolicy(t, t.TempDir(), goodPolicy)
 	env := map[string]string{"MULTICA_GUARD_POLICY": p, "MULTICA_GUARD_POLICY_SHA256": strings.Repeat("a", 64)}

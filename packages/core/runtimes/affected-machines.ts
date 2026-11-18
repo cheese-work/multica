@@ -12,7 +12,7 @@ export const AffectedMachineSchema = z.object({
   daemon_id: z.string(),
   device_name: z.string().catch(""),
   state: z.enum(["paused", "offline"]),
-  reason: z.enum(["maintenance", "incident", "suspended"]).nullable().catch(null),
+  reason: z.enum(["maintenance", "incident", "suspended", "scheduled_update"]).nullable().catch(null),
   event_id: z.string(),
   expires_at: z.string().nullable().catch(null),
   waiting_tasks: z.number().int().nonnegative().catch(0),

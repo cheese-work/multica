@@ -2354,6 +2354,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.AuthToken = tokenStr
 		resp.RemoteMCPDaemonToken = remoteMCPToken
+		resp.DoopTaskAssertion = h.doopTaskAssertion(r.Context(), &task, rt, &resp)
 		resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 		out = append(out, resp)
 	}
@@ -4793,6 +4794,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.AuthToken = tokenStr
 	resp.RemoteMCPDaemonToken = remoteMCPToken
+	resp.DoopTaskAssertion = h.doopTaskAssertion(r.Context(), task, runtime, &resp)
 	task.DeliveredCommentIds = receipt
 	resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 
@@ -5112,7 +5114,9 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	offered := service.TaskStartCapabilities{
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
 		ChatSupplement: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementChatV1),
-		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
+		PREvent: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1) ||
+			slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV2),
+		PREventV2:      slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV2),
 		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1),
 	}
 	var task *db.AgentTaskQueue

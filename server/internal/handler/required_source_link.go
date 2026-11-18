@@ -98,7 +98,7 @@ func (h *Handler) declaredRequiredSource(ctx context.Context, issue db.Issue) (s
 		return "", nil
 	}
 
-	defs, err := h.Queries.ListIssueProperties(ctx, db.ListIssuePropertiesParams{
+	defs, err := h.Queries.ListIssuePropertyDefinitions(ctx, db.ListIssuePropertyDefinitionsParams{
 		WorkspaceID: issue.WorkspaceID,
 		// Archived definitions still count: archiving a property stops NEW
 		// values being set, it does not retract an obligation already recorded

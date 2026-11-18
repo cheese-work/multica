@@ -13,6 +13,15 @@ WHERE p.workspace_id = sqlc.arg('workspace_id')::uuid
   AND (sqlc.arg('include_archived')::bool OR p.archived_at IS NULL)
 ORDER BY p.position ASC, LOWER(p.name) ASC;
 
+-- name: ListIssuePropertyDefinitions :many
+-- Same rows and order as ListIssueProperties, without usage_count. Use it when
+-- the caller only needs the definitions: usage_count costs one COUNT(*) over
+-- the workspace's issues per definition.
+SELECT * FROM issue_property p
+WHERE p.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND (sqlc.arg('include_archived')::bool OR p.archived_at IS NULL)
+ORDER BY p.position ASC, LOWER(p.name) ASC;
+
 -- name: GetIssueProperty :one
 SELECT * FROM issue_property
 WHERE id = $1 AND workspace_id = $2;

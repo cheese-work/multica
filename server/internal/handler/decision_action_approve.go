@@ -144,7 +144,7 @@ func (handler *Handler) ApproveDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	handler.finishApprovalAfterCommit(ctx, action)
-	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+	writeJSON(writer, http.StatusOK, handler.decisionActionOutcome(ctx, action))
 }
 
 // approvePlan is what an approval reads before its transaction: the executor,

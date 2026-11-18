@@ -682,6 +682,11 @@
         "name": "停用",
         "label": "停用",
         "hint": "停止服务。30 分钟后结束"
+      },
+      "scheduled_update": {
+        "name": "定时更新",
+        "label": "定时更新",
+        "hint": "更新窗口。结束后自动解除"
       }
     },
     "paused": "已暂停：{{reason}}",

@@ -1522,6 +1522,8 @@
       "max_fires": "已触发 {{count}} 次，达到上限后暂停",
       "loop": "已暂停：与其他唤醒规则互相触发",
       "rate": "已暂停：1 小时内触发超过 12 次",
+      "run_budget": "已暂停：该议题用完了运行预算；提高预算后会重新启用",
+      "weekly_run_guard": "已暂停：该议题达到每周运行上限；有新的 PR 事件或次数下降后会重新启用",
       "hint": "重新开启后恢复，次数重新计算。"
     },
     "detail": {
@@ -1544,7 +1546,9 @@
     "paused_reason": {
       "max_fires": "达到 {{count}} 次上限",
       "loop": "与其他唤醒规则互相触发",
-      "rate": "1 小时内触发超过 12 次"
+      "rate": "1 小时内触发超过 12 次",
+      "run_budget": "该议题用完了运行预算",
+      "weekly_run_guard": "该议题达到每周运行上限"
     },
     "paused_banner": "{{name}} 已于 {{time}} 暂停唤醒",
     "paused_banner_anonymous": "唤醒已于 {{time}} 暂停",
