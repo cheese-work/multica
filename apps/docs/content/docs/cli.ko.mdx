@@ -396,6 +396,18 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 워크스페이스 설정 `design_card_guard`는 `mode`, `doop_origin`, `design_url_property_id`, `design_workflow_id`를 가진 객체입니다. `mode`는 `off`, `warn`, `block` 중 하나이며, 키가 없거나 `mode`가 없으면 `off`입니다. `warn` 또는 `block`에서는 `doop_origin`(경로 없는 `https` 오리진)과 `design_url_property_id`(UUID)가 필수이고, `design_workflow_id`(UUID)는 선택입니다. 그 밖의 필드, `null` 값, 잘못된 타입은 서버가 `400`으로 거부합니다. 결정 액션으로 설정을 바꿀 때도 이 키를 지정할 수 있습니다. 지금은 설정을 읽고 검사하기만 하며, 아직 카드에 경고하거나 카드를 거부하지 않습니다.
 
+## 백그라운드 에이전트
+
+각 백그라운드 작업(`dm_title`, `quick_actions`, `compact`, `routing`)은 기본 에이전트, 그다음 대체 에이전트의 태스크로 실행됩니다. 워크스페이스 기본값이나 내 체인을 확인하거나 설정합니다.
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # 워크스페이스 기본값으로 되돌리기
+```
+
+`--agent`와 `--fallback`은 에이전트 ID 또는 이름을 받고, `none`은 필드를 지웁니다. `multica me`는 `dm_title`, `quick_actions`, `compact`를 다루며 `routing`은 워크스페이스 전용입니다. 워크스페이스에 쓰려면 소유자 또는 관리자 권한이 필요하고, 두 명령 모두 태스크 토큰을 거부합니다. 에이전트 없음 동작과 제한 시간은 [백그라운드 에이전트](/background-agents)를 참고하세요.
+
 ## 명령 개요
 
 | 명령 | 용도 |

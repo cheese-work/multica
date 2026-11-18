@@ -20,3 +20,6 @@ WHERE machine_owner_id = $1 AND daemon_id = $2;
 SELECT * FROM daemon_update_schedule
 WHERE machine_owner_id = ANY(@machine_owner_ids::uuid[])
   AND daemon_id = ANY(@daemon_ids::text[]);
+
+-- name: ListEnabledDaemonUpdateSchedules :many
+SELECT * FROM daemon_update_schedule WHERE enabled;

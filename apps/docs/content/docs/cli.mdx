@@ -435,6 +435,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 - `--issue-title-template` interpolates only `{{date}}` (UTC, `YYYY-MM-DD`) and rejects any other `{{...}}` token. A schedule trigger's `--timezone` defaults to UTC.
 - `--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` need `--mode script`, and `--mode script` needs `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script. The server deletes the task token when the task ends, on a best-effort basis. If the deletion fails, the token stays valid until it expires; nothing revokes it sooner. The run result records the script name, a SHA-256 of the argument list, the exit code and the duration under `script`, and sets `token_revoke_failed` when a deletion failed.
 
+## Background agents
+
+Each background job (`dm_title`, `quick_actions`, `compact`, `routing`) runs as a task of a primary agent, then a fallback agent. Show or set the workspace default, or your own chain:
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # back to the workspace default
+```
+
+`--agent` and `--fallback` take an agent id or name; `none` clears the field. `multica me` covers `dm_title`, `quick_actions` and `compact`; `routing` is workspace-only. Workspace writes need an owner or admin, and both commands refuse task tokens. See [Background Agents](/background-agents) for the no-agent behaviour and deadlines.
+
 ## Command overview
 
 | Command | Purpose |

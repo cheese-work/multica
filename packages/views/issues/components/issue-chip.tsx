@@ -3,7 +3,8 @@
 import { ApiError } from "@multica/core/api";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import type { Issue } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -80,7 +81,13 @@ export function IssueChip({
       !(query.state.error instanceof ApiError && query.state.error.status === 404),
   });
 
-  const issue = listIssue ?? detailIssue;
+  // A list update can drop the issue from the first page while its detail
+  // lookup is still in flight. Keep the last resolved issue meanwhile so the
+  // chip does not shrink back to its key (CHE-1830, H3).
+  const lastResolved = useRef<{ issueId: string; issue: Issue }>(null);
+  const resolved = listIssue ?? detailIssue;
+  if (resolved) lastResolved.current = { issueId, issue: resolved };
+  const issue = resolved ?? (lastResolved.current?.issueId === issueId ? lastResolved.current.issue : undefined);
   const cls = [ISSUE_CHIP_CLASS, stableWidth && ISSUE_CHIP_STABLE_WIDTH_CLASS, className]
     .filter(Boolean)
     .join(" ");

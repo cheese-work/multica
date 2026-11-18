@@ -49,6 +49,9 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
           REPO: ${{ github.repository }}
+          # CHE-7066: a queue build reads the rules file through Git, not REST, so the installation rate limit cannot
+          # eject a PR. Set only for merge_group; the CLI also checks the event and the queue ref. Remove to return to REST.
+          GUARD_RULES_VIA_GIT: ${{ github.event_name == 'merge_group' && '1' || '' }}
           GUARD_POLICY_JSON: ${{ vars.GUARD_POLICY_JSON }}
           GUARD_POLICY_SHA256: ${{ vars.GUARD_POLICY_SHA256 }}
           GUARD_POLICY_READ_TOKEN: ${{ secrets.GUARD_POLICY_READ_TOKEN }}
