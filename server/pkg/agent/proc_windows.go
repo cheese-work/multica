@@ -98,6 +98,9 @@ type jobObjectBasicAccountingInformation struct {
 // the error returned, so the caller fails the launch instead of waiting forever
 // on a process that will never run.
 func startOwnedProcessTree(cmd *exec.Cmd, logger *slog.Logger) error {
+	if err := applyLaunchHook(cmd); err != nil {
+		return err
+	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}

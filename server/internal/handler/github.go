@@ -1904,6 +1904,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		}
 	}
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	h.enqueueStackLink(&p)
 	if p.Action == "closed" && p.PullRequest.Merged {
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	}
@@ -2367,6 +2368,8 @@ func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayl
 	}
 	for _, r := range rows {
 		h.PRRefresh.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+		// CHE-4143: the layers above the merge are re-evaluated for stack linking.
+		h.enqueueStackLinkNumber(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
 	return nil
 }
