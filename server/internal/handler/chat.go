@@ -1676,6 +1676,9 @@ func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSessio
 	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
 		return nil, err
 	}
+	if err := qtx.MarkDecisionRequestsRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
 	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
 	if err != nil {
 		return nil, err

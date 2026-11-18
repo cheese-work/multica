@@ -299,6 +299,7 @@ func (handler *Handler) publishWithdrawalEvents(workspaceID, actorType, actorID 
 		handler.publish(protocol.EventCommentCreated, workspaceID, actorType, actorID, payload)
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
+	handler.revokeLeasesOfWithdrawal(workspaceID, result)
 	handler.publishDecisionAnswerUpdated(workspaceID, actorType, actorID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	for _, item := range result.Covered {
 		handler.publishWithdrawalEvents(workspaceID, actorType, actorID, item, nil)
