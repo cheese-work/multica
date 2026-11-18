@@ -65,20 +65,25 @@ func TestCardAnswerDeadCasesAreTypedRefusals(test *testing.T) {
 }
 
 // A card mirrored in another DM is the same decision: the answer is keyed by the
-// decision id alone, so answering from the mirror settles the one shared request
+// decision id alone. With the original lane archived, an active DM of the same
+// person answers it: one shared answer, history in the archived lane untouched,
 // and the original view then reads it as used.
 func TestAnswerThroughAMirroredViewUpdatesTheOneSharedDecision(test *testing.T) {
 	fixture := newCardFixture(test)
 	mirror := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Mirror DM"})
-	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": mirror, "role": "assistant", "content": "mirrored card for " + uuidToString(fixture.decision.ID)})
+	dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, fixture.sessionID)
+	originalMessages := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID)
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err != nil {
-		test.Fatal(err)
+		test.Fatalf("answer through the active mirror = %v, want recorded", err)
 	}
 	if n := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'answered'`, fixture.decision.ID); n != 1 {
 		test.Fatalf("shared decision answered rows = %d, want 1", n)
 	}
-	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, fixture.decision.ID); n != 1 {
-		test.Fatalf("answers = %d, want 1", n)
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND source_chat_session_id = $2`, fixture.decision.ID, mirror); n != 1 {
+		test.Fatalf("answers recorded from the mirror = %d, want 1", n)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID); n != originalMessages {
+		test.Fatalf("archived lane messages %d -> %d, want read-only history", originalMessages, n)
 	}
 	_, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
 	var refusal decisionIntentRefusal

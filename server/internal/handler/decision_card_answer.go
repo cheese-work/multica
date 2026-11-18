@@ -185,8 +185,22 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	if session.CreatorID != userID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
+	if session.CreatorID != userID || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+	}
+	// The card's own lane may be archived: its history stays read-only, and the
+	// person's active DM with the asking agent records the answer instead.
+	cardSession := session
+	if session.Status != "active" {
+		viewID, err := queries.GetLatestPlainDM(ctx, db.GetLatestPlainDMParams{WorkspaceID: workspaceID, CreatorID: userID, AgentID: decision.AskingAgentID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+		} else if err != nil {
+			return empty, err
+		}
+		if session, err = queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: workspaceID, ID: viewID}); err != nil {
+			return empty, err
+		}
 	}
 	workspace, err := queries.GetWorkspace(ctx, workspaceID)
 	if err != nil {
@@ -227,7 +241,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 			return empty, err
 		}
 	}
-	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(session.ID), uuidToString(decision.PingMessageID))
+	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(cardSession.ID), uuidToString(decision.PingMessageID))
 	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(quote) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
