@@ -70,15 +70,8 @@ func Load(ctx context.Context, q db.DBTX, issueID string) (Loaded, error) {
 	if issue.Labels, err = column(ctx, q, `SELECT l.name FROM issue_to_label il JOIN issue_label l ON l.id = il.label_id WHERE il.issue_id = $1`, issueID); err != nil {
 		return Loaded{}, err
 	}
-	if origin == "agent_create" {
-		// An autopilot-made issue has origin agent_create; its origin_id is the task, and the task carries the run.
-		ids, err := column(ctx, q, `SELECT r.autopilot_id::text FROM agent_task_queue t JOIN autopilot_run r ON r.id = t.autopilot_run_id WHERE t.id = $1`, originID)
-		if err != nil {
-			return Loaded{}, err
-		}
-		if len(ids) > 0 {
-			issue.AutopilotID = ids[0]
-		}
+	if issue.AutopilotID, err = autopilotOf(ctx, q, origin, originID); err != nil {
+		return Loaded{}, err
 	}
 	if err = q.QueryRow(ctx, `SELECT prior_status, to_status FROM issue_decision_park WHERE issue_id = $1`, issueID).Scan(&issue.ParkPrior, &issue.ParkTo); err == nil {
 		issue.HasPark = true
@@ -92,6 +85,19 @@ func Load(ctx context.Context, q db.DBTX, issueID string) (Loaded, error) {
 		return Loaded{}, err
 	}
 	return loaded, nil
+}
+
+// autopilotOf is the autopilot of an issue made by one. Such an issue has origin
+// agent_create; its origin_id is the task, and the task carries the run.
+func autopilotOf(ctx context.Context, q db.DBTX, origin, originID string) (string, error) {
+	if origin != "agent_create" || originID == "" {
+		return "", nil
+	}
+	ids, err := column(ctx, q, `SELECT r.autopilot_id::text FROM agent_task_queue t JOIN autopilot_run r ON r.id = t.autopilot_run_id WHERE t.id = $1`, originID)
+	if err != nil || len(ids) == 0 {
+		return "", err
+	}
+	return ids[0], nil
 }
 
 func column(ctx context.Context, q db.DBTX, sql string, args ...any) ([]string, error) {

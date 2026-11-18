@@ -845,6 +845,76 @@ func (q *Queries) ListMachineRuntimes(ctx context.Context, arg ListMachineRuntim
 	return items, nil
 }
 
+const listMachineUpdateCycles = `-- name: ListMachineUpdateCycles :many
+SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle
+WHERE machine_owner_id = $1 AND daemon_id = $2
+  AND ($3::timestamptz IS NULL
+       OR (started_at, id) < ($3::timestamptz, $4::uuid))
+ORDER BY started_at DESC, id DESC
+LIMIT $5
+`
+
+type ListMachineUpdateCyclesParams struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	CursorAt       pgtype.Timestamptz `json:"cursor_at"`
+	CursorID       pgtype.UUID        `json:"cursor_id"`
+	RowLimit       int32              `json:"row_limit"`
+}
+
+// A machine's cycles, newest first. Keyset page on (started_at DESC, id DESC);
+// the cursor row is excluded.
+func (q *Queries) ListMachineUpdateCycles(ctx context.Context, arg ListMachineUpdateCyclesParams) ([]DaemonUpdateCycle, error) {
+	rows, err := q.db.Query(ctx, listMachineUpdateCycles,
+		arg.MachineOwnerID,
+		arg.DaemonID,
+		arg.CursorAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DaemonUpdateCycle{}
+	for rows.Next() {
+		var i DaemonUpdateCycle
+		if err := rows.Scan(
+			&i.ID,
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.FireAt,
+			&i.StartedAt,
+			&i.DeadlineAt,
+			&i.State,
+			&i.Attempt,
+			&i.UpdateRequestID,
+			&i.RuntimeID,
+			&i.FromCommit,
+			&i.TargetCommit,
+			&i.CancelRequested,
+			&i.RequestStatus,
+			&i.RequestReason,
+			&i.RequestOutput,
+			&i.RequestError,
+			&i.RequestReportedAt,
+			&i.Outcome,
+			&i.OutcomeDetail,
+			&i.OutcomeSource,
+			&i.Notes,
+			&i.LiveRunsAtEnd,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMachineWorkspaceIDs = `-- name: ListMachineWorkspaceIDs :many
 SELECT DISTINCT workspace_id FROM agent_runtime
 WHERE COALESCE(owner_id, workspace_id) = $1 AND daemon_id = $2
@@ -914,6 +984,38 @@ func (q *Queries) ListMachinesOfWorkspace(ctx context.Context, workspaceID pgtyp
 	return items, nil
 }
 
+const listServerDeploysSince = `-- name: ListServerDeploysSince :many
+SELECT "commit", version, started_at FROM server_deploy
+WHERE started_at >= $1
+ORDER BY started_at DESC, id DESC
+`
+
+type ListServerDeploysSinceRow struct {
+	Commit    string             `json:"commit"`
+	Version   string             `json:"version"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
+}
+
+func (q *Queries) ListServerDeploysSince(ctx context.Context, since pgtype.Timestamptz) ([]ListServerDeploysSinceRow, error) {
+	rows, err := q.db.Query(ctx, listServerDeploysSince, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServerDeploysSinceRow{}
+	for rows.Next() {
+		var i ListServerDeploysSinceRow
+		if err := rows.Scan(&i.Commit, &i.Version, &i.StartedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDaemonUpdateCycle = `-- name: LockDaemonUpdateCycle :one
 SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle WHERE id = $1 FOR UPDATE
 `
@@ -961,6 +1063,28 @@ func (q *Queries) LockWorkspaceForMachinePause(ctx context.Context, id pgtype.UU
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const recordServerDeploy = `-- name: RecordServerDeploy :execrows
+INSERT INTO server_deploy ("commit", version)
+SELECT $1::text, $2::text
+WHERE (SELECT d."commit" FROM server_deploy d ORDER BY d.started_at DESC, d.id DESC LIMIT 1) IS DISTINCT FROM $1::text
+`
+
+type RecordServerDeployParams struct {
+	Commit  string `json:"commit"`
+	Version string `json:"version"`
+}
+
+// One row when the running commit differs from the newest row; a restart on
+// the same commit writes none (CHE-5709, D14).
+// ponytail: two replicas starting in the same instant on a new commit can both write; dedupe on read if it matters.
+func (q *Queries) RecordServerDeploy(ctx context.Context, arg RecordServerDeployParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordServerDeploy, arg.Commit, arg.Version)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseCyclePause = `-- name: ReleaseCyclePause :execrows

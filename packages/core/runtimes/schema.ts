@@ -101,3 +101,74 @@ export const EMPTY_RUNTIME: AgentRuntime = {
   server_version: "",
   update_reason: "",
 };
+
+// Machine history, audit log and planned times (CHE-5709). A list drops an item
+// that has no usable id and keeps the rest; a field of an item falls back alone.
+function listOf<T extends z.ZodType>(item: T) {
+  return z
+    .array(z.unknown())
+    .catch([])
+    .transform((items) => items.flatMap((i) => {
+      const r = item.safeParse(i);
+      return r.success ? [r.data as z.infer<T>] : [];
+    }));
+}
+
+const nullableString = z.string().nullable().catch(null);
+
+export const MachineCycleSchema = z.object({
+  id: z.string(),
+  state: z.string().catch("unknown"),
+  outcome: UpdateOutcomeSchema,
+  outcome_detail: nullableString,
+  outcome_source: nullableString,
+  from_commit: nullableString,
+  target_commit: nullableString,
+  notes: z.array(z.string()).catch([]),
+  live_runs_at_end: z.number().int().nullable().catch(null),
+  started_at: z.string().catch(""),
+  deadline_at: z.string().catch(""),
+  finished_at: nullableString,
+}).loose();
+
+export const MachineHistoryPageSchema = z.object({
+  cycles: listOf(MachineCycleSchema),
+  next_cursor: nullableString,
+}).loose();
+
+export const MachineAuditEventSchema = z.object({
+  id: z.string(),
+  at: z.string().catch(""),
+  kind: z.string().catch(""),
+  actor_type: z.string().catch(""),
+  actor_id: nullableString,
+  actor_name: nullableString,
+  target_id: nullableString,
+  target_name: nullableString,
+  before: z.unknown().optional(),
+  after: z.unknown().optional(),
+}).loose();
+
+export const MachineAuditPageSchema = z.object({
+  events: listOf(MachineAuditEventSchema),
+  next_cursor: nullableString,
+}).loose();
+
+export const MachinePlannedSchema = z.object({
+  timezone: z.string().catch(DEFAULT_UPDATE_TIMEZONE),
+  next_runs: z.array(z.unknown()).catch([]).transform((a) => a.filter((v): v is string => typeof v === "string")),
+  server_deploys: listOf(z.object({
+    commit: z.string(),
+    version: z.string().catch(""),
+    started_at: z.string().catch(""),
+  }).loose()),
+}).loose();
+
+export type MachineCycle = z.infer<typeof MachineCycleSchema>;
+export type MachineHistoryPage = z.infer<typeof MachineHistoryPageSchema>;
+export type MachineAuditPage = z.infer<typeof MachineAuditPageSchema>;
+export type MachinePlanned = z.infer<typeof MachinePlannedSchema>;
+
+export const EMPTY_MACHINE_HISTORY: MachineHistoryPage = { cycles: [], next_cursor: null };
+export const EMPTY_MACHINE_AUDIT: MachineAuditPage = { events: [], next_cursor: null };
+export const EMPTY_MACHINE_PLANNED: MachinePlanned = { timezone: DEFAULT_UPDATE_TIMEZONE, next_runs: [], server_deploys: [] };

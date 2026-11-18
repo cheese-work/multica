@@ -122,13 +122,19 @@ func (kr *Keyring) Sign(c Claims) (string, error) {
 	if err := validateClaims(c); err != nil {
 		return "", err
 	}
-	var decision *string
+	var decision, task, issue *string
 	if c.DecisionID != "" {
 		decision = &c.DecisionID
 	}
+	if c.TaskID != "" {
+		task = &c.TaskID
+	}
+	if c.IssueID != "" {
+		issue = &c.IssueID
+	}
 	t := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
 		"iss": Issuer, "aud": c.Aud, "jti": c.JTI, "sub": c.Sub, "lease_id": c.LeaseID,
-		"epoch": c.Epoch, "task_id": c.TaskID, "issue_id": c.IssueID, "decision_id": decision,
+		"epoch": c.Epoch, "task_id": task, "issue_id": issue, "decision_id": decision,
 		"user_id": c.UserID, "profile": c.Profile, "class": c.Class, "instance": c.Instance,
 		"iat": c.Iat, "exp": c.Exp,
 	})
@@ -150,8 +156,10 @@ func validateClaims(c Claims) error {
 		return fmt.Errorf("browserlease: aud %q is not %s or %s", c.Aud, Aud(HostC00), Aud(HostX99))
 	}
 	switch {
-	case c.Sub == "", c.LeaseID == "", c.TaskID == "", c.IssueID == "", c.UserID == "",
-		c.Profile == "", c.Instance == "":
+	case c.Sub == "", c.LeaseID == "", c.UserID == "", c.Profile == "", c.Instance == "":
+		return errors.New("browserlease: empty required claim")
+	case c.Class != ClassH && (c.TaskID == "" || c.IssueID == ""):
+		// Only a member's login lease has no task or issue.
 		return errors.New("browserlease: empty required claim")
 	case len(c.JTI) < 32:
 		return errors.New("browserlease: jti must be at least 32 characters")
