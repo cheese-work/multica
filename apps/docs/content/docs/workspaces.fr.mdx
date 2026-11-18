@@ -60,6 +60,25 @@ Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut p
 
 Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
 
+### Saut de l'exécution à l'entrée en blocage
+
+Le paramètre d'espace de travail `blocked_run_skip` définit si une tâche qui entre dans `blocked` lance l'exécution de l'étape bloquée. Le serveur ne saute cette exécution que si la tâche indique ce qu'elle attend et si le propriétaire de l'étape a déjà un réveil qui poursuivra le travail.
+
+| Valeur | Effet |
+| --- | --- |
+| `off` | Rien ne change. L'agent de l'étape bloquée s'exécute à l'entrée. |
+| `warn` (par défaut) | L'exécution démarre comme avant. Chaque entrée qui aurait été sautée enregistre aussi une ligne d'activité `blocked_entry_would_skip` qui nomme l'exécution qui a suivi. |
+| `block` | Le serveur ne lance aucune exécution, enregistre une ligne d'activité `blocked_entry_linked` et garde le réveil actif. |
+
+L'exécution n'est sautée que si tout ce qui suit est vrai. Si une condition échoue ou ne peut pas être lue, l'exécution démarre comme avant.
+
+- La métadonnée `blocked_on` de la tâche est définie (`multica issue status <id> blocked --blocked-on <ref>`).
+- Le propriétaire de l'étape bloquée a sur cette tâche un réveil conditionnel actif pour la même référence : même option, même cible, même état, étape ou type. Un réveil temporel, une autre condition ou le réveil d'un autre agent ne comptent pas.
+- Ce réveil n'a pas de `last_error`, se termine dans les 7 jours et utilise `--on-timeout wake`.
+- L'exécution serait admise : la tâche a encore du budget d'exécutions et l'agent n'est pas en pause.
+
+Si le réveil lié est ensuite désactivé ou supprimé, reçoit un `last_error`, se termine sans exécution (expiré ou refusé par la garde) ou ne correspond plus à `blocked_on`, le serveur lance l'exécution de l'étape bloquée et enregistre une ligne d'activité `blocked_entry_rearmed`. Si le budget d'exécutions est épuisé ou si l'agent est en pause, cette exécution est refusée aussi et la ligne l'indique.
+
 ### Garde des demandes
 
 Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quand l'opération d'un agent demande à une personne d'agir sans ouvrir de demande de décision.

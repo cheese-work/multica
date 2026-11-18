@@ -60,6 +60,25 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
+### 阻塞进入时跳过运行
+
+工作区设置 `blocked_run_skip` 决定任务进入 `blocked` 时是否启动阻塞步骤的运行。只有任务说明了它在等什么，并且该步骤的负责人已经有一个会继续这项工作的唤醒时，服务器才会跳过这次运行。
+
+| 值 | 效果 |
+| --- | --- |
+| `off` | 不变。阻塞步骤的智能体在进入时运行。 |
+| `warn`（默认） | 运行照常启动。每次本应被跳过的进入还会记录一条 `blocked_entry_would_skip` 活动记录，写明随后的运行。 |
+| `block` | 服务器不启动运行，记录一条 `blocked_entry_linked` 活动记录，并保持该唤醒有效。 |
+
+只有下列条件全部成立才会跳过运行。任一条件不成立或无法读取，运行照常启动。
+
+- 任务元数据 `blocked_on` 已设置（`multica issue status <id> blocked --blocked-on <ref>`）。
+- 阻塞步骤的负责人在该任务上有一个启用的条件唤醒，等待同一个引用：标志、目标以及状态、阶段或类型都相同。时间唤醒、其他条件或其他智能体的唤醒都不算。
+- 该唤醒没有 `last_error`，在 7 天内结束，并使用 `--on-timeout wake`。
+- 运行会被准入：任务还有运行预算，智能体未暂停。
+
+如果关联的唤醒之后被停用或删除、出现 `last_error`、未产生运行就结束（已过期或被守卫拒绝），或不再匹配 `blocked_on`，服务器会启动阻塞步骤的运行，并记录一条 `blocked_entry_rearmed` 活动记录。若运行预算已用尽或智能体已暂停，该运行同样会被拒绝，记录中会注明。
+
 ### 请求守卫
 
 工作区设置 `ask_guard_mode` 决定当智能体的操作未创建决策请求就要求人去处理时的行为。

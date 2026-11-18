@@ -16,17 +16,24 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// errCannotDoOwnerOnly is saveWorkspace's refusal of a catalog change by a
-// caller who is not a workspace owner (CHE-5902 F2).
-var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do")
+// errCannotDoOwnerOnly is saveWorkspace's refusal of an owner-only setting
+// change by a caller who is not a workspace owner (CHE-5902 F2, CHE-7358).
+var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do, decision_server_actions or standing_answers")
+
+// ownerOnlySettings are the keys the route admits admins to save but only an owner may change.
+var ownerOnlySettings = []string{decisiontx.SettingCannotDo, decisiontx.SettingServerActions, decisiontx.SettingStandingAnswers}
 
 // requireOwnerForCannotDo refuses an incoming settings blob that adds, drops or
-// changes the agent_cannot_do catalog unless the caller owns the workspace. The
-// route admits admins; the catalog is the owner's.
+// changes an owner-only setting unless the caller owns the workspace. The
+// route admits admins; these keys are the owner's.
 func requireOwnerForCannotDo(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, userID string, stored, incoming map[string]any) error {
-	sv, sok := stored[decisiontx.SettingCannotDo]
-	iv, iok := incoming[decisiontx.SettingCannotDo]
-	if sok == iok && reflect.DeepEqual(sv, iv) {
+	moved := false
+	for _, key := range ownerOnlySettings {
+		sv, sok := stored[key]
+		iv, iok := incoming[key]
+		moved = moved || sok != iok || !reflect.DeepEqual(sv, iv)
+	}
+	if !moved {
 		return nil
 	}
 	member, err := workspaceMemberVia(ctx, q, userID, uuidToString(workspaceID))
@@ -166,4 +173,14 @@ func (h *Handler) validateCannotDoAgents(ctx context.Context, workspaceID pgtype
 		}
 	}
 	return nil
+}
+
+// validateServerActionSetting checks decision_server_actions and
+// standing_answers of a workspace settings object. Absent keys are valid; null is not.
+func validateServerActionSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return decisiontx.ValidateServerActionSettings(config)
 }

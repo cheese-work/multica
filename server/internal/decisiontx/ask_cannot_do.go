@@ -155,9 +155,12 @@ func decodeArgvList(field string, raw json.RawMessage, into *[][]string) error {
 // validateAfterChoice checks the typed fields of one option, whatever the mode.
 func (option AskOption) validateAfterChoice(prefix string) error {
 	switch option.AfterChoice {
-	case "", AfterHumanSteps, AfterRecordOnly, AfterAgentRun:
+	case "", AfterHumanSteps, AfterRecordOnly, AfterAgentRun, AfterServerAction:
 	default:
-		return &AskError{prefix + ".after_choice", "must be agent_run, human_steps or record_only"}
+		return &AskError{prefix + ".after_choice", "must be agent_run, human_steps, record_only or server_action"}
+	}
+	if err := option.validateTyped(prefix); err != nil {
+		return err
 	}
 	hasAgentFields := len(option.AgentCommands) > 0 || option.AgentSurface != ""
 	switch {

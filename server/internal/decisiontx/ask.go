@@ -26,6 +26,9 @@ type AskOption struct {
 	AgentCommands [][]string `json:"agent_commands,omitempty"`
 	// AgentSurface names a console-only surface (a key of the agent_cannot_do catalog) the option promises to use.
 	AgentSurface string `json:"agent_surface,omitempty"`
+	// Action is the typed action of a server_action option; AfterWait is the event a human_steps option waits on (CHE-7358).
+	Action    *OptionAction `json:"action,omitempty"`
+	AfterWait *AfterWait    `json:"after_wait,omitempty"`
 }
 
 type Ask struct {
@@ -98,7 +101,7 @@ const askOptionShape = "must be an object with label, what_happens, pros, cons, 
 
 var (
 	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "state_claims", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
-	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands"}
+	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands", "action", "after_wait"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run", "state_claims", "settings_needed"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -355,6 +358,12 @@ func decodeOptions(raw json.RawMessage, into *[]AskOption) error {
 			return err
 		}
 		if err := decodeArgvList(prefix+".agent_commands", fields["agent_commands"], &option.AgentCommands); err != nil {
+			return err
+		}
+		if err := decodeAction(prefix, fields["action"], &option.Action); err != nil {
+			return err
+		}
+		if err := decodeAfterWait(prefix, fields["after_wait"], &option.AfterWait); err != nil {
 			return err
 		}
 		*into = append(*into, option)

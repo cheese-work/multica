@@ -154,7 +154,7 @@ func TestDecodeRefusesBadTypedFields(test *testing.T) {
 	}{
 		"command as one string":      {map[string]any{"after_choice": "agent_run", "agent_commands": []any{"multica daemon restart"}}, "ask.options[0].agent_commands[0] must be an argv array of strings"},
 		"empty argv":                 {map[string]any{"after_choice": "agent_run", "agent_commands": []any{[]any{}}}, "ask.options[0].agent_commands[0] must not be empty"},
-		"bad after_choice":           {map[string]any{"after_choice": "maybe"}, "ask.options[0].after_choice must be agent_run, human_steps or record_only"},
+		"bad after_choice":           {map[string]any{"after_choice": "maybe"}, "ask.options[0].after_choice must be agent_run, human_steps, record_only or server_action"},
 		"agent_run with nothing":     {map[string]any{"after_choice": "agent_run"}, "ask.options[0].after_choice agent_run needs agent_commands or agent_surface"},
 		"commands without agent_run": {map[string]any{"after_choice": "human_steps", "agent_commands": []any{[]any{"multica", "status"}}}, "ask.options[0].agent_commands needs after_choice agent_run"},
 	}
