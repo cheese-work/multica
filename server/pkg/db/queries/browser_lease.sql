@@ -202,6 +202,18 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(decision_id)::uuid IS NULL OR decision_id = sqlc.narg(decision_id))
 RETURNING *;
 
+-- Class H login lease held by a member (CHE-5989, W3-3b).
+
+-- name: GetOpenBrowserLoginLeaseForUser :one
+SELECT * FROM browser_lease
+WHERE workspace_id = $1 AND user_id = $2 AND class = 'H' AND state <> 'ended'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetBrowserLoginLeaseForUser :one
+SELECT * FROM browser_lease
+WHERE id = $1 AND workspace_id = $2 AND user_id = $3 AND class = 'H';
+
 -- name: ListExpiredDecisionBrowserLeases :many
 -- Decisions that passed their expires_at while a queued or active lease still names them
 -- (CHE-4742, W3-13). The worker revokes each pair; a revoked lease drops out of this list.
