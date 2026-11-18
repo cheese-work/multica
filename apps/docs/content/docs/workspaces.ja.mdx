@@ -40,7 +40,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ### 自動クローズ
 
-ワークスペース設定 `auto_close` は、子タスクが `agent_accepted` ステップに入り、やることが残っていないときの動作を決めます。ステップのエージェントはクローズするだけなので、サーバーがステップの `agent_done` エッジをたどって自分で `done` に移せます。
+ワークスペース設定 `auto_close` は、子タスクが `agent_accepted` または `merged` ステップに入り、やることが残っていないときの動作を決めます。ステップのエージェントはクローズするだけなので、サーバーがステップの `agent_done` エッジをたどって自分で `done` に移せます。
 
 | 値 | 効果 |
 | --- | --- |
@@ -55,7 +55,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 - 未完了の子タスク、未解決の決定リクエストがなく、タスクがステップに入った時点で有効だったウェイクアップがないこと。
 - 説明に `Blockers: Cheese stop` の行がなく、親の `delivery_stop` メタデータが `stopped` でないこと。
 - タスクのメタデータ `post_close_work` が `none` であること。作成者が書きます: `multica issue metadata set <issue> --key post_close_work --value none --type string`。残る作業の短い説明など、それ以外の値の場合は実行が残ります。
-- ワークフローに `agent_accepted` から `done` への `agent_done` エッジがあること。
+- ワークフローにそのステップから `done` への `agent_done` エッジがあること。
+- `merged` のみ: リンクされたすべての PR が、PASS の示す head でリポジトリのデフォルトブランチにマージ済みであること。別のブランチ（スタックの層）にマージされた PR や、ベースまたはデフォルトブランチが配信に含まれていなかった PR がある場合は、実行が残ります。
 
 モードは `multica workspace update --auto-close-mode off|warn|block` で設定します。読み取れない値は `off` として扱われます。
 
