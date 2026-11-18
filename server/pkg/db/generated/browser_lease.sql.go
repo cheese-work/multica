@@ -327,6 +327,7 @@ WHERE workspace_id = $1
   AND ($4::uuid IS NULL OR user_id = $4)
   AND ($5::uuid IS NULL OR agent_id = $5)
   AND ($6::uuid IS NULL OR profile_id = $6)
+  AND ($7::uuid IS NULL OR decision_id = $7)
 RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
 `
 
@@ -337,6 +338,7 @@ type DeleteQueuedBrowserLeasesParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
 	AgentID     pgtype.UUID `json:"agent_id"`
 	ProfileID   pgtype.UUID `json:"profile_id"`
+	DecisionID  pgtype.UUID `json:"decision_id"`
 }
 
 // Revoke and auto-revoke (CHE-4734, W3-5), step 1: drop every queued lease that matches the
@@ -351,6 +353,7 @@ func (q *Queries) DeleteQueuedBrowserLeases(ctx context.Context, arg DeleteQueue
 		arg.UserID,
 		arg.AgentID,
 		arg.ProfileID,
+		arg.DecisionID,
 	)
 	if err != nil {
 		return nil, err
@@ -449,6 +452,7 @@ WHERE workspace_id = $2
   AND ($5::uuid IS NULL OR user_id = $5)
   AND ($6::uuid IS NULL OR agent_id = $6)
   AND ($7::uuid IS NULL OR profile_id = $7)
+  AND ($8::uuid IS NULL OR decision_id = $8)
 RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
 `
 
@@ -460,6 +464,7 @@ type EndBrowserLeasesParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
 	AgentID     pgtype.UUID `json:"agent_id"`
 	ProfileID   pgtype.UUID `json:"profile_id"`
+	DecisionID  pgtype.UUID `json:"decision_id"`
 }
 
 // Revoke and auto-revoke, step 2 (run after step 1, so a grant that races step 1 is still
@@ -477,6 +482,7 @@ func (q *Queries) EndBrowserLeases(ctx context.Context, arg EndBrowserLeasesPara
 		arg.UserID,
 		arg.AgentID,
 		arg.ProfileID,
+		arg.DecisionID,
 	)
 	if err != nil {
 		return nil, err

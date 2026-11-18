@@ -177,6 +177,7 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
   AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id))
   AND (sqlc.narg(profile_id)::uuid IS NULL OR profile_id = sqlc.narg(profile_id))
+  AND (sqlc.narg(decision_id)::uuid IS NULL OR decision_id = sqlc.narg(decision_id))
 RETURNING *;
 
 -- name: EndBrowserLeases :many
@@ -197,4 +198,5 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
   AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id))
   AND (sqlc.narg(profile_id)::uuid IS NULL OR profile_id = sqlc.narg(profile_id))
+  AND (sqlc.narg(decision_id)::uuid IS NULL OR decision_id = sqlc.narg(decision_id))
 RETURNING *;
