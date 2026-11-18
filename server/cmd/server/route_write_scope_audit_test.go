@@ -151,7 +151,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/wakeup-definitions":       {4, byWorkspace},
 	"api/webhooks":                 {5, byPublic},
 	"api/wecom":                    {1, byPublic},
-	"api/workspaces":               {63, byWorkspace},
+	"api/workspaces":               {64, byWorkspace},
 	"auth/google":                  {1, byPublic},
 	"auth/logout":                  {1, byPublic},
 	"auth/send-code":               {1, byPublic},
