@@ -59,6 +59,7 @@ import type {
   AutopilotCollaborator,
   AutopilotExecutionMode,
   AutopilotTrigger,
+  WebhookEventFilter,
 } from "@multica/core/types";
 import { TitleEditor, ContentEditor, type ContentEditorRef, type TitleEditorRef } from "../../editor";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -261,6 +262,24 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const existingWebhook = isCreate
     ? null
     : props.triggers.find((trig) => trig.kind === "webhook") ?? null;
+  // Event filters picked before the editor moved to the per-webhook dialog may
+  // still sit in a persisted draft. They are the user's unsent input: show them,
+  // apply them to the webhook on save, and drop them only after that succeeds.
+  // The webhook they were meant for is the autopilot's first trigger, as before.
+  const draftEventFilters = seed.eventFilters ?? null;
+  const filterTarget = isCreate
+    ? null
+    : props.triggers[0]?.kind === "webhook"
+      ? props.triggers[0]
+      : null;
+  const filterTargetIdRef = useRef(filterTarget?.id ?? null);
+  const draftFiltersPending =
+    draftEventFilters !== null &&
+    triggerKind === "webhook" &&
+    (isCreate ||
+      (filterTarget !== null &&
+        JSON.stringify(draftEventFilters) !==
+          JSON.stringify(filterTarget.event_filters ?? [])));
   const webhookTriggerCount = isCreate
     ? 0
     : props.triggers.filter((trig) => trig.kind === "webhook").length;
@@ -413,6 +432,12 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             webhookTrigger = await createTrigger.mutateAsync({
               autopilotId,
               kind: "webhook",
+              // Omitted filters mean "allow every event" server-side, so a
+              // restored draft's choices must travel with the create.
+              event_filters:
+                draftEventFilters && draftEventFilters.length > 0
+                  ? draftEventFilters
+                  : undefined,
             });
           } else {
             await createTrigger.mutateAsync({
@@ -490,8 +515,23 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               err instanceof Error && err.message ? err.message : null;
           }
         }
+        // A restored draft's event filters go to the webhook they were picked
+        // for; an explicit empty array clears filters (tri-state PATCH).
+        if (draftFiltersPending && draftEventFilters && filterTargetIdRef.current) {
+          try {
+            await updateTrigger.mutateAsync({
+              autopilotId: props.autopilotId,
+              triggerId: filterTargetIdRef.current,
+              event_filters: draftEventFilters,
+            });
+          } catch (err) {
+            triggerOk = false;
+            triggerErrMessage =
+              err instanceof Error && err.message ? err.message : null;
+          }
+        }
         if (!triggerOk) {
-          // The autopilot is saved, its schedule is not: keep the
+          // The autopilot is saved, its schedule or filters are not: keep the
           // dialog and the draft so the user can retry.
           toast.error(formatSchedulePartialFailureToast(t, "update", triggerErrMessage));
           return;
@@ -747,6 +787,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
                 autopilotId={isCreate ? null : props.autopilotId}
                 webhook={existingWebhook}
                 webhookCount={webhookTriggerCount}
+                draftFilters={draftFiltersPending ? draftEventFilters : null}
               />
             )}
           </aside>
@@ -1107,12 +1148,15 @@ function WebhookSection({
   autopilotId,
   webhook,
   webhookCount,
+  draftFilters,
 }: {
   // Null while creating: there is no webhook to filter until the autopilot
   // exists, and its row on the detail page then offers the editor.
   autopilotId: string | null;
   webhook: AutopilotTrigger | null;
   webhookCount: number;
+  // Restored, not yet saved filter choices; shown in place of the saved ones.
+  draftFilters: WebhookEventFilter[] | null;
 }) {
   const { t } = useT("autopilots");
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -1127,6 +1171,12 @@ function WebhookSection({
             : t(($) => $.dialog.webhook_help_edit)}
         </p>
       </div>
+      {isCreate && draftFilters ? (
+        <div className="space-y-1.5">
+          <SectionLabel>{t(($) => $.dialog.event_filter_label)}</SectionLabel>
+          <WebhookEventFilterSummary filters={draftFilters} />
+        </div>
+      ) : null}
       {webhookCount >= 2 ? (
         <div className="rounded-md border border-dashed p-3">
           <p className="text-caption text-muted-foreground">
@@ -1136,7 +1186,9 @@ function WebhookSection({
       ) : autopilotId && webhook ? (
         <div className="space-y-1.5">
           <SectionLabel>{t(($) => $.dialog.event_filter_label)}</SectionLabel>
-          <WebhookEventFilterSummary filters={webhook.event_filters ?? []} />
+          <WebhookEventFilterSummary
+            filters={draftFilters ?? webhook.event_filters ?? []}
+          />
           <Button
             type="button"
             variant="ghost"

@@ -10,6 +10,7 @@ import { renderWithI18n } from "../../test/i18n";
 const mockCreateAutopilot = vi.hoisted(() => vi.fn());
 const mockCreateTrigger = vi.hoisted(() => vi.fn());
 const mockUpdateAutopilot = vi.hoisted(() => vi.fn());
+const mockUpdateTrigger = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-test" }));
 vi.mock("@multica/core/paths", () => ({ useCurrentWorkspace: () => ({ name: "Acme" }) }));
@@ -52,8 +53,14 @@ vi.mock("@multica/core/autopilots/mutations", () => ({
   useCreateAutopilot: () => ({ mutateAsync: mockCreateAutopilot }),
   useCreateAutopilotTrigger: () => ({ mutateAsync: mockCreateTrigger }),
   useUpdateAutopilot: () => ({ mutateAsync: mockUpdateAutopilot }),
-  useUpdateAutopilotTrigger: () => ({ mutateAsync: vi.fn() }),
+  useUpdateAutopilotTrigger: () => ({ mutateAsync: mockUpdateTrigger }),
 }));
+
+// The created-webhook panel reads the API base URL; not the subject here.
+vi.mock("@multica/core/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/api")>();
+  return { ...actual, api: { ...actual.api, getBaseUrl: () => "https://api.test" } };
+});
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -166,7 +173,7 @@ function renderCreateDialog() {
   );
 }
 
-function renderEditDialog(onOpenChange = vi.fn()) {
+function renderEditDialog(onOpenChange = vi.fn(), triggers: any[] = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderWithI18n(
     <QueryClientProvider client={qc}>
@@ -184,7 +191,7 @@ function renderEditDialog(onOpenChange = vi.fn()) {
           execution_mode: "run_only",
           subscriber_user_ids: [],
         }}
-        triggers={[]}
+        triggers={triggers}
         collaborators={[]}
         canManageAccess={false}
       />
@@ -201,6 +208,7 @@ describe("AutopilotDialog draft persistence", () => {
     mockCreateAutopilot.mockReset();
     mockCreateTrigger.mockReset();
     mockUpdateAutopilot.mockReset();
+    mockUpdateTrigger.mockReset();
   });
 
   it("restores title, runbook and assignee after an unmount and remount", async () => {
@@ -352,5 +360,108 @@ describe("AutopilotDialog draft persistence", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalledTimes(2));
     expect(mockCreateTrigger.mock.calls[1]![0]).toEqual(mockCreateTrigger.mock.calls[0]![0]);
+  });
+
+  // Restored event-filter drafts: saved before the filters moved to the
+  // per-webhook dialog, so the draft is the only copy of the user's choices.
+  const FILTERS = [{ event: "issues", actions: ["opened"] }];
+  const webhookTrigger = (filters: unknown = null) => ({
+    id: "tr-w",
+    kind: "webhook",
+    event_filters: filters,
+  });
+
+  it("shows a restored create draft's event filters and sends them with the webhook trigger", async () => {
+    const user = userEvent.setup();
+    mockCreateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockCreateTrigger.mockResolvedValue({ id: "tr-1", kind: "webhook" });
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        create: {
+          data: {
+            title: "Hook",
+            assigneeType: "agent",
+            assigneeId: "agent-1",
+            triggerKind: "webhook",
+            eventFilters: FILTERS,
+          },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    renderCreateDialog();
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    await user.click(createButton());
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalled());
+    expect(mockCreateTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "webhook", event_filters: FILTERS }),
+    );
+  });
+
+  it("keeps a create draft's event filters when the webhook trigger write fails", async () => {
+    const user = userEvent.setup();
+    mockCreateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockCreateTrigger.mockRejectedValueOnce(new Error("nope"));
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        create: {
+          data: {
+            title: "Hook",
+            assigneeType: "agent",
+            assigneeId: "agent-1",
+            triggerKind: "webhook",
+            eventFilters: FILTERS,
+          },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    const first = renderCreateDialog();
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    await user.click(createButton());
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalledTimes(1));
+    first.unmount();
+    expect(useAutopilotDialogDraftStore.getState().drafts.create?.data.eventFilters).toEqual(FILTERS);
+  });
+
+  it("applies a restored edit draft's event filters to the webhook before clearing the draft", async () => {
+    const user = userEvent.setup();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockUpdateTrigger.mockResolvedValue({ id: "tr-w" });
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    renderEditDialog(vi.fn(), [webhookTrigger()]);
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockUpdateTrigger).toHaveBeenCalled());
+    expect(mockUpdateTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ autopilotId: "ap-1", triggerId: "tr-w", event_filters: FILTERS }),
+    );
+    expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]).toBeUndefined();
+  });
+
+  it("keeps an edit draft's event filters when applying them fails", async () => {
+    const user = userEvent.setup();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockUpdateTrigger.mockRejectedValueOnce(new Error("nope"));
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    renderEditDialog(vi.fn(), [webhookTrigger()]);
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockUpdateTrigger).toHaveBeenCalledTimes(1));
+    expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]?.data.eventFilters).toEqual(FILTERS);
   });
 });
