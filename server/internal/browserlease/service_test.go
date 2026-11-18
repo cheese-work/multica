@@ -585,3 +585,49 @@ func TestQueuedGrantDropsALeaseWhoseProfileBecomesClassH(t *testing.T) {
 		t.Fatal("a queued lease of a class-H profile must leave the queue, not take the instance")
 	}
 }
+
+// A profile that changes class keeps no lease granted under the old class: the host, token and
+// decision rule of that lease no longer match it.
+func TestRenewEndsTheLeaseWhenItsProfileChangesBetweenS0AndS2(t *testing.T) {
+	for _, tc := range []struct{ from, to, instance string }{
+		{ClassS2, ClassS0, "c00-1"},
+		{ClassS0, ClassS2, "x99-1"},
+	} {
+		t.Run(tc.from+"->"+tc.to, func(t *testing.T) {
+			e := newEnv(t, tc.instance)
+			p := e.profile(tc.from)
+			a, r := e.mint(p)
+			e.reclassify(p, tc.to)
+			if _, err := e.svc.Renew(context.Background(), e.ws, r.TaskID, a.Lease.ID); !errors.Is(err, ErrClassNotMintable) {
+				t.Fatalf("err = %v, want ErrClassNotMintable", err)
+			}
+			if l := e.lease(a.Lease.ID); l.State != "ended" || l.EndReason.String != "revalidation_failed" {
+				t.Fatalf("lease = %s/%s, want ended/revalidation_failed", l.State, l.EndReason.String)
+			}
+		})
+	}
+}
+
+func TestQueuedGrantDropsALeaseWhoseProfileChangesBetweenS0AndS2(t *testing.T) {
+	for _, tc := range []struct{ from, to, instance string }{
+		{ClassS2, ClassS0, "c00-1"},
+		{ClassS0, ClassS2, "x99-1"},
+	} {
+		t.Run(tc.from+"->"+tc.to, func(t *testing.T) {
+			e := newEnv(t, tc.instance)
+			p := e.profile(tc.from)
+			a, _ := e.mint(p)
+			e.now = e.now.Add(time.Second)
+			b, _ := e.mint(p)
+			e.reclassify(p, tc.to)
+			e.svc.Release(context.Background(), e.ws, a.Lease.TaskID, a.Lease.ID)
+			e.ack(a.Lease.ID)
+			if err := e.svc.AdvanceQueue(context.Background(), e.ws, tc.from); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.svc.Queries.GetBrowserLease(context.Background(), db.GetBrowserLeaseParams{ID: b.Lease.ID, WorkspaceID: e.ws}); err == nil {
+				t.Fatal("a queued lease whose profile changed class must leave the queue, not take the instance")
+			}
+		})
+	}
+}
