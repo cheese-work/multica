@@ -107,7 +107,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if [ -z "$PR" ] || gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename' | grep -Eq '^scripts/(warning-budget|fixtures/warnings/)'; then
+          # Fetch first: an API error must fail the step, not read as "no match" and skip the tests.
+          files=
+          [ -z "$PR" ] || files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+          if [ -z "$PR" ] || grep -Eq '^scripts/(warning-budget|fixtures/warnings/)' <<< "$files"; then
             echo unit=true >> "$GITHUB_OUTPUT"
           else
             echo unit=false >> "$GITHUB_OUTPUT"
