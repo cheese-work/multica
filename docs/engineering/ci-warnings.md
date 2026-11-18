@@ -127,3 +127,4 @@ trusted-main-only and preserves provenance/SBOM requirements. A new CD
 qualification after merge and an explicitly Cheese-approved C00 deploy must
 still demonstrate zero items 1–7 using annotation lists and log grep. Do not
 dispatch a deploy or change its approval environment to obtain that evidence.
+Fixture line (throwaway CI probe, never merged).
