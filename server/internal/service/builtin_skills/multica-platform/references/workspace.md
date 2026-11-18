@@ -139,6 +139,20 @@ Every scope flag is explicit: `--workspace` (exactly one) never falls back to
 `--workspace-id`, `MULTICA_WORKSPACE_ID` or the saved config. Each successful
 export writes an audit row.
 
+## GitHub stack auto-link mode
+
+```bash
+multica github stack-autolink status --repo owner/repo               # read-only; final mode and per-workspace modes
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link   # owner or admin only
+```
+
+- `status` is open to any member. The final mode is the lowest effective mode
+  across every workspace bound to the same GitHub App installation, so read it
+  before you expect stack links on a PR.
+- `set` without `--repo` changes the workspace default; with `--repo` it
+  changes that repo only. Workspace `off` is a shutdown a repo entry cannot
+  raise. Run it only when a person asked for it.
+
 ## GitHub kill switch
 
 ```bash
