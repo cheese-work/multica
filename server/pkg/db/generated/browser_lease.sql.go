@@ -213,20 +213,27 @@ func (q *Queries) CreateBrowserInstance(ctx context.Context, arg CreateBrowserIn
 
 const createBrowserProfile = `-- name: CreateBrowserProfile :one
 
-INSERT INTO browser_profile (workspace_id, name, class)
-VALUES ($1, $2, $3)
-RETURNING id, workspace_id, name, class, created_at
+INSERT INTO browser_profile (workspace_id, name, class, hosts)
+VALUES ($1, $2, $3, COALESCE($4::text[], '{}'))
+RETURNING id, workspace_id, name, class, created_at, hosts
 `
 
 type CreateBrowserProfileParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Name        string      `json:"name"`
 	Class       string      `json:"class"`
+	Hosts       []string    `json:"hosts"`
 }
 
 // Browser lease storage (CHE-4731, W3-2). Mint, renew and queue logic arrives in W3-3.
+// hosts are the site hosts a login profile reaches, recorded once at creation (CHE-4782, W3-19).
 func (q *Queries) CreateBrowserProfile(ctx context.Context, arg CreateBrowserProfileParams) (BrowserProfile, error) {
-	row := q.db.QueryRow(ctx, createBrowserProfile, arg.WorkspaceID, arg.Name, arg.Class)
+	row := q.db.QueryRow(ctx, createBrowserProfile,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Class,
+		arg.Hosts,
+	)
 	var i BrowserProfile
 	err := row.Scan(
 		&i.ID,
@@ -234,6 +241,7 @@ func (q *Queries) CreateBrowserProfile(ctx context.Context, arg CreateBrowserPro
 		&i.Name,
 		&i.Class,
 		&i.CreatedAt,
+		&i.Hosts,
 	)
 	return i, err
 }
@@ -697,7 +705,7 @@ func (q *Queries) GetBrowserLeaseForTask(ctx context.Context, arg GetBrowserLeas
 }
 
 const getBrowserProfile = `-- name: GetBrowserProfile :one
-SELECT id, workspace_id, name, class, created_at FROM browser_profile
+SELECT id, workspace_id, name, class, created_at, hosts FROM browser_profile
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -715,6 +723,7 @@ func (q *Queries) GetBrowserProfile(ctx context.Context, arg GetBrowserProfilePa
 		&i.Name,
 		&i.Class,
 		&i.CreatedAt,
+		&i.Hosts,
 	)
 	return i, err
 }
@@ -795,6 +804,30 @@ func (q *Queries) HeadQueuedBrowserLease(ctx context.Context, arg HeadQueuedBrow
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const isBrowserGrantIssueClosed = `-- name: IsBrowserGrantIssueClosed :one
+SELECT COALESCE((
+    SELECT i.status IN ('done', 'cancelled') OR EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed', 'cancelled')
+    )
+    FROM issue i WHERE i.id = $1 AND i.workspace_id = $2
+), true)::bool AS closed
+`
+
+type IsBrowserGrantIssueClosedParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// A once-per-issue grant ends when its issue reaches a done or closed status (CHE-4782, W3-19).
+// A missing issue counts as closed: the grant covers nothing.
+func (q *Queries) IsBrowserGrantIssueClosed(ctx context.Context, arg IsBrowserGrantIssueClosedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isBrowserGrantIssueClosed, arg.ID, arg.WorkspaceID)
+	var closed bool
+	err := row.Scan(&closed)
+	return closed, err
 }
 
 const listBrowserInstances = `-- name: ListBrowserInstances :many

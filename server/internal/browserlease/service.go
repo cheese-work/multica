@@ -31,6 +31,7 @@ type Service struct {
 	Decisions Decisions
 	Registry  Registry
 	Signer    Signer
+	Class3    *Class3Deny
 	Now       func() time.Time
 }
 
@@ -56,10 +57,11 @@ func (s *Service) now() time.Time {
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 func isHookDenial(err error) bool {
-	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid)
+	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid) ||
+		errors.Is(err, ErrClass3Denied) || errors.Is(err, ErrClass3Unchecked)
 }
 
-// check runs the user gate, then the decision for a class that needs one (S0 asks no one), and
+// check runs the user gate, the class-3 check for a login profile, then the decision for a class that needs one (S0 asks no one), and
 // returns when the lease must end at the latest.
 func (s *Service) check(ctx context.Context, subj Subject) (time.Time, error) {
 	now := s.now()
@@ -69,6 +71,11 @@ func (s *Service) check(ctx context.Context, subj Subject) (time.Time, error) {
 	}
 	if subj.Profile.Class == ClassS0 {
 		return limit, nil
+	}
+	// Class 3 is forbidden to every agent lease: no decision can allow it, so it is checked
+	// before one is asked for, and again at every renew and queued grant.
+	if err := s.Class3.checkClass3(subj.Profile.Hosts); err != nil {
+		return limit, err
 	}
 	exp, err := s.Decisions.Validate(ctx, subj)
 	if err != nil {

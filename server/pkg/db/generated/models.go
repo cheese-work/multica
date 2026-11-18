@@ -498,6 +498,7 @@ type BrowserProfile struct {
 	Name        string             `json:"name"`
 	Class       string             `json:"class"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Hosts       []string           `json:"hosts"`
 }
 
 type ChannelBindingToken struct {
