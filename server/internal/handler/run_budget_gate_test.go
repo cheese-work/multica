@@ -77,6 +77,7 @@ func withoutRunBudgetWriters() (restore func()) {
 func giveBackRunBudgetHooks() {
 	service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
 	service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
+	service.SetOnReviewRunSkipped(testHandler.onReviewRunSkipped)
 }
 
 func finishRuns(t *testing.T, c edgeCase) {

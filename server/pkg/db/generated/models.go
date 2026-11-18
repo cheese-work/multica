@@ -498,6 +498,7 @@ type BrowserProfile struct {
 	Name        string             `json:"name"`
 	Class       string             `json:"class"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Hosts       []string           `json:"hosts"`
 }
 
 type BrowserProfileAgent struct {
@@ -1429,6 +1430,7 @@ type DecisionRequest struct {
 	PingOutcome              pgtype.Text        `json:"ping_outcome"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	ReadAt                   pgtype.Timestamptz `json:"read_at"`
 }
 
 type DecisionWait struct {
@@ -1742,6 +1744,8 @@ type GithubPullRequest struct {
 	ReviewID            int64              `json:"review_id"`
 	ReviewAt            pgtype.Timestamptz `json:"review_at"`
 	MergeCommitSha      string             `json:"merge_commit_sha"`
+	BaseRef             string             `json:"base_ref"`
+	DefaultBranch       string             `json:"default_branch"`
 }
 
 type GithubPullRequestCheckRun struct {

@@ -151,13 +151,14 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state, head_repo_same,
-    additions, deletions, changed_files, merge_commit_sha
+    additions, deletions, changed_files, merge_commit_sha, base_ref, default_branch
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
     $11, sqlc.narg('mergeable_state'), sqlc.arg('head_repo_same'),
-    $12, $13, $14, sqlc.arg('merge_commit_sha')::text
+    $12, $13, $14, sqlc.arg('merge_commit_sha')::text,
+    sqlc.arg('base_ref')::text, sqlc.arg('default_branch')::text
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -250,6 +251,9 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     changed_files = EXCLUDED.changed_files,
     -- Only a merged delivery carries the commit; a later one without it keeps it.
     merge_commit_sha = COALESCE(NULLIF(EXCLUDED.merge_commit_sha, ''), github_pull_request.merge_commit_sha),
+    -- Kept like the commit: a delivery that does not state them never blanks them.
+    base_ref = COALESCE(NULLIF(EXCLUDED.base_ref, ''), github_pull_request.base_ref),
+    default_branch = COALESCE(NULLIF(EXCLUDED.default_branch, ''), github_pull_request.default_branch),
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
 RETURNING *;

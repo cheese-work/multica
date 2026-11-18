@@ -40,7 +40,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ### 自动关闭
 
-工作区设置 `auto_close` 决定子任务进入 `agent_accepted` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
+工作区设置 `auto_close` 决定子任务进入 `agent_accepted` 或 `merged` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
 
 | 值 | 效果 |
 | --- | --- |
@@ -55,7 +55,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 - 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
 - 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
 - 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
-- 工作流中有从 `agent_accepted` 到 `done` 的 `agent_done` 边。
+- 工作流中有从该步骤到 `done` 的 `agent_done` 边。
+- 仅 `merged`：每个关联的 PR 都已在 PASS 所指的 head 上合并到其仓库的默认分支。合并到其他分支（堆叠的一层）的 PR，或其推送未带 base 或默认分支的 PR，会保留这次运行。
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
@@ -82,6 +83,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 每个事件保留创建时的模式，因此从 `warn` 切换到 `block` 不会让之前的事件变成恢复工作。如果事件无法写入，操作会以 `503` 和 `Retry-After` 头失败，且不会写入任何内容。
 
 工作区设置 `reversible_ask_guard`（默认 `off`，可选 `warn`、`block`）针对智能体发出的、类别为 `reversible` 的普通决策请求：智能体请求人批准本可自行决定并执行的工作。`warn` 只记录日志，`block` 以 `422` 拒绝。操作、提案和批量请求不受影响。改回 `off` 即可还原，不涉及数据变更。同一设置也适用于智能体在 `blocked` 或 `need_decision` 状态的议题上，对成员评论的普通回复，这类回复无需决策请求即可向该成员提问：`warn` 只记录日志，`block` 以 `422` 拒绝。顶层评论、对智能体的回复、提及智能体或小队的评论、带 `--notify-only` 的评论和决策请求不受影响。
+
+工作区设置 `owner_script_guard`（`off`、`warn`、`block`；未设置时为 `warn`）适用于智能体的决策请求、操作请求和 `multica decision ask` 卡片：所有者不读 shell，所以卡片要求人运行命令就是请求本身的缺陷。八条规则（R1 至 R8，规则集版本 1）读取卡片文字及其步骤：shell 代码围栏、围栏或行内代码中的命令、`human_steps` 命令、脚本附件，以及紧邻命令或紧跟在已被标记的消息之后的运行提示词（如 “run”“paste”）。`warn` 照常送达并记录命中。`block` 以 `422` 拒绝，指出命中的规则和字段，并建议改用 `multica config propose`、`multica decision propose <type>` 或申请机器人权限。`off` 不做检查。每次检查写入一条事件，即一行 `owner_script_guard` 活动记录：卡片送达时与卡片在同一事务中，被拒绝时单独提交。事件包含 ID、结果、`delivered`、`rule_hits`、命令的带密钥哈希（`cmd_hmacs`）和 `retry_of`，不含消息文本。议题时间线不显示这些行。改回 `warn` 或 `off` 即可还原，不涉及数据变更。
 
 当产生 `block` 事件的运行结束后，服务器会向请求所指名的那一个人发送自动恢复通知：在一个事务中写入一条私信、一条议题评论和一个收件箱条目。通知引用已存储的请求并链接到议题，没有选项、建议或批准，因此永远不是决策请求。只有在存储的来源包含请求文本、恰好指名一位成员、且该成员仍在工作区时才会发送；否则该事件等待修复。在通知的评论线程中回复会将其标记为 `answered`。已离开工作区的成员无法再阅读或回复该通知。
 
