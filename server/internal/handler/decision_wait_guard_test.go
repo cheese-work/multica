@@ -219,6 +219,13 @@ func TestDecisionWaitGuardOwnership(test *testing.T) {
 			if got := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID, leader); got != want {
 				test.Fatalf("alerts = %d, want %d", got, want)
 			}
+			if scenario == "ambiguous" {
+				// CHE-6101: an ambiguous squad route falls back to the agent assignee.
+				if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND squad_id IS NULL AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID, fixture.agentID) != 1 {
+					test.Fatal("ambiguous route did not alert the assignee")
+				}
+				return
+			}
 			if want == 0 && dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_route_error' AND metadata->>'decision_wait_missing_request' = 'true'`, fixture.issueID) != 1 {
 				test.Fatal("missing route was silently lost")
 			}

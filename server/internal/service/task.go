@@ -1947,12 +1947,13 @@ func (s *TaskService) EnqueueDecisionWaitLeaderTaskInTx(ctx context.Context, que
 
 // EnqueueGuardLeaderTaskInTx is the shared admission for a guard alert to an
 // issue's leader: trigger names the run-budget trigger, summary the task's
-// trigger summary.
+// trigger summary. A zero squadID is the CHE-6101 fallback: the task goes to the
+// issue's agent assignee as an ordinary task, not a leader task.
 func (s *TaskService) EnqueueGuardLeaderTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, leaderID, squadID pgtype.UUID, handoff, trigger, summary string) (db.AgentTaskQueue, error) {
 	if err := guardIssueRunAllowed(ctx, queries, issue.ID, OriginDerived, RunTarget{AgentID: leaderID, Trigger: trigger}); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, leaderID, pgtype.UUID{}, nil, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
