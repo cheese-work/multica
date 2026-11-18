@@ -186,5 +186,30 @@
       "open_card": "開啟卡片",
       "unreadable": "此核准對你不可用，或已不存在。請讓代理重新提出。"
     }
+  },
+  "budget_receipt": {
+    "applied_runs": "已套用。{{issue}} 現顯示已執行 {{used}} 次，上限 {{limit}} 次。",
+    "runs_used": "已用執行次數",
+    "change": "{{used}}/{{limit}} → {{usedAfter}}/{{limitAfter}}",
+    "change_new_window": "{{used}}/{{limit}} → {{usedAfter}}/{{limitAfter}}（新視窗）",
+    "outcome": {
+      "run_queued": "執行已排入佇列。",
+      "run_started": "執行已開始。",
+      "status_restored": "狀態已還原。",
+      "still_blocked_runs": "仍被封鎖：沒有剩餘執行次數。",
+      "still_blocked_tokens": "仍被封鎖：權杖預算已用完。",
+      "still_blocked": "仍被封鎖。",
+      "later_window": "未恢復：較新的預算視窗已取代此視窗。",
+      "status_moved": "未恢復：該任務已移至其他狀態。",
+      "window_changed": "未恢復：預算視窗已變更。",
+      "issue_closed": "未恢復：該任務已關閉。",
+      "agent_archived": "未恢復：該 AI 代理已封存。",
+      "restore_refused": "未恢復：無法還原狀態。",
+      "unknown_origin": "未恢復：封鎖前的狀態未知。請手動變更狀態。",
+      "assignee_changed": "未恢復：負責人已變更。",
+      "source_unknown": "未恢復：原始觸發來源未知。",
+      "source_not_delivered": "未恢復：原始觸發來源已無待辦工作。",
+      "superseded": "未恢復。"
+    }
   }
 }
