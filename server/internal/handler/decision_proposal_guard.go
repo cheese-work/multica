@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -31,7 +32,7 @@ func admitProposalOnce(ctx context.Context, queries *db.Queries, proposal Propos
 	if err := requireNoRecentRejection(ctx, queries, proposal); err != nil {
 		return err
 	}
-	return requireNoRecentReask(ctx, queries, proposal.Issue, proposal.Agent.ID, proposal.RecipientID, proposal.Ask)
+	return requireNoRecentReask(ctx, queries, proposal.Issue, proposal.Agent.ID, proposal.RecipientID, decisiontx.Identity(proposal.Ask))
 }
 
 // requireNoRecentRejection refuses an action this person rejected within the

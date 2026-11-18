@@ -92,6 +92,12 @@ describe("runtime machine pause response contract", () => {
     );
   });
 
+  it("keeps a scheduled_update pause owned by an update cycle (CHE-5466)", () => {
+    expect(AgentRuntimeSchema.parse({ ...base, pause: { ...pause, reason: "scheduled_update", paused_by: null } }).pause?.reason).toBe(
+      "scheduled_update",
+    );
+  });
+
   it("falls back to a null paused_by and empty times", () => {
     const parsed = AgentRuntimeSchema.parse({ ...base, pause: { reason: "maintenance", paused_by: 7 } });
     expect(parsed.pause).toEqual({ reason: "maintenance", paused_by: null, paused_at: "", expires_at: "" });
@@ -119,6 +125,60 @@ describe("runtime concurrency cap response contract", () => {
   it.each(["2", 1.5, true, {}, [1]])("degrades a malformed cap to no cap without dropping the runtime: %j", (max_concurrent_tasks) => {
     const parsed = AgentRuntimeSchema.parse({ id: "r", workspace_id: "w", name: "Claude", max_concurrent_tasks });
     expect(parsed.max_concurrent_tasks).toBeNull();
+    expect(parsed.name).toBe("Claude");
+  });
+});
+
+describe("runtime update schedule response contract (CHE-5465)", () => {
+  const base = { id: "r", workspace_id: "w" };
+  const schedule = {
+    enabled: true,
+    cron: "0 2 * * *",
+    timezone: "Asia/Ho_Chi_Minh",
+    window_minutes: 30,
+    updated_at: "2026-11-17T11:00:00Z",
+    updated_by: "11111111-1111-4111-8111-111111111111",
+  };
+
+  it("keeps a saved schedule and the last outcome from a new server", () => {
+    const parsed = AgentRuntimeSchema.parse({ ...base, update_schedule: schedule, last_update_outcome: "updated" });
+    expect(parsed.update_schedule).toMatchObject(schedule);
+    expect(parsed.last_update_outcome).toBe("updated");
+  });
+
+  it("defaults both fields when an older server omits them", () => {
+    const parsed = AgentRuntimeSchema.parse(base);
+    expect(parsed.update_schedule).toBeNull();
+    expect(parsed.last_update_outcome).toBeNull();
+  });
+
+  it("reads an outcome a newer server added as unknown", () => {
+    expect(AgentRuntimeSchema.parse({ ...base, last_update_outcome: "rolled_back" }).last_update_outcome).toBe("unknown");
+  });
+
+  it.each([4, {}, ["updated"], true])("reads a non-string outcome as unknown: %j", (value) => {
+    expect(AgentRuntimeSchema.parse({ ...base, last_update_outcome: value }).last_update_outcome).toBe("unknown");
+  });
+
+  it("falls back field by field when the schedule is partly malformed", () => {
+    const parsed = AgentRuntimeSchema.parse({
+      ...base,
+      update_schedule: { enabled: "yes", cron: 5, timezone: null, window_minutes: "30" },
+    });
+    expect(parsed.update_schedule).toMatchObject({
+      enabled: false,
+      cron: "",
+      timezone: "Asia/Ho_Chi_Minh",
+      window_minutes: 30,
+    });
+  });
+
+  it.each(["daily", 4, [], true])("treats a malformed schedule as none: %j", (value) => {
+    expect(AgentRuntimeSchema.parse({ ...base, update_schedule: value }).update_schedule).toBeNull();
+  });
+
+  it("keeps the runtime when the schedule is malformed", () => {
+    const parsed = AgentRuntimeSchema.parse({ ...base, name: "Claude", update_schedule: "x" });
     expect(parsed.name).toBe("Claude");
   });
 });

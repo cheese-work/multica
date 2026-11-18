@@ -307,7 +307,13 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 	}
 	var receipts []db.IssueWakeupReceipt
 	var held, free, back []pgtype.UUID
+	blocking := anyDeferred(pending) && timeWakeupSkipMode(ctx, q, issue.WorkspaceID) == "block"
 	for _, r := range pending {
+		if blocking && anyDeferred([]db.IssueWakeupReceipt{r}) {
+			// CHE-6968: a deferred fire waits for its own change or expiry; a run
+			// claimed for another reason must not consume it.
+			continue
+		}
 		if len(w.Condition) > 0 && r.EventType != wakeupConditionEventType && r.EventType != wakeupTimeoutEventType && r.EventType != wakeupManualEventType {
 			continue
 		}

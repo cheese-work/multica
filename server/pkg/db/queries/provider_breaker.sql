@@ -89,6 +89,13 @@ ON CONFLICT (workspace_id, provider) DO UPDATE
 SET last_success_at = now(), version = provider_breaker.version + 1
 WHERE provider_breaker.version = @expected_version;
 
+-- name: EnsureProviderBreaker :exec
+-- A held retry makes the breaker known: a closed row with no evidence, so the
+-- release controller can start a canary. It never touches an existing row.
+INSERT INTO provider_breaker (workspace_id, provider)
+VALUES (@workspace_id, @provider)
+ON CONFLICT (workspace_id, provider) DO NOTHING;
+
 -- name: ListProviderBreakers :many
 SELECT * FROM provider_breaker WHERE workspace_id = @workspace_id ORDER BY provider;
 

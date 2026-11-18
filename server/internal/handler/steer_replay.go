@@ -132,8 +132,9 @@ func (h *Handler) replayComment(ctx context.Context, issue db.Issue, task *db.Ag
 	// exactly how a promised follow-up is lost. Hand the obligation to that
 	// blocker instead, keeping it alive until some run provably covers it.
 	res := h.enqueueCommentAgentTriggers(ctx, issue, c.ID, scoped)[agentID]
-	out := replayOutcome{routed: true, handled: res.status != DispatchBlocked, reason: res.reason}
-	if res.status == DispatchBlocked {
+	refused := commentEnqueueRefused(res)
+	out := replayOutcome{routed: true, handled: !refused, reason: res.reason}
+	if refused {
 		headSha := h.TaskService.ResolveIssueReviewSHAParam(ctx, task.IssueID)
 		if h.propagateUncoveredCommentObligation(ctx, issue, scoped[0], c.ID, headSha) {
 			out.handled = true
@@ -151,6 +152,14 @@ func (h *Handler) replayComment(ctx context.Context, issue db.Issue, task *db.Ag
 		}
 	}
 	return out
+}
+
+// commentEnqueueRefused: the replay still holds the comment's obligation open.
+// A stage_queue_full refusal answers deferred on the wire (CHE-7011: the
+// mention is already queued), but no run covers this comment yet, so it counts
+// as refused here and keeps its handoff and transient retry.
+func commentEnqueueRefused(res commentEnqueueResult) bool {
+	return res.status == DispatchBlocked || res.reason == ReasonStageQueueFull
 }
 
 // settleReplayedSteer updates the receipt of a replayed unread steer. failures

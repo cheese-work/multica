@@ -4,11 +4,41 @@ import type { AgentRuntime } from "../types";
 export const RuntimePauseSchema = z.object({
   // An unknown reason from a newer server still means "paused"; keep it paused
   // so Resume stays reachable, with the server default as the label.
-  reason: z.enum(["maintenance", "incident", "suspended"]).catch("maintenance"),
+  reason: z.enum(["maintenance", "incident", "suspended", "scheduled_update"]).catch("maintenance"),
   paused_by: z.string().nullable().catch(null),
   paused_at: z.string().catch(""),
   expires_at: z.string().catch(""),
 }).loose();
+
+export const DEFAULT_UPDATE_TIMEZONE = "Asia/Ho_Chi_Minh";
+
+// Per-machine update schedule (CHE-5465). Field-level fallbacks keep a malformed
+// schedule from dropping the runtime; the server owns the 10 to 30 window range.
+export const RuntimeUpdateScheduleSchema = z.object({
+  enabled: z.boolean().catch(false),
+  cron: z.string().catch(""),
+  timezone: z.string().catch(DEFAULT_UPDATE_TIMEZONE),
+  window_minutes: z.number().int().catch(30),
+  next_runs: z.array(z.string()).catch([]),
+  updated_at: z.string().nullable().catch(null),
+  updated_by: z.string().nullable().catch(null),
+}).loose();
+
+// An outcome a newer server adds reads as "unknown"; an absent one is null.
+export const UpdateOutcomeSchema = z
+  .enum([
+    "updated",
+    "up_to_date",
+    "failed",
+    "no_window",
+    "cancelled",
+    "skipped_manual_pause",
+    "skipped_open_cycle",
+    "unknown",
+  ])
+  .nullish()
+  .transform((v) => v ?? null)
+  .catch("unknown");
 
 export const AgentRuntimeSchema = z.object({
   id: z.string(),
@@ -28,6 +58,8 @@ export const AgentRuntimeSchema = z.object({
   profile_id: z.string().nullable().catch(null),
   pause: RuntimePauseSchema.nullable().catch(null),
   daemon_running_tasks: z.number().int().nonnegative().nullable().catch(null),
+  update_schedule: RuntimeUpdateScheduleSchema.nullable().catch(null),
+  last_update_outcome: UpdateOutcomeSchema,
   max_concurrent_tasks: z.number().int().nullable().catch(null),
   last_seen_at: z.string().nullable().catch(null),
   created_at: z.string().catch(""),
@@ -56,6 +88,8 @@ export const EMPTY_RUNTIME: AgentRuntime = {
   shared_with: [],
   pause: null,
   daemon_running_tasks: null,
+  update_schedule: null,
+  last_update_outcome: null,
   max_concurrent_tasks: null,
   last_seen_at: null,
   created_at: "",

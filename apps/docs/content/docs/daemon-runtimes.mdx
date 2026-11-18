@@ -84,6 +84,10 @@ The registered command is `multica daemon start --foreground` for that profile, 
 - If a file Multica did not create already sits at that location (your own systemd unit, for example), `enable` and `disable` refuse to modify it.
 - A daemon launched by Desktop is managed by Desktop; `daemon start` neither hints nor refreshes a registration for it.
 
+### Scheduled self-update [#update-schedule]
+
+Each machine can hold one update schedule: a five-field cron, a time zone (default `Asia/Ho_Chi_Minh`) and a maintenance window of 10 to 30 minutes (default 30; 30 is the hard limit). Every runtime on the machine shows the same schedule. The machine owner and the workspace owner set it with `multica daemon update-schedule set`; the server rejects an invalid cron, an unknown time zone, a window outside 10 to 30 minutes, and a daemon launched by the Desktop app, which cannot update itself. This release stores and edits the schedule and shows the next 3 fire times; the update cycle itself arrives in later releases.
+
 ## Dispatch and online status
 
 Once registered, a runtime keeps a persistent connection. When a new run enters the queue, the server notifies the matching daemon; the daemon also polls periodically so a dropped connection does not lose the notification. When a runtime is online with spare capacity, runs usually start immediately.
