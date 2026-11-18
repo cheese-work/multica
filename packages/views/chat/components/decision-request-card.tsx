@@ -526,9 +526,11 @@ const RING_MS = 600;
 const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // The folded row names the question: the first line of the ask, markdown marks dropped.
+// A proposal opens with the fixed "Proposed action" heading; its question is the template title below it.
 const questionOf = (ask: string, fallback: string) => {
-  const line = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).find(Boolean);
-  return line || fallback;
+  const lines = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).filter(Boolean);
+  const proposal = lines[0] === "Proposed action";
+  return (proposal ? lines.find((l, i) => i > 0 && !l.includes(" version ")) ?? fallback : lines[0]) || fallback;
 };
 
 // `inIssue`: shown on the source issue page, where there is no DM message box.
