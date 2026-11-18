@@ -176,7 +176,7 @@ func TestDecodeRefusesBadTypedFields(test *testing.T) {
 
 func TestCannotDoFromSettings(test *testing.T) {
 	mode, catalog, err := CannotDoFromSettings(nil)
-	if err != nil || mode != "off" || len(catalog) != 3 || catalog[0].Key != "daemon_restart" {
+	if err != nil || mode != "off" || len(catalog) != 4 || catalog[0].Key != "daemon_restart" {
 		test.Fatalf("absent = %q %v %v, want off and the three built-in entries", mode, catalog, err)
 	}
 	mode, catalog, err = CannotDoFromSettings([]byte(`{"agent_cannot_do_mode":"block","agent_cannot_do":[{"key":"x","tool":"gh","subcommand":["pr","merge"],"human_step":"Merge it yourself."}]}`))
@@ -292,6 +292,30 @@ func TestBuiltinCatalogHasTheC00Entry(test *testing.T) {
 		}
 	}
 	test.Fatalf("catalog %v has no c00_restart entry with one allowed agent", catalog)
+}
+
+// The restart receipt on CHE-7149 (comment 01a1ef20) ran `docker container restart <id>` on C00.
+func TestBuiltinC00EntryRefusesTheEvidencedRestart(test *testing.T) {
+	_, catalog, err := CannotDoFromSettings(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	const other = "22222222-2222-4222-8222-222222222222"
+	for name, command := range map[string][]string{
+		"container restart": {"docker", "container", "restart", "69b1c6109659"},
+		"compose restart":   {"docker", "compose", "restart", "doop"},
+	} {
+		test.Run(name, func(test *testing.T) {
+			ask := cannotDoAsk(test, agentRun(command))
+			if _, err := ask.CheckCannotDo("block", catalog, c00HermesDevops); err != nil {
+				test.Fatalf("listed C00 agent refused: %v", err)
+			}
+			_, err := ask.CheckCannotDo("block", catalog, other)
+			if err == nil || !strings.Contains(err.Error(), "c00_") || !strings.Contains(err.Error(), "issue.assign") {
+				test.Fatalf("unlisted asker: err = %v, want a c00 refusal naming issue.assign", err)
+			}
+		})
+	}
 }
 
 func TestParseCannotDoAllowedAgents(test *testing.T) {

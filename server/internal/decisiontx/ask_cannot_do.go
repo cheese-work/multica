@@ -43,8 +43,9 @@ type CannotDo struct {
 var builtinCannotDo = []CannotDo{
 	{Key: "daemon_restart", Tool: "multica", Subcommand: []string{"daemon", "restart"}, HumanStep: "Cheese runs `multica daemon restart` on the daemon host; an agent run cannot restart its own daemon."},
 	{Key: "daemon_stop", Tool: "multica", Subcommand: []string{"daemon", "stop"}, HumanStep: "Cheese runs `multica daemon stop` on the daemon host; an agent run cannot stop its own daemon."},
-	// c00 seed: the doop restart card of 18 Nov 2026 asked an X99 agent for a C00-only command. ponytail: the command shape is read from the plan, not the card (not found); change it in agent_cannot_do if C00 uses another.
-	{Key: "c00_restart", Tool: "docker", Subcommand: []string{"compose", "restart"}, HumanStep: "A C00 agent restarts the service; assign the issue to it, or Cheese runs the command on C00.", AllowedAgents: []string{c00HermesDevops}},
+	// c00 seed: the doop restart of 18 Nov 2026 (CHE-7149 receipt) ran `docker container restart <id>` on C00, a command an X99 agent cannot run. `docker compose restart` is the same restart by another route.
+	{Key: "c00_restart", Tool: "docker", Subcommand: []string{"container", "restart"}, HumanStep: "A C00 agent restarts the service; assign the issue to it, or Cheese runs the command on C00.", AllowedAgents: []string{c00HermesDevops}},
+	{Key: "c00_compose_restart", Tool: "docker", Subcommand: []string{"compose", "restart"}, HumanStep: "A C00 agent restarts the service; assign the issue to it, or Cheese runs the command on C00.", AllowedAgents: []string{c00HermesDevops}},
 }
 
 // c00HermesDevops is the workspace agent that runs on C00 (c00-hermes-devops).
