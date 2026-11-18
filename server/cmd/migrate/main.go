@@ -278,6 +278,8 @@ var concurrentIndexCleanups = map[string]string{
 	"573_governance_budget_reservation_open_window_idx":         "governance_budget_reservation_open_window_idx",
 	"999k41_chat_submission_receipt_key":                        "uq_chat_submission_receipt_key",
 	"999k42_chat_submission_receipt_workspace":                  "idx_chat_submission_receipt_workspace",
+	"99996_dm_progress_pending_lineage_created_idx":             "dm_progress_pending_lineage_created_idx",
+	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
 	"999k38_task_context_receipt_issue_idx":                     "idx_task_context_receipt_issue",
 	"999k37_task_context_receipt_workspace_idx":                 "idx_task_context_receipt_workspace",
 	"999k35_project_subscriber_user_idx":                        "idx_project_subscriber_workspace_user",
