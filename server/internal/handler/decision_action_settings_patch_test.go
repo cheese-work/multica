@@ -224,6 +224,7 @@ func TestSettingsPatchRequestRefusals(test *testing.T) {
 		{"mermaid_orientation outside enum", http.StatusBadRequest, "invalid_params", map[string]any{"mermaid_orientation": "sideways"}, nil},
 		{"ask_guard_mode outside the modes", http.StatusBadRequest, "invalid_params", map[string]any{"ask_guard_mode": "bogus"}, nil},
 		{"ask_guard_mode is not a string", http.StatusBadRequest, "invalid_params", map[string]any{"ask_guard_mode": true}, nil},
+		{"design_card_guard with a bad mode", http.StatusBadRequest, "invalid_params", map[string]any{"design_card_guard": map[string]any{"mode": "on"}}, nil},
 		{"no keys", http.StatusBadRequest, "invalid_params", map[string]any{}, nil},
 		{"agent after digest is wrong", http.StatusBadRequest, "after_digest_mismatch", ok, func(params map[string]any) { params["after_sha256"] = strings.Repeat("0", 64) }},
 		{"agent base digest is stale", http.StatusConflict, "precondition_drift", ok, func(params map[string]any) { params["base_sha256"] = strings.Repeat("0", 64) }},

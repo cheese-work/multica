@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
@@ -828,6 +829,20 @@ func main() {
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
+	// CHE-4143 step 7: stack-link triggers (pull_request webhooks via the
+	// handler, and a bounded pass in the 10 min sweep). The mode gate and the
+	// GITHUB_STACK_AUTOLINK=0 kill live in the executor; the default mode is report.
+	if h.PRRefresh.Enabled() {
+		stackStore := ghstack.NewStore(pool)
+		stackLinker := &ghstack.Dispatcher{
+			Runner:  &ghstack.Executor{API: h.PRRefresh.Client(), Modes: stackStore, Reporter: stackStore},
+			Links:   stackStore,
+			Backoff: h.PRRefresh,
+		}
+		stackLinker.Start(sweepCtx)
+		h.StackAutolink = stackLinker
+		h.PRRefresh.AddSweep(stackLinker.Sweep) // before Start: the sweep loop reads the list
+	}
 	h.PRRefresh.Start(sweepCtx)
 	go h.BackfillGitHubAccountIDs(sweepCtx)
 	go h.RunGitHubIntakeWorker(sweepCtx)
