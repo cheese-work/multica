@@ -61,6 +61,17 @@ func TestShallowFetchInLinkedWorktreeIsRefused(t *testing.T) {
 		}
 	}
 
+	// The bare cache itself is shared by every worktree: same refusal.
+	for _, flag := range []string{"--depth=1", "--deepen=1"} {
+		code, errs := guardedGit(t, "-C", bare, "fetch", flag, "origin", "HEAD")
+		if code != 2 || !strings.Contains(errs, "shallow") {
+			t.Errorf("bare cache %s: want refusal, got exit %d %q", flag, code, errs)
+		}
+		if got := gitT(t, "-C", bare, "rev-parse", "--is-shallow-repository"); got != "false" {
+			t.Fatalf("bare cache %s: cache became shallow", flag)
+		}
+	}
+
 	// A normal fetch from the worktree is untouched.
 	if code, errs := guardedGit(t, "-C", wt, "fetch", "origin", "HEAD"); code != 0 {
 		t.Errorf("plain fetch refused: exit %d %q", code, errs)

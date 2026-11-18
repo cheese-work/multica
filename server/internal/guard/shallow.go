@@ -6,10 +6,10 @@ import (
 )
 
 // A linked worktree shares its repository's `shallow` file, so a shallow
-// fetch run from a worktree of the workspace repo cache turns the shared cache
-// shallow and breaks every later checkout (CHE-7286). Git has no setting that
+// fetch run from a worktree of the workspace repo cache, or in the bare cache
+// itself, turns the shared cache shallow and breaks every later checkout (CHE-7286). Git has no setting that
 // refuses it, so the guard does.
-const shallowLine = "git fetch/pull with --depth, --deepen or --shallow-* is refused in a linked worktree: " +
+const shallowLine = "git fetch/pull with --depth, --deepen or --shallow-* is refused in the shared repo cache or a linked worktree of it: " +
 	"it makes the shared repo cache shallow; fetch full history, or run it in an independent clone"
 
 var shallowFlags = []string{"--depth", "--deepen", "--shallow-since", "--shallow-exclude"}
@@ -49,13 +49,18 @@ func (e *Engine) shallowFetch(ctx context.Context, args []string) (line string, 
 	if !shallow {
 		return "", false
 	}
-	r, err := e.Runner.Run(ctx, "git", append(prefix, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")...)
+	r, err := e.Runner.Run(ctx, "git", append(prefix, "rev-parse", "--path-format=absolute", "--is-bare-repository", "--git-dir", "--git-common-dir")...)
 	if err != nil || r.Exit != 0 {
 		return "", false
 	}
-	dirs := strings.Fields(r.Stdout)
-	if len(dirs) != 2 || dirs[0] == dirs[1] {
+	out := strings.Fields(r.Stdout)
+	if len(out) != 3 {
 		return "", false
 	}
-	return shallowLine, true
+	// A bare repository is the shared cache itself; a linked worktree has a
+	// git dir apart from the common one.
+	if out[0] == "true" || out[1] != out[2] {
+		return shallowLine, true
+	}
+	return "", false
 }
