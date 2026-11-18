@@ -4210,6 +4210,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
+		FromMachine:     isMachineCredentialActor(r),
 		PropertyGate:    h.createPropertyGate(wsUUID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
@@ -6020,7 +6021,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
-		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID}
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID, human: actorType == "member" && !isMachineCredentialActor(r)}
 		// The client previewed no handoff for this batch. An issue that would
 		// hand off now is skipped: nobody confirmed it. verify checks again under
 		// the locks, for a handler that appears between here and the write.
@@ -6125,6 +6126,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			var refused *decisionEpisodeRefusal
 			if errors.As(err, &refused) {
 				failed = append(failed, map[string]any{"id": issueID, "code": "decision_episode_refused", "error": refused.Error()})
+				continue
+			}
+			var held *intakehold.HoldError
+			if errors.As(err, &held) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "intake_hold", "error": held.Error(), "ends_at": held.EndsAt, "fix": intakehold.Fix, "release_paths": intakehold.ReleasePaths})
 				continue
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)

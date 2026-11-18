@@ -3493,6 +3493,13 @@ type SeatCapacityOutbox struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ServerDeploy struct {
+	ID        int64              `json:"id"`
+	Commit    string             `json:"commit"`
+	Version   string             `json:"version"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
+}
+
 type SilenceAlertReceipt struct {
 	TaskID    pgtype.UUID        `json:"task_id"`
 	SegmentID string             `json:"segment_id"`

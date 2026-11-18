@@ -212,3 +212,26 @@ WHERE machine_owner_id = ANY(@machine_owner_ids::uuid[])
   AND daemon_id = ANY(@daemon_ids::text[])
   AND finished_at IS NOT NULL
 ORDER BY machine_owner_id, daemon_id, finished_at DESC;
+
+-- name: RecordServerDeploy :execrows
+-- One row when the running commit differs from the newest row; a restart on
+-- the same commit writes none (CHE-5709, D14).
+-- ponytail: two replicas starting in the same instant on a new commit can both write; dedupe on read if it matters.
+INSERT INTO server_deploy ("commit", version)
+SELECT @commit::text, @version::text
+WHERE (SELECT d."commit" FROM server_deploy d ORDER BY d.started_at DESC, d.id DESC LIMIT 1) IS DISTINCT FROM @commit::text;
+
+-- name: ListServerDeploysSince :many
+SELECT "commit", version, started_at FROM server_deploy
+WHERE started_at >= @since
+ORDER BY started_at DESC, id DESC;
+
+-- name: ListMachineUpdateCycles :many
+-- A machine's cycles, newest first. Keyset page on (started_at DESC, id DESC);
+-- the cursor row is excluded.
+SELECT * FROM daemon_update_cycle
+WHERE machine_owner_id = @machine_owner_id AND daemon_id = @daemon_id
+  AND (sqlc.narg('cursor_at')::timestamptz IS NULL
+       OR (started_at, id) < (sqlc.narg('cursor_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY started_at DESC, id DESC
+LIMIT @row_limit;
