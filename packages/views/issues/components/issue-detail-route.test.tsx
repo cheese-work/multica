@@ -229,7 +229,7 @@ describe("IssueDetailRoute when the lookup fails for a reason other than 404", (
   it("offers a retry instead of claiming the issue is deleted", async () => {
     const getIssue = vi
       .fn()
-      .mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
+      .mockRejectedValue(new ApiError("unavailable", 503, "Service Unavailable"));
     setApiInstance({ getIssue } as unknown as ApiClient);
     const qc = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
@@ -262,8 +262,8 @@ describe("IssueDetailRoute when the lookup fails for a reason other than 404", (
 });
 
 describe("IssueDetailRoute when the issue fails schema validation", () => {
-  // A 200 with an unreadable field is a data problem, not a connection problem.
-  it("says the data is unreadable, names the issue key and offers a retry", async () => {
+  // Upstream wins (v0.10.0): unreadable data is a generic load failure with retry.
+  it("shows the generic load failure and offers a retry", async () => {
     const getIssue = vi
       .fn()
       .mockRejectedValue(new SchemaValidationError("GET /api/issues/:id", ["metadata.decision_park"]));
@@ -290,9 +290,7 @@ describe("IssueDetailRoute when the issue fails schema validation", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("This issue has data the app cannot read.")).toBeInTheDocument();
-    expect(screen.getByText("CHE-3680")).toBeInTheDocument();
-    expect(screen.queryByText(/connection/)).not.toBeInTheDocument();
+    expect(await screen.findByText("Could not load issue.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
     qc.clear();

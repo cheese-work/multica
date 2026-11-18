@@ -3480,7 +3480,7 @@ describe("IssueDetail (shared)", () => {
 
   // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
   it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
-    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unavailable", 503, "Service Unavailable"));
 
     renderIssueDetail("issue-1");
 

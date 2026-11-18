@@ -503,7 +503,7 @@
     "metadata_description": "AI 代理和整合記錄的鍵值資料，用於銜接工作流程。",
     "section_load_failed_retry": "載入失敗，點選重試",
     "not_found": "這個任務不存在或已在該工作區被刪除。",
-    "load_failed": "無法載入這個任務。請檢查網路後重試。",
+    "load_failed": "無法載入任務。",
     "load_retry": "重試",
     "card_load_failed": "無法載入這個任務。",
     "data_error": "這個任務包含應用程式無法讀取的資料。",

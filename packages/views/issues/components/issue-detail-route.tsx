@@ -12,7 +12,7 @@ import { useInboxSelectionStore } from "@multica/core/inbox/selection-store";
 import { useNavigation } from "../../navigation";
 import { DecisionActionPanel } from "./decision-action-panel";
 import { TranscriptButton } from "../../common/task-transcript";
-import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
+import { IssueDetail, IssueDetailSkeleton, IssueLoadError, IssueNotFound } from "./issue-detail";
 import { IssuePeekHost } from "./issue-peek";
 
 interface IssueDetailRouteProps {
@@ -123,7 +123,7 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
 export function IssueDetailRoute({ routeId, onDelete, deliverable }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
   const {
-    canonicalId, issue, isResolving, notFound, loadError, dataError, retry, authoritative, hasLoaded,
+    canonicalId, issue, isResolving, notFound, loadFailed, isRetrying, retry, authoritative, hasLoaded,
   } = useCanonicalIssue(wsId, routeId);
   const highlight = useHighlightHash();
   const landingToken = useInboxSelectionStore((s) =>
@@ -157,13 +157,16 @@ export function IssueDetailRoute({ routeId, onDelete, deliverable }: IssueDetail
     navigation.replace(paths.issueDetail(issueRef));
   }, [issueRef]);
 
+  if (loadFailed) {
+    return <IssueLoadError showBackLink={!onDelete} onRetry={retry} isRetrying={isRetrying} />;
+  }
+
   if (isResolving || (!issue && !notFound)) return <IssueDetailSkeleton />;
 
   // Render not-found here rather than handing the unresolved segment down.
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
-  if (loadError) return <IssueNotFound showBackLink={!onDelete} onRetry={retry} dataError={dataError} issueKey={routeId} />;
   if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
 
   // The page hosts a side peek so Shift+Click on an issue mention in the

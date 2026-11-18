@@ -95,8 +95,7 @@ import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
-import { isSchemaValidationError } from "@multica/core/api/schema";
-import { isIssueUuid, isNotFoundError } from "@multica/core/issues/canonical-id";
+import { useIssueReadState } from "@multica/core/issues/read-state";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -1358,17 +1357,8 @@ export function IssueNotFound({
   showBackLink = true,
   leading,
   trailing,
-  onRetry,
-  dataError,
-  issueKey,
 }: {
   showBackLink?: boolean;
-  /** The response arrived but failed schema validation: say the data is unreadable, not "connection". */
-  dataError?: boolean;
-  /** Identifier shown above the data-error message so the user knows which issue it is. */
-  issueKey?: string;
-  /** Set when the load failed for a reason other than a 404: says so and offers a retry. */
-  onRetry?: () => void;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1391,24 +1381,14 @@ export function IssueNotFound({
       )}
       <CollectionPageState
         icon={FileQuestion}
-        title={t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found_title))}
-        description={dataError ? issueKey : onRetry ? undefined : t(($) => $.detail.not_found)}
-        tone={onRetry || dataError ? "destructive" : "muted"}
+        title={t(($) => $.detail.not_found_title)}
+        description={t(($) => $.detail.not_found)}
         actions={
-          onRetry || showBackLink ? (
-            <>
-              {onRetry && (
-                <Button variant="outline" size="sm" onClick={onRetry}>
-                  {t(($) => $.detail.retry)}
-                </Button>
-              )}
-              {showBackLink && (
-                <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-                  <ChevronLeft aria-hidden="true" />
-                  {t(($) => $.detail.back)}
-                </Button>
-              )}
-            </>
+          showBackLink ? (
+            <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+              <ChevronLeft aria-hidden="true" />
+              {t(($) => $.detail.back)}
+            </Button>
           ) : undefined
         }
       />
@@ -1839,9 +1819,11 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
   // The view's own observer reconciles with the authoritative detail endpoint
   // on mount unless the route already completed that read (`authoritative`
   // from the fork route, `skipInitialRefetch` from the upstream contract).
-  const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+  const issueQuery = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative || skipInitialRefetch),
   );
+  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = issueQuery;
+  const issueReadState = useIssueReadState(wsId, id, issueQuery);
   useMarkIssueReadWhileViewing(wsId, issue?.id ?? "");
   useMarkIssueInboxReadWhileViewing(wsId, issue?.id ?? "", readsInbox);
   const descriptionSourceId = `description:${id}`;
@@ -3873,6 +3855,18 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     [resolvedIssueId, resolvedIssueIdentifier],
   );
 
+  if (issueReadState.loadFailed) {
+    return (
+      <IssueLoadError
+        showBackLink={!onDelete}
+        leading={leadingAction}
+        trailing={trailingActions}
+        onRetry={issueReadState.retry}
+        isRetrying={issueReadState.isRetrying}
+      />
+    );
+  }
+
   if (loading) {
     // The host's trailing controls hold the peek's only close button, so the
     // waiting and missing states carry them too.
@@ -3885,9 +3879,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
         showBackLink={!onDelete}
         leading={leadingAction}
         trailing={trailingActions}
-        onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
-        dataError={isSchemaValidationError(issueError)}
-        issueKey={isIssueUuid(id) ? undefined : id}
       />
     );
   }
