@@ -74,6 +74,9 @@ type decisionRequestInput struct {
 	DMSession pgtype.UUID `json:"-"`
 	// Batch is set only by the batch proposal route (CHE-5412).
 	Batch *batchCard `json:"-"`
+	// Wait asks to park the issue while the request is open under
+	// decision_ask_park=on_wait (CHE-6460). Out of the fingerprint.
+	Wait bool `json:"-"`
 }
 
 // batchCard ties the requests of one batch to one shared card: they share the
@@ -515,7 +518,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+	if result.ParkedIssue, result.ParkedActivity, err = parkForDecisionRequest(ctx, queries, issue, input.Wait); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -842,7 +845,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	}
 	result.PingRecorded = true
 	if !inDM { // the DM's task is not the issue's: the anchor stays as it is
-		if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+		if result.ParkedIssue, result.ParkedActivity, err = parkForDecisionRequest(ctx, queries, issue, input.Wait); err != nil {
 			return empty, err
 		}
 	}

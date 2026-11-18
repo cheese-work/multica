@@ -695,6 +695,7 @@ UPDATE workspace SET
     -- the statuses list and any unnamed field keep their value.
     -- CHE-3706: harness_profile sets or (reset) removes one settings key.
     -- CHE-6969: auto_close replaces its one settings key.
+    -- CHE-6460: decision_ask_park replaces its one settings key.
     settings = (
         SELECT CASE
             WHEN $5::bool THEN h.v - 'harness_profile'
@@ -702,42 +703,46 @@ UPDATE workspace SET
             ELSE h.v
         END
         FROM (SELECT CASE
-            WHEN $7::jsonb IS NOT NULL THEN jsonb_set(k.v, '{ask_guard_mode}', $7::jsonb)
+            WHEN $7::jsonb IS NOT NULL THEN jsonb_set(d.v, '{ask_guard_mode}', $7::jsonb)
+            ELSE d.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(k.v, '{decision_ask_park}', $8::jsonb)
             ELSE k.v
         END AS v
         FROM (SELECT CASE
-            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', $8::jsonb)
+            WHEN $9::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', $9::jsonb)
             ELSE c.v
         END AS v
         FROM (SELECT CASE
-            WHEN $9::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $9::jsonb)
+            WHEN $10::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $10::jsonb)
             ELSE t.v
         END AS v
         FROM (SELECT CASE
-            WHEN $10::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $10::jsonb)
+            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $11::jsonb)
             ELSE g.v
         END AS v
         FROM (SELECT CASE
-            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $11::jsonb)
+            WHEN $12::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $12::jsonb)
             ELSE m.v
         END AS v
         FROM (SELECT CASE
-            WHEN $12::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $12::jsonb)
+            WHEN $13::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $13::jsonb)
             ELSE a.v
         END AS v FROM (SELECT CASE
-            WHEN $13::bool THEN base.v - 'auto_compact'
-            WHEN $14::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $14::jsonb)
+            WHEN $14::bool THEN base.v - 'auto_compact'
+            WHEN $15::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $15::jsonb)
             ELSE base.v
         END AS v
         FROM (SELECT CASE
-            WHEN $15::bool THEN COALESCE($16::jsonb, settings) - 'compact_prompt'
-            WHEN $17::text IS NOT NULL THEN jsonb_set(COALESCE($16::jsonb, settings), '{compact_prompt}', to_jsonb($17::text))
-            ELSE COALESCE($16::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS k) AS h
+            WHEN $16::bool THEN COALESCE($17::jsonb, settings) - 'compact_prompt'
+            WHEN $18::text IS NOT NULL THEN jsonb_set(COALESCE($17::jsonb, settings), '{compact_prompt}', to_jsonb($18::text))
+            ELSE COALESCE($17::jsonb, settings)
+        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS k) AS d) AS h
     ),
-    repos = COALESCE($18, repos),
-    issue_prefix = COALESCE($19, issue_prefix),
-    avatar_url = COALESCE($20, avatar_url),
+    repos = COALESCE($19, repos),
+    issue_prefix = COALESCE($20, issue_prefix),
+    avatar_url = COALESCE($21, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
@@ -751,6 +756,7 @@ type UpdateWorkspaceParams struct {
 	HarnessProfileReset pgtype.Bool `json:"harness_profile_reset"`
 	HarnessProfile      pgtype.Text `json:"harness_profile"`
 	AskGuardMode        []byte      `json:"ask_guard_mode"`
+	DecisionAskPark     []byte      `json:"decision_ask_park"`
 	AutoClose           []byte      `json:"auto_close"`
 	TimeWakeupSkip      []byte      `json:"time_wakeup_skip"`
 	IdleStartedGuard    []byte      `json:"idle_started_guard"`
@@ -775,6 +781,7 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.HarnessProfileReset,
 		arg.HarnessProfile,
 		arg.AskGuardMode,
+		arg.DecisionAskPark,
 		arg.AutoClose,
 		arg.TimeWakeupSkip,
 		arg.IdleStartedGuard,
