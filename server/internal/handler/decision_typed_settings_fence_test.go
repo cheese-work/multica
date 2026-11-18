@@ -424,6 +424,46 @@ func TestTypedSettingsFenceOtherWritersLeaveFencedKeys(test *testing.T) {
 				test.Errorf("%s changed %s: %v", name, key, incoming[key])
 			}
 		}
+		// A body that omits the keys: no reconcile adds, sets or invents one.
+		stored, incoming = fenced(), map[string]any{"compact_prompt": "new"}
+		_ = reconcile(stored, incoming)
+		for _, key := range typedFencedKeys {
+			if _, present := incoming[key]; present {
+				test.Errorf("%s added %s to a body that omitted it: %v", name, key, incoming[key])
+			}
+		}
+	}
+}
+
+// The owner CAS path writes governed fields in other columns (workspace.context): it leaves
+// workspace.settings, and so both fenced keys, as they were.
+func TestTypedSettingsFenceOwnerCASLeavesFencedKeys(test *testing.T) {
+	setWorkspaceSettings(test, `{"decision_server_actions":"on","standing_answers":{"review_cap":"split"}}`)
+	before := storedSettings(test)
+	var current string
+	dbfx.QueryRow(test, `SELECT COALESCE(context, '') FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&current)
+	ctx := context.Background()
+	transaction, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer transaction.Rollback(ctx)
+	_, reason, err := ownerCASWriteTx(ctx, transaction, ownerCASWorkspaceContext, testWorkspaceID, testWorkspaceID, "context set by the CAS path", hermesExceptionDigest([]byte(current)))
+	if err != nil || reason != hermesExceptionRejectNone {
+		test.Fatalf("owner CAS write: reason %v, err %v", reason, err)
+	}
+	var settings []byte
+	if err := transaction.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings); err != nil {
+		test.Fatal(err)
+	}
+	var after map[string]json.RawMessage
+	if err := json.Unmarshal(settings, &after); err != nil {
+		test.Fatal(err)
+	}
+	for _, key := range typedFencedKeys {
+		if !bytes.Equal(after[key], before[key]) {
+			test.Errorf("owner CAS changed %s: %s, want %s", key, after[key], before[key])
+		}
 	}
 }
 
