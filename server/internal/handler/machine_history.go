@@ -45,7 +45,7 @@ func (h *Handler) RecordServerDeploy(ctx context.Context, commit, version string
 // requireMachineReadAccess loads the runtime and refuses with 404 (never 403, so
 // a runtime's existence does not leak) unless the caller may see it: a member
 // who owns or may use the runtime, or the workspace owner.
-func (h *Handler) requireMachineReadAccess(w http.ResponseWriter, r *http.Request) (db.AgentRuntime, db.Member, bool) {
+func (h *Handler) requireMachineReadAccess(w http.ResponseWriter, r *http.Request, adminOverride bool) (db.AgentRuntime, db.Member, bool) {
 	runtimeUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "runtimeId"), "runtime_id")
 	if !ok {
 		return db.AgentRuntime{}, db.Member{}, false
@@ -59,7 +59,8 @@ func (h *Handler) requireMachineReadAccess(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return rt, member, false
 	}
-	if !canPauseDaemon(member, rt) && !canUseRuntimeForAgent(member, rt) {
+	isAdmin := member.Role == "owner" || member.Role == "admin"
+	if !(adminOverride && isAdmin) && !canPauseDaemon(member, rt) && !canUseRuntimeForAgent(member, rt) {
 		writeError(w, http.StatusNotFound, "runtime not found")
 		return rt, member, false
 	}
@@ -95,7 +96,7 @@ type MachineHistoryPage struct {
 // GetMachineHistory answers GET /api/runtimes/{runtimeId}/machine/history: the
 // machine's update cycles, newest first. Query: limit, cursor.
 func (h *Handler) GetMachineHistory(w http.ResponseWriter, r *http.Request) {
-	rt, _, ok := h.requireMachineReadAccess(w, r)
+	rt, _, ok := h.requireMachineReadAccess(w, r, false)
 	if !ok {
 		return
 	}
@@ -166,7 +167,9 @@ func (h *Handler) GetMachineAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
 		return
 	}
-	rt, member, ok := h.requireMachineReadAccess(w, r)
+	// An owner or admin reads the audit of any runtime in the workspace, like the
+	// workspace audit reader; everyone else gets 404 from the access check.
+	rt, member, ok := h.requireMachineReadAccess(w, r, true)
 	if !ok {
 		return
 	}
@@ -218,7 +221,7 @@ type MachinePlanned struct {
 // GetMachinePlanned answers GET /api/runtimes/{runtimeId}/machine/planned: the
 // next 3 cron times of an enabled schedule, and the server deploys of the last 24 h.
 func (h *Handler) GetMachinePlanned(w http.ResponseWriter, r *http.Request) {
-	rt, _, ok := h.requireMachineReadAccess(w, r)
+	rt, _, ok := h.requireMachineReadAccess(w, r, false)
 	if !ok {
 		return
 	}

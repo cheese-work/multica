@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,6 +230,15 @@ func TestMachineAudit_OnlyThisMachineAndAccess(t *testing.T) {
 	json.Unmarshal(getMachine(t, testHandler.GetMachineAudit, f.adminA, rtA, "audit", "?limit=3&cursor="+*p1.NextCursor, nil).Body.Bytes(), &p2)
 	if len(p2.Events) != 1 || p2.NextCursor != nil {
 		t.Fatalf("audit page 2 = %+v, want 1 event", p2)
+	}
+
+	// Same as the workspace audit reader: an admin reads the audit of another
+	// member's private runtime, while that private runtime stays 404 for a plain member.
+	rtPriv := dbfx.Runtime(t, "audit-private", testutil.Cols{"workspace_id": f.wsA, "owner_id": f.memberA, "daemon_id": "machine-audit-3", "provider": "audit-private", "visibility": "private"})
+	privID := seedAudit(t, seedRow{ws: f.wsA, kind: "runtime.pause", targetType: "runtime", targetID: rtPriv, at: now})
+	w = getMachine(t, testHandler.GetMachineAudit, f.adminA, rtPriv, "audit", "", nil)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), privID) {
+		t.Fatalf("admin audit of a member's private runtime = %d, want 200 with event %s: %s", w.Code, privID, w.Body.String())
 	}
 
 	// No access: a plain member, a member of another workspace, and a stranger get 404.
