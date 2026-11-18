@@ -9,7 +9,7 @@ import { PrLinkDemo } from "@/components/demos/pr-link-demo";
 
 Une fois GitHub connecté, Multica associe automatiquement les pull requests à partir des identifiants de tâche. Le détail de la tâche affiche directement l'état de la PR, l'ampleur des modifications, les résultats de la CI et les conflits de fusion.
 
-L'intégration GitHub se contente de lire les dépôts autorisés lors de l'installation ; elle ne pousse jamais de commits, de commentaires ni de status checks.
+L'intégration GitHub se contente de lire les dépôts autorisés lors de l'installation ; elle ne pousse jamais de commits, de commentaires ni de status checks. La seule écriture est facultative : quand la [liaison automatique des piles](#stack-auto-linking) est réglée sur `link`, elle relie les PR dépendantes dans une pile GitHub.
 
 Multica auto-hébergé peut aussi connecter en parallèle des instances Forgejo, Gitea ou GitLab auto-hébergées, avec la même association automatique des PR, le même changement de statut à la fusion et le même affichage de la CI. Le point d'entrée est **Paramètres → Code** ; voir [Fournisseurs Git auto-hébergés](/vcs-integration). Multica Cloud ne propose pas ce point d'entrée.
 
@@ -137,6 +137,88 @@ Par exemple, une PR qui référence à la fois `MUL-1` et `ENG-2` peut être ass
 
 Si un même identifiant correspond à une tâche dans plusieurs des espaces de travail connectés (possible lorsqu'ils partagent un préfixe), Multica ne l'associe automatiquement dans aucun d'eux, afin que la fusion de la PR ne termine pas une tâche sans rapport. Associez la PR à la main dans le bon espace de travail.
 
+## Relier les PR dépendantes en piles GitHub [#stack-auto-linking]
+
+Quand la branche de base d'une PR est la branche de tête d'une autre PR ouverte du même dépôt, les deux PR forment une chaîne. Multica peut relier la chaîne en une seule pile GitHub, sans que personne n'ait à lancer `gh stack link` à la main.
+
+### Ce qu'elle fait et ne fait jamais
+
+Une PR associée à une tâche Multica la déclenche. Les PR ancêtres n'ont pas besoin de tâche. Multica descend de cette PR le long des PR de base, puis fait l'une de ces actions :
+
+| Résultat du parcours | Action |
+|---|---|
+| La base de la PR est la branche par défaut | Rien. La PR peut devenir le bas d'une pile quand une couche suivante arrive. |
+| La PR est déjà dans une pile, juste au-dessus de sa PR de base | Rien. |
+| Aucune PR de la chaîne n'est dans une pile | Crée une pile, couche du bas en premier. |
+| Le parcours atteint une PR qui est le **haut** d'une pile existante | Ajoute les nouvelles PR (et les PR non empilées entre les deux) à cette pile, du bas vers le haut. |
+| Tout autre cas (voir les [codes de rapport](#stack-report-codes)) | N'écrit rien et le signale. |
+
+Elle ne déplace jamais une PR d'une pile à une autre, ne désempile jamais, ne réordonne jamais, et ne fusionne, ne rebase ni ne pousse jamais. Une chaîne dont un ancêtre pose problème n'est pas reliée du tout : Multica ne crée donc jamais de pile tronquée. Les piles GitHub fusionnent de bas en haut, et une personne fusionne toujours le code. Le parcours couvre au plus 10 ancêtres et ne compte que les PR dont la branche de tête est dans le même dépôt (une tête issue d'un fork ne compte pas).
+
+Elle se déclenche quand une PR associée est ouverte, rouverte, passée en « prête pour la revue », synchronisée, ou quand sa branche de base est modifiée, ou quand une PR en dessous est fusionnée. Un passage borné dans la réconciliation toutes les 10 minutes vérifie aussi les PR ouvertes associées dont la base n'est pas la branche par défaut, afin de rattraper un webhook manqué. Une seule tâche s'exécute à la fois par dépôt. Une erreur GitHub ne fait jamais échouer le traitement de la PR ni le webhook.
+
+### Choisir un mode
+
+Le réglage d'espace de travail `github_stack_autolink` contient un mode, et des modes facultatifs par dépôt :
+
+```json
+{ "mode": "report", "repos": { "owner/repo": "link" } }
+```
+
+| Mode | Effet |
+|---|---|
+| `off` | Ne fait rien. |
+| `report` | Lit, décide et consigne ce qu'elle ferait. N'écrit jamais. C'est la valeur par défaut quand la clé est absente. |
+| `link` | Écrit aussi la pile sur GitHub. |
+
+Ordre : `off` < `report` < `link`. Règles :
+
+1. Un `mode` d'espace de travail à `off` coupe tout. Une entrée de dépôt ne peut pas le relever.
+2. Sinon, une entrée de dépôt l'emporte sur le `mode` de l'espace de travail. Elle peut relever `report` à `link` pour un seul dépôt, ou abaisser n'importe quoi à `off`.
+3. La même installation de GitHub App peut être connectée à plusieurs espaces de travail (voir [Plusieurs espaces de travail](#plusieurs-espaces-de-travail)). Le **mode final** d'un dépôt est le mode effectif le plus bas parmi tous les espaces de travail connectés à cette installation. Une écriture exige que tous résolvent `link`.
+4. La variable d'environnement serveur `GITHUB_STACK_AUTOLINK=0` force `off` pour tous les dépôts et tous les espaces de travail.
+5. Le mode est relu juste avant chaque écriture. Un mode abaissé pendant qu'une tâche attendait donne zéro écriture.
+
+Un réglage illisible compte comme `off`.
+
+### CLI
+
+```bash
+multica github stack-autolink status --repo owner/repo
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link
+```
+
+`status` est ouvert à tout membre. Il affiche le mode final, si le kill par variable d'environnement est actif, et le mode effectif de chacun de vos espaces de travail connectés à l'installation du propriétaire du dépôt. Les autres espaces de travail sont seulement comptés. `set` exige un propriétaire ou un administrateur de l'espace de travail : sans `--repo` il règle le mode de l'espace de travail, avec `--repo` il règle l'entrée de ce dépôt. Les deux acceptent `--output json`.
+
+<Callout type="info">
+Tant que le mode n'est pas `link` pour votre dépôt, reliez les PR empilées à la main avec `gh stack link`. Après l'ouverture d'une PR empilée en mode `link`, lisez une fois `GET repos/{owner}/{repo}/stacks?pull_request=<numéro>`. S'il n'y a pas de pile, reliez-la à la main.
+</Callout>
+
+### Codes de rapport [#stack-report-codes]
+
+Chaque résultat est ajouté à l'activité de chaque tâche associée à la PR, dans chaque espace de travail dont le propre mode est `report` ou `link`. Un résultat identique au dernier résultat de la tâche pour cette PR et cette branche de base est ignoré. Les résultats alimentent aussi une métrique et une ligne de journal serveur.
+
+| Code | Signification | Écriture |
+|---|---|---|
+| `created` | Une nouvelle pile a été créée et relue. | Oui |
+| `extended` | Des PR ont été ajoutées à une pile existante et relues. | Oui |
+| `would_create` | Mode `report` : une pile serait créée. | Non |
+| `would_extend` | Mode `report` : des PR seraient ajoutées à une pile. | Non |
+| `in_other_stack` | La PR est dans une pile, mais pas juste au-dessus de sa PR de base. | Non |
+| `branching_chain` | La chaîne rejoint une pile à une PR qui n'en est pas le haut. | Non |
+| `ambiguous_base` | Plusieurs PR ouvertes du dépôt ont la branche de base comme tête. | Non |
+| `stale_base` | La branche de base n'a pas de PR ouverte et n'est pas la branche par défaut, ou sa PR est fusionnée. Une personne doit la rebaser. | Non |
+| `closed_ancestor` | Une PR ancêtre a été fermée sans fusion. | Non |
+| `cycle` | La chaîne revient sur une branche déjà parcourue. | Non |
+| `depth_limit` | La chaîne dépasse 10 ancêtres. | Non |
+| `conflict` | GitHub a répondu `422` deux fois, même après que Multica a tout relu. | Non |
+| `unsupported` | Le dépôt n'a pas d'API de piles (`404`). | Non |
+| `no_permission` | L'App n'a pas la permission (`403`). Voir [Configuration en auto-hébergement](#configuration-en-auto-hébergement). | Non |
+| `schema` | La réponse de l'API des piles de GitHub a une forme que Multica ne connaît pas. | Non |
+| `readback_failed` | L'écriture a réussi, mais la relecture n'a pas retrouvé la pile dans l'ordre. Vérifiez la PR sur GitHub. | Oui |
+
+L'API des piles est en préversion chez GitHub : un changement de forme apparaît donc comme `schema`, jamais comme un webhook en échec.
+
 ## Déconnecter
 
 Choisir **Déconnecter** dans le menu **⋯** de la ligne GitHub, sur **Paramètres → Code**, supprime seulement la relation entre l'espace de travail Multica courant et l'installation ; cela ne désinstalle pas l'App de GitHub à votre place. Les enregistrements de PR existants sont conservés, et les nouveaux événements cessent d'arriver dans cet espace de travail.
@@ -210,7 +292,7 @@ Permissions de dépôt (Repository permissions) :
 | Permission | Niveau |
 |---|---|
 | Metadata | Read-only |
-| Pull requests | Read-only |
+| Pull requests | Lecture et écriture ; l'écriture sert à la [liaison automatique des piles](#stack-auto-linking) |
 | Actions | Read-only ; nécessaire aux réveils `--until-gh-run` |
 | Checks | Read-only ; sert à afficher le statut CI |
 | Commit statuses | Read-only ; sert à agréger la CI basée sur les statuts hérités (legacy statuses) |
@@ -231,6 +313,8 @@ Abonnez-vous à ces événements :
 - **Check suite**, **Check run** et **Status**, qui déclenchent l'actualisation de la CI et de la possibilité de fusion.
 
 Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire. Avec la permission facultative Actions, Multica lit aussi les exécutions de workflow du commit. Sans elle, une exécution annulée compte toujours comme un échec, même après la réussite d'une exécution plus récente du même workflow.
+
+La liaison automatique des piles appelle l'API des piles de GitHub et exige la permission Pull requests en **écriture**. Une App en lecture seule continue de faire tout le reste ; les résultats de pile affichent `no_permission` (voir les [codes de rapport](#stack-report-codes)). Si vous élevez la permission d'une App déjà installée, le propriétaire de chaque installation doit l'approuver sur GitHub pour qu'elle prenne effet.
 
 <Callout type="warning">
 Il s'agit du **Webhook secret**, et non du Client secret OAuth. Si les deux côtés n'ont pas le même secret de webhook, les livraisons GitHub renvoient `401 invalid signature`.
