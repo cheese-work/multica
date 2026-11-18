@@ -479,9 +479,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Fail closed until W3-4 (signer), W3-8/9 (user gate) and W3-10/11 (decisions) fill the seams.
+	// Fail closed until W3-4 (signer) and W3-10/11 (decisions) fill the seams. The user gate (W3-8/9) reads the permission tables.
 	h.BrowserLeases = &browserlease.Service{
-		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: browserlease.DenyAll{},
+		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: browserlease.DenyAll{},
 		Registry: browserlease.NameRegistry{Queries: queries},
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)

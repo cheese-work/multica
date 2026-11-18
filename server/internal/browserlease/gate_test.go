@@ -148,3 +148,49 @@ func TestQueuedGrantRevalidatesTheGate(t *testing.T) {
 		t.Fatalf("instance = %s, want idle_clean (no grant)", phase)
 	}
 }
+
+// The server wires StoreGate over the real W3-8 tables: a grant row is the only way in, and
+// removing the row stops mint, renew and the queued grant on the next check.
+func TestStoreGateReadsTheW3_8Tables(t *testing.T) {
+	e := newEnv(t, "x99-1")
+	q := db.New(testPool)
+	e.svc.Gate = StoreGate(q)
+	prof := e.profile(ClassS0)
+	r := e.req(prof)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM browser_profile_member WHERE workspace_id = $1`, e.ws)
+		testPool.Exec(ctx, `DELETE FROM browser_profile_agent WHERE workspace_id = $1`, e.ws)
+	})
+
+	if _, err := e.svc.Mint(ctx, r); !errors.Is(err, ErrUserNotPermitted) {
+		t.Fatalf("no rows: err = %v, want ErrUserNotPermitted", err)
+	}
+	if err := q.GrantBrowserProfileMember(ctx, db.GrantBrowserProfileMemberParams{WorkspaceID: e.ws, ProfileID: prof.ID, UserID: r.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Mint(ctx, r); !errors.Is(err, ErrAgentNotAllowed) {
+		t.Fatalf("user only: err = %v, want ErrAgentNotAllowed", err)
+	}
+	if err := q.GrantBrowserProfileAgent(ctx, db.GrantBrowserProfileAgentParams{WorkspaceID: e.ws, ProfileID: prof.ID, AgentID: r.AgentID}); err != nil {
+		t.Fatal(err)
+	}
+	// A grant on another profile or workspace must not count.
+	other := e.req(e.profile(ClassS0))
+	if _, err := e.svc.Mint(ctx, other); !errors.Is(err, ErrUserNotPermitted) {
+		t.Fatalf("other user: err = %v, want ErrUserNotPermitted", err)
+	}
+	res, err := e.svc.Mint(ctx, r)
+	if err != nil || res.Token == "" {
+		t.Fatalf("both rows: err = %v token=%q", err, res.Token)
+	}
+	if err := q.RevokeBrowserProfileMember(ctx, db.RevokeBrowserProfileMemberParams{WorkspaceID: e.ws, ProfileID: prof.ID, UserID: r.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Renew(ctx, e.ws, r.TaskID, res.Lease.ID); !errors.Is(err, ErrUserNotPermitted) {
+		t.Fatalf("renew after revoke: err = %v, want ErrUserNotPermitted", err)
+	}
+	if l := e.lease(res.Lease.ID); l.State != "ended" || l.EndReason.String != endRevalidation {
+		t.Fatalf("lease = %s/%s, want ended/%s", l.State, l.EndReason.String, endRevalidation)
+	}
+}

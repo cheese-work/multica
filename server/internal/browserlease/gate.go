@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Both denials are ErrGateDenied, so the handler answers 403 and the reason reaches the caller.
@@ -47,4 +48,19 @@ func (g UserGate) Check(ctx context.Context, s Subject) error {
 		return ErrAgentNotAllowed
 	}
 	return nil
+}
+
+// StoreGate is the table-backed gate wired into the server: UserGate over the W3-8 tables.
+func StoreGate(q *db.Queries) Gate { return UserGate{Permissions: tablePermissions{q}} }
+
+// tablePermissions reads browser_profile_member and browser_profile_agent (CHE-4737). A grant is a
+// row, scoped by workspace and profile; no row means no access.
+type tablePermissions struct{ q *db.Queries }
+
+func (t tablePermissions) UserPermitted(ctx context.Context, ws, user, profile pgtype.UUID) (bool, error) {
+	return t.q.BrowserProfileHasMember(ctx, db.BrowserProfileHasMemberParams{WorkspaceID: ws, ProfileID: profile, UserID: user})
+}
+
+func (t tablePermissions) AgentAllowed(ctx context.Context, ws, profile, agent pgtype.UUID) (bool, error) {
+	return t.q.BrowserProfileHasAgent(ctx, db.BrowserProfileHasAgentParams{WorkspaceID: ws, ProfileID: profile, AgentID: agent})
 }
