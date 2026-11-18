@@ -1,5 +1,0 @@
---- FAIL: TestCannotDoRelayRefusalNamesAReplacementThatDecodes (0.00s)
-    ask_cannot_do_test.go:239: err = ask.options[0] "Yes, reload" only moves an issue; send it as a typed option instead: after_choice record_only, options[].action issue.status.set, want after_choice server_action and no record_only
-FAIL
-FAIL	github.com/multica-ai/multica/server/internal/decisiontx	0.244s
-FAIL
