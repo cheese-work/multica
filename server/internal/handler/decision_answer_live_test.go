@@ -102,6 +102,36 @@ func TestAnswerThroughAMirroredViewUpdatesTheOneSharedDecision(test *testing.T) 
 	}
 }
 
+// CHE-3473 D3 routes a decision to a fitting member DM, so the answering view may
+// belong to a different agent than the one that asked. The person's own active
+// plain DM records the one shared answer; the archived original and an unrelated
+// DM stay untouched, and a second answer reads as used.
+func TestAnswerThroughAViewOwnedByADifferentAgentRecordsTheSharedDecision(test *testing.T) {
+	fixture := newCardFixture(test)
+	otherAgent := dbfx.Agent(test, "different view agent", handlerTestRuntimeID(test))
+	mirror := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": otherAgent, "creator_id": fixture.humanID, "title": "Other agent DM"})
+	decoy := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": otherAgent, "creator_id": fixture.humanID, "title": "Newer unrelated DM"})
+	dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, fixture.sessionID)
+	untouched := func() int {
+		return dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id IN ($1, $2)`, fixture.sessionID, decoy)
+	}
+	before := untouched()
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A", ViewSessionID: mirror}); err != nil {
+		test.Fatalf("answer through another agent's view = %v, want recorded", err)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND source_chat_session_id = $2`, fixture.decision.ID, mirror); n != 1 {
+		test.Fatalf("answers recorded from the other agent's view = %d, want 1", n)
+	}
+	if n := untouched(); n != before {
+		test.Fatalf("archived original and unrelated DM messages %d -> %d, want untouched", before, n)
+	}
+	_, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B", ViewSessionID: mirror})
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || !strings.HasPrefix(refusal.message, "used_answer:") {
+		test.Fatalf("second view answer = %v, want used_answer", err)
+	}
+}
+
 // Delivered, read and answered are three stored states on the one decision:
 // reading the DM never answers, answering never rewrites delivered or read.
 func TestDeliveredReadAnsweredAreSeparateStoredStates(test *testing.T) {

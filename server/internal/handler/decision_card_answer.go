@@ -193,8 +193,8 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
 	}
 	// The answer is recorded in the view the person answered from. The card's own
-	// lane may be archived: its history stays read-only, and a named active view
-	// of the same person and agent records the answer instead.
+	// lane may be archived: its history stays read-only, and an active plain DM of
+	// the same person, named by the request, records the answer instead.
 	cardSession := session
 	if input.ViewSessionID == "" && session.Status != "active" {
 		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
@@ -205,7 +205,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "view_session_id must name a decision lane"}
 		}
 		if viewID != session.ID || session.Status != "active" {
-			if session, err = lockAnswerView(ctx, queries, workspaceID, userID, decision.AskingAgentID, viewID); err != nil {
+			if session, err = lockAnswerView(ctx, queries, workspaceID, userID, viewID); err != nil {
 				return empty, err
 			}
 		}
@@ -371,8 +371,9 @@ func cardOptionIndex(decision db.DecisionRequest, input decisionCardAnswerInput)
 }
 
 // lockAnswerView returns the active DM a mirrored card was answered from: the
-// answering person's own plain DM with the asking agent.
-func lockAnswerView(ctx context.Context, queries *db.Queries, workspaceID, userID, agentID, viewID pgtype.UUID) (db.ChatSession, error) {
+// answering person's own plain DM, whichever agent it is with (CHE-3473 D3 routes
+// a decision to a fitting member DM).
+func lockAnswerView(ctx context.Context, queries *db.Queries, workspaceID, userID, viewID pgtype.UUID) (db.ChatSession, error) {
 	unavailable := decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
 	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: workspaceID, ID: viewID}); errors.Is(err, pgx.ErrNoRows) {
 		return db.ChatSession{}, unavailable
@@ -383,7 +384,7 @@ func lockAnswerView(ctx context.Context, queries *db.Queries, workspaceID, userI
 	if err != nil {
 		return db.ChatSession{}, err
 	}
-	if view.CreatorID != userID || view.AgentID != agentID || view.Status != "active" || view.ChannelOriginAt.Valid || view.IsAgentIntro {
+	if view.CreatorID != userID || view.Status != "active" || view.ChannelOriginAt.Valid || view.IsAgentIntro {
 		return db.ChatSession{}, unavailable
 	}
 	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, view.ID); err == nil {
