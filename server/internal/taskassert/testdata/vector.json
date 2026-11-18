@@ -1,0 +1,20 @@
+{
+  "note": "TEST-ONLY seed; never a real key. Generated independently with Python cryptography. doop S2 copies this file.",
+  "signing_key": "k1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "claims": {
+    "v": 1,
+    "kid": "k1",
+    "aud": "doop",
+    "wid": "00000000-0000-0000-0000-000000000001",
+    "tid": "00000000-0000-0000-0000-000000000002",
+    "aid": "00000000-0000-0000-0000-000000000003",
+    "iid": "00000000-0000-0000-0000-000000000004",
+    "pid": "00000000-0000-0000-0000-000000000005",
+    "prv": "claude",
+    "mdl": "claude-sonnet-5-5",
+    "iat": 1800000000,
+    "exp": 1800086400
+  },
+  "token": "mta1.eyJ2IjoxLCJraWQiOiJrMSIsImF1ZCI6ImRvb3AiLCJ3aWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJ0aWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDIiLCJhaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDQiLCJwaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDUiLCJwcnYiOiJjbGF1ZGUiLCJtZGwiOiJjbGF1ZGUtc29ubmV0LTUtNSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDg2NDAwfQ.MhSBLEOCw1mlzRf3vN5H6MG1ggmxm4PkMmywQ8fLO8Gr1JYf70uf-jkuFiGffMV2MNUqG9MPjG_gPZ43MpOqCQ"
+}

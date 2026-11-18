@@ -476,6 +476,10 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// DoopTaskAssertion is the signed, short-lived task identity doop verifies
+	// (CHE-7064 D1.6). Minted at claim, never stored; absent when
+	// MULTICA_TASK_ASSERTION_SIGNING_KEY is unset or malformed.
+	DoopTaskAssertion string `json:"doop_task_assertion,omitempty"`
 	// CancelAckProof is minted at claim time and echoed in the daemon's
 	// cancel-ack. It is what lets the stop gate trust an ack: the runtime
 	// owner's credential alone cannot (CHE-2309).

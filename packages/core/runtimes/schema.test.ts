@@ -80,6 +80,13 @@ describe("runtime machine pause response contract", () => {
     expect(parsed.daemon_running_tasks).toBe(3);
   });
 
+  it("keeps the time of the last outcome, and reads a malformed one as null", () => {
+    const at = "2026-11-17T18:20:00Z";
+    expect(AgentRuntimeSchema.parse({ ...base, last_update_outcome: "no_window", last_update_outcome_at: at }).last_update_outcome_at).toBe(at);
+    expect(AgentRuntimeSchema.parse({ ...base, last_update_outcome_at: 7 }).last_update_outcome_at).toBeNull();
+    expect(AgentRuntimeSchema.parse(base).last_update_outcome_at).toBeNull();
+  });
+
   it("defaults both fields when an older server omits them", () => {
     const parsed = AgentRuntimeSchema.parse(base);
     expect(parsed.pause).toBeNull();
