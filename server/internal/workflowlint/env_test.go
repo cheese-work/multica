@@ -11,8 +11,8 @@ func agentH(id string) issueworkflow.Handler {
 	return issueworkflow.Handler{Type: issueworkflow.HandlerAgent, ID: id}
 }
 
-// good is a healthy agent on the one recorded qualified runtime (CHE-735).
-var good = Agent{Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: "0.155.1", RuntimeOnline: true}
+// good is a healthy agent on the one recorded qualified runtime (CHE-2574).
+var good = Agent{Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: "0.166.0", RuntimeOnline: true}
 
 // withHandler returns clean() with the handler of step key replaced.
 func withHandler(key string, h issueworkflow.Handler) issueworkflow.Definition {
@@ -63,38 +63,52 @@ func TestWF005RuntimeNotQualified(t *testing.T) {
 	codex := func(version string) Env {
 		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: version, RuntimeOnline: true}}}
 	}
-	if fs := LintWith(clean(), codex("0.166.0")); !has(fs, "WF005", "todo") {
-		t.Fatalf("codex 0.166.0: want WF005@todo, got %v", rules(fs))
+	// 0.155.1 (CHE-735) was replaced by 0.166.0 (CHE-2574): X99 no longer reports it.
+	if fs := LintWith(clean(), codex("0.155.1")); !has(fs, "WF005", "todo") {
+		t.Fatalf("codex 0.155.1: want WF005@todo, got %v", rules(fs))
 	}
 	if fs := LintWith(clean(), codex("")); !has(fs, "WF005", "todo") {
 		t.Fatalf("codex, unknown version: want WF005, got %v", rules(fs))
 	}
-	for _, v := range []string{"0.155.1", "codex-cli 0.155.1"} {
+	for _, v := range []string{"0.166.0", "codex-cli 0.166.0"} {
 		if fs := LintWith(clean(), codex(v)); countRule(fs, "WF005") != 0 {
 			t.Fatalf("codex %q is qualified, got %v", v, rules(fs))
 		}
 	}
-	// No qualification is recorded for Claude, so any Claude version fails WF005.
-	for _, v := range []string{"2.1.0", ""} {
-		env := Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeVersion: v, RuntimeOnline: true}}}
-		if fs := LintWith(clean(), env); !has(fs, "WF005", "todo") {
-			t.Fatalf("claude %q has no recorded qualification: want WF005, got %v", v, rules(fs))
+	// Claude Code is qualified only as 2.1.318 on the X99 Claude runtime (CHE-6366).
+	claude := func(version string) Env {
+		return Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeID: x99Claude, RuntimeVersion: version, RuntimeOnline: true}}}
+	}
+	for _, v := range []string{"2.1.318", "2.1.318 (Claude Code)"} {
+		if fs := LintWith(clean(), claude(v)); countRule(fs, "WF005") != 0 {
+			t.Fatalf("claude %q on X99: want no WF005, got %v", v, rules(fs))
 		}
 	}
+	for _, v := range []string{"2.1.307", "2.1.0", ""} {
+		if fs := LintWith(clean(), claude(v)); !has(fs, "WF005", "todo") {
+			t.Fatalf("claude %q is not qualified: want WF005, got %v", v, rules(fs))
+		}
+	}
+	other := Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeID: "cdd16bd4-f33a-4065-929a-984d1b921b96", RuntimeVersion: "2.1.318", RuntimeOnline: true}}}
+	if fs := LintWith(clean(), other); !has(fs, "WF005", "todo") {
+		t.Fatalf("claude 2.1.318 on another runtime: want WF005, got %v", rules(fs))
+	}
 }
+
+const x99Claude = "cc2a0ee7-9d1f-41b1-a50f-88390b8aadc9"
 
 const x99Codex = "bc0835c7-a25d-4a16-a3bc-e2921d092ed9"
 
 func TestWF005SeedBindsCodexToX99(t *testing.T) {
 	at := func(rt string) Env {
-		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: rt, RuntimeVersion: "0.155.1", RuntimeOnline: true}}}
+		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: rt, RuntimeVersion: "0.166.0", RuntimeOnline: true}}}
 	}
 	if fs := LintWith(clean(), at(x99Codex)); countRule(fs, "WF005") != 0 {
-		t.Fatalf("X99 codex 0.155.1: want no WF005, got %v", rules(fs))
+		t.Fatalf("X99 codex 0.166.0: want no WF005, got %v", rules(fs))
 	}
 	for name, rt := range map[string]string{"C00": "a596f781-3a60-414c-b346-ebc11d72451c", "missing": ""} {
 		if fs := LintWith(clean(), at(rt)); !has(fs, "WF005", "todo") {
-			t.Fatalf("codex 0.155.1 on %s runtime: want WF005, got %v", name, rules(fs))
+			t.Fatalf("codex 0.166.0 on %s runtime: want WF005, got %v", name, rules(fs))
 		}
 	}
 }
@@ -138,7 +152,7 @@ func authorReviewer() issueworkflow.Definition {
 
 func TestWF006SameLab(t *testing.T) {
 	claude := Agent{Provider: "claude", RuntimeOnline: true}
-	codex := Agent{Provider: "codex", RuntimeVersion: "0.155.1", RuntimeOnline: true}
+	codex := Agent{Provider: "codex", RuntimeVersion: "0.166.0", RuntimeOnline: true}
 	same := Env{Agents: map[string]Agent{"a": claude, "r": claude}}
 	fs := LintWith(authorReviewer(), same)
 	if !has(fs, "WF006", "agent_review") {
@@ -248,8 +262,8 @@ func TestWF013Unused(t *testing.T) {
 }
 
 func TestEmbeddedConfigsParse(t *testing.T) {
-	if len(qualified) != 1 || len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.155.1" {
-		t.Fatalf("seed: want codex 0.155.1, got %v", qualified)
+	if len(qualified) != 2 || len(qualified["claude"]) != 1 || len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.166.0" {
+		t.Fatalf("seed: want codex 0.166.0, got %v", qualified)
 	}
 	if lab, ok := labs.of(Agent{Provider: "codex"}); !ok || lab != "OpenAI" {
 		t.Fatalf("codex lab: got %q %v", lab, ok)

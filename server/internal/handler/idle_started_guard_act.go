@@ -39,8 +39,11 @@ const (
 // episode pass removes it when the issue leaves the episode's status. MovedAt is
 // empty while the move has not happened; From is where an unmoved episode sits.
 type idleGuardReceipt struct {
-	State     string `json:"state"`
-	Kind      string `json:"kind"`
+	State string `json:"state"`
+	Kind  string `json:"kind"`
+	// Wait names the person-wait a human_wait move found. It is in the move's
+	// comment and blocked_reason; the stored receipt has no column for it.
+	Wait      string `json:"-"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	IdleSince string `json:"idle_since"`
@@ -54,6 +57,21 @@ type idleGuardReceipt struct {
 	AlertAttempts int    `json:"alert_attempts,omitempty"`
 	AlertAt       string `json:"alert_at,omitempty"`
 	AlertError    string `json:"alert_error,omitempty"`
+}
+
+// reason is the kind, with the wait it found when a person is the wait.
+func (receipt idleGuardReceipt) reason() string {
+	if receipt.Wait == "" {
+		return receipt.Kind
+	}
+	return receipt.Kind + ": " + receipt.Wait
+}
+
+func (receipt idleGuardReceipt) blockedReason() string {
+	if receipt.Wait == "" {
+		return "idle-no-continuation"
+	}
+	return "idle-human-wait: " + receipt.Wait
 }
 
 // issueMoveGuard runs inside a status write's transaction, after the issue row
@@ -109,7 +127,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 		receipt.Attempts, receipt.AlertAttempts, receipt.AlertAt, receipt.AlertError = prior.Attempts, prior.AlertAttempts, prior.AlertAt, prior.AlertError
 	}
 	var unavailable error
-	if receipt.To, receipt.Kind, unavailable = handler.idleGuardTarget(ctx, issue); unavailable != nil {
+	if receipt.To, receipt.Kind, receipt.Wait, unavailable = handler.idleGuardTarget(ctx, issue); unavailable != nil {
 		switch {
 		case errors.Is(unavailable, errIdleGuardOpenRequest):
 			if prior.State == idleGuardRefused {
@@ -150,7 +168,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 		created, err := q.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true},
 			Content: fmt.Sprintf("Idle started-issue guard: no run, wakeup or sub-issue was left to continue this issue and it had been idle since %s. Moved from %s to %s (%s).",
-				idleGuardWhen(receipt.IdleSince), receipt.From, receipt.To, receipt.Kind),
+				idleGuardWhen(receipt.IdleSince), receipt.From, receipt.To, receipt.reason()),
 			Type: "system",
 		})
 		if err != nil {
@@ -162,7 +180,8 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 			return err
 		}
 		if receipt.To == issuestatus.Blocked {
-			if _, err := setIssueMetadataValue(ctx, q, issue.WorkspaceID, issue.ID, "blocked_reason", "idle-no-continuation"); err != nil {
+			// ErrNoRows: the same reason is already set from an earlier episode.
+			if _, err := setIssueMetadataValue(ctx, q, issue.WorkspaceID, issue.ID, "blocked_reason", receipt.blockedReason()); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
 		}
@@ -196,17 +215,17 @@ var errIdleGuardNoTarget = errors.New("idle guard: the issue's workflow lists ne
 // need_decision. The wait is legitimate: no move, no receipt, no comment.
 var errIdleGuardOpenRequest = errors.New("idle guard: an open decision request is the legitimate wait")
 
-// idleGuardTarget picks where an idle issue goes. A person is the next move when
-// an open decision request, a member-filtered wakeup, a mention of a member in
-// the newest comment, Readiness gated-human or a person-handled workflow step
-// says so; otherwise nothing is left to continue it and it is blocked. A target
-// the issue's workflow or catalog lacks falls back to blocked, except for an
-// open decision request, which stays where it is.
-func (handler *Handler) idleGuardTarget(ctx context.Context, issue db.Issue) (to, kind string, err error) {
+// idleGuardTarget picks where an idle issue goes. Only an open decision request
+// earns need_decision: a person asked, so the issue waits on that answer. Every
+// other idle issue is blocked; when a person is the wait (a member-filtered
+// wakeup, a mention of a member in the newest comment, Readiness gated-human or
+// a person-handled workflow step) the kind is human_wait and wait names it.
+// An open decision request on a workflow without need_decision stays where it is.
+func (handler *Handler) idleGuardTarget(ctx context.Context, issue db.Issue) (to, kind, wait string, err error) {
 	kind = idleGuardKindNoContinuation
 	requests, err := handler.Queries.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for _, request := range requests {
 		if request.Status == "open" {
@@ -214,53 +233,53 @@ func (handler *Handler) idleGuardTarget(ctx context.Context, issue db.Issue) (to
 		}
 	}
 	if kind == idleGuardKindNoContinuation {
-		waiting, err := handler.idleGuardHumanWait(ctx, issue)
-		if err != nil {
-			return "", "", err
+		if wait, err = handler.idleGuardHumanWait(ctx, issue); err != nil {
+			return "", "", "", err
 		}
-		if waiting {
+		if wait != "" {
 			kind = idleGuardKindHumanWait
 		}
 	}
 	for _, candidate := range []string{idleGuardNeedDecision, issuestatus.Blocked} {
-		if candidate == idleGuardNeedDecision && kind == idleGuardKindNoContinuation {
+		if candidate == idleGuardNeedDecision && kind != idleGuardKindOpenRequest {
 			continue
 		}
 		available, err := handler.idleGuardStatusAvailable(ctx, issue, candidate)
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		if available {
-			return candidate, kind, nil
+			return candidate, kind, wait, nil
 		}
 		if kind == idleGuardKindOpenRequest {
-			return "", "", errIdleGuardOpenRequest
+			return "", "", "", errIdleGuardOpenRequest
 		}
 	}
-	return "", "", errIdleGuardNoTarget
+	return "", "", "", errIdleGuardNoTarget
 }
 
-func (handler *Handler) idleGuardHumanWait(ctx context.Context, issue db.Issue) (bool, error) {
-	waiting, err := handler.Queries.IdleStartedGuardHumanWait(ctx, issue.ID)
-	if err != nil || waiting {
-		return waiting, err
+// idleGuardHumanWait names the wait on a person, or returns "" when there is none.
+func (handler *Handler) idleGuardHumanWait(ctx context.Context, issue db.Issue) (string, error) {
+	wait, err := handler.Queries.IdleStartedGuardHumanWait(ctx, issue.ID)
+	if err != nil || wait != "" {
+		return wait, err
 	}
-	if waiting, err = decisionWaitEligible(ctx, handler.Queries, issue); err != nil || waiting {
-		return waiting, err
+	if eligible, err := decisionWaitEligible(ctx, handler.Queries, issue); err != nil || eligible {
+		return "Readiness gated-human", err
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, handler.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil || def == nil {
-		return false, err
+		return "", err
 	}
 	step, ok := def.Step(issue.Status)
 	if !ok {
-		return false, nil
+		return "", nil
 	}
 	switch step.Handler.Type {
 	case issueworkflow.HandlerMember, issueworkflow.HandlerProjectLead, issueworkflow.HandlerCreator, issueworkflow.HandlerHumanByRole, issueworkflow.HandlerHumanInCharge:
-		return true, nil
+		return "workflow step " + issue.Status + " handled by a person", nil
 	}
-	return false, nil
+	return "", nil
 }
 
 // idleGuardStatusAvailable reports whether the issue can sit in status: its

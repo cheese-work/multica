@@ -295,3 +295,34 @@ func TestKeyringFromEnv(t *testing.T) {
 		t.Fatalf("kr=%v err=%v", kr, err)
 	}
 }
+
+// hClaims is a class H login lease: the member is the subject and there is no task or issue.
+func hClaims() Claims {
+	c := claims()
+	c.Class, c.Sub, c.TaskID, c.IssueID = "H", "user-1", "", ""
+	return c
+}
+
+func TestSignAcceptsAMemberLoginLeaseWithoutTaskOrIssue(t *testing.T) {
+	kr, err := ParseKeyring("k1:" + seed(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := kr.Sign(hClaims())
+	if err != nil {
+		t.Fatalf("sign H without task and issue: %v", err)
+	}
+	keys, _ := fetchJWKS(t, kr)
+	mc, _ := verify(t, tok, keys, time.Unix(tNow, 0))
+	if mc["class"] != "H" || mc["sub"] != "user-1" || mc["task_id"] != nil || mc["issue_id"] != nil {
+		t.Fatalf("claims = %v", mc)
+	}
+	// Only H may omit them: an agent lease still needs its task and issue.
+	for _, mut := range []func(*Claims){func(c *Claims) { c.TaskID = "" }, func(c *Claims) { c.IssueID = "" }} {
+		c := claims()
+		mut(&c)
+		if _, err := kr.Sign(c); err == nil {
+			t.Fatalf("S2 claims %+v signed without a task or issue", c)
+		}
+	}
+}

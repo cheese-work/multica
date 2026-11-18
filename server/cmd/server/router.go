@@ -1868,6 +1868,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
 					r.Get("/provider-breakers", h.ListProviderBreakers)
+					// Class H login lease for the calling member (CHE-5989); the handlers refuse
+					// daemon credentials, agents and another member's lease.
+					r.With(handler.RequireHumanActor).Post("/browser-login-leases", h.MintBrowserLoginLease)
+					r.With(handler.RequireHumanActor).Post("/browser-login-leases/{leaseId}/renew", h.RenewBrowserLoginLease)
+					r.With(handler.RequireHumanActor).Post("/browser-login-leases/{leaseId}/release", h.ReleaseBrowserLoginLease)
 					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -2727,6 +2732,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/update-schedule", h.GetUpdateSchedule)
 					r.Put("/update-schedule", h.PutUpdateSchedule)
 					r.Delete("/update-schedule", h.DeleteUpdateSchedule)
+					r.Get("/machine/history", h.GetMachineHistory)
+					r.Get("/machine/audit", h.GetMachineAudit)
+					r.Get("/machine/planned", h.GetMachinePlanned)
 					r.Post("/update", h.InitiateUpdate)
 					r.Get("/update/{updateId}", h.GetUpdate)
 					r.Post("/models", h.InitiateListModels)

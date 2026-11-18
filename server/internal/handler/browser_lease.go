@@ -141,6 +141,7 @@ func (h *Handler) MintBrowserLease(w http.ResponseWriter, r *http.Request) {
 		writeBrowserLeaseError(w, err)
 		return
 	}
+	h.DecisionWorker.WakeLeaseExpiry()
 	status := http.StatusCreated
 	if res.Lease.State == "queued" {
 		status = http.StatusAccepted
@@ -194,8 +195,8 @@ func (h *Handler) revokeLeasesOfDecision(workspaceID string, requestID pgtype.UU
 }
 
 // revokeLeasesOfExpiredDecisions revokes the leases of every decision past its expires_at,
-// including an answered (approved) one, which no request-cancel path ends (CHE-4742). The
-// decision worker calls it on each pass.
+// including an answered (approved) one, which no request-cancel path ends (CHE-4742).
+// RunLeaseExpiry calls it at each deadline.
 func (h *Handler) revokeLeasesOfExpiredDecisions(ctx context.Context) error {
 	expired, err := h.Queries.ListExpiredDecisionBrowserLeases(ctx, decisionBatchSize)
 	if err != nil {

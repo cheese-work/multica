@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -146,11 +144,12 @@ const (
 func TestVoteGateRouter_HonestVotesWrite(t *testing.T) {
 	r := newVoteRig(t)
 	r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
-	if code, out := r.writeSquad(rigBefore, rigNext); code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", code, out)
-	}
-	if got := r.squadValue(); got != rigNext {
-		t.Fatalf("not written: %q", got)
+	// CHE-3482: a machine writer never writes squad.instructions, whatever the
+	// votes say. The vote receipt no longer authorizes the write.
+	code, out := r.writeSquad(rigBefore, rigNext)
+	r.wantDenied(code, out)
+	if !strings.Contains(out, `"code":"passkey_action_required"`) {
+		t.Fatalf("expected passkey_action_required, got %s", out)
 	}
 }
 
@@ -284,9 +283,11 @@ func TestVoteGateRouter_AgentAndWorkspaceFieldsNeedSetup(t *testing.T) {
 		t.Setenv("MULTICA_VOTE_GATE_FIELDS", rigFields)
 		r.fx.Exec(t, `UPDATE agent SET instructions = $1 WHERE id = $2`, rigBefore, target)
 		r.fx.Exec(t, `UPDATE workspace SET context = $1 WHERE id = $2`, rigBefore, testWorkspaceID)
+		// CHE-3482: the votes no longer open the write to a machine writer.
 		for _, f := range fields {
-			if code, out := send(f); code != http.StatusOK || read(f) != rigNext {
-				t.Fatalf("%s: expected 200 and a write, got %d: %s", f.name, code, out)
+			code, out := send(f)
+			if code != http.StatusForbidden || read(f) != rigBefore || !strings.Contains(out, `"code":"passkey_action_required"`) {
+				t.Fatalf("%s: expected 403 passkey_action_required and no write, got %d: %s", f.name, code, out)
 			}
 		}
 	})
@@ -329,90 +330,4 @@ func TestVoteGateRouter_ExistingTokenRelabel(t *testing.T) {
 		r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
 		r.wantDenied(r.writeSquad(rigBefore, rigNext))
 	})
-}
-
-// R2: a BLOCK that commits while the write waits on the target row must stop
-// the write. The test holds the target row lock so the write parks in its
-// compare-and-swap, then tries to commit a member BLOCK. Either the BLOCK
-// commits and the write is refused, or the BLOCK waits behind the write.
-func TestVoteGateRouter_BlockCommittedBeforeWriteStopsIt(t *testing.T) {
-	// The server accepts a vote_issue in any UUID spelling pgx parses, so the
-	// BLOCK lock must not depend on how the writer spelled it.
-	spellings := map[string]func(string) string{
-		"canonical":             func(id string) string { return id },
-		"uppercase":             strings.ToUpper,
-		"without hyphens":       func(id string) string { return strings.ReplaceAll(id, "-", "") },
-		"uppercase, no hyphens": func(id string) string { return strings.ToUpper(strings.ReplaceAll(id, "-", "")) },
-	}
-	for name, spell := range spellings {
-		t.Run(name, func(t *testing.T) { blockCommittedBeforeWrite(t, spell) })
-	}
-}
-
-func blockCommittedBeforeWrite(t *testing.T, spell func(string) string) {
-	r := newVoteRig(t)
-	label, after := "instructions:"+r.targetSquad, rigDigest(rigNext)
-	r.honestVotes(label, after)
-	t.Cleanup(func() { testPool.Exec(t.Context(), `DELETE FROM comment WHERE issue_id = $1`, r.issueID) })
-
-	lock, err := testPool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Rollback(t.Context())
-	if _, err := lock.Exec(t.Context(), `SELECT 1 FROM squad WHERE id = $1 FOR UPDATE`, r.targetSquad); err != nil {
-		t.Fatal(err)
-	}
-
-	type result struct {
-		code int
-		body string
-	}
-	done := make(chan result, 1)
-	go func() {
-		b, _ := json.Marshal(map[string]any{"instructions": rigNext, "vote_issue": spell(r.issueID), "before_sha256": rigDigest(rigBefore), "after_sha256": after})
-		req, _ := http.NewRequest("PUT", testServer.URL+"/api/squads/"+r.targetSquad, bytes.NewReader(b))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+r.writerTok)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			done <- result{-1, err.Error()}
-			return
-		}
-		defer resp.Body.Close()
-		out, _ := io.ReadAll(resp.Body)
-		done <- result{resp.StatusCode, string(out)}
-	}()
-
-	// Wait until the write is parked on the target row lock. The audit read
-	// (SELECT ... FOR UPDATE) now takes the lock ahead of the compare-and-swap UPDATE.
-	parked := false
-	for i := 0; i < 200 && !parked; i++ {
-		var n int
-		testPool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
-			AND wait_event_type = 'Lock'
-			AND (query ILIKE 'UPDATE squad%' OR query ILIKE 'SELECT COALESCE(instructions%FROM squad%FOR UPDATE')`).Scan(&n)
-		parked = n > 0
-		if !parked {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	if !parked {
-		t.Fatal("the write never parked on the target row lock")
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	_, blockErr := testPool.Exec(ctx, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
-		VALUES ($1, $2, 'member', $3, $4, 'comment')`, r.issueID, testWorkspaceID, testUserID, "Vote: BLOCK "+label+" "+after)
-	cancel()
-	blockCommitted := blockErr == nil
-
-	lock.Rollback(t.Context())
-	res := <-done
-	if blockCommitted && res.code != http.StatusForbidden {
-		t.Fatalf("a BLOCK committed before the write, yet the write returned %d: %s", res.code, res.body)
-	}
-	if blockCommitted && r.squadValue() != rigBefore {
-		t.Fatalf("squad instructions changed after a committed BLOCK: %q", r.squadValue())
-	}
 }
