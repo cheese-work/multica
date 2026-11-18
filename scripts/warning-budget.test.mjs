@@ -271,7 +271,7 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
 
 // CHE-7010: run the real script against a stubbed `gh` on PATH. The stub serves one job (a zero-baseline job, so no
 // baseline lookup) and fails the job-log endpoint with the given HTTP status for the first `times` calls.
-function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600, bare = false }) {
+function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600, bare = false, job = "gitleaks" }) {
   const dir = mkdtempSync(join(tmpdir(), "warning-budget-gh-"))
   try {
     const counter = join(dir, "log-calls")
@@ -288,7 +288,8 @@ else if (endpoint.endsWith("/logs")) {
   if (calls <= ${times}) { process.stderr.write(${JSON.stringify(bare ? `gh: HTTP ${status}` : `gh: ${message} (HTTP ${status})`)} + "\\n"); process.exit(1) }
   out(${JSON.stringify(warning ? "2026-11-17T00:00:00Z Warning: new diagnostic\n" : "all quiet\n")})
 } else if (endpoint.includes("/annotations")) out([])
-else if (endpoint.includes("/jobs")) out({ jobs: [{ id: 7, name: "gitleaks", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/repos/cheese-work/multica/check-runs/5" }] })
+else if (endpoint.includes("/workflows/")) out({ workflow_runs: [] })
+else if (endpoint.includes("/jobs")) out({ jobs: [{ id: 7, name: ${JSON.stringify(job)}, status: "completed", conclusion: "success", check_run_url: "https://api.github.com/repos/cheese-work/multica/check-runs/5" }] })
 else out({ id: 1, workflow_id: 2, created_at: "2026-11-17T00:00:00Z", html_url: "run-1", head_sha: "abc" })
 `, { mode: 0o755 })
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("./warning-budget.mjs", import.meta.url))], {
@@ -324,6 +325,20 @@ test("a 4xx is not retried (CHE-7010)", () => {
   const result = runWithStubbedGh({ status: 404, times: 99 })
   assert.equal(result.status, 1)
   assert.equal(result.logCalls, 1)
+})
+
+// CHE-7136: decision-card-e2e is new and main has no run of it (the stub serves no main runs), so it has no baseline to
+// look up. It keeps a zero warning baseline instead of failing with "No successful main CI job baseline".
+test("decision-card-e2e passes without a main baseline when it is quiet (CHE-7136)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 0, job: "decision-card-e2e" })
+  assert.doesNotMatch(result.stdout + result.stderr, /No successful main CI job baseline/)
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test("decision-card-e2e still fails on any warning without a main baseline (CHE-7136)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 0, warning: true, job: "decision-card-e2e" })
+  assert.doesNotMatch(result.stdout + result.stderr, /No successful main CI job baseline/)
+  assert.equal(result.status, 1)
 })
 
 // CHE-7032: a GitHub API rate limit is not a warning regression. The shared installation token runs dry under CI load.
