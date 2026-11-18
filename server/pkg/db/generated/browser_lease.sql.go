@@ -874,6 +874,43 @@ func (q *Queries) ListBrowserInstancesForGateway(ctx context.Context, credential
 	return items, nil
 }
 
+const listExpiredDecisionBrowserLeases = `-- name: ListExpiredDecisionBrowserLeases :many
+SELECT DISTINCT lease.workspace_id, lease.decision_id
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active')
+  AND request.expires_at IS NOT NULL AND request.expires_at <= clock_timestamp()
+ORDER BY lease.workspace_id, lease.decision_id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+type ListExpiredDecisionBrowserLeasesRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	DecisionID  pgtype.UUID `json:"decision_id"`
+}
+
+// Decisions that passed their expires_at while a queued or active lease still names them
+// (CHE-4742, W3-13). The worker revokes each pair; a revoked lease drops out of this list.
+func (q *Queries) ListExpiredDecisionBrowserLeases(ctx context.Context, batchSize int32) ([]ListExpiredDecisionBrowserLeasesRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredDecisionBrowserLeases, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredDecisionBrowserLeasesRow{}
+	for rows.Next() {
+		var i ListExpiredDecisionBrowserLeasesRow
+		if err := rows.Scan(&i.WorkspaceID, &i.DecisionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBrowserInstance = `-- name: LockBrowserInstance :one
 SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE id = $1 AND workspace_id = $2

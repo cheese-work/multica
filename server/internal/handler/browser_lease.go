@@ -191,6 +191,23 @@ func (h *Handler) revokeLeasesOfDecision(workspaceID string, requestID pgtype.UU
 	}
 }
 
+// revokeLeasesOfExpiredDecisions revokes the leases of every decision past its expires_at,
+// including an answered (approved) one, which no request-cancel path ends (CHE-4742). The
+// decision worker calls it on each pass.
+func (h *Handler) revokeLeasesOfExpiredDecisions(ctx context.Context) error {
+	expired, err := h.Queries.ListExpiredDecisionBrowserLeases(ctx, decisionBatchSize)
+	if err != nil {
+		return err
+	}
+	var failures error
+	revoker := h.browserLeaseRevoker()
+	for _, e := range expired {
+		_, err := revoker.RevokeDecision(ctx, e.WorkspaceID, e.DecisionID, browserlease.ReasonDecisionExpired)
+		failures = errors.Join(failures, err)
+	}
+	return failures
+}
+
 // revokeLeasesOfWithdrawal covers a withdrawal whose request may be untouched: a withdrawn
 // answer that reopens the ask leaves Request empty, so the answer names the decision.
 func (h *Handler) revokeLeasesOfWithdrawal(workspaceID string, w decisiontx.Withdrawal) {

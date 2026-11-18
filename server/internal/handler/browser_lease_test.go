@@ -295,3 +295,48 @@ func TestEndedDecisionRevokesItsBrowserLeases(t *testing.T) {
 		})
 	}
 }
+
+// An approved (answered) decision that reaches its expires_at revokes its leases through the
+// decision worker's own pass; another decision's lease stays live (CHE-4742 review P1).
+func TestAnsweredDecisionPastExpiryRevokesItsBrowserLeases(t *testing.T) {
+	fixture := newAskedRecordFixture(t)
+	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Request.Status != "answered" {
+		t.Fatalf("request status = %q, want answered", record.Request.Status)
+	}
+	decision := uuidToString(record.Request.ID)
+	runtimeID := dbfx.Runtime(t, "CHE-4742 expiry runtime")
+	agentID := dbfx.Agent(t, "CHE-4742 expiry agent "+uuid.NewString(), runtimeID)
+	issueID := dbfx.Issue(t, "CHE-4742 expiry issue")
+	task := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "started_at": testutil.Raw("now()")})
+	bound := seedDecisionBoundBrowserLease(t, task, decision)
+	elsewhere := seedDecisionBoundBrowserLease(t, task, uuid.NewString())
+
+	dbfx.Exec(t, `DELETE FROM decision_worker_lease`)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_worker_lease`) })
+	// One worker for both passes: its consequences lease is held for 30 s after the first.
+	worker := NewDecisionWorker(testHandler)
+	pass := func() {
+		t.Helper()
+		if ran, err := worker.ProcessPass(context.Background()); err != nil || !ran {
+			t.Fatalf("decision worker pass ran=%v err=%v", ran, err)
+		}
+	}
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, decision)
+	pass()
+	if state, _ := browserLeaseState(t, bound); state != "active" {
+		t.Fatalf("lease revoked before its decision expired: state = %q", state)
+	}
+
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, decision)
+	pass()
+	if state, reason := browserLeaseState(t, bound); state != "ended" || reason != browserlease.ReasonDecisionExpired {
+		t.Fatalf("bound lease state=%q reason=%q, want ended %s", state, reason, browserlease.ReasonDecisionExpired)
+	}
+	if state, _ := browserLeaseState(t, elsewhere); state != "active" {
+		t.Fatalf("a lease of another decision was revoked: state = %q", state)
+	}
+}
