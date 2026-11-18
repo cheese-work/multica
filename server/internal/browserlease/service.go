@@ -56,18 +56,23 @@ func (s *Service) now() time.Time {
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 func isHookDenial(err error) bool {
-	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid)
+	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrClassNotMintable) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid)
 }
 
-// check runs the user gate, then the decision for a class that needs one (S0 asks no one), and
-// returns when the lease must end at the latest.
+// check applies the class rules, runs the user gate, then the decision for a class that needs
+// one (S0 asks no one), and returns when the lease must end at the latest. Mint, renew and the
+// queued grant all come through here, so a profile moved to a class that is not leased (H, S1)
+// ends or drops its leases.
 func (s *Service) check(ctx context.Context, subj Subject) (time.Time, error) {
 	now := s.now()
 	limit := now.Add(MaxLeaseDuration)
+	if !mintable(subj.Profile.Class) {
+		return limit, ErrClassNotMintable
+	}
 	if err := s.Gate.Check(ctx, subj); err != nil {
 		return limit, err
 	}
-	if subj.Profile.Class == ClassS0 {
+	if !needsDecision(subj.Profile.Class) {
 		return limit, nil
 	}
 	exp, err := s.Decisions.Validate(ctx, subj)
@@ -123,8 +128,7 @@ func (s *Service) Mint(ctx context.Context, r MintRequest) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// H is Cheese's login lease through the viewer (member auth); S1 is deferred and has no row.
-	if profile.Class != ClassS0 && profile.Class != ClassS2 {
+	if !mintable(profile.Class) {
 		return Result{}, ErrClassNotMintable
 	}
 	subj := Subject{
