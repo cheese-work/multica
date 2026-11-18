@@ -329,6 +329,12 @@ type ProgressCardItem struct {
 	Status     string   `json:"status"`
 	FromStatus string   `json:"from_status"`
 	Kinds      []string `json:"kinds"`
+	// DuplicateOf names the original of an issue cancelled as a duplicate, only
+	// while the card's owner can read it. FollowOffer is true when the lane does
+	// not follow that original yet: the card offers a one-click follow, and the
+	// follow endpoint repeats the access check (CHE-3473 M10, D6).
+	DuplicateOf string `json:"duplicate_of,omitempty"`
+	FollowOffer bool   `json:"follow_offer,omitempty"`
 }
 
 // Chat message kinds (chat_message.message_kind). Additive: unknown values

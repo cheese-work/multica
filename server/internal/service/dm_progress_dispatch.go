@@ -195,9 +195,13 @@ func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane 
 		if len(kinds) == 0 || len(sent) == progressCardMaxItems {
 			continue
 		}
-		payload.Items = append(payload.Items, protocol.ProgressCardItem{
+		item := protocol.ProgressCardItem{
 			IssueID: util.UUIDToString(it.IssueID), Status: it.Status, FromStatus: it.LastRenderedStatus, Kinds: kinds,
-		})
+		}
+		if err := offerDuplicateFollow(ctx, q, lane, it.DuplicateOfIssueID, &item); err != nil {
+			return nil, err
+		}
+		payload.Items = append(payload.Items, item)
 		sent = append(sent, it)
 	}
 	if err := deletePending(ctx, q, lane.LineageID, flushed); err != nil {
@@ -286,4 +290,31 @@ func deletePending(ctx context.Context, q *db.Queries, lineage pgtype.UUID, even
 		return nil
 	}
 	return q.DeleteDMProgressPendingEvents(ctx, db.DeleteDMProgressPendingEventsParams{LineageID: lineage, EventIds: eventIDs})
+}
+
+// offerDuplicateFollow marks a card item whose issue was cancelled as a
+// duplicate. The follow never moves (D6): the item names the original only if
+// it still exists and the lane owner can read it, and offers a follow only when
+// the lane does not follow it yet.
+func offerDuplicateFollow(ctx context.Context, q *db.Queries, lane db.DmProgressLane, original pgtype.UUID, item *protocol.ProgressCardItem) error {
+	if !original.Valid {
+		return nil
+	}
+	issue, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: original, WorkspaceID: lane.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ProgressVisible(ctx, q, lane.OwnerUserID, issue) {
+		return nil
+	}
+	item.DuplicateOf = util.UUIDToString(original)
+	_, err = q.GetActiveDMProgressFollow(ctx, db.GetActiveDMProgressFollowParams{IssueID: original, LineageID: lane.LineageID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		item.FollowOffer = true
+		return nil
+	}
+	return err
 }
