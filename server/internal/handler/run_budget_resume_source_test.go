@@ -217,7 +217,7 @@ func TestRunBudgetResumeDeliversARefusedNativeTriggerOnce(t *testing.T) {
 			c, id, ref := refuseNative(t, int64(2860200+i), src)
 			wantResume(t, id, "open", "")
 			linkRefusal(t, id, resumeRowOf(t, id).Window)
-			raiseCap(t, c)
+			raiseCapAsApproved(t, c)
 			resume(t, id)
 			resume(t, id)
 			runWakeupTick(t)
@@ -233,7 +233,7 @@ func TestRunBudgetResumeRacesTheNativeDispatchAndDeliversOnce(t *testing.T) {
 		t.Run(src.trigger, func(t *testing.T) {
 			c, id, ref := refuseNative(t, int64(2860210+i), src)
 			linkRefusal(t, id, resumeRowOf(t, id).Window)
-			raiseCap(t, c)
+			raiseCapAsApproved(t, c)
 			var wg sync.WaitGroup
 			wg.Add(2)
 			go func() { defer wg.Done(); resume(t, id) }()
@@ -254,7 +254,7 @@ func TestRunBudgetResumeRollsBackANativeDispatchThatCrashesBeforeCommit(t *testi
 		t.Run(src.trigger, func(t *testing.T) {
 			c, id, ref := refuseNative(t, int64(2860220+i), src)
 			linkRefusal(t, id, resumeRowOf(t, id).Window)
-			raiseCap(t, c)
+			raiseCapAsApproved(t, c)
 			pendingBefore := ref.pending(t)
 			service.RunBudgetBindAt = func(stage string) bool { return stage == "after_bind" }
 			t.Cleanup(func() { service.RunBudgetBindAt = func(string) bool { return false } })
