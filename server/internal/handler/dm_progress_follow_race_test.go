@@ -2,15 +2,16 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -67,8 +68,12 @@ func followAddManual(ctx context.Context, lane string, issue db.Issue) (db.DmPro
 		return db.DmProgressFollow{}, err
 	}
 	defer tx.Rollback(context.Background())
-	f, _, err := service.AddProgressFollow(ctx, testHandler.Queries.WithTx(tx), service.DMLane{Lineage: uuidOf(lane), Owner: uuidOf(testUserID)}, issue, []string{service.ReasonManual}, issue.ID, pgtype.Timestamptz{})
+	q := testHandler.Queries.WithTx(tx)
+	f, _, err := service.AddProgressFollow(ctx, q, service.DMLane{Lineage: uuidOf(lane), Owner: uuidOf(testUserID)}, issue, []string{service.ReasonManual}, issue.ID, pgtype.Timestamptz{})
 	if err != nil {
+		return f, err
+	}
+	if err := service.SubscribeProgressDescendants(ctx, q, issue); err != nil {
 		return f, err
 	}
 	return f, tx.Commit(ctx)
@@ -127,6 +132,9 @@ func TestDMProgressFollow_FollowWaitsForAnOpenChildCreate(t *testing.T) {
 	child := followIssueOf(t, dbfx.Issue(t, "race child "+t.Name()))
 
 	tx, q := followBeginTx(t)
+	if _, err := tx.Exec(t.Context(), `UPDATE issue SET parent_issue_id = $1 WHERE id = $2`, parent.ID, child.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := service.InheritProgressFollows(t.Context(), q, parent, child); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +147,63 @@ func TestDMProgressFollow_FollowWaitsForAnOpenChildCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	followFinished(t, "follow after the child create committed", done)
+	// The child committed before the follow: it enumerated no follow, so the
+	// follow itself must subscribe it.
+	if got := followState(t, uuidToString(child.ID), lane); got != "active" {
+		t.Fatalf("child follow = %q, want active: the follow lost a child that committed first", got)
+	}
+}
+
+// AC1 / M11: a follow of a parent subscribes every committed descendant, at any
+// depth, and leaves one the member unfollowed alone (M12).
+func TestDMProgressFollow_FollowSubscribesCommittedDescendants(t *testing.T) {
+	w := newDMWorld(t)
+	lane := w.dm(t, testUserID)
+	parent := dbfx.Issue(t, "descendants parent "+t.Name())
+	child := childOf(t, parent, "descendants child")
+	grandchild := childOf(t, child, "descendants grandchild")
+	opted := childOf(t, parent, "descendants unfollowed")
+	dbfx.Exec(t, `INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, state, last_rendered_status, reporting_root_id) VALUES ($1, $2, $3, $4, '{}', 'unfollowed', 'todo', $2)`, testWorkspaceID, opted, lane, testUserID)
+
+	testutil.Call(t, testHandler.FollowIssueProgress, progressReq("POST", parent, "", lane)).Want(http.StatusOK)
+	for name, id := range map[string]string{"parent": parent, "child": child, "grandchild": grandchild} {
+		if got := followState(t, id, lane); got != "active" {
+			t.Errorf("%s follow = %q, want active", name, got)
+		}
+	}
+	if got := followState(t, opted, lane); got != "unfollowed" {
+		t.Errorf("unfollowed child = %q, want it to stay unfollowed", got)
+	}
+}
+
+// AC2: a PR event whose transaction is open while a follow is being taken is
+// held until the follow commits, then captured for it: the snapshot holds
+// status only, so a PR event may not slip past the cut.
+func TestDMProgressFollow_PREventWaitsForAnOpenFollowAndIsCaptured(t *testing.T) {
+	w := newDMWorld(t)
+	lane := w.dm(t, testUserID)
+	id := dbfx.Issue(t, "pr cut "+t.Name())
+	issue := followIssueOf(t, id)
+	pr := insertGitHubPR(t, "draft")
+	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, id, pr)
+
+	ftx, fq := followBeginTx(t)
+	if _, _, err := service.AddProgressFollow(t.Context(), fq, service.DMLane{Lineage: uuidOf(lane), Owner: uuidOf(testUserID)}, issue, []string{service.ReasonManual}, issue.ID, pgtype.Timestamptz{}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := testPool.Exec(t.Context(), `UPDATE github_pull_request SET state = 'open' WHERE id = $1`, pr)
+		done <- err
+	}()
+	if !followBlocked(done) {
+		t.Fatal("a PR event committed while a follow of its issue was open: it would see no follow and be lost")
+	}
+	if err := ftx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	followFinished(t, "PR event after the follow committed", done)
+	wantPending(t, id, lane, "pr")
 }
 
 // AC1 / M11, subscription side: a child create that starts while a follow of
@@ -179,8 +244,8 @@ func TestDMProgressFollow_ChildCreateWaitsForAnOpenFollowAndInheritsIt(t *testin
 	}
 }
 
-// AC1: parallel child creation and follow creation lose no child. A child
-// whose commit starts after the follow committed must carry the follow.
+// AC1: parallel child creation and follow creation lose no child: whichever
+// order they commit in, every child ends up followed.
 func TestDMProgressFollow_ParallelChildCreatesAndFollowLoseNoChild(t *testing.T) {
 	w := newDMWorld(t)
 	lane := w.dm(t, testUserID)
@@ -191,10 +256,8 @@ func TestDMProgressFollow_ParallelChildCreatesAndFollowLoseNoChild(t *testing.T)
 		kids[i] = followIssueOf(t, dbfx.Issue(t, "race child "+t.Name()))
 	}
 
-	var followedAt atomic.Int64 // unix nanos after the follow committed; 0 until then
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	commitStart := make([]int64, children)
 	errs := make(chan error, children+1)
 	for i := range kids {
 		wg.Add(1)
@@ -208,11 +271,14 @@ func TestDMProgressFollow_ParallelChildCreatesAndFollowLoseNoChild(t *testing.T)
 				return
 			}
 			defer tx.Rollback(context.Background())
+			if _, err := tx.Exec(t.Context(), `UPDATE issue SET parent_issue_id = $1 WHERE id = $2`, parent.ID, kids[i].ID); err != nil {
+				errs <- err
+				return
+			}
 			if err := service.InheritProgressFollows(t.Context(), testHandler.Queries.WithTx(tx), parent, kids[i]); err != nil {
 				errs <- err
 				return
 			}
-			commitStart[i] = time.Now().UnixNano()
 			errs <- tx.Commit(t.Context())
 		}()
 	}
@@ -222,7 +288,6 @@ func TestDMProgressFollow_ParallelChildCreatesAndFollowLoseNoChild(t *testing.T)
 		<-start
 		time.Sleep(30 * time.Millisecond)
 		_, err := followAddManual(t.Context(), lane, parent)
-		followedAt.Store(time.Now().UnixNano())
 		errs <- err
 	}()
 	close(start)
@@ -234,8 +299,8 @@ func TestDMProgressFollow_ParallelChildCreatesAndFollowLoseNoChild(t *testing.T)
 		}
 	}
 	for i, k := range kids {
-		if commitStart[i] > followedAt.Load() && followState(t, uuidToString(k.ID), lane) != "active" {
-			t.Errorf("child %d committed after the parent's follow committed but is not followed", i)
+		if got := followState(t, uuidToString(k.ID), lane); got != "active" {
+			t.Errorf("child %d follow = %q, want active: the child was lost", i, got)
 		}
 	}
 }

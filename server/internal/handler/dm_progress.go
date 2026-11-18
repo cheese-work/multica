@@ -92,6 +92,10 @@ func (h *Handler) FollowIssueProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return
 	}
+	if err := service.SubscribeProgressDescendants(r.Context(), qtx, issue); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to follow")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return

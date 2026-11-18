@@ -100,9 +100,13 @@ func dmLane(ctx context.Context, q *db.Queries, sessionID, creator, workspaceID 
 //     child create takes the parent FOR KEY SHARE (LockIssueAsParent) before it
 //     lists the parent's follows. The two conflict, so a follow and a child
 //     create on one parent never interleave: the child either sees the follow
-//     or commits before the follow is taken. A status write also conflicts with
-//     the follow lock, which is what puts the follow's snapshot and the capture
-//     triggers on opposite sides of one cut (the follow's event watermark).
+//     or commits before the follow is taken, and then the follow subscribes it
+//     (SubscribeProgressDescendants). A status write also conflicts with the
+//     follow lock, and so does every capture trigger (dm_progress_capture takes
+//     the issue FOR KEY SHARE, PR events included), which is what puts the
+//     follow's snapshot and the capture triggers on opposite sides of one cut
+//     (the follow's event watermark). Descendants are locked parent first, so
+//     the walk never takes a lock against the order.
 //   - follow: row writes after the issue lock.
 //   - lane: the follow path never locks the lane row, only reads it or inserts
 //     it when missing. The dispatcher alone locks it (FOR UPDATE SKIP LOCKED),
@@ -175,6 +179,34 @@ func followNewIssue(ctx context.Context, q *db.Queries, p IssueCreateParams, iss
 		return err
 	}
 	return InheritProgressFollows(ctx, q, parent, issue)
+}
+
+// SubscribeProgressDescendants gives every committed descendant of root, at any
+// depth, the follows of its parent, so a child that committed before root was
+// followed is not lost (M11). Call it in the follow transaction after
+// AddProgressFollow, while root's lock is held: a child create that started
+// earlier has committed by then, and a later one sees the follow. A descendant
+// the member unfollowed stays unfollowed (M12). The visited set ends a parent
+// loop.
+func SubscribeProgressDescendants(ctx context.Context, q *db.Queries, root db.Issue) error {
+	seen := map[pgtype.UUID]bool{root.ID: true}
+	for queue := []db.Issue{root}; len(queue) > 0; queue = queue[1:] {
+		children, err := q.ListChildIssues(ctx, queue[0].ID)
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			if seen[child.ID] {
+				continue
+			}
+			seen[child.ID] = true
+			if err := InheritProgressFollows(ctx, q, queue[0], child); err != nil {
+				return err
+			}
+			queue = append(queue, child)
+		}
+	}
+	return nil
 }
 
 // InheritProgressFollows gives child each active follow of parent, mute
