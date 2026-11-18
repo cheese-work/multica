@@ -723,7 +723,7 @@ func main() {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
 	// CHE-4746: gateway-facing control-plane routes live on this second listener only.
-	internalServer, internalErr := newInternalServer(port)
+	internalServer, internalErr := newInternalServer(port, internalMounts(h)...)
 	if internalErr != nil {
 		slog.Error("internal listener disabled", "error", internalErr)
 	}
@@ -932,11 +932,22 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus})); err != nil {
+		slog.Error("scheduler: register dm progress dispatch", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
 		slog.Error("scheduler: register member-owned issue sweep", "error", err)
+	}
+	// CHE-5708: scheduled daemon update cycles fire per machine and drain on a
+	// 30 s driver. The ready_to_update hook (UpdateCycleReady) lands with child 9.
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateFireJob(pool, queries, h)); err != nil {
+		slog.Error("scheduler: register daemon update fire", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateCyclesJob(h)); err != nil {
+		slog.Error("scheduler: register daemon update cycles", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -956,6 +967,10 @@ func main() {
 	// condition is a 30-day cache; drop rows with no event for that long.
 	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
 		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
+	}
+	// CHE-4937: settle stored release receipts GitHub will not redeliver.
+	if err := schedulerMgr.Register(scheduler.ReleaseReceiptSweepJob(h)); err != nil {
+		slog.Warn("scheduler: failed to register github_release_receipt_sweep job", "error", err)
 	}
 	// CHE-2586 L1: ops page snapshots (30 s sampler, 5 min rollup, retention).
 	for _, job := range []scheduler.JobSpec{

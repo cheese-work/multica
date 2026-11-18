@@ -927,6 +927,7 @@
     "status_queued": "待機中",
     "status_dispatched": "開始中",
     "status_waiting_local_directory": "ローカルディレクトリ待機中",
+    "status_deferred": "保留中",
     "status_running": "作業中",
     "status_completed": "完了",
     "status_failed": "失敗",
@@ -1179,6 +1180,7 @@
     "variant_my_any": "何らかの関わり",
     "variant_my_assigned": "自分に割り当て",
     "variant_my_created": "自分が作成",
+    "variant_my_requested": "自分が依頼",
     "variant_my_involved": "関与中"
   },
   "plugins": {
@@ -1520,6 +1522,8 @@
       "max_fires": "{{count}} 回起動して上限に達したため停止",
       "loop": "一時停止：別のルールと互いに起こし合っていました",
       "rate": "一時停止：1 時間に 12 回を超えて起動",
+      "run_budget": "一時停止：課題が実行予算を使い切りました。予算を引き上げると再開します",
+      "weekly_run_guard": "一時停止：課題が週間の実行上限に達しました。新しい PR イベントが届くか回数が減ると再開します",
       "hint": "オンに戻すと再開し、回数はリセットされます。"
     },
     "detail": {
@@ -1542,7 +1546,9 @@
     "paused_reason": {
       "max_fires": "上限の {{count}} 回に到達",
       "loop": "別のルールと互いに起こし合っていました",
-      "rate": "1 時間に 12 回を超えて起動"
+      "rate": "1 時間に 12 回を超えて起動",
+      "run_budget": "課題が実行予算を使い切りました",
+      "weekly_run_guard": "課題が週間の実行上限に達しました"
     },
     "paused_banner": "{{name}} が {{time}} にウェイクアップを一時停止しました",
     "paused_banner_anonymous": "ウェイクアップは {{time}} に一時停止されました",

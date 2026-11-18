@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
+import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
@@ -56,6 +57,7 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
+  AffectedMachine,
   RuntimePause,
   RuntimePauseReason,
   RuntimeProfile,
@@ -1217,6 +1219,7 @@ export class ApiClient {
     if (params?.assignee_ids?.length) search.set("assignee_ids", params.assignee_ids.join(","));
     if (params?.assignee_types?.length) search.set("assignee_types", params.assignee_types.join(","));
     if (params?.creator_id) search.set("creator_id", params.creator_id);
+    if (params?.requested_by_id) search.set("requested_by_id", params.requested_by_id);
     if (params?.project_id) search.set("project_id", params.project_id);
     if (params?.assignee_filters?.length) {
       search.set("assignee_filters", params.assignee_filters.map((f) => `${f.type}:${f.id}`).join(","));
@@ -1278,6 +1281,7 @@ export class ApiClient {
     if (params.assignee_id) search.set("assignee_id", params.assignee_id);
     if (params.assignee_ids?.length) search.set("assignee_ids", params.assignee_ids.join(","));
     if (params.creator_id) search.set("creator_id", params.creator_id);
+    if (params.requested_by_id) search.set("requested_by_id", params.requested_by_id);
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.involves_user_id) search.set("involves_user_id", params.involves_user_id);
     if (params.metadata && Object.keys(params.metadata).length > 0) {
@@ -2341,6 +2345,14 @@ export class ApiClient {
       headers: workspaceHeader(workspaceSlug),
     });
     return parseWithFallback(raw, AgentRuntimeSchema.array(), [], { endpoint: "listRuntimes" });
+  }
+
+  // Off machines holding queued tasks the caller is affected by (CHE-2674).
+  async listAffectedMachines(): Promise<AffectedMachine[]> {
+    const raw = await this.fetch<unknown>("/api/runtimes/affected");
+    return parseWithFallback(raw, AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES, {
+      endpoint: "listAffectedMachines",
+    }).machines;
   }
 
   async listCloudRuntimeNodes(
@@ -3508,6 +3520,30 @@ export class ApiClient {
       extraHeaders: { "Content-Type": "application/json", ...(etag ? { "If-Match": etag } : {}) },
     });
     return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "PUT");
+  }
+
+  // CHE-4124: the caller's own picks (`{}` when none). Null when the response is
+  // malformed, so a guessed value is never shown.
+  async getMyBackgroundAgents(workspaceId: string): Promise<BackgroundAgents | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/me/background-agents`);
+    return parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/me/background-agents",
+    });
+  }
+
+  // Merges per job and per field; a null slot clears the personal pick. Any
+  // workspace member may call it, for their own picks only.
+  async updateMyBackgroundAgents(
+    workspaceId: string,
+    patch: Record<string, Record<string, string | null>>,
+  ): Promise<BackgroundAgents | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/me/background-agents`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
+      endpoint: "PUT /api/workspaces/{id}/me/background-agents",
+    });
   }
 
   // CHE-4617: null when the response is malformed, so a guessed rule is never

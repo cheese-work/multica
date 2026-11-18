@@ -965,6 +965,7 @@
     "status_queued": "Queued",
     "status_dispatched": "Starting",
     "status_waiting_local_directory": "Waiting for local directory",
+    "status_deferred": "Deferred",
     "status_running": "Working",
     "status_completed": "Completed",
     "status_failed": "Failed",
@@ -1233,6 +1234,7 @@
     "variant_my_any": "Any relation",
     "variant_my_assigned": "Assigned to me",
     "variant_my_created": "Created by me",
+    "variant_my_requested": "Requested by me",
     "variant_my_involved": "Involved"
   },
   "plugins": {
@@ -1577,6 +1579,8 @@
       "max_fires": "Stopped after reaching {{count}} runs",
       "loop": "Paused: it kept waking rules that woke it again",
       "rate": "Paused: more than 12 runs in an hour",
+      "run_budget": "Paused: the issue used its run budget; a raise turns it back on",
+      "weekly_run_guard": "Paused: the issue hit the weekly run limit; it turns back on when a new PR event arrives or the count falls",
       "hint": "Turn it back on to resume; the count starts over."
     },
     "detail": {
@@ -1600,7 +1604,9 @@
     "paused_reason": {
       "max_fires": "reached its limit of {{count}} runs",
       "loop": "it kept waking rules that woke it again",
-      "rate": "more than 12 runs in an hour"
+      "rate": "more than 12 runs in an hour",
+      "run_budget": "the issue used its run budget",
+      "weekly_run_guard": "the issue hit the weekly run limit"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
     "paused_banner_anonymous": "Wakeups paused at {{time}}",

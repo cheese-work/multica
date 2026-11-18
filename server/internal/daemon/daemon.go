@@ -143,7 +143,12 @@ var pendingWorkHintMinInterval = time.Second
 // choice rather than a per-policy one: it is decided before a task's resolved
 // sandbox config is known, one workdir is reused across tasks whose policies
 // can differ, and task-local metadata is correct under either policy.
-func repoCheckoutModeFor(provider, goos string) string {
+func repoCheckoutModeFor(provider, goos string, mode sandbox.Mode) string {
+	// Under enforcement on every provider borrows the cache objects, which the
+	// sandbox binds read-only (CHE-2216 §3.5). Off and audit keep today's values.
+	if mode == sandbox.ModeOn && goos == "linux" {
+		return repoCheckoutModeShared
+	}
 	if provider != "codex" {
 		return ""
 	}
@@ -9162,7 +9167,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 	agentEnv := taskMulticaEnvironment(task, provider, agentName, agentToken, env.MulticaConfigRoot, d.cfg.WorkspacesRoot, d.cfg.ServerBaseURL, d.cfg.HealthPort, slot, taskTempDir)
-	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
+	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS, d.cfg.SandboxMode); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
 	}
 	if task.AutopilotRunID != "" {
@@ -9573,6 +9578,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	outputObserver := &taskOutputObserver{}
 	ctx = withTaskOutputObserver(ctx, outputObserver)
 	ctx = withTaskPREvents(ctx, negotiation.PREvent)
+	ctx = withTaskWakeupItems(ctx, negotiation.PREventWakeups)
 	// STOE-30: mirror the agent's cumulative token counters into task_usage
 	// while the run is live, so a long run's cost moves on the board instead of
 	// appearing only after it ends. The backend calls OnUsage from its protocol

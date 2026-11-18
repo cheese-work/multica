@@ -475,7 +475,8 @@
       "apps": "Applications connectées",
       "workflows": "Workflows",
       "provider_breakers": "Disjoncteurs des fournisseurs",
-      "background_agents": "Agents d'arrière-plan"
+      "background_agents": "Agents d'arrière-plan",
+      "personal_background_agents": "Agents d'arrière-plan"
     },
     "groups": {
       "personal": "Personnel",
@@ -1632,7 +1633,8 @@
       "device": "Cet appareil uniquement",
       "device_workspace": "Cet appareil · {{name}}",
       "workspace": "Espace {{name}}",
-      "workspace_only": "Uniquement dans {{name}}"
+      "workspace_only": "Uniquement dans {{name}}",
+      "personal": "Personnel"
     },
     "read_only": {
       "title": "Lecture seule",
@@ -1817,5 +1819,32 @@
         "no_agent": "Aucun agent : chaque étape garde son propre agent."
       }
     }
+  },
+  "personal_background_agents": {
+    "title": "Agents d'arrière-plan",
+    "description": "Choisissez l'agent qui fait ces petites tâches pour vous. Vous seul voyez et utilisez ces choix. Ils s'appliquent à vos DM et priment sur le choix de l'espace de travail.",
+    "jobs": {
+      "dm_title": {
+        "hint": "Nomme vos DM d'après le premier message."
+      },
+      "quick_actions": {
+        "hint": "Propose des boutons de suite sous une réponse dans vos DM."
+      }
+    },
+    "using_workspace": "Utilise l'espace de travail : {{agent}}",
+    "using_workspace_pick": "Utilise le choix de l'espace de travail",
+    "use_workspace_pick": "Utiliser le choix de l'espace de travail",
+    "archived": "Archivé",
+    "archived_warning": "{{agent}} est archivé. {{job}} s'exécute sans agent dans vos DM tant que vous n'en choisissez pas un autre. L'agent de l'espace de travail ne prend pas le relais, ni l'agent de secours : il ne s'exécute que lorsque l'agent échoue.",
+    "use_workspace_button": "Utiliser le choix de l'espace de travail ({{agent}})",
+    "load_error": "Impossible de charger vos agents d'arrière-plan.",
+    "load_error_detail": "Rien n'a été modifié. Vos derniers choix enregistrés s'appliquent toujours.",
+    "toast_save_failed": "Impossible d'enregistrer vos agents d'arrière-plan.",
+    "offline_title": "Vous êtes hors ligne.",
+    "offline_body": "Les modifications sont suspendues. Les choix ci-dessous sont les derniers chargés et peuvent être obsolètes. Les sélecteurs se réactivent à la reconnexion.",
+    "another_tab": "Vous avez enregistré une modification dans un autre onglet. Voici vos choix les plus récents.",
+    "routing_before": "Le routage est défini pour tout l'espace de travail. Les propriétaires et administrateurs le modifient dans",
+    "routing_link": "Espace de travail → Agents d'arrière-plan",
+    "routing_after": "."
   }
 }

@@ -22,6 +22,7 @@ import { useWakeupText } from "./wakeup-presentation";
 import { ActorChoice, AgentChoice, AssigneeChoice, PillMenu, pillClass } from "./wakeup-pickers";
 import {
   WAKEUP_EVENT_TYPES,
+  toggleWakeupEvent,
   type WakeupAtPreset,
   type WakeupDraft,
   type WakeupField,
@@ -132,13 +133,7 @@ export function ConditionParams({
                 key={event}
                 checked={draft.events.includes(event)}
                 closeOnClick={false}
-                onCheckedChange={(checked) =>
-                  update({
-                    events: checked
-                      ? WAKEUP_EVENT_TYPES.filter((e) => e === event || draft.events.includes(e))
-                      : draft.events.filter((e) => e !== event),
-                  })
-                }
+                onCheckedChange={(checked) => update({ events: toggleWakeupEvent(draft.events, event, checked) })}
               >
                 {text.eventName(event)}
               </DropdownMenuCheckboxItem>

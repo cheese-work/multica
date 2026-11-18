@@ -188,8 +188,9 @@ Per-job deadlines (targets for review; measurement is a layer-1 task, see Eviden
 
 ## UI
 
-- Settings > Workspace: a "Background agents" section with one row per job: "Agent" and "Fallback agent" selects (owner/admin; members see read-only), a one-line description, and the job's no-agent note ("No agent: uses the title cut" and so on). The existing compact picker (CHE-2917) and the routing selects (PR #989) become rows in this section.
-- Settings > Preferences (personal): the same rows for user-scoped jobs, labelled "Use workspace default" when unset.
+- Settings > Workspace > Background agents (tab): one row per job: "Agent" and "Fallback agent" selects (owner/admin; members see read-only), a one-line description, and the job's no-agent note ("No agent: uses the title cut" and so on). The existing compact picker (CHE-2917) and the routing selects (PR #989) become rows in this tab.
+- Settings > Personal > Background agents (tab): the same rows for user-scoped jobs, labelled "Use workspace default" when unset.
+- Agent detail page: a "Background agent" notice beside the archived and runtime banners lists each job the agent serves as `{scope: workspace|personal, job}`, with its scope badge, job key and a link to the tab above (workspace links for owners and admins only). The list comes from `background_use` on `GET /api/agents/{id}` and `multica agent get --output json`: every viewer gets the workspace entries, and only their own personal entries from their `member_setting` row, never another member's. "Who can run this agent" adds a note for a workspace background agent: narrowing access to "Only me" or specific people makes it ineligible (ENG-8) and the job runs its fallback or no-agent path.
 - A DM shows "Compacting with <agent>" as plan v3 requires. Title and quick-action runs show no UI beyond the runs list.
 - Strings in all six locales; entries in the settings search index.
 - Component tests first. Because this changes UI, the design record and cross-lab UX review of `multica-cheese-work-design-loop` apply before the UI layer is ready.

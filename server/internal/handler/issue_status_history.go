@@ -34,10 +34,19 @@ type statusRecord struct {
 	// route label shares it. routingExit marks the row as a routing agent leaving its step.
 	eventID     pgtype.UUID
 	routingExit bool
+	// blockedOn is the validated blocked_on ref of a move to blocked (CHE-6972).
+	blockedOn string
 	// intent, when armed, makes the write record a handoff dispatch intent in
 	// its own transaction; intentID is the row it wrote (CHE-5486).
 	intent   *handoffIntentSeed
 	intentID pgtype.UUID
+	// comment, when set, is created in the write's transaction after the status
+	// change; created is the row it wrote (CHE-5489).
+	comment *handoffCommentSeed
+	created *db.CreateCommentRow
+	// attach is the existing comments the move carries; the transaction checks
+	// them again under the issue lock.
+	attach *attachedComments
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {

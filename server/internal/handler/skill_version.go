@@ -324,6 +324,11 @@ func (h *Handler) RestoreSkillVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to restore skill version")
 		return
 	}
+	beforeFiles, err := qtx.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore skill files")
+		return
+	}
 	if err := qtx.DeleteSkillFilesBySkill(r.Context(), skill.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to restore skill files")
 		return
@@ -343,6 +348,14 @@ func (h *Handler) RestoreSkillVersion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fileResps = append(fileResps, skillFileToResponse(sf))
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "skill.update", WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: skillRowAuditFields(skill, beforeFiles),
+		After:  skillAuditFields(updated.Name, updated.Description, updated.Content, updated.Config, skillAuditFilesFromResponses(fileResps)),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "skill.update")
+		return
 	}
 	if _, err := recordSkillVersion(r.Context(), qtx, skill.ID, skillVersionRecord{
 		Source:       skillVersionSourceRestore,

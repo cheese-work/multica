@@ -196,3 +196,27 @@ func TestSteerReplaySweeperLeasesClaimedReceipts(t *testing.T) {
 		t.Fatalf("second claim = %d, want 0: the lease must hide a claimed receipt", n)
 	}
 }
+
+// CHE-7011: a stage_queue_full mention answers deferred on the wire, but the
+// replay still treats it as a refused enqueue, so the obligation handoff and
+// the transient retry keep running.
+func TestCommentEnqueueRefused_StageQueueFullStaysRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		res  commentEnqueueResult
+		want bool
+	}{
+		{"blocked", commentEnqueueResult{status: DispatchBlocked, reason: ReasonAgentPaused}, true},
+		{"deferred stage_queue_full", commentEnqueueResult{status: DispatchDeferred, reason: ReasonStageQueueFull}, true},
+		{"deferred", commentEnqueueResult{status: DispatchDeferred, reason: ReasonDeferred}, false},
+		{"queued", commentEnqueueResult{status: DispatchQueued, reason: ReasonQueued}, false},
+	}
+	for _, c := range cases {
+		if got := commentEnqueueRefused(c.res); got != c.want {
+			t.Errorf("%s: refused = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if !transientReplayReason(ReasonStageQueueFull) {
+		t.Error("stage_queue_full must stay a transient replay reason")
+	}
+}

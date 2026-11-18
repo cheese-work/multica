@@ -1576,6 +1576,26 @@ func WithStatusHandoffComment(ctx context.Context, commentID pgtype.UUID) contex
 	return context.WithValue(ctx, statusHandoffCommentKey{}, commentID)
 }
 
+type statusHandoffRestKey struct{}
+
+// WithStatusHandoffComments names every comment a status move carried, in
+// order: the first is the run's trigger comment, the rest are coalesced.
+func WithStatusHandoffComments(ctx context.Context, ids []pgtype.UUID) context.Context {
+	if len(ids) == 0 {
+		return ctx
+	}
+	ctx = WithStatusHandoffComment(ctx, ids[0])
+	if len(ids) > 1 {
+		ctx = context.WithValue(ctx, statusHandoffRestKey{}, ids[1:])
+	}
+	return ctx
+}
+
+func statusHandoffRest(ctx context.Context) []pgtype.UUID {
+	ids, _ := ctx.Value(statusHandoffRestKey{}).([]pgtype.UUID)
+	return ids
+}
+
 func statusHandoffComment(ctx context.Context) pgtype.UUID {
 	id, _ := ctx.Value(statusHandoffCommentKey{}).(pgtype.UUID)
 	return id
@@ -1722,6 +1742,9 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	if handoffComment.Valid {
 		triggerCommentID = handoffComment
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+		if len(coalescedCommentIDs) == 0 {
+			coalescedCommentIDs = statusHandoffRest(ctx)
+		}
 	}
 	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, triggerKind, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
@@ -2105,6 +2128,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if handoffComment.Valid {
 		triggerCommentID = handoffComment
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+		if len(coalescedCommentIDs) == 0 {
+			coalescedCommentIDs = statusHandoffRest(ctx)
+		}
 	}
 	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
@@ -5482,7 +5508,8 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 type TaskStartCapabilities struct {
 	Supplement     bool
 	ChatSupplement bool
-	PREvent        bool
+	PREvent        bool // the daemon offered typed PR-event delivery (v1 or v2)
+	PREventV2      bool // it offered v2: v1 plus wakeup items
 	ProcessCleanup bool
 }
 
@@ -5557,7 +5584,7 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			return fmt.Errorf("start claimed task: %w", err)
 		}
 		if offered.PREvent {
-			if _, err := qtx.RecordTaskPREventCapability(ctx, task.ID); err != nil {
+			if _, err := qtx.RecordTaskPREventCapability(ctx, db.RecordTaskPREventCapabilityParams{TaskID: task.ID, OfferV2: offered.PREventV2}); err != nil {
 				return fmt.Errorf("record PR event capability: %w", err)
 			}
 		}

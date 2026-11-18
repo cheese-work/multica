@@ -1,0 +1,559 @@
+# Live route manifest (CHE-5793 C9). One entry per in-scope page.tsx and per Settings tab.
+# Checked by: node scripts/design/live/manifest.mjs --check
+# Live key = route/<screen>/<state>/<profile>/<theme> (scripts/design/live/keys.mjs).
+#
+# path   : the route template of the page.tsx. [workspaceSlug] is the seeded workspace slug; every other
+#          [param] is filled from `seed` (param -> record kind) by the seed script (steps 32 and 33).
+#          Seeded records are named "Live seed <kind>" so a detail marker can name them.
+# auth   : anonymous | owner | new-user | no-workspace | invitee (C9 auth states).
+# expect : url is a regex for the final path; marker is {role, name} or {testid} that only this screen shows.
+# Markers are written from the English locale and the page components. Step 32 (route check) confirms each
+# one against the live instance and corrects any that read screen-mismatch.
+# scenes : ui-map.yml screen ids the route shows (golden scenes, step 10c). Empty until those exist.
+# A Settings tab that the local configuration hides gets `config: <flag>=<value>` (step 32 sets it).
+project: 5e621e12-eeb4-40a5-9571-25657d5b0ec5
+canvas: mRAnnjvGod
+page: Live
+profile: web-1440   # routes use web-1440 only (web only, Cheese 13 Nov 2026)
+theme: dark
+entries:
+  - screen: auth.login
+    state: default
+    path: "/login"
+    auth: anonymous
+    seed: {}
+    expect:
+      url: "^/login$"
+      marker: { role: heading, name: "Sign in to Multica" }
+    scenes: []
+  - screen: auth.onboarding
+    state: default
+    path: "/onboarding"
+    auth: new-user
+    seed: {}
+    expect:
+      url: "^/onboarding$"
+      marker: { role: heading, name: "Name your workspace" }
+    scenes: []
+  - screen: auth.workspaces-new
+    state: default
+    path: "/workspaces/new"
+    auth: no-workspace
+    seed: {}
+    expect:
+      url: "^/workspaces/new$"
+      marker: { role: heading, name: "Name your workspace" }
+    scenes: []
+  - screen: auth.invitations
+    state: default
+    path: "/invitations"
+    auth: invitee
+    seed: {}
+    expect:
+      url: "^/invitations$"
+      marker: { role: heading, name: "You've been invited" }
+    scenes: []
+  - screen: auth.invite
+    state: default
+    path: "/invite/[id]"
+    auth: invitee
+    seed: { id: invitation }
+    expect:
+      url: "^/invite/[^/]+$"
+      marker: { role: heading, name: "You've been invited" }
+    scenes: []
+  - screen: ws.agents
+    state: default
+    path: "/[workspaceSlug]/agents"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/agents$"
+      marker: { role: heading, name: "Agents" }
+    scenes: []
+  - screen: ws.agent-detail
+    state: default
+    path: "/[workspaceSlug]/agents/[id]"
+    auth: owner
+    seed: { id: agent }
+    expect:
+      url: "^/[^/]+/agents/[^/]+$"
+      marker: { role: heading, name: "Live seed agent" }
+    scenes: []
+  - screen: ws.agents-new
+    state: default
+    path: "/[workspaceSlug]/agents/new"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/agents/new$"
+      marker: { role: heading, name: "Where should this agent run?" }
+    scenes: []
+  - screen: ws.agents-new-ai
+    state: default
+    path: "/[workspaceSlug]/agents/new/ai"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/agents/new/ai$"
+      marker: { role: heading, name: "Build with AI" }
+    scenes: []
+  - screen: ws.agents-new-ai-session
+    state: default
+    path: "/[workspaceSlug]/agents/new/ai/[sessionId]"
+    auth: owner
+    seed: { sessionId: ai-builder-session }
+    expect:
+      url: "^/[^/]+/agents/new/ai/[^/]+$"
+      marker: { role: heading, name: "Build with AI" }
+    scenes: []
+  - screen: ws.agents-new-done
+    state: default
+    path: "/[workspaceSlug]/agents/new/done/[agentId]"
+    auth: owner
+    seed: { agentId: agent }
+    expect:
+      url: "^/[^/]+/agents/new/done/[^/]+$"
+      marker: { role: heading, name: "Live seed agent is ready" }
+    scenes: []
+  - screen: ws.agents-new-manual
+    state: default
+    path: "/[workspaceSlug]/agents/new/manual"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/agents/new/manual$"
+      marker: { role: heading, name: "Create an agent" }
+    scenes: []
+  - screen: ws.autopilots
+    state: default
+    path: "/[workspaceSlug]/autopilots"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/autopilots$"
+      marker: { role: heading, name: "Autopilots" }
+    scenes: []
+  - screen: ws.autopilot-detail
+    state: default
+    path: "/[workspaceSlug]/autopilots/[id]"
+    auth: owner
+    seed: { id: autopilot }
+    expect:
+      url: "^/[^/]+/autopilots/[^/]+$"
+      marker: { role: heading, name: "Live seed autopilot" }
+    scenes: []
+  - screen: ws.billing-test
+    state: default
+    path: "/[workspaceSlug]/billing"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/billing$"
+      marker: { role: heading, name: "Billing (test page)" }
+    scenes: []
+  - screen: ws.chat
+    state: default
+    path: "/[workspaceSlug]/chat"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/chat$"
+      marker: { role: heading, name: "Chat" }
+    scenes: []
+  - screen: ws.inbox
+    state: default
+    path: "/[workspaceSlug]/inbox"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/inbox$"
+      marker: { role: heading, name: "Inbox" }
+    scenes: []
+  - screen: ws.issues
+    state: default
+    path: "/[workspaceSlug]/issues"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/issues$"
+      marker: { role: heading, name: "Issues" }
+    scenes: []
+  - screen: ws.issue-detail
+    state: default
+    path: "/[workspaceSlug]/issues/[id]"
+    auth: owner
+    seed: { id: issue }
+    expect:
+      url: "^/[^/]+/issues/[^/]+$"
+      marker: { role: textbox, name: "Issue title" }
+    scenes: []
+  - screen: ws.member-detail
+    state: default
+    path: "/[workspaceSlug]/members/[id]"
+    auth: owner
+    seed: { id: member }
+    expect:
+      url: "^/[^/]+/members/[^/]+$"
+      marker: { role: heading, name: "Live seed member" }
+    scenes: []
+  - screen: ws.my-issues
+    state: default
+    path: "/[workspaceSlug]/my-issues"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/my-issues$"
+      marker: { role: heading, name: "My Issues" }
+    scenes: []
+  - screen: ws.projects
+    state: default
+    path: "/[workspaceSlug]/projects"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/projects$"
+      marker: { role: heading, name: "Projects" }
+    scenes: []
+  - screen: ws.project-detail
+    state: default
+    path: "/[workspaceSlug]/projects/[id]"
+    auth: owner
+    seed: { id: project }
+    expect:
+      url: "^/[^/]+/projects/[^/]+$"
+      marker: { role: textbox, name: "Project title" }
+    scenes: []
+  - screen: ws.runtimes
+    state: default
+    path: "/[workspaceSlug]/runtimes"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/runtimes$"
+      marker: { role: heading, name: "Runtimes" }
+    scenes: []
+  - screen: ws.runtime-detail
+    state: default
+    path: "/[workspaceSlug]/runtimes/[id]"
+    auth: owner
+    seed: { id: runtime }
+    expect:
+      url: "^/[^/]+/runtimes/[^/]+$"
+      marker: { role: heading, name: "Live seed runtime" }
+    scenes: []
+  - screen: ws.runtime-settings
+    state: default
+    path: "/[workspaceSlug]/runtimes/[id]/runtime/[runtimeId]"
+    auth: owner
+    seed: { id: runtime, runtimeId: runtime }
+    expect:
+      url: "^/[^/]+/runtimes/[^/]+/runtime/[^/]+$"
+      marker: { role: heading, name: "Live seed runtime" }
+    scenes: []
+  - screen: ws.search
+    state: default
+    path: "/[workspaceSlug]/search"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/search$"
+      marker: { role: dialog, name: "Command bar" }
+    scenes: []
+  - screen: ws.settings
+    state: default
+    path: "/[workspaceSlug]/settings"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Profile" }
+    scenes: []
+  - screen: ws.skills
+    state: default
+    path: "/[workspaceSlug]/skills"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/skills$"
+      marker: { role: heading, name: "Skills" }
+    scenes: []
+  - screen: ws.skill-detail
+    state: default
+    path: "/[workspaceSlug]/skills/[id]"
+    auth: owner
+    seed: { id: skill }
+    expect:
+      url: "^/[^/]+/skills/[^/]+$"
+      marker: { role: heading, name: "Live seed skill" }
+    scenes: []
+  - screen: ws.squads
+    state: default
+    path: "/[workspaceSlug]/squads"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/squads$"
+      marker: { role: heading, name: "Squads" }
+    scenes: []
+  - screen: ws.squad-detail
+    state: default
+    path: "/[workspaceSlug]/squads/[id]"
+    auth: owner
+    seed: { id: squad }
+    expect:
+      url: "^/[^/]+/squads/[^/]+$"
+      marker: { role: heading, name: "Live seed squad" }
+    scenes: []
+  - screen: ws.usage
+    state: default
+    path: "/[workspaceSlug]/usage"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/usage$"
+      marker: { role: heading, name: "Analytics" }
+    scenes: []
+  - screen: ws.views
+    state: default
+    path: "/[workspaceSlug]/views"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/views$"
+      marker: { role: heading, name: "Views" }
+    scenes: []
+  - screen: ws.attachment-preview
+    state: default
+    path: "/[workspaceSlug]/attachments/[id]/preview"
+    auth: owner
+    seed: { id: attachment }
+    expect:
+      url: "^/[^/]+/attachments/[^/]+/preview$"
+      marker: { role: img, name: "Live seed attachment" }
+    scenes: []
+  - screen: ws.media
+    state: default
+    path: "/[workspaceSlug]/media/[type]/[sourceId]/[kind]/[mediaId]"
+    auth: owner
+    seed: { type: issue, sourceId: issue, kind: attachment, mediaId: attachment }
+    expect:
+      url: "^/[^/]+/media/[^/]+/[^/]+/[^/]+/[^/]+$"
+      marker: { role: img, name: "Live seed media" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-profile
+    path: "/[workspaceSlug]/settings?tab=profile"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Profile" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-preferences
+    path: "/[workspaceSlug]/settings?tab=preferences"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Preferences" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-notifications
+    path: "/[workspaceSlug]/settings?tab=notifications"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Notifications" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-shortcuts
+    path: "/[workspaceSlug]/settings?tab=shortcuts"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Keyboard Shortcuts" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-apps
+    path: "/[workspaceSlug]/settings?tab=apps"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Connected apps" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-tokens
+    path: "/[workspaceSlug]/settings?tab=tokens"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "API Tokens" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-passkeys
+    path: "/[workspaceSlug]/settings?tab=passkeys"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Passkeys" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-workspace
+    path: "/[workspaceSlug]/settings?tab=workspace"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "General" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-members
+    path: "/[workspaceSlug]/settings?tab=members"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Members" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-background-agents
+    path: "/[workspaceSlug]/settings?tab=background-agents"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Background agents" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-export-privacy
+    path: "/[workspaceSlug]/settings?tab=export-privacy"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Export Privacy" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-billing
+    path: "/[workspaceSlug]/settings?tab=billing"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Billing" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-workflows
+    path: "/[workspaceSlug]/settings?tab=workflows"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Workflows" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-issue-statuses
+    path: "/[workspaceSlug]/settings?tab=issue-statuses"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Issue Statuses" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-wakeups
+    path: "/[workspaceSlug]/settings?tab=wakeups"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Wakeups" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-provider-breakers
+    path: "/[workspaceSlug]/settings?tab=provider-breakers"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Provider breakers" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-labels
+    path: "/[workspaceSlug]/settings?tab=labels"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Labels" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-properties
+    path: "/[workspaceSlug]/settings?tab=properties"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Properties" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-quick-actions
+    path: "/[workspaceSlug]/settings?tab=quick-actions"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Quick Actions" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-code
+    path: "/[workspaceSlug]/settings?tab=code"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Code" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-channels
+    path: "/[workspaceSlug]/settings?tab=channels"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Messaging" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-mcp
+    path: "/[workspaceSlug]/settings?tab=mcp"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "MCP servers" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-plugins
+    path: "/[workspaceSlug]/settings?tab=plugins"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Plugins" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-site-search
+    path: "/[workspaceSlug]/settings?tab=site-search"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Site search" }
+    scenes: []

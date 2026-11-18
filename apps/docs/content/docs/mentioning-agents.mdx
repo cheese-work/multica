@@ -79,6 +79,8 @@ When one comment @-mentions several different agents, each agent gets its own ru
 
 Agent-authored comment triggers are limited to one newly started run per agent per issue in each 10-minute window. Comments can still join an existing pending or running task; otherwise the trigger outcome reports that it was rate-limited.
 
+When a full review stage cannot start the run yet, the trigger outcome is `deferred` with reason `stage_queue_full`: the mention is already queued and starts by itself, so do not mention the agent again.
+
 ## Comments that don't trigger agents
 
 There are two ways:
