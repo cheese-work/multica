@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -247,10 +250,15 @@ func TestM1bClaimWaitsForGatewayCooldownAfterRelease(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	claim := func(ago string) *db.AgentTaskQueue {
+	// Fake clock: ClaimTask reads time.Now(), so "time since the failure" is
+	// moved by setting completed_at to an instant computed in Go, the same
+	// pattern as the CHE-1699 tests in gateway_recovery_test.go. Database now()
+	// is not used.
+	claimAfter := func(elapsed time.Duration) *db.AgentTaskQueue {
 		t.Helper()
-		o.Exec(t, `UPDATE agent_task_queue SET completed_at = now() - $2::interval WHERE id=$1`, failed, ago)
-		o.Exec(t, `UPDATE agent_task_queue SET fire_at = now() - interval '1 hour' WHERE id=$1`, child)
+		failedAt := time.Now().Add(-elapsed)
+		o.Exec(t, `UPDATE agent_task_queue SET completed_at = $2 WHERE id=$1`, failed, pgtype.Timestamptz{Time: failedAt, Valid: true})
+		o.Exec(t, `UPDATE agent_task_queue SET fire_at = $2 WHERE id=$1`, child, pgtype.Timestamptz{Time: failedAt, Valid: true})
 		promote()
 		got, err := o.svc.TaskSvc.ClaimTask(ctx, parseTestUUID(t, o.agentID))
 		if err != nil {
@@ -258,12 +266,81 @@ func TestM1bClaimWaitsForGatewayCooldownAfterRelease(t *testing.T) {
 		}
 		return got
 	}
-	if got := claim("1 minute"); got != nil {
-		t.Fatalf("claimed %s 1 minute after the failure, want the 10 minute cooldown", util.UUIDToString(got.ID))
+	for _, elapsed := range []time.Duration{time.Minute, gatewayFailureCooldown - time.Second} {
+		if got := claimAfter(elapsed); got != nil {
+			t.Fatalf("claimed %s %s after the failure, want the %s cooldown", util.UUIDToString(got.ID), elapsed, gatewayFailureCooldown)
+		}
 	}
-	if got := claim("10 minutes 1 second"); got == nil || util.UUIDToString(got.ID) != child {
+	if got := claimAfter(gatewayFailureCooldown + time.Second); got == nil || util.UUIDToString(got.ID) != child {
 		t.Fatalf("claim after cooldown = %v, want the released retry %s", got, child)
 	}
+}
+
+// Rollback receipt: when the receipt write fails, the failing transaction rolls
+// back the held row and its reservation with it. The failure itself commits and
+// none of the three exist. (The commit-together case is
+// TestM1bWakeupRunGetsOneHeldRetry: children, reservations and receipts are 1.)
+func TestM1bReceiptFailureRollsBackHeldRowAndReservation(t *testing.T) {
+	forEachM1bWakeup(t, func(t *testing.T, o ownerFixture, wakeup string) {
+		for _, reason := range heldRetryReasons {
+			t.Run(strings.TrimPrefix(reason, "agent_error."), func(t *testing.T) {
+				id := o.runningTask(t, wakeupRunContext(t, wakeup, 1))
+				o.failingTrigger(t, "activity_log", fmt.Sprintf(`NEW.action = '%s' AND NEW.issue_id = '%s'`, providerRecoveryActivityReserved, o.issueID))
+				s := o.failWith(t, id, reason)
+				s.wantFailed(t, reason)
+				s.wantNoEffect(t)
+				if s.reservations != 0 {
+					t.Fatalf("reservations=%d, want 0 after a failed receipt", s.reservations)
+				}
+			})
+		}
+	})
+}
+
+// Restart: the held row, its wakeup binding and its hold marker live in the
+// database. A fresh TaskService (a process restart) finds the row still held,
+// and its release lets the retry through.
+func TestM1bRestartKeepsHeldRow(t *testing.T) {
+	forEachM1bWakeup(t, func(t *testing.T, o ownerFixture, wakeup string) {
+		child := o.heldWakeupRetry(t, wakeup)
+		restarted := NewTaskService(db.New(o.Pool), o.Pool, nil, events.New())
+		if status, _, held := o.taskState(t, child); status != "deferred" || !held {
+			t.Fatalf("before release: status=%q held=%v, want a held deferred row", status, held)
+		}
+		if err := restarted.ReleaseProviderHeldTasks(context.Background(), time.Now().Add(providerCapacityRetryWait+time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		status, reason, held := o.taskState(t, child)
+		if held || status == "cancelled" || reason == "wakeup_superseded" {
+			t.Fatalf("after release by the restarted service: status=%q reason=%q held=%v, want the retry released and alive", status, reason, held)
+		}
+		_, _, c := o.heldChild(t, o.mustParent(t, child))
+		if c["wakeup_id"] != wakeup || c["wakeup_revision"] != float64(1) {
+			t.Fatalf("released retry context=%v, want wakeup %s revision 1 kept", c, wakeup)
+		}
+	})
+}
+
+// M0d cap, post-re-arm: a run of the wakeup at a revision already in a
+// recovery lineage that fails with a held or a generic retry reason, with
+// attempt budget left, gets no retry of any kind.
+func TestM1bPostRearmRunGetsNoRetryChild(t *testing.T) {
+	forEachM1bWakeup(t, func(t *testing.T, o ownerFixture, wakeup string) {
+		o.recordRecovery(t, o.failedTask(t, nil), db.RecordProviderFailureRecoveryParams{
+			RecoveryWakeupID: parseTestUUID(t, wakeup), RecoveryWakeupRevision: pgtype.Int8{Int64: 5, Valid: true},
+		})
+		for _, reason := range []string{held5xx, "agent_error.provider_capacity_or_rate_limit", "agent_error.timeout", "agent_error.provider_network"} {
+			t.Run(reason, func(t *testing.T) {
+				id := o.runningTask(t, wakeupRunContext(t, wakeup, 5))
+				s := o.failWith(t, id, reason)
+				s.wantFailed(t, reason)
+				s.wantNoEffect(t)
+				if s.reservations != 0 {
+					t.Fatalf("reservations=%d, want 0 for a wakeup already in a recovery lineage", s.reservations)
+				}
+			})
+		}
+	})
 }
 
 func (o ownerFixture) mustParent(t *testing.T, child string) string {
