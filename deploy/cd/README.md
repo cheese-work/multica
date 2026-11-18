@@ -1140,15 +1140,22 @@ never forced, never a prune.
 
 Keep references are read from live state: `cutover-state.json` `image_tuple`
 (must resolve to a local image by ID, tag or RepoDigest, else BLOCKED) and the
-image of every container, which covers the retained predecessor colour. Compose
+image of every container, which covers the retained predecessor colour. Both
+predecessor services (`backend-<colour>`, `frontend-<colour>`, the colour that is
+not `active_colour`) must exist as containers, or the run is BLOCKED: without
+them no rollback image can be proven. Compose
 labels are ignored on purpose: `cd-deploy.yml` deletes its `cd-deploy-<ts>`
 staging directory after each deploy. A `cd-deploy-*` directory under
 `--deploy-root` blocks the run (active deploy, or a failed cleanup). The run also
 takes the controller's `deploy.lock` (non-blocking) in `--cutover-state-dir` and
 holds it across discovery and every removal, which covers a rollback that creates
 no staging; a busy lock is BLOCKED. Every `--keep-ref` must resolve to a local
-image by ID, tag or RepoDigest, else BLOCKED. The
-historical `manifest.json` and `release-record.json` are not read.
+image by ID, tag or RepoDigest, else BLOCKED. The controller does not read
+`manifest.json` or `release-record.json` in the state dir, but if present they are
+parsed: a malformed file is BLOCKED, and every Multica image ref in them must
+resolve locally (kept) or be accepted by exact value with
+`--accept-unresolved-ref REF` (repeatable; recorded in the receipt as
+`accepted_unresolved_refs`), else BLOCKED with a recovery owner.
 
 Exit 0 only when used bytes are at or below `--target-bytes`; 3 TARGET_UNMET, 2
 BLOCKED (nothing mutated), 1 FAILED. Each run writes `manifest.json` and

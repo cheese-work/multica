@@ -95,9 +95,10 @@ def image(c, age, tags=None, digests=None):
     return {"Id": iid(c), "RepoTags": tags, "RepoDigests": digests or [], "Created": created(age)}
 
 
-def container(cid, c, ref, running, staging):
+def container(cid, c, ref, running, staging, service=None):
     return {
         "Id": cid, "Image": iid(c), "Config": {"Image": ref, "Labels": {
+            **({"com.docker.compose.service": service} if service else {}),
             "com.docker.compose.project.config_files": f"{staging}/docker-compose.selfhost.yml",
             "com.docker.compose.project.working_dir": str(staging)}},
         "State": {"Running": running},
@@ -124,7 +125,11 @@ class GcTests(unittest.TestCase):
     def write_cutover(self, tuple_):
         (self.state_dir / "cutover-state.json").write_text(json.dumps({"active_colour": "blue", "image_tuple": tuple_}))
 
-    def world(self, images, containers=(), **extra):
+    def world(self, images, containers=(), predecessor=True, **extra):
+        containers = list(containers)
+        if predecessor:  # active colour is blue; green is the retained predecessor, stopped, on the active image
+            ref = f"{BACKEND}:sha-{sha('c')}"
+            containers += [container(f"pred-{svc}", "c", ref, False, self.staging, f"{svc}-green") for svc in ("backend", "frontend")]
         self.stub_state.write_text(json.dumps({"images": images, "containers": list(containers), **extra}))
 
     def run_gc(self, *extra, apply=True, target=1):
@@ -303,6 +308,49 @@ class GcTests(unittest.TestCase):
         p, r = self.run_gc("--keep-ref", digest)
         self.assertEqual(self.ids(), {iid("a"), iid("c")}, p.stderr)
         self.assertEqual(r["removed"], [])
+
+    def test_unidentifiable_retained_predecessor_blocks(self):
+        self.world([image("a", 10), image("c", 1)], predecessor=False)
+        p, r = self.run_gc()
+        self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"), p.stderr)
+        self.assertIn("predecessor", r["reason"])
+        self.assertEqual(self.removed_calls(), [])
+
+    def test_retained_records_resolving_locally_protect_their_images(self):
+        ref_b = f"{BACKEND}:sha-{sha('b')}"
+        (self.state_dir / "release-record.json").write_text(json.dumps({"images": {"backend": ref_b, "web": ref_b}}))
+        self.world([image("a", 10), image("b", 10), image("c", 1)])
+        p, r = self.run_gc()
+        self.assertEqual(self.ids(), {iid("b"), iid("c")}, p.stderr)
+        self.assertEqual(r["removed"], [iid("a")])
+
+    def test_unresolvable_retained_record_ref_blocks_with_evidence_and_owner(self):
+        gone = f"{BACKEND}@sha256:{'6' * 64}"
+        (self.state_dir / "manifest.json").write_text(json.dumps({"images": {"backend": gone, "web": gone}}))
+        self.world([image("a", 10), image("c", 1)])
+        p, r = self.run_gc()
+        self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"), p.stderr)
+        self.assertIn(gone, r["reason"])
+        self.assertIn("manifest.json", r["reason"])
+        self.assertIn("recovery_owner", r)
+        self.assertEqual(self.removed_calls(), [])
+
+    def test_accepting_an_exact_unresolvable_ref_is_explicit_and_recorded(self):
+        gone = f"{BACKEND}@sha256:{'6' * 64}"
+        (self.state_dir / "manifest.json").write_text(json.dumps({"images": {"backend": gone}}))
+        self.world([image("a", 10), image("c", 1)])
+        p, r = self.run_gc("--accept-unresolved-ref", gone)
+        self.assertEqual(r["removed"], [iid("a")], p.stderr)
+        self.assertEqual(r["accepted_unresolved_refs"], [gone])
+        p, r = self.run_gc("--accept-unresolved-ref", f"{BACKEND}@sha256:{'5' * 64}")
+        self.assertEqual(r["status"], "BLOCKED")  # accepting some other ref does not cover this one
+
+    def test_malformed_retained_record_blocks(self):
+        (self.state_dir / "release-record.json").write_text("{")
+        self.world([image("a", 10), image("c", 1)])
+        p, r = self.run_gc()
+        self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"), p.stderr)
+        self.assertEqual(self.removed_calls(), [])
 
     def test_nothing_removed_is_target_unmet_not_success(self):
         self.world([image("c", 1)])

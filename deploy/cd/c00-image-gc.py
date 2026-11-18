@@ -9,11 +9,14 @@ Never force, never prune, never touch containers, volumes or config.
 Keep references come from live state only: the active tuple in
 cutover-state.json (the contract of cutover.sh write_cutover_state), every
 container's image ID and configured ref (the retained predecessor colour is a
-stopped container, see rollback-failed-readback.sh), and --keep-ref. Compose
+stopped container, see rollback-failed-readback.sh; both its services must be
+present or the run is BLOCKED), and --keep-ref. Compose
 labels are NOT a reference source: cd-deploy.yml deletes its staging directory
 after every deploy, so they point at paths that are gone by design. The
-historical manifest.json / release-record.json are not read; pass a ref you
-trust with --keep-ref instead. Every keep ref must resolve to a local image
+manifest.json / release-record.json beside cutover-state.json are not part of the
+controller contract, but any image ref in them must resolve to a local image or be
+accepted by exact value with --accept-unresolved-ref (recorded in the receipt);
+otherwise BLOCKED. Every keep ref must resolve to a local image
 (by config ID, tag, or RepoDigest, which is how a registry manifest digest maps
 to a local config ID) or the run is BLOCKED. The deploy lock in
 --cutover-state-dir is held across discovery and removal; if it is busy, BLOCKED.
@@ -34,6 +37,7 @@ import subprocess
 import sys
 
 TAG_RE = re.compile(r"^ghcr\.io/cheese-work/multica-(backend|web):sha-[0-9a-f]{40}$")
+IMAGE_REF_RE = re.compile(r"ghcr\.io/cheese-work/multica-(?:backend|web)(?::[A-Za-z0-9._-]+)?(?:@sha256:[0-9a-f]{64})?")
 MIN_AGE = 7 * 86400
 OWNER = "deploy-controller owner (cutover.sh state) or the C00 operator for a stuck cd-deploy staging directory"
 
@@ -68,20 +72,50 @@ def matches(ref, img):
     return ref == img["Id"] or ref in (img.get("RepoTags") or []) or ref in (img.get("RepoDigests") or [])
 
 
-def current_tuple_refs(state_dir):
+def read_cutover_state(state_dir):
     path = Path(state_dir) / "cutover-state.json"
     try:
-        tup = json.loads(path.read_text())["image_tuple"]
-        refs = [tup["backend"], tup["web"]]
+        st = json.loads(path.read_text())
+        refs = [st["image_tuple"]["backend"], st["image_tuple"]["web"]]
+        colour = st["active_colour"]
     except (OSError, ValueError, KeyError, TypeError) as e:
-        raise Blocked(f"cannot read the active image_tuple from {path}: {e}")
-    if not all(isinstance(r, str) and r for r in refs):
-        raise Blocked(f"image_tuple in {path} is not two non-empty refs")
-    return refs
+        raise Blocked(f"cannot read the active image_tuple and colour from {path}: {e}")
+    if not all(isinstance(r, str) and r for r in refs) or colour not in ("blue", "green"):
+        raise Blocked(f"{path} has no two non-empty image refs and a blue/green active_colour")
+    return refs, colour
+
+
+def record_refs(state_dir):
+    """{ref: file} from retained release records beside cutover-state.json.
+
+    cutover.sh and rollback-failed-readback.sh never read these files (the retained
+    predecessor is whatever Docker runs), so they are not authoritative. They are still
+    unexamined evidence of a deployment reference: each ref must resolve locally or be
+    accepted by exact value, else BLOCKED.
+    """
+    found = {}
+    for name in ("manifest.json", "release-record.json"):
+        path = Path(state_dir) / name
+        if not path.exists():
+            continue
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError) as e:
+            raise Blocked(f"retained record {path} is unreadable ({e}); its deployment references are unknown")
+        stack = [doc]
+        while stack:
+            v = stack.pop()
+            if isinstance(v, dict):
+                stack.extend(v.values())
+            elif isinstance(v, list):
+                stack.extend(v)
+            elif isinstance(v, str) and IMAGE_REF_RE.fullmatch(v):
+                found.setdefault(v, name)
+    return found
 
 
 def freeze(args, now):
-    """Return (candidates, skipped); raise Blocked when identity or deploy state is unknown."""
+    """Return (candidates, skipped, accepted_unresolved_refs); raise Blocked when identity or deploy state is unknown."""
     root = Path(args.deploy_root)
     if not root.is_dir():
         raise Blocked(f"deploy root {root} is not readable; cannot prove no deploy is active")
@@ -92,13 +126,21 @@ def freeze(args, now):
     images = inspect_images(docker("image", "ls", "-aq", "--no-trunc").split())
     by_id = {i["Id"]: i for i in images}
 
-    refs = current_tuple_refs(args.cutover_state_dir)
-    keep = set()
+    refs, colour = read_cutover_state(args.cutover_state_dir)
+    keep, accepted = set(), []
     for ref in refs:
         hit = [i["Id"] for i in images if matches(ref, i)]
         if not hit:
             raise Blocked(f"active tuple ref {ref} resolves to no local image; the current deployment identity is unknown")
         keep.update(hit)
+    for ref, name in record_refs(args.cutover_state_dir).items():
+        hit = [i["Id"] for i in images if matches(ref, i)]
+        if hit:
+            keep.update(hit)
+        elif ref in args.accept_unresolved_ref:
+            accepted.append(ref)
+        else:
+            raise Blocked(f"{name} references {ref}, which resolves to no local image; pass --accept-unresolved-ref {ref} once its owner confirms it is not a local image")
     for ref in args.keep_ref:
         hit = [i["Id"] for i in images if matches(ref, i)]
         if not hit:
@@ -106,7 +148,13 @@ def freeze(args, now):
         keep.update(hit)
 
     cids = docker("ps", "-aq", "--no-trunc").split()
-    for c in (json.loads(docker("inspect", *cids)) if cids else []):
+    containers = json.loads(docker("inspect", *cids)) if cids else []
+    predecessor = "blue" if colour == "green" else "green"
+    services = {(c["Config"].get("Labels") or {}).get("com.docker.compose.service") for c in containers}
+    missing = [f"{s}-{predecessor}" for s in ("backend", "frontend") if f"{s}-{predecessor}" not in services]
+    if missing:  # same contract as rollback-failed-readback.sh: no identifiable predecessor, no rollback target
+        raise Blocked(f"retained predecessor colour {predecessor} is not identifiable (no container for {', '.join(missing)}); rollback images cannot be proven")
+    for c in containers:
         cref = c["Config"]["Image"]
         keep.add(c["Image"])
         keep.update(i["Id"] for i in images if matches(cref, i))
@@ -123,7 +171,7 @@ def freeze(args, now):
             why = "younger than 7 full days"
         (skipped.append({"id": i["Id"], "tags": tags, "reason": why}) if why
          else candidates.append({"id": i["Id"], "tags": tags, "size": i.get("Size"), "created": i["Created"]}))
-    return candidates, skipped
+    return candidates, skipped, accepted
 
 
 def remove_one(c):
@@ -154,6 +202,7 @@ def main(argv=None):
     ap.add_argument("--target-bytes", type=int, default=65_000_000_000)
     ap.add_argument("--df-path", default="/")
     ap.add_argument("--keep-ref", action="append", default=[])
+    ap.add_argument("--accept-unresolved-ref", action="append", default=[], help="exact retained-record ref the owner confirmed is not a local image")
     ap.add_argument("--apply", action="store_true", help="remove; default is a dry run")
     ap.add_argument("--now", type=float, default=None)
     args = ap.parse_args(argv)
@@ -177,7 +226,7 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as e:
             raise Blocked(f"deploy lock {lock.name} is held or unavailable ({e}); a deploy or rollback may be running")
-        receipt["candidates"], receipt["skipped"] = freeze(args, now)
+        receipt["candidates"], receipt["skipped"], receipt["accepted_unresolved_refs"] = freeze(args, now)
         (run / "manifest.json").write_text(json.dumps(receipt["candidates"], indent=1))
         if args.apply:
             for c in receipt["candidates"]:
