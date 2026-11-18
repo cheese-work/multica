@@ -7,40 +7,63 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const askGuardEditFix = "post a new comment with multica decision request ... to ask the person, or with --notify-only if it needs no answer; an edit cannot add a member mention"
 
+const askGuardEditAskFix = "post a new comment with multica decision request ... with observed, files and dry_run to ask the person, or with --notify-only if it needs no answer"
+
 const askGuardCommentFix = "multica decision request ... to ask the person, or add --notify-only to multica issue comment add if the comment needs no answer"
 
 // askGuardAllowsComment is S2: a plain comment from an agent task that
-// mentions a member must be a typed kind. The typed kinds (ask comment,
+// mentions a member must be a typed kind. A comment with no member link that
+// still asks a person to act on a UI path, repo file, command or placeholder
+// (decisiontx.CheckCommentAsk, CHE-5753) is refused too: it has no field for
+// the evidence. The typed kinds (ask comment,
 // decision intent, record, veto, --notify-only) never reach it. It writes the
 // response when the comment may not be posted.
 func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, parent *db.Comment, content string) bool {
 	if authorType != "agent" {
 		return true
 	}
-	if len(askguard.MentionedMembers(content)) > 0 && !h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix) {
-		return false
+	if len(askguard.MentionedMembers(content)) > 0 {
+		if !h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix) {
+			return false
+		}
+	} else if err := decisiontx.CheckCommentAsk(content); err != nil {
+		if !h.askGuardMemberMention(w, r, issue, task, "comment_ask", content, "multica decision request --kind action ... with observed, files and dry_run, or add --notify-only to multica issue comment add if the comment needs no answer (comment refused: "+err.Error()+")") {
+			return false
+		}
 	}
 	return h.askGuardReversibleComment(w, r, issue, task, parent, content)
 }
 
 // askGuardAllowsCommentEdit is S2 for an edit. A plain edit has no typed kind,
-// so an agent edit that adds a member link is refused like a plain comment.
-// Links the comment already had never block an unrelated edit.
+// so an agent edit that adds a member link, or turns the text into an unproven
+// ask (decisiontx.CheckCommentAsk, CHE-5753), is refused like a plain comment.
+// Links and asks the comment already had never block an unrelated edit; a new
+// or changed unverified command, file or UI step does.
 func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Request, issue db.Issue, actorType, oldContent, newContent string) bool {
-	if actorType != "agent" || !addsMemberMention(oldContent, newContent) {
+	if actorType != "agent" {
 		return true
 	}
 	var actorTask *db.AgentTaskQueue
 	if task, ok := h.taskFromRequestHeader(r); ok {
 		actorTask = &task
 	}
-	return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditFix)
+	if addsMemberMention(oldContent, newContent) {
+		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditFix)
+	}
+	// An ask the comment already held stays editable, but an edit may not bring
+	// in a command, file or UI step it did not cite before (CHE-6354).
+	err := decisiontx.CheckCommentAsk(newContent)
+	if err != nil && (decisiontx.CheckCommentAsk(oldContent) == nil || decisiontx.AddsAskItem(oldContent, newContent)) {
+		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditAskFix+" (edit refused: "+err.Error()+")")
+	}
+	return true
 }
 
 func addsMemberMention(oldContent, newContent string) bool {
