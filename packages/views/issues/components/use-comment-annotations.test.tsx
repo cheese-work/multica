@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -7,6 +7,9 @@ import { useCommentAnnotations } from "./use-comment-annotations";
 import { Profiler, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
+
+// The composer is lazy-loaded; warm its module so the first render does not wait on a cold transform.
+beforeAll(() => import("./annotation-composer"), 30_000);
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 

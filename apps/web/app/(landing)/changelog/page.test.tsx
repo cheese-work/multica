@@ -9,9 +9,12 @@ vi.mock("node:fs", async (importOriginal) => {
   const readFileSync = vi.fn();
   return { ...actual, readFileSync, default: { ...actual, readFileSync } };
 });
-vi.mock("@/features/landing/components/landing-header", () => ({ LandingHeader: () => null }));
-vi.mock("@/features/landing/components/landing-footer", () => ({ LandingFooter: () => null }));
-vi.mock("@/features/landing/i18n", () => ({ useLocale: () => ({ locale: localeState.locale, t: createLandingDict(localeState.locale) }) }));
+vi.mock("@/features/landing/site/site-header", () => ({ SiteHeader: () => null }));
+vi.mock("@/features/landing/site/site-footer", () => ({ SiteFooter: () => null }));
+vi.mock("@/features/landing/i18n", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/landing/i18n")>()),
+  useLocale: () => ({ locale: localeState.locale, t: createLandingDict(localeState.locale) }),
+}));
 
 afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); localeState.locale = "en"; });
 

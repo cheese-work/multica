@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { MessageSquarePlus, Trash2 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
@@ -11,8 +11,12 @@ import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotatio
 import { useT } from "../../i18n";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
 import { CommentSelectionBubble } from "./comment-selection-bubble";
-import { AnnotationComposer, type AnnotationSendControls } from "./annotation-composer";
+import type { AnnotationSendControls } from "./annotation-composer";
 import type { ContentEditorRef } from "../../editor/content-editor";
+
+// Lazy so the editor engine stays out of the chat page and layout bundles (dashboard-layout-graph.test.ts).
+const AnnotationComposer = lazy(() =>
+  import("./annotation-composer").then((m) => ({ default: m.AnnotationComposer })));
 
 /** Text overrides for a surface that is not an issue thread (the DM). */
 export interface AnnotationLabels {
@@ -498,7 +502,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   // Composer slot: the editor a host (reply input, description comment input) draws
   // next to its own send controls.
   const renderComposer = (controls?: AnnotationSendControls) => editing ? renderBubble(
-    <AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey}
+    <Suspense fallback={null}><AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey}
       annotation={withDraft(editing)} existing={editingExisting}
       number={editingNumber}
       editorRef={inputRef} controls={controls}
@@ -518,7 +522,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
         useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
         useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
         close(true);
-      } : undefined} />) : null;
+      } : undefined} /></Suspense>) : null;
 
   return {
     cardRef: setCardRef,

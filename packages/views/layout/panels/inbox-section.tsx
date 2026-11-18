@@ -39,7 +39,7 @@ import type { InboxItem } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { AppLink, useNavigation } from "../../navigation";
 import { useViewStateWriter } from "../../platform";
-import { issueHighlightMementoKey } from "../../issues/components/issue-detail";
+import { issueHighlightMementoKey } from "../../issues/components/issue-highlight-key";
 import { useT } from "../../i18n";
 import { INBOX_TYPE_ICONS } from "../../inbox/components/inbox-filter-options";
 import { getInboxDisplayTitle, inboxRowHref, isAutopilotQuotaNotice } from "../../inbox/components/inbox-display";
@@ -59,7 +59,7 @@ import {
   useLeaveInboxRow,
 } from "../../inbox/components/use-leave-inbox-row";
 import { useKeptInboxRowText } from "../../inbox/components/inbox-kept-actions";
-import { StatusIcon } from "../../issues/components";
+import { StatusIcon } from "../../issues/components/status-icon";
 import { useStatusLabel } from "../../issues/utils/status-label";
 import {
   PANEL_ROW_CLASS,

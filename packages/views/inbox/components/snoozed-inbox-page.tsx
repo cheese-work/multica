@@ -19,7 +19,7 @@ import {
   type CollectionColumn,
   type CollectionGroup,
 } from "../../layout/collection-list";
-import { StatusIcon } from "../../issues/components";
+import { StatusIcon } from "../../issues/components/status-icon";
 import { useBuiltinViewLabel } from "../../issue-views/builtin-views";
 import { useLocale, useT } from "../../i18n";
 import { InboxSnoozeMenu } from "./inbox-snooze-menu";
