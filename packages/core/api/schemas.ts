@@ -111,6 +111,7 @@ import type {
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
+import { BudgetReceiptSchema } from "./passkey-schema";
 
 export const PluginConfigFieldSchema = z.lazy(() => z.object({
   key: z.string(),
@@ -1122,6 +1123,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
   owner_only: z.boolean().optional().catch(undefined),
   effect: z.string().optional().catch(undefined),
   effect_reason: z.string().optional().catch(undefined),
+  receipt: BudgetReceiptSchema,
   decided_at: z.string().optional().catch(undefined),
   decided_by_name: z.string().optional().catch(undefined),
   on_behalf_of_name: z.string().optional().catch(undefined),

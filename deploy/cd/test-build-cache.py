@@ -157,7 +157,8 @@ class BuildCacheTests(unittest.TestCase):
     def test_turbo_caches_restore_branch_and_lockfile_generations(self):
         workflows = [yaml.safe_load((ROOT / f'.github/workflows/{name}').read_text()) for name in ['ci.yml', 'main-build.yml']]
         caches = [step['with'] for workflow in workflows for job in workflow['jobs'].values() for step in job.get('steps', [])
-                  if str(step.get('with', {}).get('key', '')).startswith('turbo-')]
+                  if str(step.get('with', {}).get('key', '')).startswith('turbo-')
+                  and not step.get('uses', '').startswith('actions/cache/save@')]
         self.assertGreater(len(caches), 0)
         for cache in caches:
             with self.subTest(key=cache['key']):
@@ -166,6 +167,30 @@ class BuildCacheTests(unittest.TestCase):
                 self.assertIn('github.run_id', cache['key'])
                 self.assertNotIn('github.sha', cache['key'])
                 self.assertIn("hashFiles('pnpm-lock.yaml')", cache['restore-keys'])
+
+    def test_ci_turbo_caches_are_saved_only_from_main(self):
+        # CHE-7210: PR and merge_group runs only restore. Entries saved on those refs are
+        # readable only by that ref and filled the 10 GB repo cache, evicting main's entries.
+        jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+        found = 0
+        for name, job in jobs.items():
+            steps = job.get('steps', [])
+            for step in steps:
+                key = str(step.get('with', {}).get('key', ''))
+                if not key.startswith('turbo-') or step.get('uses') == 'actions/cache/save@v6':
+                    continue
+                found += 1
+                with self.subTest(job=name, key=key):
+                    self.assertEqual(step['uses'], 'actions/cache/restore@v6')
+                    self.assertIn("hashFiles('pnpm-lock.yaml')", step['with']['restore-keys'])
+                    self.assertIn('refs/heads/main-', step['with']['restore-keys'])
+                    saves = [s for s in steps if s.get('uses') == 'actions/cache/save@v6'
+                             and s['with']['key'] == key]
+                    self.assertEqual(len(saves), 1)
+                    self.assertEqual(saves[0]['with']['path'], step['with']['path'])
+                    self.assertEqual(saves[0]['if'], "${{ success() && github.ref == 'refs/heads/main' }}")
+                    self.assertGreater(steps.index(saves[0]), steps.index(step) + 1)
+        self.assertEqual(found, 3)
 
     def test_compiler_caches_precede_version_invalidation(self):
         backend = (ROOT / 'Dockerfile').read_text()
