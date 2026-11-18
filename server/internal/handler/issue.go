@@ -1553,24 +1553,21 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	return query, args
 }
 
-// titleTierScanWindow bounds the instant tier to the newest issues of a workspace,
-// so one keystroke reads at most this many rows however large the workspace is or
-// however few titles match. A match older than the window comes with the full search.
+// titleTierScanWindow is how many of the newest issues of a workspace the instant
+// tier probes first. A window that already holds limit matches is the exact answer;
+// otherwise buildTitleTailQuery answers from the trigram index.
 var titleTierScanWindow = 2000
 
 // buildTitleSearchQuery is the instant tier of Cmd+K (CHE-7337): issues whose
 // title holds every term, newest update first, read through the same row shape as
 // buildSearchQuery so scanSearchIssue serves both. It reads no description or
 // comment and ranks nothing. It walks idx_issue_workspace_updated_at newest first
-// through at most titleTierScanWindow rows, so the work is bounded even when fewer
-// than limit titles match. Args: $1 workspace_id (filled by the caller), $2 term
+// through at most titleTierScanWindow rows, so the work is bounded by the window.
+// It is exact only when it returns limit rows. Args: $1 workspace_id (filled by the caller), $2 term
 // patterns, then the terminal statuses when closed issues are excluded, limit and
 // offset.
 func buildTitleSearchQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
-	patterns := make([]string, len(terms))
-	for i, term := range terms {
-		patterns[i] = "%" + escapeLike(foldDiacritics(term)) + "%"
-	}
+	patterns, _ := titleTrigramPatterns(terms)
 	args := []any{nil, patterns}
 	recentCols, where := "id, updated_at", ""
 	if !includeClosed {
@@ -1604,6 +1601,62 @@ func buildTitleSearchQuery(terms []string, includeClosed bool, terminalStatusKey
 	) hit
 	JOIN issue i ON i.id = hit.id
 	ORDER BY i.updated_at DESC, i.id DESC`, recentCols, titleTierScanWindow, where, len(args)-1, len(args)), args
+}
+
+// titleTrigramPatterns returns the LIKE pattern of every term, and whether one of
+// them has the 3 characters a trigram index needs.
+func titleTrigramPatterns(terms []string) ([]string, bool) {
+	patterns := make([]string, len(terms))
+	indexable := false
+	for i, term := range terms {
+		folded := foldDiacritics(term)
+		patterns[i] = "%" + escapeLike(folded) + "%"
+		if utf8.RuneCountInString(folded) >= 3 {
+			indexable = true
+		}
+	}
+	return patterns, indexable
+}
+
+// buildTitleTailQuery answers the instant tier for the whole workspace when the
+// newest-window query came back short (CHE-7337): the same rows and order, found
+// through idx_issue_search_text_title_trgm. Its work follows the number of titles
+// that match, which stays small because the window already held fewer than limit
+// of them. The caller runs it only when a term is long enough for the index
+// (titleTrigramPatterns). Args: $1 workspace_id (filled by the caller), one pattern
+// per term, then the terminal statuses when closed issues are excluded, limit and
+// offset.
+func buildTitleTailQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	patterns, _ := titleTrigramPatterns(terms)
+	args := []any{nil}
+	likes := ""
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+		likes += fmt.Sprintf(" AND title_folded LIKE $%d", len(args))
+	}
+	status := ""
+	if !includeClosed {
+		args = append(args, terminalStatusKeys)
+		status = fmt.Sprintf(" AND NOT (status = ANY($%d::text[]))", len(args))
+	}
+	args = append(args, 0, 0)
+	// A LATERAL primary-key probe per hit keeps the join from scanning every issue
+	// of the workspace.
+	return fmt.Sprintf(`WITH hit AS MATERIALIZED (
+		SELECT issue_id FROM issue_search_text WHERE workspace_id = $1%s
+	)
+	SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
+		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
+		'title' AS match_source, '' AS matched_comment_content
+	FROM hit
+	JOIN LATERAL (
+		SELECT * FROM issue WHERE id = hit.issue_id AND workspace_id = $1%s LIMIT 1
+	) i ON true
+	ORDER BY i.updated_at DESC, i.id DESC
+	LIMIT $%d OFFSET $%d`, likes, status, len(args)-1, len(args)), args
 }
 
 func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
@@ -1709,6 +1762,18 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 
 	if !runSearch(nil, sqlQuery, args) {
 		return
+	}
+	// A short window is not the answer: look for the newest matches of the whole
+	// workspace, when the terms can use the trigram index.
+	if _, indexable := titleTrigramPatterns(terms); titleOnly && indexable && len(results) < limit {
+		tailQuery, tailArgs := buildTitleTailQuery(terms, includeClosed, terminalStatusKeys)
+		tailArgs[0] = wsUUID
+		tailArgs[len(tailArgs)-2] = limit
+		tailArgs[len(tailArgs)-1] = offset
+		results = nil
+		if !runSearch(nil, tailQuery, tailArgs) {
+			return
+		}
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
 	if !titleOnly && shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {

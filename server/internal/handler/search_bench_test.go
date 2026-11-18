@@ -493,9 +493,9 @@ func TestSearchTitleTierTypingSequence(t *testing.T) {
 	budget := float64(benchEnvInt("BENCH_P95_MS", 50))
 	wsID := seedSearchBenchShaped(t, ctx, benchWorkspaceSlug, issues, benchEnvInt("BENCH_COMMENTS", issues*4))
 	wsUUID := util.MustParseUUID(wsID)
-	run := func(q string) (int, error) {
-		sql, args := buildTitleSearchQuery(splitSearchTerms(q), true, nil)
-		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+	// run mirrors SearchIssues: the newest-window query, then the trigram query
+	// when the window came back short.
+	exec := func(sql string, args []any) (int, error) {
 		n := 0
 		err := runSearchQuery(ctx, testPool, sql, args, func(rows pgx.Rows) error {
 			for rows.Next() {
@@ -507,6 +507,18 @@ func TestSearchTitleTierTypingSequence(t *testing.T) {
 			return rows.Err()
 		})
 		return n, err
+	}
+	run := func(q string) (int, error) {
+		terms := splitSearchTerms(q)
+		sql, args := buildTitleSearchQuery(terms, true, nil)
+		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+		n, err := exec(sql, args)
+		if _, indexable := titleTrigramPatterns(terms); err != nil || n >= 8 || !indexable {
+			return n, err
+		}
+		sql, args = buildTitleTailQuery(terms, true, nil)
+		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+		return exec(sql, args)
 	}
 	for _, q := range typingSequence {
 		n, err := run(q) // warm-up

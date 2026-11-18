@@ -61,24 +61,25 @@ func TestSearchIssues_TitleOnlyRequiresEveryTermAndFoldsDiacritics(t *testing.T)
 	assertOrder(t, "short term", searchTitleTier(t, token+" ng", 8), []string{both})
 }
 
-// The tier must not grow with the workspace: it reads only the newest
-// titleTierScanWindow issues, so a match older than that is left to the full search.
-func TestSearchIssues_TitleOnlyScansOnlyTheNewestWindow(t *testing.T) {
+// The tier reads the newest titleTierScanWindow issues first. When that window holds
+// fewer than limit matches it must still return the newest matches of the whole
+// workspace, so an old sole match is never hidden.
+func TestSearchIssues_TitleOnlyFindsMatchesOlderThanTheWindow(t *testing.T) {
 	prev := titleTierScanWindow
 	titleTierScanWindow = 3
 	t.Cleanup(func() { titleTierScanWindow = prev })
 
 	token := fmt.Sprintf("tierwin%d", time.Now().UnixNano())
-	old := seedTitleTierIssue(t, token+" old", "", 3*time.Hour)
+	solo := seedTitleTierIssue(t, "solo only "+token+"solo", "", 3*time.Hour)
 	for i := 1; i <= 3; i++ {
 		seedTitleTierIssue(t, fmt.Sprintf("filler %d %s", i, token[:8]), "", time.Duration(i)*time.Second)
 	}
-	fresh := seedTitleTierIssue(t, token+" fresh", "", 0)
+	assertOrder(t, "sole match outside the window", searchTitleTier(t, token+"solo", 8), []string{solo})
 
-	assertOrder(t, "inside the window", searchTitleTier(t, token, 8), []string{fresh})
-
-	titleTierScanWindow = prev
-	assertOrder(t, "whole workspace", searchTitleTier(t, token, 8), []string{fresh, old})
+	inWindow := seedTitleTierIssue(t, token+" fresh", "", 0)
+	old := seedTitleTierIssue(t, token+" old", "", 4*time.Hour)
+	assertOrder(t, "window plus older matches", searchTitleTier(t, token, 8), []string{inWindow, solo, old})
+	assertOrder(t, "limit 2 stays exact", searchTitleTier(t, token, 2), []string{inWindow, solo})
 }
 
 func TestSearchIssues_TitleOnlyHonoursIncludeClosed(t *testing.T) {
