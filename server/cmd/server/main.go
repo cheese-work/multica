@@ -946,6 +946,14 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
 		slog.Error("scheduler: register member-owned issue sweep", "error", err)
 	}
+	// CHE-5708: scheduled daemon update cycles fire per machine and drain on a
+	// 30 s driver. The ready_to_update hook (UpdateCycleReady) lands with child 9.
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateFireJob(pool, queries, h)); err != nil {
+		slog.Error("scheduler: register daemon update fire", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateCyclesJob(h)); err != nil {
+		slog.Error("scheduler: register daemon update cycles", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
 	}

@@ -253,8 +253,8 @@ func updateScheduleAuditFields(s *db.DaemonUpdateSchedule) map[string]any {
 	return map[string]any{"scheduled": true, "enabled": s.Enabled, "cron": s.Cron, "timezone": s.Timezone, "window_minutes": s.WindowMinutes}
 }
 
-// attachUpdateSchedules fills UpdateSchedule on a runtime list. LastUpdateOutcome
-// stays null until the update cycle (later children) records one.
+// attachUpdateSchedules fills UpdateSchedule, and LastUpdateOutcome with its time
+// (the machine's latest finished update cycle), on a runtime list.
 func (h *Handler) attachUpdateSchedules(r *http.Request, runtimes []db.AgentRuntime, resp []AgentRuntimeResponse) error {
 	ownerIDs, daemonIDs := machinesOf(runtimes)
 	if len(daemonIDs) == 0 {
@@ -268,6 +268,14 @@ func (h *Handler) attachUpdateSchedules(r *http.Request, runtimes []db.AgentRunt
 	for _, row := range rows {
 		byMachine[machineKeyOf(row.MachineOwnerID, row.DaemonID)] = row
 	}
+	last, err := h.Queries.ListLastDaemonUpdateOutcomes(r.Context(), db.ListLastDaemonUpdateOutcomesParams{MachineOwnerIds: ownerIDs, DaemonIds: daemonIDs})
+	if err != nil {
+		return err
+	}
+	lastByMachine := make(map[string]db.ListLastDaemonUpdateOutcomesRow, len(last))
+	for _, row := range last {
+		lastByMachine[machineKeyOf(row.MachineOwnerID, row.DaemonID)] = row
+	}
 	for i, rt := range runtimes {
 		key, ok := machineKey(rt)
 		if !ok {
@@ -276,6 +284,10 @@ func (h *Handler) attachUpdateSchedules(r *http.Request, runtimes []db.AgentRunt
 		if row, ok := byMachine[key]; ok {
 			s := updateScheduleToResponse(row)
 			resp[i].UpdateSchedule = &s
+		}
+		if row, ok := lastByMachine[key]; ok {
+			resp[i].LastUpdateOutcome = textToPtr(row.Outcome)
+			resp[i].LastUpdateOutcomeAt = timestampToPtr(row.FinishedAt)
 		}
 	}
 	return nil

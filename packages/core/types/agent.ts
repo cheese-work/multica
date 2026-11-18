@@ -56,7 +56,7 @@ export interface AgentInvocationTargetInput {
 export type RuntimeVisibility = "private" | "public";
 
 /** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
-export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
+export type RuntimePauseReason = "maintenance" | "incident" | "suspended" | "scheduled_update";
 
 /** Last update cycle result of a machine; `unknown` is an outcome a newer server added. */
 export type RuntimeUpdateOutcome =
@@ -151,6 +151,8 @@ export interface RuntimeDevice {
   update_schedule?: RuntimeUpdateSchedule | null;
   /** Result of the machine's last update cycle; null until one ran. */
   last_update_outcome?: RuntimeUpdateOutcome | null;
+  /** When that outcome was written (RFC 3339); null until a cycle ran. */
+  last_update_outcome_at?: string | null;
   /**
    * Runtime-wide cap on tasks running at once across every agent bound to
    * this runtime (GitHub #9626). `null` means no runtime cap; each agent's

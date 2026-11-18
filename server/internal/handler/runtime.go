@@ -69,6 +69,8 @@ type AgentRuntimeResponse struct {
 	DaemonRunningTasks *int                    `json:"daemon_running_tasks"`
 	UpdateSchedule     *UpdateScheduleResponse `json:"update_schedule"`
 	LastUpdateOutcome  *string                 `json:"last_update_outcome"`
+	// LastUpdateOutcomeAt is when that cycle finished (CHE-5708).
+	LastUpdateOutcomeAt *string `json:"last_update_outcome_at"`
 }
 
 func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {

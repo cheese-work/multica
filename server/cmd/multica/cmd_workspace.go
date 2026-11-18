@@ -220,6 +220,7 @@ func init() {
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
 	workspaceUpdateCmd.Flags().String("compact-prompt-file", "", "Set the /compact summary prompt from a file, byte-for-byte; pass null to reset to the built-in default. Changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("idle-guard-mode", "", "Set the idle-issue guard mode: off, shadow (log only) or act (move idle started issues). Owner only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("auto-close-mode", "", "Set the auto-close mode (settings.auto_close.mode): off, warn or block. A clean child issue entering agent_accepted closes through the step's done edge in block mode. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("time-wakeup-skip-mode", "", "Set the time-wakeup skip mode (settings.time_wakeup_skip.mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("ask-guard-mode", "", "Set the ask guard mode (settings.ask_guard_mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().Int("idle-guard-after-hours", 0, "Set the idle-issue guard threshold in whole hours, 1 to 72. Owner only; changes no other workspace setting")
@@ -654,7 +655,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
 			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (context)", name)
@@ -747,12 +748,13 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 	// mixed patch.
 	for _, single := range []struct{ flag, field, what string }{
 		{"time-wakeup-skip-mode", "time_wakeup_skip", "time-wakeup skip mode"},
+		{"auto-close-mode", "auto_close", "auto-close mode"},
 		{"ask-guard-mode", "ask_guard_mode", "ask guard mode"},
 	} {
 		if !cmd.Flags().Changed(single.flag) {
 			continue
 		}
-		for _, name := range []string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+		for _, name := range []string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 			if name != single.flag && cmd.Flags().Changed(name) {
 				return nil, fmt.Errorf("--%s cannot be combined with --%s; it changes only the %s", single.flag, name, single.what)
 			}
@@ -834,7 +836,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	}
 	routing := routingFlagsChanged(cmd)
 	if len(body) == 0 && !routing {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, --time-wakeup-skip-mode, --ask-guard-mode, or a --routing-* flag")
+		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, --time-wakeup-skip-mode, --auto-close-mode, --ask-guard-mode, or a --routing-* flag")
 	}
 
 	if routing {

@@ -701,6 +701,11 @@
         "name": "suspendue",
         "label": "Suspendue",
         "hint": "Hors service. Se termine après 30 min"
+      },
+      "scheduled_update": {
+        "name": "mise à jour planifiée",
+        "label": "Mise à jour planifiée",
+        "hint": "Fenêtre de mise à jour. Se lève d'elle-même à la fin"
       }
     },
     "paused": "En pause : {{reason}}",

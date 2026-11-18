@@ -701,6 +701,11 @@
         "name": "suspended",
         "label": "Suspended",
         "hint": "Out of service. Ends after 30 min"
+      },
+      "scheduled_update": {
+        "name": "scheduled update",
+        "label": "Scheduled update",
+        "hint": "Daily update window. Lifts itself when it ends"
       }
     },
     "paused": "Paused: {{reason}}",

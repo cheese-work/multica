@@ -347,7 +347,11 @@ var issueStatusCmd = &cobra.Command{
 		"than cancelled later removes the mark.\n\n" +
 		"A workflow step can set entry gates a status write must meet. A refused write\n" +
 		"names each failed gate, the fact and the fix. A person's own login may pass a\n" +
-		"block gate with --override-reason; agent runs cannot.",
+		"block gate with --override-reason; agent runs cannot.\n\n" +
+		"To record what a blocked issue waits for, move it with --blocked-on <ref>. It is\n" +
+		"accepted only with status blocked; the ref is stored in metadata blocked_on and\n" +
+		"cleared when the issue leaves blocked. Each form is the target of a wakeup\n" +
+		"condition flag:\n" + blockedOnFormsHelp,
 	Args: exactArgs(2),
 	RunE: runIssueStatus,
 }
@@ -781,6 +785,7 @@ func init() {
 	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run, including a workflow step handler's run.")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
+	issueStatusCmd.Flags().String("blocked-on", "", "With status blocked: what the issue waits for (see the forms in --help)")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
@@ -2681,6 +2686,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	blockedOn, err := parseBlockedOnFlag(cmd, status)
+	if err != nil {
+		return err
+	}
 
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -2696,6 +2705,12 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	body := map[string]any{"status": status}
+	if blockedOn != "" {
+		if blockedOn, err = resolveBlockedOnIssue(ctx, client, blockedOn); err != nil {
+			return err
+		}
+		body["blocked_on"] = blockedOn
+	}
 	if duplicateOf != "" {
 		original, err := resolveIssueRef(ctx, client, duplicateOf)
 		if err != nil {
@@ -2715,6 +2730,11 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
 		return fmt.Errorf("update status: %w", err)
+	}
+	if blockedOn != "" {
+		if meta, _ := result["metadata"].(map[string]any); meta["blocked_on"] != blockedOn {
+			return fmt.Errorf("the server did not record --blocked-on (it may predate this flag); the status is now blocked")
+		}
 	}
 
 	if duplicateOf != "" {

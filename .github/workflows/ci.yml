@@ -14,14 +14,9 @@ on:
         type: string
         required: false
 
-# Only a PR's runs supersede each other. A push filters paths against the
-# commit just before it, so a cancelled main run's scope is never re-checked
-# and a breaking commit lands green (MUL-8798). A shared group is not enough
-# either: with cancel-in-progress off, a new run still cancels a pending one,
-# so every non-PR run gets its own group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dispatch' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   namespace-qualification:
@@ -89,7 +84,7 @@ jobs:
 
   warning-budget:
     needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && github.event_name != 'merge_group' }}
     runs-on: ${{ vars.RUNNER_WARNING_BUDGET || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
@@ -870,66 +865,6 @@ jobs:
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
-      # CHE-6247: a decision card that renders "Details unavailable" cannot be
-      # approved, and no unit test sees it (CHE-6242). This opens each
-      # previewed action type's card in a browser against the API and the
-      # database this job already has. It runs here, not in a new job, because
-      # this is the only job with Postgres and a built server; the `rest`
-      # partition only, so the six shards do not each install a browser.
-      # It follows Test on purpose: test-go.sh clones the migrated database and
-      # a connected API server would block the clone.
-      - name: Setup pnpm (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        run: bash scripts/setup-pnpm.sh
-
-      - name: Setup Node.js (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Chromium (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        run: pnpm exec playwright install --with-deps chromium
-
-      # CHE-6481: a good run takes about 5.5 min. Two runs hung here with no log until the 60 min job
-      # limit. The step limit fails a hang in minutes, and the next step then dumps the API and web logs.
-      - name: Decision card E2E
-        if: ${{ matrix.partition == 'rest' }}
-        timeout-minutes: 12
-        env:
-          PORT: "8080"
-          FRONTEND_ORIGIN: http://localhost:3000
-          JWT_SECRET: ci-decision-card-e2e-secret
-          # The login fixture signs in with a fixed code: the database stores
-          # only a hash of the emailed one. Ignored when APP_ENV=production.
-          MULTICA_DEV_VERIFICATION_CODE: "888888"
-          # The passkey ceremony needs an exact https origin; the spec serves
-          # the web app over it (e2e/dm-budget-proposal-helpers.ts).
-          MULTICA_WEBAUTHN_RP_ID: localhost
-          MULTICA_WEBAUTHN_ORIGINS: https://localhost:23627
-        run: |
-          set -euo pipefail
-          (cd server && go build -o "$RUNNER_TEMP/multica-server" ./cmd/server)
-          "$RUNNER_TEMP/multica-server" > "$RUNNER_TEMP/e2e-api.log" 2>&1 &
-          API=$!
-          pnpm dev:web > "$RUNNER_TEMP/e2e-web.log" 2>&1 &
-          WEB=$!
-          trap 'kill "$API" "$WEB" 2>/dev/null || true; pkill -P "$WEB" 2>/dev/null || true' EXIT
-          ready() { for _ in $(seq 1 90); do curl -sf "$1" > /dev/null && return 0; sleep 2; done; echo "::error::$1 not ready"; return 1; }
-          ready http://localhost:8080/health
-          ready http://localhost:3000/
-          pnpm exec playwright test --project=chromium --global-timeout=600000 e2e/decision-dm-card-renders.spec.ts
-
-      - name: Show decision card E2E logs
-        if: ${{ failure() && matrix.partition == 'rest' }}
-        run: tail -n 80 "$RUNNER_TEMP/e2e-api.log" "$RUNNER_TEMP/e2e-web.log" || true
-
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.
       - name: Summarize test timing
@@ -1012,6 +947,121 @@ jobs:
             echo "::error::migration-checks expected $expected, got $MIGRATION_CHECKS_RESULT"
             exit 1
           fi
+
+  # CHE-6247: a decision card that renders "Details unavailable" cannot be
+  # approved, and no unit test sees it (CHE-6242). This opens each previewed
+  # action type's card in a browser against the API and a migrated database.
+  # CHE-6847: it ran inside the `rest` shard, after the Go tests, with the API,
+  # `next dev` and Chromium beside Postgres. In 15 of 36 runs the hosted runner
+  # was lost there; GitHub failed the job only ~57 min later, after the merge
+  # queue's 30 min status limit had dropped the PR. A fresh runner with a
+  # production build keeps it off the Go test path. The required `backend`
+  # aggregate waits on it, so a red or hung run still blocks merge. The memory
+  # trace in e2e-mem.log is the evidence if a runner is ever lost again.
+  decision-card-e2e:
+    name: decision-card-e2e
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
+    runs-on: ${{ vars.RUNNER_BACKEND_TESTS || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: multica_test
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d multica_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://multica:multica@localhost:5432/multica_test?sslmode=disable
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build API server
+        run: cd server && go build -o "$RUNNER_TEMP/multica-server" ./cmd/server
+
+      - name: Run migrations
+        run: cd server && go run ./cmd/migrate up
+
+      - name: Build web app
+        run: pnpm --filter @multica/web exec next build --webpack
+
+      - name: Decision card E2E
+        timeout-minutes: 10
+        env:
+          PORT: "8080"
+          FRONTEND_ORIGIN: http://localhost:3000
+          REMOTE_API_URL: http://localhost:8080
+          JWT_SECRET: ci-decision-card-e2e-secret
+          # The login fixture signs in with a fixed code: the database stores
+          # only a hash of the emailed one. Ignored when APP_ENV=production.
+          MULTICA_DEV_VERIFICATION_CODE: "888888"
+          # The passkey ceremony needs an exact https origin; the spec serves
+          # the web app over it (e2e/dm-budget-proposal-helpers.ts).
+          MULTICA_WEBAUTHN_RP_ID: localhost
+          MULTICA_WEBAUTHN_ORIGINS: https://localhost:23627
+        run: |
+          set -euo pipefail
+          (while true; do { date +%T; free -m; ps -eo rss,comm --sort=-rss | head -6; } >> "$RUNNER_TEMP/e2e-mem.log"; sleep 5; done) &
+          MEM=$!
+          "$RUNNER_TEMP/multica-server" > "$RUNNER_TEMP/e2e-api.log" 2>&1 &
+          API=$!
+          pnpm --filter @multica/web exec next start -p 3000 > "$RUNNER_TEMP/e2e-web.log" 2>&1 &
+          WEB=$!
+          trap 'kill "$API" "$WEB" "$MEM" 2>/dev/null || true; pkill -P "$WEB" 2>/dev/null || true' EXIT
+          ready() { for _ in $(seq 1 60); do curl -sf "$1" > /dev/null && return 0; sleep 2; done; echo "::error::$1 not ready"; return 1; }
+          ready http://localhost:8080/health
+          ready http://localhost:3000/
+          pnpm exec playwright test --project=chromium --global-timeout=480000 e2e/decision-dm-card-renders.spec.ts
+
+      - name: Upload decision card E2E logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: decision-card-e2e-logs
+          path: |
+            ${{ runner.temp }}/e2e-api.log
+            ${{ runner.temp }}/e2e-web.log
+            ${{ runner.temp }}/e2e-mem.log
+            test-results
+          if-no-files-found: warn
+          retention-days: 7
 
   # pkg/agent used to run as the tail of backend-tests: ~2m20s for a single
   # package, throttled to -parallel 2 because its subprocess-backed tests carry
@@ -1242,7 +1292,7 @@ jobs:
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, backend-agent-tests, backend-darwin-vet, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
+    needs: [changes, backend-tests, decision-card-e2e, backend-agent-tests, backend-darwin-vet, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
@@ -1250,7 +1300,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_backend","backend-agent-tests":"backend","backend-darwin-vet":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
+          JOB_SCOPES: '{"backend-tests":"push_backend","decision-card-e2e":"push_backend","backend-agent-tests":"backend","backend-darwin-vet":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so

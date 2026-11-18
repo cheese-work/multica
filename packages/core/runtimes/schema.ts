@@ -4,7 +4,7 @@ import type { AgentRuntime } from "../types";
 export const RuntimePauseSchema = z.object({
   // An unknown reason from a newer server still means "paused"; keep it paused
   // so Resume stays reachable, with the server default as the label.
-  reason: z.enum(["maintenance", "incident", "suspended"]).catch("maintenance"),
+  reason: z.enum(["maintenance", "incident", "suspended", "scheduled_update"]).catch("maintenance"),
   paused_by: z.string().nullable().catch(null),
   paused_at: z.string().catch(""),
   expires_at: z.string().catch(""),
@@ -60,6 +60,7 @@ export const AgentRuntimeSchema = z.object({
   daemon_running_tasks: z.number().int().nonnegative().nullable().catch(null),
   update_schedule: RuntimeUpdateScheduleSchema.nullable().catch(null),
   last_update_outcome: UpdateOutcomeSchema,
+  last_update_outcome_at: z.string().nullable().catch(null),
   max_concurrent_tasks: z.number().int().nullable().catch(null),
   last_seen_at: z.string().nullable().catch(null),
   created_at: z.string().catch(""),
@@ -90,6 +91,7 @@ export const EMPTY_RUNTIME: AgentRuntime = {
   daemon_running_tasks: null,
   update_schedule: null,
   last_update_outcome: null,
+  last_update_outcome_at: null,
   max_concurrent_tasks: null,
   last_seen_at: null,
   created_at: "",

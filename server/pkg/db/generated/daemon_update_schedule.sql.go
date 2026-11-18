@@ -97,6 +97,39 @@ func (q *Queries) ListDaemonUpdateSchedules(ctx context.Context, arg ListDaemonU
 	return items, nil
 }
 
+const listEnabledDaemonUpdateSchedules = `-- name: ListEnabledDaemonUpdateSchedules :many
+SELECT machine_owner_id, daemon_id, enabled, cron, timezone, window_minutes, updated_by, updated_at FROM daemon_update_schedule WHERE enabled
+`
+
+func (q *Queries) ListEnabledDaemonUpdateSchedules(ctx context.Context) ([]DaemonUpdateSchedule, error) {
+	rows, err := q.db.Query(ctx, listEnabledDaemonUpdateSchedules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DaemonUpdateSchedule{}
+	for rows.Next() {
+		var i DaemonUpdateSchedule
+		if err := rows.Scan(
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.Enabled,
+			&i.Cron,
+			&i.Timezone,
+			&i.WindowMinutes,
+			&i.UpdatedBy,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertDaemonUpdateSchedule = `-- name: UpsertDaemonUpdateSchedule :one
 INSERT INTO daemon_update_schedule (machine_owner_id, daemon_id, enabled, cron, timezone, window_minutes, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

@@ -9,14 +9,14 @@
    pull_request:
      branches: [main]
    merge_group:
-@@ -20,8 +22,8 @@
- # either: with cancel-in-progress off, a new run still cancels a pending one,
- # so every non-PR run gets its own group.
+@@ -15,8 +17,8 @@ on:
+         required: false
+ 
  concurrency:
--  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
--  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
-+  cancel-in-progress: ${{ github.event_name != 'push' }}
+-  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dispatch' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.ref) }}
+-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
++  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dispatch' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref) }}
++  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.event_name != 'push' }}
  
  jobs:
    namespace-qualification:

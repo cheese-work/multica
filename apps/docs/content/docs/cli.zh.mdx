@@ -185,6 +185,18 @@ multica issue delete MUL-123 MUL-124 --yes --output json
 ```bash
 multica issue delete MUL-123 MUL-124 --dry-run --output json
 ```
+要记录被阻塞的任务在等什么，在状态变更时加上 `--blocked-on <ref>`：`multica issue status MUL-124 blocked --blocked-on pr:merged`。该参数只能与 `blocked` 一起使用。ref 会保存到 `status_changed` 活动和任务元数据键 `blocked_on`，任务离开 `blocked` 时被清除。不带该参数移到 `blocked` 的行为与以前相同。每种 ref 形式对应一个唤醒条件参数：
+
+| ref | 对应参数 |
+| --- | --- |
+| `issue:<id>[@done\|ended\|in_review\|blocked]` | `--until-issue`、`--until-issue-state` |
+| `pr:<checks\|merged\|conflicts\|dequeued>` | `--until-pr` |
+| `children[@<stage>]` | `--until-children-done`、`--stage` |
+| `gh-run:<owner>/<repo>:<run-id>` | `--until-gh-run` |
+| `decision:<request-id>` | 用 `--decision` 绑定的唤醒 |
+
+ref 会按工作区校验：其他工作区的任务或决策请求会被拒绝，其他形式也会被拒绝。人不是 ref 形式。负责人和结束事件仍写在任务描述的 `Blockers:` 行，ref 以 `--blocked-on <ref>` 的形式写在那里。
+
 ### 路由任务
 
 `issue route` 在一次调用中修改任务状态并记录原因。路由步骤用它决定任务下一步去哪里。`--status`、`--reason`（1 到 500 个字符）和 `--confidence`（0 到 1）为必填：
@@ -406,6 +418,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。该设置存储为 `background_agents` 的 `routing` 任务。这些标志是 `multica workspace background-agents set routing` 的别名，旧的 `/routing-agent` API 路由也会作为别名保留一个版本。
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` 设置工作区的定时唤醒跳过模式（`settings.time_wakeup_skip.mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改，每次修改都会记入活动日志。`off` 关闭检查并运行所有被推迟的定时唤醒；`warn` 只记录 `block` 会怎么做，触发照常运行；`block` 会推迟未变化的已声明触发，并要求智能体在定时唤醒上传入 `--watch <inputs>` 或 `--watch always`。
+- `multica workspace update --auto-close-mode off|warn|block` 设置自动关闭模式（`settings.auto_close.mode`）。它只修改这一个键，不改其他设置，也不能与其他更新标志同时使用。只有所有者可以修改。关闭所需的检查见[工作区](/docs/workspaces)。评审后无事可做时，任务的作者记录 `multica issue metadata set <issue> --key post_close_work --value none --type string`。
 - `multica workspace update --ask-guard-mode off|warn|block` 设置提问守卫模式（`settings.ask_guard_mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改。命令会输出保存后的工作区，`multica workspace get` 也会在 `settings` 下显示该模式。`off` 关闭守卫；`warn` 只统计遗漏并放行；`block` 拒绝。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 - `--mode script --script <name> [--arg <value>]...` 在智能体的任务令牌下运行一个白名单脚本，不启动模型会话。`--script` 和 `--arg` 需要 `--mode script`，`--mode script` 需要 `--script`。`--description` 从不被执行。守护进程没有白名单时，所有脚本任务都会安全失败。`--output json` 以 `script_config` 显示脚本名和参数。`autopilot update --mode <其他>` 会清除脚本。 任务结束时，服务器会尽力删除任务令牌。如果删除失败，令牌在过期前仍然有效，没有更早的撤销机制。运行结果的 `script` 下记录脚本名、参数列表的 SHA-256、退出码和耗时；删除失败时还会设置 `token_revoke_failed`。
@@ -580,7 +593,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `batch update <id>...` | 对多条任务应用相同修改 | `--ids-stdin`, `--status`, `--priority`, `--assignee` / `--assignee-id` / `--unassign`, `--project`, `--start-date`, `--due-date`, `--parent`, `--stage`, `--add-label`, `--remove-label`, `--clear-labels`, `--property`, `--unset-property`, `--no-start`, `--dry-run` |
 | | `delete <id>...` | 永久删除一条或多条任务 | `--yes` 跳过确认；接受任务编号或完整 UUID; `--dry-run` |
 | | `assign <id>` | 指派或取消指派 | `--to`（名称模糊匹配成员、智能体或小队）、`--to-id`、`--unassign`、`--no-start` |
-| | `status <id> <status>` | 修改状态 | `--no-start`、`--duplicate-of` |
+| | `status <id> <status>` | 修改状态 | `--no-start`、`--duplicate-of`、`--blocked-on` |
 | | `reorder <id>` | 在列内移动 | |
 | | `search <query>` | 搜索任务 | `--limit`、`--include-closed`、`--project` |
 | | `children <id>` | 按阶段分组列出子任务 | |
@@ -670,6 +683,9 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `guard` | `check-pr <pr-url\|number\|branch>` | 对照策略和仓库的 `.github/agent-rules.yml` 检查一个拉取请求，不做任何修改。文件作为数据从 PR 受保护基础分支的当前末端读取，绝不从 PR 分支读取；文件缺失不增加规则，格式错误的文件或无法读取的基础分支会使检查失败。可用作 CI 检查 | 退出码：0 通过，1 违反规则，2 被拒绝。`-R owner/name` 指定仓库 |
 | `guard` | `plugin list\|get\|set` | 读取已存储的守卫策略（`list`、`get <name>`），或写出替换它的决策动作文件（`set --file <policy.json> --out <action.json>`，或 `--dry-run`）。策略包含工作区插件和评审规则，以及 org、仓库和路径层；更深的层按键覆盖更浅的层，带 `locked` 的层或工作区会把其键锁定，不受更深层影响。`set` 不会发送任何内容：由人通过 passkey 批准 `workspace.settings.patch`。守护进程把已批准的策略作为工作树之外的文件 `MULTICA_GUARD_POLICY` 连同 `MULTICA_GUARD_POLICY_SHA256` 交给每次运行 | 输出：JSON 行（`--output table` 为表格）；`set` 打印 `before_sha256` 和 `after_sha256` |
 
+`repository_allowlist` 按所有者指定允许的完整仓库名，不区分大小写。已列出的所有者默认拒绝，未列出的所有者不受限制。该边界先于插件及下层规则执行，拒绝未批准的 `gh pr create`、`gh pr comment`、`git push` 和已认证的 `repo checkout`。Git 检查实际推送 URL，包括 pushurl 和 URL 重写；目标不明确时拒绝。批准此字段前须升级 daemon。Cheese Work 的唯一正式来源为 `config/tevo-prod1-guard.json`。
+
+
 ### 决策提案
 
 任务令牌可以提出一个受管控的操作，由人用通行密钥批准。提案本身不会更改任何内容。
@@ -684,7 +700,7 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 运行预算的下一步：issue 上 80 % 的提醒会带上数字和一条可直接运行的命令，例如 `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。被预算拒绝的运行会返回错误码 `run_budget_exhausted`，并带有 `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card` 和 `next_command`。`multica issue budget get <issue> --output json` 同样返回 `open_card` 和 `next_command`。当 issue 的当前窗口已有提额或新窗口卡片处于打开状态时，`next_command` 会提示等待该卡片，再次执行 `multica issue budget raise` 会返回同一张卡片，而不是再开一张。使用任务令牌时，issue 任务的 `--for` 默认是工作区所有者，帮助中只列出 `raise`；`top-up` 仍供成员使用。工作区内任意 issue 上的任务都可以为另一个 issue（例如自身无法运行任务的超预算 issue）打开 `raise` 卡片。卡片仍需有人用通行密钥批准，批准前不会应用任何更改。服务器、成员或智能体每打开一张卡片，就会新增一条 `run_budget_ask` 活动记录，记录操作者类型、操作者和动作类型。
 
-已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。 对已回答的决定，它还显示 `answer.woken_at` 和 `answer.wake_outcome`（回答何时、以何种方式送达智能体，送达前为 null）以及 `receipt_state`（`recorded`、`delivered`、`picked_up` 或 `disclaimed`）。`receipt_state` 是回答的回执状态，不是卡片显示的状态：卡片只在 `picked_up` 时折叠，回答后 2 分钟内显示 `recorded` 或 `delivered`，之后显示“Not picked up”。
+已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。 对已回答的决定，它还显示 `answer.woken_at` 和 `answer.wake_outcome`（回答何时、以何种方式送达智能体，送达前为 null）以及 `receipt_state`（`recorded`、`delivered`、`picked_up` 或 `disclaimed`）。`receipt_state` 是回答的回执状态，不是卡片显示的状态：对于没有操作、撤回或拒绝的已回答决定，卡片只在 `picked_up` 时折叠；处于 `recorded` 或 `delivered` 时，回答后 2 分钟内显示该状态，之后显示“Not picked up”，并保持展开。
 
 `issue.project.set` 把 issue 移到另一个项目：`multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。卡片显示移动前后的项目、工作流、运行上限和已用运行次数，并说明这次移动是否扩大运行预算。扩大预算的移动是 `spend` 卡片，其他移动是 `reversible`。只有工作区所有者可以批准。若请求之后 issue 已离开原项目，或目标工作流的预算变大，卡片会被拒绝。
 

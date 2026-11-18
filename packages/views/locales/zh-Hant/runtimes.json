@@ -680,6 +680,11 @@
         "name": "停用",
         "label": "停用",
         "hint": "停止服務。30 分鐘後結束"
+      },
+      "scheduled_update": {
+        "name": "定時更新",
+        "label": "定時更新",
+        "hint": "更新視窗。結束後自動解除"
       }
     },
     "paused": "已暫停：{{reason}}",

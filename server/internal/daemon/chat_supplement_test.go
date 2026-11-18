@@ -16,7 +16,7 @@ func TestTaskSupplementCapabilitiesByTaskKind(t *testing.T) {
 		task Task
 		want []string
 	}{
-		{"issue task", Task{IssueID: "issue-1"}, []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1}},
+		{"issue task", Task{IssueID: "issue-1"}, []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1, protocol.DaemonCapabilityTaskSupplementPREventV2}},
 		{"chat task", Task{ChatSessionID: "session-1"}, []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementChatV1}},
 		{"neither", Task{}, nil},
 	} {

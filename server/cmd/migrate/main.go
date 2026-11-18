@@ -177,11 +177,20 @@ var concurrentIndexCleanups = map[string]string{
 	// v0.10.0 merge (CHE-7023): migrations that build an index concurrently on up
 	// but were never registered. Without a hook an interrupted build leaves an
 	// INVALID index that `IF NOT EXISTS` skips on retry.
+	"999l_issue_wakeup_receipt_pr_event_id_idx":                 "idx_issue_wakeup_receipt_pr_event_id",
+	"9999969_activity_log_status_moves_idx":                     "idx_activity_log_status_moves",
 	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
 	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
 	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",
 	"916_ask_recovery_notice_comment_index":                     "idx_ask_recovery_notice_comment",
 	"918_ask_repair_root_task_index":                            "idx_ask_repair_root_task",
+	"99970_system1_label_labeller_key_idx":                      "system1_label_labeller_key",
+	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
+	"99996_dm_progress_pending_lineage_created_idx":             "dm_progress_pending_lineage_created_idx",
+	"999h_weekly_run_guard_refusal_open_uidx":                   "weekly_run_guard_refusal_open_uidx",
+	"999i_weekly_run_guard_allowance_issue_idx":                 "weekly_run_guard_allowance_issue_idx",
+	"999j_weekly_run_guard_refusal_action_idx":                  "weekly_run_guard_refusal_action_idx",
+	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
 	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
 	"99970_system1_label_labeller_key_idx":                      "system1_label_labeller_key",
 	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
@@ -279,7 +288,6 @@ var concurrentIndexCleanups = map[string]string{
 	"999o41_chat_submission_receipt_key":                        "uq_chat_submission_receipt_key",
 	"999o42_chat_submission_receipt_workspace":                  "idx_chat_submission_receipt_workspace",
 	"99996_dm_progress_pending_lineage_created_idx":             "dm_progress_pending_lineage_created_idx",
-	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
 	"999o38_task_context_receipt_issue_idx":                     "idx_task_context_receipt_issue",
 	"999o37_task_context_receipt_workspace_idx":                 "idx_task_context_receipt_workspace",
 	"999o35_project_subscriber_user_idx":                        "idx_project_subscriber_workspace_user",

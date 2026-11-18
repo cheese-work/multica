@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/channelmedia"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -139,6 +140,9 @@ type IssueResponse struct {
 	// SourceContext is detail-only. List, board, search, and children responses
 	// deliberately omit the potentially large immutable snapshot.
 	SourceContext *sourceContextDetailResponse `json:"source_context,omitempty"`
+	// IntakeHold is detail-only (CHE-6911): the list endpoints do not compute
+	// it. Absent for an issue with a parent and in a project with no entry.
+	IntakeHold *intakehold.ReadField `json:"intake_hold,omitempty"`
 	// duplicateOfIssueID is the raw mark, kept off the wire; see DuplicateOf.
 	duplicateOfIssueID pgtype.UUID
 }
@@ -401,11 +405,20 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err != nil {
 		return issue, nil, err
 	}
+	if params.Status.Valid {
+		blockedOn := ""
+		if rec != nil {
+			blockedOn = rec.blockedOn
+		}
+		if issue, err = recordBlockedOn(ctx, q, issue, blockedOn); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record blocked_on: %w", err)
+		}
+	}
 	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
 		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit)
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit, rec.blockedOn)
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
@@ -3073,6 +3086,11 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		detailLabels = []LabelResponse{}
 	}
 	resp.Labels = &detailLabels
+	if loaded, err := intakehold.Load(r.Context(), h.DB, uuidToString(issue.ID)); err != nil {
+		slog.Warn("load intake hold failed", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
+	} else {
+		resp.IntakeHold = loaded.Field()
+	}
 
 	// Fetch issue reactions.
 	reactions, err := h.Queries.ListIssueReactions(r.Context(), issue.ID)
@@ -4581,6 +4599,10 @@ type UpdateIssueRequest struct {
 	// no explicit null. Write-only: read the relation back from
 	// GET /api/issues/{id}/duplicates. Not accepted by batch updates.
 	DuplicateOfIssueID *string `json:"duplicate_of_issue_id,omitempty"`
+	// BlockedOn names what a move to blocked waits for (CHE-6972); see
+	// issue_blocked_on.go. Refused on any other status. Not accepted by batch
+	// updates.
+	BlockedOn *string `json:"blocked_on,omitempty"`
 }
 
 func mergeIssueChannelMediaDescription(current, incoming string, base *string, attachments []db.Attachment) string {
@@ -4911,6 +4933,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		statusKeyForGuard = statusKey
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
 	}
+	blockedOn, ok := h.parseBlockedOn(r.Context(), w, &req, rawFields, prevIssue.WorkspaceID, statusKeyForGuard)
+	if !ok {
+		return
+	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {
 			return
@@ -5204,7 +5230,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
 	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
-		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger, blockedOn: blockedOn}
 		if handoff != nil {
 			statusRec.enterHandoff(handoff)
 		}
