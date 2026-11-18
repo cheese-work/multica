@@ -231,6 +231,22 @@ func TestCannotDoBlockRefusesRelayOnlyStatusAndAssign(test *testing.T) {
 	}
 }
 
+// The refusal must name a replacement that typed-option validation accepts: server_action carries the action.
+func TestCannotDoRelayRefusalNamesAReplacementThatDecodes(test *testing.T) {
+	ask := cannotDoAsk(test, agentRun([]string{"multica", "issue", "status", "CHE-1", "done"}))
+	_, err := ask.CheckCannotDo("block", testCatalog, "")
+	if err == nil || !strings.Contains(err.Error(), "after_choice server_action") || strings.Contains(err.Error(), "record_only") {
+		test.Fatalf("err = %v, want after_choice server_action and no record_only", err)
+	}
+	replacement := cannotDoAsk(test, map[string]any{
+		"after_choice": "server_action",
+		"action":       map[string]any{"type": "issue.status.set", "params": map[string]any{"status": "done"}},
+	})
+	if replacement.Options[0].AfterChoice != AfterServerAction || replacement.Options[0].Action == nil {
+		test.Fatalf("replacement option = %+v, want a server_action option with an action", replacement.Options[0])
+	}
+}
+
 func TestCannotDoAcceptsReadsAndMixedCommands(test *testing.T) {
 	for name, commands := range map[string][][]string{
 		"issue get":             {{"$MULTICA_CLI_PATH", "issue", "get", "CHE-1"}},

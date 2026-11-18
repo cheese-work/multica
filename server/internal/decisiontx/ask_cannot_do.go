@@ -233,7 +233,7 @@ func (ask Ask) CheckCannotDo(mode string, catalog []CannotDo, asker string) (hin
 			}
 		}
 		if fix := relayOnlyFix(option.AgentCommands); fix != "" {
-			if err := report(prefix, fmt.Sprintf("%q only moves an issue; send it as a typed option instead: after_choice record_only, options[].action %s", option.Label, fix)); err != nil {
+			if err := report(prefix, fmt.Sprintf("%q only moves an issue; send it as a typed option instead: after_choice server_action, options[].action %s", option.Label, fix)); err != nil {
 				return nil, err
 			}
 		}
