@@ -11,11 +11,12 @@ import (
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 )
 
-// wantExcludedAskFields is the whole exclusion list of CHE-5682 section 2, plus
-// state_claims (CHE-5950, added after the spec): the asker's explanation,
-// checks and provenance. Changing KeyExcludedAskFields must change this list.
+// wantExcludedAskFields is the whole exclusion list of CHE-5682 section 2: the
+// asker's explanation, checks and provenance. state_claims (CHE-5950) is not in
+// it: a changed live fact is a different ask. Changing KeyExcludedAskFields must
+// change this list.
 var wantExcludedAskFields = []string{
-	"context_eli10", "agent_did", "stakes_if_wrong", "recommendation", "recommended_option", "confidence", "probes", "state_claims",
+	"context_eli10", "agent_did", "stakes_if_wrong", "recommendation", "recommended_option", "confidence", "probes",
 	"source_issue_id", "source_comment_id",
 }
 
@@ -194,6 +195,38 @@ func TestMatchKeyChangeOfEachAskFieldAlone(test *testing.T) {
 			}
 		})
 	}
+}
+
+// Each state_claims field changed alone, and a claim added, changes the key.
+func TestMatchKeyChangeOfEachStateClaimFieldAlone(test *testing.T) {
+	paths := leafPaths(reflect.TypeOf(StateClaim{}))
+	if len(paths) != 3 {
+		test.Fatalf("StateClaim leaf fields = %d, want 3; a new field must be reviewed", len(paths))
+	}
+	base := keyOf(test, filledAsk(), nil)
+	for _, path := range paths {
+		test.Run(strings.Join(path, "."), func(test *testing.T) {
+			ask := filledAsk()
+			change(navigate(reflect.ValueOf(&ask.StateClaims[0]).Elem(), path))
+			if got := keyOf(test, ask, nil); got == base {
+				test.Fatalf("state claim field %v did not change the key", path)
+			}
+		})
+	}
+	test.Run("claim added", func(test *testing.T) {
+		ask := filledAsk()
+		ask.StateClaims = append(ask.StateClaims, ask.StateClaims[0])
+		if got := keyOf(test, ask, nil); got == base {
+			test.Fatal("an added state claim did not change the key")
+		}
+	})
+	test.Run("no claims", func(test *testing.T) {
+		ask := filledAsk()
+		ask.StateClaims = nil
+		if got := keyOf(test, ask, nil); got == base {
+			test.Fatal("dropping the state claims did not change the key")
+		}
+	})
 }
 
 // CHE-5682 test 11, option half: every AskOption field changed alone (the label
