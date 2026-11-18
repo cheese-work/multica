@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/designguard"
 	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -116,6 +117,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
 		err = validateCardLintSetting(map[string]any{key: value})
+	case key == designguard.SettingKey:
+		err = validateDesignGuardSetting(map[string]any{key: value})
 	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
