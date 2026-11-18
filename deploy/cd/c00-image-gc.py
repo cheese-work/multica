@@ -14,9 +14,9 @@ present or the run is BLOCKED), and --keep-ref. Compose
 labels are NOT a reference source: cd-deploy.yml deletes its staging directory
 after every deploy, so they point at paths that are gone by design. The
 manifest.json / release-record.json beside cutover-state.json are not part of the
-controller contract, but any image ref in them must resolve to a local image or be
-accepted by exact value with --accept-unresolved-ref (recorded in the receipt);
-otherwise BLOCKED. Every keep ref must resolve to a local image
+controller contract, but any image ref in them must resolve to a local image, or the
+run is BLOCKED; no flag waives an unresolved ref (a registry digest can describe a
+local image with no RepoDigests). Every keep ref must resolve to a local image
 (by config ID, tag, or RepoDigest, which is how a registry manifest digest maps
 to a local config ID) or the run is BLOCKED. The deploy lock in
 --cutover-state-dir is held across discovery and removal; if it is busy, BLOCKED.
@@ -91,7 +91,7 @@ def record_refs(state_dir):
     cutover.sh and rollback-failed-readback.sh never read these files (the retained
     predecessor is whatever Docker runs), so they are not authoritative. They are still
     unexamined evidence of a deployment reference: each ref must resolve locally or be
-    accepted by exact value, else BLOCKED.
+    unresolved means BLOCKED, with no waiver flag.
     """
     found = {}
     for name in ("manifest.json", "release-record.json"):
@@ -115,7 +115,7 @@ def record_refs(state_dir):
 
 
 def freeze(args, now):
-    """Return (candidates, skipped, accepted_unresolved_refs); raise Blocked when identity or deploy state is unknown."""
+    """Return (candidates, skipped); raise Blocked when identity or deploy state is unknown."""
     root = Path(args.deploy_root)
     if not root.is_dir():
         raise Blocked(f"deploy root {root} is not readable; cannot prove no deploy is active")
@@ -127,7 +127,7 @@ def freeze(args, now):
     by_id = {i["Id"]: i for i in images}
 
     refs, colour = read_cutover_state(args.cutover_state_dir)
-    keep, accepted = set(), []
+    keep = set()
     for ref in refs:
         hit = [i["Id"] for i in images if matches(ref, i)]
         if not hit:
@@ -137,10 +137,8 @@ def freeze(args, now):
         hit = [i["Id"] for i in images if matches(ref, i)]
         if hit:
             keep.update(hit)
-        elif ref in args.accept_unresolved_ref:
-            accepted.append(ref)
-        else:
-            raise Blocked(f"{name} references {ref}, which resolves to no local image; pass --accept-unresolved-ref {ref} once its owner confirms it is not a local image")
+        else:  # a registry digest can describe a local image that has no RepoDigests: not proof it protects nothing
+            raise Blocked(f"{name} references {ref}, which resolves to no local image, so what it protects is unproven; its owner must correct or archive {name}")
     for ref in args.keep_ref:
         hit = [i["Id"] for i in images if matches(ref, i)]
         if not hit:
@@ -171,7 +169,7 @@ def freeze(args, now):
             why = "younger than 7 full days"
         (skipped.append({"id": i["Id"], "tags": tags, "reason": why}) if why
          else candidates.append({"id": i["Id"], "tags": tags, "size": i.get("Size"), "created": i["Created"]}))
-    return candidates, skipped, accepted
+    return candidates, skipped
 
 
 def remove_one(c):
@@ -202,7 +200,6 @@ def main(argv=None):
     ap.add_argument("--target-bytes", type=int, default=65_000_000_000)
     ap.add_argument("--df-path", default="/")
     ap.add_argument("--keep-ref", action="append", default=[])
-    ap.add_argument("--accept-unresolved-ref", action="append", default=[], help="exact retained-record ref the owner confirmed is not a local image")
     ap.add_argument("--apply", action="store_true", help="remove; default is a dry run")
     ap.add_argument("--now", type=float, default=None)
     args = ap.parse_args(argv)
@@ -226,7 +223,7 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as e:
             raise Blocked(f"deploy lock {lock.name} is held or unavailable ({e}); a deploy or rollback may be running")
-        receipt["candidates"], receipt["skipped"], receipt["accepted_unresolved_refs"] = freeze(args, now)
+        receipt["candidates"], receipt["skipped"] = freeze(args, now)
         (run / "manifest.json").write_text(json.dumps(receipt["candidates"], indent=1))
         if args.apply:
             for c in receipt["candidates"]:

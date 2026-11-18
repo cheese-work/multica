@@ -1153,9 +1153,9 @@ no staging; a busy lock is BLOCKED. Every `--keep-ref` must resolve to a local
 image by ID, tag or RepoDigest, else BLOCKED. The controller does not read
 `manifest.json` or `release-record.json` in the state dir, but if present they are
 parsed: a malformed file is BLOCKED, and every Multica image ref in them must
-resolve locally (kept) or be accepted by exact value with
-`--accept-unresolved-ref REF` (repeatable; recorded in the receipt as
-`accepted_unresolved_refs`), else BLOCKED with a recovery owner.
+resolve locally (kept), else BLOCKED with a recovery owner. No flag waives an
+unresolved ref, because a registry digest can describe a local image that has no
+RepoDigests; the owner corrects or archives the record.
 
 Exit 0 only when used bytes are at or below `--target-bytes`; 3 TARGET_UNMET, 2
 BLOCKED (nothing mutated), 1 FAILED. Each run writes `manifest.json` and

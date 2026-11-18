@@ -274,14 +274,11 @@ class GcTests(unittest.TestCase):
     def test_deploy_lock_held_by_a_controller_blocks_every_removal(self):
         # rollback holds this lock without creating staging, so staging absence proves nothing
         self.world([image("a", 10), image("c", 1)])
-        holder = subprocess.Popen(["flock", str(self.state_dir / "deploy.lock"), "sleep", "30"])
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl,sys;f=open(sys.argv[1],'a');fcntl.flock(f,fcntl.LOCK_EX);print('held',flush=True);sys.stdin.read()",
+             str(self.state_dir / "deploy.lock")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.addCleanup(holder.kill)
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            probe = subprocess.run(["flock", "-n", str(self.state_dir / "deploy.lock"), "true"])
-            if probe.returncode != 0:
-                break
-            time.sleep(0.05)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
         p, r = self.run_gc()
         self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"), p.stderr)
         self.assertIn("lock", r["reason"])
@@ -335,15 +332,19 @@ class GcTests(unittest.TestCase):
         self.assertIn("recovery_owner", r)
         self.assertEqual(self.removed_calls(), [])
 
-    def test_accepting_an_exact_unresolvable_ref_is_explicit_and_recorded(self):
+    def test_no_flag_can_bypass_an_unresolvable_retained_ref(self):
+        # A registry digest may describe a local image with no RepoDigests, so "unresolved" is
+        # not proof the ref protects nothing. No argument may waive it; the owner fixes the record.
         gone = f"{BACKEND}@sha256:{'6' * 64}"
         (self.state_dir / "manifest.json").write_text(json.dumps({"images": {"backend": gone}}))
         self.world([image("a", 10), image("c", 1)])
         p, r = self.run_gc("--accept-unresolved-ref", gone)
-        self.assertEqual(r["removed"], [iid("a")], p.stderr)
-        self.assertEqual(r["accepted_unresolved_refs"], [gone])
-        p, r = self.run_gc("--accept-unresolved-ref", f"{BACKEND}@sha256:{'5' * 64}")
-        self.assertEqual(r["status"], "BLOCKED")  # accepting some other ref does not cover this one
+        self.assertEqual(self.removed_calls(), [], p.stderr)
+        self.assertEqual(self.ids(), {iid("a"), iid("c")})
+        self.assertNotEqual(p.returncode, 0)
+        p, r = self.run_gc()
+        self.assertEqual((p.returncode, r["status"]), (2, "BLOCKED"))
+        self.assertNotIn("accept", r["reason"].lower())
 
     def test_malformed_retained_record_blocks(self):
         (self.state_dir / "release-record.json").write_text("{")
