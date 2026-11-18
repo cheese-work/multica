@@ -320,6 +320,10 @@ type decisionRequestResponse struct {
 type decisionReadResponse struct {
 	db.DecisionRequest
 	Answer *decisionAnswerRead `json:"answer,omitempty"`
+	// ReceiptState is the answer receipt the DM card carries as answer.state:
+	// recorded, delivered, picked_up or disclaimed. It is not the state the card
+	// displays: only picked_up folds the card. Null without an answer or a DM card.
+	ReceiptState *string `json:"receipt_state"`
 	// The outcome of the request's proposed action, once it is terminal (CHE-5411).
 	AppliedAt     *string `json:"applied_at,omitempty"`
 	Outcome       string  `json:"outcome,omitempty"`
@@ -351,6 +355,9 @@ type decisionAnswerRead struct {
 	CreatedAt         *string `json:"created_at"`
 	DisclaimedAt      *string `json:"disclaimed_at"`
 	DisclaimReason    *string `json:"disclaim_reason"`
+	// WokenAt and WakeOutcome say when and how the answer reached the agent; null until it did.
+	WokenAt     *string `json:"woken_at"`
+	WakeOutcome *string `json:"wake_outcome"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
@@ -383,12 +390,39 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
 			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
 			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
+			WokenAt: timestampToPtr(answer.WokenAt), WakeOutcome: textToPtr(answer.WakeOutcome),
 		}
+		receipt, err := handler.answerReceiptState(request.Context(), stored)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read decision card")
+			return
+		}
+		response.ReceiptState = receipt
 	case !errors.Is(err, pgx.ErrNoRows):
 		writeError(writer, http.StatusInternalServerError, "failed to read decision answer")
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+// answerReceiptState is the receipt state of the request's answer on its DM
+// card, or nil when the request has no DM card or no answer.
+func (handler *Handler) answerReceiptState(ctx context.Context, stored db.DecisionRequest) (*string, error) {
+	if !stored.PingMessageID.Valid {
+		return nil, nil
+	}
+	rows, err := handler.Queries.ListDecisionRequestCards(ctx, db.ListDecisionRequestCardsParams{WorkspaceID: stored.WorkspaceID, MessageIds: []pgtype.UUID{stored.PingMessageID}})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.RequestID == stored.ID {
+			if answer := decisionRequestAnswerFromRow(row); answer != nil {
+				return &answer.State, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 // loadDecisionForRead resolves {id} for a workspace member who can read the

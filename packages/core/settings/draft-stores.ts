@@ -50,3 +50,10 @@ export const useGuardEditDraftStore = createKeyedDraftStore<SettingsFieldsDraft>
   emptyData: {},
   hasMeaningful: anyField,
 });
+
+/** Key: `<owner>/<name>` of the watched repo. Field: form (JSON of the unsaved CI watcher form). */
+export const useCIWatchDraftStore = createKeyedDraftStore<SettingsFieldsDraft>({
+  storageKey: "multica_ci_watch_drafts",
+  emptyData: {},
+  hasMeaningful: anyField,
+});

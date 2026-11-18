@@ -140,13 +140,13 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         for name in ("cache-maintenance.yml",):
             self.assertNotEqual(load(name)["concurrency"]["group"], caller)
 
-    def test_pr_main_sync_requests_only_permissions_the_app_installation_grants(self):
-        # Run 43137581396 failed with 422 minting contents:write + pull-requests:write: the installation grants
-        # pull-requests read only (cd-deploy mints it). The script reads PRs and merges through update-branch (CHE-4963).
+    def test_pr_main_sync_mints_write_for_update_branch(self):
+        # update-branch needs pull-requests:write on the installation token (GitHub permissions table). Run 43137581396
+        # got 422 before the App owner granted it (Cheese, 12 Nov 2026); a 422 again means the grant is gone (CHE-4963).
         steps = load("pr-main-sync.yml")["jobs"]["sync"]["steps"]
         mint = next(s["with"] for s in steps if "create-github-app-token" in s.get("uses", ""))
         perms = {k: v for k, v in mint.items() if k.startswith("permission-")}
-        self.assertEqual(perms, {"permission-contents": "write", "permission-pull-requests": "read"})
+        self.assertEqual(perms, {"permission-contents": "write", "permission-pull-requests": "write"})
 
     def test_pr_main_sync_keeps_its_gate_runner_and_dry_run_switch(self):
         text = (WF / "pr-main-sync.yml").read_text()

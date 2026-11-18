@@ -132,6 +132,8 @@ export interface DecisionRequestAction {
   /** Readback of a decided action (B v9 S9). `applied`, `not_applied` or `expired`; absent while pending or on an older server. */
   effect?: "applied" | "not_applied" | "expired" | (string & {});
   effect_reason?: string;
+  /** What an executed run-budget action did and where the refused run stands; absent for any other action or an older server. */
+  receipt?: import("../api/passkey-schema").BudgetReceipt;
   decided_at?: string;
   decided_by_name?: string;
   on_behalf_of_name?: string;

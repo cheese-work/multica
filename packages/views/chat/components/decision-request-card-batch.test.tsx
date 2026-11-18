@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { DecisionRequestCard } from "./decision-request-card";
+import { useDecisionBatchChoicesStore } from "@multica/core/issues/stores/decision-batch-choices-store";
 
 // Direction B v9 batch card (design/decision-card/approved): per-item Approve / Reject, none chosen on open,
 // one button that counts what is left or names the result, one passkey for the approved items.
@@ -61,6 +62,7 @@ const sha = (hashes: string[]) => createHash("sha256").update([...hashes].sort()
 describe("DecisionRequestCard batch", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    useDecisionBatchChoicesStore.setState({ drafts: {} });
     api.listDecisionArtifacts.mockResolvedValue([]);
     api.getDecisionAction.mockReset().mockImplementation(async (id: string) => ({ id, payload_sha256: `hash-${id}` }));
     api.challengeDecisionBatch.mockReset().mockResolvedValue({ challenge_id: "ch" });
@@ -82,6 +84,36 @@ describe("DecisionRequestCard batch", () => {
     expect(screen.getByRole("button", { name: "Choose 1 more item" })).toBeDisabled();
     await user.click(within(screen.getByRole("radiogroup", { name: "Decision for CHE-1" })).getByRole("radio", { name: "Approve" }));
     expect(screen.getByRole("button", { name: "Choose 2 more items" })).toBeDisabled();
+  });
+
+  it("keeps the per-item choices across an unmount, sends nothing, and clears them once sent (CHE-3509)", async () => {
+    const user = userEvent.setup();
+    const first = view(batch);
+    await screen.findByRole("radiogroup", { name: "Decision for CHE-1" });
+    await pick(user, "CHE-1", "Approve");
+    await pick(user, "CHE-2", "Reject");
+    first.unmount();
+
+    view(batch);
+    const checked = (issue: string, name: string) =>
+      within(screen.getByRole("radiogroup", { name: `Decision for ${issue}` })).getByRole("radio", { name });
+    expect(await screen.findByRole("button", { name: "Choose 1 more item" })).toBeDisabled();
+    expect(checked("CHE-1", "Approve")).toHaveAttribute("aria-checked", "true");
+    expect(checked("CHE-2", "Reject")).toHaveAttribute("aria-checked", "true");
+    expect(api.approveDecisionBatch).not.toHaveBeenCalled();
+    expect(signPasskeyChallenge).not.toHaveBeenCalled();
+
+    api.approveDecisionBatch.mockResolvedValue({ batch_id: "batch", items: ["a1", "a2", "a3"].map((id) => ({ id, state: "rejected" })) });
+    await pick(user, "CHE-3", "Reject");
+    await user.click(screen.getByRole("button", { name: /^Approve 1, Reject 2 with passkey/ }));
+    await waitFor(() => expect(api.approveDecisionBatch).toHaveBeenCalledOnce());
+    await waitFor(() => expect(useDecisionBatchChoicesStore.getState().getDraft("batch")).toBeUndefined());
+  });
+
+  it("drops stored choices when the server already shows the batch decided", async () => {
+    useDecisionBatchChoicesStore.getState().setDraft("batch", { choices: { a1: "approve" } });
+    view({ ...batch, batch_items: batch.batch_items!.map((i) => ({ ...i, state: "executed" })) });
+    await waitFor(() => expect(useDecisionBatchChoicesStore.getState().getDraft("batch")).toBeUndefined());
   });
 
   it("names the mixed result and ends with the send key", async () => {

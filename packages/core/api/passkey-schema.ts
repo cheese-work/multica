@@ -33,10 +33,25 @@ export const DecisionActionViewSchema = z.object({
   /** The chat that holds the action's card; older servers omit it. */
   chat_session_id: z.string().optional(),
 });
+/**
+ * What a decided run-budget action did (CHE-6943 §3). `outcome` is an open set of tokens; each number
+ * drops alone, and a receipt without its two required fields drops whole, so a bad one never hides the action.
+ */
+const optionalNumber = z.number().optional().catch(undefined);
+export const BudgetReceiptSchema = z.object({
+  outcome: z.string(),
+  applied_at: z.string(),
+  runs_used: optionalNumber,
+  runs_limit: optionalNumber,
+  runs_limit_after: optionalNumber,
+  new_window: z.boolean().optional().catch(undefined),
+}).optional().catch(undefined);
+export type BudgetReceipt = NonNullable<z.infer<typeof BudgetReceiptSchema>>;
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),
   state: z.string(),
   result: z.unknown().optional(),
+  receipt: BudgetReceiptSchema,
   error_code: z.string().optional(),
   error_message: z.string().optional(),
 });

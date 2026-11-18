@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -11,7 +12,7 @@ const ci = read(".github/workflows/ci.yml");
 const policy = read(".github/ci-policy.yml");
 
 // Jobs a required check may wait on. Anything heavier would put its runtime on the PR critical path.
-const FAST_LANE_DEPS = new Set(["changes", "migration-prefix-check", "backend-test-shards"]); // CHE-4268: shard matrix behind backend-tests
+const FAST_LANE_DEPS = new Set(["changes", "migration-prefix-check", "migration-checks", "backend-test-shards"]); // CHE-4268: shard matrix behind backend-tests; CHE-6563: migration order and parity
 
 const section = (text, start, end) => {
   const from = text.indexOf(start);
@@ -90,4 +91,29 @@ test("each exception expires within 60 days of the day it was added", () => {
     const days = (Date.parse(expires) - Date.parse(added)) / 86_400_000;
     assert.ok(days > 0 && days <= 60, `exception lasts ${days} days`);
   }
+});
+
+// CHE-6563: migration-checks has a zero warning baseline, so its Postgres service must not print initdb's trust-auth warning.
+test("migration-checks Postgres service initialises with password auth for local and host connections", () => {
+  assert.match(job("migration-checks"), /POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256\n/);
+});
+
+// CHE-6563 (CHE-6210 A2c): migration order and fresh-vs-upgrade parity gate the required check.
+test("migration-checks runs on pull_request and merge_group and backend-tests requires its success", () => {
+  assert.match(jobKey("migration-checks", "if"), /pull_request/);
+  assert.match(jobKey("migration-checks", "if"), /merge_group/);
+  assert.match(job("migration-checks"), /node scripts\/migration-order-check\.mjs/);
+  assert.match(job("migration-checks"), /scripts\/migration-parity\.sh "\$BASE"/);
+  assert.ok(needs("backend-tests").includes("migration-checks"));
+  const step = job("backend-tests").match(/- name: Require migration checks result[\s\S]*?run: \|\n((?:          .*\n)+)/)?.[1];
+  assert.ok(step, "backend-tests must check the migration-checks result");
+  const command = step.replace(/^          /gm, "");
+  const run = (event, result) => spawnSync("bash", ["-c", command], { env: { ...process.env, EVENT_NAME: event, MIGRATION_CHECKS_RESULT: result } }).status;
+  for (const event of ["pull_request", "merge_group"]) {
+    for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
+      assert.equal(run(event, result) === 0, result === "success", `${event} ${result}`);
+    }
+  }
+  assert.equal(run("schedule", "skipped"), 0, "other events skip the job");
+  assert.notEqual(run("schedule", "success"), 0);
 });

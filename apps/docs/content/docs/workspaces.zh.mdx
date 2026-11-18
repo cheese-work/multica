@@ -38,6 +38,27 @@ import { Callout } from "fumadocs-ui/components/callout";
 修改任务前缀后，所有任务立即换用新编号（`MUL-5` 变为 `NEW-5`），但 PR、分支名和聊天记录里的旧编号不会更新。
 </Callout>
 
+### 自动关闭
+
+工作区设置 `auto_close` 决定子任务进入 `agent_accepted` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
+
+| 值 | 效果 |
+| --- | --- |
+| `off` | 不变。该步骤的智能体运行。 |
+| `warn`（默认） | 该步骤的智能体照常运行。每次进入还会记录一条 `auto_close_would_close` 活动记录，写明满足的检查和随后的运行。 |
+| `block` | 服务器把任务移到 `done`，记录一条写明所读检查的 `auto_closed` 活动记录，并且不启动运行。 |
+
+关闭需要下面所有检查都通过。任何一项不满足或无法读取，该步骤的智能体照常运行。
+
+- 任务有父任务。根任务永远不会被关闭。
+- 最新的评审结论是不含 P0 或 P1 问题的 PASS，并且针对当前候选。有 PR 时，每个关联的 PR 都已在 PASS 所指的 head 上合并。没有 PR 时，候选是任务的文本：PASS 之后没有新附件、描述变更、评论（评审者自己的除外）、CHANGES 结论、过期或被取代标记，也没有回到 `in_progress`。
+- 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
+- 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
+- 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
+- 工作流中有从 `agent_accepted` 到 `done` 的 `agent_done` 边。
+
+用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
+
 ### 请求守卫
 
 工作区设置 `ask_guard_mode` 决定当智能体的操作未创建决策请求就要求人去处理时的行为。
@@ -59,6 +80,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 | `off` | 守卫不执行任何操作。 |
 
 每个事件保留创建时的模式，因此从 `warn` 切换到 `block` 不会让之前的事件变成恢复工作。如果事件无法写入，操作会以 `503` 和 `Retry-After` 头失败，且不会写入任何内容。
+
+工作区设置 `reversible_ask_guard`（默认 `off`，可选 `warn`、`block`）针对智能体发出的、类别为 `reversible` 的普通决策请求：智能体请求人批准本可自行决定并执行的工作。`warn` 只记录日志，`block` 以 `422` 拒绝。操作、提案和批量请求不受影响。改回 `off` 即可还原，不涉及数据变更。同一设置也适用于智能体在 `blocked` 或 `need_decision` 状态的议题上，对成员评论的普通回复，这类回复无需决策请求即可向该成员提问：`warn` 只记录日志，`block` 以 `422` 拒绝。顶层评论、对智能体的回复、提及智能体或小队的评论、带 `--notify-only` 的评论和决策请求不受影响。
 
 当产生 `block` 事件的运行结束后，服务器会向请求所指名的那一个人发送自动恢复通知：在一个事务中写入一条私信、一条议题评论和一个收件箱条目。通知引用已存储的请求并链接到议题，没有选项、建议或批准，因此永远不是决策请求。只有在存储的来源包含请求文本、恰好指名一位成员、且该成员仍在工作区时才会发送；否则该事件等待修复。在通知的评论线程中回复会将其标记为 `answered`。已离开工作区的成员无法再阅读或回复该通知。
 

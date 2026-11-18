@@ -48,6 +48,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | 收到终止信号后，开始优雅退出前等待多久 |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | 运行时离线后可重新连接且不终止在途运行的宽限时间；低于 `150s` 时按 `150s` 处理 |
 | `MULTICA_REVIEW_GUARD_AGENT_IDS` | 空（关闭守卫） | 以逗号分隔的评审者智能体 ID。该智能体已针对 PR 的 head 发布 PASS、FAIL、BLOCKED 或 NOT-RUN，且 Issue 恰有一个打开的关联 PR 时，评审运行会以原因 `review_head_answered` 跳过；head 变化后会重新运行。评审结论是一行 `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN`（或以 `BLOCKED`、`NOT-RUN` 开头的一行），并带有写明 head SHA 的 `Candidate:` 或 `Head:` 行。跳过的运行会在运行列表中显示为已取消。定时检查不受影响 |
+| `MULTICA_TASK_ASSERTION_SIGNING_KEY` | 空（关闭） | `<kid>:<base64 编码的 Ed25519 种子>`。设置后，任务 claim 响应还会返回 `doop_task_assertion`：一份带签名、有效期 24 小时的任务身份（任务、智能体、Issue、项目、运行时提供方、claim 时的模型），由 doop 用对应公钥验证。未设置：无该字段，claim 不变。格式错误的值只记录一次日志且不签发任何内容，claim 仍会成功。不会存储任何内容 |
 
 在 Kubernetes 中设置 shutdown hold 时，`terminationGracePeriodSeconds` 要大于 hold 与实际退出所需时间之和。
 
@@ -235,6 +236,17 @@ API key 与 base URL 都为空时，这一层关闭，不会发出任何上游�
 <Callout type="info">
 这只覆盖辅助生成这一层。智能体执行是另一条数据路径：智能体回复对话时，由你的守护进程调用该智能体的 AI 编程工具，用的是那个工具自己的凭据，守护进程不会把上面的 `MULTICA_LLM_*` 配置传给它。（智能体自身需要的运行级 Multica 连接变量由守护进程单独注入。）把上面的变量留空不影响这条路径——它由智能体的运行时配置决定。
 </Callout>
+
+## 设计守卫（doop）
+
+本组变量配置 Multica 如何从 doop 读取设计证明（attestation），用于工作区设置 `design_card_guard`。一次带共享 Bearer 令牌的 HTTPS GET 读取一份证明。
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | 空 | doop 的源（origin），例如 `https://doop.example.com`。必须是 `https`，且不带路径 |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | 空 | 至少 32 个字符的共享令牌，必须与 doop 上的 `DOOP_ATTESTATION_READ_TOKEN` 相同 |
+
+任一变量未设置或不可用时，读取器视为未配置，每次读取都以“未配置”失败。每次读取超时 3 秒，不跟随重定向，响应体最多 256 KiB。
 
 ## 守护进程配置
 

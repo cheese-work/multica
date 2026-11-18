@@ -11,6 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const ackBrowserLeaseCleanup = `-- name: AckBrowserLeaseCleanup :one
+UPDATE browser_lease
+SET cleanup_acked_at = clock_timestamp()
+WHERE instance_id = $1 AND workspace_id = $2 AND epoch = $3
+  AND state = 'ended' AND cleanup_acked_at IS NULL
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+`
+
+type AckBrowserLeaseCleanupParams struct {
+	InstanceID  pgtype.UUID `json:"instance_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Epoch       pgtype.Int8 `json:"epoch"`
+}
+
+// Stamps cleanup-ack on the ended lease that still holds the instance, for the given epoch only.
+func (q *Queries) AckBrowserLeaseCleanup(ctx context.Context, arg AckBrowserLeaseCleanupParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, ackBrowserLeaseCleanup, arg.InstanceID, arg.WorkspaceID, arg.Epoch)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const activateBrowserLease = `-- name: ActivateBrowserLease :one
 UPDATE browser_lease
 SET state = 'active', instance_id = $3, epoch = $4, granted_at = $5, expires_at = $6
@@ -71,7 +113,7 @@ WHERE bi.id = $1 AND bi.workspace_id = $2 AND bi.phase = 'idle_clean'
       SELECT 1 FROM browser_lease l
       WHERE l.instance_id = bi.id AND l.state <> 'queued' AND l.cleanup_acked_at IS NULL
   )
-RETURNING id, workspace_id, name, epoch, phase, created_at, updated_at
+RETURNING id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes
 `
 
 type ClaimIdleBrowserInstanceParams struct {
@@ -92,6 +134,9 @@ func (q *Queries) ClaimIdleBrowserInstance(ctx context.Context, arg ClaimIdleBro
 		&i.Phase,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
 	)
 	return i, err
 }
@@ -111,10 +156,36 @@ func (q *Queries) CountBrowserLeasesAhead(ctx context.Context, id pgtype.UUID) (
 	return column_1, err
 }
 
+const createBrowserGatewayCredential = `-- name: CreateBrowserGatewayCredential :one
+INSERT INTO browser_gateway_credential (workspace_id, gateway, credential_hash)
+VALUES ($1, $2, $3)
+RETURNING id, workspace_id, gateway, credential_hash, created_at, revoked_at
+`
+
+type CreateBrowserGatewayCredentialParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	Gateway        string      `json:"gateway"`
+	CredentialHash string      `json:"credential_hash"`
+}
+
+func (q *Queries) CreateBrowserGatewayCredential(ctx context.Context, arg CreateBrowserGatewayCredentialParams) (BrowserGatewayCredential, error) {
+	row := q.db.QueryRow(ctx, createBrowserGatewayCredential, arg.WorkspaceID, arg.Gateway, arg.CredentialHash)
+	var i BrowserGatewayCredential
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Gateway,
+		&i.CredentialHash,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const createBrowserInstance = `-- name: CreateBrowserInstance :one
 INSERT INTO browser_instance (workspace_id, name)
 VALUES ($1, $2)
-RETURNING id, workspace_id, name, epoch, phase, created_at, updated_at
+RETURNING id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes
 `
 
 type CreateBrowserInstanceParams struct {
@@ -133,6 +204,9 @@ func (q *Queries) CreateBrowserInstance(ctx context.Context, arg CreateBrowserIn
 		&i.Phase,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
 	)
 	return i, err
 }
@@ -443,7 +517,7 @@ func (q *Queries) EndBrowserLeases(ctx context.Context, arg EndBrowserLeasesPara
 }
 
 const getBrowserInstance = `-- name: GetBrowserInstance :one
-SELECT id, workspace_id, name, epoch, phase, created_at, updated_at FROM browser_instance
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -463,6 +537,41 @@ func (q *Queries) GetBrowserInstance(ctx context.Context, arg GetBrowserInstance
 		&i.Phase,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
+}
+
+const getBrowserInstanceForGateway = `-- name: GetBrowserInstanceForGateway :one
+SELECT i.id, i.workspace_id, i.name, i.epoch, i.phase, i.created_at, i.updated_at, i.host, i.gateway, i.allowed_classes FROM browser_instance i
+JOIN browser_gateway_credential c ON c.workspace_id = i.workspace_id AND c.gateway = i.gateway
+WHERE c.credential_hash = $1 AND c.revoked_at IS NULL
+  AND i.id = $2
+`
+
+type GetBrowserInstanceForGatewayParams struct {
+	CredentialHash string      `json:"credential_hash"`
+	ID             pgtype.UUID `json:"id"`
+}
+
+// A gateway credential resolves only to its own gateway's instances: another gateway's instance
+// returns no row, the same as a missing one.
+func (q *Queries) GetBrowserInstanceForGateway(ctx context.Context, arg GetBrowserInstanceForGatewayParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, getBrowserInstanceForGateway, arg.CredentialHash, arg.ID)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
 	)
 	return i, err
 }
@@ -684,7 +793,7 @@ func (q *Queries) HeadQueuedBrowserLease(ctx context.Context, arg HeadQueuedBrow
 
 const listBrowserInstances = `-- name: ListBrowserInstances :many
 
-SELECT id, workspace_id, name, epoch, phase, created_at, updated_at FROM browser_instance
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE workspace_id = $1
 ORDER BY name, id
 `
@@ -707,6 +816,9 @@ func (q *Queries) ListBrowserInstances(ctx context.Context, workspaceID pgtype.U
 			&i.Phase,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Host,
+			&i.Gateway,
+			&i.AllowedClasses,
 		); err != nil {
 			return nil, err
 		}
@@ -718,6 +830,74 @@ func (q *Queries) ListBrowserInstances(ctx context.Context, workspaceID pgtype.U
 	return items, nil
 }
 
+const listBrowserInstancesForGateway = `-- name: ListBrowserInstancesForGateway :many
+SELECT i.id, i.workspace_id, i.name, i.epoch, i.phase, i.created_at, i.updated_at, i.host, i.gateway, i.allowed_classes FROM browser_instance i
+JOIN browser_gateway_credential c ON c.workspace_id = i.workspace_id AND c.gateway = i.gateway
+WHERE c.credential_hash = $1 AND c.revoked_at IS NULL
+ORDER BY i.name
+`
+
+func (q *Queries) ListBrowserInstancesForGateway(ctx context.Context, credentialHash string) ([]BrowserInstance, error) {
+	rows, err := q.db.Query(ctx, listBrowserInstancesForGateway, credentialHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserInstance{}
+	for rows.Next() {
+		var i BrowserInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Epoch,
+			&i.Phase,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Host,
+			&i.Gateway,
+			&i.AllowedClasses,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockBrowserInstance = `-- name: LockBrowserInstance :one
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockBrowserInstanceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Serializes cleanup-ack, quarantine and grant on one instance (CHE-4736, W3-7).
+func (q *Queries) LockBrowserInstance(ctx context.Context, arg LockBrowserInstanceParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, lockBrowserInstance, arg.ID, arg.WorkspaceID)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
+}
+
 const lockBrowserLeaseQueue = `-- name: LockBrowserLeaseQueue :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -727,6 +907,49 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 func (q *Queries) LockBrowserLeaseQueue(ctx context.Context, dollar_1 string) error {
 	_, err := q.db.Exec(ctx, lockBrowserLeaseQueue, dollar_1)
 	return err
+}
+
+const registerBrowserInstance = `-- name: RegisterBrowserInstance :one
+
+INSERT INTO browser_instance (workspace_id, name, host, gateway, allowed_classes)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (workspace_id, name) DO UPDATE
+SET host = EXCLUDED.host, gateway = EXCLUDED.gateway,
+    allowed_classes = EXCLUDED.allowed_classes, updated_at = clock_timestamp()
+RETURNING id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes
+`
+
+type RegisterBrowserInstanceParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	Name           string      `json:"name"`
+	Host           string      `json:"host"`
+	Gateway        string      `json:"gateway"`
+	AllowedClasses []string    `json:"allowed_classes"`
+}
+
+// Browser instance registry (CHE-4781, W3-18). The host and class matrix is a CHECK on the table.
+func (q *Queries) RegisterBrowserInstance(ctx context.Context, arg RegisterBrowserInstanceParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, registerBrowserInstance,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Host,
+		arg.Gateway,
+		arg.AllowedClasses,
+	)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
 }
 
 const setBrowserInstancePhase = `-- name: SetBrowserInstancePhase :exec

@@ -476,7 +476,8 @@
       "workflows": "Workflows",
       "provider_breakers": "Disjoncteurs des fournisseurs",
       "guard": "Guard",
-      "background_agents": "Agents d'arrière-plan"
+      "background_agents": "Agents d'arrière-plan",
+      "personal_background_agents": "Agents d'arrière-plan"
     },
     "groups": {
       "personal": "Personnel",
@@ -1633,7 +1634,8 @@
       "device": "Cet appareil uniquement",
       "device_workspace": "Cet appareil · {{name}}",
       "workspace": "Espace {{name}}",
-      "workspace_only": "Uniquement dans {{name}}"
+      "workspace_only": "Uniquement dans {{name}}",
+      "personal": "Personnel"
     },
     "read_only": {
       "title": "Lecture seule",
@@ -1818,6 +1820,54 @@
     "scope_path": "Chemin {{target}}",
     "shared_counts": "Les compteurs sont partagés par tous les plugins de même nom."
   },
+  "ci_watch": {
+    "title": "Surveillance CI",
+    "disabled": "La surveillance CI est désactivée sur ce serveur",
+    "manager_only": "Seuls les propriétaires et administrateurs de l'espace de travail peuvent modifier la surveillance CI.",
+    "load_error": "Impossible de charger les paramètres de la surveillance CI.",
+    "save_error": "Impossible d'enregistrer les paramètres de la surveillance CI.",
+    "mode": "Mode",
+    "mode_off": "Désactivé",
+    "mode_shadow": "Shadow : consigne ce qu'elle ferait",
+    "mode_act": "Act : agit",
+    "branches": "Branches",
+    "events": "Événements",
+    "event_merge_group": "merge_group (observé uniquement)",
+    "workflows_include": "Workflows inclus",
+    "workflows_exclude": "Workflows exclus",
+    "protocol_mode": "Mode P{{n}}",
+    "mode_shadow_short": "Shadow",
+    "mode_act_short": "Act",
+    "unknown_note": "Les échecs inconnus restent en Shadow en phase 1.",
+    "fix_owner": "Responsable du correctif",
+    "fix_owner_none": "Aucun",
+    "fix_owner_squads": "Équipes",
+    "fix_owner_agents": "Agents",
+    "notify_member": "Membre à notifier",
+    "notify_member_none": "Aucun",
+    "max_reruns": "Relances max par exécution d'origine",
+    "max_issues": "Nouveaux tickets max par jour",
+    "max_wakes": "Réveils max du responsable par heure",
+    "cap_error": "Saisissez un entier de 0 à 100000.",
+    "list_error": "Une entrée par ligne, 50 entrées de 200 caractères au plus.",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "discard": "Annuler les modifications",
+    "unsaved": "Modifications non enregistrées",
+    "events_title": "50 derniers événements",
+    "events_empty": "Aucun événement pour le moment.",
+    "events_error": "Impossible de charger les événements.",
+    "col_time": "Heure",
+    "col_workflow": "Workflow",
+    "col_class": "Classe",
+    "col_protocol": "Protocole",
+    "col_action": "Action",
+    "col_state": "État",
+    "col_outcome": "Résultat",
+    "col_would_do": "Aurait fait",
+    "col_run": "Exécution",
+    "run_link": "Exécution {{id}}"
+  },
   "background_agents": {
     "title": "Agents d'arrière-plan",
     "description": "Petites tâches que les agents exécutent en coulisses pour tout l'espace de travail. Une tâche sans agent utilise son repli simple. Elle n'appelle jamais directement un modèle.",
@@ -1858,5 +1908,32 @@
         "no_agent": "Aucun agent : chaque étape garde son propre agent."
       }
     }
+  },
+  "personal_background_agents": {
+    "title": "Agents d'arrière-plan",
+    "description": "Choisissez l'agent qui fait ces petites tâches pour vous. Vous seul voyez et utilisez ces choix. Ils s'appliquent à vos DM et priment sur le choix de l'espace de travail.",
+    "jobs": {
+      "dm_title": {
+        "hint": "Nomme vos DM d'après le premier message."
+      },
+      "quick_actions": {
+        "hint": "Propose des boutons de suite sous une réponse dans vos DM."
+      }
+    },
+    "using_workspace": "Utilise l'espace de travail : {{agent}}",
+    "using_workspace_pick": "Utilise le choix de l'espace de travail",
+    "use_workspace_pick": "Utiliser le choix de l'espace de travail",
+    "archived": "Archivé",
+    "archived_warning": "{{agent}} est archivé. {{job}} s'exécute sans agent dans vos DM tant que vous n'en choisissez pas un autre. L'agent de l'espace de travail ne prend pas le relais, ni l'agent de secours : il ne s'exécute que lorsque l'agent échoue.",
+    "use_workspace_button": "Utiliser le choix de l'espace de travail ({{agent}})",
+    "load_error": "Impossible de charger vos agents d'arrière-plan.",
+    "load_error_detail": "Rien n'a été modifié. Vos derniers choix enregistrés s'appliquent toujours.",
+    "toast_save_failed": "Impossible d'enregistrer vos agents d'arrière-plan.",
+    "offline_title": "Vous êtes hors ligne.",
+    "offline_body": "Les modifications sont suspendues. Les choix ci-dessous sont les derniers chargés et peuvent être obsolètes. Les sélecteurs se réactivent à la reconnexion.",
+    "another_tab": "Vous avez enregistré une modification dans un autre onglet. Voici vos choix les plus récents.",
+    "routing_before": "Le routage est défini pour tout l'espace de travail. Les propriétaires et administrateurs le modifient dans",
+    "routing_link": "Espace de travail → Agents d'arrière-plan",
+    "routing_after": "."
   }
 }

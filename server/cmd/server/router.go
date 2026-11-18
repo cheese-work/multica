@@ -1721,6 +1721,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
+		r.Post("/tasks/{taskId}/elevation/downgrade", h.StartTaskDowngrade)
+		r.Post("/tasks/{taskId}/elevation/downgrade/deliver", h.DeliverTaskDowngrade)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/guard-decisions", h.ReportGuardDecisions)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
@@ -1954,6 +1956,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// unchanged machine write stays accepted.
 					r.Put("/background-agents", h.UpdateBackgroundAgents)
 					r.Delete("/background-agents", h.ResetBackgroundAgents)
+					// CHE-4281: CI watcher settings and event log. Human owner/admin only;
+					// the handlers answer "disabled" while the ci_watcher flag is off.
+					r.With(handler.RequireHumanActor).Get("/ci-watch/repos/{repo}", h.GetCIWatchConfig)
+					r.With(handler.RequireHumanActor).Put("/ci-watch/repos/{repo}", h.PutCIWatchConfig)
+					r.With(handler.RequireHumanActor).Get("/ci-watch/repos/{repo}/events", h.ListCIWatchEvents)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
@@ -2231,6 +2238,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+			// Stack auto-link mode (CHE-4165, CHE-4143 step 5): any member reads; owner/admin writes.
+			r.Get("/api/github/stack-autolink", h.GetGitHubStackAutolink)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/stack-autolink", h.SetGitHubStackAutolink)
 			// Receipt facts for merge_eligibility dispatch (CHE-5594): a person who is owner/admin only.
 			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/merge-receipts", h.PutMergeReceipt)
 			// A Multica-only veto holds the PR and drops its receipt (CHE-5594): same gates.
@@ -2713,6 +2723,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
+				r.Get("/affected", h.ListAffectedMachines)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
 					r.Get("/usage", h.GetRuntimeUsage)
@@ -2721,6 +2732,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/activity", h.GetRuntimeTaskActivity)
 					r.Put("/pause", h.PauseDaemon)
 					r.Delete("/pause", h.ResumeDaemon)
+					r.Get("/update-schedule", h.GetUpdateSchedule)
+					r.Put("/update-schedule", h.PutUpdateSchedule)
+					r.Delete("/update-schedule", h.DeleteUpdateSchedule)
 					r.Post("/update", h.InitiateUpdate)
 					r.Get("/update/{updateId}", h.GetUpdate)
 					r.Post("/models", h.InitiateListModels)
@@ -2842,6 +2856,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
+			r.Get("/api/needs-you", h.GetNeedsYou) // CHE-5670: member reads own; a task token may name ?for=
 			r.With(humanOnly).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
 			r.With(humanOnly).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
@@ -2859,6 +2874,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// thread (?id for a specific one, else the thread the session is in).
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
+			// Closed segments of the caller's own DM (CHE-2819 L2b): same handlers as
+			// /api/chat/sessions/{id}/segment(s); the task token names the DM.
+			r.Get("/api/chat/segments", h.ListChatSegments)
+			r.Get("/api/chat/segment", h.GetChatSegment)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.

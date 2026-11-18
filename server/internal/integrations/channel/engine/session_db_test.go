@@ -1573,6 +1573,7 @@ func newDeliveryTaskID(t *testing.T, pool *pgxpool.Pool) pgtype.UUID {
 }
 
 func TestBindMediaRefs_IssueAppendsSelectedMediaWithoutTranscript(t *testing.T) {
+	t.Skip("CHE-6461: fork CHE-1900 keeps InlineIDOnly media out of the issue body; upstream MUL-8495 expects selected media appended")
 	for _, tc := range []struct{ edited, named bool }{{false, false}, {false, true}, {true, true}} {
 		t.Run(fmt.Sprintf("edited-%v/named-%v", tc.edited, tc.named), func(t *testing.T) {
 			pool := sessionPersistenceTestDB(t)

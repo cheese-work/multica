@@ -43,20 +43,23 @@ var (
 
 const prQuery = `query($id: ID!) { node(id: $id) { __typename ... on PullRequest { id url title body } } }`
 
-func (p *Proxy) withheld(ctx context.Context, a Approval, text, url string) Result {
+func (p *Proxy) withheld(ctx context.Context, a Approval, text, url string, ask bool) Result {
 	sum := sha256.Sum256([]byte(text))
 	a.IssueID, a.TaskID, a.BodySHA256 = p.IssueID, p.TaskID, hex.EncodeToString(sum[:])
 	res := Result{Kind: a.Kind, ID: a.ObjectID, URL: url, SHA256: a.BodySHA256}
-	if p.Approve == nil {
-		return res
+	if p.Approve != nil {
+		if ok, _ := p.admit(ctx, func(lctx context.Context) (bool, error) { return p.Approve.Approved(lctx, a) }); ok {
+			res.Full, res.Body = true, text
+			return res
+		}
 	}
-	if ok, _ := p.admit(ctx, func(lctx context.Context) (bool, error) { return p.Approve.Approved(lctx, a) }); ok {
+	if ask && p.downgrade(ctx) {
 		res.Full, res.Body = true, text
 	}
 	return res
 }
 
-func (p *Proxy) readPR(ctx context.Context, id, field string) (Result, error) {
+func (p *Proxy) readPR(ctx context.Context, id, field string, ask bool) (Result, error) {
 	payload, _ := json.Marshal(map[string]any{"query": prQuery, "variables": map[string]string{"id": id}})
 	endpoint := p.GraphQLURL
 	if endpoint == "" {
@@ -94,10 +97,10 @@ func (p *Proxy) readPR(ctx context.Context, id, field string) (Result, error) {
 	if field == "body" {
 		text = *n.Body
 	}
-	return p.withheld(ctx, Approval{Kind: "pr_" + field, ObjectID: id}, text, n.URL), nil
+	return p.withheld(ctx, Approval{Kind: "pr_" + field, ObjectID: id}, text, n.URL, ask), nil
 }
 
-func (p *Proxy) readCILog(ctx context.Context, repo, job string) (Result, error) {
+func (p *Proxy) readCILog(ctx context.Context, repo, job string, ask bool) (Result, error) {
 	base := p.RESTURL
 	if base == "" {
 		base = defaultREST
@@ -115,14 +118,14 @@ func (p *Proxy) readCILog(ctx context.Context, repo, job string) (Result, error)
 	if err != nil || len(raw) > maxResponse {
 		return Result{}, errors.New("log unreadable or too large")
 	}
-	return p.withheld(ctx, Approval{Kind: "ci_log", ObjectID: path}, string(raw), "https://github.com/"+repo+"/runs/"+job), nil
+	return p.withheld(ctx, Approval{Kind: "ci_log", ObjectID: path}, string(raw), "https://github.com/"+repo+"/runs/"+job, ask), nil
 }
 
 // readCommit returns a commit message as a stub (plan 3.4, CHE-3971). Commit
 // messages have no admission path, so only an approval of these exact bytes
 // releases them. One exception: a commit the broker pushed for this run, while
 // its current bytes still hash to the receipt (Own).
-func (p *Proxy) readCommit(ctx context.Context, repo, sha string) (Result, error) {
+func (p *Proxy) readCommit(ctx context.Context, repo, sha string, ask bool) (Result, error) {
 	base := p.RESTURL
 	if base == "" {
 		base = defaultREST
@@ -152,7 +155,7 @@ func (p *Proxy) readCommit(ctx context.Context, repo, sha string) (Result, error
 		sum := sha256.Sum256([]byte(*out.Message))
 		return Result{Full: true, Kind: "commit_message", ID: path, URL: link, SHA256: hex.EncodeToString(sum[:]), Body: *out.Message}, nil
 	}
-	return p.withheld(ctx, Approval{Kind: "commit_message", ObjectID: path}, *out.Message, link), nil
+	return p.withheld(ctx, Approval{Kind: "commit_message", ObjectID: path}, *out.Message, link, ask), nil
 }
 
 func (p *Proxy) externalRoutes(mux *http.ServeMux) {
@@ -170,7 +173,7 @@ func (p *Proxy) externalRoutes(mux *http.ServeMux) {
 			http.Error(w, "bad pull request read", http.StatusBadRequest)
 			return
 		}
-		res, err := p.readPR(r.Context(), id, field)
+		res, err := p.readPR(r.Context(), id, field, askedDowngrade(r))
 		serve(w, res, err)
 	})
 	mux.HandleFunc("GET /v1/ci-log", func(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +182,7 @@ func (p *Proxy) externalRoutes(mux *http.ServeMux) {
 			http.Error(w, "bad log read", http.StatusBadRequest)
 			return
 		}
-		res, err := p.readCILog(r.Context(), repo, job)
+		res, err := p.readCILog(r.Context(), repo, job, askedDowngrade(r))
 		serve(w, res, err)
 	})
 	mux.HandleFunc("GET /v1/commit", func(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +191,7 @@ func (p *Proxy) externalRoutes(mux *http.ServeMux) {
 			http.Error(w, "bad commit read", http.StatusBadRequest)
 			return
 		}
-		res, err := p.readCommit(r.Context(), repo, sha)
+		res, err := p.readCommit(r.Context(), repo, sha, askedDowngrade(r))
 		serve(w, res, err)
 	})
 }
@@ -206,16 +209,16 @@ func validRepo(repo string) bool {
 }
 
 // ReadPR asks the proxy on sock for a pull request's title or body.
-func ReadPR(ctx context.Context, sock, id, field string) (Result, error) {
-	return get(ctx, sock, "/v1/pr?id="+url.QueryEscape(id)+"&field="+url.QueryEscape(field))
+func ReadPR(ctx context.Context, sock, id, field string, opts ...ReadOption) (Result, error) {
+	return get(ctx, sock, "/v1/pr?id="+url.QueryEscape(id)+"&field="+url.QueryEscape(field)+askParam(opts))
 }
 
 // ReadCILog asks the proxy on sock for one job's log.
-func ReadCILog(ctx context.Context, sock, repo, job string) (Result, error) {
-	return get(ctx, sock, "/v1/ci-log?repo="+url.QueryEscape(repo)+"&job="+url.QueryEscape(job))
+func ReadCILog(ctx context.Context, sock, repo, job string, opts ...ReadOption) (Result, error) {
+	return get(ctx, sock, "/v1/ci-log?repo="+url.QueryEscape(repo)+"&job="+url.QueryEscape(job)+askParam(opts))
 }
 
 // ReadCommit asks the proxy on sock for one commit's message.
-func ReadCommit(ctx context.Context, sock, repo, sha string) (Result, error) {
-	return get(ctx, sock, "/v1/commit?repo="+url.QueryEscape(repo)+"&sha="+url.QueryEscape(sha))
+func ReadCommit(ctx context.Context, sock, repo, sha string, opts ...ReadOption) (Result, error) {
+	return get(ctx, sock, "/v1/commit?repo="+url.QueryEscape(repo)+"&sha="+url.QueryEscape(sha)+askParam(opts))
 }

@@ -126,7 +126,7 @@ func (b *scriptBackend) run(ctx context.Context, cwd string) Result {
 
 	// No shell: argv goes straight to execve. The environment is the task's own
 	// variables plus PATH, never the daemon's.
-	cmd := newRuntimeCmd(exec.CommandContext(runCtx, entry.Executable, spec.Args...))
+	cmd := registerLaunchHook(runCtx, newRuntimeCmd(exec.CommandContext(runCtx, entry.Executable, spec.Args...)), b.cfg.Launch)
 	cmd.Dir = cwd
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, envList(b.cfg.Env)...)
 	tail := &tailWriter{max: scriptBufferBytes}

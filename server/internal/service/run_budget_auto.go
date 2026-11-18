@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,13 @@ type RunBudgetAutoConfig struct {
 	Enabled       bool `json:"enabled"`
 	DailyEnvelope int  `json:"daily_envelope"`
 	// ExpectedChecks is the check set a pushed head must hold, each finished,
-	// before its CI reads as known. Empty, no head does: the hold stays on.
+	// before its CI reads as known. Each entry is "name@appid@workflow-path": the
+	// check name, the numeric GitHub App id that produces it, and the workflow file
+	// that runs it (".github/workflows/ci.yml"). GitHub Actions is app 15368 and
+	// must name its workflow, because two workflows can report the same check name
+	// under the same App. Another App's entry may be "name@appid". An entry without
+	// a valid app id, or an Actions entry without a workflow, never matches, and an
+	// empty set means no head does: the hold stays on.
 	ExpectedChecks []string `json:"expected_checks"`
 }
 
@@ -102,6 +109,45 @@ func runBudgetAutoErrorKey(msg string) string {
 	return key
 }
 
+// githubActionsAppID is the App id of GitHub Actions. Its check runs carry no
+// other producer identity than the workflow, so an expected Actions check must
+// name its workflow file.
+const githubActionsAppID = 15368
+
+// splitExpectedChecks splits "name@appid" and "name@appid@workflow-path" entries
+// into parallel name, app id and workflow lists. The workflow is "" when the
+// entry names none. An entry with no valid positive app id gets app id 0, which
+// no stored row carries, so it can never read as finished (fail closed). So does
+// a GitHub Actions entry with no workflow path: two workflows can report the same
+// check name under the same App.
+func splitExpectedChecks(entries []string) ([]string, []int64, []string) {
+	names, appIDs, workflows := make([]string, len(entries)), make([]int64, len(entries)), make([]string, len(entries))
+	parseApp := func(s string) int64 {
+		if id, err := strconv.ParseInt(s, 10, 64); err == nil && id > 0 {
+			return id
+		}
+		return 0
+	}
+	for i, e := range entries {
+		names[i] = e
+		at := strings.LastIndex(e, "@")
+		if at < 0 {
+			continue
+		}
+		if id := parseApp(e[at+1:]); id > 0 {
+			names[i], appIDs[i] = e[:at], id
+		} else if mid := strings.LastIndex(e[:at], "@"); mid >= 0 {
+			if id := parseApp(e[mid+1 : at]); id > 0 {
+				names[i], appIDs[i], workflows[i] = e[:mid], id, e[at+1:]
+			}
+		}
+		if appIDs[i] == githubActionsAppID && workflows[i] == "" {
+			appIDs[i] = 0
+		}
+	}
+	return names, appIDs, workflows
+}
+
 // EvaluateRunBudgetAuto judges the spent window that opened at since. It only
 // reads: the caller acts on the verdict. Order: kill switch, anomalies (which
 // are never approved), progress, then the daily envelope.
@@ -121,31 +167,53 @@ func EvaluateRunBudgetAuto(ctx context.Context, q *db.Queries, issue db.Issue, s
 	if err != nil || usage == nil {
 		return RunBudgetAutoVerdict{Reason: "not_budgeted"}, err
 	}
+	return evaluateAutoWindow(ctx, q, issue, ws.Settings, cfg, since, usage.Max, now)
+}
+
+// EvaluateRunGuardAuto judges a weekly run guard refusal by the same rules as a
+// spent run budget window, over the guard's window, for an allowance of runs.
+// The workflow's budget is not needed: the guard applies to any issue.
+func EvaluateRunGuardAuto(ctx context.Context, q *db.Queries, issue db.Issue, now time.Time, runs int) (RunBudgetAutoVerdict, error) {
+	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return RunBudgetAutoVerdict{}, fmt.Errorf("run guard auto: load workspace: %w", err)
+	}
+	cfg, err := RunBudgetAutoConfigFromSettings(ws.Settings)
+	if err != nil || !cfg.Enabled {
+		return RunBudgetAutoVerdict{Reason: "disabled"}, nil
+	}
+	return evaluateAutoWindow(ctx, q, issue, ws.Settings, cfg, now.Add(-WeeklyRunGuardWindow), runs, now)
+}
+
+// evaluateAutoWindow judges the runs since a time for a grant of grant runs:
+// anomalies, then progress, then the daily envelope.
+func evaluateAutoWindow(ctx context.Context, q *db.Queries, issue db.Issue, settings []byte, cfg RunBudgetAutoConfig, since time.Time, grant int, now time.Time) (RunBudgetAutoVerdict, error) {
 	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
-	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedChecks: append([]string{}, cfg.ExpectedChecks...)})
+	names, appIDs, workflows := splitExpectedChecks(cfg.ExpectedChecks)
+	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedNames: names, ExpectedAppIds: appIDs, ExpectedWorkflows: workflows})
 	if err != nil {
 		return RunBudgetAutoVerdict{}, fmt.Errorf("run budget auto: list runs: %w", err)
 	}
-	anomaly, err := runBudgetAutoAnomaly(ctx, q, issue, ws.Settings, runs, now)
+	anomaly, err := runBudgetAutoAnomaly(ctx, q, issue, settings, runs, now)
 	if err != nil {
 		return RunBudgetAutoVerdict{}, err
 	}
 	if anomaly != "" {
-		return RunBudgetAutoVerdict{Anomaly: anomaly, Reason: anomaly, Runs: usage.Max}, nil
+		return RunBudgetAutoVerdict{Anomaly: anomaly, Reason: anomaly, Runs: grant}, nil
 	}
 	delivered := 0
 	for _, r := range runs {
 		// A pushed head whose checks are missing or not all finished may fail
 		// the same check as the others: the loop test cannot run, so a person decides.
 		if r.CiUnknown {
-			return RunBudgetAutoVerdict{Reason: "ci_unknown", Runs: usage.Max}, nil
+			return RunBudgetAutoVerdict{Reason: "ci_unknown", Runs: grant}, nil
 		}
 		if r.Delivered {
 			delivered++
 		}
 	}
 	if delivered == 0 {
-		return RunBudgetAutoVerdict{Reason: "no_progress", Runs: usage.Max}, nil
+		return RunBudgetAutoVerdict{Reason: "no_progress", Runs: grant}, nil
 	}
 	used, err := q.SumAutoApprovedRunsSince(ctx, db.SumAutoApprovedRunsSinceParams{
 		WorkspaceID: issue.WorkspaceID, Since: pgtype.Timestamptz{Time: RunBudgetAutoDayStart(now), Valid: true},
@@ -153,10 +221,10 @@ func EvaluateRunBudgetAuto(ctx context.Context, q *db.Queries, issue db.Issue, s
 	if err != nil {
 		return RunBudgetAutoVerdict{}, fmt.Errorf("run budget auto: sum envelope: %w", err)
 	}
-	if used+int64(usage.Max) > int64(cfg.DailyEnvelope) {
-		return RunBudgetAutoVerdict{Reason: "envelope", Runs: usage.Max}, nil
+	if used+int64(grant) > int64(cfg.DailyEnvelope) {
+		return RunBudgetAutoVerdict{Reason: "envelope", Runs: grant}, nil
 	}
-	return RunBudgetAutoVerdict{Approve: true, Runs: usage.Max}, nil
+	return RunBudgetAutoVerdict{Approve: true, Runs: grant}, nil
 }
 
 // runBudgetAutoAnomaly returns the first anomaly kind the window shows, or "".

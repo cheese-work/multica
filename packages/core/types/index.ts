@@ -58,9 +58,12 @@ export type {
   WorkspaceWorkingAgentMineRelation,
   TaskFailureReason,
   AgentRuntime,
+  AffectedMachine,
   RuntimeDevice,
   RuntimeUpdateInfo,
   RuntimePause,
+  RuntimeUpdateOutcome,
+  RuntimeUpdateSchedule,
   RuntimePauseReason,
   RuntimeProfile,
   RuntimeProtocolFamily,
@@ -123,6 +126,7 @@ export type {
   RuntimeLocalSkillImportResult,
   IssueUsageSummary,
   MikaBootstrapResponse,
+  AgentBackgroundUse,
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, RUNTIME_PROFILE_RUNTIME_TYPES } from "./agent";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, WorkspaceExportPrivacy, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";

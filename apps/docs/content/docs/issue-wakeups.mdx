@@ -99,7 +99,7 @@ To see every wakeup in the workspace, open **Autopilot** and switch to the **Iss
 - When an issue is done or cancelled, its wakeups are all turned off and runs that have not started are withdrawn. Reopening the issue does not bring them back. You cannot create wakeups on a done or cancelled issue.
 - A waiting rule that reaches its **Wait up to** limit does what its **Then** setting says; a regular check stops at its end date.
 - A repeating rule pauses once it reaches its maximum number of triggers. Waiting rules are also paused when they trigger each other with other wakeups (the trigger chain passes through the rule a third time with no person in between), or when they fire more than 12 times in an hour. A paused rule stays off until someone turns it back on, and its count starts over.
-- An issue can have at most 32 wakeups turned on, and a workspace at most 1,000.
+- An issue can have at most 32 wakeups turned on, and a workspace at most 5,000.
 
 ## Wake the parent when sub-issues finish [#child-done]
 
@@ -143,7 +143,7 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "Check
 - **Conditions**: `--until-status`, `--until-assignee`, `--until-label`, `--until-property`, `--until-children-done [--stage N]`, `--until-pr checks|merged|conflicts`, and `--until-issue <issue> --until-issue-state done|ended|in_review|blocked`. Use one `--until-*` per wakeup, and not together with `--event`.
 - **Timers on an open PR**: an agent cannot add an `at`, `every` or `cron` wakeup to an issue with a linked open PR while the server refreshes GitHub checks; it gets a 422 that points to `--until-pr checks|conflicts` or `--until-gh-run`. A person, a draft or merged PR, and an issue with no PR are not affected.
 - **Endings**: the CLI does not add a deadline for you. Use `--expires-in 72h` or `--expires-at <RFC3339 time>`; `--on-timeout wake` makes an event rule wake the agent once more at the deadline. `--max-fires N` (1–1000) caps how many runs a repeating rule starts.
-- **Watched inputs**: on a time wakeup (`at`, `every`, `cron`), repeat `--watch <input>` to declare what it watches: `issue`, `pr`, `children` or `thread:<comment-uuid>`. When every declared input is unchanged since the last completed run, the server may skip the fire. Undeclared means always run. The server only records the declaration for now; it skips nothing yet. Event and condition rules refuse `--watch`.
+- **Watched inputs**: on a time wakeup (`at`, `every`, `cron`), repeat `--watch <input>` to declare what it watches: `issue`, `pr`, `children` or `thread:<comment-uuid>`, or `--watch always` alone to run on every fire. When the workspace's time-wakeup skip mode is `block` and every declared input is unchanged since the last completed run, the server defers the fire instead of consuming it: the wakeup stays on with its expiry and runs on the next change of a declared input or at its expiry, and setting the mode to `off` runs every deferred wakeup. Deadline fires are never deferred. In `block`, a time wakeup an agent creates without `--watch` is refused; in `warn` it is created and the timeline records the missing declaration. Wakeups created by a person are exempt. Event and condition rules refuse `--watch`.
 - **Where results go**: `--parent <comment-id>` keeps the woken run's reply in the original thread.
 
 To manage existing rules:

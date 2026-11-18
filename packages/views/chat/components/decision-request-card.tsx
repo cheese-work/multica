@@ -53,7 +53,8 @@ const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim(
 type AnswerMutation = ReturnType<typeof useAnswerDecisionRequest>;
 
 // Direction B v9: a card with an action offers Approve or Reject beside one composer. "" is Discuss more.
-// Never stored: a reload must not bring back an armed Approve. Only the composer text is kept.
+// The selection is kept with the draft (it is unsent input), so a scroll-away or reload brings it back.
+// It only selects: Approve still needs the button press and the passkey, Reject the button press.
 type Choice = "" | "approve" | "reject";
 const CHOICES: readonly Exclude<Choice, "">[] = ["approve", "reject"];
 type Decide = {
@@ -334,7 +335,7 @@ type CardAction = NonNullable<RequestCard["action"]>;
 
 // Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
 // member list yet or any other role the button is absent. The server still refuses a non-owner.
-type ApprovalWiring = { hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
+type ApprovalWiring = { issueId: string; hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
 
 function OwnerGatedApproval({ action, previewSha256, approveDisabled, ...wiring }: { action: CardAction; previewSha256?: string; approveDisabled: boolean } & ApprovalWiring) {
   const workspace = useCurrentWorkspace();
@@ -408,8 +409,8 @@ function ActionPreview({
         </dl>
       )}
       {ownerOnly
-        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ hideControls, handle, onControls }} />
-        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ issueId, hideControls, handle, onControls }} />
+        : <DecisionActionApproval actionId={action.id} issueId={issueId} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
     </div>
   );
 }
@@ -579,7 +580,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
   const [, setUploadCancelled] = useUploadCancelledNotice(decisionAnswerDraftKey(card.id));
   const [refused, setRefused] = useState(false);
-  const [choice, setChoice] = useState<Choice>("");
+  const choice: Choice = draft.choice ?? "";
+  const setChoice = (next: Choice) => setDraft({ choice: next === "" ? undefined : next });
   const approvalRef = useRef<ApprovalHandle>(null);
   const [controls, setControls] = useState<ApprovalControls>({ ready: false, mayApprove: false, approveDisabled: false });
   const [needsPasskey, setNeedsPasskey] = useState(false);
@@ -612,6 +614,13 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     setRefused(false);
   };
 
+  const undecided = !!card.action && (!card.action.state || card.action.state === "pending");
+  // A recorded decision (or a card closed under the reader) ends the choice; the stored one must not outlive it.
+  const choiceEnded = !!draft.choice && (card.state !== "open" || !undecided);
+  useEffect(() => {
+    if (choiceEnded) setDraft({ choice: undefined });
+  }, [choiceEnded, setDraft]);
+
   if (card.answered_by_batch_request_id && !inIssue) {
     return (
       <p data-testid="decision-request-folded" className="flex min-w-0 flex-wrap items-center gap-x-2 rounded-xl border border-surface-border bg-surface px-3 py-2 text-label text-muted-foreground">
@@ -625,7 +634,6 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
 
   const keptDraft = (refused || card.state !== "open") && hasDraft(draft) && !answer.isPending;
   const formShown = card.state === "open" && !keptDraft && !coveredCardsMissing;
-  const undecided = !!card.action && (!card.action.state || card.action.state === "pending");
   const decide: Decide | undefined = formShown && undecided ? { choice, onChoice: setChoice, approvalRef, controls } : undefined;
   // One card for the whole batch: each item is decided on its own line, so the single-action controls stay away.
   const batched = !!card.batch_id && !!card.batch_items?.length && card.state !== "withdrawn";

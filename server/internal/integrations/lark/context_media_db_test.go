@@ -28,6 +28,9 @@ func TestContextMediaCollisionPreservesBindingDB(t *testing.T) {
 				name = source + "/issue"
 			}
 			t.Run(name, func(t *testing.T) {
+				if issue {
+					t.Skip("CHE-6461: fork CHE-1900 keeps InlineIDOnly media out of the issue body; upstream MUL-8495 expects selected media appended")
+				}
 				fx := testutil.New(pool, "", "")
 				suffix := uuid.NewString()
 				fx.UserID = fx.User(t, "Reporter", "marker-"+suffix+"@example.invalid")

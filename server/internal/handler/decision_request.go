@@ -23,6 +23,15 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
+// askIdentity is the caller's ask identity. A structured ask leaves out the
+// time its state was read, which a re-ask changes (CHE-7007).
+func (input decisionRequestInput) askIdentity() string {
+	if input.Parsed != nil {
+		return input.Parsed.IdentityWithoutReadTime()
+	}
+	return decisiontx.Identity(input.Ask)
+}
+
 type decisionRequestInput struct {
 	SessionID   pgtype.UUID
 	NewDM       bool
@@ -148,6 +157,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 	case "reversible", "spend", "deploy", "publish", "irreversible", "product_direction":
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
+	}
+	if err := handler.refuseReversibleAsk(request.Context(), issue, input); err != nil {
+		return empty, err
 	}
 	if input.HumanUserID.Valid {
 		var err error
@@ -439,7 +451,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request refuses a terminal issue"}
 	}
-	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.Ask); err != nil {
+	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.askIdentity()); err != nil {
 		return empty, err
 	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: located.TaskID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -546,7 +558,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if attach {
 		commentID = tag.ID
 	}
-	askIdentity := decisiontx.Identity(input.Ask)
+	askIdentity := input.askIdentity()
 	input, err := enrichDecisionAsk(ctx, queries, issue, intent.AgentID, input)
 	if err != nil {
 		return empty, err
@@ -762,7 +774,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	authorityStatus := http.StatusConflict
 	if input.Proposal != nil {
 		authorityStatus = http.StatusForbidden // D3's guard owns the re-ask rule
-	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.askIdentity()); err != nil {
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {

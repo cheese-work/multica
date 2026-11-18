@@ -179,6 +179,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_checkpoint":                   workspaceDelete,
 	"issue_wakeup":                       workspaceDelete,
 	"issue_wakeup_definition":            workspaceDelete,
+	"dm_progress_delivery":               workspaceDelete, // CHE-3405 sent progress cards; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_follow":                 workspaceDelete, // CHE-3369 C1 follow state; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_data_incident":          workspaceDelete, // CHE-3546 L0 data incident; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
@@ -223,6 +224,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
 	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
+	"member_setting":                     workspaceDelete,
+	"browser_instance":                   workspaceDelete,
+	"browser_lease":                      workspaceDelete,
+	"browser_profile":                    workspaceDelete,
+	"review_admission_deferral":          workspaceDeleteKeep, // no workspace_id; rows expire after 24 h (CHE-4650)
 	"host_sample":                        workspaceDeleteKeep, // host telemetry keyed by daemon_id, no workspace_id; outlives workspaces by design
 	"host_sample_hourly":                 workspaceDeleteKeep, // hourly rollup of host_sample; same reason
 	"agent_mcp_server":                   workspaceDelete,
@@ -317,6 +323,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"ci_watch_action":                    workspaceDelete,     // CHE-4273
 	"ci_signature_owner":                 workspaceDelete,     // CHE-4273
 	"ci_flake_increment":                 workspaceDelete,     // CHE-4280 flake counter; no FK.
+	"ci_watch_event":                     workspaceDelete,     // CHE-4279 storm-breaker event log; no FK.
 	"gh_installation_budget":             workspaceDeleteKeep, // CHE-4273 per GitHub App installation, shared across workspaces; no workspace_id.
 	"gh_budget_reservation":              workspaceDeleteKeep, // CHE-4273 same; no workspace_id.
 	"workspace_invitation":               workspaceDelete,

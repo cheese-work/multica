@@ -9,7 +9,7 @@ import { PrLinkDemo } from "@/components/demos/pr-link-demo";
 
 Once GitHub is connected, Multica automatically links pull requests based on issue identifiers. Issue detail shows PR state, change size, CI results, and merge conflicts in place.
 
-The GitHub integration only reads the repositories authorized at install time; it never pushes commits, comments, or status checks.
+The GitHub integration only reads the repositories authorized at install time; it never pushes commits, comments, or status checks. The one write is optional: when [stack auto-linking](#stack-auto-linking) is set to `link`, it links dependent PRs into a GitHub stack.
 
 Self-hosted Multica can also connect self-hosted Forgejo, Gitea, or GitLab instances in parallel, with the same PR auto-linking, merge-driven status changes, and CI display. The entry point is **Settings → Code**; see [Self-hosted Git hosting](/vcs-integration). Multica Cloud does not offer this entry point.
 
@@ -139,6 +139,88 @@ For example, a PR that references both `MUL-1` and `ENG-2` can link in two works
 
 If one identifier matches an issue in more than one of the connected workspaces (possible when they share a prefix), Multica doesn't link it automatically in any of them, so merging the PR can't complete an unrelated issue. Link the PR by hand in the right workspace.
 
+## Link stacked PRs into GitHub stacks [#stack-auto-linking]
+
+When a PR's base branch is the head branch of another open PR in the same repository, the two PRs form a chain. Multica can link the chain into one GitHub stack, so nobody has to run `gh stack link` by hand.
+
+### What it does and never does
+
+A PR linked to a Multica issue triggers it. Ancestor PRs do not need an issue. Multica walks down from that PR through the base PRs and then does one of these:
+
+| Walk result | Action |
+|---|---|
+| The PR's base is the default branch | Nothing. The PR can become the bottom of a stack when a later layer arrives. |
+| The PR is already in a stack, directly above its base PR | Nothing. |
+| No PR in the chain is in a stack | Creates one stack, bottom layer first. |
+| The walk reaches a PR that is the **top** of an existing stack | Adds the new PRs (and any unstacked PRs between) to that stack, bottom first. |
+| Anything else (see [report codes](#stack-report-codes)) | Writes nothing and reports. |
+
+It never moves a PR from one stack to another, never unstacks, never reorders, and never merges, rebases or pushes. A chain with any bad ancestor is not linked at all, so Multica never creates a truncated stack. GitHub stacks merge bottom-up, and a person still merges the code. The walk covers at most 10 ancestors and counts only PRs whose head branch is in the same repository (a fork head does not count).
+
+It runs when a linked PR is opened, reopened, marked ready for review, synchronized, has its base branch edited, or when a PR below it merges. A bounded pass in the 10 minute reconcile also checks linked open PRs whose base branch is not named `main` or `master`, so a missed webhook is caught. The sweep does not look up the repository's real default branch: if the default branch has another name, its PRs are checked too, and the pass changes nothing when the PR is not part of a stack. One job runs per repository at a time. A GitHub failure never fails PR handling or the webhook.
+
+### Choose a mode
+
+The workspace setting `github_stack_autolink` holds a mode, and optional per-repo modes:
+
+```json
+{ "mode": "report", "repos": { "owner/repo": "link" } }
+```
+
+| Mode | Effect |
+|---|---|
+| `off` | Does nothing. |
+| `report` | Reads, decides and records what it would do. Never writes. This is the default when the key is absent. |
+| `link` | Also writes the stack to GitHub. |
+
+Order: `off` < `report` < `link`. Rules:
+
+1. A workspace `mode` of `off` is a shutdown. A repo entry cannot raise it.
+2. Otherwise a repo entry wins over the workspace `mode`. It can raise `report` to `link` for one repo, or lower anything to `off`.
+3. The same GitHub App installation can be connected to several workspaces (see [Multiple workspaces](#multiple-workspaces)). The **final mode** for a repo is the lowest effective mode across every workspace connected to that installation. A write needs all of them to resolve `link`.
+4. The server environment variable `GITHUB_STACK_AUTOLINK=0` forces `off` for every repo and workspace.
+5. The mode is read again right before each write. A mode lowered while a job was queued means no write.
+
+Settings that cannot be read count as `off`.
+
+### CLI
+
+```bash
+multica github stack-autolink status --repo owner/repo
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link
+```
+
+`status` is open to any member. It prints the final mode, whether the env kill is set, and the effective mode of each of your workspaces connected to the repo owner's installation. Other workspaces are only counted. `set` needs a workspace owner or admin: without `--repo` it sets the workspace mode, with `--repo` it sets that repo's entry. Both accept `--output json`.
+
+<Callout type="info">
+Until stacking is `link` for your repo, link stacked PRs by hand with `gh stack link`. After you open a stacked PR in `link` mode, read `GET repos/{owner}/{repo}/stacks?pull_request=<number>` once. If no stack is there, link it by hand.
+</Callout>
+
+### Report codes [#stack-report-codes]
+
+Each outcome goes to the activity of every issue linked to the PR, in each workspace whose own mode is `report` or `link`. An outcome equal to the issue's latest one for that PR and base branch is skipped. Outcomes also feed a metric and a server log line.
+
+| Code | Meaning | Write |
+|---|---|---|
+| `created` | A new stack was created and read back. | Yes |
+| `extended` | PRs were added to an existing stack and read back. | Yes |
+| `would_create` | `report` mode: a stack would be created. | No |
+| `would_extend` | `report` mode: PRs would be added to a stack. | No |
+| `in_other_stack` | The PR is in a stack, but not directly above its base PR. | No |
+| `branching_chain` | The chain meets a stack at a PR that is not the top of that stack. | No |
+| `ambiguous_base` | More than one open PR in the repository has the base branch as its head. | No |
+| `stale_base` | The base branch has no open PR and is not the default branch, or its PR has merged. A person has to retarget. | No |
+| `closed_ancestor` | An ancestor PR was closed without merging. | No |
+| `cycle` | The chain loops back on a branch it already walked. | No |
+| `depth_limit` | The chain is deeper than 10 ancestors. | No |
+| `conflict` | GitHub answered `422` twice, even after Multica re-read everything. | No |
+| `unsupported` | The repository has no stacks API (`404`). | No |
+| `no_permission` | The App lacks permission (`403`). Check [Self-hosting setup](#self-hosting-setup). | No |
+| `schema` | GitHub's stacks response has a shape Multica does not know. | No |
+| `readback_failed` | The write succeeded, but the read-back did not find the stack in order. Check the PR on GitHub. | Yes |
+
+The stacks API is in preview on GitHub, so a shape change shows up as `schema` and never as a failed webhook.
+
 ## Disconnect
 
 Choosing **Disconnect** from the GitHub row's **⋯** menu on **Settings → Code** only removes the relationship between the current Multica workspace and the installation; it does not uninstall the App from GitHub for you. Existing PR records are kept, and new events stop flowing into that workspace.
@@ -224,6 +306,19 @@ The rule is satisfied by webhook events that Multica received after the App subs
 3. Wait for the approval gate: `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
 4. After the approval, wait for the finish with the same rule and `--until-gh-run-state completed`.
 
+## Release issues from the C00 deploy
+
+A successful `CD deploy to C00` run on `main` opens one issue per deploy. No new App permission or event is needed: the signed `workflow_job` delivery that the App already sends carries the proof.
+
+- **Trigger.** The `release-receipt` job finishes `success` and its step named `release-receipt old=<sha> new=<sha> digest=sha256:<hex>` also finishes `success`. The workflow runs that job only after a real deploy, a passing readback and the passing 15-minute confirm, so a skipped, failed or superseded deploy opens no issue.
+- **Binding.** Set the workspace setting `release_deploy_repo` to `owner/name` of the deploy repository. Without it no release issue opens. The receipt's repository must be that repository, and the run must be the `.github/workflows/cd-deploy.yml` run that the signed `workflow_run` delivery mirrored for it. A job with the same name in any other repository or workflow opens nothing; the refusal is logged and is not retried. Declaring a repository in the workspace's repository list does not authorize it.
+- **Order and retry.** GitHub does not order deliveries and does not redeliver a failed one. Multica stores the verified delivery first, before it looks up the installation and the workspace, then checks the run. If the run is not mirrored with its workflow file yet, the receipt waits and opens the issue when the `workflow_run` delivery arrives. If that run is another workflow file, the receipt is discarded. A sweep that runs every minute fans out again any stored delivery whose installation or workspace lookup failed, and settles any stored receipt a failed run lookup or a concurrent delivery left behind, so no manual redelivery is needed. A delivery or receipt that is still unsettled after 7 days is dropped.
+- **Issue.** Title `release(<repo>): <old>..<new>`, status `todo`, label `release`, the deployed SHA and image digest, and the merged pull requests grouped as feat, fix, CLI, skill and other. The list covers pull requests merged since the previous release issue, or the last 7 days for the first one.
+- **Label.** The `release` label is added in a separate write after the issue is created, so the `issue.labels_changed` event fires for wakeup rules scoped to that label.
+- **No duplicates.** The issue id is derived from the workspace, repository, SHA and digest, so a redelivery, a rerun or a concurrent delivery of the same deploy creates nothing new. A different SHA or digest opens a new issue.
+- **Recovery.** If a delivery fails after the issue is created, the next delivery of the same deploy reuses that issue and finishes the missing link or label write. No claim waits for a timeout.
+- **Limit.** The same signature and installation checks as other deliveries apply. The issue's creator is the workspace owner.
+
 ## Self-hosting setup
 
 Multica Cloud doesn't need this section. Self-hosting requires creating your own GitHub App first.
@@ -249,7 +344,7 @@ Repository permissions:
 | Permission | Level |
 |---|---|
 | Metadata | Read-only |
-| Pull requests | Read-only |
+| Pull requests | Read and write; write is needed for [stack auto-linking](#stack-auto-linking) |
 | Actions | Read-only; needed by `--until-gh-run` wakeups |
 | Checks | Read-only; used to show CI status |
 | Commit statuses | Read-only; used to aggregate legacy-status CI |
@@ -270,6 +365,8 @@ Subscribe to these events:
 - **Check suite**, **Check run**, and **Status**, which trigger CI and mergeability refreshes.
 
 PR snapshots use the Pull requests, Checks, and Commit statuses REST APIs. Contents access is not required. With the optional Actions permission, Multica also reads the commit's workflow runs. Without it, a cancelled run still counts as failed even after a newer run of the same workflow passes.
+
+Stack auto-linking calls GitHub's stacks API and needs the Pull requests **write** permission. An App that only has read keeps everything else working; stack outcomes show `no_permission` (see [report codes](#stack-report-codes)). If you raise the permission on an installed App, each installation owner must approve it on GitHub before it takes effect.
 
 <Callout type="warning">
 This is the **Webhook secret**, not the OAuth Client secret. If the two sides have different webhook secrets, GitHub deliveries return `401 invalid signature`.

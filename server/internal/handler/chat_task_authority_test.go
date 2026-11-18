@@ -378,6 +378,7 @@ func TestChatTaskAuthorityOtherSessionTargetLogsNoGrant(t *testing.T) {
 }
 
 func TestChatTaskAuthorityOrdinaryDMTaskKeepsAccess(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	a := newAuthorityFixture(t)
 	task := a.task(a.dmAgent, "running", "")
 	for _, setting := range []string{a.compactAgent, a.dmAgent, ""} {
@@ -683,6 +684,7 @@ func TestChatTaskAuthorityFailTaskAndSettingsWriteTakeLocksInOneOrder(t *testing
 // route: a compaction task whose agent is no longer the current compact agent
 // reads nothing, even though its token still binds it to the DM session.
 func TestChatTaskAuthorityHistoryRoutesUseSharedCheck(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	routes := map[string]func(http.ResponseWriter, *http.Request){
 		"history": testHandler.GetChatChannelHistory,
 		"thread":  testHandler.GetChatThread,

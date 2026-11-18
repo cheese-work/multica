@@ -32,6 +32,7 @@ import (
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
@@ -280,11 +281,14 @@ type Handler struct {
 	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
-	Passkeys              *passkey.Service
-	EmailService          *service.EmailService
-	UpdateStore           UpdateStore
-	ModelListStore        ModelListStore
-	DaemonUpdate          *DaemonUpdateSource // daemon build baked into this image; nil when absent
+	Passkeys       *passkey.Service
+	EmailService   *service.EmailService
+	UpdateStore    UpdateStore
+	ModelListStore ModelListStore
+	DaemonUpdate   *DaemonUpdateSource // daemon build baked into this image; nil when absent
+	// UpdateCycleReady runs when a draining update cycle has 0 live runs and an
+	// online runtime before its start cutoff; the updating step (CHE-5711) sets it.
+	UpdateCycleReady      func(context.Context, db.DaemonUpdateCycle) error
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
@@ -488,6 +492,9 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
+	// StackAutolink queues stack-link jobs for pull_request events (CHE-4143
+	// step 7). Nil disables the triggers. Enqueue never blocks or fails.
+	StackAutolink StackAutolinkEnqueuer
 
 	// ConfigSyncGitHub builds the GitHub reader for one config repo (CHE-3284);
 	// nil when the GitHub App is not configured. configSyncRun runs one
@@ -501,6 +508,9 @@ type Handler struct {
 	readApprovalSnapshot githubSnapshotReader
 	cfg                  Config
 }
+
+// StackAutolinkEnqueuer is the trigger side of ghstack.Dispatcher.
+type StackAutolinkEnqueuer interface{ Enqueue(ghstack.Job) }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
 	var executor dbExecutor

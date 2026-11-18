@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -16,23 +18,29 @@ import (
 // Runaway protection. A rule that starts this many runs within an hour, or
 // whose trigger chain leads back to itself, is paused with a visible reason.
 const (
-	wakeupHourlyRunLimit     = 12
-	wakeupDefaultMaxFires    = 20
-	wakeupChainLimit         = 32
-	wakeupLoopRepeats        = 2
-	wakeupActivityCreated    = "wakeup_created"
-	wakeupActivityTriggered  = "wakeup_triggered"
-	wakeupActivityTimedOut   = "wakeup_timed_out"
-	wakeupActivityCheckin    = "wakeup_checkin"
-	wakeupActivityPaused     = "wakeup_paused"
-	wakeupActivitySkipped    = "wakeup_skipped"
-	wakeupActivityRearmed    = "wakeup_rearmed"
-	wakeupPausedLoop         = "loop"
-	wakeupPausedRate         = "rate"
-	wakeupPausedMaxFires     = "max_fires"
-	wakeupTimeoutEventType   = "wakeup.timeout"
-	wakeupManualEventType    = "wakeup.manual"
-	wakeupConditionEventType = "condition.met"
+	wakeupHourlyRunLimit    = 12
+	wakeupDefaultMaxFires   = 20
+	wakeupChainLimit        = 32
+	wakeupLoopRepeats       = 2
+	wakeupActivityCreated   = "wakeup_created"
+	wakeupActivityTriggered = "wakeup_triggered"
+	wakeupActivityTimedOut  = "wakeup_timed_out"
+	wakeupActivityCheckin   = "wakeup_checkin"
+	wakeupActivityPaused    = "wakeup_paused"
+	wakeupActivitySkipped   = "wakeup_skipped"
+	wakeupActivityRearmed   = "wakeup_rearmed"
+	// CHE-6968: time_wakeup_skip deferral and its warn-mode previews.
+	wakeupActivityDeferred     = "wake_deferred"
+	wakeupActivityWouldDefer   = "wake_would_defer"
+	wakeupActivityWatchMissing = "wake_watch_missing"
+	wakeupPausedLoop           = "loop"
+	wakeupPausedRate           = "rate"
+	wakeupPausedMaxFires       = "max_fires"
+	wakeupPausedRunBudget      = "run_budget"
+	wakeupPausedWeeklyGuard    = "weekly_run_guard"
+	wakeupTimeoutEventType     = "wakeup.timeout"
+	wakeupManualEventType      = "wakeup.manual"
+	wakeupConditionEventType   = "condition.met"
 )
 
 // wakeupPreview is the rule snapshot stored with timeline entries, so the
@@ -227,4 +235,99 @@ func wakeupTriggerDetails(task db.AgentTaskQueue, receipts []db.IssueWakeupRecei
 	details["events"] = events
 	details["count"] = count
 	return details
+}
+
+// guardBlockReason names the run guard that refused a dispatch, or "" for any
+// other error. ErrWeeklyRunGuard wraps ErrRunBudgetExhausted, so it goes first.
+func guardBlockReason(err error) string {
+	switch {
+	case errors.Is(err, ErrWeeklyRunGuard):
+		return wakeupPausedWeeklyGuard
+	case errors.Is(err, ErrRunBudgetExhausted):
+		return wakeupPausedRunBudget
+	}
+	return ""
+}
+
+// disableGuardBlocked pauses a rule a run guard refused and writes one timeline
+// line for it, in one transaction apart from the refused dispatch (which rolled
+// back). It reports whether the rule is off. A weekly-guard refusal that a
+// pending progress event would now admit leaves the rule on (CHE-6193).
+func (s *IssueWakeupService) disableGuardBlocked(ctx context.Context, w db.IssueWakeup, reason string) (bool, error) {
+	if reason == wakeupPausedWeeklyGuard {
+		if admits, err := weeklyGuardAdmits(ctx, s.Tasks.Queries, w.IssueID, w.AgentID); err != nil || admits {
+			return false, err
+		}
+	}
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	q := s.Tasks.Queries.WithTx(tx)
+	row, err := q.DisableGuardBlockedWakeup(ctx, db.DisableGuardBlockedWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: reason, Valid: true}})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil // already off: the line was written when it was paused
+	}
+	if err != nil {
+		return false, err
+	}
+	activity, err := recordWakeupActivity(ctx, q, row, wakeupActivityPaused, "system", pgtype.UUID{}, map[string]any{"reason": reason})
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	s.publishWakeupActivities(activity)
+	return true, nil
+}
+
+// weeklyGuardResumePageSize bounds one resume pass.
+var weeklyGuardResumePageSize = 100
+
+// resumeWeeklyGuardWakeups re-enables the rules the weekly guard paused once it
+// would admit their run again: the 7-day count fell below the limit, or a
+// progress event is pending. A budget raise does not (CHE-6193).
+func (s *IssueWakeupService) resumeWeeklyGuardWakeups(ctx context.Context, workspaceIDs []pgtype.UUID) error {
+	q := s.Tasks.Queries
+	// One page per pass, resuming after the last rule the previous pass read, so
+	// rules the guard still refuses cannot pin the page. A short page wraps the
+	// walk to the start.
+	s.weeklyResume.Lock()
+	cursor := s.weeklyResume.after
+	s.weeklyResume.Unlock()
+	params := db.ListWeeklyGuardPausedWakeupsParams{WorkspaceIds: workspaceIDs, PageSize: int32(weeklyGuardResumePageSize)}
+	if cursor != nil {
+		params.AfterUpdatedAt, params.AfterID = cursor.updatedAt, cursor.id
+	}
+	rows, err := q.ListWeeklyGuardPausedWakeups(ctx, params)
+	if err != nil {
+		return err
+	}
+	next := (*weeklyResumeCursor)(nil)
+	if len(rows) >= weeklyGuardResumePageSize {
+		last := rows[len(rows)-1]
+		next = &weeklyResumeCursor{updatedAt: last.UpdatedAt, id: last.ID}
+	}
+	s.weeklyResume.Lock()
+	s.weeklyResume.after = next
+	s.weeklyResume.Unlock()
+	var errs []error
+	for _, w := range rows {
+		admits, err := weeklyGuardAdmits(ctx, q, w.IssueID, w.AgentID)
+		if err == nil && admits {
+			_, err = q.ResumeGuardPausedWakeup(ctx, db.ResumeGuardPausedWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedWeeklyGuard, Valid: true}})
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// weeklyResumeCursor is the last weekly-guard-paused rule a resume pass read.
+type weeklyResumeCursor struct {
+	updatedAt pgtype.Timestamptz
+	id        pgtype.UUID
 }
