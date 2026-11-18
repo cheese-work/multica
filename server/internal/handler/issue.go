@@ -1553,11 +1553,17 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	return query, args
 }
 
+// titleTierScanWindow bounds the instant tier to the newest issues of a workspace,
+// so one keystroke reads at most this many rows however large the workspace is or
+// however few titles match. A match older than the window comes with the full search.
+var titleTierScanWindow = 2000
+
 // buildTitleSearchQuery is the instant tier of Cmd+K (CHE-7337): issues whose
 // title holds every term, newest update first, read through the same row shape as
 // buildSearchQuery so scanSearchIssue serves both. It reads no description or
-// comment and ranks nothing, so the planner can walk idx_issue_workspace_updated_at
-// and stop at the limit. Args: $1 workspace_id (filled by the caller), $2 term
+// comment and ranks nothing. It walks idx_issue_workspace_updated_at newest first
+// through at most titleTierScanWindow rows, so the work is bounded even when fewer
+// than limit titles match. Args: $1 workspace_id (filled by the caller), $2 term
 // patterns, then the terminal statuses when closed issues are excluded, limit and
 // offset.
 func buildTitleSearchQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
@@ -1566,23 +1572,38 @@ func buildTitleSearchQuery(terms []string, includeClosed bool, terminalStatusKey
 		patterns[i] = "%" + escapeLike(foldDiacritics(term)) + "%"
 	}
 	args := []any{nil, patterns}
-	where := "i.workspace_id = $1 AND ist.title_folded LIKE ALL($2::text[])"
+	recentCols, where := "id, updated_at", ""
 	if !includeClosed {
 		args = append(args, terminalStatusKeys)
-		where += fmt.Sprintf(" AND NOT (i.status = ANY($%d::text[]))", len(args))
+		recentCols += ", status"
+		where = fmt.Sprintf("WHERE NOT (recent.status = ANY($%d::text[]))", len(args))
 	}
 	args = append(args, 0, 0)
+	// The LATERAL probe pins a primary-key lookup per window row (a plain join may
+	// seq scan the title table), and the hits join back to issue last, so full rows
+	// are read only for the few titles that matched.
 	return fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
 		i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		'title' AS match_source, '' AS matched_comment_content
-	FROM issue i
-	JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
-	WHERE %s
-	ORDER BY i.updated_at DESC, i.id DESC
-	LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args)), args
+	FROM (
+		SELECT recent.id
+		FROM (
+			SELECT %s FROM issue WHERE workspace_id = $1 ORDER BY updated_at DESC, id DESC LIMIT %d
+		) recent
+		JOIN LATERAL (
+			SELECT 1 FROM issue_search_text ist
+			WHERE ist.issue_id = recent.id AND ist.workspace_id = $1 AND ist.title_folded LIKE ALL($2::text[])
+			LIMIT 1
+		) title ON true
+		%s
+		ORDER BY recent.updated_at DESC, recent.id DESC
+		LIMIT $%d OFFSET $%d
+	) hit
+	JOIN issue i ON i.id = hit.id
+	ORDER BY i.updated_at DESC, i.id DESC`, recentCols, titleTierScanWindow, where, len(args)-1, len(args)), args
 }
 
 func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
