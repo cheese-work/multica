@@ -703,6 +703,12 @@ func main() {
 	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
 	// stops writing it as well as sending the snapshot.
 	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
+	// One server_deploy row per new commit (CHE-5709, D14). Display data only:
+	// a failed write is logged and never stops the boot.
+	deployVersion, _, deployCommit := normalizeServerBuildInfo(version, build, commit)
+	if _, err := h.RecordServerDeploy(context.Background(), deployCommit, deployVersion); err != nil {
+		slog.Warn("record server deploy failed", "error", err)
+	}
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)

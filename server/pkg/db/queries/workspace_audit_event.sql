@@ -43,3 +43,18 @@ UNION ALL SELECT 'project', p.id, p.title FROM project p WHERE p.workspace_id = 
 UNION ALL SELECT 'autopilot', ap.id, ap.title FROM autopilot ap WHERE ap.workspace_id = @workspace_id AND ap.id = ANY(@ids::uuid[])
 UNION ALL SELECT 'workspace', w.id, w.name FROM workspace w WHERE w.id = @workspace_id AND w.id = ANY(@ids::uuid[])
 UNION ALL SELECT 'member', m.id, u.name FROM member m JOIN "user" u ON u.id = m.user_id WHERE m.workspace_id = @workspace_id AND m.id = ANY(@ids::uuid[]);
+
+-- name: ListMachineAuditEvents :many
+-- Audit rows about the runtimes of one machine (CHE-5709). Same keyset page and
+-- columns as ListWorkspaceAuditEvents; the caller passes the machine's runtime
+-- ids and the kinds the machine tab shows.
+SELECT id, at, actor_type, actor_id, task_id, kind, target_type, target_id,
+       "before", "after", external_requested
+FROM workspace_audit_event
+WHERE workspace_id = @workspace_id
+  AND target_id = ANY(@runtime_ids::uuid[])
+  AND kind = ANY(@kinds::text[])
+  AND (sqlc.narg('cursor_at')::timestamptz IS NULL
+       OR (at, id) < (sqlc.narg('cursor_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY at DESC, id DESC
+LIMIT @row_limit;
