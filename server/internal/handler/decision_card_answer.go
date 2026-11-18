@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -32,9 +34,12 @@ var errCoversAckRequired = decisionIntentRefusal{http.StatusBadRequest, "covers_
 type decisionCardAnswerInput struct {
 	Option string `json:"option"`
 	Text   string `json:"text"`
+	// The DM the person answered from. A mirrored card names its own lane; empty
+	// means the card's original lane.
+	ViewSessionID string `json:"view_session_id,omitempty"`
 	// A gated class also carries the revisions the person saw and the passkey
 	// assertion over them.
-	AnswerRevision int32           `json:"answer_revision,omitempty"`
+	AnswerRevision *int32          `json:"answer_revision,omitempty"`
 	PolicyRevision int32           `json:"policy_revision,omitempty"`
 	Assertion      json.RawMessage `json:"assertion,omitempty"`
 	// A batch card's option answer also closes the cards it covers. It carries
@@ -116,8 +121,8 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	if located.HumanUserID != userID {
-		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can answer"}
+	if err := refuseDeadAnswer(located, userID, input, time.Now()); err != nil {
+		return empty, err
 	}
 	if input.Option != "" && located.AskJson == nil && located.Kind != "action" {
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "this request has no options to click; type an answer"}
@@ -167,7 +172,10 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if decision.ChatSessionID != located.ChatSessionID || decision.HumanUserID != userID || decision.IssueCommentID != located.IssueCommentID {
 		return empty, decisionIntentRefusal{http.StatusConflict, "decision context changed; retry"}
 	}
-	if decision.Origin != "asked" || decision.Status != "open" {
+	if err := refuseDeadAnswer(decision, userID, input, time.Now()); err != nil {
+		return empty, err
+	}
+	if decision.Origin != "asked" {
 		return empty, decisionIntentRefusal{http.StatusConflict, "this request cannot accept another answer"}
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, workspaceID, issue.Status)
@@ -181,8 +189,26 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	if session.CreatorID != userID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
+	if session.CreatorID != userID || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+	}
+	// The answer is recorded in the view the person answered from. The card's own
+	// lane may be archived: its history stays read-only, and an active plain DM of
+	// the same person, named by the request, records the answer instead.
+	cardSession := session
+	if input.ViewSessionID == "" && session.Status != "active" {
+		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+	}
+	if input.ViewSessionID != "" {
+		viewID, err := util.ParseUUID(input.ViewSessionID)
+		if err != nil {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "view_session_id must name a decision lane"}
+		}
+		if viewID != session.ID || session.Status != "active" {
+			if session, err = lockAnswerView(ctx, queries, workspaceID, userID, viewID); err != nil {
+				return empty, err
+			}
+		}
 	}
 	workspace, err := queries.GetWorkspace(ctx, workspaceID)
 	if err != nil {
@@ -223,7 +249,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 			return empty, err
 		}
 	}
-	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(session.ID), uuidToString(decision.PingMessageID))
+	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(cardSession.ID), uuidToString(decision.PingMessageID))
 	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(quote) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
@@ -342,4 +368,29 @@ func cardOptionIndex(decision db.DecisionRequest, input decisionCardAnswerInput)
 	}
 	index := slices.IndexFunc(options, func(option decisiontx.AskOption) bool { return option.Label == input.Option })
 	return pgtype.Int4{Int32: int32(index), Valid: index >= 0}, nil
+}
+
+// lockAnswerView returns the active DM a mirrored card was answered from: the
+// answering person's own plain DM, whichever agent it is with (CHE-3473 D3 routes
+// a decision to a fitting member DM).
+func lockAnswerView(ctx context.Context, queries *db.Queries, workspaceID, userID, viewID pgtype.UUID) (db.ChatSession, error) {
+	unavailable := decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: workspaceID, ID: viewID}); errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, unavailable
+	} else if err != nil {
+		return db.ChatSession{}, err
+	}
+	view, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: workspaceID, ID: viewID})
+	if err != nil {
+		return db.ChatSession{}, err
+	}
+	if view.CreatorID != userID || view.Status != "active" || view.ChannelOriginAt.Valid || view.IsAgentIntro {
+		return db.ChatSession{}, unavailable
+	}
+	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, view.ID); err == nil {
+		return db.ChatSession{}, unavailable
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, err
+	}
+	return view, nil
 }
