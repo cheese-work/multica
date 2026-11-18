@@ -28,14 +28,14 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.namespace_source_sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate source and qualification verifier
         run: |
           python3 -m unittest discover -s scripts -p test_namespace_qualification.py -v
           python3 scripts/namespace-qualification.py check-source "$SOURCE_SHA"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.namespace_source_sha }}
           path: namespace-source
@@ -92,7 +92,7 @@ jobs:
       actions: read
       checks: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -120,7 +120,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -143,7 +143,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
@@ -186,7 +186,7 @@ jobs:
     env:
       BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
@@ -225,7 +225,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Test the guard
@@ -265,7 +265,7 @@ jobs:
         os:
           - ${{ vars.RUNNER_CURSOR_BACKGROUND_LIFECYCLE || 'ubuntu-24.04' }} # macOS leg halted (CHE-1012): no free macOS runners
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "~1.27.3"
@@ -312,7 +312,7 @@ jobs:
       push_sqlc: ${{ steps.decide.outputs.push_sqlc }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -351,7 +351,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_SQLC_CHECK || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -387,7 +387,7 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
@@ -450,7 +450,7 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
@@ -511,7 +511,7 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
@@ -558,7 +558,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -589,7 +589,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_FRONTEND || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
@@ -727,7 +727,7 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         id: go
@@ -948,7 +948,7 @@ jobs:
       CI: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -1052,7 +1052,7 @@ jobs:
       GOFLAGS: -count=1
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         id: go
@@ -1119,7 +1119,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_GO_VULNERABILITY_SCAN || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -1154,7 +1154,7 @@ jobs:
     steps:
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The diff-only lint mode needs the merge base, not just the tip commit.
           fetch-depth: 0
@@ -1225,7 +1225,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
@@ -1247,7 +1247,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_IMAGE_BUDGET || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The merge commit and both of its parents: the first parent is the
           # base the merge was made with (see check-image-budget.mjs).
@@ -1280,7 +1280,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Test shell installers
         run: bash scripts/install.test.sh
@@ -1314,7 +1314,7 @@ jobs:
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ${{ vars.RUNNER_SCRIPT_CHECKS || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -1396,7 +1396,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_DEPLOY_CD || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Test D2 deploy control flow
         run: bash deploy/cd/test-deploy.sh
@@ -1452,7 +1452,7 @@ jobs:
     if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: bash scripts/setup-pnpm.sh
       - uses: actions/setup-node@v7
         with:

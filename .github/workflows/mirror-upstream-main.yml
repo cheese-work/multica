@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 10
     environment: ci-app-token
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: scripts/mirror-upstream-main.sh
