@@ -364,6 +364,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。設定は `background_agents` の `routing` ジョブとして保存されます。これらのフラグは `multica workspace background-agents set routing` の別名で、従来の `/routing-agent` API ルートも 1 リリースの間は別名として残ります。
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` は、ワークスペースの時刻ウェイクアップのスキップモード（`settings.time_wakeup_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみで、変更はすべてアクティビティログに記録されます。`off` は確認をオフにし、保留中の時刻ウェイクアップをすべて実行します。`warn` は `block` なら何をするかを記録し、起動は通常どおり実行します。`block` は変化のない宣言済みの起動を保留し、エージェントには時刻ウェイクアップで `--watch <inputs>` または `--watch always` を必須にします。
+- `multica workspace update --auto-close-mode off|warn|block` は自動クローズのモード（`settings.auto_close.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーだけです。クローズに必要なチェックは [ワークスペース](/docs/workspaces) を参照してください。レビュー後にやることが残っていないとき、タスクの作成者は `multica issue metadata set <issue> --key post_close_work --value none --type string` を記録します。
 - `multica workspace update --ask-guard-mode off|warn|block` は、質問ガードのモード（`settings.ask_guard_mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。コマンドは保存後のワークスペースを表示し、`multica workspace get` でも `settings` にモードが表示されます。`off` でガードをオフにし、`warn` は違反を数えるだけで通し、`block` は拒否します。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 - `--mode script --script <name> [--arg <value>]...` は、モデルセッションなしでエージェントのタスクトークンの下、許可リストにあるスクリプトを 1 つ実行します。`--script` と `--arg` には `--mode script` が必要で、`--mode script` には `--script` が必要です。`--description` は実行されません。デーモンに許可リストがない場合、すべてのスクリプトタスクは安全側で失敗します。`--output json` はスクリプト名と引数を `script_config` として表示します。`autopilot update --mode <他のモード>` はスクリプトを消去します。 タスク終了時、サーバーはタスクトークンの削除をベストエフォートで行います。削除に失敗した場合、トークンは有効期限まで有効なままで、それより早く失効させる仕組みはありません。実行結果の `script` にスクリプト名、引数リストの SHA-256、終了コード、所要時間が記録され、削除に失敗した場合は `token_revoke_failed` が設定されます。
@@ -392,6 +393,20 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 `decision` カードの各選択肢は、選ばれた後に誰が動くかを示せます。`after_choice` に `agent_run`、`human_steps`、`record_only` のいずれかを設定します。`agent_run` の選択肢は `agent_commands` を列挙します。1 つ以上の argv 配列で、例は `["$MULTICA_CLI_PATH", "daemon", "restart"]` です。1 つの文字列で渡したコマンドは、サーバーがシェル文を解析しないため、フィールド名付きで拒否されます。コンソール専用の画面を使う選択肢は、代わりに `agent_surface` にカタログのキーを設定します。この検査は型付きフィールドだけを読み、`what_happens` は読みません。各コマンドをツール名と先頭の語に正規化し(パス、`.exe`、グローバルフラグ `--profile`、`--server-url`、`--workspace-id`、`--debug` は除去)、ワークスペース設定 `agent_cannot_do` と比較します。これはエージェントの実行ではできないことの `{key, tool, subcommand, human_step}` 一覧です。この設定がない場合、エントリは `multica` の `daemon restart` と `daemon stop` です。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` などのラッパーは実際のコマンドを隠すため、コマンド自体を argv で渡してください。ワークスペース設定 `agent_cannot_do_mode`(`off`、`warn`、`block`。既定は `off`)が結果を決めます。`warn` ではカードを作成し、応答にヒントを付けます。`block` ではサーバーが `400` を返し、選択肢のラベル、カタログのキー、`human_steps` に書く人の手順を示し、カードは作成しません。`warn` と `block` では、`after_choice` のない選択肢はヒントが 1 件付くか、フィールド名付きで拒否されます。アクションカードと免除トピックのカードは検査しません。
 
 ワークスペース設定 `decision_card_lint_mode`(`off`、`warn`、`block`。既定は `off`)は、選択肢カードの文面を検査します。`warn` ではカードを作成し、指摘ごとに 1 件のヒントを応答に付けます。`block` ではサーバーが理由コードとフィールドパスを付けて `400` を返し、カードは作成しません。コードは次のとおりです。`weak_cons` は、選択肢のデメリットがすべて「あなたの時間」(「takes 1 minute of your time」)または確認・レビューをもう 1 回行うことだけの場合。`option_markdown` は、`label`、`what_happens`、`pros`、`cons` に表、見出し、画像、HTML、コードブロック、Mermaid ブロックがある場合(太字、斜体、インラインコード、リスト、リンクは使えます)。`option_leak` は、選択肢の文面が推奨を示す場合(「recommended」、「(rec)」、または 1 つのラベルだけの太字)。`default_leak` は、クラス `spend`、`deploy`、`publish`、`irreversible`、`product_direction` で `default_if_no_reply` が選択肢を名指しする場合(「No action until you pick.」と書いてください)。英語とベトナム語の言い回しを照合します。アクションカードと免除トピックのカードは検査しません。 カードの issue コメントに質問先の人へのメンションがない場合、サーバーがメンションを追加し `mention_missing` をログに記録します。拒否はされません。
+
+ワークスペース設定 `design_card_guard` は、`mode`、`doop_origin`、`design_url_property_id`、`design_workflow_id` を持つオブジェクトです。`mode` は `off`、`warn`、`block` のいずれかで、キーがない場合や `mode` がない場合は `off` です。`warn` または `block` では、`doop_origin`(パスのない `https` オリジン)と `design_url_property_id`(UUID)が必須で、`design_workflow_id`(UUID)は任意です。それ以外のフィールド、`null` 値、型の誤りはサーバーが `400` で拒否します。決定アクションによる設定変更でもこのキーを指定できます。現時点では設定の読み取りと検証だけを行い、カードに対する警告や拒否はまだ行いません。
+
+## バックグラウンドエージェント
+
+各バックグラウンドジョブ（`dm_title`、`quick_actions`、`compact`、`routing`）は、プライマリエージェント、次にフォールバックエージェントのタスクとして実行されます。ワークスペースの既定、または自分のチェーンを表示・設定します。
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # ワークスペースの既定に戻す
+```
+
+`--agent` と `--fallback` にはエージェントの ID または名前を指定し、`none` でフィールドを解除します。`multica me` が扱うのは `dm_title`、`quick_actions`、`compact` で、`routing` はワークスペース専用です。ワークスペースへの書き込みにはオーナーまたは管理者が必要で、どちらのコマンドもタスクトークンを拒否します。エージェントなしの動作と期限は[バックグラウンドエージェント](/background-agents)を参照してください。
 
 ## コマンド概要
 
@@ -576,6 +591,9 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `guard` | `exec <tool> -- <args>` | ガード経由でツールを実行：`gh pr create`・`edit`・`ready` はドラフト固定・タグ付け・読み戻し確認を行い、`gh api` による pull request への書き込み（GraphQL mutation を含む）は拒否。CI 待ち（`gh pr checks --watch`・`gh run watch`・20 秒以上の `sleep`）は、代わりに使う wakeup コマンドを示して拒否 | 終了コード：ツール自身のもの、ガードが拒否した場合は 2。環境変数：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
 | `guard` | `check-pr <pr-url\|number\|branch>` | プルリクエストをポリシーとリポジトリの `.github/agent-rules.yml` に照らして、変更せずに検査します。ファイルは PR の保護されたベースブランチの現在の先端からデータとして読み、PR ブランチからは読みません。ファイルがなければルールは増えず、不正な形式のファイルや読めないベースは検査を失敗させます。CI のチェックとして使います | 終了コード: 0 は合格、1 はルール違反、2 は拒否。`-R owner/name` でリポジトリを指定 |
 | `guard` | `plugin list\|get\|set` | 保存済みのガードポリシーを読む（`list`、`get <name>`）か、置き換える決定アクションファイルを書き出す（`set --file <policy.json> --out <action.json>`、または `--dry-run`）。ポリシーはワークスペースのプラグインとレビュールールに加え、org・リポジトリ・パスの各レイヤーを持つ。深いレイヤーは浅いレイヤーをキーごとに上書きし、`locked` を付けたレイヤーまたはワークスペースは、そのキーを深いレイヤーから固定する。`set` は何も送信せず、人が passkey で `workspace.settings.patch` を承認する。デーモンは承認済みポリシーを、作業ツリー外のファイル `MULTICA_GUARD_POLICY` と `MULTICA_GUARD_POLICY_SHA256` として各実行に渡す | 出力：JSON 行（`--output table` で表）。`set` は `before_sha256` と `after_sha256` を表示 |
+
+`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。Cheese Work の正規ファイルは `config/tevo-prod1-guard.json` です。
+
 
 ### 判断の提案
 

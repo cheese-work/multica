@@ -38,6 +38,27 @@ The creator automatically becomes an `owner`.
 After the issue prefix changes, every issue immediately switches to the new number (`MUL-5` becomes `NEW-5`), but the old numbers in PRs, branch names, and chat history do not update.
 </Callout>
 
+### Auto-close
+
+The workspace setting `auto_close` controls what happens when a child issue enters the `agent_accepted` step and nothing is left to do. The step's agent would only close it, so the server can take the step's `agent_done` edge to `done` itself.
+
+| Value | Effect |
+| --- | --- |
+| `off` | Nothing changes. The step's agent runs. |
+| `warn` (default) | The step's agent runs as today. Each entry also records one `auto_close_would_close` activity row that names the checks that held and the run that followed. |
+| `block` | The server moves the issue to `done`, records an `auto_closed` activity row that names the checks it read, and starts no run. |
+
+A close needs every check below. If one fails or cannot be read, the step's agent runs as today.
+
+- The issue has a parent. Root issues are never closed.
+- The newest review verdict is a PASS with no P0 or P1 finding, and it is for the current candidate. With a PR, every linked PR is merged at the head the PASS names. Without a PR, the candidate is the issue's text: no attachment, description change, or comment (other than the reviewer's) came after the PASS, and neither did a CHANGES verdict, stale or superseded mark, or return to `in_progress`.
+- No open child issue, no open decision request, and no wakeup that was live when the issue entered the step.
+- The description has no `Blockers: Cheese stop` line, and the parent's `delivery_stop` metadata is not `stopped`.
+- The issue metadata `post_close_work` is `none`. The author writes it: `multica issue metadata set <issue> --key post_close_work --value none --type string`. Any other value, such as a short description of the work that remains, keeps the run.
+- The workflow has an `agent_done` edge from `agent_accepted` to `done`.
+
+Set the mode with `multica workspace update --auto-close-mode off|warn|block`. An unreadable value counts as `off`.
+
 ### Ask guard
 
 The workspace setting `ask_guard_mode` controls what happens when an agent operation asks a person to act without opening a decision request.
@@ -61,6 +82,8 @@ The workspace setting `autopilot_assign_gate` controls what happens when an issu
 Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
 
 The workspace setting `reversible_ask_guard` (`off` by default, `warn`, `block`) covers a plain decision request from an agent whose class is `reversible`: the agent asks a person to approve work that agents may already decide and do themselves. `warn` logs it. `block` refuses it with `422`. Action, proposal and batch requests are unaffected. Set it back to `off` to revert; no data changes. The same setting covers a plain reply from an agent under a member's comment on an issue in `blocked` or `need_decision`, where the reply can ask that person without any decision request: `warn` logs it and `block` refuses it with `422`. Top-level comments, replies under an agent, comments that mention an agent or squad, comments with `--notify-only` and decision requests are unaffected.
+
+The workspace setting `owner_script_guard` (`off`, `warn`, `block`; `warn` when unset) covers an agent's decision request, action request and `multica decision ask` card: the owner reads no shell, so a card that tells the person to run a command is a defect of the ask. Eight rules (R1 to R8, rule set version 1) read the card text and its steps: a shell code fence, a command in a fence or in inline code, a `human_steps` command, a script attachment, and a run cue such as "run" or "paste" next to a command or right after a flagged message. `warn` delivers the card and records the hit. `block` refuses it with `422`, names the rules and fields that hit, and points to `multica config propose`, `multica decision propose <type>` or a bot permission instead. `off` checks nothing. Each check writes one event, an `owner_script_guard` activity row, in the same transaction as the card, or on its own when the card is refused. The event holds ids, the outcome, `delivered`, `rule_hits`, keyed hashes of the commands (`cmd_hmacs`) and `retry_of`; it holds no message text. The issue timeline does not list these rows. Set it back to `warn` or `off` to revert; no data changes.
 
 When the run that raised a `block` event has ended, the server sends the one person the ask names an automatic recovery notice: a DM message, an issue comment and an inbox item, written in one transaction. The notice quotes the stored ask, links the issue, and has no options, recommendation or approval, so it is never a decision request. It is sent only if the stored source has the ask text, names exactly one member, and that member is still in the workspace; otherwise the event waits for repair. Replying in the notice's comment thread marks it `answered`. A member who left the workspace can no longer read or answer it.
 

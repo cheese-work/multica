@@ -1,0 +1,23 @@
+issue: CHE-2864
+design: design/decision-card/approved/direction-b.html @ de59132eab6f4bd50e3ddc7d2654ecf3d9d27831
+pages:
+  - id: dm-decided-card
+    url: /<workspace>/chat/<session>   # DM with a decided run-budget card
+    keep: [decision-summary, decision-request-meta]
+    change: [decision-request-effect: "effect line names runs after the change", decision-request-receipt: "new: one outcome line", decision-request-runs: "new: runs used before → after row"]
+    remove: []
+  - id: issue-decided-card
+    url: /<workspace>/issues/<issue>   # issue page, decision cards block
+    keep: [decision-summary, decision-request-meta]
+    change: [decision-request-effect: "same as DM", decision-request-receipt: "same as DM", decision-request-runs: "same as DM"]
+    remove: []
+  - id: issue-run-budget-meter
+    url: /<workspace>/issues/<issue>   # sidebar meter, after an owner approves there
+    keep: [run-budget-meter]
+    change: [decision-action-outcome: "done view shows the same outcome line, updated live"]
+    remove: []
+  - id: issue-approve-panel
+    url: /<workspace>/issues/<issue>?approve=<action>   # approve link panel
+    keep: []
+    change: [decision-action-outcome: "same as the meter"]
+    remove: []

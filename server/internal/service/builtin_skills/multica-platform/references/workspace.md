@@ -139,6 +139,20 @@ Every scope flag is explicit: `--workspace` (exactly one) never falls back to
 `--workspace-id`, `MULTICA_WORKSPACE_ID` or the saved config. Each successful
 export writes an audit row.
 
+## GitHub stack auto-link mode
+
+```bash
+multica github stack-autolink status --repo owner/repo               # read-only; final mode and per-workspace modes
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link   # owner or admin only
+```
+
+- `status` is open to any member. The final mode is the lowest effective mode
+  across every workspace bound to the same GitHub App installation, so read it
+  before you expect stack links on a PR.
+- `set` without `--repo` changes the workspace default; with `--repo` it
+  changes that repo only. Workspace `off` is a shutdown a repo entry cannot
+  raise. Run it only when a person asked for it.
+
 ## GitHub kill switch
 
 ```bash
@@ -180,3 +194,16 @@ Workspace admin. Settings are per repo (`<owner/name>`).
   `--max-owner-wakes`.
 - `multica ci-watch events <owner/name> [--limit N]` lists recent watcher
   events (1 to 200, server default 50).
+
+## Per-issue token usage
+
+```bash
+multica issue usage <issue-id> --output json
+```
+
+Returns aggregated token usage across the issue's runs. In table output `RUNS`
+counts terminal runs only — one still in flight is not yet reflected. A total
+prefixed with `>=` is a lower bound, not the real total: one or more terminal
+runs did not report usage (aborted or infra-failed), so the true figure is at
+least that but unknown above it. Do not compare an unprefixed total with a
+`>=`-prefixed one without checking which you have.

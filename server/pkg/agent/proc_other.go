@@ -41,6 +41,9 @@ func configureProcessGroup(cmd *exec.Cmd) {
 //
 // An oversized command line (E2BIG) is reported as ErrArgvLimitExceeded.
 func startOwnedProcessTree(cmd *exec.Cmd, _ *slog.Logger) error {
+	if err := applyLaunchHook(cmd); err != nil {
+		return err
+	}
 	return wrapArgvLimitError(cmd.Start())
 }
 

@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1339,6 +1339,36 @@ func TestBuildWorkspaceUpdateBodyAskGuardMode(t *testing.T) {
 		setStringFlag(t, "ask-guard-mode", mode)
 		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
 			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+}
+
+// CHE-6969: --auto-close-mode sends only auto_close.mode and refuses any other flag.
+func TestBuildWorkspaceUpdateBodyAutoCloseMode(t *testing.T) {
+	for _, mode := range []string{"off", "warn", "block"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "auto-close-mode", mode)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if want := map[string]any{"auto_close": map[string]any{"mode": mode}}; !reflect.DeepEqual(body, want) {
+			t.Errorf("%s: body = %#v, want %#v", mode, body, want)
+		}
+	}
+	for _, mode := range []string{"on", "", "BLOCK"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "auto-close-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+	for _, other := range []string{"time-wakeup-skip-mode", "ask-guard-mode", "name"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "auto-close-mode", "warn")
+		setStringFlag(t, other, "warn")
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--auto-close-mode") {
+			t.Errorf("with --%s: err = %v, want a conflict naming --auto-close-mode", other, err)
 		}
 	}
 }

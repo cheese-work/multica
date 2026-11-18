@@ -211,4 +211,17 @@ describe("DescriptionDisclosure", () => {
     act(() => queuedFrame?.(0));
     expect(screen.queryByRole("button", { name: /Show more|Show less/ })).not.toBeInTheDocument();
   });
+
+  it("keeps the Show more label unchanged right after a child mutation (CHE-1830 H5)", () => {
+    render(<DisclosureHarness />);
+    const label = "Show more 1 more line";
+    expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+
+    // A child mutation schedules a re-measure; the frame has not run yet.
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    act(() => TestResizeObserver.callback?.([], {} as ResizeObserver));
+
+    expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
 });

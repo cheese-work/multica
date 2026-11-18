@@ -48,6 +48,7 @@ Vous devez aussi choisir un service d'e-mail ; sinon, les codes de vérification
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | Délai d'attente, après un signal d'arrêt, avant le début de l'arrêt propre |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | Durée pendant laquelle un runtime hors ligne peut se reconnecter avant que ses exécutions en cours n'échouent ; les valeurs inférieures à `150s` sont relevées à ce plancher |
 | `MULTICA_REVIEW_GUARD_AGENT_IDS` | vide (garde désactivée) | ID d'agents relecteurs séparés par des virgules. Une exécution de relecture est ignorée, avec la raison `review_head_answered`, quand cet agent a déjà publié PASS, FAIL, BLOCKED ou NOT-RUN pour le head de la PR et que le ticket a exactement une PR liée ouverte ; un nouveau head relance l'exécution. Un verdict est une ligne `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN` (ou une ligne commençant par `BLOCKED` ou `NOT-RUN`) plus une ligne `Candidate:` ou `Head:` donnant le SHA du head. L'exécution ignorée apparaît dans la liste des exécutions comme annulée. Les points de suivi planifiés ne sont pas concernés |
+| `MULTICA_TASK_ASSERTION_SIGNING_KEY` | vide (désactivé) | `<kid>:<graine Ed25519 en base64>`. Si défini, une prise en charge de tâche renvoie aussi `doop_task_assertion` : une identité de tâche signée, valable 24 h (tâche, agent, issue, projet, fournisseur du runtime, modèle réclamé), que doop vérifie avec la clé publique correspondante. Non défini : aucun champ, prise en charge inchangée. Une valeur mal formée est journalisée une seule fois et ne produit rien ; la prise en charge réussit quand même. Rien n'est stocké |
 
 Lorsque vous définissez un délai de maintien avant arrêt sur Kubernetes, `terminationGracePeriodSeconds` doit dépasser ce délai plus le temps nécessaire à l'arrêt proprement dit.
 
@@ -230,6 +231,17 @@ Lorsque la clé d'API et l'URL de base sont toutes deux vides, cette couche est 
 <Callout type="info">
 Ceci ne concerne que la couche d'assistance. L'exécution d'un agent suit un chemin de données distinct : lorsqu'un agent répond dans une discussion, votre daemon exécute l'outil de codage IA de cet agent avec les propres identifiants de l'outil, et ne lui transmet pas les paramètres `MULTICA_LLM_*` ci-dessus. (Les variables de connexion à Multica propres à l'exécution, dont l'agent a besoin, sont injectées séparément par le daemon.) Vider les variables ci-dessus n'a aucun effet sur ce chemin — contrôlez-le via la configuration du runtime de l'agent.
 </Callout>
+
+## Garde de conception (doop)
+
+Ce groupe configure la façon dont Multica lit les attestations de conception de doop pour le paramètre d'espace de travail `design_card_guard`. Un seul GET HTTPS avec un jeton porteur partagé lit une attestation.
+
+| Variable | Défaut | Description |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | vide | Origine de doop, par exemple `https://doop.example.com`. Elle doit être en `https` et sans chemin |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | vide | Jeton partagé d'au moins 32 caractères. Il doit être égal à `DOOP_ATTESTATION_READ_TOKEN` côté doop |
+
+Si l'une des variables est absente ou inutilisable, le lecteur n'est pas configuré et chaque lecture échoue comme non configurée. Chaque lecture a un délai de 3 secondes, ne suit aucune redirection et accepte un corps de 256 Kio au plus.
 
 ## Configuration du daemon
 

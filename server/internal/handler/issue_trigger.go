@@ -113,6 +113,15 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		h.skipHandoffIntent(ctx, intentID, "stop_not_confirmed")
 		return false
 	}
+	if issue.Status == statusAgentAccepted {
+		closed, after := h.autoCloseOnAccept(ctx, issue, intentID)
+		if closed {
+			return false
+		}
+		if after != nil {
+			defer func() { after(started, trigger.AgentID) }()
+		}
+	}
 	if intentID.Valid {
 		intent, err := h.dispatchHandoffIntent(ctx, intentID)
 		if err != nil {

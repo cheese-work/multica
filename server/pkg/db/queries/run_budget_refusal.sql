@@ -78,15 +78,17 @@ SET hook_phase = @hook_phase::text,
     updated_at = now()
 WHERE id = @id::uuid;
 
--- name: SupersedeRunBudgetRefusalsExcept :exec
+-- name: SupersedeRunBudgetRefusalsExcept :many
 -- A refusal for a later window ends every earlier non-terminal refusal of the
--- issue and its unfinished hook (P2r supersession a).
+-- issue and its unfinished hook (P2r supersession a). Returns the approved
+-- action of each row it ended, whose card now reads a new outcome.
 UPDATE run_budget_refusal
 SET state = 'superseded', state_reason = 'later_window',
     hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'later_window' ELSE hook_reason END,
     updated_at = now()
-WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked');
+WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked')
+RETURNING action_id;
 
 -- name: SupersedeRunBudgetRefusalsOnStatusChange :exec
 -- A status move starts its own work: every non-terminal refusal of the issue

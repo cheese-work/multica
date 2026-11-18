@@ -364,6 +364,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。该设置存储为 `background_agents` 的 `routing` 任务。这些标志是 `multica workspace background-agents set routing` 的别名，旧的 `/routing-agent` API 路由也会作为别名保留一个版本。
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` 设置工作区的定时唤醒跳过模式（`settings.time_wakeup_skip.mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改，每次修改都会记入活动日志。`off` 关闭检查并运行所有被推迟的定时唤醒；`warn` 只记录 `block` 会怎么做，触发照常运行；`block` 会推迟未变化的已声明触发，并要求智能体在定时唤醒上传入 `--watch <inputs>` 或 `--watch always`。
+- `multica workspace update --auto-close-mode off|warn|block` 设置自动关闭模式（`settings.auto_close.mode`）。它只修改这一个键，不改其他设置，也不能与其他更新标志同时使用。只有所有者可以修改。关闭所需的检查见[工作区](/docs/workspaces)。评审后无事可做时，任务的作者记录 `multica issue metadata set <issue> --key post_close_work --value none --type string`。
 - `multica workspace update --ask-guard-mode off|warn|block` 设置提问守卫模式（`settings.ask_guard_mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改。命令会输出保存后的工作区，`multica workspace get` 也会在 `settings` 下显示该模式。`off` 关闭守卫；`warn` 只统计遗漏并放行；`block` 拒绝。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 - `--mode script --script <name> [--arg <value>]...` 在智能体的任务令牌下运行一个白名单脚本，不启动模型会话。`--script` 和 `--arg` 需要 `--mode script`，`--mode script` 需要 `--script`。`--description` 从不被执行。守护进程没有白名单时，所有脚本任务都会安全失败。`--output json` 以 `script_config` 显示脚本名和参数。`autopilot update --mode <其他>` 会清除脚本。 任务结束时，服务器会尽力删除任务令牌。如果删除失败，令牌在过期前仍然有效，没有更早的撤销机制。运行结果的 `script` 下记录脚本名、参数列表的 SHA-256、退出码和耗时；删除失败时还会设置 `token_revoke_failed`。
@@ -392,6 +393,20 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 `decision` 卡片的每个选项都可以说明被选中后由谁行动。把 `after_choice` 设为 `agent_run`、`human_steps` 或 `record_only`。`agent_run` 选项要列出 `agent_commands`：一个或多个 argv 数组，例如 `["$MULTICA_CLI_PATH", "daemon", "restart"]`。以单个字符串给出的命令会被拒绝并指出字段名，因为服务器不解析 shell 文本。使用仅限控制台界面的选项改为把 `agent_surface` 设为目录中的键。该检查只读取这些带类型的字段，绝不读取 `what_happens`。它把每条命令化简为工具和前导词（去掉路径、`.exe` 以及全局标志 `--profile`、`--server-url`、`--workspace-id`、`--debug`），再与工作区设置 `agent_cannot_do` 比较，该设置是智能体运行无法完成之事的 `{key, tool, subcommand, human_step}` 列表。未设置时，条目为 `multica` 的 `daemon restart` 和 `daemon stop`。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` 等包装器会隐藏真实命令，所以请直接以 argv 给出命令本身。工作区设置 `agent_cannot_do_mode`（`off`、`warn`、`block`；默认 `off`）决定结果。`warn` 时创建卡片，并在响应中附带一条提示。`block` 时服务器返回 `400`，给出选项标签、目录键以及应写入 `human_steps` 的人工步骤，且不创建卡片。在 `warn` 和 `block` 下，没有 `after_choice` 的选项会增加一条提示，或带字段名被拒绝。操作卡片和豁免主题卡片不受检查。
 
 工作区设置 `decision_card_lint_mode`（`off`、`warn`、`block`；默认 `off`）检查选项卡片的措辞。`warn` 时创建卡片，并为每条发现在响应中附带一条提示。`block` 时服务器返回 `400`，附带原因代码和字段路径，且不创建卡片。代码如下：`weak_cons`，某个选项的每条缺点都只是你的时间（"takes 1 minute of your time"）或多一次检查或评审；`option_markdown`，`label`、`what_happens`、`pros` 或 `cons` 中含表格、标题、图片、HTML、代码块或 Mermaid 块（允许粗体、斜体、行内代码、列表和链接）；`option_leak`，选项文字暗示推荐项（"recommended"、"(rec)"，或只有一个标签加粗）；`default_leak`，在类别 `spend`、`deploy`、`publish`、`irreversible` 或 `product_direction` 下，`default_if_no_reply` 点名了某个选项（请写 "No action until you pick."）。英语和越南语措辞都会匹配。操作卡片和豁免主题卡片不受检查。 如果卡片的 issue 评论没有提及被询问的人，服务器会补上提及并记录 `mention_missing`，不会拒绝。
+
+工作区设置 `design_card_guard` 是一个对象，含 `mode`、`doop_origin`、`design_url_property_id` 和 `design_workflow_id`。`mode` 为 `off`、`warn` 或 `block`；键不存在或缺少 `mode` 时为 `off`。`warn` 或 `block` 时，`doop_origin`（不带路径的 `https` 源）和 `design_url_property_id`（UUID）必填；`design_workflow_id`（UUID）可选。服务器对其他字段、`null` 值或类型错误返回 `400`。通过决策动作修改设置时可以指定该键。目前只读取并校验该设置，尚不会对任何卡片发出警告或拒绝。
+
+## 后台智能体
+
+每个后台作业（`dm_title`、`quick_actions`、`compact`、`routing`）都作为主智能体的任务运行，必要时再由备用智能体运行。查看或设置工作区默认值，或你自己的链：
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # 恢复为工作区默认值
+```
+
+`--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
 
 ## 命令概览
 
@@ -586,6 +601,9 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request（含 GraphQL mutation）会被拒绝；等待 CI 的调用（`gh pr checks --watch`、`gh run watch`、20 秒及以上的 `sleep`）会被拒绝，并提示应改用的 wakeup 命令 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
 | `guard` | `check-pr <pr-url\|number\|branch>` | 对照策略和仓库的 `.github/agent-rules.yml` 检查一个拉取请求，不做任何修改。文件作为数据从 PR 受保护基础分支的当前末端读取，绝不从 PR 分支读取；文件缺失不增加规则，格式错误的文件或无法读取的基础分支会使检查失败。可用作 CI 检查 | 退出码：0 通过，1 违反规则，2 被拒绝。`-R owner/name` 指定仓库 |
 | `guard` | `plugin list\|get\|set` | 读取已存储的守卫策略（`list`、`get <name>`），或写出替换它的决策动作文件（`set --file <policy.json> --out <action.json>`，或 `--dry-run`）。策略包含工作区插件和评审规则，以及 org、仓库和路径层；更深的层按键覆盖更浅的层，带 `locked` 的层或工作区会把其键锁定，不受更深层影响。`set` 不会发送任何内容：由人通过 passkey 批准 `workspace.settings.patch`。守护进程把已批准的策略作为工作树之外的文件 `MULTICA_GUARD_POLICY` 连同 `MULTICA_GUARD_POLICY_SHA256` 交给每次运行 | 输出：JSON 行（`--output table` 为表格）；`set` 打印 `before_sha256` 和 `after_sha256` |
+
+`repository_allowlist` 按所有者指定允许的完整仓库名，不区分大小写。已列出的所有者默认拒绝，未列出的所有者不受限制。该边界先于插件及下层规则执行，拒绝未批准的 `gh pr create`、`gh pr comment`、`git push` 和已认证的 `repo checkout`。Git 检查实际推送 URL，包括 pushurl 和 URL 重写；目标不明确时拒绝。批准此字段前须升级 daemon。Cheese Work 的唯一正式来源为 `config/tevo-prod1-guard.json`。
+
 
 ### 决策提案
 
