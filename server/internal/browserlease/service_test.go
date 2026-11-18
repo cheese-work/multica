@@ -540,3 +540,94 @@ func TestReleaseQueuedDeletesAndReleaseEndedIsIdempotent(t *testing.T) {
 		t.Fatalf("phase = %s, want draining", inst.Phase)
 	}
 }
+
+// reclassify moves a profile to another class after leases exist (W3-12: the class rules hold at
+// every mint, renew and queued grant, not only at the first mint).
+func (e *env) reclassify(p db.BrowserProfile, class string) {
+	e.t.Helper()
+	if _, err := testPool.Exec(context.Background(), `UPDATE browser_profile SET class = $2 WHERE id = $1`, p.ID, class); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func TestRenewEndsTheLeaseWhenItsProfileBecomesClassH(t *testing.T) {
+	e := newEnv(t, "c00-1")
+	p := e.profile(ClassS2)
+	a, r := e.mint(p)
+	if _, err := e.svc.Renew(context.Background(), e.ws, r.TaskID, a.Lease.ID); err != nil {
+		t.Fatalf("renew while S2: %v", err)
+	}
+	e.reclassify(p, ClassH)
+	if _, err := e.svc.Renew(context.Background(), e.ws, r.TaskID, a.Lease.ID); !errors.Is(err, ErrClassNotMintable) {
+		t.Fatalf("err = %v, want ErrClassNotMintable", err)
+	}
+	if l := e.lease(a.Lease.ID); l.State != "ended" || l.EndReason.String != "revalidation_failed" {
+		t.Fatalf("lease = %s/%s, want ended/revalidation_failed", l.State, l.EndReason.String)
+	}
+}
+
+func TestQueuedGrantDropsALeaseWhoseProfileBecomesClassH(t *testing.T) {
+	e := newEnv(t, "c00-1")
+	p := e.profile(ClassS2)
+	a, _ := e.mint(p)
+	e.now = e.now.Add(time.Second)
+	b, _ := e.mint(p)
+	if b.Lease.State != "queued" {
+		t.Fatalf("b = %s, want queued", b.Lease.State)
+	}
+	e.reclassify(p, ClassH)
+	e.svc.Release(context.Background(), e.ws, a.Lease.TaskID, a.Lease.ID)
+	e.ack(a.Lease.ID)
+	if err := e.svc.AdvanceQueue(context.Background(), e.ws, ClassS2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Queries.GetBrowserLease(context.Background(), db.GetBrowserLeaseParams{ID: b.Lease.ID, WorkspaceID: e.ws}); err == nil {
+		t.Fatal("a queued lease of a class-H profile must leave the queue, not take the instance")
+	}
+}
+
+// A profile that changes class keeps no lease granted under the old class: the host, token and
+// decision rule of that lease no longer match it.
+func TestRenewEndsTheLeaseWhenItsProfileChangesBetweenS0AndS2(t *testing.T) {
+	for _, tc := range []struct{ from, to, instance string }{
+		{ClassS2, ClassS0, "c00-1"},
+		{ClassS0, ClassS2, "x99-1"},
+	} {
+		t.Run(tc.from+"->"+tc.to, func(t *testing.T) {
+			e := newEnv(t, tc.instance)
+			p := e.profile(tc.from)
+			a, r := e.mint(p)
+			e.reclassify(p, tc.to)
+			if _, err := e.svc.Renew(context.Background(), e.ws, r.TaskID, a.Lease.ID); !errors.Is(err, ErrClassNotMintable) {
+				t.Fatalf("err = %v, want ErrClassNotMintable", err)
+			}
+			if l := e.lease(a.Lease.ID); l.State != "ended" || l.EndReason.String != "revalidation_failed" {
+				t.Fatalf("lease = %s/%s, want ended/revalidation_failed", l.State, l.EndReason.String)
+			}
+		})
+	}
+}
+
+func TestQueuedGrantDropsALeaseWhoseProfileChangesBetweenS0AndS2(t *testing.T) {
+	for _, tc := range []struct{ from, to, instance string }{
+		{ClassS2, ClassS0, "c00-1"},
+		{ClassS0, ClassS2, "x99-1"},
+	} {
+		t.Run(tc.from+"->"+tc.to, func(t *testing.T) {
+			e := newEnv(t, tc.instance)
+			p := e.profile(tc.from)
+			a, _ := e.mint(p)
+			e.now = e.now.Add(time.Second)
+			b, _ := e.mint(p)
+			e.reclassify(p, tc.to)
+			e.svc.Release(context.Background(), e.ws, a.Lease.TaskID, a.Lease.ID)
+			e.ack(a.Lease.ID)
+			if err := e.svc.AdvanceQueue(context.Background(), e.ws, tc.from); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.svc.Queries.GetBrowserLease(context.Background(), db.GetBrowserLeaseParams{ID: b.Lease.ID, WorkspaceID: e.ws}); err == nil {
+				t.Fatal("a queued lease whose profile changed class must leave the queue, not take the instance")
+			}
+		})
+	}
+}
