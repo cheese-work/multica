@@ -73,11 +73,10 @@ func ownerEvents(t *testing.T, issueID string) []ownerEvent {
 
 // ownerAskEntry sends one ask whose person-facing text is body, through one entry point.
 type ownerAskEntry struct {
-	name     string
-	surface  string
-	cards    func(*testing.T, string) int
-	send     func(*testing.T, string) (status int, issueID, agentID, humanID string)
-	idOfCard func(*testing.T, string) string
+	name    string
+	surface string
+	cards   func(*testing.T, string) int
+	send    func(*testing.T, string) (status int, issueID, agentID, humanID string)
 }
 
 func ownerAskEntries() []ownerAskEntry {
