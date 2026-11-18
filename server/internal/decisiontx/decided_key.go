@@ -34,6 +34,10 @@ var KeyExcludedAskFields = []string{
 	"source_issue_id", "source_comment_id",
 }
 
+// KeyExcludedNestedFields names, as "Type.json_field", the only fields inside a
+// nested type left out of the key.
+var KeyExcludedNestedFields []string
+
 // keyExactStrings lists the string fields kept as exact bytes. Every other
 // string is trimmed and its whitespace runs collapsed. Spacing inside a command
 // can change what it does.

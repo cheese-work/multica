@@ -20,6 +20,11 @@ var wantExcludedAskFields = []string{
 	"source_issue_id", "source_comment_id",
 }
 
+// wantExcludedNestedFields is the only nested field left out of the key:
+// state_claims[].observed_at (CHE-5950) is when the sender ran the readback, so
+// a re-ask carries a fresh one. The claim text and its readback command stay.
+var wantExcludedNestedFields = []string{"StateClaim.observed_at"}
+
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func keyOf(test *testing.T, ask Ask, action *ActionKeyInput) string {
@@ -160,6 +165,9 @@ func TestKeyExclusionListIsExactlyTheNamedOne(test *testing.T) {
 	if !slices.Equal(got, want) {
 		test.Fatalf("KeyExcludedAskFields = %v, want %v", got, want)
 	}
+	if !slices.Equal(KeyExcludedNestedFields, wantExcludedNestedFields) {
+		test.Fatalf("KeyExcludedNestedFields = %v, want %v", KeyExcludedNestedFields, wantExcludedNestedFields)
+	}
 	known := map[string]bool{}
 	for i := range reflect.TypeOf(Ask{}).NumField() {
 		known[jsonName(reflect.TypeOf(Ask{}).Field(i))] = true
@@ -188,7 +196,8 @@ func TestMatchKeyChangeOfEachAskFieldAlone(test *testing.T) {
 			ask := filledAsk()
 			change(navigate(reflect.ValueOf(&ask).Elem(), path))
 			got := keyOf(test, ask, nil)
-			if isExcluded := excluded[askJSONNameOf(test, path[0])]; isExcluded && got != base {
+			isExcluded := excluded[askJSONNameOf(test, path[0])] || (path[0] == "StateClaims" && path[1] == "ObservedAt")
+			if isExcluded && got != base {
 				test.Fatalf("excluded field %v changed the key", path)
 			} else if !isExcluded && got == base {
 				test.Fatalf("in-key field %v did not change the key", path)
@@ -197,8 +206,9 @@ func TestMatchKeyChangeOfEachAskFieldAlone(test *testing.T) {
 	}
 }
 
-// Each state_claims field changed alone, and a claim added, changes the key.
-func TestMatchKeyChangeOfEachStateClaimFieldAlone(test *testing.T) {
+// state_claims content is in the key; observed_at is not (CHE-5682 test 15: an
+// unchanged re-ask matches, and every re-ask carries a fresh observed_at).
+func TestMatchKeyStateClaims(test *testing.T) {
 	paths := leafPaths(reflect.TypeOf(StateClaim{}))
 	if len(paths) != 3 {
 		test.Fatalf("StateClaim leaf fields = %d, want 3; a new field must be reviewed", len(paths))
@@ -208,11 +218,27 @@ func TestMatchKeyChangeOfEachStateClaimFieldAlone(test *testing.T) {
 		test.Run(strings.Join(path, "."), func(test *testing.T) {
 			ask := filledAsk()
 			change(navigate(reflect.ValueOf(&ask.StateClaims[0]).Elem(), path))
-			if got := keyOf(test, ask, nil); got == base {
+			got := keyOf(test, ask, nil)
+			if path[0] == "ObservedAt" {
+				if got != base {
+					test.Fatal("a refreshed observed_at changed the key")
+				}
+			} else if got == base {
 				test.Fatalf("state claim field %v did not change the key", path)
 			}
 		})
 	}
+	test.Run("every claim refreshed", func(test *testing.T) {
+		ask := filledAsk()
+		ask.StateClaims = append(ask.StateClaims, StateClaim{Claim: "second", ReadbackCommand: "cmd", ObservedAt: "2026-11-18T10:00:00Z"})
+		before := keyOf(test, ask, nil)
+		for i := range ask.StateClaims {
+			ask.StateClaims[i].ObservedAt = "2026-11-19T01:02:03Z"
+		}
+		if keyOf(test, ask, nil) != before {
+			test.Fatal("refreshed timestamps changed the key")
+		}
+	})
 	test.Run("claim added", func(test *testing.T) {
 		ask := filledAsk()
 		ask.StateClaims = append(ask.StateClaims, ask.StateClaims[0])
