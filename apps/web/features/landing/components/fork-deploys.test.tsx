@@ -73,12 +73,26 @@ describe("DeploySections", () => {
   it("renders Live, Previous and light levels with chips and labelled dividers", () => {
     const out = html([entry(1, "live"), entry(2, "b"), entry(3, "a")], three);
     expect(out).toContain("0.7.2-20261105-1426");
-    expect(out).toContain("· Live");
-    expect(out).toContain("0.7.2-20261105-1100 · 2026-11-05 11:00 ICT");
+    expect(out).toContain("Live · build 0.7.2-20261105-1426");
+    expect(out).toContain("Deployed 2026-11-05 11:00 ICT · build 0.7.2-20261105-1100");
     expect(out).toMatch(/data-heat="live"[\s\S]*data-heat="previous"[\s\S]*data-heat="earlier"/);
     expect(out).toContain(">Live<");
     expect(out).toContain(">Previous<");
     expect(out).toContain("Fix 1.");
+  });
+
+  it("labels the deploy time and the build stamp separately on each divider", () => {
+    const sameDay = [
+      deploy("l", "0.8.0-20261117-2200", "2026-11-17T16:40:00Z", 0, true),
+      deploy("p", "0.8.0-20261117-2159", "2026-11-17T16:33:42Z"),
+    ];
+    const dated = (n: number, d: string) => ({ ...entry(n, d, "2026-11-17T16:00:00Z"), date: "2026-11-17" });
+    const out = html([dated(1, "live"), dated(2, "p")], sameDay);
+    const divider = (sha: string) => out.split(`data-deploy="${sha}"`)[1]!.split("data-deploy=")[0]!;
+    expect(divider("p")).toContain("Deployed 2026-11-17 23:33 ICT · build 0.8.0-20261117-2159");
+    expect(divider("l")).toContain("Live · build 0.8.0-20261117-2200");
+    expect(divider("l")).not.toContain("ICT");
+    expect(divider("l")).not.toContain("Deployed");
   });
 
   it("shows the count for a deploy with no visible entry, and says so when it is 0", () => {
