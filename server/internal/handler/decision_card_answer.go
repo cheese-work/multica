@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,9 @@ var errCoversAckRequired = decisionIntentRefusal{http.StatusBadRequest, "covers_
 type decisionCardAnswerInput struct {
 	Option string `json:"option"`
 	Text   string `json:"text"`
+	// The DM the person answered from. A mirrored card names its own lane; empty
+	// means the card's original lane.
+	ViewSessionID string `json:"view_session_id,omitempty"`
 	// A gated class also carries the revisions the person saw and the passkey
 	// assertion over them.
 	AnswerRevision *int32          `json:"answer_revision,omitempty"`
@@ -188,18 +192,22 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if session.CreatorID != userID || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
 	}
-	// The card's own lane may be archived: its history stays read-only, and the
-	// person's active DM with the asking agent records the answer instead.
+	// The answer is recorded in the view the person answered from. The card's own
+	// lane may be archived: its history stays read-only, and a named active view
+	// of the same person and agent records the answer instead.
 	cardSession := session
-	if session.Status != "active" {
-		viewID, err := queries.GetLatestPlainDM(ctx, db.GetLatestPlainDMParams{WorkspaceID: workspaceID, CreatorID: userID, AgentID: decision.AskingAgentID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
-		} else if err != nil {
-			return empty, err
+	if input.ViewSessionID == "" && session.Status != "active" {
+		return empty, decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+	}
+	if input.ViewSessionID != "" {
+		viewID, err := util.ParseUUID(input.ViewSessionID)
+		if err != nil {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "view_session_id must name a decision lane"}
 		}
-		if session, err = queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: workspaceID, ID: viewID}); err != nil {
-			return empty, err
+		if viewID != session.ID || session.Status != "active" {
+			if session, err = lockAnswerView(ctx, queries, workspaceID, userID, decision.AskingAgentID, viewID); err != nil {
+				return empty, err
+			}
 		}
 	}
 	workspace, err := queries.GetWorkspace(ctx, workspaceID)
@@ -360,4 +368,28 @@ func cardOptionIndex(decision db.DecisionRequest, input decisionCardAnswerInput)
 	}
 	index := slices.IndexFunc(options, func(option decisiontx.AskOption) bool { return option.Label == input.Option })
 	return pgtype.Int4{Int32: int32(index), Valid: index >= 0}, nil
+}
+
+// lockAnswerView returns the active DM a mirrored card was answered from: the
+// answering person's own plain DM with the asking agent.
+func lockAnswerView(ctx context.Context, queries *db.Queries, workspaceID, userID, agentID, viewID pgtype.UUID) (db.ChatSession, error) {
+	unavailable := decisionIntentRefusal{http.StatusConflict, "the decision lane is not available"}
+	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: workspaceID, ID: viewID}); errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, unavailable
+	} else if err != nil {
+		return db.ChatSession{}, err
+	}
+	view, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: workspaceID, ID: viewID})
+	if err != nil {
+		return db.ChatSession{}, err
+	}
+	if view.CreatorID != userID || view.AgentID != agentID || view.Status != "active" || view.ChannelOriginAt.Valid || view.IsAgentIntro {
+		return db.ChatSession{}, unavailable
+	}
+	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, view.ID); err == nil {
+		return db.ChatSession{}, unavailable
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, err
+	}
+	return view, nil
 }
