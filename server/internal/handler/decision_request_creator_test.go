@@ -59,6 +59,33 @@ func (fixture creatorCardFixture) requests(test *testing.T) int {
 	return dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, fixture.issueY)
 }
 
+// answerAndWake plays the person's answer: held for ten minutes (Y stays held,
+// with exempt_after), then effective at wake_at (Y is not held), then delivered by DeliverDecisionWake.
+func (fixture creatorCardFixture) answerAndWake(test *testing.T, requestID string) {
+	test.Helper()
+	// The person answers. The answer is on hold for ten minutes: Y stays held.
+	dbfx.Exec(test, `UPDATE decision_request SET status = 'answered' WHERE id = $1`, requestID)
+	dbfx.Insert(test, "decision_answer", testutil.Cols{
+		"decision_request_id": requestID, "answer_source": "card", "answered_by_user_id": fixture.humanID,
+		"chat_message_ids": testutil.Raw("'{}'::uuid[]"), "content_snapshot": "yes", "issue_comment_id": fixture.commentY,
+		"effective_at": testutil.Raw("now() + interval '10 minutes'"), "wake_at": testutil.Raw("now() + interval '10 minutes'"),
+	})
+	if field := wantHold(test, fixture.issueY, true, true, "held"); field["exempt_after"] == nil {
+		test.Fatalf("held answer has no exempt_after: %v", field)
+	}
+
+	// At wake_at the answer is effective: Y is not held and one run starts on it.
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE decision_request_id = $1`, requestID)
+	dbfx.Cleanup(test, `UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status IN ('queued', 'running')`, fixture.issueY)
+	wantHold(test, fixture.issueY, false, false, "exempt_escalation_class")
+	if err := testHandler.DeliverDecisionWake(context.Background(), parseUUID(testWorkspaceID), parseUUID(requestID)); err != nil {
+		test.Fatal(err)
+	}
+	if runs := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, fixture.issueY); runs != 1 {
+		test.Fatalf("runs on Y after the answer took effect = %d, want 1", runs)
+	}
+}
+
 // Criterion 12: the run that created the issue opens the card on it, and the
 // issue stays held until the answer's wake_at.
 func TestDecisionRequestFromCreatingTaskOfEscalationClass(test *testing.T) {
@@ -75,27 +102,7 @@ func TestDecisionRequestFromCreatingTaskOfEscalationClass(test *testing.T) {
 			}
 			wantHold(test, fixture.issueY, true, true, "held")
 
-			// The person answers. The answer is on hold for ten minutes: Y stays held.
-			dbfx.Exec(test, `UPDATE decision_request SET status = 'answered' WHERE id = $1`, created.ID)
-			dbfx.Insert(test, "decision_answer", testutil.Cols{
-				"decision_request_id": created.ID, "answer_source": "card", "answered_by_user_id": fixture.humanID,
-				"chat_message_ids": testutil.Raw("'{}'::uuid[]"), "content_snapshot": "yes", "issue_comment_id": fixture.commentY,
-				"effective_at": testutil.Raw("now() + interval '10 minutes'"), "wake_at": testutil.Raw("now() + interval '10 minutes'"),
-			})
-			if field := wantHold(test, fixture.issueY, true, true, "held"); field["exempt_after"] == nil {
-				test.Fatalf("held answer has no exempt_after: %v", field)
-			}
-
-			// At wake_at the answer is effective: Y is not held and one run starts on it.
-			dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE decision_request_id = $1`, created.ID)
-			dbfx.Cleanup(test, `UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status IN ('queued', 'running')`, fixture.issueY)
-			wantHold(test, fixture.issueY, false, false, "exempt_escalation_class")
-			if err := testHandler.DeliverDecisionWake(context.Background(), parseUUID(testWorkspaceID), parseUUID(created.ID)); err != nil {
-				test.Fatal(err)
-			}
-			if runs := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, fixture.issueY); runs != 1 {
-				test.Fatalf("runs on Y after the answer took effect = %d, want 1", runs)
-			}
+			fixture.answerAndWake(test, created.ID)
 		})
 	}
 }
@@ -109,7 +116,8 @@ func TestDecisionRequestFromDMTaskOnCreatedIssue(test *testing.T) {
 		test.Run(class, func(test *testing.T) {
 			dm := newDMDecisionFixture(test)
 			fixture := creatorCardFixture{singleCallFixture: dm.singleCallFixture, hold: newHoldFixture(test, exemptAllEscalationClasses)}
-			fixture.issueY = fixture.createdBy(test, fixture.taskID, "agent_create")
+			// The DM task is the task that creates Y.
+			fixture.issueY = fixture.createdBy(test, dm.chatTaskID, "agent_create")
 			body := fixture.body()
 			delete(body, "for")
 			delete(body, "footer")
@@ -127,12 +135,29 @@ func TestDecisionRequestFromDMTaskOnCreatedIssue(test *testing.T) {
 			if created.ChatSessionID != dm.sessionID {
 				test.Fatalf("card delivered in session %s, want the calling DM %s", created.ChatSessionID, dm.sessionID)
 			}
-			var status string
-			dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueY).Scan(&status)
-			if status != "backlog" {
-				test.Fatalf("issue status = %q, want backlog (no park from a DM)", status)
+			wantBacklogNoPark := func() {
+				test.Helper()
+				var status string
+				dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueY).Scan(&status)
+				if status != "backlog" || dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1`, fixture.issueY) != 0 {
+					test.Fatalf("issue status = %q, want backlog and no park row (a DM task is not the issue's task)", status)
+				}
 			}
+			wantBacklogNoPark()
 			wantHold(test, fixture.issueY, true, true, "held")
+
+			// Answer, wake_at, delivery, derived run: the same steps as the creating task.
+			fixture.answerAndWake(test, created.ID)
+
+			// Where the answer goes: not back to the DM. The answer wakes the
+			// issue's assignee on Y with a new run, and records that outcome.
+			if got := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND wake_outcome = 'run_enqueued' AND woken_at IS NOT NULL`, created.ID); got != 1 {
+				test.Fatalf("answers recorded as run_enqueued = %d, want 1", got)
+			}
+			if got := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND agent_id = $2 AND chat_session_id IS NULL`, fixture.issueY, fixture.agentID); got != 1 {
+				test.Fatalf("queued run for the assignee on Y (not in the DM) = %d, want 1", got)
+			}
+			wantBacklogNoPark()
 		})
 	}
 }
