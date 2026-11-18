@@ -93,9 +93,19 @@ export function warningRegressions(baseline, current) {
     .map(([warning, count]) => ({ warning, baseline: baseline[warning] ?? 0, current: count }))
 }
 
+// CHE-7010: GitHub returns transient 5xx on log and job reads. Retry those (3 tries, 0.5 s then 1 s); anything else throws at once.
 function api(endpoint, json = true) {
-  const response = execFileSync("gh", ["api", endpoint, ...(json ? [] : ["--allow-escape-sequences"])], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 })
-  return json ? JSON.parse(response) : response
+  for (let attempt = 1; ; attempt++) {
+    let response
+    try {
+      response = execFileSync("gh", ["api", endpoint, ...(json ? [] : ["--allow-escape-sequences"])], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 })
+    } catch (error) {
+      if (attempt >= 3 || !isServerError(error)) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500 * attempt)
+      continue
+    }
+    return json ? JSON.parse(response) : response
+  }
 }
 
 function pages(endpoint, key) {
