@@ -7,6 +7,7 @@ import { ProjectWorkflowSheet } from "./project-workflow-sheet";
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   permissions: { canCreateWorkflow: true, canEditWorkflow: false, canManageProject: true },
+  workflowsEnabled: true,
 }));
 
 const releaseWorkflow = {
@@ -22,6 +23,11 @@ const releaseWorkflow = {
   updated_at: "",
 } as unknown as IssueWorkflow;
 
+// Fork wins (CHE-7026): the fork gates workflow management behind PROJECT_WORKFLOWS_V1_FLAG.
+vi.mock("@multica/core/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/config")>()),
+  useFeatureEnabled: () => mocks.workflowsEnabled,
+}));
 vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
 vi.mock("@multica/core/api", () => ({ api: {}, clientErrorMessage: () => null }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
@@ -51,6 +57,7 @@ const project = { id: "project-1", title: "Launch", workflow_id: "wf-release" } 
 beforeEach(() => {
   mocks.push.mockReset();
   mocks.permissions = { canCreateWorkflow: true, canEditWorkflow: false, canManageProject: true };
+  mocks.workflowsEnabled = true;
 });
 afterEach(cleanup);
 
@@ -72,6 +79,14 @@ describe("ProjectWorkflowSheet", () => {
     expect(screen.getByText("Release workflow")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Switch workflow/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /todo/ })).toBeInTheDocument();
+  });
+
+  it("hides the manage link while the workflows flag is off", () => {
+    mocks.workflowsEnabled = false;
+    renderWithI18n(<ProjectWorkflowSheet project={project} open onOpenChange={vi.fn()} />);
+
+    expect(screen.getByText("Release workflow")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Manage workflows/ })).not.toBeInTheDocument();
   });
 
   it("closes the panel before going to workflow settings", () => {
