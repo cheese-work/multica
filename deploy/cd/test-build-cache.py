@@ -468,6 +468,14 @@ class CdBackendBinariesTests(unittest.TestCase):
         self.assertEqual({shlex.split(l)[1] for l in copies}, {'--from=verify'})
         self.assertGreaterEqual(len(copies), 7)
 
+    def test_verify_stage_normalizes_file_modes_so_the_runner_umask_cannot_change_the_image(self):
+        stages = docker_stages(CD_DOCKERFILE)
+        verify = next(stage for stage in stages if stage['from'].endswith(' AS verify'))
+        text = '\n'.join(verify['lines'])
+        self.assertIn('chmod 644', text)
+        self.assertIn('chmod 755', text)
+        self.assertLess(text.index('sha256sum -c SHA256SUMS'), text.index('chmod 644'))
+
     # Acceptance 2
     def test_script_builds_the_dockerfile_binaries_with_the_same_ldflags(self):
         def builds(path, pattern):
