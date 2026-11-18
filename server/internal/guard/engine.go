@@ -21,6 +21,9 @@ type Engine struct {
 	Log    io.Writer
 	Out    io.Writer
 	Err    io.Writer
+	// Env reads an environment variable. nil reads none: only `guard check-pr`
+	// sets it, so no other call can take the merge-queue Git path.
+	Env func(string) string
 
 	eff  *Policy // Policy resolved for the current call
 	path string  // the call's directory inside its repository
