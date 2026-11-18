@@ -44,12 +44,19 @@ func (f memberBG) enqueueFor(t *testing.T, member, agent string, job bgagents.Jo
 	task, err := testHandler.TaskService.EnqueueBackgroundTask(context.Background(), service.BackgroundTaskInput{
 		Job: job, WorkspaceID: util.MustParseUUID(f.ws),
 		MemberID: util.MustParseUUID(member), Input: "hello", Resolve: fixedTarget(agent, src),
+		SourceChatSessionID: util.MustParseUUID(f.dm(t, agent)),
 	})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 	dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(task.ID))
 	return task
+}
+
+// dm is the chat session a DM-derived task must name as its source.
+func (f memberBG) dm(t *testing.T, agent string) string {
+	t.Helper()
+	return dbfx.ChatSession(t, agent, testutil.Cols{"workspace_id": f.ws})
 }
 
 func (f memberBG) wantStatus(t *testing.T, name string, task db.AgentTaskQueue, want string) {
@@ -199,6 +206,7 @@ func (f memberBG) enqueueBehindInFlightWrite(t *testing.T, inWrite func(ctx cont
 	if err := service.LockMemberBackgroundAgents(ctx, tx, util.MustParseUUID(f.ws), util.MustParseUUID(testUserID)); err != nil {
 		t.Fatal(err)
 	}
+	dm := f.dm(t, f.a1)
 	var committed atomic.Bool
 	var seen bgagents.Resolution
 	type result struct {
@@ -209,6 +217,7 @@ func (f memberBG) enqueueBehindInFlightWrite(t *testing.T, inWrite func(ctx cont
 	go func() {
 		task, err := testHandler.TaskService.EnqueueBackgroundTask(ctx, service.BackgroundTaskInput{
 			Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws), MemberID: util.MustParseUUID(testUserID), Input: "x",
+			SourceChatSessionID: util.MustParseUUID(dm),
 			Resolve: liveTarget(f.ws, func(r bgagents.Resolution) {
 				if !committed.Load() {
 					t.Error("the chain was resolved before the in-flight write committed")
@@ -293,6 +302,7 @@ func TestWorkspaceWriteWaitsForAnInFlightEnqueue(t *testing.T) {
 	var early *testutil.Response
 	task, err := testHandler.TaskService.EnqueueBackgroundTask(t.Context(), service.BackgroundTaskInput{
 		Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws), MemberID: util.MustParseUUID(testUserID), Input: "x",
+		SourceChatSessionID: util.MustParseUUID(f.dm(t, f.a1)),
 		Resolve: liveTarget(f.ws, func(bgagents.Resolution) {
 			write = make(chan *testutil.Response, 1)
 			go func() { write <- putBG(t, f.ws, title(f.a2), nil) }()
