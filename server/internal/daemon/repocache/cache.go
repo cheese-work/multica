@@ -668,6 +668,15 @@ func runGitFetch(barePath string) error {
 }
 
 func runGitFetchContext(ctx context.Context, barePath string) error {
+	// Linked worktrees share the cache's `shallow` file, so a `git fetch
+	// --depth` run from any of them (or a stray command in the cache) turns the
+	// shared cache shallow and later checkouts fail on missing history
+	// objects (CHE-7286). Heal it before the normal fetch.
+	if out, err := runGitOutputContext(ctx, "-C", barePath, "rev-parse", "--is-shallow-repository"); err == nil && strings.TrimSpace(string(out)) == "true" {
+		if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "--unshallow", "origin"); err != nil {
+			return fmt.Errorf("git fetch --unshallow: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
 	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "origin"); err != nil {
 		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
 	}
