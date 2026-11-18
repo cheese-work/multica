@@ -1,3 +1,4 @@
+// ci probe C: comment-only edit
 import { execFileSync } from "node:child_process"
 import { appendFileSync, writeFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
