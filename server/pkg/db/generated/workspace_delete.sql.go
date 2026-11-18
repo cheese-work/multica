@@ -144,12 +144,19 @@ deleted_browser_instances AS (
 ),
 deleted_browser_profiles AS (
     DELETE FROM browser_profile WHERE workspace_id = $1
+),
+deleted_browser_profile_members AS (
+    DELETE FROM browser_profile_member WHERE workspace_id = $1
+),
+deleted_browser_profile_agents AS (
+    DELETE FROM browser_profile_agent WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
 `
 
 // CHE-4731 browser lease storage: workspace-owned leaves, no FK (migration 99960).
+// CHE-4737 browser permission grants: workspace-owned leaves, no FK (migration 99964c).
 func (q *Queries) DeleteWorkspaceAdministration(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceAdministration, workspaceID)
 	return err

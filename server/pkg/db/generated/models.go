@@ -500,6 +500,24 @@ type BrowserProfile struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type BrowserProfileAgent struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProfileID   pgtype.UUID        `json:"profile_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	GrantedBy   pgtype.UUID        `json:"granted_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type BrowserProfileMember struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProfileID   pgtype.UUID        `json:"profile_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	GrantedBy   pgtype.UUID        `json:"granted_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`

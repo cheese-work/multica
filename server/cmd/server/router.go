@@ -1921,6 +1921,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/pause", h.PauseWorkspaceScheduling)
 					// Kill switch for every Steel browser lease (CHE-4734); the handler refuses agents.
 					r.Post("/browser-leases/revoke-all", h.RevokeAllBrowserLeases)
+					// Browser permission per profile: members and the agent allowlist, default deny (CHE-4737).
+					r.Get("/browser-profiles/{profileId}/permissions", h.GetBrowserProfilePermissions)
+					r.Put("/browser-profiles/{profileId}/members/{userId}", h.GrantBrowserProfileMember)
+					r.Delete("/browser-profiles/{profileId}/members/{userId}", h.RevokeBrowserProfileMember)
+					r.Put("/browser-profiles/{profileId}/agents/{agentId}", h.GrantBrowserProfileAgent)
+					r.Delete("/browser-profiles/{profileId}/agents/{agentId}", h.RevokeBrowserProfileAgent)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
 					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)
