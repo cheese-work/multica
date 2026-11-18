@@ -217,6 +217,11 @@ WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
   AND EXISTS (SELECT 1 FROM dm_progress_pending p WHERE p.lineage_id = l.lineage_id)
 ORDER BY random() LIMIT 200;
 
+-- name: LockDMProgressLane :one
+-- Dispatcher-side only (epic-done runs on the dispatcher's lane transaction): the
+-- follow path never calls it (lock order issue -> follow -> lane, CHE-3549).
+SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
+
 -- name: LockDMProgressLaneSkipLocked :one
 -- Dispatcher entry: a lane another dispatcher holds is
 -- skipped, not waited for (CHE-3369 I1.3).

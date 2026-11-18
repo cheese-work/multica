@@ -853,6 +853,27 @@ func (q *Queries) ListDMProgressPendingLanes(ctx context.Context) ([]pgtype.UUID
 	return items, nil
 }
 
+const lockDMProgressLane = `-- name: LockDMProgressLane :one
+SELECT lineage_id, workspace_id, owner_user_id, last_card_at, next_seq, suspended_reason, created_at FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE
+`
+
+// Dispatcher-side only (epic-done runs on the dispatcher's lane transaction): the
+// follow path never calls it (lock order issue -> follow -> lane, CHE-3549).
+func (q *Queries) LockDMProgressLane(ctx context.Context, lineageID pgtype.UUID) (DmProgressLane, error) {
+	row := q.db.QueryRow(ctx, lockDMProgressLane, lineageID)
+	var i DmProgressLane
+	err := row.Scan(
+		&i.LineageID,
+		&i.WorkspaceID,
+		&i.OwnerUserID,
+		&i.LastCardAt,
+		&i.NextSeq,
+		&i.SuspendedReason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const lockDMProgressLaneSkipLocked = `-- name: LockDMProgressLaneSkipLocked :one
 SELECT lineage_id, workspace_id, owner_user_id, last_card_at, next_seq, suspended_reason, created_at FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED
 `
