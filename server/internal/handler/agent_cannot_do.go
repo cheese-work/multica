@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"reflect"
 
@@ -40,7 +41,8 @@ func requireOwnerForCannotDo(ctx context.Context, q *db.Queries, workspaceID pgt
 func checkAgentCannotDo(writer http.ResponseWriter, ask decisiontx.Ask, settings []byte) (hints []string, ok bool) {
 	mode, catalog, err := decisiontx.CannotDoFromSettings(settings)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		slog.Error("workspace settings unreadable for decision card check", "error", err)
+		writeError(writer, http.StatusInternalServerError, "workspace settings are unreadable")
 		return nil, false
 	}
 	hints, err = ask.CheckCannotDo(mode, catalog)
@@ -58,7 +60,8 @@ func checkAgentCannotDo(writer http.ResponseWriter, ask decisiontx.Ask, settings
 func checkCardLint(writer http.ResponseWriter, ask decisiontx.Ask, class string, settings []byte) (hints []string, ok bool) {
 	mode, err := decisiontx.CardLintModeFromSettings(settings)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		slog.Error("workspace settings unreadable for decision card check", "error", err)
+		writeError(writer, http.StatusInternalServerError, "workspace settings are unreadable")
 		return nil, false
 	}
 	hints, err = ask.CheckCard(mode, class)
