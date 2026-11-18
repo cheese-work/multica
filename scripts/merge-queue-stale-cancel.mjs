@@ -29,6 +29,17 @@ export async function isOnMain(api, repo, sha) {
   return status === "identical" || status === "behind";
 }
 
+// A run stuck in `queued` that GitHub never started answers cancel with 409; force-cancel clears it.
+// Any other error, or a 409 on force-cancel, still stops the sweep.
+async function cancelRun(api, repo, id) {
+  try {
+    await api.post(`/repos/${repo}/actions/runs/${id}/cancel`);
+  } catch (e) {
+    if (e.status !== 409) throw e;
+    await api.post(`/repos/${repo}/actions/runs/${id}/force-cancel`);
+  }
+}
+
 export async function sweep({ api, repo, dryRun = false, now = Date.now, print = console.log }) {
   const runs = [];
   for (const status of ["in_progress", "queued"]) {
@@ -45,7 +56,7 @@ export async function sweep({ api, repo, dryRun = false, now = Date.now, print =
     if (dryRun) {
       print(`would cancel ${run.html_url} (${run.head_branch}, ${run.status})`);
     } else {
-      await api.post(`/repos/${repo}/actions/runs/${run.id}/cancel`);
+      await cancelRun(api, repo, run.id);
       print(`cancelled ${run.html_url} (${run.head_branch}, ${run.status})`);
     }
     cancelled++;
@@ -54,9 +65,11 @@ export async function sweep({ api, repo, dryRun = false, now = Date.now, print =
   return cancelled;
 }
 
+export const httpStatus = (stderr) => Number(/\(HTTP (\d{3})\)/.exec(stderr)?.[1]) || undefined;
+
 const gh = (args) => {
   const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
-  if (r.status !== 0) throw new Error(`gh api ${args.join(" ")} failed: ${r.stderr}`);
+  if (r.status !== 0) throw Object.assign(new Error(`gh api ${args.join(" ")} failed: ${r.stderr}`), { status: httpStatus(r.stderr) });
   return r.stdout;
 };
 export const ghApi = {

@@ -19,7 +19,8 @@ const run = (id, over = {}) => ({
 
 // Fake GitHub: `runs` is what the two status listings return, `live` the queue branches that still exist,
 // `onMain` the SHAs whose compare against main is identical/behind. `fail` makes one call throw.
-function fake({ runs = [], live = [], onMain = [], fail } = {}) {
+// `conflict` makes cancel answer HTTP 409 for those run ids; `conflictForce` does the same for force-cancel.
+function fake({ runs = [], live = [], onMain = [], fail, conflict = [], conflictForce = [] } = {}) {
   const calls = [];
   const api = {
     get: async (path) => {
@@ -37,10 +38,15 @@ function fake({ runs = [], live = [], onMain = [], fail } = {}) {
     post: async (path) => {
       calls.push(["POST", path]);
       if (fail && path.includes(fail)) throw new Error(`boom ${fail}`);
+      const id = Number(path.match(/runs\/(\d+)\//)[1]);
+      const list = path.endsWith("/force-cancel") ? conflictForce : conflict;
+      if (list.includes(id)) throw Object.assign(new Error(`HTTP 409 ${path}`), { status: 409 });
     },
   };
-  const cancelled = () => calls.filter(([m]) => m === "POST").map(([, p]) => Number(p.match(/runs\/(\d+)\/cancel/)[1]));
-  return { api, calls, cancelled };
+  const posts = (suffix) => calls.filter(([m, p]) => m === "POST" && p.endsWith(suffix)).map(([, p]) => Number(p.match(/runs\/(\d+)\//)[1]));
+  const forced = () => posts("/force-cancel");
+  const cancelled = () => posts("/cancel");
+  return { api, calls, cancelled, forced };
 }
 const sweep = async (f, extra = {}) => (await load()).sweep({ api: f.api, repo: REPO, now: () => NOW, print: () => {}, ...extra });
 
@@ -117,6 +123,32 @@ test("an error after the first cancel stops the sweep", async () => {
   };
   await assert.rejects(sweep(f), /boom compare/);
   assert.deepEqual(f.cancelled(), [16]);
+});
+
+test("a 409 on cancel falls back to force-cancel once and the sweep goes on", async () => {
+  const f = fake({ runs: [run(20), run(21)], live: [], conflict: [20] });
+  await sweep(f);
+  assert.deepEqual(f.cancelled(), [20, 21]);
+  assert.deepEqual(f.forced(), [20]);
+});
+
+test("a 409 on force-cancel stops the sweep", async () => {
+  const f = fake({ runs: [run(22), run(23)], live: [], conflict: [22], conflictForce: [22] });
+  await assert.rejects(sweep(f), /409/);
+  assert.deepEqual(f.cancelled(), [22]);
+  assert.deepEqual(f.forced(), [22]);
+});
+
+test("a non-409 cancel error does not force-cancel", async () => {
+  const f = fake({ runs: [run(24)], live: [], fail: "/cancel" });
+  await assert.rejects(sweep(f), /boom/);
+  assert.deepEqual(f.forced(), []);
+});
+
+test("gh api failures carry the HTTP status", async () => {
+  const { httpStatus } = await load();
+  assert.equal(httpStatus("gh: Cannot cancel a workflow run that has not been queued yet. (HTTP 409)"), 409);
+  assert.equal(httpStatus("something else"), undefined);
 });
 
 test("dry run lists the runs it would cancel and cancels none", async () => {
