@@ -22,6 +22,8 @@ const (
 	ReasonPermissionRemoved = "permission_removed"
 	ReasonPluginDisabled    = "plugin_disabled"
 	ReasonRevokeAll         = "revoke_all"
+	ReasonDecisionWithdrawn = "decision_withdrawn"
+	ReasonDecisionExpired   = "decision_expired"
 )
 
 // Filter picks the leases to revoke. WorkspaceID is required. Any other valid field narrows the
@@ -33,6 +35,7 @@ type Filter struct {
 	UserID      pgtype.UUID
 	AgentID     pgtype.UUID
 	ProfileID   pgtype.UUID
+	DecisionID  pgtype.UUID
 }
 
 // Revoker ends leases and tells the gateway at once.
@@ -61,6 +64,7 @@ func (r *Revoker) Revoke(ctx context.Context, f Filter, reason string) ([]db.Bro
 		UserID:      f.UserID,
 		AgentID:     f.AgentID,
 		ProfileID:   f.ProfileID,
+		DecisionID:  f.DecisionID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("drop queued browser leases: %w", err)
@@ -75,6 +79,7 @@ func (r *Revoker) Revoke(ctx context.Context, f Filter, reason string) ([]db.Bro
 		UserID:      f.UserID,
 		AgentID:     f.AgentID,
 		ProfileID:   f.ProfileID,
+		DecisionID:  f.DecisionID,
 	})
 	if err != nil {
 		return dropped, fmt.Errorf("end browser leases: %w", err)
@@ -126,4 +131,18 @@ func (r *Revoker) onTaskEnd(e events.Event, reason string) {
 	if _, err := r.Revoke(context.Background(), Filter{WorkspaceID: workspaceID, TaskID: taskID}, reason); err != nil {
 		slog.Error("browser lease: revoke on task end failed", "task_id", e.TaskID, "reason", reason, "error", err)
 	}
+}
+
+// ErrNoDecision rejects a decision revoke without a decision id: the empty filter would match
+// every lease of the workspace.
+var ErrNoDecision = errors.New("browserlease: revoke by decision needs a decision id")
+
+// RevokeDecision ends every queued or active lease bound to the decision (CHE-4742, W3-13).
+// Call it once the decision is withdrawn or has expired, with ReasonDecisionWithdrawn or
+// ReasonDecisionExpired. Leases bound to another decision, or to none, stay live.
+func (r *Revoker) RevokeDecision(ctx context.Context, workspaceID, decisionID pgtype.UUID, reason string) ([]db.BrowserLease, error) {
+	if !decisionID.Valid {
+		return nil, ErrNoDecision
+	}
+	return r.Revoke(ctx, Filter{WorkspaceID: workspaceID, DecisionID: decisionID}, reason)
 }
