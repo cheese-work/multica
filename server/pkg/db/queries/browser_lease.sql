@@ -200,3 +200,14 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(profile_id)::uuid IS NULL OR profile_id = sqlc.narg(profile_id))
   AND (sqlc.narg(decision_id)::uuid IS NULL OR decision_id = sqlc.narg(decision_id))
 RETURNING *;
+
+-- name: ListExpiredDecisionBrowserLeases :many
+-- Decisions that passed their expires_at while a queued or active lease still names them
+-- (CHE-4742, W3-13). The worker revokes each pair; a revoked lease drops out of this list.
+SELECT DISTINCT lease.workspace_id, lease.decision_id
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active')
+  AND request.expires_at IS NOT NULL AND request.expires_at <= clock_timestamp()
+ORDER BY lease.workspace_id, lease.decision_id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
