@@ -706,7 +706,8 @@ SELECT g.issue_id,
                      WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
        COALESCE(i.status, '')::text AS status,
        COALESCE(f.last_rendered_status, '')::text AS last_rendered_status,
-       (CASE WHEN i.status = 'cancelled' THEN i.duplicate_of_issue_id END)::uuid AS duplicate_of_issue_id
+       (CASE WHEN i.status = 'cancelled' THEN i.duplicate_of_issue_id END)::uuid AS duplicate_of_issue_id,
+       f.reporting_root_id::uuid AS reporting_root_id
 FROM (
     SELECT p.issue_id,
            min(p.created_at) AS first_at,
@@ -739,6 +740,7 @@ type ListDMProgressLaneIssuesRow struct {
 	Status             string             `json:"status"`
 	LastRenderedStatus string             `json:"last_rendered_status"`
 	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 }
 
 // One row per distinct issue with pending rows in a lane, oldest first, in one
@@ -766,6 +768,7 @@ func (q *Queries) ListDMProgressLaneIssues(ctx context.Context, arg ListDMProgre
 			&i.Status,
 			&i.LastRenderedStatus,
 			&i.DuplicateOfIssueID,
+			&i.ReportingRootID,
 		); err != nil {
 			return nil, err
 		}

@@ -207,7 +207,10 @@ func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane 
 	if err := deletePending(ctx, q, lane.LineageID, flushed); err != nil {
 		return nil, err
 	}
-	if len(sent) == 0 {
+	if err := fireEpics(ctx, q, lane, kept, &payload); err != nil {
+		return nil, err
+	}
+	if len(sent) == 0 && len(payload.Epics) == 0 {
 		return nil, nil
 	}
 	body, err := json.Marshal(payload)
@@ -218,12 +221,16 @@ func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane 
 	if len(sent) == 1 {
 		noun = "issue"
 	}
+	content := fmt.Sprintf("Progress update: %d %s", len(sent), noun)
+	if len(sent) == 0 {
+		content = "Progress update: epic done"
+	}
 	// A neutral insert: no task, no queue re-anchor (I5.1).
 	msg, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),
 		ChatSessionID: lane.LineageID,
 		Role:          "assistant",
-		Content:       fmt.Sprintf("Progress update: %d %s", len(sent), noun),
+		Content:       content,
 		MessageKind:   pgtype.Text{String: protocol.ChatMessageKindProgressCard, Valid: true},
 	})
 	if err != nil {
@@ -317,4 +324,30 @@ func offerDuplicateFollow(ctx context.Context, q *db.Queries, lane db.DmProgress
 		return nil
 	}
 	return err
+}
+
+// fireEpics asks, for every reporting root the flushed rows belong to, whether
+// its completion episode fires now, and lists the ones that do on the card
+// (M13). It runs under the lane lock the caller holds, so the check and the
+// card that announces it commit together: a failed delivery rolls the episode
+// back and the next run fires it again.
+func fireEpics(ctx context.Context, q *db.Queries, lane db.DmProgressLane, kept []db.ListDMProgressLaneIssuesRow, payload *protocol.ProgressCardPayload) error {
+	seen := map[pgtype.UUID]bool{}
+	for _, it := range kept {
+		if !it.ReportingRootID.Valid || seen[it.ReportingRootID] {
+			continue
+		}
+		seen[it.ReportingRootID] = true
+		state, err := EvaluateEpicDone(ctx, q, lane.LineageID, it.ReportingRootID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if state.Fire {
+			payload.Epics = append(payload.Epics, protocol.ProgressCardEpic{IssueID: util.UUIDToString(it.ReportingRootID), Revision: state.Revision, Cancelled: state.Cancelled})
+		}
+	}
+	return nil
 }

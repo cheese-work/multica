@@ -320,6 +320,17 @@ type ChatMessagePayload struct {
 // titles are resolved at read time under the access gate (CHE-3369 I6).
 type ProgressCardPayload struct {
 	Items []ProgressCardItem `json:"items"`
+	// Epics lists the epics whose completion episode fired with this card
+	// (CHE-3473 M13): once per episode, never again until a reopen starts the next.
+	Epics []ProgressCardEpic `json:"epics,omitempty"`
+}
+
+// ProgressCardEpic announces one fired completion episode of a reporting root.
+// Cancelled counts tracked descendants that ended cancelled, reported apart.
+type ProgressCardEpic struct {
+	IssueID   string `json:"issue_id"`
+	Revision  int32  `json:"revision"`
+	Cancelled int64  `json:"cancelled,omitempty"`
 }
 
 // ProgressCardItem is one issue's net change since the last card: FromStatus is

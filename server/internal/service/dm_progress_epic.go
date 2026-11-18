@@ -14,10 +14,11 @@ type EpicState struct {
 	Fire      bool  // this call is the first to see it hold in this episode
 	Revision  int32 // the completion episode the answer belongs to
 	Cancelled int64 // tracked descendants in a closed category, reported apart
+	Tracked   int64 // tracked descendants of the root, whatever their status
 }
 
 // EvaluateEpicDone answers whether root's epic is done in lane: the root is in
-// a done category and every tracked descendant is terminal (done or closed
+// a done category, it has tracked descendants and every one is terminal (done or closed
 // category; closed ones are counted apart). Lifecycle category decides, never
 // a status name; an unresolvable status counts as unfinished. The first call
 // that sees the predicate hold in an episode returns Fire once; a reopen or a
@@ -45,6 +46,7 @@ func EvaluateEpicDone(ctx context.Context, q *db.Queries, lane, root pgtype.UUID
 	}
 	unfinished := false
 	for _, g := range groups {
+		state.Tracked += g.Total
 		switch category, _ := issuestatus.CategoryWithError(ctx, q, rootIssue.WorkspaceID, g.Status); category {
 		case issuestatus.CategoryDone:
 		case issuestatus.CategoryClosed:
@@ -53,7 +55,8 @@ func EvaluateEpicDone(ctx context.Context, q *db.Queries, lane, root pgtype.UUID
 			unfinished = true
 		}
 	}
-	state.Done = rootCategory == issuestatus.CategoryDone && !unfinished
+	// A root with no tracked descendant is a single issue, not an epic.
+	state.Done = rootCategory == issuestatus.CategoryDone && state.Tracked > 0 && !unfinished
 	switch {
 	case state.Done && !episode.FiredAt.Valid:
 		n, err := q.FireDMProgressEpicEpisode(ctx, db.FireDMProgressEpicEpisodeParams{LineageID: lane, RootIssueID: root})

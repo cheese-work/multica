@@ -9,6 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Unlinked roots, duplicates, deletion, reopen and epic completion (CHE-3550,
@@ -272,5 +273,60 @@ func TestDMProgressEpic_ChildEventsCountWhateverTheRootStatusAndAreNotImmediate(
 	count, err := service.CountProgressDescendants(t.Context(), testHandler.Queries, uuidOf(w.dispatchEnvLane), uuidOf(w.root))
 	if err != nil || count != 1 {
 		t.Fatalf("tracked descendants = %d, %v; want 1", count, err)
+	}
+}
+
+func TestDMProgressDispatch_EpicDoneRidesTheCardOnceAndReopenStartsANewEpisode(t *testing.T) {
+	e := newDispatchEnv(t)
+	k1, k2 := e.child(t), e.child(t)
+	e.status(t, k1, "done", 0)
+	e.status(t, k2, "cancelled", 1)
+	e.status(t, e.issue, "done", 2)
+	e.run(t, 20)
+	got := e.wantCards(t, 1)
+	if len(got[0].Payload.Epics) != 1 || got[0].Payload.Epics[0] != (protocol.ProgressCardEpic{IssueID: e.issue, Revision: 1, Cancelled: 1}) {
+		t.Fatalf("epics on card 1 = %+v, want the root at revision 1 with 1 cancelled descendant", got[0].Payload.Epics)
+	}
+
+	// Nothing changed: the episode never fires twice.
+	e.run(t, 40)
+	e.wantCards(t, 1)
+
+	// A reopen ends the episode and says so on the next card without an epic.
+	e.status(t, e.issue, "in_progress", 50)
+	e.run(t, 70)
+	if got = e.wantCards(t, 2); len(got[1].Payload.Epics) != 0 {
+		t.Fatalf("epics after the reopen = %+v, want none", got[1].Payload.Epics)
+	}
+
+	e.status(t, e.issue, "done", 80)
+	e.run(t, 100)
+	got = e.wantCards(t, 3)
+	if len(got[2].Payload.Epics) != 1 || got[2].Payload.Epics[0].Revision != 2 {
+		t.Fatalf("epics on card 3 = %+v, want the root at revision 2", got[2].Payload.Epics)
+	}
+}
+
+func TestDMProgressDispatch_EpicDoneRidesTheLastChildEvenWhenTheRootAlreadyClosed(t *testing.T) {
+	e := newDispatchEnv(t)
+	k1 := e.child(t)
+	e.status(t, e.issue, "done", 0)
+	e.run(t, 20)
+	if got := e.wantCards(t, 1); len(got[0].Payload.Epics) != 0 {
+		t.Fatalf("epics with a child still unfinished = %+v, want none", got[0].Payload.Epics)
+	}
+	e.status(t, k1, "done", 30)
+	e.run(t, 50)
+	if got := e.wantCards(t, 2); len(got[1].Payload.Epics) != 1 || got[1].Payload.Epics[0].IssueID != e.issue {
+		t.Fatalf("epics on card 2 = %+v, want the root once the last child closes", got[1].Payload.Epics)
+	}
+}
+
+func TestDMProgressDispatch_ARootWithNoTrackedChildIsNotAnEpic(t *testing.T) {
+	e := newDispatchEnv(t)
+	e.status(t, e.issue, "done", 0)
+	e.run(t, 20)
+	if got := e.wantCards(t, 1); len(got[0].Payload.Epics) != 0 {
+		t.Fatalf("epics = %+v, want none for a root with no tracked descendant", got[0].Payload.Epics)
 	}
 }
