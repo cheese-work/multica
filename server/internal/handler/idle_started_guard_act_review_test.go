@@ -167,9 +167,9 @@ func TestIdleStartedGuardActFallsBackToBlockedWithoutNeedDecision(test *testing.
 
 func TestIdleStartedGuardActNoticeSkipsIssueThatResumed(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	dbfx.Comment(test, fixture.issue, "back at it", testutil.Cols{"author_type": "member", "author_id": testUserID})
 	fixture.sweep(test)
 	if fixture.leaderTasks(test) != 0 {
@@ -198,7 +198,7 @@ func TestIdleStartedGuardActNoticeReusesTheDecisionWaitAlert(test *testing.T) {
 
 func TestIdleStartedGuardActKeepsTheStatusExplanationWhenAdmissionFails(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
 	if fixture.systemComments(test) != 1 || fixture.receipt(test, "comment_id") == "" {
 		test.Fatalf("system comments = %d, comment id = %q: the status explanation was lost with the failed admission", fixture.systemComments(test), fixture.receipt(test, "comment_id"))
