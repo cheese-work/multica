@@ -21,14 +21,11 @@ import type {
 } from "@multica/core/types";
 import type { AgentAvailability } from "@multica/core/agents";
 import { continuousCorners } from "@/lib/radius";
-import { THEME } from "@/lib/theme";
-import { useColorScheme } from "@/lib/use-color-scheme";
 import { taskMessagesOptions } from "@/data/queries/chat";
 import { Text } from "@/components/ui/text";
 import { Markdown } from "@/lib/markdown";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { failureReasonKey } from "@/lib/failure-reason-label";
-import type { QueuedChatMessage } from "@/lib/chat-queued-messages";
 import { formatElapsedMs } from "@/lib/format-elapsed";
 import { cn } from "@/lib/utils";
 import { useChatSelectStore } from "@/data/chat-select-store";
@@ -40,15 +37,24 @@ import { ChatTimeline } from "./chat-timeline";
 // referenced inline in the message content, with same-file dedup.
 import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
 import { StatusPill } from "./status-pill";
+import { SupplementStatus } from "./supplement-status";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useT } from "@/lib/i18n";
+import {
+  chatAnchorKey,
+  loadReadingAnchor,
+  restoreIndex,
+} from "@/lib/reading-anchor";
+import { useReadingAnchorRecorder } from "@/lib/use-reading-anchor";
 
 interface Props {
   messages: ChatMessage[];
+  /** Active session; null for a blank new chat. Keys the list and its reading anchor. */
+  sessionId: string | null;
   loading: boolean;
   /** Has the workspace ever started a chat? Drives empty-state copy. */
   hasSessions: boolean;
@@ -69,15 +75,14 @@ interface Props {
   /** Live timeline rows for the in-flight task. Already fetched by the
    *  parent so this list doesn't have to manage its own subscription. */
   liveTaskMessages?: TaskMessagePayload[];
-  /** Follow-ups waiting for their turn, rendered after the live reply. */
-  queuedMessages?: QueuedChatMessage[];
   /** Resolved availability — drives the StatusPill's "Offline" /
    *  "Reconnecting" stages. Pass `undefined` while loading. */
   availability?: AgentAvailability;
 }
 
 export function ChatMessageList({
-  messages: allMessages,
+  messages,
+  sessionId,
   loading,
   hasSessions,
   agent,
@@ -86,19 +91,12 @@ export function ChatMessageList({
   quickActionsDisabled = false,
   pendingTask,
   liveTaskMessages,
-  queuedMessages = [],
   availability,
 }: Props) {
   // Top-level selection subscription gates the outer "tap-outside-to-dismiss"
   // Pressable below. When null, the Pressable stays disabled and every tap
   // passes through to the list cells / bubble long-press wrappers normally.
   const selectingId = useChatSelectStore((s) => s.selectingId);
-  // A wakeup turn's input is the runtime's, not a message the person wrote;
-  // its content is withheld, so it would render as an empty bubble.
-  const messages = useMemo(
-    () => allMessages.filter((m) => m.message_kind !== "wakeup"),
-    [allMessages],
-  );
 
   // Every image in this session, in message order (MUL-5752), so tapping one
   // opens the lightbox at its position and a swipe walks the rest.
@@ -117,6 +115,22 @@ export function ChatMessageList({
         attachments: message.attachments,
       })),
     [messages],
+  );
+
+  // Reading position (CHE-1857): record the top visible message per session,
+  // and reopen on it after a remount. Read once per session: a later scroll
+  // must not move the open position under the reader.
+  const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
+  const messageIds = useMemo(() => messages.map((m) => m.id), [messages]);
+  const anchorRecorder = useReadingAnchorRecorder(anchorKey, messageIds);
+  const [viewabilityCallbackPairs] = useState(() => [anchorRecorder.pair]);
+  const hasMessages = messageIds.length > 0;
+  const initialIndex = useMemo(
+    () => (anchorKey ? restoreIndex(loadReadingAnchor(anchorKey), messageIds) : undefined),
+    // Re-read once messages first load (they may arrive after the session id),
+    // not on every later change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [anchorKey, hasMessages],
   );
 
   if (loading && messages.length === 0) {
@@ -173,13 +187,16 @@ export function ChatMessageList({
       disabled={!selectingId}
       style={{ flex: 1 }}
     >
-    {/* `key` on first message id forces remount on session switch so
-        `startRenderingFromBottom` re-fires and we land at the new
-        session's bottom (instead of inheriting the previous session's
-        scroll position). Cheap because sessions are switched, not
-        re-rendered every keystroke. */}
+    {/* `key` on the session id forces remount on session switch so the
+        initial position re-fires (saved anchor, else
+        `startRenderingFromBottom`) instead of inheriting the previous
+        session's scroll position. Keyed on the session, not the first
+        message, so loading older messages does not remount the list. */}
     <FlashList
-      key={messages[0]?.id ?? "empty"}
+      key={sessionId ?? "new"}
+      initialScrollIndex={initialIndex}
+      viewabilityConfigCallbackPairs={viewabilityCallbackPairs}
+      onScroll={anchorRecorder.onScroll}
       data={messages}
       keyExtractor={(m) => m.id}
       renderItem={({ item }) => (
@@ -191,21 +208,16 @@ export function ChatMessageList({
       )}
       ItemSeparatorComponent={MessageSeparator}
       ListFooterComponent={
-        showLiveSection || queuedMessages.length > 0 ? (
+        showLiveSection ? (
           <View style={{ paddingTop: 12 }} className="gap-2">
             {showLiveTimeline ? (
               <ChatTimeline items={liveTaskMessages ?? []} isStreaming />
             ) : null}
-            {showLiveSection ? (
-              <StatusPill
-                pendingTask={pendingTask}
-                taskMessages={liveTaskMessages}
-                availability={availability}
-              />
-            ) : null}
-            {queuedMessages.map((row) => (
-              <QueuedMessageRow key={row.task_id} message={row} />
-            ))}
+            <StatusPill
+              pendingTask={pendingTask}
+              taskMessages={liveTaskMessages}
+              availability={availability}
+            />
           </View>
         ) : null
       }
@@ -246,48 +258,6 @@ export function ChatMessageList({
 
 function MessageSeparator() {
   return <View style={{ height: 12 }} />;
-}
-
-/**
- * A follow-up waiting for its turn. Sits after the live reply, where it will
- * run, dimmed and captioned so it does not read as part of the current
- * reply. Read-only on mobile: removing or editing queued messages stays on
- * web and desktop. Once its turn starts the server row returns to the
- * transcript in this position.
- */
-function QueuedMessageRow({ message }: { message: QueuedChatMessage }) {
-  const { t } = useT("chat");
-  const { colorScheme } = useColorScheme();
-  return (
-    <View className="self-end max-w-[80%] items-end gap-1 opacity-60">
-      <View
-        className="gap-1.5 rounded-xl border-2 border-transparent bg-muted px-3.5 py-2"
-        style={continuousCorners}
-      >
-        {message.content.trim() ? (
-          <Markdown
-            content={message.content}
-            attachments={message.attachments}
-            compact
-          />
-        ) : null}
-        <CommentAttachmentList
-          attachments={message.attachments}
-          content={message.content}
-        />
-      </View>
-      <View className="flex-row items-center gap-1 px-1">
-        <Ionicons
-          name="time-outline"
-          size={12}
-          color={THEME[colorScheme].mutedForeground}
-        />
-        <Text className="text-xs text-muted-foreground">
-          {t("status.queued")}
-        </Text>
-      </View>
-    </View>
-  );
 }
 
 function MessageRow({
@@ -352,13 +322,22 @@ function MessageRow({
     );
     if (isSelecting) return body;
     return (
-      <Pressable
-        onLongPress={longPress.onLongPress}
-        delayLongPress={500}
-      >
-        {body}
-      </Pressable>
+      <>
+        <Pressable
+          onLongPress={longPress.onLongPress}
+          delayLongPress={500}
+        >
+          {body}
+        </Pressable>
+        {message.supplement ? <SupplementStatus supplement={message.supplement} /> : null}
+      </>
     );
+  }
+
+  // The agent-only summary a continued DM starts with: collapsed, never the
+  // visible first reply (CHE-2119). Web: ContinuationSummary.
+  if (message.message_kind === "continuation_summary") {
+    return <ContinuationSummary message={message} isSelecting={isSelecting} />;
   }
 
   // Assistant: timeline fold + markdown + elapsed caption. See
@@ -371,6 +350,41 @@ function MessageRow({
       onQuickAction={onQuickAction}
       quickActionsDisabled={quickActionsDisabled}
     />
+  );
+}
+
+function ContinuationSummary({
+  message,
+  isSelecting,
+}: {
+  message: ChatMessage;
+  isSelecting: boolean;
+}) {
+  const { t } = useT("chat");
+  return (
+    <Collapsible>
+      <CollapsibleTrigger asChild>
+        <View
+          accessibilityRole="button"
+          accessibilityLabel={t("continuation_summary")}
+          className="flex-row items-center gap-1 active:opacity-70"
+        >
+          <Ionicons name="chevron-forward" size={12} color="#71717a" />
+          <Text className="text-xs text-muted-foreground">
+            {t("continuation_summary")}
+          </Text>
+        </View>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <View className="mt-1">
+          <Markdown
+            content={message.content}
+            attachments={message.attachments}
+            selectable={isSelecting}
+          />
+        </View>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

@@ -17,7 +17,9 @@ import type {
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
+  ChatSessionUsage,
   Comment,
   InboxItem,
   InboxWorkspaceUnread,
@@ -39,7 +41,11 @@ import type {
   User,
   Workspace,
 } from "@multica/core/types";
-import { IssueSchema } from "@multica/core/api/schemas";
+import {
+  ChatSessionUsageSchema,
+  EMPTY_CHAT_SESSION_USAGE,
+  IssueSchema,
+} from "@multica/core/api/schemas";
 
 /** Upload response. Only fields mobile actually consumes — `url` to put
  *  into the markdown link, `filename` for the `[📎 name](url)` form, `id`
@@ -245,6 +251,14 @@ export const EMPTY_LIST_PROJECT_RESOURCES_RESPONSE: ListProjectResourcesResponse
 // agent/creator ids). `.loose()` so server-added fields pass through. The two
 // fields mobile keys behaviour on — `id` and `chat_session_id` — are required.
 
+const ChatLastMessageSchema = z.object({
+  content: z.string().default(""),
+  role: z.enum(["user", "assistant"]).catch("assistant"),
+  created_at: z.string().default(""),
+  failure_reason: z.string().nullable().optional(),
+  message_kind: z.enum(["message", "no_response"]).catch("message").optional(),
+}).loose();
+
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
@@ -259,9 +273,38 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   // so the badge math can tell "older server didn't send it" from a real 0 —
   // the tab badge sums `unread_count ?? 0`, same rule as web's sidebar.
   unread_count: z.number().optional(),
+  pinned: z.boolean().optional().catch(undefined),
+  continued_from_session_id: z.string().nullable().optional().catch(null),
+  continued_into_session_id: z.string().nullable().optional().catch(null),
+  forked_from_session_id: z.string().nullable().optional().catch(null),
+  last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
+  // DM attention projection (list-only; absent on older servers). Enum drift
+  // downgrades: an unknown level reads as "none" and the row stays hidden.
+  stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
+  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().optional().catch(null),
+  attention_since: z.string().nullable().optional().catch(null),
+  next_change_at: z.string().nullable().optional().catch(null),
+  attention_keys: z.array(z.string()).optional().catch(undefined),
+  attention_ask_ids: z.array(z.string()).optional().catch(undefined),
+  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
+
+export const EMPTY_CHAT_SESSION: ChatSession = {
+  id: "",
+  workspace_id: "",
+  agent_id: "",
+  creator_id: "",
+  title: "",
+  status: "active",
+  has_unread: false,
+  created_at: "",
+  updated_at: "",
+};
+
+export { ChatSessionUsageSchema, EMPTY_CHAT_SESSION_USAGE };
+export type { ChatSession, ChatSessionUsage };
 
 export const ChatSessionListSchema = z.array(ChatSessionSchema).default([]);
 
@@ -269,6 +312,27 @@ export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
 
 // `attachments` carried for parity rendering only — v1 doesn't author them on
 // mobile. AttachmentSchema is reused as-is.
+// Delivery receipt of a DM follow-up steered into the running task (CHE-2820).
+// Mirrors packages/core/api/schemas.ts: an unknown status degrades to
+// `uncertain`, which never reads as delivered or as safe to resend silently.
+export const ChatSupplementSchema: z.ZodType<ChatSupplement> = z.object({
+  message_id: z.string(),
+  chat_session_id: z.string(),
+  task_id: z.string(),
+  status: z
+    .enum(["pending", "delivering", "delivered", "uncertain", "failed"])
+    .catch("uncertain"),
+  failure_reason: z.string().nullable().catch(null),
+  delivered_at: z.string().nullable().catch(null),
+  acked_after_resend_at: z.string().nullable().catch(null),
+  resent_task_id: z.string().nullable().catch(null),
+}).loose();
+
+export const ResendChatSupplementResponseSchema = z.object({
+  task_id: z.string(),
+  supplement: ChatSupplementSchema,
+}).loose();
+
 export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -282,7 +346,10 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   attachments: z.array(AttachmentSchema).optional(),
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
-  message_kind: z.enum(["message", "no_response", "wakeup"]).catch("message").optional(),
+  message_kind: z
+    .enum(["message", "no_response", "continuation_summary"])
+    .catch("message")
+    .optional(),
   // One malformed optional suggestion must not erase an otherwise valid
   // conversation. The server validates these too; this is mixed-version and
   // corrupted-cache defense at the mobile boundary.
@@ -291,6 +358,8 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
     prompt: z.string(),
     primary: z.boolean().optional(),
   }).loose()).catch([]).optional().default([]),
+  // A malformed receipt drops to "no receipt" rather than the whole message.
+  supplement: ChatSupplementSchema.optional().catch(undefined),
 }).loose();
 
 export const ChatMessageListSchema = z.array(ChatMessageSchema).default([]);
@@ -321,20 +390,20 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
   created_at: z.string().optional(),
   supports_queue: z.boolean().optional(),
   queued_tasks: ChatQueuedTasksSchema.optional(),
+  // Unknown or malformed degrades to `unsupported`; absent (older server) stays absent.
+  head_supplement: z
+    .enum(["capable", "starting", "unsupported"])
+    .optional()
+    .catch("unsupported"),
 }).loose();
 
 export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
-// Steering fields are additive: servers before #10715 omit them and a
-// malformed value degrades to the legacy queued reading, never a failed send.
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string(),
   task_id: z.string(),
   supports_queue: z.boolean().optional(),
   queued: z.boolean().optional().catch(undefined),
-  steered: z.boolean().optional().catch(undefined),
-  message_task_id: z.string().min(1).optional().catch(undefined),
-  message_created_at: z.string().min(1).optional().catch(undefined),
   created_at: z.string().default(""),
 }).loose();
 
@@ -379,7 +448,7 @@ export const EMPTY_TASK_MESSAGE_LIST: TaskMessagePayload[] = [];
 // (root CLAUDE.md "Enum drift downgrades, not crashes"): unknown values fall
 // back to "title" so the row still renders without a snippet line.
 
-const SearchIssueResultSchema = IssueSchema.safeExtend({
+const SearchIssueResultSchema = IssueSchema.unwrap().safeExtend({
   match_source: z.enum(["title", "description", "comment"]).catch("title"),
   matched_snippet: z.string().optional(),
 });

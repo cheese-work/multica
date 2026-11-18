@@ -9,10 +9,6 @@
  *     session, `sending` flips true and we replace the Send button slot
  *     with a Stop affordance (filled foreground bg + stop glyph). Tap →
  *     `onStop()` cancels the in-flight task.
- *   - **Send during a reply**: when the server accepts follow-ups
- *     (`allowSendWhileSending`), typed content swaps Stop for Send, which
- *     asks to add the message to the running reply, plus a Queue action
- *     for the next turn. Mirrors web's ChatInput action slot.
  *   - **Mention picker mode=chat**: chat is user ↔ single agent so
  *     @member / @agent / @squad / @all are noise + would notify the
  *     wrong people. Picker route honors `?mode=chat` and surfaces only
@@ -41,6 +37,9 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/i18n";
 
 interface Props {
+  /** Chat session id, or the new-chat sentinel. Keys the composer draft
+   *  (mention chips + attachments); the text stays in `value`. */
+  draftKey: string;
   /** Current draft text (controlled). Empty string = no draft. */
   value: string;
   /** Fired on every keystroke. The caller writes to the drafts store. */
@@ -48,11 +47,11 @@ interface Props {
   /** Send the serialised markdown content + the completed attachments'
    *  server ids. Caller resets the input by setting `value=""` after a
    *  successful send. */
-  onSend: (
-    content: string,
-    attachmentIds: string[],
-    options?: { queue?: boolean },
-  ) => Promise<void> | void;
+  onSend: (content: string, attachmentIds: string[]) => Promise<void> | void;
+  /** Keep the submitted text on disk until the send settles (see
+   *  `useChatDraftsStore.beginSend`). */
+  onSendStart?: (text: string) => string;
+  onSendSettled?: (handle: string, ok: boolean) => void;
   /** Cancel the in-flight agent task. Only callable while `sending===true`. */
   onStop: () => void;
   /** True while an agent task is running for the active session. The
@@ -60,28 +59,31 @@ interface Props {
   sending: boolean;
   /** Queued tasks remain busy, but do not expose Stop without draft restore. */
   allowStop?: boolean;
-  /** The server accepts sends while `sending` (queue-capable). Older
-   *  servers keep the composer stop-only during a run. */
-  allowSendWhileSending?: boolean;
   /** Hard-disable typing + send. Used when there's no usable agent in the
-   *  workspace or the session is archived (legacy). */
+   *  workspace or an archive/unarchive mutation is in flight. */
   disabled?: boolean;
   /** When `disabled`, replaces the pill label with the reason. */
   disabledReason?: string;
+  /** True when the active session is archived — keeps composer enabled and
+   *  shows the unarchive-on-send placeholder. */
+  archived?: boolean;
 }
 
 const IS_IOS = process.env.EXPO_OS === "ios";
 
 export function ChatComposer({
+  draftKey,
   value,
   onChangeText,
   onSend,
+  onSendStart,
+  onSendSettled,
   onStop,
   sending,
   allowStop = true,
-  allowSendWhileSending = false,
   disabled = false,
   disabledReason,
+  archived = false,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("chat");
@@ -90,15 +92,13 @@ export function ChatComposer({
     async ({
       content,
       attachmentIds,
-      queue,
     }: {
       content: string;
       attachmentIds: string[];
-      queue: boolean;
     }) => {
       // `onSend` may be sync or async; await is safe in both cases. If it
       // throws, MessageComposer's catch restores text + chips.
-      await onSend(content, attachmentIds, queue ? { queue: true } : undefined);
+      await onSend(content, attachmentIds);
     },
     [onSend],
   );
@@ -110,36 +110,39 @@ export function ChatComposer({
     onStop();
   }, [onStop]);
 
+  const idlePrompt = archived
+    ? t("composer.archived_send")
+    : t("composer.message");
+
   return (
-    <MessageComposer
-      value={value}
-      onChangeText={onChangeText}
-      onSubmit={onSubmit}
-      mentionPickerPath={{
-        pathname: "/[workspace]/mention-picker",
-        params: { workspace: wsSlug ?? "", mode: "chat" },
-      }}
-      placeholder={
-        sending && !allowSendWhileSending
-          ? t("composer.working")
-          : t("composer.message")
-      }
-      pillLabel={
-        sending
-          ? t("composer.working")
-          : disabled
-            ? (disabledReason ?? t("composer.unavailable"))
-            : t("composer.message")
-      }
-      pillIcon="chatbubble-ellipses-outline"
-      disabled={disabled}
-      disabledReason={disabledReason}
-      isSending={sending}
-      renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
-      allowSubmitWhileSending={allowSendWhileSending}
-      queueAction={{ accessibilityLabel: t("composer.queue") }}
-      manageKeyboard={false}
-    />
+    <View testID="mobile-chat-composer">
+      <MessageComposer
+        draftKey={`chat:${draftKey}`}
+        value={value}
+        onChangeText={onChangeText}
+        onSubmit={onSubmit}
+        onSubmitStart={onSendStart}
+        onSubmitSettled={onSendSettled}
+        mentionPickerPath={{
+          pathname: "/[workspace]/mention-picker",
+          params: { workspace: wsSlug ?? "", mode: "chat" },
+        }}
+        placeholder={sending ? t("composer.working") : idlePrompt}
+        pillLabel={
+          sending
+            ? t("composer.working")
+            : disabled
+              ? (disabledReason ?? t("composer.unavailable"))
+              : idlePrompt
+        }
+        pillIcon="chatbubble-ellipses-outline"
+        disabled={disabled}
+        disabledReason={disabledReason}
+        isSending={sending}
+        renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
+        manageKeyboard={false}
+      />
+    </View>
   );
 }
 
