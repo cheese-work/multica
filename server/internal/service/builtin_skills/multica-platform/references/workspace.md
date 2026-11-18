@@ -194,3 +194,16 @@ Workspace admin. Settings are per repo (`<owner/name>`).
   `--max-owner-wakes`.
 - `multica ci-watch events <owner/name> [--limit N]` lists recent watcher
   events (1 to 200, server default 50).
+
+## Per-issue token usage
+
+```bash
+multica issue usage <issue-id> --output json
+```
+
+Returns aggregated token usage across the issue's runs. In table output `RUNS`
+counts terminal runs only — one still in flight is not yet reflected. A total
+prefixed with `>=` is a lower bound, not the real total: one or more terminal
+runs did not report usage (aborted or infra-failed), so the true figure is at
+least that but unknown above it. Do not compare an unprefixed total with a
+`>=`-prefixed one without checking which you have.
