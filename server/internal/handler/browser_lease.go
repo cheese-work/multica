@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -128,7 +129,7 @@ func (h *Handler) MintBrowserLease(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusForbidden, "no_accountable_user", "the task has no accountable user")
 		return
 	}
-	res, err := h.BrowserLeases.Mint(r.Context(), browserlease.MintRequest{
+	res, err := h.BrowserLeases.Mint(daemonLeaseCtx(r, task), browserlease.MintRequest{
 		WorkspaceID: ws, TaskID: task.ID, AgentID: task.AgentID, IssueID: task.IssueID,
 		UserID: task.AccountableUserID, ProfileID: profileID, DecisionID: decisionID,
 	})
@@ -152,7 +153,7 @@ func (h *Handler) RenewBrowserLease(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, err := h.BrowserLeases.Renew(r.Context(), ws, task.ID, leaseID)
+	res, err := h.BrowserLeases.Renew(daemonLeaseCtx(r, task), ws, task.ID, leaseID)
 	if err != nil {
 		writeBrowserLeaseError(w, err)
 		return
@@ -164,9 +165,15 @@ func (h *Handler) RenewBrowserLease(w http.ResponseWriter, r *http.Request) {
 // (plugins/steel-browser, CHE-4730). Disabling or uninstalling it revokes every lease.
 const SteelBrowserPluginKey = "work.cheese.steel-browser"
 
-// browserLeaseRevoker is cheap: two pointers, no state.
+// browserLeaseRevoker is cheap: a few pointers, no state. It audits each revoke inside the
+// transaction that ends the leases (CHE-4744).
 func (h *Handler) browserLeaseRevoker() *browserlease.Revoker {
-	return &browserlease.Revoker{Queries: h.Queries, Bus: h.Bus}
+	return &browserlease.Revoker{Queries: h.Queries, Bus: h.Bus, Pool: h.TxStarter, Audit: BrowserLeaseAudit}
+}
+
+// daemonLeaseCtx attributes a lease transition to the agent whose task asked for it.
+func daemonLeaseCtx(r *http.Request, task db.AgentTaskQueue) context.Context {
+	return withAuditActor(r.Context(), auditActor{Type: "agent", ID: task.AgentID, TaskID: task.ID, Source: "daemon"})
 }
 
 type browserLeaseRevokeResponse struct {
@@ -190,7 +197,7 @@ func (h *Handler) ReleaseBrowserLease(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	revoked, err := h.browserLeaseRevoker().Revoke(r.Context(), browserlease.Filter{
+	revoked, err := h.browserLeaseRevoker().Revoke(daemonLeaseCtx(r, task), browserlease.Filter{
 		WorkspaceID: workspaceUUID,
 		LeaseID:     leaseUUID,
 		TaskID:      task.ID,
@@ -224,7 +231,7 @@ func (h *Handler) RevokeAllBrowserLeases(w http.ResponseWriter, r *http.Request)
 	if _, ok := h.requireWorkspaceRole(w, r, wsID, "workspace not found", "owner", "admin"); !ok {
 		return
 	}
-	revoked, err := h.browserLeaseRevoker().Revoke(r.Context(), browserlease.Filter{WorkspaceID: wsUUID}, browserlease.ReasonRevokeAll)
+	revoked, err := h.browserLeaseRevoker().Revoke(withAuditActor(r.Context(), h.auditActorFromRequest(r, wsUUID)), browserlease.Filter{WorkspaceID: wsUUID}, browserlease.ReasonRevokeAll)
 	if err != nil {
 		slog.Warn("revoke all browser leases failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", wsID)...)
 		writeError(w, http.StatusInternalServerError, "failed to revoke the browser leases")
@@ -242,7 +249,7 @@ func (h *Handler) revokeLeasesOfDisabledPlugin(r *http.Request, installation db.
 		return
 	}
 	filter := browserlease.Filter{WorkspaceID: installation.WorkspaceID}
-	if _, err := h.browserLeaseRevoker().Revoke(r.Context(), filter, browserlease.ReasonPluginDisabled); err != nil {
+	if _, err := h.browserLeaseRevoker().Revoke(withAuditActor(r.Context(), h.auditActorFromRequest(r, installation.WorkspaceID)), filter, browserlease.ReasonPluginDisabled); err != nil {
 		slog.Error("revoke browser leases of a disabled plugin failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", uuidToString(installation.WorkspaceID))...)
 	}
 }

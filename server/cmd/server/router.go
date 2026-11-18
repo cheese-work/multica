@@ -482,7 +482,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Fail closed until W3-4 (signer), W3-8/9 (user gate) and W3-10/11 (decisions) fill the seams.
 	h.BrowserLeases = &browserlease.Service{
 		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: browserlease.DenyAll{},
-		Registry: browserlease.NameRegistry{Queries: queries},
+		Registry: browserlease.NameRegistry{Queries: queries}, Audit: handler.BrowserLeaseAudit,
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -73,4 +74,25 @@ func auditTimestamp(t pgtype.Timestamptz) any {
 		return nil
 	}
 	return t.Time.UTC().Format(time.RFC3339)
+}
+
+type auditActorCtxKey struct{}
+
+// withAuditActor carries the actor of a lease transition into the browserlease package, which
+// cannot import this one. A context without an actor audits as the system.
+func withAuditActor(ctx context.Context, a auditActor) context.Context {
+	return context.WithValue(ctx, auditActorCtxKey{}, a)
+}
+
+func auditActorFromContext(ctx context.Context) auditActor {
+	if a, ok := ctx.Value(auditActorCtxKey{}).(auditActor); ok {
+		return a
+	}
+	return auditSystemActor
+}
+
+// BrowserLeaseAudit is the browserlease.AuditFunc: it writes one lease event row through q,
+// the lease transaction's queries.
+func BrowserLeaseAudit(ctx context.Context, q *db.Queries, kind string, l db.BrowserLease) error {
+	return insertAuditRow(ctx, q, auditActorFromContext(ctx), browserLeaseAuditInput(kind, l))
 }

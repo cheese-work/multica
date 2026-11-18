@@ -9,6 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"net/http"
+
+	"github.com/multica-ai/multica/server/internal/browserlease"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -126,5 +130,120 @@ func TestBrowserLeaseAuditRowStoresAllFields(t *testing.T) {
 				t.Errorf("agent id stored as %v", row.After["agent"])
 			}
 		})
+	}
+}
+
+// Lease transitions write their audit rows (CHE-4744 P1 fix): each test performs the
+// transition through the real handler and service, then reads the stored audit row.
+
+func TestBrowserLeaseAuditKindsMatchTheServiceConstants(t *testing.T) {
+	for kind, want := range map[string]string{
+		browserlease.AuditStart: "browser.lease.start", browserlease.AuditEnd: "browser.lease.end", browserlease.AuditRevoke: "browser.lease.revoke",
+	} {
+		if kind != want || !AuditKindRegistered(kind) {
+			t.Errorf("service kind %q: want %q registered", kind, want)
+		}
+	}
+}
+
+func TestBrowserLeaseTransitionsWriteAuditRowsWithActor(t *testing.T) {
+	f := newBrowserLeaseFixture(t, "running")
+	f.h.BrowserLeases.Audit = BrowserLeaseAudit
+	prevTx := f.h.TxStarter
+	t.Cleanup(func() { f.h.TxStarter = prevTx })
+
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": f.profile})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var minted struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil {
+		t.Fatal(err)
+	}
+
+	assertRow := func(kind, reasonKey, reason string) {
+		t.Helper()
+		rows := auditRowsFor(t, kind, minted.LeaseID)
+		if len(rows) != 1 {
+			t.Fatalf("%s rows = %d, want 1", kind, len(rows))
+		}
+		row := rows[0]
+		if row.ActorType != "agent" || row.ActorID != f.agentID || row.TaskID != f.taskID {
+			t.Errorf("%s actor = %s/%s task %s, want agent %s task %s", kind, row.ActorType, row.ActorID, row.TaskID, f.agentID, f.taskID)
+		}
+		if row.TargetType != "browser_lease" {
+			t.Errorf("%s target type = %q", kind, row.TargetType)
+		}
+		for key, want := range map[string]any{"agent": f.agentID, "task": f.taskID, "profile": f.profile, "class": "S0", "user": testUserID} {
+			if row.After[key] != want {
+				t.Errorf("%s after[%s] = %v, want %v", kind, key, row.After[key], want)
+			}
+		}
+		for _, key := range []string{"issue", "start"} {
+			if v, ok := row.After[key]; !ok || v == nil {
+				t.Errorf("%s after[%s] missing", kind, key)
+			}
+		}
+		if reasonKey != "" && row.After[reasonKey] != reason {
+			t.Errorf("%s after[%s] = %v, want %s", kind, reasonKey, row.After[reasonKey], reason)
+		}
+	}
+	assertRow("browser.lease.start", "", "")
+
+	// An agent release goes through the revoker: a revoke row, with the agent as actor.
+	f.h.TxStarter = testPool
+	if w := f.call(t, f.h.ReleaseBrowserLease, "/x", nil, "leaseId", minted.LeaseID); w.Code != http.StatusOK {
+		t.Fatalf("release: %d %s", w.Code, w.Body.String())
+	}
+	assertRow("browser.lease.revoke", "revoke_reason", browserlease.ReasonRelease)
+}
+
+func TestBrowserLeaseExpiryWritesAnEndRow(t *testing.T) {
+	f := newBrowserLeaseFixture(t, "running")
+	f.h.BrowserLeases.Audit = BrowserLeaseAudit
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": f.profile})
+	var minted struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	f.h.BrowserLeases.Now = func() time.Time { return time.Now().Add(browserlease.MaxLeaseDuration) }
+	if w := f.call(t, f.h.RenewBrowserLease, "/x", nil, "leaseId", minted.LeaseID); w.Code != http.StatusConflict {
+		t.Fatalf("renew past the hard limit: %d %s", w.Code, w.Body.String())
+	}
+	rows := auditRowsFor(t, "browser.lease.end", minted.LeaseID)
+	if len(rows) != 1 || rows[0].ActorType != "agent" || rows[0].ActorID != f.agentID || rows[0].After["end_reason"] != "expired" {
+		t.Fatalf("end rows = %+v, want one agent row with end_reason expired", rows)
+	}
+	if _, ok := rows[0].After["end"]; !ok {
+		t.Error("end row has no end time")
+	}
+}
+
+func TestBrowserLeaseKillSwitchAndPluginOffAuditTheirActors(t *testing.T) {
+	runtimeID := dbfx.Runtime(t, "CHE-4744 audit runtime")
+	agentID := dbfx.Agent(t, "CHE-4744 audit agent", runtimeID)
+	issueID := dbfx.Issue(t, "CHE-4744 audit issue")
+	task := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "started_at": testutil.Raw("now()")})
+	prevTx := testHandler.TxStarter
+	testHandler.TxStarter = testPool
+	t.Cleanup(func() { testHandler.TxStarter = prevTx })
+
+	killed := seedActiveBrowserLease(t, task)
+	req := withURLParam(newRequest(http.MethodPost, "/x", nil), "id", testWorkspaceID)
+	testutil.Call(t, testHandler.RevokeAllBrowserLeases, req).Want(http.StatusOK)
+	rows := auditRowsFor(t, "browser.lease.revoke", killed)
+	if len(rows) != 1 || rows[0].ActorType != "member" || rows[0].ActorID != testUserID || rows[0].After["revoke_reason"] != browserlease.ReasonRevokeAll {
+		t.Fatalf("kill-switch rows = %+v, want one member row (%s) with revoke_all", rows, testUserID)
+	}
+
+	off := seedActiveBrowserLease(t, task)
+	testHandler.revokeLeasesOfDisabledPlugin(newRequest(http.MethodPost, "/x", nil), db.PluginInstallation{PluginKey: SteelBrowserPluginKey, WorkspaceID: parseUUID(testWorkspaceID)})
+	rows = auditRowsFor(t, "browser.lease.revoke", off)
+	if len(rows) != 1 || rows[0].After["revoke_reason"] != browserlease.ReasonPluginDisabled {
+		t.Fatalf("plugin-off rows = %+v, want one revoke row with plugin_disabled", rows)
 	}
 }
