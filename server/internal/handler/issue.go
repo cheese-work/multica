@@ -1553,6 +1553,38 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	return query, args
 }
 
+// buildTitleSearchQuery is the instant tier of Cmd+K (CHE-7337): issues whose
+// title holds every term, newest update first, read through the same row shape as
+// buildSearchQuery so scanSearchIssue serves both. It reads no description or
+// comment and ranks nothing, so the planner can walk idx_issue_workspace_updated_at
+// and stop at the limit. Args: $1 workspace_id (filled by the caller), $2 term
+// patterns, then the terminal statuses when closed issues are excluded, limit and
+// offset.
+func buildTitleSearchQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	patterns := make([]string, len(terms))
+	for i, term := range terms {
+		patterns[i] = "%" + escapeLike(foldDiacritics(term)) + "%"
+	}
+	args := []any{nil, patterns}
+	where := "i.workspace_id = $1 AND ist.title_folded LIKE ALL($2::text[])"
+	if !includeClosed {
+		args = append(args, terminalStatusKeys)
+		where += fmt.Sprintf(" AND NOT (i.status = ANY($%d::text[]))", len(args))
+	}
+	args = append(args, 0, 0)
+	return fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
+		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
+		'title' AS match_source, '' AS matched_comment_content
+	FROM issue i
+	JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
+	WHERE %s
+	ORDER BY i.updated_at DESC, i.id DESC
+	LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args)), args
+}
+
 func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	workspaceID := h.resolveWorkspaceID(r)
@@ -1601,9 +1633,18 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		terminalStatusKeys = resolvedKeys
 	}
 
-	sqlQuery, args := buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
-	// Fill placeholder args: $4 = workspace_id, last two = limit, offset
-	args[3] = wsUUID
+	titleOnly := r.URL.Query().Get("title_only") == "true"
+	var sqlQuery string
+	var args []any
+	wsArg := 3 // index of the workspace_id placeholder in args
+	if titleOnly {
+		sqlQuery, args = buildTitleSearchQuery(terms, includeClosed, terminalStatusKeys)
+		wsArg = 0
+	} else {
+		sqlQuery, args = buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
+	}
+	// Fill placeholder args: workspace_id, last two = limit, offset
+	args[wsArg] = wsUUID
 	args[len(args)-2] = limit
 	args[len(args)-1] = offset
 
@@ -1649,7 +1690,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
-	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
+	if !titleOnly && shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
 		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
