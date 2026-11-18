@@ -549,6 +549,7 @@
     "card_load_failed": "このタスクを読み込めませんでした。",
     "data_error": "このタスクにはアプリが読み取れないデータが含まれています。",
     "retry": "再試行",
+    "load_retry": "再試行",
     "not_found_title": "タスクが見つかりません",
     "breadcrumb_project_unknown": "不明なプロジェクト",
     "back": "戻る",

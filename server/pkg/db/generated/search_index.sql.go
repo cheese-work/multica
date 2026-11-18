@@ -370,7 +370,7 @@ func (q *Queries) ListSearchIndexIssuesPage(ctx context.Context, arg ListSearchI
 }
 
 const listSearchIndexProjects = `-- name: ListSearchIndexProjects :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id FROM project
 WHERE workspace_id = $1
 ORDER BY id
 `
@@ -401,6 +401,8 @@ func (q *Queries) ListSearchIndexProjects(ctx context.Context, workspaceID pgtyp
 			&i.WorkflowID,
 			&i.DecisionDelegates,
 			&i.WorkflowSplit,
+			&i.CreatorType,
+			&i.CreatorID,
 		); err != nil {
 			return nil, err
 		}
@@ -413,7 +415,7 @@ func (q *Queries) ListSearchIndexProjects(ctx context.Context, workspaceID pgtyp
 }
 
 const listSearchIndexProjectsByIDs = `-- name: ListSearchIndexProjectsByIDs :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id FROM project
 WHERE workspace_id = $1 AND id = ANY($2::uuid[])
 `
 
@@ -448,6 +450,8 @@ func (q *Queries) ListSearchIndexProjectsByIDs(ctx context.Context, arg ListSear
 			&i.WorkflowID,
 			&i.DecisionDelegates,
 			&i.WorkflowSplit,
+			&i.CreatorType,
+			&i.CreatorID,
 		); err != nil {
 			return nil, err
 		}

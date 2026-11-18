@@ -29,7 +29,7 @@ import { useT } from "../i18n";
 import { docsUrl } from "../common/docs-url";
 import { RAIL_ICON_BUTTON_CLASS } from "./rail-styles";
 import { DOWNLOAD_URL } from "./help-links";
-import { useWhatsNewMenuPanel, WhatsNewMenuPanel } from "../whats-new/whats-new-launcher";
+import { useWhatsNewMenuPanel, WhatsNewMenuPanel } from "../whats-new/whats-new-menu-panel";
 
 const BRAND_URL = "https://multica.ai";
 
@@ -112,6 +112,14 @@ export function HelpLauncher() {
             <DropdownMenuItem onClick={whatsNew.show}>
               <Megaphone className="h-3.5 w-3.5" />
               {t(($) => $.whats_new.trigger)}
+              {whatsNew.newestUnread && (
+                <span
+                  data-slot="whats-new-tag"
+                  className="ml-auto text-caption font-medium text-brand tabular-nums"
+                >
+                  {`v${whatsNew.newestUnread}`}
+                </span>
+              )}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem

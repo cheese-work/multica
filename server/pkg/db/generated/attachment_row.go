@@ -22,5 +22,7 @@ func (r CreateAttachmentRow) Attachment() Attachment {
 		RevisionOf:    r.RevisionOf,
 		RevisionRoot:  r.RevisionRoot,
 		Sha256:        r.Sha256,
+		Width:         r.Width,
+		Height:        r.Height,
 	}
 }
