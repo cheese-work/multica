@@ -3671,7 +3671,7 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue on behalf of Test User")).toBeInTheDocument();
-      fireEvent.click(screen.getByText("Details"));
+      // Fork default: Details starts open (upstream v0.10.0 starts collapsed).
       const creatorRow = screen.getByText("Created by").parentElement!;
       expect(creatorRow).toHaveTextContent("Claude Agent");
       expect(within(creatorRow).getByRole("link", { name: "On behalf of Test User" }))
@@ -3695,7 +3695,7 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue")).toBeInTheDocument();
-      fireEvent.click(screen.getByText("Details"));
+      // Fork default: Details starts open.
       expect(screen.queryByText(/On behalf of/)).not.toBeInTheDocument();
       expect(screen.queryByText("Requested by")).not.toBeInTheDocument();
     });
@@ -3712,7 +3712,7 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue on behalf of Unknown")).toBeInTheDocument();
-      fireEvent.click(screen.getByText("Details"));
+      // Fork default: Details starts open.
       expect(screen.getByText("Created by").parentElement).toHaveTextContent("On behalf of Unknown");
     });
   });
@@ -4201,9 +4201,13 @@ describe("IssueDetail (shared)", () => {
     try {
       renderIssueDetail();
       await screen.findByText("Long discussion root");
-      expect(document.getElementById("comment-offscreen-reply-199")).not.toBeNull();
-      expect(screen.queryByText("Offscreen body 199")).toBeNull();
-      expect(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body"))).toHaveLength(0);
+      // Fork wins (CHE-7026): long threads fold to a short tail (thread-length fold +
+      // Virtuoso rows), so the 200 replies are never all mounted. Upstream's test
+      // assumed every reply gets a VirtualThreadRow anchor; the bound that matters
+      // — offscreen bodies are not mounted — holds more strongly under the fold.
+      expect(document.getElementById("comment-offscreen-reply-0")).toBeNull();
+      expect(screen.queryByText("Offscreen body 0")).toBeNull();
+      expect(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body")).length).toBeLessThan(10);
     } finally { vi.unstubAllGlobals(); }
   });
 
