@@ -340,3 +340,95 @@ func TestIntakeHoldWarnMode(test *testing.T) {
 		test.Fatalf("warn mode wrote a refusal line: %q", logged.String())
 	}
 }
+
+// 8 (a), the run: a person's move into a step with a handler queues the
+// handler's run; an agent could not make that move before it.
+func TestIntakeHoldPersonMoveStartsHandlerRun(test *testing.T) {
+	seedTestCatalog(test)
+	agentID := seededReadyAgentID(test)
+	fixture := newHoldFixture(test, nil)
+	setColumnHandoff(test, fixture.projectID, "in_progress", handToAgent(agentID, "Go.")).Want(http.StatusOK)
+	issueID := fixture.issue(test, "feat(x): handled")
+
+	wantIntakeRefusal(test, holdAgentPut(test, issueID, "in_progress"))
+	if queued := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, issueID); queued != 0 {
+		test.Fatalf("a refused move queued %d runs", queued)
+	}
+	putIssue(test, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+	if queued := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, issueID, agentID); queued != 1 {
+		test.Fatalf("queued handler runs after the person's move = %d, want 1", queued)
+	}
+	holdAgentPut(test, issueID, "backlog").Want(http.StatusOK)
+	wantHold(test, issueID, false, false, "released_by_member")
+	holdAgentPut(test, issueID, "in_progress").Want(http.StatusOK)
+}
+
+// 7: in a workflow whose todo step has no handler (as Design's), an agent
+// create with status todo is refused, and one with no status lands in backlog.
+func TestIntakeHoldCreateInWorkflowWithoutHandler(test *testing.T) {
+	seedTestCatalog(test)
+	fixture := newHoldFixture(test, nil)
+	workflow := createTestWorkflow(test, "hold handlerless", "todo", "in_progress", "in_review")
+	setProjectWorkflow(test, fixture.projectID, map[string]any{"workflow_id": workflow.ID}).Want(http.StatusOK)
+
+	wantIntakeRefusal(test, holdCreateAs(test, map[string]any{"title": "plan(x): design", "project_id": fixture.projectID, "status": "todo"}, true))
+	response := holdCreateAs(test, map[string]any{"title": "plan(x): design no status", "project_id": fixture.projectID}, true).Want(http.StatusCreated)
+	issueID := response.Map()["id"].(string)
+	if got := holdIssueStatus(test, issueID); got != "backlog" || holdMarker(test, issueID) != "CHE-6911" {
+		test.Fatalf("status = %s marker = %q, want backlog and the entry source", got, holdMarker(test, issueID))
+	}
+}
+
+// 8 (e), through the real request and answer path: a task sends a spend
+// request on a held issue, the person answers the card, and the agent move
+// passes only once the answer's wake_at has passed.
+func TestIntakeHoldAnswerHoldRealPath(test *testing.T) {
+	seedTestCatalog(test)
+	hold := newHoldFixture(test, func(entry map[string]any) { entry["exempt_escalation_classes"] = []string{"spend"} })
+	for _, withdraw := range []bool{false, true} {
+		name := "the answer takes effect at wake_at"
+		if withdraw {
+			name = "a withdrawn answer never passes"
+		}
+		test.Run(name, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			dbfx.Exec(test, `UPDATE issue SET project_id = $1, status = 'backlog', created_at = now(), assignee_type = NULL, assignee_id = NULL WHERE id = $2`, hold.projectID, fixture.issueID)
+			issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			input := fixture.input()
+			input.EscalationClass = "spend"
+			result, err := testHandler.createDecisionRequest(fixture.request(), issue, input)
+			if err != nil {
+				test.Fatal(err)
+			}
+			// The request path parks the issue today; a park is a platform move and
+			// the issue stays held. Holding the issue without a park belongs to a
+			// later child.
+			if got := holdIssueStatus(test, fixture.issueID); got != "backlog" && got != "blocked" && got != "need_decision" {
+				test.Fatalf("the request moved the issue to %s", got)
+			}
+			wantIntakeRefusal(test, holdAgentPut(test, fixture.issueID, "in_progress"))
+
+			answer, err := testHandler.answerDecisionRequestTx(fixture.request(), issue.WorkspaceID, result.Request.ID, parseUUID(fixture.humanID), decisionCardAnswerInput{Text: "yes"})
+			if err != nil {
+				test.Fatal(err)
+			}
+			if !answer.Answer.WakeAt.Valid {
+				test.Fatal("the card answer has no wake_at")
+			}
+			wantIntakeRefusal(test, holdAgentPut(test, fixture.issueID, "in_progress"))
+			if withdraw {
+				if _, err := testHandler.disclaimDecisionAnswerTx(fixture.request(), issue.WorkspaceID, answer.Answer.ID, parseUUID(fixture.humanID)); err != nil {
+					test.Fatal(err)
+				}
+				dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, answer.Answer.ID)
+				wantIntakeRefusal(test, holdAgentPut(test, fixture.issueID, "in_progress"))
+				return
+			}
+			dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, answer.Answer.ID)
+			holdAgentPut(test, fixture.issueID, "in_progress").Want(http.StatusOK)
+		})
+	}
+}
