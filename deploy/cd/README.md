@@ -322,6 +322,7 @@ python3 deploy/cd/test-health-window.py
 python3 deploy/cd/test-install-health-observer.py
 python3 .github/scripts/test_ci_wait_policy.py
 python3 deploy/cd/test-rollback-failed-readback.py
+python3 deploy/cd/test-c00-image-gc.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -1127,3 +1128,41 @@ drives `deploy-lib.sh`'s real `compose()` function through the shim against a
 stand-in `docker`: the candidate start renders the fault, the migrator, the
 recovery start and a run without the switch render the real database. It does
 not run `cutover.sh` or touch C00.
+
+## C00 image maintenance (`c00-image-gc.py`, CHE-7139)
+
+A no-model replacement for the prompt-driven image cleanup. Dry run by default;
+`--apply` removes. Scope is frozen: images whose every tag is
+`ghcr.io/cheese-work/multica-{backend,web}:sha-<40 hex>`, older than 7 full days,
+with no container (running or stopped), active-tuple or `--keep-ref` reference.
+Removal is `docker image rm <full id>` after a fresh tag and `ancestor=` recheck;
+never forced, never a prune.
+
+Keep references are read from live state: `cutover-state.json` `image_tuple`
+(must resolve to a local image by ID, tag or RepoDigest, else BLOCKED) and the
+image of every container, which covers the retained predecessor colour. Both
+predecessor services (`backend-<colour>`, `frontend-<colour>`, the colour that is
+not `active_colour`) must exist as containers, or the run is BLOCKED: without
+them no rollback image can be proven. Compose
+labels are ignored on purpose: `cd-deploy.yml` deletes its `cd-deploy-<ts>`
+staging directory after each deploy. A `cd-deploy-*` directory under
+`--deploy-root` blocks the run (active deploy, or a failed cleanup). The run also
+takes the controller's `deploy.lock` (non-blocking) in `--cutover-state-dir` and
+holds it across discovery and every removal, which covers a rollback that creates
+no staging; a busy lock is BLOCKED. Every `--keep-ref` must resolve to a local
+image by ID, tag or RepoDigest, else BLOCKED. The controller does not read
+`manifest.json` or `release-record.json` in the state dir, but if present they are
+parsed: a malformed file is BLOCKED, and every Multica image ref in them must
+resolve locally (kept), else BLOCKED with a recovery owner. No flag waives an
+unresolved ref, because a registry digest can describe a local image that has no
+RepoDigests; the owner corrects or archives the record.
+
+Exit 0 only when used bytes are at or below `--target-bytes`; 3 TARGET_UNMET, 2
+BLOCKED (nothing mutated), 1 FAILED. Each run writes `manifest.json` and
+`receipt.json` (df before/after, removed, skipped, failed) under `--run-dir/<ICT
+timestamp>/`. Container json-file logs and other disk growth are out of scope.
+
+```
+python3 deploy/cd/c00-image-gc.py --cutover-state-dir "$C00_CUTOVER_STATE_DIR" \
+  --deploy-root "$C00_STATE_DIR" --run-dir ~/.multica/image-gc [--apply]
+```

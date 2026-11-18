@@ -33,6 +33,8 @@ const (
 type autoClose struct {
 	reviewLoop
 	acceptor, parentID string
+	// step is the step the issue enters and its handler runs for.
+	step string
 }
 
 func setAutoCloseMode(t *testing.T, mode string) {
@@ -79,7 +81,7 @@ func newAutoClose(t *testing.T, mode string) autoClose {
 	})
 	// The issue's own text is older than any verdict a test seeds.
 	dbfx.Exec(t, `UPDATE issue_description_revision SET created_at = now() - interval '2 hours' WHERE issue_id = $1`, issueID)
-	return autoClose{reviewLoop{reviewer, runtimeID, issueID, projectID, run}, acceptor, parentID}
+	return autoClose{reviewLoop{reviewer, runtimeID, issueID, projectID, run}, acceptor, parentID, statusAgentAccepted}
 }
 
 // comment plants a comment by author, created and last edited the given ages ago.
@@ -129,8 +131,8 @@ func (c autoClose) wantClosed(t *testing.T) {
 
 func (c autoClose) wantHandlerRun(t *testing.T) {
 	t.Helper()
-	if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != "agent_accepted" {
-		t.Fatalf("status = %q, want agent_accepted", status)
+	if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != c.step {
+		t.Fatalf("status = %q, want %s", status, c.step)
 	}
 	if n := c.acceptorRuns(t); n != 1 {
 		t.Fatalf("acceptor runs = %d, want 1", n)
@@ -195,67 +197,71 @@ func TestAutoClose_PRIssueClosesOnlyWhenMergedAtThePassHead(t *testing.T) {
 	})
 }
 
+// autoCloseNegatives are the cases that each keep the handler run, on entry
+// to either step.
+var autoCloseNegatives = map[string]struct {
+	setup func(t *testing.T, c autoClose)
+}{
+	"stale PASS: a newer candidate": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `INSERT INTO attachment (workspace_id, issue_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+			SELECT workspace_id, id, 'agent', $2, 'plan-r2.md', 'https://example.test/plan-r2.md', 'text/markdown', 1 FROM issue WHERE id = $1`, c.issueID, c.agentID)
+	}},
+	"stale PASS: a revised candidate in a comment": {func(t *testing.T, c autoClose) {
+		c.comment(t, "agent", c.acceptor, "1 minute", "1 minute")
+	}},
+	"stale PASS: a candidate comment edited after the PASS": {func(t *testing.T, c autoClose) {
+		c.comment(t, "agent", c.acceptor, "3 hours", "1 minute")
+	}},
+	"stale PASS: a revised description": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `UPDATE issue SET description = 'plan r2', revision = revision + 1 WHERE id = $1`, c.issueID)
+	}},
+	"CHANGES after PASS": {func(t *testing.T, c autoClose) {
+		c.seedVerdict(t, "review_changes_requested", `[{"severity":"P1","summary":"x"}]`, "", "1 minute")
+	}},
+	"stale-verdict mark": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details)
+			SELECT workspace_id, id, 'system', 'review_verdict_stale', '{}'::jsonb FROM issue WHERE id = $1`, c.issueID)
+	}},
+	"return to in_progress after the PASS": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details)
+			SELECT workspace_id, id, 'system', 'status_changed', '{"from":"agent_review","to":"in_progress"}'::jsonb FROM issue WHERE id = $1`, c.issueID)
+	}},
+	"root issue": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `UPDATE issue SET parent_issue_id = NULL WHERE id = $1`, c.issueID)
+	}},
+	"open decision request": {func(t *testing.T, c autoClose) {
+		session := dbfx.ChatSession(t, c.agentID, testutil.Cols{"creator_id": testUserID})
+		id := dbfx.Insert(t, "decision_request", testutil.Cols{
+			"workspace_id": testWorkspaceID, "issue_id": c.issueID, "asking_agent_id": c.agentID, "human_user_id": testUserID,
+			"chat_session_id": session, "ask": "Waive?", "escalation_class": "reversible", "origin": "asked", "status": "open",
+		})
+		dbfx.Cleanup(t, `DELETE FROM decision_request WHERE id = $1`, id)
+	}},
+	"enabled wakeup": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `INSERT INTO issue_wakeup (id, workspace_id, issue_id, agent_id, instruction, kind, mode, enabled)
+			SELECT gen_random_uuid(), workspace_id, id, $2, 'look again', 'event', 'continuous', true FROM issue WHERE id = $1`, c.issueID, c.agentID)
+		dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
+	}},
+	"Blockers: Cheese stop": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `UPDATE issue SET description = E'Blockers: Cheese stop CHE-1\nrest' WHERE id = $1`, c.issueID)
+	}},
+	"parent delivery_stop stopped": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `UPDATE issue SET metadata = '{"delivery_stop":"stopped"}'::jsonb WHERE id = $1`, c.parentID)
+	}},
+	"no post_close_work": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `UPDATE issue SET metadata = '{}'::jsonb WHERE id = $1`, c.issueID)
+	}},
+	"post_close_work names work": {func(t *testing.T, c autoClose) {
+		dbfx.Exec(t, `UPDATE issue SET metadata = '{"post_close_work":"deploy to C00"}'::jsonb WHERE id = $1`, c.issueID)
+	}},
+	"open child": {func(t *testing.T, c autoClose) {
+		dbfx.Issue(t, "open child", testutil.Cols{"project_id": c.projectID, "status": "in_progress", "parent_issue_id": c.issueID})
+	}},
+}
+
 // Negative tests: each keeps the handler run.
 func TestAutoClose_EachFailedPredicateKeepsTheHandlerRun(t *testing.T) {
-	for name, tc := range map[string]struct {
-		setup func(t *testing.T, c autoClose)
-	}{
-		"stale PASS: a newer candidate": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `INSERT INTO attachment (workspace_id, issue_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
-				SELECT workspace_id, id, 'agent', $2, 'plan-r2.md', 'https://example.test/plan-r2.md', 'text/markdown', 1 FROM issue WHERE id = $1`, c.issueID, c.agentID)
-		}},
-		"stale PASS: a revised candidate in a comment": {func(t *testing.T, c autoClose) {
-			c.comment(t, "agent", c.acceptor, "1 minute", "1 minute")
-		}},
-		"stale PASS: a candidate comment edited after the PASS": {func(t *testing.T, c autoClose) {
-			c.comment(t, "agent", c.acceptor, "3 hours", "1 minute")
-		}},
-		"stale PASS: a revised description": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `UPDATE issue SET description = 'plan r2', revision = revision + 1 WHERE id = $1`, c.issueID)
-		}},
-		"CHANGES after PASS": {func(t *testing.T, c autoClose) {
-			c.seedVerdict(t, "review_changes_requested", `[{"severity":"P1","summary":"x"}]`, "", "1 minute")
-		}},
-		"stale-verdict mark": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details)
-				SELECT workspace_id, id, 'system', 'review_verdict_stale', '{}'::jsonb FROM issue WHERE id = $1`, c.issueID)
-		}},
-		"return to in_progress after the PASS": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details)
-				SELECT workspace_id, id, 'system', 'status_changed', '{"from":"agent_review","to":"in_progress"}'::jsonb FROM issue WHERE id = $1`, c.issueID)
-		}},
-		"root issue": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `UPDATE issue SET parent_issue_id = NULL WHERE id = $1`, c.issueID)
-		}},
-		"open decision request": {func(t *testing.T, c autoClose) {
-			session := dbfx.ChatSession(t, c.agentID, testutil.Cols{"creator_id": testUserID})
-			id := dbfx.Insert(t, "decision_request", testutil.Cols{
-				"workspace_id": testWorkspaceID, "issue_id": c.issueID, "asking_agent_id": c.agentID, "human_user_id": testUserID,
-				"chat_session_id": session, "ask": "Waive?", "escalation_class": "reversible", "origin": "asked", "status": "open",
-			})
-			dbfx.Cleanup(t, `DELETE FROM decision_request WHERE id = $1`, id)
-		}},
-		"enabled wakeup": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `INSERT INTO issue_wakeup (id, workspace_id, issue_id, agent_id, instruction, kind, mode, enabled)
-				SELECT gen_random_uuid(), workspace_id, id, $2, 'look again', 'event', 'continuous', true FROM issue WHERE id = $1`, c.issueID, c.agentID)
-			dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
-		}},
-		"Blockers: Cheese stop": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `UPDATE issue SET description = E'Blockers: Cheese stop CHE-1\nrest' WHERE id = $1`, c.issueID)
-		}},
-		"parent delivery_stop stopped": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `UPDATE issue SET metadata = '{"delivery_stop":"stopped"}'::jsonb WHERE id = $1`, c.parentID)
-		}},
-		"no post_close_work": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `UPDATE issue SET metadata = '{}'::jsonb WHERE id = $1`, c.issueID)
-		}},
-		"post_close_work names work": {func(t *testing.T, c autoClose) {
-			dbfx.Exec(t, `UPDATE issue SET metadata = '{"post_close_work":"deploy to C00"}'::jsonb WHERE id = $1`, c.issueID)
-		}},
-		"open child": {func(t *testing.T, c autoClose) {
-			dbfx.Issue(t, "open child", testutil.Cols{"project_id": c.projectID, "status": "in_progress", "parent_issue_id": c.issueID})
-		}},
-	} {
+	for name, tc := range autoCloseNegatives {
 		t.Run(name, func(t *testing.T) {
 			c := newAutoClose(t, "block")
 			c.seedVerdict(t, "review_passed", "[]", "", "1 hour")

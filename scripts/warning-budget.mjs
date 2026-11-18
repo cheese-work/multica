@@ -209,13 +209,15 @@ export function runBudget() {
     return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
   }
   const currentJobs = jobs(current).map(collect)
-  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review", "migration-checks", "decision-card-e2e"])
+  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review", "migration-checks"])
   const pending = new Set(currentJobs.map(({ name }) => name).filter((name) => !zeroBaselineJobs.has(name)))
   const jobBaselines = Object.fromEntries(currentJobs.map(({ name }) => [name, null]))
   const baselineJobs = []
   let baseline
   for (let page = 1; pending.size && page <= 10; page++) {
-    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=success&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
+    // CHE-7171: list completed runs, not only successful ones. The job's own conclusion is checked per job, and a
+    // new job's first main run can end `failure` because this very check had no baseline for it.
+    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=completed&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
     const trusted = runs.filter((run) => String(run.id) !== runId && run.created_at < current.created_at && run.head_branch === "main" && ["push", "schedule", "workflow_dispatch"].includes(run.event))
       .sort((first, second) => second.created_at.localeCompare(first.created_at))
     const first = scanBaselines(trusted, { pending, jobBaselines, baselineJobs, listJobs: jobs, collect, log: console.error })

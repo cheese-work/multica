@@ -109,6 +109,7 @@ jobs:
           python3 .github/scripts/test_ci_wait_policy.py
           python3 .github/scripts/ci-wait-policy.py
           python3 deploy/cd/test-rollback-failed-readback.py
+          python3 deploy/cd/test-c00-image-gc.py
           bash deploy/cd/test-workflow-path-filters.sh
           bash deploy/cd/test-isolated-qualification.sh
           bash deploy/cd/test-tuple-snapshot.sh

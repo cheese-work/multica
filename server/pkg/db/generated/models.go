@@ -498,6 +498,7 @@ type BrowserProfile struct {
 	Name        string             `json:"name"`
 	Class       string             `json:"class"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Hosts       []string           `json:"hosts"`
 }
 
 type ChannelBindingToken struct {
@@ -1411,6 +1412,7 @@ type DecisionRequest struct {
 	PingOutcome              pgtype.Text        `json:"ping_outcome"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	ReadAt                   pgtype.Timestamptz `json:"read_at"`
 }
 
 type DecisionWait struct {
@@ -1528,6 +1530,14 @@ type DmProgressDelivery struct {
 	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
 	Payload       []byte             `json:"payload"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type DmProgressEpicEpisode struct {
+	LineageID   pgtype.UUID        `json:"lineage_id"`
+	RootIssueID pgtype.UUID        `json:"root_issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Revision    int32              `json:"revision"`
+	FiredAt     pgtype.Timestamptz `json:"fired_at"`
 }
 
 type DmProgressFollow struct {
@@ -1716,6 +1726,8 @@ type GithubPullRequest struct {
 	ReviewID            int64              `json:"review_id"`
 	ReviewAt            pgtype.Timestamptz `json:"review_at"`
 	MergeCommitSha      string             `json:"merge_commit_sha"`
+	BaseRef             string             `json:"base_ref"`
+	DefaultBranch       string             `json:"default_branch"`
 }
 
 type GithubPullRequestCheckRun struct {
@@ -3479,6 +3491,13 @@ type SeatCapacityOutbox struct {
 	DeadLetteredAt pgtype.Timestamptz `json:"dead_lettered_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ServerDeploy struct {
+	ID        int64              `json:"id"`
+	Commit    string             `json:"commit"`
+	Version   string             `json:"version"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
 }
 
 type SilenceAlertReceipt struct {

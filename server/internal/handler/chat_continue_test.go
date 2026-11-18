@@ -210,7 +210,7 @@ func TestCompactWebDMContinuesAndNextClaimStartsFresh(t *testing.T) {
 		return *response.Task
 	}
 	initial := claim()
-	if initial.ID != taskID || initial.PriorSessionID != "resumed-provider-session" || !strings.Contains(initial.ChatMessage, "multica chat continue --summary-file") || !strings.Contains(initial.ChatMessage, "deployment evidence") {
+	if initial.ID != taskID || initial.PriorSessionID != "resumed-provider-session" || !strings.Contains(initial.ChatMessage, "multica chat compact --summary-file") || !strings.Contains(initial.ChatMessage, "deployment evidence") {
 		t.Fatalf("compact claim lost the resumed session or focus: %+v", initial)
 	}
 	markTaskRunning(t, ctx, taskID)

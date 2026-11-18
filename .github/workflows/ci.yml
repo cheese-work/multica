@@ -415,9 +415,10 @@ jobs:
       # recent prefix match. Each frontend worker runs a disjoint task set, so
       # it gets its own prefix rather than racing to save one key.
       # GitHub scopes caches by branch: a PR reads main's entries (so unchanged
-      # tasks hit on the first push) and writes its own (so re-pushes hit too).
+      # tasks hit on the first push) but never writes its own (CHE-7210). Only
+      # main saves, from this workflow's daily schedule run.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -438,6 +439,15 @@ jobs:
         # per-runner cgroup limit and get OOM-killed. concurrency=4 still hit
         # OOM in a later run; cap further.
         run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
@@ -476,7 +486,7 @@ jobs:
       # logs rather than artifacts -- yet a hit still skips the whole suite,
       # which is the single most expensive task in the graph.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -491,6 +501,15 @@ jobs:
         # `test` reaches dependency sources through the hash-only
         # `^cache-inputs` edge (see turbo.json), so no `tsc` runs here.
         run: pnpm exec turbo test --filter='!@multica/docs' --filter='!@multica/mobile' --filter='!@multica/views'
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Split views across two runners. GitHub reports the matrix job's combined
   # result, so the aggregate gate can continue depending on this one job ID.
@@ -534,7 +553,7 @@ jobs:
       # argument in the task hash, while dependency sources still flow through
       # turbo.json's hash-only `^cache-inputs` edge.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -545,6 +564,15 @@ jobs:
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # CHE-2418 B3: fast fail-first check for locale skew. The merge queue failed
   # 22% of runs, mostly on locales/parity.test.ts: two PRs, each green alone,
@@ -1420,6 +1448,7 @@ jobs:
           python3 .github/scripts/test_ci_wait_policy.py
           python3 .github/scripts/ci-wait-policy.py
           python3 deploy/cd/test-rollback-failed-readback.py
+          python3 deploy/cd/test-c00-image-gc.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh
