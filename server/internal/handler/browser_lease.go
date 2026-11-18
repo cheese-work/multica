@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,8 +11,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/browserlease"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -167,6 +170,35 @@ const SteelBrowserPluginKey = "work.cheese.steel-browser"
 // browserLeaseRevoker is cheap: two pointers, no state.
 func (h *Handler) browserLeaseRevoker() *browserlease.Revoker {
 	return &browserlease.Revoker{Queries: h.Queries, Bus: h.Bus}
+}
+
+// revokeLeasesOfDecision ends every lease bound to a decision that was withdrawn or has expired
+// (CHE-4742, W3-13). The decision change has committed already, so a failure is logged, never
+// returned; the lease expiry (token 15 min, hard limit 2 h) and the gateway's stream check
+// (5 s) bound the exposure. An expired request (cancel_reason "expired") revokes as expired;
+// every other end of the ask, or a withdrawn answer, revokes as withdrawn.
+func (h *Handler) revokeLeasesOfDecision(workspaceID string, requestID pgtype.UUID, cancelReason string) {
+	workspace, err := util.ParseUUID(workspaceID)
+	if err != nil || !requestID.Valid {
+		return
+	}
+	reason := browserlease.ReasonDecisionWithdrawn
+	if cancelReason == "expired" {
+		reason = browserlease.ReasonDecisionExpired
+	}
+	if _, err := h.browserLeaseRevoker().RevokeDecision(context.Background(), workspace, requestID, reason); err != nil {
+		slog.Error("revoke browser leases of an ended decision failed", "workspace_id", workspaceID, "decision_id", uuidToString(requestID), "reason", reason, "error", err)
+	}
+}
+
+// revokeLeasesOfWithdrawal covers a withdrawal whose request may be untouched: a withdrawn
+// answer that reopens the ask leaves Request empty, so the answer names the decision.
+func (h *Handler) revokeLeasesOfWithdrawal(workspaceID string, w decisiontx.Withdrawal) {
+	id := w.Request.ID
+	if !id.Valid {
+		id = w.Answer.DecisionRequestID
+	}
+	h.revokeLeasesOfDecision(workspaceID, id, w.Request.CancelReason.String)
 }
 
 type browserLeaseRevokeResponse struct {

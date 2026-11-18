@@ -300,6 +300,7 @@ func (handler *Handler) publishWithdrawal(result decisiontx.Withdrawal) {
 		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.revokeLeasesOfWithdrawal(workspaceID, result)
 	if result.Answer.DisclaimedAt.Valid {
 		handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	}
