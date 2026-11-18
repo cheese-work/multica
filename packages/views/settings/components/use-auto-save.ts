@@ -96,6 +96,7 @@ export function useAutoSave<T>({
         void runSave(queued.value);
       } else if (
         succeeded &&
+        mountedRef.current &&
         !timerRef.current &&
         !isEqualRef.current(latest, persistedRef.current)
       ) {
