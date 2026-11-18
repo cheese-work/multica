@@ -69,6 +69,7 @@ import {
 import type { Workspace } from "../types/workspace";
 import {
   chatKeys,
+  decisionActionKeys,
   isTaskMessageTimelineHeld,
   mergeTaskMessagesBySeq,
   sortChatSessions,
@@ -84,6 +85,7 @@ import {
   removePendingChatTask,
 } from "../chat/pending";
 import { resolvePostAuthDestination, useHasOnboarded } from "../paths";
+import { specificEvents } from "./specific-events";
 import type {
   IssueTableFacetsRequest,
   IssueTableQuerySpec,
@@ -234,6 +236,20 @@ export function applyIssueRunStarted(qc: QueryClient, issueIds: ReadonlySet<stri
   };
   refresh(chatKeys.messagesAll(), (d: ChatMessage[]) => d);
   refresh(chatKeys.messagesPageAll(), (d: InfiniteData<ChatMessagesPage>) => d.pages.flatMap((p) => p.messages));
+}
+
+/**
+ * A run started, an issue changed status or an answer was updated: the budget receipt on a decided
+ * card may have moved (CHE-6943 D5). Refresh the DM pages that hold a card for one of the issues,
+ * each issue's card list and each issue's open outcome queries. Only mounted queries refetch.
+ */
+export function applyBudgetReceiptChanged(qc: QueryClient, wsId: string, issueIds: Iterable<string>) {
+  const ids = new Set(issueIds);
+  applyIssueRunStarted(qc, ids);
+  for (const id of ids) {
+    qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCards(wsId, id) });
+    qc.invalidateQueries({ queryKey: decisionActionKeys.outcomesForIssue(wsId, id) });
+  }
 }
 
 /**
@@ -1175,32 +1191,6 @@ export function useRealtimeSync(
       );
     };
 
-    // Event types handled by specific handlers below -- skip generic refresh
-    const specificEvents = new Set([
-      "workspace:updated",
-      "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_unread:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
-      "comment:created", "comment:updated", "comment:deleted",
-      "comment:resolved", "comment:unresolved", "decision_answer:updated",
-      "activity:created",
-      "reaction:added", "reaction:removed",
-      "issue_reaction:added", "issue_reaction:removed",
-      "subscriber:added", "subscriber:removed",
-      "daemon:heartbeat",
-      // Chat events are handled explicitly below; do not double-invalidate.
-      "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read", "chat:supplement_updated",
-      "chat:session_created", "chat:session_deleted", "chat:session_updated",
-      // task:message stays out of the prefix path because it fires per
-      // streamed message during a long run — invalidating the snapshot on
-      // every message would flood the network. Specific chat handlers below
-      // still receive it via ws.on() (a separate subscription channel).
-      "task:message",
-      // task:completed / task:failed deliberately NOT here. They go through
-      // both the task-prefix invalidate (refreshes the agent-task-snapshot
-      // cache) AND the chat-specific ws.on() handlers below. The two
-      // channels are independent — onAny dispatch and ws.on are separate
-      // subscriptions.
-    ]);
-
     const unsubAny = ws.onAny((msg) => {
       if (specificEvents.has(msg.type)) return;
       const prefix = msg.type.split(":")[0] ?? "";
@@ -1242,11 +1232,23 @@ export function useRealtimeSync(
       if (wsId) debouncedRefresh("issue_graph", () => void invalidateIssueGraph(qc, wsId));
     };
 
+    // Issues whose decided cards may show a new budget receipt; one debounce covers a run start and a status move.
+    const receiptIssues = new Set<string>();
+    const refreshBudgetReceipts = (issueId: string) => {
+      receiptIssues.add(issueId);
+      debouncedRefresh("issue_run_started", () => {
+        const wsId = getCurrentWsId();
+        if (wsId) applyBudgetReceiptChanged(qc, wsId, receiptIssues);
+        receiptIssues.clear();
+      });
+    };
+
     const unsubIssueUpdated = ws.on("issue:updated", (p) => {
       const payload = p as IssueUpdatedPayload;
       const { issue } = payload;
       if (!issue?.id) return;
       refreshIssueGraph();
+      if (payload.status_changed) refreshBudgetReceipts(issue.id);
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueUpdated(qc, wsId, issue, {
@@ -1399,11 +1401,13 @@ export function useRealtimeSync(
     });
 
     const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
-      applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
+      const payload = p as DecisionAnswerUpdatedPayload;
+      applyDecisionAnswerUpdated(qc, payload);
       const wsId = getCurrentWsId();
       if (wsId) {
         qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
         qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(wsId) });
+        if (payload.issue_id) applyBudgetReceiptChanged(qc, wsId, [payload.issue_id]);
       }
     });
 
@@ -1904,17 +1908,10 @@ export function useRealtimeSync(
     // path is collapsed in the handler above, so this handler exists mainly to
     // clear a stale `waiting_local_directory` pill — without it, the pill
     // would stay parked even after the daemon resumed work.
-    const runStartedIssues = new Set<string>();
     const unsubTaskRunning = ws.on("task:running", (p) => {
       const payload = p as TaskRunningPayload;
       if (!payload.chat_session_id) {
-        if (payload.issue_id) {
-          runStartedIssues.add(payload.issue_id);
-          debouncedRefresh("issue_run_started", () => {
-            applyIssueRunStarted(qc, new Set(runStartedIssues));
-            runStartedIssues.clear();
-          });
-        }
+        if (payload.issue_id) refreshBudgetReceipts(payload.issue_id);
         return;
       }
       qc.setQueryData<ChatPendingTask>(

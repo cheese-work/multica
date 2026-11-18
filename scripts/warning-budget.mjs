@@ -46,6 +46,9 @@ export function warningCounts(jobs) {
         continue
       }
       if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?\s+WARN\s/.test(line)) continue
+      // CHE-6346: backend-agent-tests fixtures log expected slog rejections (only the `script rejected` and `script timed out` messages) that
+      // appear as new warnings against a main baseline that predates the fixture. They are test inputs, not diagnostics.
+      if (job.name === "backend-agent-tests" && /^(?:\d{4}-\d\d-\d\dT\S+\s+)?time=\S+ level=WARN msg="script (?:rejected|timed out)"/.test(line)) continue
       const message = normalize(line)
       if (/^(?:\/|[A-Za-z]:\/|(?:\.\.?\/)?(?:apps|packages|server|scripts)\/).+\.[cm]?[jt]sx?$/.test(message)) {
         eslintFile = sourcePath(message)
@@ -90,9 +93,46 @@ export function warningRegressions(baseline, current) {
     .map(([warning, count]) => ({ warning, baseline: baseline[warning] ?? 0, current: count }))
 }
 
+let apiCalls = 0
+let rateLimitWaited = false
+class RateLimitError extends Error {}
+
+function ghApi(endpoint, json) {
+  apiCalls++
+  return execFileSync("gh", ["api", endpoint, ...(json ? [] : ["--allow-escape-sequences"])], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 })
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+// CHE-7032: seconds until the core rate limit resets, or Infinity when it cannot be read.
+function secondsToReset() {
+  try { return JSON.parse(ghApi("rate_limit", true)).resources.core.reset - Date.now() / 1000 } catch { return Infinity }
+}
+
+// CHE-7010: GitHub returns transient 5xx on log and job reads. Retry those (3 tries, 0.5 s then 1 s); anything else throws at once.
+// CHE-7032: a rate limit (403 or 429 saying "rate limit") that resets within 5 minutes is waited out once per run;
+// otherwise it throws RateLimitError, which the entrypoint reports as "not checked" instead of a failure.
 function api(endpoint, json = true) {
-  const response = execFileSync("gh", ["api", endpoint, ...(json ? [] : ["--allow-escape-sequences"])], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 })
-  return json ? JSON.parse(response) : response
+  for (let attempt = 1; ; attempt++) {
+    let response
+    try {
+      response = ghApi(endpoint, json)
+    } catch (error) {
+      if (isRateLimit(error)) {
+        const wait = rateLimitWaited ? Infinity : secondsToReset()
+        if (!(wait <= 300)) throw new RateLimitError(error.stderr)
+        rateLimitWaited = true
+        sleep(Math.max(wait, 0) * 1000 + 1000)
+        continue
+      }
+      if (attempt >= 3 || !isServerError(error)) throw error
+      sleep(500 * attempt)
+      continue
+    }
+    return json ? JSON.parse(response) : response
+  }
 }
 
 function pages(endpoint, key) {
@@ -105,10 +145,14 @@ function pages(endpoint, key) {
   }
 }
 
-// Only a failed gh process carries stderr; it reports a server error as "... (HTTP 502)".
+// Only a failed gh process carries stderr; it reports a server error as "... (HTTP 502)" or, with no JSON body, "gh: HTTP 503".
 // Other exceptions (4xx, malformed JSON) are real faults even when their message mentions HTTP 5xx.
 function isServerError(error) {
-  return typeof error?.stderr === "string" && /\(HTTP 5\d\d\)/.test(error.stderr)
+  return typeof error?.stderr === "string" && /\bHTTP 5\d\d\b/.test(error.stderr)
+}
+
+function isRateLimit(error) {
+  return typeof error?.stderr === "string" && /\bHTTP (?:403|429)\b/.test(error.stderr) && /rate limit/i.test(error.stderr)
 }
 
 export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log }) {
@@ -143,6 +187,11 @@ export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJ
   return first
 }
 
+// CHE-7032: every summary ends with the gh api call count, so the next fix can cut them.
+function summary(text) {
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\ngh api calls: ${apiCalls}\n`)
+}
+
 export function runBudget() {
   const repository = process.env.GITHUB_REPOSITORY
   const runId = process.env.GITHUB_RUN_ID
@@ -160,13 +209,15 @@ export function runBudget() {
     return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
   }
   const currentJobs = jobs(current).map(collect)
-  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review"])
+  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review", "migration-checks"])
   const pending = new Set(currentJobs.map(({ name }) => name).filter((name) => !zeroBaselineJobs.has(name)))
   const jobBaselines = Object.fromEntries(currentJobs.map(({ name }) => [name, null]))
   const baselineJobs = []
   let baseline
   for (let page = 1; pending.size && page <= 10; page++) {
-    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=success&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
+    // CHE-7171: list completed runs, not only successful ones. The job's own conclusion is checked per job, and a
+    // new job's first main run can end `failure` because this very check had no baseline for it.
+    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=completed&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
     const trusted = runs.filter((run) => String(run.id) !== runId && run.created_at < current.created_at && run.head_branch === "main" && ["push", "schedule", "workflow_dispatch"].includes(run.event))
       .sort((first, second) => second.created_at.localeCompare(first.created_at))
     const first = scanBaselines(trusted, { pending, jobBaselines, baselineJobs, listJobs: jobs, collect, log: console.error })
@@ -180,10 +231,22 @@ export function runBudget() {
   const report = { baseline_run: baseline?.html_url ?? null, current_run: current.html_url, baseline_sha: baseline?.head_sha ?? null, current_sha: current.head_sha, job_baselines: jobBaselines, zero_baseline_jobs: currentJobs.map(({ name }) => name).filter((name) => zeroBaselineJobs.has(name)), baseline: baselineCounts, current: currentCounts, annotations: currentJobs.map(({ name, annotations }) => ({ name, annotations })), regressions }
   writeFileSync("warning-budget-report.json", `${JSON.stringify(report, null, 2)}\n`)
   console.log(JSON.stringify(report, null, 2))
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Warning budget against per-job main baselines: ${regressions.length} new warning signatures. See job_baselines and zero_baseline_jobs in the report.\n`)
+  summary(`Warning budget against per-job main baselines: ${regressions.length} new warning signatures. See job_baselines and zero_baseline_jobs in the report.`)
   if (regressions.length) process.exitCode = 1
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try { runBudget() } catch (error) { console.error(error.message); process.exitCode = 1 }
+  try {
+    runBudget()
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      const text = "warning-budget not checked: GitHub API rate limit"
+      console.log(`::warning::${text}`)
+      summary(text)
+    } else {
+      console.error(error.message)
+      summary("warning-budget failed.")
+      process.exitCode = 1
+    }
+  }
 }

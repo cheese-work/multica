@@ -40,17 +40,14 @@ type handoffIntentSeed struct {
 // armHandoffIntent asks the status write in ctx's record to write a handoff
 // intent. A legacy handoff_note travels with the run it starts, so it keeps the
 // direct path.
-func armHandoffIntent(rec *statusRecord, r *http.Request, actorType, actorID, handoffCommentID, handoffNote, write string) {
+func armHandoffIntent(rec *statusRecord, r *http.Request, actorType, actorID string, commentIDs []pgtype.UUID, handoffNote, write string) {
 	if rec == nil || write == "" || handoffNote != "" {
 		return
 	}
 	// Empty, not nil: a nil slice is NULL and the column is NOT NULL.
-	seed := &handoffIntentSeed{actorType: actorType, actorID: actorID, write: write, commentIDs: []pgtype.UUID{}}
+	seed := &handoffIntentSeed{actorType: actorType, actorID: actorID, write: write, commentIDs: append([]pgtype.UUID{}, commentIDs...)}
 	if id, err := util.ParseUUID(r.Header.Get("X-Task-ID")); err == nil {
 		seed.sourceTask = id
-	}
-	if id, err := util.ParseUUID(handoffCommentID); err == nil {
-		seed.commentIDs = []pgtype.UUID{id}
 	}
 	rec.intent = seed
 }
@@ -72,7 +69,7 @@ func writeHandoffIntent(ctx context.Context, q *db.Queries, rec *statusRecord, i
 		ActorType:         seed.actorType,
 		ActorID:           optionalActorUUID(seed.actorID),
 		SourceTaskID:      seed.sourceTask,
-		ContextCommentIds: seed.commentIDs,
+		ContextCommentIds: handoffContextIDs(rec, seed.commentIDs),
 		HandoffWrite:      seed.write,
 	})
 	if err != nil {
@@ -288,8 +285,5 @@ func intentRunContext(ctx context.Context, intent db.IssueHandoffDispatch) conte
 	if intent.SourceTaskID.Valid {
 		ctx = service.WithActingTask(ctx, intent.SourceTaskID)
 	}
-	if len(intent.ContextCommentIds) > 0 {
-		ctx = service.WithStatusHandoffComment(ctx, intent.ContextCommentIds[0])
-	}
-	return ctx
+	return service.WithStatusHandoffComments(ctx, intent.ContextCommentIds)
 }

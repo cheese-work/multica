@@ -23,18 +23,13 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 rm -f "$out"/multica-* "$out/manifest.json"
 
-# The platforms share no output, so build them side by side; wait on each pid
-# so one failed platform fails the script and writes no manifest.
-pids=""
+# One go build at a time: the server image builds its own binaries beside this
+# script, and the X99 dind has 4 GB (CHE-731); four at once got OOM-killed.
 for platform in $platforms; do
   goos="${platform%/*}"
   goarch="${platform#*/}"
   (cd "$root/server" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -ldflags "$ldflags" -o "$out/multica-${goos}-${goarch}" ./cmd/multica) &
-  pids="$pids $!"
-done
-for pid in $pids; do
-  wait "$pid" || { echo "build-daemon-binaries: a platform build failed" >&2; exit 1; }
+    go build -ldflags "$ldflags" -o "$out/multica-${goos}-${goarch}" ./cmd/multica)
 done
 
 entries=""

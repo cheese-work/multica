@@ -104,11 +104,23 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 在工作流编辑器中设置**每个 Issue 的最大运行次数**，可限制一个 Issue 在被工作流阻止前最多能启动多少次运行（1 到 1000；留空则使用默认值 15）。修改需要已登录的网页或桌面会话；不改动该字段的保存可从任何客户端进行。旁边的**包含子 Issue 的 PR** 开关决定 PR 守卫是否也读取子 Issue 的 PR（默认开启），遵循同一规则。智能体或令牌不能直接修改这两个字段：会收到 `budget_requires_decision`，需用 `multica config propose workflow.budget` 提出修改，再由所有者用通行密钥批准。智能体或令牌创建 Issue、或把 Issue 改绑到预算更宽的工作流时，同样受此限制（`budget_rebinding_requires_interactive`）。同一个决定即可放行：`multica issue create` 和 `multica issue update` 接受 `--workflow <id> --decision-id <id>`。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
 
-设有运行预算的 Issue，侧边栏会显示一个计量条：已用运行数、剩余运行数、80 % 时的警告，以及**运行预算已用完**状态。**提高上限**和**补充**会请求工作区所有者批准更多运行。如果你是所有者，可直接用通行密钥在原处批准；否则请求会发给所有者。在列表和看板中，被预算停住的 Issue 会在状态旁显示**预算已用完**标签。
+设有运行预算的 Issue，侧边栏会显示一个计量条：已用运行数、剩余运行数、80 % 时的警告，以及**运行预算已用完**状态。**提高上限**和**补充**会请求工作区所有者批准更多运行。如果你是所有者，可直接用通行密钥在原处批准；否则请求会发给所有者。在列表和看板中，被预算停住的 Issue 会在状态旁显示**预算已用完**标签。所有者批准后，已决定的卡片和审批面板会显示新的上限，以及被停住的 Issue 之后的结果（运行已入队、运行已开始、状态已恢复，或未恢复的原因），并且无需刷新即可更新。
 
 删除工作流前，需要先把使用它的项目切换到其他工作流。任务会保留当前状态。
 
 如果**设置**中没有**工作流**，说明当前工作区还不能使用这个功能，状态仍在**设置 → 任务状态**中管理。
+
+## 暂缓处理项目中的新请求 [#intake-hold]
+
+工作区可以在一段时间内，把新的顶层请求留在 **Backlog**，让人先阅读并放行，再由智能体开始工作。规则是工作区设置 `intake_hold`：一个列表，每个项目一条。每条包含 `project_id`、`mode`、`starts_at`、`ends_at`、`exempt_types`、`exempt_labels`、`exempt_escalation_classes`、`exempt_autopilot_ids`、`exempt_issue_ids` 和 `source`。智能体通过工作区设置补丁修改它，由所有者用通行密钥批准。没有条目的项目不受影响。 `source` 为必填项，所有 ID 须为带连字符的小写 UUID；违反任一规则的值在保存时会被拒绝。
+
+模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。暂缓生效后，智能体或令牌把被暂缓的任务移出 Backlog，会被拒绝，返回 HTTP 409 和代码 `intake_hold`。本次发布只新增设置和读取字段，尚不拒绝任何操作。
+
+`GET /api/issues/{id}` 返回 `intake_hold` 字段，包含 `source`、`held`、`owned`、`reason`、`ends_at` 和 `exempt_after`。`owned` 在 `ends_at` 之后仍为 true，因此可以区分暂缓覆盖过的任务和从未覆盖的任务。有父任务的任务和没有条目的项目不返回该字段，列表接口也不返回。`reason` 取 `held`、`ended`、`not_started`、`mode_off`、`created_before_start`、`left_backlog`、`released_by_member`、`exempt_type`、`exempt_label`、`exempt_escalation_class`、`exempt_autopilot` 或 `exempt_issue_id`。标题没有类型的任务（例如 `plain words`）会被暂缓。优先级不豁免任何任务。
+
+智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。
+
+人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。
 
 ## 相关指引
 

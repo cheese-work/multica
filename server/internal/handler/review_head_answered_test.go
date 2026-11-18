@@ -29,6 +29,8 @@ func reviewCase(t *testing.T, installation int64) (edgeCase, string) {
 	dbfx.Exec(t, `UPDATE issue SET status='in_review', assignee_type='agent', assignee_id=$2 WHERE id=$1`, c.issueID, agentID)
 	service.SetReviewGuardAgents(agentID)
 	t.Cleanup(func() { service.SetReviewGuardAgents() })
+	// A test that built a second Handler left its hook registered, possibly on a closed pool.
+	service.SetOnReviewRunSkipped(testHandler.onReviewRunSkipped)
 	return c, agentID
 }
 

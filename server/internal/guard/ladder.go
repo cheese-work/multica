@@ -113,7 +113,7 @@ func (p *Policy) resolve(t Target, file *Rules, reviewers []string) *Policy {
 		layers = append([]Layer{{Rules: file}}, layers...)
 	}
 
-	out := &Policy{Version: p.Version, fileReviewers: reviewers}
+	out := &Policy{Version: p.Version, fileReviewers: reviewers, RepositoryAllowlist: p.RepositoryAllowlist}
 	acc := &rulesAcc{tokens: map[string]bool{}}
 	frozen := map[string]bool{}
 	var plugins []string // plugin names in first-seen order

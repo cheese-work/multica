@@ -57,3 +57,22 @@ func TestIssueCommentAddWarnsOnBlockedTriggers_CHE1418(test *testing.T) {
 		})
 	}
 }
+
+// CHE-7011: a mention deferred behind a full stage is already queued; the CLI
+// says so instead of "started no run", so the author does not re-mention.
+func TestWarnTriggerOutcomes_StageQueueFullPrintsQueuedNote(t *testing.T) {
+	const agentID = "33333333-3333-4333-8333-333333333333"
+	var out strings.Builder
+	warnBlockedTriggerOutcomes(&out, map[string]any{"trigger_outcomes": []any{
+		map[string]any{"target_type": "agent", "target_id": agentID, "status": "deferred", "reason_code": "stage_queue_full"},
+		map[string]any{"target_type": "agent", "target_id": "other", "status": "deferred", "reason_code": "deferred"},
+	}})
+	got := out.String()
+	want := "Note: review of agent " + agentID + " is queued behind a full stage and starts by itself; do not re-mention.\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "started no run") {
+		t.Fatalf("must not print the started-no-run warning:\n%s", got)
+	}
+}

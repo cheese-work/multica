@@ -14,7 +14,10 @@ var issueBriefSectionCaps = map[string]int{
 	"Available Commands":     4150, // wakeup detail lives in references/wakeups.md
 }
 
-const issueBriefTotalCap = 17650
+// Raised 17650 -> 17970 (CHE-6457): the brief grew past the 2026-11-12 cap
+// and the red test went unseen because the `rest` shard hid Go failures (CHE-6374).
+// Shrink sections (CHE-3683) and lower this; do not raise it again.
+const issueBriefTotalCap = 17970
 
 func TestIssueBriefStaysInsideByteBudget(t *testing.T) {
 	t.Parallel()

@@ -21,7 +21,7 @@ runs:
         EVENT: ${{ github.event_name }}
         BASE_REF: ${{ github.base_ref }}
       run: |
-        node --test scripts/design/validate-patterns.test.mjs scripts/design/validate-fidelity-files.test.mjs scripts/design/check-lock-marks.test.mjs
+        node --test scripts/design/validate-patterns.test.mjs scripts/design/validate-fidelity-files.test.mjs scripts/design/check-lock-marks.test.mjs scripts/design/check-fidelity.test.mjs
         node scripts/design/validate-fidelity-files.mjs
         node scripts/design/check-lock-marks.mjs
         # frame.state moves compare with the PR base; push and merge_group runs check the file alone.

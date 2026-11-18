@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -18,7 +20,10 @@ import (
 // budget window says. A member moving the status reopens a budget window, so
 // an issue that loops across windows is bounded only by this guard. It sits at
 // the same queue door as the loop breaker and the run budget. A person naming
-// an agent by hand (OriginNamed) never reaches it.
+// an agent by hand (OriginNamed) never reaches it. A run that follows progress
+// the target agent has not yet run on (a new PR head, a merge, a signed review
+// verdict, an answered decision request) passes once, below a hard ceiling of
+// WeeklyRunGuardCeilingFactor times the limit (CHE-6175).
 
 const (
 	weeklyRunGuardMaxRunsEnv = "MULTICA_WEEKLY_RUN_GUARD_MAX_RUNS"
@@ -27,6 +32,9 @@ const (
 	DefaultWeeklyRunGuardMaxRuns = 30
 	// WeeklyRunGuardWindow is how far back the guard counts.
 	WeeklyRunGuardWindow = 7 * 24 * time.Hour
+	// WeeklyRunGuardCeilingFactor times the limit is the run count at which even
+	// a run that follows progress is refused.
+	WeeklyRunGuardCeilingFactor = 2
 )
 
 // ErrWeeklyRunGuard is returned when the guard refuses a run. It wraps
@@ -156,6 +164,26 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	if mode == WeeklyRunGuardOff {
 		return nil
 	}
+	// Past the limit, a run that follows progress passes once (CHE-6175), up to
+	// the hard ceiling; the loop breaker has already judged it.
+	if runs < limit*WeeklyRunGuardCeilingFactor && target.AgentID.Valid {
+		// Serialize with the task insert: the issue row lock is held to the end of
+		// the enqueue transaction, so a concurrent trigger reads this run as the
+		// agent's last run and finds the event used.
+		if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("weekly run guard: %w", err)
+		}
+		events, err := q.CountIssueProgressEventsSince(ctx, db.CountIssueProgressEventsSinceParams{
+			IssueID: issueID, AgentID: target.AgentID,
+			WindowStart: pgtype.Timestamptz{Time: time.Now().Add(-WeeklyRunGuardWindow), Valid: true},
+		})
+		if err != nil {
+			return fmt.Errorf("weekly run guard: %w", err)
+		}
+		if events > 0 {
+			return nil
+		}
+	}
 	if hook := onWeeklyRunGuardTripped.Load(); hook != nil && !hookSuppressed(ctx) {
 		event := WeeklyRunGuardTripped{IssueID: issueID, Runs: runs, Target: target, Warn: mode == WeeklyRunGuardWarn}
 		// Best effort: the incident loses its outcomes, never the refusal.
@@ -170,4 +198,24 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 		return nil
 	}
 	return ErrWeeklyRunGuard
+}
+
+// weeklyGuardAdmits reports whether the guard would let a run of the agent
+// through now: under the limit, the guard off, or past the limit with an unused
+// progress event and below the ceiling. It only reads.
+func weeklyGuardAdmits(ctx context.Context, q *db.Queries, issueID, agentID pgtype.UUID) (bool, error) {
+	limit, err := WeeklyRunGuardLimit(ctx, q, issueID)
+	if err != nil || limit <= 0 || weeklyRunGuardMode(ctx, q, issueID) != WeeklyRunGuardBlock {
+		return err == nil, err
+	}
+	since := pgtype.Timestamptz{Time: time.Now().Add(-WeeklyRunGuardWindow), Valid: true}
+	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issueID, Since: since})
+	if err != nil || runs < limit {
+		return err == nil, err
+	}
+	if runs >= limit*WeeklyRunGuardCeilingFactor || !agentID.Valid {
+		return false, nil
+	}
+	events, err := q.CountIssueProgressEventsSince(ctx, db.CountIssueProgressEventsSinceParams{IssueID: issueID, AgentID: agentID, WindowStart: since})
+	return events > 0, err
 }

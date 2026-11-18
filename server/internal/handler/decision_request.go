@@ -23,6 +23,15 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
+// askIdentity is the caller's ask identity. A structured ask leaves out the
+// time its state was read, which a re-ask changes (CHE-7007).
+func (input decisionRequestInput) askIdentity() string {
+	if input.Parsed != nil {
+		return input.Parsed.IdentityWithoutReadTime()
+	}
+	return decisiontx.Identity(input.Ask)
+}
+
 type decisionRequestInput struct {
 	SessionID   pgtype.UUID
 	NewDM       bool
@@ -65,6 +74,10 @@ type decisionRequestInput struct {
 	DMSession pgtype.UUID `json:"-"`
 	// Batch is set only by the batch proposal route (CHE-5412).
 	Batch *batchCard `json:"-"`
+	// OwnerScript is the owner-script guard's finished check (CHE-7138 S7a); its
+	// event is written with the message. Nil when the guard is off or no agent
+	// text is read.
+	OwnerScript *ownerScriptCheck `json:"-"`
 }
 
 // batchCard ties the requests of one batch to one shared card: they share the
@@ -149,6 +162,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
 	}
+	if err := handler.refuseReversibleAsk(request.Context(), issue, input); err != nil {
+		return empty, err
+	}
 	if input.HumanUserID.Valid {
 		var err error
 		if input.HumanUserID, err = handler.resolveDecisionRecipient(request.Context(), issue, input.HumanUserID); err != nil {
@@ -169,6 +185,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input); err != nil || prior.Request.ID.Valid {
 			return prior, err
 		}
+	}
+	if input.OwnerScript, err = handler.checkOwnerScript(request.Context(), issue, agentID, taskID, input); err != nil {
+		return empty, err
 	}
 	intent, err := handler.Queries.GetDecisionIntentForTask(request.Context(), db.GetDecisionIntentForTaskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID, AgentID: agentID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -439,7 +458,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request refuses a terminal issue"}
 	}
-	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.Ask); err != nil {
+	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.askIdentity()); err != nil {
 		return empty, err
 	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: located.TaskID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -546,7 +565,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if attach {
 		commentID = tag.ID
 	}
-	askIdentity := decisiontx.Identity(input.Ask)
+	askIdentity := input.askIdentity()
 	input, err := enrichDecisionAsk(ctx, queries, issue, intent.AgentID, input)
 	if err != nil {
 		return empty, err
@@ -644,6 +663,11 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	}
 	if err := queries.CompleteDecisionIntent(ctx, db.CompleteDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: intent.ID, RequestID: created.ID}); err != nil {
 		return empty, err
+	}
+	if input.OwnerScript != nil {
+		if err := input.OwnerScript.writeDelivered(ctx, queries, issue, created, messageID, comment.ID); err != nil {
+			return empty, err
+		}
 	}
 	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action}, nil
 }
@@ -762,7 +786,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	authorityStatus := http.StatusConflict
 	if input.Proposal != nil {
 		authorityStatus = http.StatusForbidden // D3's guard owns the re-ask rule
-	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.askIdentity()); err != nil {
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {

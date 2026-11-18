@@ -38,6 +38,27 @@ Le créateur devient automatiquement `owner`.
 Après un changement de préfixe des tâches, chaque tâche passe immédiatement au nouveau numéro (`MUL-5` devient `NEW-5`), mais les anciens numéros figurant dans les PR, les noms de branches et l'historique des discussions ne sont pas mis à jour.
 </Callout>
 
+### Fermeture automatique
+
+Le paramètre d'espace de travail `auto_close` définit ce qui se passe quand une tâche enfant entre dans l'étape `agent_accepted` sans plus rien à faire. L'agent de l'étape ne ferait que la fermer ; le serveur peut donc emprunter lui-même l'arête `agent_done` de l'étape vers `done`.
+
+| Valeur | Effet |
+| --- | --- |
+| `off` | Rien ne change. L'agent de l'étape s'exécute. |
+| `warn` (par défaut) | L'agent de l'étape s'exécute comme avant. Chaque entrée enregistre aussi une ligne d'activité `auto_close_would_close` qui nomme les contrôles satisfaits et l'exécution qui a suivi. |
+| `block` | Le serveur passe la tâche à `done`, enregistre une ligne d'activité `auto_closed` qui nomme les contrôles lus, et ne lance aucune exécution. |
+
+Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut pas être lu, l'agent de l'étape s'exécute comme avant.
+
+- La tâche a un parent. Les tâches racines ne sont jamais fermées.
+- Le dernier verdict de revue est un PASS sans constat P0 ni P1, et il porte sur le candidat actuel. Avec une PR, chaque PR liée est fusionnée au head que nomme le PASS. Sans PR, le candidat est le texte de la tâche : aucune pièce jointe, aucun changement de description, aucun commentaire (hors ceux du relecteur) n'est venu après le PASS, ni verdict CHANGES, marque périmée ou remplacée, ni retour à `in_progress`.
+- Aucune tâche enfant ouverte, aucune demande de décision ouverte, et aucun réveil actif quand la tâche est entrée dans l'étape.
+- La description n'a pas de ligne `Blockers: Cheese stop`, et la métadonnée `delivery_stop` du parent n'est pas `stopped`.
+- La métadonnée de la tâche `post_close_work` vaut `none`. L'auteur l'écrit : `multica issue metadata set <issue> --key post_close_work --value none --type string`. Toute autre valeur, par exemple une courte description du travail restant, conserve l'exécution.
+- Le workflow a une arête `agent_done` de `agent_accepted` vers `done`.
+
+Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
+
 ### Garde des demandes
 
 Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quand l'opération d'un agent demande à une personne d'agir sans ouvrir de demande de décision.
@@ -59,6 +80,10 @@ Le paramètre d'espace de travail `autopilot_assign_gate` définit ce qui se pas
 | `off` | La garde ne fait rien. |
 
 Chaque événement garde le mode dans lequel il a été créé : passer de `warn` à `block` ne transforme pas les événements antérieurs en travail de reprise. Si l'événement ne peut pas être écrit, l'opération échoue avec `503` et un en-tête `Retry-After`, et rien n'est écrit.
+
+Le paramètre d'espace de travail `reversible_ask_guard` (`off` par défaut, `warn`, `block`) couvre une demande de décision simple d'un agent dont la classe est `reversible` : l'agent demande à une personne d'approuver un travail que les agents peuvent déjà décider et faire eux-mêmes. `warn` l'enregistre dans les journaux. `block` la refuse avec `422`. Les demandes d'action, de proposition et de lot ne sont pas concernées. Remettez-le à `off` pour revenir en arrière ; aucune donnée ne change. Le même paramètre couvre une réponse simple d'un agent sous le commentaire d'un membre, sur une tâche en `blocked` ou `need_decision`, qui peut interroger cette personne sans demande de décision : `warn` l'enregistre et `block` la refuse avec `422`. Les commentaires de premier niveau, les réponses sous un agent, les commentaires qui mentionnent un agent ou une équipe, ceux avec `--notify-only` et les demandes de décision ne sont pas concernés.
+
+Le paramètre d'espace de travail `owner_script_guard` (`off`, `warn`, `block` ; `warn` s'il n'est pas défini) couvre la demande de décision, la demande d'action et la carte `multica decision ask` d'un agent : le propriétaire ne lit pas de shell, donc une carte qui demande à la personne d'exécuter une commande est un défaut de la demande. Huit règles (R1 à R8, version 1 du jeu de règles) lisent le texte de la carte et ses étapes : un bloc de code shell, une commande dans un bloc ou dans du code en ligne, une commande de `human_steps`, une pièce jointe de script, et un mot d'exécution comme « run » ou « paste » à côté d'une commande ou juste après un message signalé. `warn` livre la carte et enregistre la détection. `block` la refuse avec `422`, nomme les règles et les champs touchés, et renvoie vers `multica config propose`, `multica decision propose <type>` ou une permission du bot. `off` ne vérifie rien. Chaque vérification écrit un événement, une ligne d'activité `owner_script_guard`, dans la même transaction que la carte, ou seule si la carte est refusée. L'événement contient les identifiants, le résultat, `delivered`, `rule_hits`, des empreintes à clé des commandes (`cmd_hmacs`) et `retry_of` ; il ne contient aucun texte de message. La chronologie de la tâche n'affiche pas ces lignes. Remettez `warn` ou `off` pour revenir en arrière ; aucune donnée ne change.
 
 Quand l'exécution qui a produit un événement `block` est terminée, le serveur envoie à la seule personne visée par la demande un avis de reprise automatique : un message de DM, un commentaire sur le ticket et un élément de boîte de réception, écrits dans une seule transaction. L'avis cite la demande enregistrée, renvoie au ticket et n'a ni options, ni recommandation, ni approbation : ce n'est jamais une demande de décision. Il n'est envoyé que si la source enregistrée contient le texte de la demande, désigne exactement un membre et que ce membre est toujours dans l'espace de travail ; sinon l'événement attend une réparation. Répondre dans le fil de commentaires de l'avis le marque `answered`. Un membre qui a quitté l'espace de travail ne peut plus le lire ni y répondre.
 

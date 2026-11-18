@@ -75,6 +75,8 @@ describe("wakeup timeline entries", () => {
     );
     expect(read(entry("wakeup_timed_out", { wakeup: reply, woke: true }))).toContain("唤醒了 Emacs 处理超时");
     expect(read(entry("wakeup_paused", { wakeup: reply, reason: "loop" }))).toBe("已暂停：与其他唤醒规则互相触发");
+    expect(read(entry("wakeup_paused", { wakeup: reply, reason: "run_budget" }))).toContain("运行预算");
+    expect(read(entry("wakeup_paused", { wakeup: reply, reason: "weekly_run_guard" }))).toContain("每周运行上限");
     expect(read(entry("wakeup_checkin", { wakeup: reply, note: "进度 72%" }, { actor_type: "agent", actor_id: "g", coalesced_count: 3 }))).toBe(
       "静默检查 3 次 · 最近一次：进度 72%",
     );

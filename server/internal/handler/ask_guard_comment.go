@@ -23,18 +23,20 @@ const askGuardCommentFix = "multica decision request ... to ask the person, or a
 // the evidence. The typed kinds (ask comment,
 // decision intent, record, veto, --notify-only) never reach it. It writes the
 // response when the comment may not be posted.
-func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, content string) bool {
+func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, parent *db.Comment, content string) bool {
 	if authorType != "agent" {
 		return true
 	}
-	if len(askguard.MentionedMembers(content)) == 0 {
-		err := decisiontx.CheckCommentAsk(content)
-		if err == nil {
-			return true
+	if len(askguard.MentionedMembers(content)) > 0 {
+		if !h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix) {
+			return false
 		}
-		return h.askGuardMemberMention(w, r, issue, task, "comment_ask", content, "multica decision request --kind action ... with observed, files and dry_run, or add --notify-only to multica issue comment add if the comment needs no answer (comment refused: "+err.Error()+")")
+	} else if err := decisiontx.CheckCommentAsk(content); err != nil {
+		if !h.askGuardMemberMention(w, r, issue, task, "comment_ask", content, "multica decision request --kind action ... with observed, files and dry_run, or add --notify-only to multica issue comment add if the comment needs no answer (comment refused: "+err.Error()+")") {
+			return false
+		}
 	}
-	return h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix)
+	return h.askGuardReversibleComment(w, r, issue, task, parent, content)
 }
 
 // askGuardAllowsCommentEdit is S2 for an edit. A plain edit has no typed kind,

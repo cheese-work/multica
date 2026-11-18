@@ -32,6 +32,13 @@ const (
 // inbox ping in one transaction. An issue with a card still open gets nothing
 // more; a refusal whose card was answered is superseded by the new one.
 func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e service.WeeklyRunGuardTripped) error {
+	// CHE-6299: a finished issue gets no card. The decision lifecycle cancels
+	// it as issue_closed within seconds, a cancelled card does not count as
+	// declined, and the next refusal then opens another one. The refusal
+	// stands (no run starts) and the incident row is written by the caller.
+	if service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return nil
+	}
 	// CHE-6241: a refusal whose trigger is a system comment (the reject or
 	// approve note, the guard's own notice) is the platform echoing itself, not
 	// a person or agent asking for a run. It opens no card, so a declined card
@@ -194,12 +201,28 @@ func executeRunGuardAllowAction(ctx context.Context, execution decisionActionExe
 	if moved == 0 {
 		return nil, actionFailure{Code: "refusal_closed", Message: "this refusal was already approved or is no longer open"}
 	}
+	// CHE-6295: the allowance counts from the current run count. An issue
+	// already over its limit would otherwise stay refused after the approval.
+	runs := int64(params.Runs)
+	limit, err := service.WeeklyRunGuardLimit(ctx, q, issueID)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 {
+		used, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{
+			IssueID: issueID, Since: pgtype.Timestamptz{Time: time.Now().Add(-service.WeeklyRunGuardWindow), Valid: true},
+		})
+		if err != nil {
+			return nil, err
+		}
+		runs += max(used-limit, 0)
+	}
 	if err := q.CreateWeeklyRunGuardAllowance(ctx, db.CreateWeeklyRunGuardAllowanceParams{
-		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(params.Runs), ActionID: execution.Action.ID,
+		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(runs), ActionID: execution.Action.ID,
 	}); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"issue_id": params.IssueID, "runs": params.Runs})
+	return json.Marshal(map[string]any{"issue_id": params.IssueID, "runs": runs})
 }
 
 // resumeWeeklyRefusalsOfAction runs the trigger of every refusal the action approved.
@@ -243,6 +266,42 @@ func (h *Handler) resumeWeeklyRefusal(ctx context.Context, id pgtype.UUID) {
 			slog.Warn("weekly run guard: record resume outcome failed", "err", err, "refusal_id", uuidToString(id))
 		}
 	}
+	// CHE-6295: an approved trigger that is refused again is never dropped
+	// silently. The suppressed hook opens no card (that would loop), so say it
+	// in a system comment.
+	if state == "refused" {
+		h.postWeeklyResumeRefusedComment(ctx, id)
+	}
+}
+
+// postWeeklyResumeRefusedComment tells the issue that the approved trigger was
+// refused again. A system-authored comment opens no card and runs nothing
+// (CHE-6241), so it cannot loop.
+func (h *Handler) postWeeklyResumeRefusedComment(ctx context.Context, id pgtype.UUID) {
+	ref, err := h.Queries.GetWeeklyRunGuardRefusal(ctx, id)
+	if err != nil {
+		slog.Warn("weekly run guard: read refused resume failed", "err", err, "refusal_id", uuidToString(id))
+		return
+	}
+	issue, err := h.Queries.GetIssue(ctx, ref.IssueID)
+	if err != nil {
+		slog.Warn("weekly run guard: read issue of refused resume failed", "err", err, "refusal_id", uuidToString(id))
+		return
+	}
+	created, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
+		Content: "Weekly run guard: the approved run was refused again by another run gate (a competing run, the loop breaker or the run budget). Nothing was started. Run `multica issue budget get` to see what blocks the issue, then re-trigger it.",
+	})
+	if err != nil {
+		slog.Warn("weekly run guard: post refused resume comment failed", "err", err, "refusal_id", uuidToString(id))
+		return
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
+		"comment": commentToResponse(created.Comment(), nil, nil), "issue_title": issue.Title,
+		"issue_assignee_type": textToPtr(issue.AssigneeType), "issue_assignee_id": uuidToPtr(issue.AssigneeID),
+		"issue_status": issue.Status, "issue_revision": created.IssueRevision,
+	})
 }
 
 // resumeWeeklyOnce returns the state to record after the transaction, or "" when

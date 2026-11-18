@@ -349,3 +349,10 @@ after `main` already held `678_issue_workflow_owner` and
 
 The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
 so a database that already applied the old names re-runs them safely.
+
+## Upstream-merge renumber map and parity checks
+
+CI job `migration-checks` (required through `backend-tests`, on `pull_request` and `merge_group`) runs two checks (CHE-6210 A2c):
+
+- **Order.** Runs only when the change adds `server/cmd/migrate/renumber-map.json`: a JSON array of `{"from": "<upstream stem>", "to": "<stem on this tree>"}` in upstream order. It fails when a `to` stem does not sort after every unmapped `up` file (byte order of the file name, as the runner sorts), when the `to` stems leave array order, when a `down` file is missing, or when a stem in this file's registries names no migration. Use a letter-suffix prefix after `999j_`: the numeric suggestion of `scripts/migration-prefix-check.mjs` sorts before it. Run locally: `node scripts/migration-order-check.mjs`.
+- **Parity.** Runs when the change touches `server/migrations` or this directory. `scripts/migration-parity.sh <base>` applies the tree to an empty database, applies the base commit and then the tree to a second one, and fails on any difference in normalized `pg_dump --schema-only`. When the map exists it also rolls the mapped `down` files back and lists schema differences from the base. Schema parity does not prove data preservation.

@@ -1576,6 +1576,26 @@ func WithStatusHandoffComment(ctx context.Context, commentID pgtype.UUID) contex
 	return context.WithValue(ctx, statusHandoffCommentKey{}, commentID)
 }
 
+type statusHandoffRestKey struct{}
+
+// WithStatusHandoffComments names every comment a status move carried, in
+// order: the first is the run's trigger comment, the rest are coalesced.
+func WithStatusHandoffComments(ctx context.Context, ids []pgtype.UUID) context.Context {
+	if len(ids) == 0 {
+		return ctx
+	}
+	ctx = WithStatusHandoffComment(ctx, ids[0])
+	if len(ids) > 1 {
+		ctx = context.WithValue(ctx, statusHandoffRestKey{}, ids[1:])
+	}
+	return ctx
+}
+
+func statusHandoffRest(ctx context.Context) []pgtype.UUID {
+	ids, _ := ctx.Value(statusHandoffRestKey{}).([]pgtype.UUID)
+	return ids
+}
+
 func statusHandoffComment(ctx context.Context) pgtype.UUID {
 	id, _ := ctx.Value(statusHandoffCommentKey{}).(pgtype.UUID)
 	return id
@@ -1722,6 +1742,9 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	if handoffComment.Valid {
 		triggerCommentID = handoffComment
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+		if len(coalescedCommentIDs) == 0 {
+			coalescedCommentIDs = statusHandoffRest(ctx)
+		}
 	}
 	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, triggerKind, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
@@ -1880,12 +1903,30 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	return task, nil
 }
 
+// EnqueueIssueTaskInTx enqueues the assignee's run for a just-created issue inside the
+// caller's transaction. The caller calls PublishTaskEnqueued only after commit.
+func (s *TaskService) EnqueueIssueTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue) (db.AgentTaskQueue, error) {
+	return s.EnqueueIssueTaskInTxAs(ctx, queries, issue, pgtype.UUID{})
+}
+
+// EnqueueIssueTaskInTxAs is EnqueueIssueTaskInTx with an explicit acting member: a
+// valid actor is both originator and accountable human, ahead of the issue creator.
+func (s *TaskService) EnqueueIssueTaskInTxAs(ctx context.Context, queries *db.Queries, issue db.Issue, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return task, err
+}
+
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	return s.EnqueueDecisionTaskInTxAs(ctx, queries, issue, agentID, squadID, triggerCommentID, commentIDs, handoff, pgtype.UUID{})
+}
+
+// EnqueueDecisionTaskInTxAs is EnqueueDecisionTaskInTx with an explicit acting member.
+func (s *TaskService) EnqueueDecisionTaskInTxAs(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
-		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, actorUserID, pgtype.UUID{}, OriginDerived)
 		return task, err
 	}
-	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 	return task, err
 }
 
@@ -2087,6 +2128,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if handoffComment.Valid {
 		triggerCommentID = handoffComment
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+		if len(coalescedCommentIDs) == 0 {
+			coalescedCommentIDs = statusHandoffRest(ctx)
+		}
 	}
 	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
@@ -3868,7 +3912,7 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 			if err := SettleTerminalTaskState(ctx, qtx, cancelled); err != nil {
 				return err
 			}
-			if !cancelled.ChatSessionID.Valid {
+			if !cancelled.ChatSessionID.Valid || IsCompactionTask(cancelled) {
 				return nil
 			}
 			return qtx.AdvanceCancelledChatSessionPointer(ctx, cancelled.ID)
@@ -4321,7 +4365,7 @@ func (s *TaskService) RetireCancelledTaskSession(ctx context.Context, taskID pgt
 		if err != nil {
 			return fmt.Errorf("load cancelled task: %w", err)
 		}
-		if !t.ChatSessionID.Valid {
+		if !t.ChatSessionID.Valid || IsCompactionTask(t) {
 			return nil
 		}
 		if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
@@ -5464,7 +5508,8 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 type TaskStartCapabilities struct {
 	Supplement     bool
 	ChatSupplement bool
-	PREvent        bool
+	PREvent        bool // the daemon offered typed PR-event delivery (v1 or v2)
+	PREventV2      bool // it offered v2: v1 plus wakeup items
 	ProcessCleanup bool
 }
 
@@ -5539,7 +5584,7 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			return fmt.Errorf("start claimed task: %w", err)
 		}
 		if offered.PREvent {
-			if _, err := qtx.RecordTaskPREventCapability(ctx, task.ID); err != nil {
+			if _, err := qtx.RecordTaskPREventCapability(ctx, db.RecordTaskPREventCapabilityParams{TaskID: task.ID, OfferV2: offered.PREventV2}); err != nil {
 				return fmt.Errorf("record PR event capability: %w", err)
 			}
 		}
@@ -5676,6 +5721,12 @@ func sanitizeWaitReason(reason string) string {
 	return reason
 }
 
+// IsCompactionTask reports whether t is a compaction task (SEC-2). It is a side
+// job on the DM and never reads or writes the DM's resume pointer.
+func IsCompactionTask(t db.AgentTaskQueue) bool {
+	return t.Purpose.Valid && t.Purpose.String == "compaction"
+}
+
 // startsWithAbsolutePath reports whether s opens with an absolute path on any
 // platform the daemon runs on: POSIX (/…), Windows drive (C:\… or C:/…), or a
 // UNC share (\\host\share). Checked against the daemon's own output, so the
@@ -5784,38 +5835,40 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		}
 
 		if t.ChatSessionID.Valid {
-			// Pin the chat_session's runtime_id alongside the session_id so the
-			// next claim can apply the runtime-guard. Both fields move together:
-			// when there's no session_id to record, leave runtime_id untouched
-			// (NULL → COALESCE keeps the existing value).
-			var sessionRuntimeID pgtype.UUID
-			if sessionID != "" {
-				sessionRuntimeID = t.RuntimeID
-			}
-			// COALESCE in SQL guarantees empty inputs don't wipe the
-			// existing resume pointer; we still surface DB errors.
-			if err := qtx.UpdateChatSessionSession(ctx, db.UpdateChatSessionSessionParams{
-				ID:        t.ChatSessionID,
-				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
-				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
-				RuntimeID: sessionRuntimeID,
-				TaskEpoch: t.ChatCompactionEpoch,
-			}); err != nil {
-				return fmt.Errorf("update chat session resume pointer: %w", err)
-			}
-			// A turn that recovered by abandoning its session still has to
-			// retire it here. The COALESCE above cannot: a fresh retry that
-			// succeeds without emitting a new id passes sessionID == "", which
-			// preserves the pointer — and the pointer is the poisoned session
-			// (GH #6066). Runs after the update so a real new id wins first and
-			// the match guard then finds nothing to clear.
-			if retiredSessionID != "" {
-				if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
+			if !IsCompactionTask(t) {
+				// Pin the chat_session's runtime_id alongside the session_id so the
+				// next claim can apply the runtime-guard. Both fields move together:
+				// when there's no session_id to record, leave runtime_id untouched
+				// (NULL → COALESCE keeps the existing value).
+				var sessionRuntimeID pgtype.UUID
+				if sessionID != "" {
+					sessionRuntimeID = t.RuntimeID
+				}
+				// COALESCE in SQL guarantees empty inputs don't wipe the
+				// existing resume pointer; we still surface DB errors.
+				if err := qtx.UpdateChatSessionSession(ctx, db.UpdateChatSessionSessionParams{
 					ID:        t.ChatSessionID,
-					SessionID: pgtype.Text{String: retiredSessionID, Valid: true},
-					RuntimeID: t.RuntimeID,
+					SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
+					WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
+					RuntimeID: sessionRuntimeID,
+					TaskEpoch: t.ChatCompactionEpoch,
 				}); err != nil {
-					return fmt.Errorf("clear retired chat session resume pointer: %w", err)
+					return fmt.Errorf("update chat session resume pointer: %w", err)
+				}
+				// A turn that recovered by abandoning its session still has to
+				// retire it here. The COALESCE above cannot: a fresh retry that
+				// succeeds without emitting a new id passes sessionID == "", which
+				// preserves the pointer — and the pointer is the poisoned session
+				// (GH #6066). Runs after the update so a real new id wins first and
+				// the match guard then finds nothing to clear.
+				if retiredSessionID != "" {
+					if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
+						ID:        t.ChatSessionID,
+						SessionID: pgtype.Text{String: retiredSessionID, Valid: true},
+						RuntimeID: t.RuntimeID,
+					}); err != nil {
+						return fmt.Errorf("clear retired chat session resume pointer: %w", err)
+					}
 				}
 			}
 
@@ -6607,7 +6660,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// is left alone. ResumeUnsafeFailure (not the reason alone) so an
 		// un-upgraded daemon's agent_error.unknown row is caught by the error
 		// text too.
-		if t.ChatSessionID.Valid && ResumeUnsafeFailure(failureReason, errMsg) {
+		if t.ChatSessionID.Valid && !IsCompactionTask(t) && ResumeUnsafeFailure(failureReason, errMsg) {
 			deadSession := sessionID
 			if deadSession == "" {
 				deadSession = t.SessionID.String
@@ -6626,7 +6679,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// terminal status: the fresh-session retry that replaced it may well
 		// have succeeded, and the pointer would otherwise still name the
 		// transcript it retried away from.
-		if t.ChatSessionID.Valid && retiredSessionID != "" {
+		if t.ChatSessionID.Valid && !IsCompactionTask(t) && retiredSessionID != "" {
 			if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
 				ID:        t.ChatSessionID,
 				SessionID: pgtype.Text{String: retiredSessionID, Valid: true},
@@ -6639,7 +6692,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// ResumeUnsafeFailure, not resumeUnsafeFailureReason: the reason-only
 		// check passes an un-upgraded daemon's agent_error.unknown row, which
 		// would re-pin the very session the clear above just removed.
-		if t.ChatSessionID.Valid && !ResumeUnsafeFailure(failureReason, errMsg) {
+		if t.ChatSessionID.Valid && !IsCompactionTask(t) && !ResumeUnsafeFailure(failureReason, errMsg) {
 			// Pin the chat_session's runtime_id alongside the session_id so the
 			// next claim can apply the runtime-guard. Both fields move together:
 			// when there's no session_id to record, leave runtime_id untouched
@@ -10230,6 +10283,8 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"revision":         issue.Revision,
 		"metadata":         util.JSONObjectOrEmpty(issue.Metadata),
 		"properties":       util.JSONObjectOrEmpty(issue.Properties),
+		// Mirrors handler.IssueResponse.CreatedVia (a plain string there).
+		"created_via": issue.CreatedVia.String,
 	}
 }
 

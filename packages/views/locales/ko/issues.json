@@ -927,6 +927,7 @@
     "status_queued": "대기 중",
     "status_dispatched": "시작 중",
     "status_waiting_local_directory": "로컬 디렉터리 대기 중",
+    "status_deferred": "보류됨",
     "status_running": "작업 중",
     "status_completed": "완료됨",
     "status_failed": "실패함",
@@ -1179,6 +1180,7 @@
     "variant_my_any": "모든 관련",
     "variant_my_assigned": "나에게 할당됨",
     "variant_my_created": "내가 생성함",
+    "variant_my_requested": "내가 요청함",
     "variant_my_involved": "참여 중"
   },
   "plugins": {
@@ -1520,6 +1522,8 @@
       "max_fires": "{{count}}회 실행해 한도에 도달해 중지됨",
       "loop": "일시중지: 다른 규칙과 서로 깨우고 있었습니다",
       "rate": "일시중지: 1시간에 12회 넘게 실행됨",
+      "run_budget": "일시중지: 이슈가 실행 예산을 모두 사용함. 예산을 올리면 다시 켜짐",
+      "weekly_run_guard": "일시중지: 이슈가 주간 실행 한도에 도달함. 새 PR 이벤트가 오거나 횟수가 줄면 다시 켜짐",
       "hint": "다시 켜면 재개되고 횟수는 초기화됩니다."
     },
     "detail": {
@@ -1542,7 +1546,9 @@
     "paused_reason": {
       "max_fires": "한도 {{count}}회에 도달",
       "loop": "다른 규칙과 서로 깨우고 있었습니다",
-      "rate": "1시간에 12회 넘게 실행됨"
+      "rate": "1시간에 12회 넘게 실행됨",
+      "run_budget": "이슈가 실행 예산을 모두 사용함",
+      "weekly_run_guard": "이슈가 주간 실행 한도에 도달함"
     },
     "paused_banner": "{{name}}님이 {{time}}에 깨우기를 일시 중지했습니다",
     "paused_banner_anonymous": "{{time}}에 깨우기가 일시 중지되었습니다",

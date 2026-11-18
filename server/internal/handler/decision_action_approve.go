@@ -144,7 +144,7 @@ func (handler *Handler) ApproveDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	handler.finishApprovalAfterCommit(ctx, action)
-	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+	writeJSON(writer, http.StatusOK, handler.decisionActionOutcome(ctx, action))
 }
 
 // approvePlan is what an approval reads before its transaction: the executor,
@@ -255,7 +255,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		PayloadSHA256: body.PayloadSHA256, Assertion: body.Assertion,
 	})
 	if err != nil {
-		return empty, err
+		return empty, atStep("passkey", err)
 	}
 	finished, err := handler.executeApproved(ctx, transaction, caller, plan, locked, targets, body.Secrets, credential)
 	if err != nil {
@@ -336,7 +336,12 @@ func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx,
 	if _, err := queries.LockDecisionSessionNowait(ctx, db.LockDecisionSessionNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ChatSessionID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return locked, atStep("chat_session", err)
 	}
-	if locked.agents, err = queries.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{WorkspaceID: caller.workspaceID, Ids: distinctUUIDs(located.AskingAgentID, plan.target)}); err != nil {
+	// The asking agent is not locked: an approval only reads it, the request and
+	// action rows below serialize everything it writes, and claimTask holds the
+	// agent row FOR UPDATE while it queues on the runtime's capacity lock, so a
+	// lock here refuses the click on any agent with work to claim (CHE-6720).
+	// Only the action's target agent, which the executor writes, is locked.
+	if locked.agents, err = queries.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{WorkspaceID: caller.workspaceID, Ids: distinctUUIDs(plan.target)}); err != nil {
 		return locked, atStep("agents", err)
 	}
 	if err := lockDecisionThreadAndIssue(ctx, queries, caller.workspaceID, located); err != nil {
@@ -529,7 +534,7 @@ func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Que
 		finish.ErrorMessage = pgtype.Text{String: failure.Message, Valid: true}
 		return finish, nil
 	case err != nil:
-		return finish, err
+		return finish, atStep("executor", err)
 	}
 	if _, err := transaction.Exec(ctx, "RELEASE SAVEPOINT action_exec"); err != nil {
 		return finish, err
@@ -545,6 +550,7 @@ func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db
 	if err := handler.completeDecisionActionPostCommit(context.WithoutCancel(ctx), action); err != nil {
 		slog.Warn("decision action: post-commit work failed", "action_id", uuidToString(action.ID), "error", err)
 	}
+	handler.withdrawStaleRunBudgetCards(context.WithoutCancel(ctx), action)
 }
 
 // completeDecisionActionPostCommit broadcasts the change, wakes the delivery

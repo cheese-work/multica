@@ -179,9 +179,8 @@ func (q *Queries) ListChatAttentionChains(ctx context.Context, arg ListChatAtten
 const listChatAttentionDecisions = `-- name: ListChatAttentionDecisions :many
 SELECT d.id, s.chain_root_session_id, d.answer_revision, d.created_at
 FROM decision_request d
-JOIN chat_session s ON s.id = d.chat_session_id
-WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open'
-  AND s.chain_root_session_id IS NOT NULL
+LEFT JOIN chat_session s ON s.id = d.chat_session_id
+WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open' AND d.authority = 'human'
 `
 
 type ListChatAttentionDecisionsParams struct {
@@ -196,7 +195,8 @@ type ListChatAttentionDecisionsRow struct {
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
-// Open decision requests, addressed by the chain of the DM they were asked in.
+// Every open human decision request of the viewer. The chat join is a left join (CHE-5670 D6): a
+// request whose chat row is missing is kept, with a NULL chain root.
 func (q *Queries) ListChatAttentionDecisions(ctx context.Context, arg ListChatAttentionDecisionsParams) ([]ListChatAttentionDecisionsRow, error) {
 	rows, err := q.db.Query(ctx, listChatAttentionDecisions, arg.HumanUserID, arg.WorkspaceID)
 	if err != nil {

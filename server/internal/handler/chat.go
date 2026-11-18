@@ -179,6 +179,9 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
 	if !listsOwnChatSessions(r.Header.Get("X-Actor-Source")) {
+		if h.listRequesterStaleDMs(w, r, workspaceID) {
+			return
+		}
 		session, ok := h.callingChatSession(w, r)
 		if !ok {
 			return
@@ -1671,6 +1674,9 @@ func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSessio
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	if err := qtx.MarkDecisionRequestsRead(ctx, session.ID); err != nil {
 		return nil, err
 	}
 	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})

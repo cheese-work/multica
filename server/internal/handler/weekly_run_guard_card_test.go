@@ -32,6 +32,25 @@ func weeklyCardCase(t *testing.T, installationID int64) (budgetCase, service.Wee
 // recipients are every workspace owner, and adds a second owner.
 func weeklyCardCaseFor(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
 	t.Helper()
+	return weeklyCardCaseRuns(t, installationID, manyOwners, 30)
+}
+
+// weeklyCardCaseRuns is weeklyCardCaseFor with the issue's 7-day run count set.
+func weeklyCardCaseRuns(t *testing.T, installationID int64, manyOwners bool, runs int) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
+	c, e := weeklyRefusalCaseRuns(t, installationID, manyOwners, runs)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	return c, e
+}
+
+// weeklyRefusalCase is weeklyCardCaseFor before the incident hook runs.
+func weeklyRefusalCase(t *testing.T, installationID int64, manyOwners bool) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
+	return weeklyRefusalCaseRuns(t, installationID, manyOwners, 30)
+}
+
+func weeklyRefusalCaseRuns(t *testing.T, installationID int64, manyOwners bool, runs int) (budgetCase, service.WeeklyRunGuardTripped) {
+	t.Helper()
 	c := weeklyCase(t, installationID)
 	var role string
 	dbfx.QueryRow(t, `SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID).Scan(&role)
@@ -50,10 +69,8 @@ func weeklyCardCaseFor(t *testing.T, installationID int64, manyOwners bool) (bud
 	dbfx.Cleanup(t, `DELETE FROM decision_request WHERE issue_id = $1`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID)
 	dbfx.Cleanup(t, `DELETE FROM weekly_run_guard_allowance WHERE issue_id = $1`, c.issueID)
-	seedRuns(t, c, c.agentID, 30, 2*24*time.Hour)
-	e := c.weeklyTripped(t)
-	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
-	return c, e
+	seedRuns(t, c, c.agentID, runs, 2*24*time.Hour)
+	return c, c.weeklyTripped(t)
 }
 
 func (c budgetCase) allowCards(t *testing.T) int {
@@ -389,5 +406,132 @@ func TestSystemCommentNeverRoutesToSquadLeader(t *testing.T) {
 	testHandler.triggerTasksForComment(ctx, issue, post("member", "please continue"), nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
 	if n := queued(); n != 1 {
 		t.Fatalf("runs enqueued for the leader by a member comment = %d, want 1 (fixture must reach dispatch)", n)
+	}
+}
+
+// CHE-6299: a refusal on a finished issue opens no card, no system comment and
+// no inbox ping, but the incident row for the brief is still written.
+func TestWeeklyRunGuardRefusalOnFinishedIssueOpensNothing(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentAccepted := createTestCustomStatus(t, "che6299_agent_accepted", "done")
+	for i, status := range []string{"done", "merged", agentAccepted.Key} {
+		t.Run(status, func(t *testing.T) {
+			c, e := weeklyRefusalCase(t, int64(6299001+i), false)
+			dbfx.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, c.issueID, status)
+			testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+			testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+
+			if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
+				t.Fatalf("decision requests = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID); n != 0 {
+				t.Fatalf("refusal rows = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID); n != 0 {
+				t.Fatalf("system comments = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE issue_id = $1`, c.issueID); n != 0 {
+				t.Fatalf("inbox items = %d, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'weekly_run_guard_tripped'`, c.issueID); n != 1 {
+				t.Fatalf("incident rows = %d, want 1", n)
+			}
+			if n := c.queuedRuns(t); n != 0 {
+				t.Fatalf("queued runs = %d, want 0", n)
+			}
+		})
+	}
+}
+
+type weeklyBudgetRead struct {
+	Blocking    []string `json:"blocking"`
+	WeeklyRuns  int64    `json:"weekly_runs"`
+	WeeklyLimit int64    `json:"weekly_limit"`
+}
+
+func (c budgetCase) weeklyBudget(t *testing.T) weeklyBudgetRead {
+	t.Helper()
+	var got weeklyBudgetRead
+	request := withURLParam(newRequest(http.MethodGet, "/api/issues/"+c.issueID+"/run-budget", nil), "id", c.issueID)
+	testutil.Call(t, testHandler.GetIssueRunBudget, request).Want(http.StatusOK).JSON(&got)
+	return got
+}
+
+// CHE-6295 AC1, AC2, AC4: an issue 30 runs over the limit gets 10 more derived
+// runs counted from its current count; the refused trigger runs once, the next
+// nine pass, the 11th is refused and opens a new card.
+func TestWeeklyRunGuardApprovalCountsAllowanceFromCurrentCount(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseRuns(t, 6295001, false, 60)
+	action := c.pendingAllow(t)
+	action.approve(t, withVerifier(acceptingVerifier), action.claim(t, map[string]string{}), http.StatusOK)
+	if n := c.queuedRuns(t); n != 1 {
+		t.Fatalf("queued runs after approval = %d, want the refused trigger once", n)
+	}
+	got := c.weeklyBudget(t)
+	if len(got.Blocking) != 0 || got.WeeklyRuns != 61 || got.WeeklyLimit != 70 {
+		t.Fatalf("budget after approval = %+v, want 61 of 70 and nothing blocking", got)
+	}
+	// The next nine derived runs pass through real dispatches.
+	for i := 0; i < 9; i++ {
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status = 'queued'`, c.issueID)
+		if err := c.enqueue(t); err != nil {
+			t.Fatalf("derived run %d after approval = %v, want it admitted", i+2, err)
+		}
+	}
+	// The 11th derived run is refused and opens a new card.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status = 'queued'`, c.issueID)
+	e := c.weeklyTripped(t)
+	testHandler.onWeeklyRunGuardTripped(context.Background(), e)
+	if n := c.allowCards(t); n != 1 {
+		t.Fatalf("open allow cards after the 11th run = %d, want 1", n)
+	}
+}
+
+// CHE-6295 review: an approved trigger that the guard (or another gate) still
+// refuses at resume is never dropped silently; the issue gets a system comment.
+func TestWeeklyRunGuardRefusedResumePostsSystemComment(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseRuns(t, 6295003, false, 60)
+	// Mark the refusal approved without the allowance, as if another gate ate it.
+	dbfx.Exec(t, `UPDATE weekly_run_guard_refusal SET state = 'approved' WHERE issue_id = $1 AND state = 'open'`, c.issueID)
+	before := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID)
+	var id pgtype.UUID
+	dbfx.QueryRow(t, `SELECT id FROM weekly_run_guard_refusal WHERE issue_id = $1`, c.issueID).Scan(&id)
+	testHandler.resumeWeeklyRefusal(context.Background(), id)
+	var state string
+	dbfx.QueryRow(t, `SELECT state FROM weekly_run_guard_refusal WHERE id = $1`, id).Scan(&state)
+	if state != "refused" {
+		t.Fatalf("refusal state = %s, want refused", state)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system'`, c.issueID); n != before+1 {
+		t.Fatalf("system comments = %d, want %d: a refused resume must say so", n, before+1)
+	}
+	if n := c.queuedRuns(t); n != 0 {
+		t.Fatalf("queued runs = %d, want 0", n)
+	}
+}
+
+// CHE-6295 AC3: an issue just over the limit (31 of 30) is unblocked as before:
+// the refused trigger runs once and ten derived runs count from the current 31.
+func TestWeeklyRunGuardApprovalJustOverLimitStillUnblocks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := weeklyCardCaseRuns(t, 6295002, false, 31)
+	action := c.pendingAllow(t)
+	action.approve(t, withVerifier(acceptingVerifier), action.claim(t, map[string]string{}), http.StatusOK)
+	if n := c.queuedRuns(t); n != 1 {
+		t.Fatalf("queued runs after approval = %d, want the refused trigger once", n)
+	}
+	got := c.weeklyBudget(t)
+	if len(got.Blocking) != 0 || got.WeeklyLimit != 41 {
+		t.Fatalf("budget after approval = %+v, want limit 41 and nothing blocking", got)
 	}
 }

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS browser_gateway_credential_hash_uidx;

@@ -11,6 +11,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceDMProgressLane = `-- name: AdvanceDMProgressLane :exec
+UPDATE dm_progress_lane
+SET last_card_at = $2, next_seq = next_seq + 1, suspended_reason = NULL
+WHERE lineage_id = $1
+`
+
+type AdvanceDMProgressLaneParams struct {
+	LineageID  pgtype.UUID        `json:"lineage_id"`
+	LastCardAt pgtype.Timestamptz `json:"last_card_at"`
+}
+
+// A card went out: stamp the lane and take the next seq. A lane held back only
+// for routing is released.
+func (q *Queries) AdvanceDMProgressLane(ctx context.Context, arg AdvanceDMProgressLaneParams) error {
+	_, err := q.db.Exec(ctx, advanceDMProgressLane, arg.LineageID, arg.LastCardAt)
+	return err
+}
+
 const countDMProgressDescendants = `-- name: CountDMProgressDescendants :one
 SELECT count(*) FROM dm_progress_follow
 WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2
@@ -30,6 +48,47 @@ func (q *Queries) CountDMProgressDescendants(ctx context.Context, arg CountDMPro
 	return count, err
 }
 
+const countDMProgressDescendantsByStatus = `-- name: CountDMProgressDescendantsByStatus :many
+SELECT i.status, count(*) AS total
+FROM dm_progress_follow f
+JOIN issue i ON i.id = f.issue_id
+WHERE f.lineage_id = $1 AND f.reporting_root_id = $2 AND f.state = 'active' AND f.issue_id <> $2
+GROUP BY i.status
+`
+
+type CountDMProgressDescendantsByStatusParams struct {
+	LineageID       pgtype.UUID `json:"lineage_id"`
+	ReportingRootID pgtype.UUID `json:"reporting_root_id"`
+}
+
+type CountDMProgressDescendantsByStatusRow struct {
+	Status string `json:"status"`
+	Total  int64  `json:"total"`
+}
+
+// Tracked descendants of a reporting root in one lane, grouped by status, so the
+// epic-done predicate classifies each distinct status once however many issues
+// the tree holds.
+func (q *Queries) CountDMProgressDescendantsByStatus(ctx context.Context, arg CountDMProgressDescendantsByStatusParams) ([]CountDMProgressDescendantsByStatusRow, error) {
+	rows, err := q.db.Query(ctx, countDMProgressDescendantsByStatus, arg.LineageID, arg.ReportingRootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountDMProgressDescendantsByStatusRow{}
+	for rows.Next() {
+		var i CountDMProgressDescendantsByStatusRow
+		if err := rows.Scan(&i.Status, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteDMProgressByWorkspace = `-- name: DeleteDMProgressByWorkspace :exec
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
@@ -37,13 +96,17 @@ WITH gone_follows AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.workspace_id = $1
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.workspace_id = $1
+), gone_deliveries AS (
+    DELETE FROM dm_progress_delivery AS d WHERE d.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1
 `
 
-// No FKs (repo rule): workspace delete sweeps all five tables here.
+// No FKs (repo rule): workspace delete sweeps all seven tables here.
 func (q *Queries) DeleteDMProgressByWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressByWorkspace, workspaceID)
 	return err
@@ -54,6 +117,8 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.issue_id = $1 AND p.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.root_issue_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2
 `
@@ -76,6 +141,10 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.lineage_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
+), gone_deliveries AS (
+    DELETE FROM dm_progress_delivery AS d WHERE d.lineage_id = $1 AND d.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.lineage_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2
 `
@@ -85,10 +154,24 @@ type DeleteDMProgressForLineageParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows and lane here.
+// No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows, deliveries and lane here.
 // Callers hold the chat_session lock, so a new follow cannot slip in between.
 func (q *Queries) DeleteDMProgressForLineage(ctx context.Context, arg DeleteDMProgressForLineageParams) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressForLineage, arg.LineageID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDMProgressPendingEvents = `-- name: DeleteDMProgressPendingEvents :exec
+DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY($2::uuid[])
+`
+
+type DeleteDMProgressPendingEventsParams struct {
+	LineageID pgtype.UUID   `json:"lineage_id"`
+	EventIds  []pgtype.UUID `json:"event_ids"`
+}
+
+func (q *Queries) DeleteDMProgressPendingEvents(ctx context.Context, arg DeleteDMProgressPendingEventsParams) error {
+	_, err := q.db.Exec(ctx, deleteDMProgressPendingEvents, arg.LineageID, arg.EventIds)
 	return err
 }
 
@@ -141,6 +224,34 @@ func (q *Queries) DropInheritedDMProgressReason(ctx context.Context, arg DropInh
 	return items, nil
 }
 
+const ensureDMProgressEpicEpisode = `-- name: EnsureDMProgressEpicEpisode :one
+INSERT INTO dm_progress_epic_episode (lineage_id, root_issue_id, workspace_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (lineage_id, root_issue_id) DO UPDATE SET workspace_id = dm_progress_epic_episode.workspace_id
+RETURNING lineage_id, root_issue_id, workspace_id, revision, fired_at
+`
+
+type EnsureDMProgressEpicEpisodeParams struct {
+	LineageID   pgtype.UUID `json:"lineage_id"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The episode row of (lane, root), created at revision 1 on first use. The lane
+// lock held by the caller serializes the read-then-fire that follows.
+func (q *Queries) EnsureDMProgressEpicEpisode(ctx context.Context, arg EnsureDMProgressEpicEpisodeParams) (DmProgressEpicEpisode, error) {
+	row := q.db.QueryRow(ctx, ensureDMProgressEpicEpisode, arg.LineageID, arg.RootIssueID, arg.WorkspaceID)
+	var i DmProgressEpicEpisode
+	err := row.Scan(
+		&i.LineageID,
+		&i.RootIssueID,
+		&i.WorkspaceID,
+		&i.Revision,
+		&i.FiredAt,
+	)
+	return i, err
+}
+
 const ensureDMProgressLane = `-- name: EnsureDMProgressLane :exec
 INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id)
 VALUES ($1, $2, $3)
@@ -156,6 +267,24 @@ type EnsureDMProgressLaneParams struct {
 func (q *Queries) EnsureDMProgressLane(ctx context.Context, arg EnsureDMProgressLaneParams) error {
 	_, err := q.db.Exec(ctx, ensureDMProgressLane, arg.LineageID, arg.WorkspaceID, arg.OwnerUserID)
 	return err
+}
+
+const fireDMProgressEpicEpisode = `-- name: FireDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET fired_at = now()
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NULL
+`
+
+type FireDMProgressEpicEpisodeParams struct {
+	LineageID   pgtype.UUID `json:"lineage_id"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+}
+
+func (q *Queries) FireDMProgressEpicEpisode(ctx context.Context, arg FireDMProgressEpicEpisodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, fireDMProgressEpicEpisode, arg.LineageID, arg.RootIssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getActiveDMProgressFollow = `-- name: GetActiveDMProgressFollow :one
@@ -184,6 +313,35 @@ func (q *Queries) GetActiveDMProgressFollow(ctx context.Context, arg GetActiveDM
 		&i.Reasons,
 		&i.ReportingRootID,
 	)
+	return i, err
+}
+
+const getDMProgressLaneWindow = `-- name: GetDMProgressLaneWindow :one
+SELECT min(p.created_at)::timestamptz AS oldest_at,
+       min(p.created_at) FILTER (WHERE p.immediate AND (f.last_immediate_at IS NULL OR f.last_immediate_at <= $2::timestamptz - interval '60 minutes'))::timestamptz AS immediate_at
+FROM dm_progress_pending p
+LEFT JOIN dm_progress_follow f ON f.issue_id = p.issue_id AND f.lineage_id = p.lineage_id AND f.state = 'active'
+WHERE p.lineage_id = $1
+`
+
+type GetDMProgressLaneWindowParams struct {
+	LineageID pgtype.UUID        `json:"lineage_id"`
+	Now       pgtype.Timestamptz `json:"now"`
+}
+
+type GetDMProgressLaneWindowRow struct {
+	OldestAt    pgtype.Timestamptz `json:"oldest_at"`
+	ImmediateAt pgtype.Timestamptz `json:"immediate_at"`
+}
+
+// The dispatcher's due-ness gate: the oldest pending row and the oldest row
+// that may jump the batch wait (its follow has not spent the hourly allowance),
+// from the pending rows and follows alone. No issue or member lookup. Denied
+// rows count here, so the gate is never later than the exact due time.
+func (q *Queries) GetDMProgressLaneWindow(ctx context.Context, arg GetDMProgressLaneWindowParams) (GetDMProgressLaneWindowRow, error) {
+	row := q.db.QueryRow(ctx, getDMProgressLaneWindow, arg.LineageID, arg.Now)
+	var i GetDMProgressLaneWindowRow
+	err := row.Scan(&i.OldestAt, &i.ImmediateAt)
 	return i, err
 }
 
@@ -262,6 +420,30 @@ func (q *Queries) InsertDMProgressDataIncident(ctx context.Context, arg InsertDM
 	return err
 }
 
+const insertDMProgressDelivery = `-- name: InsertDMProgressDelivery :exec
+INSERT INTO dm_progress_delivery (lineage_id, seq, workspace_id, chat_message_id, payload)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertDMProgressDeliveryParams struct {
+	LineageID     pgtype.UUID `json:"lineage_id"`
+	Seq           int64       `json:"seq"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ChatMessageID pgtype.UUID `json:"chat_message_id"`
+	Payload       []byte      `json:"payload"`
+}
+
+func (q *Queries) InsertDMProgressDelivery(ctx context.Context, arg InsertDMProgressDeliveryParams) error {
+	_, err := q.db.Exec(ctx, insertDMProgressDelivery,
+		arg.LineageID,
+		arg.Seq,
+		arg.WorkspaceID,
+		arg.ChatMessageID,
+		arg.Payload,
+	)
+	return err
+}
+
 const insertDMProgressFollow = `-- name: InsertDMProgressFollow :one
 INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status, reporting_root_id)
 VALUES ($1, $2, $3, $4, $6::text[], $7, $5, $8)
@@ -325,10 +507,16 @@ func (q *Queries) InsertDMProgressFollow(ctx context.Context, arg InsertDMProgre
 }
 
 const insertDMProgressMovedUnderEvents = `-- name: InsertDMProgressMovedUnderEvents :exec
-INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
-SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', $3::uuid
+WITH lane_events AS (
+    INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
+    SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', $3::uuid
+    FROM dm_progress_follow AS f
+    WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active'
+)
+INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, event_id)
+SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', gen_random_uuid()
 FROM dm_progress_follow AS f
-WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active'
+WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active' AND f.muted_at IS NULL
 `
 
 type InsertDMProgressMovedUnderEventsParams struct {
@@ -338,10 +526,31 @@ type InsertDMProgressMovedUnderEventsParams struct {
 }
 
 // CHE-3548: one "moved under" row per lane that actively follows the moved
-// issue. Follows are not touched; muted lanes still get the row.
+// issue. Follows are not touched; muted lanes still get the lane event. Every
+// unmuted lane also gets one pending row, so the dispatcher tells the DM (the
+// card item carries the kind only, never the new parent: its visibility to the
+// DM owner is not checked here).
 func (q *Queries) InsertDMProgressMovedUnderEvents(ctx context.Context, arg InsertDMProgressMovedUnderEventsParams) error {
 	_, err := q.db.Exec(ctx, insertDMProgressMovedUnderEvents, arg.IssueID, arg.WorkspaceID, arg.NewParentID)
 	return err
+}
+
+const invalidateDMProgressEpicEpisode = `-- name: InvalidateDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET revision = revision + 1, fired_at = NULL
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NOT NULL
+`
+
+type InvalidateDMProgressEpicEpisodeParams struct {
+	LineageID   pgtype.UUID `json:"lineage_id"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+}
+
+func (q *Queries) InvalidateDMProgressEpicEpisode(ctx context.Context, arg InvalidateDMProgressEpicEpisodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, invalidateDMProgressEpicEpisode, arg.LineageID, arg.RootIssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const issueParentChainLoops = `-- name: IssueParentChainLoops :one
@@ -485,6 +694,123 @@ func (q *Queries) ListDMProgressFollowsByLineage(ctx context.Context, lineageID 
 	return items, nil
 }
 
+const listDMProgressLaneIssues = `-- name: ListDMProgressLaneIssues :many
+SELECT g.issue_id,
+       g.first_at::timestamptz AS first_at,
+       g.kinds::text[] AS kinds,
+       g.event_ids::uuid[] AS event_ids,
+       (CASE WHEN f.last_immediate_at IS NULL OR f.last_immediate_at <= $2::timestamptz - interval '60 minutes' THEN g.immediate_at END)::timestamptz AS immediate_at,
+       COALESCE(CASE WHEN f.issue_id IS NULL THEN 'not_following'
+                     WHEN f.muted_at IS NOT NULL THEN 'muted'
+                     WHEN i.id IS NULL THEN 'issue_gone'
+                     WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
+       COALESCE(i.status, '')::text AS status,
+       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status,
+       (CASE WHEN i.status = 'cancelled' THEN i.duplicate_of_issue_id END)::uuid AS duplicate_of_issue_id,
+       f.reporting_root_id::uuid AS reporting_root_id
+FROM (
+    SELECT p.issue_id,
+           min(p.created_at) AS first_at,
+           array_agg(DISTINCT p.event_kind) AS kinds,
+           array_agg(p.event_id) AS event_ids,
+           min(p.created_at) FILTER (WHERE p.immediate) AS immediate_at
+    FROM dm_progress_pending p
+    WHERE p.lineage_id = $1
+    GROUP BY p.issue_id
+) g
+JOIN dm_progress_lane l ON l.lineage_id = $1
+LEFT JOIN dm_progress_follow f ON f.issue_id = g.issue_id AND f.lineage_id = $1 AND f.state = 'active'
+LEFT JOIN issue i ON i.id = g.issue_id
+LEFT JOIN member m ON m.user_id = l.owner_user_id AND m.workspace_id = i.workspace_id
+ORDER BY g.first_at, g.issue_id
+`
+
+type ListDMProgressLaneIssuesParams struct {
+	LineageID pgtype.UUID        `json:"lineage_id"`
+	Now       pgtype.Timestamptz `json:"now"`
+}
+
+type ListDMProgressLaneIssuesRow struct {
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	FirstAt            pgtype.Timestamptz `json:"first_at"`
+	Kinds              []string           `json:"kinds"`
+	EventIds           []pgtype.UUID      `json:"event_ids"`
+	ImmediateAt        pgtype.Timestamptz `json:"immediate_at"`
+	DenyReason         string             `json:"deny_reason"`
+	Status             string             `json:"status"`
+	LastRenderedStatus string             `json:"last_rendered_status"`
+	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
+}
+
+// One row per distinct issue with pending rows in a lane, oldest first, in one
+// statement: the denial verdict (follow gone or muted, issue gone, owner not a
+// member of the issue's workspace), the current status and what the DM was last
+// told. The member join mirrors service.ProgressVisible; change both together.
+// event_ids name exactly the rows this read saw, so a row committed later
+// survives the delete.
+func (q *Queries) ListDMProgressLaneIssues(ctx context.Context, arg ListDMProgressLaneIssuesParams) ([]ListDMProgressLaneIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listDMProgressLaneIssues, arg.LineageID, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDMProgressLaneIssuesRow{}
+	for rows.Next() {
+		var i ListDMProgressLaneIssuesRow
+		if err := rows.Scan(
+			&i.IssueID,
+			&i.FirstAt,
+			&i.Kinds,
+			&i.EventIds,
+			&i.ImmediateAt,
+			&i.DenyReason,
+			&i.Status,
+			&i.LastRenderedStatus,
+			&i.DuplicateOfIssueID,
+			&i.ReportingRootID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDMProgressPendingLanes = `-- name: ListDMProgressPendingLanes :many
+SELECT l.lineage_id FROM dm_progress_lane l
+WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
+  AND EXISTS (SELECT 1 FROM dm_progress_pending p WHERE p.lineage_id = l.lineage_id)
+ORDER BY random() LIMIT 200
+`
+
+// Driven by the lane table (one probe of the pending key per lane, never a scan
+// of the backlog). A lane held for any reason but routing is skipped. One run
+// takes a bounded random slice, so no lane starves the others and the run fits
+// its deadline.
+func (q *Queries) ListDMProgressPendingLanes(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDMProgressPendingLanes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var lineage_id pgtype.UUID
+		if err := rows.Scan(&lineage_id); err != nil {
+			return nil, err
+		}
+		items = append(items, lineage_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDMProgressLane = `-- name: LockDMProgressLane :one
 SELECT lineage_id, workspace_id, owner_user_id, last_card_at, next_seq, suspended_reason, created_at FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE
 `
@@ -502,6 +828,108 @@ func (q *Queries) LockDMProgressLane(ctx context.Context, lineageID pgtype.UUID)
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const lockDMProgressLaneSkipLocked = `-- name: LockDMProgressLaneSkipLocked :one
+SELECT lineage_id, workspace_id, owner_user_id, last_card_at, next_seq, suspended_reason, created_at FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED
+`
+
+// Dispatcher entry: a lane another dispatcher (or a follow write) holds is
+// skipped, not waited for (CHE-3369 I1.3).
+func (q *Queries) LockDMProgressLaneSkipLocked(ctx context.Context, lineageID pgtype.UUID) (DmProgressLane, error) {
+	row := q.db.QueryRow(ctx, lockDMProgressLaneSkipLocked, lineageID)
+	var i DmProgressLane
+	err := row.Scan(
+		&i.LineageID,
+		&i.WorkspaceID,
+		&i.OwnerUserID,
+		&i.LastCardAt,
+		&i.NextSeq,
+		&i.SuspendedReason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const lockNativeChatSessionShare = `-- name: LockNativeChatSessionShare :one
+SELECT session.id, session.workspace_id, session.agent_id, session.creator_id, session.title, session.session_id, session.work_dir, session.status, session.created_at, session.updated_at, session.unread_since, session.runtime_id, session.last_read_at, session.is_agent_intro, session.pinned_at, session.project_id, session.explicitly_created_at, session.continued_from_session_id, session.continued_into_session_id, session.channel_origin_at, session.forked_from_session_id, session.fork_idempotency_key, session.fork_last_message_id, session.fork_message_count, session.fork_source_message_id, session.title_manually_set, session.compaction_epoch, session.preset_name, session.decision_topic_id, session.segment_floor_at, session.segment_floor_id, session.chain_root_session_id, session.taint_ids, session.taint_verified FROM chat_session session
+WHERE session.id = $1
+  AND session.channel_origin_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+FOR SHARE OF session
+`
+
+// The dispatcher's route read: the share lock holds the DM open (no archive or
+// continue can commit) until the card commits, so a batch never lands in a DM
+// that closed meanwhile.
+func (q *Queries) LockNativeChatSessionShare(ctx context.Context, id pgtype.UUID) (ChatSession, error) {
+	row := q.db.QueryRow(ctx, lockNativeChatSessionShare, id)
+	var i ChatSession
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.CreatorID,
+		&i.Title,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UnreadSince,
+		&i.RuntimeID,
+		&i.LastReadAt,
+		&i.IsAgentIntro,
+		&i.PinnedAt,
+		&i.ProjectID,
+		&i.ExplicitlyCreatedAt,
+		&i.ContinuedFromSessionID,
+		&i.ContinuedIntoSessionID,
+		&i.ChannelOriginAt,
+		&i.ForkedFromSessionID,
+		&i.ForkIdempotencyKey,
+		&i.ForkLastMessageID,
+		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
+		&i.CompactionEpoch,
+		&i.PresetName,
+		&i.DecisionTopicID,
+		&i.SegmentFloorAt,
+		&i.SegmentFloorID,
+		&i.ChainRootSessionID,
+		&i.TaintIds,
+		&i.TaintVerified,
+	)
+	return i, err
+}
+
+const markDMProgressFollowRendered = `-- name: MarkDMProgressFollowRendered :exec
+UPDATE dm_progress_follow
+SET last_rendered_status = $3,
+    last_immediate_at = CASE WHEN $4::boolean THEN $5::timestamptz ELSE last_immediate_at END
+WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
+`
+
+type MarkDMProgressFollowRenderedParams struct {
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	LastRenderedStatus string             `json:"last_rendered_status"`
+	Immediate          bool               `json:"immediate"`
+	At                 pgtype.Timestamptz `json:"at"`
+}
+
+// The card told the DM this issue's current status; an immediate card also
+// spends the follow's hourly immediate allowance (I2.2).
+func (q *Queries) MarkDMProgressFollowRendered(ctx context.Context, arg MarkDMProgressFollowRenderedParams) error {
+	_, err := q.db.Exec(ctx, markDMProgressFollowRendered,
+		arg.IssueID,
+		arg.LineageID,
+		arg.LastRenderedStatus,
+		arg.Immediate,
+		arg.At,
+	)
+	return err
 }
 
 const resolveChatLineageRoot = `-- name: ResolveChatLineageRoot :one
@@ -558,6 +986,20 @@ func (q *Queries) SetDMProgressFollowMuted(ctx context.Context, arg SetDMProgres
 		&i.ReportingRootID,
 	)
 	return i, err
+}
+
+const suspendDMProgressLane = `-- name: SuspendDMProgressLane :exec
+UPDATE dm_progress_lane SET suspended_reason = $2 WHERE lineage_id = $1
+`
+
+type SuspendDMProgressLaneParams struct {
+	LineageID       pgtype.UUID `json:"lineage_id"`
+	SuspendedReason pgtype.Text `json:"suspended_reason"`
+}
+
+func (q *Queries) SuspendDMProgressLane(ctx context.Context, arg SuspendDMProgressLaneParams) error {
+	_, err := q.db.Exec(ctx, suspendDMProgressLane, arg.LineageID, arg.SuspendedReason)
+	return err
 }
 
 const unfollowDMProgressFollow = `-- name: UnfollowDMProgressFollow :one

@@ -11,10 +11,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acquireCyclePause = `-- name: AcquireCyclePause :one
+INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by, cycle_id, expires_at)
+VALUES ($1, $2, $3, 'scheduled_update', NULL, $4, $5)
+ON CONFLICT (machine_owner_id, daemon_id) DO UPDATE
+SET workspace_id = EXCLUDED.workspace_id, reason = EXCLUDED.reason, paused_by = NULL,
+    paused_at = now(), drained_notified_at = NULL,
+    cycle_id = EXCLUDED.cycle_id, expires_at = EXCLUDED.expires_at
+WHERE COALESCE(daemon_pause.expires_at, daemon_pause.paused_at + make_interval(secs => CASE daemon_pause.reason WHEN 'maintenance' THEN $6::int ELSE $7::int END)) <= now()
+RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at, cycle_id, expires_at
+`
+
+type AcquireCyclePauseParams struct {
+	MachineOwnerID  pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID        string             `json:"daemon_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	CycleID         pgtype.UUID        `json:"cycle_id"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	MaintenanceSecs int32              `json:"maintenance_secs"`
+	OtherSecs       int32              `json:"other_secs"`
+}
+
+// A scheduled update cycle takes the machine's pause (CHE-5466, D10). One
+// statement: insert, or take the row over only when the existing pause has
+// expired. No row returned means a live pause exists and nothing changed.
+func (q *Queries) AcquireCyclePause(ctx context.Context, arg AcquireCyclePauseParams) (DaemonPause, error) {
+	row := q.db.QueryRow(ctx, acquireCyclePause,
+		arg.MachineOwnerID,
+		arg.DaemonID,
+		arg.WorkspaceID,
+		arg.CycleID,
+		arg.ExpiresAt,
+		arg.MaintenanceSecs,
+		arg.OtherSecs,
+	)
+	var i DaemonPause
+	err := row.Scan(
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.WorkspaceID,
+		&i.Reason,
+		&i.PausedBy,
+		&i.PausedAt,
+		&i.DrainedNotifiedAt,
+		&i.CycleID,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const claimDaemonPauseDrainNotice = `-- name: ClaimDaemonPauseDrainNotice :one
 UPDATE daemon_pause SET drained_notified_at = now()
 WHERE machine_owner_id = $1 AND daemon_id = $2 AND paused_at = $3 AND drained_notified_at IS NULL
-RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at
+RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at, cycle_id, expires_at
 `
 
 type ClaimDaemonPauseDrainNoticeParams struct {
@@ -36,6 +85,8 @@ func (q *Queries) ClaimDaemonPauseDrainNotice(ctx context.Context, arg ClaimDaem
 		&i.PausedBy,
 		&i.PausedAt,
 		&i.DrainedNotifiedAt,
+		&i.CycleID,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -84,6 +135,34 @@ func (q *Queries) CountRunningTasksByMachine(ctx context.Context, arg CountRunni
 	return items, nil
 }
 
+const cycleHoldsLivePause = `-- name: CycleHoldsLivePause :one
+SELECT EXISTS (
+    SELECT 1 FROM daemon_pause
+    WHERE machine_owner_id = $1 AND daemon_id = $2
+      AND cycle_id = $3 AND expires_at > $4::timestamptz
+)::bool AS holds
+`
+
+type CycleHoldsLivePauseParams struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	CycleID        pgtype.UUID        `json:"cycle_id"`
+	Now            pgtype.Timestamptz `json:"now"`
+}
+
+// Is the machine's pause still this cycle's, and not yet expired at @now?
+func (q *Queries) CycleHoldsLivePause(ctx context.Context, arg CycleHoldsLivePauseParams) (bool, error) {
+	row := q.db.QueryRow(ctx, cycleHoldsLivePause,
+		arg.MachineOwnerID,
+		arg.DaemonID,
+		arg.CycleID,
+		arg.Now,
+	)
+	var holds bool
+	err := row.Scan(&holds)
+	return holds, err
+}
+
 const deleteDaemonPause = `-- name: DeleteDaemonPause :execrows
 DELETE FROM daemon_pause
 WHERE machine_owner_id = $1 AND daemon_id = $2
@@ -102,11 +181,190 @@ func (q *Queries) DeleteDaemonPause(ctx context.Context, arg DeleteDaemonPausePa
 	return result.RowsAffected(), nil
 }
 
+const finishDaemonUpdateCycle = `-- name: FinishDaemonUpdateCycle :one
+UPDATE daemon_update_cycle
+SET state = $1, outcome = $1, outcome_detail = $2,
+    outcome_source = 'server', live_runs_at_end = $3, finished_at = now()
+WHERE id = $4 AND state = $5 AND finished_at IS NULL
+RETURNING id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at
+`
+
+type FinishDaemonUpdateCycleParams struct {
+	Outcome       string      `json:"outcome"`
+	OutcomeDetail pgtype.Text `json:"outcome_detail"`
+	LiveRunsAtEnd pgtype.Int4 `json:"live_runs_at_end"`
+	ID            pgtype.UUID `json:"id"`
+	FromState     string      `json:"from_state"`
+}
+
+// Conditional on (id, state): a second driver finds no row and does nothing.
+func (q *Queries) FinishDaemonUpdateCycle(ctx context.Context, arg FinishDaemonUpdateCycleParams) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, finishDaemonUpdateCycle,
+		arg.Outcome,
+		arg.OutcomeDetail,
+		arg.LiveRunsAtEnd,
+		arg.ID,
+		arg.FromState,
+	)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const finishDaemonUpdateCycleSkipped = `-- name: FinishDaemonUpdateCycleSkipped :one
+UPDATE daemon_update_cycle
+SET state = $1, outcome = $1, outcome_source = 'server', finished_at = now()
+WHERE id = $2
+RETURNING id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at
+`
+
+type FinishDaemonUpdateCycleSkippedParams struct {
+	Outcome string      `json:"outcome"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) FinishDaemonUpdateCycleSkipped(ctx context.Context, arg FinishDaemonUpdateCycleSkippedParams) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, finishDaemonUpdateCycleSkipped, arg.Outcome, arg.ID)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getDaemonUpdateCycle = `-- name: GetDaemonUpdateCycle :one
+SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle WHERE id = $1
+`
+
+func (q *Queries) GetDaemonUpdateCycle(ctx context.Context, id pgtype.UUID) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, getDaemonUpdateCycle, id)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getDaemonUpdateCycleByFire = `-- name: GetDaemonUpdateCycleByFire :one
+SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND fire_at = $3
+`
+
+type GetDaemonUpdateCycleByFireParams struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	FireAt         pgtype.Timestamptz `json:"fire_at"`
+}
+
+// The cycle a cron time already produced; the fire step is idempotent on it.
+func (q *Queries) GetDaemonUpdateCycleByFire(ctx context.Context, arg GetDaemonUpdateCycleByFireParams) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, getDaemonUpdateCycleByFire, arg.MachineOwnerID, arg.DaemonID, arg.FireAt)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const getLiveDaemonPauseByRuntime = `-- name: GetLiveDaemonPauseByRuntime :one
-SELECT dp.machine_owner_id, dp.daemon_id, dp.workspace_id, dp.reason, dp.paused_by, dp.paused_at, dp.drained_notified_at FROM daemon_pause dp
+SELECT dp.machine_owner_id, dp.daemon_id, dp.workspace_id, dp.reason, dp.paused_by, dp.paused_at, dp.drained_notified_at, dp.cycle_id, dp.expires_at FROM daemon_pause dp
 JOIN agent_runtime rt ON COALESCE(rt.owner_id, rt.workspace_id) = dp.machine_owner_id AND rt.daemon_id = dp.daemon_id
 WHERE rt.id = $1
-  AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
+  AND COALESCE(dp.expires_at, dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $2::int ELSE $3::int END)) > now()
 `
 
 type GetLiveDaemonPauseByRuntimeParams struct {
@@ -128,15 +386,366 @@ func (q *Queries) GetLiveDaemonPauseByRuntime(ctx context.Context, arg GetLiveDa
 		&i.PausedBy,
 		&i.PausedAt,
 		&i.DrainedNotifiedAt,
+		&i.CycleID,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
-const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
-SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at FROM daemon_pause
+const getOpenDaemonUpdateCycle = `-- name: GetOpenDaemonUpdateCycle :one
+SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND finished_at IS NULL
+FOR UPDATE
+`
+
+type GetOpenDaemonUpdateCycleParams struct {
+	MachineOwnerID pgtype.UUID `json:"machine_owner_id"`
+	DaemonID       string      `json:"daemon_id"`
+}
+
+// The machine's open cycle, locked: the lock order is machine lock, pause row, cycle row.
+func (q *Queries) GetOpenDaemonUpdateCycle(ctx context.Context, arg GetOpenDaemonUpdateCycleParams) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, getOpenDaemonUpdateCycle, arg.MachineOwnerID, arg.DaemonID)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const insertDaemonUpdateCycle = `-- name: InsertDaemonUpdateCycle :one
+INSERT INTO daemon_update_cycle (id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at
+`
+
+type InsertDaemonUpdateCycleParams struct {
+	ID             pgtype.UUID        `json:"id"`
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	FireAt         pgtype.Timestamptz `json:"fire_at"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	DeadlineAt     pgtype.Timestamptz `json:"deadline_at"`
+	State          string             `json:"state"`
+}
+
+func (q *Queries) InsertDaemonUpdateCycle(ctx context.Context, arg InsertDaemonUpdateCycleParams) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, insertDaemonUpdateCycle,
+		arg.ID,
+		arg.MachineOwnerID,
+		arg.DaemonID,
+		arg.FireAt,
+		arg.StartedAt,
+		arg.DeadlineAt,
+		arg.State,
+	)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const insertSkippedDaemonUpdateCycle = `-- name: InsertSkippedDaemonUpdateCycle :one
+INSERT INTO daemon_update_cycle (id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, outcome, outcome_source, finished_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'server', now())
+RETURNING id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at
+`
+
+type InsertSkippedDaemonUpdateCycleParams struct {
+	ID             pgtype.UUID        `json:"id"`
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	FireAt         pgtype.Timestamptz `json:"fire_at"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	DeadlineAt     pgtype.Timestamptz `json:"deadline_at"`
+	Outcome        string             `json:"outcome"`
+}
+
+// A cron time that cannot open a cycle: written already finished, so it never
+// takes the open-cycle slot.
+func (q *Queries) InsertSkippedDaemonUpdateCycle(ctx context.Context, arg InsertSkippedDaemonUpdateCycleParams) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, insertSkippedDaemonUpdateCycle,
+		arg.ID,
+		arg.MachineOwnerID,
+		arg.DaemonID,
+		arg.FireAt,
+		arg.StartedAt,
+		arg.DeadlineAt,
+		arg.Outcome,
+	)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const listAffectedMachines = `-- name: ListAffectedMachines :many
+WITH waiting AS (
+    SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id, COUNT(*)::int AS waiting_tasks
+    FROM agent_task_queue t
+    JOIN agent_runtime rt ON rt.id = t.runtime_id
+    LEFT JOIN issue i ON i.id = t.issue_id
+    LEFT JOIN project p ON p.id = i.project_id
+    WHERE t.status = 'queued'
+      AND rt.workspace_id = $1::uuid
+      AND rt.daemon_id IS NOT NULL
+      AND ($4::bool OR (p.lead_type = 'member' AND p.lead_id = $5::uuid))
+    GROUP BY 1, 2
+)
+SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
+       dp.reason AS pause_reason, dp.paused_at AS paused_at, dp.expires_at AS pause_expires_at,
+       m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
+FROM waiting w
+JOIN LATERAL (
+    SELECT COALESCE(MIN(NULLIF(o.device_info, '')) FILTER (WHERE o.workspace_id = $1::uuid),
+                    MIN(o.name) FILTER (WHERE o.workspace_id = $1::uuid)) AS device_name,
+           MAX(o.last_seen_at) AS last_seen_at,
+           COALESCE(bool_or(o.status = 'online'), false) AS any_online
+    FROM agent_runtime o
+    WHERE COALESCE(o.owner_id, o.workspace_id) = w.machine_owner_id AND o.daemon_id = w.daemon_id
+) m ON true
+LEFT JOIN daemon_pause dp
+  ON dp.machine_owner_id = w.machine_owner_id AND dp.daemon_id = w.daemon_id
+ AND COALESCE(dp.expires_at, dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $2::int ELSE $3::int END)) > now()
+WHERE dp.machine_owner_id IS NOT NULL OR NOT m.any_online
+ORDER BY w.machine_owner_id, w.daemon_id
+`
+
+type ListAffectedMachinesParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	MaintenanceSecs int32       `json:"maintenance_secs"`
+	OtherSecs       int32       `json:"other_secs"`
+	AllProjects     bool        `json:"all_projects"`
+	UserID          pgtype.UUID `json:"user_id"`
+}
+
+type ListAffectedMachinesRow struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	WaitingTasks   int32              `json:"waiting_tasks"`
+	PauseReason    pgtype.Text        `json:"pause_reason"`
+	PausedAt       pgtype.Timestamptz `json:"paused_at"`
+	PauseExpiresAt pgtype.Timestamptz `json:"pause_expires_at"`
+	DeviceName     string             `json:"device_name"`
+	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+}
+
+// Machines that hold queued tasks of this workspace and are off: paused, or with
+// no online runtime. all_projects is the workspace owner's view; otherwise only
+// tasks of projects led by user_id count. A machine with only running tasks, or
+// none, is not affected: nothing waits for it.
+// The machine can span workspaces: the device label comes only from this
+// workspace's runtimes; online state and last_seen_at are machine-wide.
+func (q *Queries) ListAffectedMachines(ctx context.Context, arg ListAffectedMachinesParams) ([]ListAffectedMachinesRow, error) {
+	rows, err := q.db.Query(ctx, listAffectedMachines,
+		arg.WorkspaceID,
+		arg.MaintenanceSecs,
+		arg.OtherSecs,
+		arg.AllProjects,
+		arg.UserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAffectedMachinesRow{}
+	for rows.Next() {
+		var i ListAffectedMachinesRow
+		if err := rows.Scan(
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.WaitingTasks,
+			&i.PauseReason,
+			&i.PausedAt,
+			&i.PauseExpiresAt,
+			&i.DeviceName,
+			&i.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDrainingDaemonUpdateCycles = `-- name: ListDrainingDaemonUpdateCycles :many
+SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle
+WHERE state = 'draining' AND finished_at IS NULL
+ORDER BY started_at
+`
+
+func (q *Queries) ListDrainingDaemonUpdateCycles(ctx context.Context) ([]DaemonUpdateCycle, error) {
+	rows, err := q.db.Query(ctx, listDrainingDaemonUpdateCycles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DaemonUpdateCycle{}
+	for rows.Next() {
+		var i DaemonUpdateCycle
+		if err := rows.Scan(
+			&i.ID,
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.FireAt,
+			&i.StartedAt,
+			&i.DeadlineAt,
+			&i.State,
+			&i.Attempt,
+			&i.UpdateRequestID,
+			&i.RuntimeID,
+			&i.FromCommit,
+			&i.TargetCommit,
+			&i.CancelRequested,
+			&i.RequestStatus,
+			&i.RequestReason,
+			&i.RequestOutput,
+			&i.RequestError,
+			&i.RequestReportedAt,
+			&i.Outcome,
+			&i.OutcomeDetail,
+			&i.OutcomeSource,
+			&i.Notes,
+			&i.LiveRunsAtEnd,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLastDaemonUpdateOutcomes = `-- name: ListLastDaemonUpdateOutcomes :many
+SELECT DISTINCT ON (machine_owner_id, daemon_id) machine_owner_id, daemon_id, outcome, finished_at
+FROM daemon_update_cycle
 WHERE machine_owner_id = ANY($1::uuid[])
   AND daemon_id = ANY($2::text[])
-  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $3::int ELSE $4::int END) > now()
+  AND finished_at IS NOT NULL
+ORDER BY machine_owner_id, daemon_id, finished_at DESC
+`
+
+type ListLastDaemonUpdateOutcomesParams struct {
+	MachineOwnerIds []pgtype.UUID `json:"machine_owner_ids"`
+	DaemonIds       []string      `json:"daemon_ids"`
+}
+
+type ListLastDaemonUpdateOutcomesRow struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	Outcome        pgtype.Text        `json:"outcome"`
+	FinishedAt     pgtype.Timestamptz `json:"finished_at"`
+}
+
+// The latest finished cycle of each machine asked for (a superset of the pairs;
+// callers match the exact pair).
+func (q *Queries) ListLastDaemonUpdateOutcomes(ctx context.Context, arg ListLastDaemonUpdateOutcomesParams) ([]ListLastDaemonUpdateOutcomesRow, error) {
+	rows, err := q.db.Query(ctx, listLastDaemonUpdateOutcomes, arg.MachineOwnerIds, arg.DaemonIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLastDaemonUpdateOutcomesRow{}
+	for rows.Next() {
+		var i ListLastDaemonUpdateOutcomesRow
+		if err := rows.Scan(
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.Outcome,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
+SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at, cycle_id, expires_at FROM daemon_pause
+WHERE machine_owner_id = ANY($1::uuid[])
+  AND daemon_id = ANY($2::text[])
+  AND COALESCE(expires_at, paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $3::int ELSE $4::int END)) > now()
 `
 
 type ListLiveDaemonPausesParams struct {
@@ -171,6 +780,60 @@ func (q *Queries) ListLiveDaemonPauses(ctx context.Context, arg ListLiveDaemonPa
 			&i.PausedBy,
 			&i.PausedAt,
 			&i.DrainedNotifiedAt,
+			&i.CycleID,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMachineRuntimes = `-- name: ListMachineRuntimes :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, shared_with, max_concurrent_tasks FROM agent_runtime
+WHERE COALESCE(owner_id, workspace_id) = $1 AND daemon_id = $2
+ORDER BY (status = 'online') DESC, last_seen_at DESC NULLS LAST, id
+`
+
+type ListMachineRuntimesParams struct {
+	OwnerID  pgtype.UUID `json:"owner_id"`
+	DaemonID pgtype.Text `json:"daemon_id"`
+}
+
+// Every runtime on a machine, online ones first, then the most recently seen.
+func (q *Queries) ListMachineRuntimes(ctx context.Context, arg ListMachineRuntimesParams) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listMachineRuntimes, arg.OwnerID, arg.DaemonID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+			&i.SharedWith,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -251,6 +914,42 @@ func (q *Queries) ListMachinesOfWorkspace(ctx context.Context, workspaceID pgtyp
 	return items, nil
 }
 
+const lockDaemonUpdateCycle = `-- name: LockDaemonUpdateCycle :one
+SELECT id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at FROM daemon_update_cycle WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockDaemonUpdateCycle(ctx context.Context, id pgtype.UUID) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, lockDaemonUpdateCycle, id)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const lockWorkspaceForMachinePause = `-- name: LockWorkspaceForMachinePause :one
 SELECT id FROM workspace WHERE id = $1 FOR SHARE
 `
@@ -262,6 +961,27 @@ func (q *Queries) LockWorkspaceForMachinePause(ctx context.Context, id pgtype.UU
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const releaseCyclePause = `-- name: ReleaseCyclePause :execrows
+DELETE FROM daemon_pause
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND cycle_id = $3
+`
+
+type ReleaseCyclePauseParams struct {
+	MachineOwnerID pgtype.UUID `json:"machine_owner_id"`
+	DaemonID       string      `json:"daemon_id"`
+	CycleID        pgtype.UUID `json:"cycle_id"`
+}
+
+// Releases the pause only while it is still this cycle's. 0 rows: a person's
+// pause replaced it or it is gone; nothing changes.
+func (q *Queries) ReleaseCyclePause(ctx context.Context, arg ReleaseCyclePauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseCyclePause, arg.MachineOwnerID, arg.DaemonID, arg.CycleID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseDaemonPauseDrainNotice = `-- name: ReleaseDaemonPauseDrainNotice :exec
@@ -281,13 +1001,68 @@ func (q *Queries) ReleaseDaemonPauseDrainNotice(ctx context.Context, arg Release
 	return err
 }
 
+const requestOpenCycleCancel = `-- name: RequestOpenCycleCancel :exec
+UPDATE daemon_update_cycle SET cancel_requested = COALESCE(cancel_requested, $3)
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND finished_at IS NULL
+`
+
+type RequestOpenCycleCancelParams struct {
+	MachineOwnerID  pgtype.UUID `json:"machine_owner_id"`
+	DaemonID        string      `json:"daemon_id"`
+	CancelRequested pgtype.Text `json:"cancel_requested"`
+}
+
+// A person's pause or resume cancels the machine's open cycle. The first
+// request stays.
+func (q *Queries) RequestOpenCycleCancel(ctx context.Context, arg RequestOpenCycleCancelParams) error {
+	_, err := q.db.Exec(ctx, requestOpenCycleCancel, arg.MachineOwnerID, arg.DaemonID, arg.CancelRequested)
+	return err
+}
+
+const setDaemonUpdateCycleDraining = `-- name: SetDaemonUpdateCycleDraining :one
+UPDATE daemon_update_cycle SET state = 'draining' WHERE id = $1 RETURNING id, machine_owner_id, daemon_id, fire_at, started_at, deadline_at, state, attempt, update_request_id, runtime_id, from_commit, target_commit, cancel_requested, request_status, request_reason, request_output, request_error, request_reported_at, outcome, outcome_detail, outcome_source, notes, live_runs_at_end, finished_at
+`
+
+func (q *Queries) SetDaemonUpdateCycleDraining(ctx context.Context, id pgtype.UUID) (DaemonUpdateCycle, error) {
+	row := q.db.QueryRow(ctx, setDaemonUpdateCycleDraining, id)
+	var i DaemonUpdateCycle
+	err := row.Scan(
+		&i.ID,
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.FireAt,
+		&i.StartedAt,
+		&i.DeadlineAt,
+		&i.State,
+		&i.Attempt,
+		&i.UpdateRequestID,
+		&i.RuntimeID,
+		&i.FromCommit,
+		&i.TargetCommit,
+		&i.CancelRequested,
+		&i.RequestStatus,
+		&i.RequestReason,
+		&i.RequestOutput,
+		&i.RequestError,
+		&i.RequestReportedAt,
+		&i.Outcome,
+		&i.OutcomeDetail,
+		&i.OutcomeSource,
+		&i.Notes,
+		&i.LiveRunsAtEnd,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const upsertDaemonPause = `-- name: UpsertDaemonPause :one
 INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (machine_owner_id, daemon_id) DO UPDATE
 SET workspace_id = EXCLUDED.workspace_id, reason = EXCLUDED.reason,
-    paused_by = EXCLUDED.paused_by, paused_at = now(), drained_notified_at = NULL
-RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at
+    paused_by = EXCLUDED.paused_by, paused_at = now(), drained_notified_at = NULL,
+    cycle_id = NULL, expires_at = NULL
+RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at, cycle_id, expires_at
 `
 
 type UpsertDaemonPauseParams struct {
@@ -317,6 +1092,8 @@ func (q *Queries) UpsertDaemonPause(ctx context.Context, arg UpsertDaemonPausePa
 		&i.PausedBy,
 		&i.PausedAt,
 		&i.DrainedNotifiedAt,
+		&i.CycleID,
+		&i.ExpiresAt,
 	)
 	return i, err
 }

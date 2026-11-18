@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  myIssuesViewStore,
   myIssuesRelationFromScope,
   myIssuesScopeFor,
   type MyIssuesScope,
@@ -12,6 +13,7 @@ describe("myIssuesRelationFromScope", () => {
     ["all", "all"],
     ["assigned", "assigned"],
     ["created", "created"],
+    ["requested", "requested"],
     ["agents", "involved"],
   ] satisfies Array<[MyIssuesScope, string]>)(
     "maps %s to the surface relation %s",
@@ -19,6 +21,18 @@ describe("myIssuesRelationFromScope", () => {
       expect(myIssuesRelationFromScope(scope)).toBe(relation);
     },
   );
+});
+
+describe("myIssuesViewStore persistence", () => {
+  it("persists Requested by me so a reload keeps it selected", () => {
+    const { persist } = myIssuesViewStore as unknown as {
+      persist: { getOptions(): { partialize?: (s: unknown) => unknown } };
+    };
+    myIssuesViewStore.getState().setScope("requested");
+    const saved = persist.getOptions().partialize?.(myIssuesViewStore.getState());
+    expect(saved).toMatchObject({ scope: "requested" });
+    expect(myIssuesScopeFor(new URLSearchParams(), "requested")).toBe("requested");
+  });
 });
 
 describe("myIssuesScopeFor", () => {

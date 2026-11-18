@@ -6,12 +6,17 @@ import (
 	"encoding/pem"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/gatesuite"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
@@ -54,7 +59,7 @@ func brokerFakeTools(t *testing.T) {
 func buildMultica(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "multica")
-	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/multica").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "../../cmd/multica").CombinedOutput(); err != nil {
 		t.Fatalf("go build multica: %v\n%s", err, out)
 	}
 	return bin
@@ -230,4 +235,49 @@ func TestStartRunBrokerFromCheckout(t *testing.T) {
 		t.Fatalf("broker must listen after the checkout: %v", err)
 	}
 	d.startRunBroker(activeRepoCheckoutTask{TaskID: "t1"}, req, &repocache.WorktreeResult{Path: work, BranchName: "agent/x/t1"}) // no broker: no-op
+}
+
+type countingAuthority struct{ n atomic.Int32 }
+
+func (a *countingAuthority) Authorize(context.Context, string, string) (string, error) {
+	a.n.Add(1)
+	return "op-1", nil
+}
+func (a *countingAuthority) Complete(context.Context, string, string) error { return nil }
+
+// A fence before the first checkout, for instance a downgrade whose server
+// fence failed, must still bind the broker the checkout creates later: the
+// restriction is a fact about the run, not about a broker that existed then.
+func TestRunBrokerFenceBeforeFirstCheckoutBindsTheLaterBroker(t *testing.T) {
+	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
+	brokerFakeTools(t)
+	rb, err := applyRunBroker(sandbox.ModeOn, true, brokerTestConfig(t, gh), map[string]string{}, quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rb.Close()
+
+	rb.Fence() // no broker yet: the server fence failed before the first checkout
+	auth := &countingAuthority{}
+	if err := rb.start(brokerCheckout{TaskID: "t1", RepoURL: "https://github.com/o/r.git", Branch: "agent/x/t1",
+		Base: strings.Repeat("a", 40), Objects: t.TempDir(), Bases: []string{"main"},
+		Policy:    func(context.Context) ([]string, error) { return []string{"AGENTS.md"}, nil },
+		Elevation: &broker.Elevation{Authority: auth, Scope: "repo_write:42", ReportFor: 100 * time.Millisecond}}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", rb.Socket)
+	}}}
+	resp, err := hc.Post("http://broker/pr", "application/json", strings.NewReader(`{"op":"comment","number":1,"body":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("elevated PR operation answered %d on a run fenced before its checkout, want 403", resp.StatusCode)
+	}
+	if n := auth.n.Load(); n != 0 {
+		t.Fatalf("%d operations authorized on a fenced run", n)
+	}
 }

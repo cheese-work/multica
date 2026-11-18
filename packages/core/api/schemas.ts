@@ -111,6 +111,7 @@ import type {
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
+import { BudgetReceiptSchema } from "./passkey-schema";
 
 export const PluginConfigFieldSchema = z.lazy(() => z.object({
   key: z.string(),
@@ -791,7 +792,7 @@ export interface CreateIssueViewRequest {
   name: string;
   scope_type: "workspace" | "my" | "project";
   scope_id?: string | null;
-  scope_variant?: "assigned" | "created" | "involved" | "any" | "members" | "agents" | null;
+  scope_variant?: "assigned" | "created" | "requested" | "involved" | "any" | "members" | "agents" | null;
   visibility: "private" | "workspace";
   definition_version: number;
   query: Record<string, unknown>;
@@ -1122,6 +1123,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
   owner_only: z.boolean().optional().catch(undefined),
   effect: z.string().optional().catch(undefined),
   effect_reason: z.string().optional().catch(undefined),
+  receipt: BudgetReceiptSchema,
   decided_at: z.string().optional().catch(undefined),
   decided_by_name: z.string().optional().catch(undefined),
   on_behalf_of_name: z.string().optional().catch(undefined),
@@ -4585,7 +4587,7 @@ export const WakeupRunSchema = z.lazy(() => z.object({
 
 export const PausedWakeupSchema = z.lazy(() => z.object({
   issue_id: z.string(), id: z.string(), agent_id: z.string(),
-  paused_reason: z.enum(["max_fires", "loop", "rate"]).catch("rate"),
+  paused_reason: z.enum(["max_fires", "loop", "rate", "run_budget", "weekly_run_guard"]).catch("rate"),
 }));
 
 export const IssueWakeupSchema = z.lazy(() => z.object({
@@ -4607,7 +4609,7 @@ export const IssueWakeupSchema = z.lazy(() => z.object({
   // An unknown condition shape from a newer server reads as "no condition".
   condition: WakeupConditionSchema.nullish().catch(null),
   max_fires: z.number().int().nullish(), fire_count: z.number().int().nonnegative().optional().catch(undefined),
-  paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null),
+  paused_reason: z.enum(["max_fires", "loop", "rate", "run_budget", "weekly_run_guard"]).nullish().catch(null),
   // Set for an instance a scoped default created; absent from older servers.
   default_rule_key: z.string().nullish().catch(null),
 }));
@@ -4616,7 +4618,7 @@ export const SystemWakeupSchema = z.lazy(() => z.object({
   id: z.string().default(""), revision: z.number().int().nonnegative().default(0),
   rule: z.literal("child_done"), enabled: z.boolean(), instruction: z.string().default(""),
   default_instruction: z.string().default(""), customized: z.boolean().default(false),
-  paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null).transform((v) => v ?? null),
+  paused_reason: z.enum(["max_fires", "loop", "rate", "run_budget", "weekly_run_guard"]).nullish().catch(null).transform((v) => v ?? null),
   staged: z.boolean(), stage: z.number().int().nullable(), total: z.number().int().nonnegative(),
   remaining: z.number().int().nonnegative(), waiting: z.array(z.string()).default([]),
   target: z.object({ type: z.enum(["agent", "squad", "member"]), id: z.string(), name: z.string() }).nullable().catch(null),

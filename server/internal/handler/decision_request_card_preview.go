@@ -62,6 +62,8 @@ type DecisionRequestCardAction struct {
 	Revocable    bool   `json:"revocable"`
 	// Revoke is the record of a revoke that happened.
 	Revoke *CardRevoke `json:"revoke,omitempty"`
+	// Receipt is what an executed run-budget raise or top-up did and where its run stands.
+	Receipt *RunBudgetReceipt `json:"receipt,omitempty"`
 }
 
 // CardRevoke is who revoked an applied action, when, and why.
@@ -243,6 +245,17 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.agentCopyPreview(ctx, action, viewer)
 	case agentPauseAction, agentResumeAction:
 		return handler.agentSchedulingPreview(ctx, action, viewer)
+	case "doop.deploy_lift":
+		// No row to read: the approver signs the marker and repository themselves.
+		var params decisionaction.DoopDeployLiftParams
+		if err := json.Unmarshal(action.Params, &params); err != nil {
+			return nil, err
+		}
+		return []ActionPreviewField{
+			{"Deploy train", "held", "lifted"},
+			{"Repository", params.Repo, params.Repo},
+			{"Train marker", params.MarkerValue, params.MarkerValue},
+		}, nil
 	}
 	return nil, nil
 }
@@ -496,6 +509,7 @@ func (handler *Handler) fillCardReadback(ctx context.Context, card *DecisionRequ
 		card.EffectReason = *reason
 	}
 	card.Revocable = handler.revocableNow(ctx, action)
+	card.Receipt = runBudgetReceipt(ctx, handler.Queries, action)
 	decidedAt := action.ApprovedAt
 	switch {
 	case action.State == "expired":
