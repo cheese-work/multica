@@ -116,8 +116,8 @@ func browserLeaseAsk(slug string, issue db.Issue, agent db.Agent, profile db.Bro
 	issueLink := fmt.Sprintf("[%s](/%s/issues/%s)", issue.Title, slug, uuidToString(issue.ID))
 	scope := fmt.Sprintf("agent %s, issue %s, profile %q, class %s, up to %s", agent.Name, issueLink, profile.Name, profile.Class, duration)
 	return decisiontx.Ask{
-		ContextELI10:  fmt.Sprintf("Agent %s wants a browser that is logged in as profile %q, to work on %s. A browser with a login can read and change that account.", agent.Name, profile.Name, issueLink),
-		AgentDid:      "The agent asked Multica for a browser lease. Multica started no browser and holds the lease until you answer. Scope: " + scope + ".",
+		ContextELI10: fmt.Sprintf("Agent %s wants a browser that is logged in as profile %q, to work on %s. A browser with a login can read and change that account.", agent.Name, profile.Name, issueLink),
+		AgentDid:     "The agent asked Multica for a browser lease. Multica started no browser and holds the lease until you answer. Scope: " + scope + ".",
 		Decision: browserlease.LinkedScopeDecision(browserlease.Scope{
 			AgentID: agent.ID, IssueID: issue.ID, ProfileID: profile.ID, Class: profile.Class, Duration: browserlease.MaxLeaseDuration,
 		}, browserlease.ScopeNames{Slug: slug, Agent: agent.Name, Issue: issue.Title, Profile: profile.Name}),
