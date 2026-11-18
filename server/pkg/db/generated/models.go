@@ -2555,6 +2555,17 @@ type IssueStepAssignee struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type IssueStepWatchdogAction struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	OccurrenceKey string             `json:"occurrence_key"`
+	Action        string             `json:"action"`
+	Outcome       string             `json:"outcome"`
+	Details       []byte             `json:"details"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueSubscriber struct {
 	IssueID        pgtype.UUID        `json:"issue_id"`
 	UserType       string             `json:"user_type"`

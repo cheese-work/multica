@@ -11,6 +11,40 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimStepWatchdogAction = `-- name: ClaimStepWatchdogAction :one
+INSERT INTO issue_step_watchdog_action (id, workspace_id, issue_id, occurrence_key, action, outcome, details)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (issue_id, occurrence_key, action) DO NOTHING
+RETURNING id
+`
+
+type ClaimStepWatchdogActionParams struct {
+	ID            pgtype.UUID `json:"id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	OccurrenceKey string      `json:"occurrence_key"`
+	Action        string      `json:"action"`
+	Outcome       string      `json:"outcome"`
+	Details       []byte      `json:"details"`
+}
+
+// CHE-6116 S2. Claims (issue, occurrence, action) in the transaction of the
+// effect; no row back means another sweeper already holds the claim.
+func (q *Queries) ClaimStepWatchdogAction(ctx context.Context, arg ClaimStepWatchdogActionParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, claimStepWatchdogAction,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.OccurrenceKey,
+		arg.Action,
+		arg.Outcome,
+		arg.Details,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listStepWatchdogCandidates = `-- name: ListStepWatchdogCandidates :many
 SELECT i.id,
        COALESCE(chg.act_key, 'created:' || i.id::text)::text AS occurrence_key,

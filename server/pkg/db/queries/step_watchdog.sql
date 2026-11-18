@@ -41,3 +41,11 @@ WHERE i.assignee_type IN ('agent', 'squad')
     WHERE d.workspace_id = i.workspace_id AND d.issue_id = i.id))
 ORDER BY COALESCE(chg.act_at, i.created_at), i.id
 LIMIT @row_limit::int;
+
+-- name: ClaimStepWatchdogAction :one
+-- CHE-6116 S2. Claims (issue, occurrence, action) in the transaction of the
+-- effect; no row back means another sweeper already holds the claim.
+INSERT INTO issue_step_watchdog_action (id, workspace_id, issue_id, occurrence_key, action, outcome, details)
+VALUES (@id, @workspace_id, @issue_id, @occurrence_key, @action, @outcome, @details)
+ON CONFLICT (issue_id, occurrence_key, action) DO NOTHING
+RETURNING id;

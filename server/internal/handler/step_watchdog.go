@@ -123,3 +123,6 @@ func (h *Handler) classifyStep(ctx context.Context, c stepCandidate) (stepClass,
 	}
 	return stepClass{}, refusal
 }
+
+// sweepStepWatchdog is a stub: S2 implements the actions.
+func (h *Handler) sweepStepWatchdog(ctx context.Context, limit int32) error { return nil }
