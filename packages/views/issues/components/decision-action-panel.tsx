@@ -59,7 +59,7 @@ export function DecisionActionPanel({ actionId, issueId, issueLabel }: { actionI
                 ? t(($) => $.decision_action.panel.raise_cap, { cap: cap as number, issue: issueLabel })
                 : t(($) => $.decision_action.panel.top_up, { issue: issueLabel })}
             </p>
-            <DecisionActionApproval actionId={data.id} payloadSha256={data.payload_sha256} />
+            <DecisionActionApproval actionId={data.id} issueId={issueId} payloadSha256={data.payload_sha256} />
           </>
         ) : (
           <>
