@@ -2188,6 +2188,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
 		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable, MergeCommitSha: p.PullRequest.MergeCommitSHA,
+		BaseRef: p.PullRequest.Base.Ref, DefaultBranch: p.Repository.DefaultBranch,
 		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
