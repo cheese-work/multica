@@ -146,22 +146,19 @@ func (s *Store) IsLinked(ctx context.Context, j Job) (bool, error) {
 	return linked, nil
 }
 
-// ListLinkedStacked lists linked open PRs whose base is the head branch of
-// another open PR of the same repo, after the given PR in key order. The
-// default branch is not stored, so "non-default base" is read as "base is
-// another open PR's head": exactly the PRs that can sit above a layer. A layer
-// whose ancestor is not mirrored is left to the webhook.
+// ListLinkedStacked lists linked open PRs that may sit above another layer,
+// after the given PR in key order. The default branch is not stored, so
+// "non-default base" excludes the usual default names (main, master); any other
+// base counts, whether or not its lower PR is mirrored here. A missed webhook
+// must not hide a layer from the sweep: the executor finds the real base via
+// GitHub and no-ops when the PR is not part of a stack.
 func (s *Store) ListLinkedStacked(ctx context.Context, after Job, limit int) ([]Job, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
 		   FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 		  WHERE pr.state IN ('open', 'draft')
 		    AND pr.snapshot_base_ref IS NOT NULL
-		    AND EXISTS (
-		      SELECT 1 FROM github_pull_request below
-		       WHERE below.installation_id = pr.installation_id AND below.repo_owner = pr.repo_owner
-		         AND below.repo_name = pr.repo_name AND below.state IN ('open', 'draft')
-		         AND below.branch = pr.snapshot_base_ref AND below.pr_number <> pr.pr_number)
+		    AND pr.snapshot_base_ref NOT IN ('main', 'master')
 		    AND (pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number) > ($1, $2, $3, $4)
 		  ORDER BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
 		  LIMIT $5`,

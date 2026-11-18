@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -291,9 +292,9 @@ func TestStoreListLinkedStacked(t *testing.T) {
 	f.pr(t, ws, 2, "b", "a", "open")    // stacked on 1, linked
 	f.pr(t, ws, 3, "c", "b", "open")    // stacked on 2, linked
 	f.pr(t, ws, 4, "d", "c", "open")    // stacked on 3, not linked
-	f.pr(t, ws, 5, "e", "zz", "open")   // base has no open PR
+	f.pr(t, ws, 5, "e", "zz", "open")   // lower PR not mirrored (missed webhook): still swept
 	f.pr(t, ws, 6, "f", "e", "closed")  // closed
-	f.pr(t, ws, 7, "g", "f", "open")    // base PR 6 is closed
+	f.pr(t, ws, 7, "g", "f", "open")    // base PR 6 is closed: still swept
 	for _, n := range []int{1, 2, 3, 5, 6, 7} {
 		f.linkPR(t, ws, n)
 	}
@@ -304,15 +305,39 @@ func TestStoreListLinkedStacked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != at(2) || got[1] != at(3) {
-		t.Fatalf("stacked = %+v, want PRs 2,3", got)
+	if len(got) != 4 || got[0] != at(2) || got[1] != at(3) || got[2] != at(5) || got[3] != at(7) {
+		t.Fatalf("stacked = %+v, want PRs 2,3,5,7", got)
 	}
 	got, _ = s.ListLinkedStacked(ctx, Job{}, 1)
 	if len(got) != 1 || got[0] != at(2) {
 		t.Fatalf("limit 1 = %+v", got)
 	}
 	got, _ = s.ListLinkedStacked(ctx, at(2), 10)
-	if len(got) != 1 || got[0] != at(3) {
+	if len(got) != 3 || got[0] != at(3) || got[1] != at(5) || got[2] != at(7) {
 		t.Fatalf("after 2 = %+v", got)
+	}
+}
+
+// A linked PR whose lower PR is not mirrored (its webhook was missed) must
+// still reach the runner through the sweep.
+func TestSweepRunsLinkedPRWithUnmirroredBase(t *testing.T) {
+	f := newStoreFx(t)
+	ws := f.workspace(t, `{}`)
+	f.pr(t, ws, 5, "e", "zz", "open")
+	f.linkPR(t, ws, 5)
+	s := NewStore(f.pool)
+	ran := make(chan Job, 4)
+	d := &Dispatcher{Runner: runnerFunc(func(_ context.Context, j Job) error { ran <- j; return nil }), Links: s}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	d.Sweep(ctx)
+	select {
+	case j := <-ran:
+		if j.PR != 5 {
+			t.Fatalf("ran PR %d, want 5", j.PR)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep never ran the PR with an unmirrored base")
 	}
 }
