@@ -26,12 +26,17 @@ func holdEpisodeProject(test *testing.T, f episodeFixture, mode string) holdFixt
 	return newHoldFixtureWith(test, fixture, func(map[string]any) {})
 }
 
-// moveEpisodeToBacklog is the state of a held issue whose episode is open: the
-// issue is in backlog and the episode restores it there.
-func moveEpisodeToBacklog(test *testing.T, f episodeFixture) {
+// enterFromBacklog is a held issue whose asking run is still in flight: a person
+// moves the issue to backlog, then the asking agent moves it into the waiting
+// step. The code records backlog as the restore target (design 4.4.6); the test
+// writes no issue or decision_wait row.
+func enterFromBacklog(test *testing.T, f episodeFixture) {
 	test.Helper()
-	dbfx.Exec(test, `UPDATE issue SET status = 'backlog' WHERE id = $1`, f.issueID)
-	dbfx.Exec(test, `UPDATE decision_wait SET restore_status = 'backlog' WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID)
+	f.memberMove(test, "backlog").Want(http.StatusOK)
+	f.enter(test)
+	if got := f.onlyEpisode(test).restoreStatus; got != "backlog" {
+		test.Fatalf("restore_status = %q, want backlog recorded by the entry", got)
+	}
 }
 
 // Row 3, case (d): an open wait episode on an issue that is back in backlog.
@@ -41,16 +46,19 @@ func TestHeldIssueEpisodeDeliversNothing(test *testing.T) {
 	runner := newDeliveryRunner(test)
 	f := newEpisodeFixture(test, false)
 	hold := holdEpisodeProject(test, f, "off")
-	f.enter(test)
-	moveEpisodeToBacklog(test, f)
+	enterFromBacklog(test, f)
 	newHoldFixtureWith(test, hold, func(entry map[string]any) { entry["mode"] = "block" })
-	wantHold(test, f.issueID, true, true, intakehold.ReasonHeld)
 	answerID, _ := f.answerRequest(test, f.requestID, -time.Minute, false)
 	tasks := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, f.issueID)
 	logs := recordHoldLogs(test)
 
 	decisionPass(test, runner)
 
+	// The restore put the issue back in backlog, where the hold applies.
+	if status, _, _ := issueStatusAndAssignee(test, f.issueID); status != "backlog" {
+		test.Fatalf("status after the restore = %q, want backlog", status)
+	}
+	wantHold(test, f.issueID, true, true, intakehold.ReasonHeld)
 	closed := f.closedEpisodes(test)
 	if len(closed) != 1 || closed[0].reason != "answered" || closed[0].outcome != "skipped_ineligible" || closed[0].resumeTaskID != "" {
 		test.Fatalf("closed episodes = %+v, want one closed answered with skipped_ineligible and no resume task", closed)
@@ -77,8 +85,7 @@ func TestHeldIssueEpisodeWarnModeDispatches(test *testing.T) {
 	runner := newDeliveryRunner(test)
 	f := newEpisodeFixture(test, false)
 	holdEpisodeProject(test, f, "warn")
-	f.enter(test)
-	moveEpisodeToBacklog(test, f)
+	enterFromBacklog(test, f)
 	f.answerRequest(test, f.requestID, -time.Minute, false)
 	logs := recordHoldLogs(test)
 	decisionPass(test, runner)
