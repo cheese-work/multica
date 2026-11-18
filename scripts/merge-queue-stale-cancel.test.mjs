@@ -132,11 +132,29 @@ test("a 409 on cancel falls back to force-cancel once and the sweep goes on", as
   assert.deepEqual(f.forced(), [20]);
 });
 
-test("a 409 on force-cancel stops the sweep", async () => {
+test("a 409 on force-cancel skips that run and the next stale run is still cancelled", async () => {
+  const lines = [];
   const f = fake({ runs: [run(22), run(23)], live: [], conflict: [22], conflictForce: [22] });
-  await assert.rejects(sweep(f), /409/);
-  assert.deepEqual(f.cancelled(), [22]);
+  const n = await sweep(f, { print: (l) => lines.push(l) });
+  assert.deepEqual(f.cancelled(), [22, 23]);
   assert.deepEqual(f.forced(), [22]);
+  assert.equal(n, 1); // only run 23 was cancelled
+  assert.ok(lines.includes("skipped uncancellable run 22"));
+});
+
+test("a non-409 error on force-cancel still stops the sweep", async () => {
+  const f = fake({ runs: [run(25), run(26)], live: [], conflict: [25] });
+  const post = f.api.post;
+  f.api.post = async (p) => {
+    if (p.endsWith("/force-cancel")) {
+      await post(p);
+      throw Object.assign(new Error("HTTP 500 force"), { status: 500 });
+    }
+    return post(p);
+  };
+  await assert.rejects(sweep(f), /500/);
+  assert.deepEqual(f.cancelled(), [25]);
+  assert.deepEqual(f.forced(), [25]);
 });
 
 test("a non-409 cancel error does not force-cancel", async () => {

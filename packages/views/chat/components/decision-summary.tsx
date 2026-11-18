@@ -3,6 +3,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { budgetReceiptLines } from "../../common/budget-receipt";
 
 const ictFormat = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Bangkok",
@@ -50,6 +51,7 @@ export function effectText(decision: RequestCard, t: ReturnType<typeof useT<"cha
 // `onRevoke` is the DM's; the issue page passes none and shows the block read-only.
 export function DecisionSummary({ decision, onRevoke }: { decision: RequestCard; onRevoke?: (reason: string) => Promise<void> }) {
   const { t } = useT("chat");
+  const { t: tc } = useT("common");
   const [asking, setAsking] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -58,12 +60,16 @@ export function DecisionSummary({ decision, onRevoke }: { decision: RequestCard;
   const effect = effectOf(action);
   if (!action || !effect) return null;
 
-  const text = effectText(decision, t);
+  // The receipt belongs to an executed action that was not revoked; any other state shows its own line only.
+  const receipt = effect.kind === "applied" ? action.receipt : undefined;
+  const lines = receipt ? budgetReceiptLines(receipt, tc, decision.issue_identifier) : null;
+  const text = lines?.effect ?? effectText(decision, t);
   const by = action.decided_by_name && action.on_behalf_of_name && action.decided_by_name !== action.on_behalf_of_name
     ? t(($) => $.decision.by_for, { by: action.decided_by_name, for: action.on_behalf_of_name })
     : action.decided_by_name;
   const asked = ictOf(decision.created_at);
-  const decided = ictOf(action.decided_at);
+  const decidedAt = receipt?.applied_at ?? action.decided_at;
+  const decided = ictOf(decidedAt);
   const revoked = action.revoke;
   // The server's flag alone is not enough: Revoke belongs to an applied, not yet revoked decision.
   const canRevoke = !!onRevoke && action.revocable === true && effect.kind === "applied";
@@ -84,9 +90,11 @@ export function DecisionSummary({ decision, onRevoke }: { decision: RequestCard;
   return (
     <div data-testid="decision-summary" className="space-y-1 border-t border-surface-border px-3 py-2 text-label">
       <p data-testid="decision-request-effect" className="font-medium">{text}</p>
+      {lines?.outcome && <p data-testid="decision-request-receipt">{lines.outcome}</p>}
       <dl data-testid="decision-request-meta" className="grid grid-cols-[auto_1fr] gap-x-3 text-caption text-muted-foreground">
         {asked && (<><dt>{t(($) => $.decision.meta_asked)}</dt><dd><time dateTime={decision.created_at}>{asked}</time></dd></>)}
-        {decided && (<><dt>{t(($) => $.decision.meta_decided)}</dt><dd><time dateTime={action.decided_at}>{decided}</time></dd></>)}
+        {decided && (<><dt>{t(($) => $.decision.meta_decided)}</dt><dd><time dateTime={decidedAt}>{decided}</time></dd></>)}
+        {lines?.runs && (<><dt>{lines.runs.label}</dt><dd data-testid="decision-request-runs">{lines.runs.change}</dd></>)}
         {revoked && ictOf(revoked.at) && (<><dt>{t(($) => $.decision.meta_revoked)}</dt><dd><time dateTime={revoked.at}>{ictOf(revoked.at)}</time></dd></>)}
         {by && (<><dt>{t(($) => $.decision.meta_by)}</dt><dd>{by}</dd></>)}
         {decision.asking_agent_name && (<><dt>{t(($) => $.decision.meta_from)}</dt><dd>{decision.asking_agent_name}</dd></>)}

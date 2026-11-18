@@ -428,11 +428,11 @@ func TestRetriedAckAdvancesAQueueThatTheFirstAckLeftWaiting(t *testing.T) {
 
 // An ended H lease and a queued S2 lease share the one C00 instance. The first ack must hand the
 // instance to the S2 waiter: it advances every class the instance can serve, not only the ended
-// lease's class. H mint is deferred, so the holder is an S2 lease re-labelled H.
+// lease's class. H mint is deferred, so the holder is an S2 lease re-labelled H. A waiting H
+// lease is not tested: H is never leased to an agent (W3-12), so a queued H lease is dropped.
 func TestFirstAckAdvancesAWaiterOfAnotherClassOnTheSameInstance(t *testing.T) {
 	for _, tc := range []struct{ name, ended, waiting string }{
 		{"ended H, waiting S2", ClassH, ClassS2},
-		{"ended S2, waiting H", ClassS2, ClassH},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t, "c00-1")
