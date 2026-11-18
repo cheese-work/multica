@@ -40,8 +40,3 @@ export const workspaceKeys = {
   agents: (wsId: string) => ["harness", "agents", wsId],
 };
 export const paths = new Proxy({}, { get: () => () => "/harness" }) as Record<string, (...a: string[]) => string>;
-// SS5 (CHE-5538): agent create dialog and inspector pickers read these from the aliased barrels. Leaf re-exports keep the real values.
-export const skillListOptions = (wsId?: string) => empty("skills", wsId);
-export { VISIBILITY_DESCRIPTION, VISIBILITY_LABEL, VISIBILITY_TOOLTIP } from "../../../packages/core/agents/visibility-label";
-export { AGENT_DESCRIPTION_MAX_LENGTH } from "../../../packages/core/agents/constants";
-export const assigneeFrequencyOptions = (_wsId?: string) => empty("assignee-frequency", _wsId); // assignee-picker import (CHE-5538)
