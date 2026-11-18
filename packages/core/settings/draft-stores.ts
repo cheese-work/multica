@@ -41,7 +41,7 @@ export const useWakeupRuleDraftStore = createKeyedDraftStore<SettingsFieldsDraft
 });
 
 /**
- * Key: `workspace:<plugin name>`. Fields: action, message, and `base`, the JSON of the
+ * Key: `<workspace id>:workspace:<plugin name>`, so two workspaces with the same plugin keep separate drafts. Fields: action, message, and `base`, the JSON of the
  * policy version (policy + sha256) the edit started from, frozen so the passkey
  * signs against it and a concurrent change surfaces as a 409, never an overwrite.
  */

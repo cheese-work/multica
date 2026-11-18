@@ -57,7 +57,7 @@ export function GuardEditor({ row, onClose }: { row: GuardRow; onClose: () => vo
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
   const { data: base, isError } = useQuery(guardPolicyOptions(wsId));
-  const [draft, patchDraft, clearDraft] = usePersistedDraft(useGuardEditDraftStore, `workspace:${row.name}`, EMPTY_DRAFT);
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(useGuardEditDraftStore, `${wsId}:workspace:${row.name}`, EMPTY_DRAFT);
   const frozen = useMemo(() => parseBase(draft.base), [draft.base]);
   // Untouched fields come from the same version the edit will be signed against (the
   // frozen base, else the fetched one); the workspace row only fills in until it loads.

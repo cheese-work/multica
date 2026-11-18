@@ -15,10 +15,11 @@ vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge: vi.fn() })
 let role: "owner" | "member" = "owner";
 vi.mock("@multica/core/permissions", () => ({ useCurrentMember: () => ({ role }) }));
 let settings: Record<string, unknown> = {};
+let wsId = "ws";
 vi.mock("@multica/core/paths", () => ({
-  useCurrentWorkspace: () => ({ id: "ws", name: "Cheese", settings }),
+  useCurrentWorkspace: () => ({ id: wsId, name: "Cheese", settings }),
 }));
-vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws" }));
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => wsId }));
 vi.mock("../../common/use-viewing-timezone", () => ({ useViewingTimezone: () => "Asia/Bangkok" }));
 
 const stats = vi.mocked(api.getGuardStats);
@@ -55,6 +56,7 @@ function mount() {
 beforeEach(() => {
   useGuardEditDraftStore.setState({ drafts: {} });
   role = "owner";
+  wsId = "ws";
   settings = { guard_policy: POLICY };
   getPolicy.mockReset().mockResolvedValue({ policy: POLICY, sha256: "1111aaaa" + "0".repeat(56) });
   challenge.mockReset().mockResolvedValue({ challenge_id: "c1", options: { publicKey: {} }, expires_at: "2026-11-15T00:00:00Z" });
@@ -330,4 +332,20 @@ it("starts the form from the same fetched policy version it freezes, not from a 
   expect(input?.base_sha256).toBe(OTHER_OWNER_SHA);
   const saved = (input?.policy as { plugins: { name: string; action: string; message?: string }[] }).plugins.find((p) => p.name === "ci-wait");
   expect(saved).toMatchObject({ action: "shadow", message: "only the message" });
+});
+
+it("keeps the unsent edit of one workspace apart from another workspace's edit of the same plugin", async () => {
+  const a = await openEditor();
+  fireEvent.change(a.action, { target: { value: "pass" } });
+  a.view.unmount();
+  wsId = "ws-b";
+  const b = await openEditor("ci-wait", mount());
+  expect(b.action).toHaveValue("deny"); // not the other workspace's unsent "pass"
+  fireEvent.change(b.action, { target: { value: "shadow" } });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(Object.keys(useGuardEditDraftStore.getState().drafts)).toHaveLength(1); // ws-a's draft survives
+  b.view.unmount();
+  wsId = "ws";
+  const back = await openEditor("ci-wait", mount());
+  expect(back.action).toHaveValue("pass");
 });
