@@ -30,10 +30,11 @@ test("each shard uploads its timing JSON", () => {
 });
 
 // CHE-7000: peak RAM per shard is the number the follow-up needs; the E2E job already traces its own.
-test("each shard samples memory from setup and annotates its peak", () => {
+test("each shard samples memory from setup and logs its peak as plain text (a ::notice would count as a warning)", () => {
   assert.ok(shards.indexOf("name: Start memory sampler") > 0, "sampler step missing");
   assert.ok(shards.indexOf("name: Start memory sampler") < shards.indexOf("name: Test\n"), "sampler must start before the tests");
-  assert.match(shards, /::notice title=peak-mem::\$\{\{ matrix\.partition \}\}/);
+  assert.match(shards, /echo "peak-mem: \$\{\{ matrix\.partition \}\} /);
+  assert.doesNotMatch(shards, /::notice title=peak-mem/);
 });
 
 test("required check names are unchanged and the aggregate backend-tests gates on every shard", () => {

@@ -838,7 +838,7 @@ jobs:
 
       - name: Report peak memory
         if: ${{ !cancelled() }}
-        run: echo "::notice title=peak-mem::${{ matrix.partition }} $(sort -n "$RUNNER_TEMP/mem.log" | tail -1) MiB used of $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) MiB"
+        run: echo "peak-mem: ${{ matrix.partition }} $(sort -n "$RUNNER_TEMP/mem.log" | tail -1) MiB used of $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) MiB"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.

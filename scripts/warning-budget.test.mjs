@@ -61,6 +61,15 @@ test("expected slog WARN lines from backend-agent-tests fixtures are not warning
   assert.equal(Object.keys(warningCounts([{ name: "backend-agent-tests", log: unrelated, annotations: [] }])).length, 1)
 })
 
+test("decision-card-e2e: the Postgres image's initdb trust notice and Next's no-build-cache notice are expected, other warnings still count (CHE-7000)", () => {
+  const initdb = '2026-11-18T01:00:00.0000000Z initdb: warning: enabling "trust" authentication for local connections'
+  const nextCache = "2026-11-18T01:01:00.0000000Z  \u26a0 No build cache found. Please configure build caching for faster rebuilds."
+  const log = `${initdb}\n${nextCache}`
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log, annotations: [] }]), {})
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log: `${log}\nWarning: new diagnostic`, annotations: [] }]), { "decision-card-e2e: Warning: new diagnostic": 1 })
+  assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log, annotations: [] }])).length, 2)
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
