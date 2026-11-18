@@ -156,7 +156,7 @@ func (q *Queries) DeletePendingGitHubInstallation(ctx context.Context, installat
 }
 
 const findGitHubPullRequestByURL = `-- name: FindGitHubPullRequestByURL :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request
 WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower($2::text)
 ORDER BY pr_updated_at DESC
@@ -210,6 +210,8 @@ func (q *Queries) FindGitHubPullRequestByURL(ctx context.Context, arg FindGitHub
 		&i.ReviewID,
 		&i.ReviewAt,
 		&i.MergeCommitSha,
+		&i.BaseRef,
+		&i.DefaultBranch,
 	)
 	return i, err
 }
@@ -238,7 +240,7 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -294,12 +296,14 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.ReviewID,
 		&i.ReviewAt,
 		&i.MergeCommitSha,
+		&i.BaseRef,
+		&i.DefaultBranch,
 	)
 	return i, err
 }
 
 const getGitHubPullRequestInWorkspace = `-- name: GetGitHubPullRequestInWorkspace :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -348,6 +352,8 @@ func (q *Queries) GetGitHubPullRequestInWorkspace(ctx context.Context, arg GetGi
 		&i.ReviewID,
 		&i.ReviewAt,
 		&i.MergeCommitSha,
+		&i.BaseRef,
+		&i.DefaultBranch,
 	)
 	return i, err
 }
@@ -1196,13 +1202,14 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state, head_repo_same,
-    additions, deletions, changed_files, merge_commit_sha
+    additions, deletions, changed_files, merge_commit_sha, base_ref, default_branch
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $15, $16, $17,
     $18, $19, $9, $10,
     $11, $20, $21,
-    $12, $13, $14, $22::text
+    $12, $13, $14, $22::text,
+    $23::text, $24::text
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -1237,7 +1244,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
              AND (
-                 NOT COALESCE($23::boolean, FALSE)
+                 NOT COALESCE($25::boolean, FALSE)
                  OR (
                      EXCLUDED.closed_at IS NOT NULL
                      AND github_pull_request.closed_at IS NOT NULL
@@ -1259,7 +1266,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
              AND (
-                 NOT COALESCE($23::boolean, FALSE)
+                 NOT COALESCE($25::boolean, FALSE)
                  OR (
                      EXCLUDED.closed_at IS NOT NULL
                      AND github_pull_request.closed_at IS NOT NULL
@@ -1273,7 +1280,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
              AND (
-                 NOT COALESCE($23::boolean, FALSE)
+                 NOT COALESCE($25::boolean, FALSE)
                  OR (
                      EXCLUDED.closed_at IS NOT NULL
                      AND github_pull_request.closed_at IS NOT NULL
@@ -1286,7 +1293,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($24::boolean, FALSE) THEN NULL
+        WHEN COALESCE($26::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
@@ -1295,9 +1302,12 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     changed_files = EXCLUDED.changed_files,
     -- Only a merged delivery carries the commit; a later one without it keeps it.
     merge_commit_sha = COALESCE(NULLIF(EXCLUDED.merge_commit_sha, ''), github_pull_request.merge_commit_sha),
+    -- Kept like the commit: a delivery that does not state them never blanks them.
+    base_ref = COALESCE(NULLIF(EXCLUDED.base_ref, ''), github_pull_request.base_ref),
+    default_branch = COALESCE(NULLIF(EXCLUDED.default_branch, ''), github_pull_request.default_branch),
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -1323,6 +1333,8 @@ type UpsertGitHubPullRequestParams struct {
 	MergeableState      pgtype.Text        `json:"mergeable_state"`
 	HeadRepoSame        bool               `json:"head_repo_same"`
 	MergeCommitSha      string             `json:"merge_commit_sha"`
+	BaseRef             string             `json:"base_ref"`
+	DefaultBranch       string             `json:"default_branch"`
 	IsReopen            bool               `json:"is_reopen"`
 	ClearMergeableState pgtype.Bool        `json:"clear_mergeable_state"`
 }
@@ -1394,6 +1406,8 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		arg.MergeableState,
 		arg.HeadRepoSame,
 		arg.MergeCommitSha,
+		arg.BaseRef,
+		arg.DefaultBranch,
 		arg.IsReopen,
 		arg.ClearMergeableState,
 	)
@@ -1435,6 +1449,8 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.ReviewID,
 		&i.ReviewAt,
 		&i.MergeCommitSha,
+		&i.BaseRef,
+		&i.DefaultBranch,
 	)
 	return i, err
 }

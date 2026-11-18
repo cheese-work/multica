@@ -40,7 +40,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ### 自动关闭
 
-工作区设置 `auto_close` 决定子任务进入 `agent_accepted` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
+工作区设置 `auto_close` 决定子任务进入 `agent_accepted` 或 `merged` 步骤且已无事可做时的行为。该步骤的智能体只会把它关闭，所以服务器可以自己沿该步骤的 `agent_done` 边把它移到 `done`。
 
 | 值 | 效果 |
 | --- | --- |
@@ -55,7 +55,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 - 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
 - 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
 - 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
-- 工作流中有从 `agent_accepted` 到 `done` 的 `agent_done` 边。
+- 工作流中有从该步骤到 `done` 的 `agent_done` 边。
+- 仅 `merged`：每个关联的 PR 都已在 PASS 所指的 head 上合并到其仓库的默认分支。合并到其他分支（堆叠的一层）的 PR，或其推送未带 base 或默认分支的 PR，会保留这次运行。
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
