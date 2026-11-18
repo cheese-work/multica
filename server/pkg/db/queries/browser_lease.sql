@@ -1,8 +1,9 @@
 -- Browser lease storage (CHE-4731, W3-2). Mint, renew and queue logic arrives in W3-3.
 
 -- name: CreateBrowserProfile :one
-INSERT INTO browser_profile (workspace_id, name, class)
-VALUES ($1, $2, $3)
+-- hosts are the site hosts a login profile reaches, recorded once at creation (CHE-4782, W3-19).
+INSERT INTO browser_profile (workspace_id, name, class, hosts)
+VALUES (sqlc.arg(workspace_id), sqlc.arg(name), sqlc.arg(class), COALESCE(sqlc.narg(hosts)::text[], '{}'))
 RETURNING *;
 
 -- name: GetBrowserProfile :one
@@ -177,6 +178,7 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
   AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id))
   AND (sqlc.narg(profile_id)::uuid IS NULL OR profile_id = sqlc.narg(profile_id))
+  AND (sqlc.narg(decision_id)::uuid IS NULL OR decision_id = sqlc.narg(decision_id))
 RETURNING *;
 
 -- name: EndBrowserLeases :many
@@ -197,6 +199,7 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
   AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id))
   AND (sqlc.narg(profile_id)::uuid IS NULL OR profile_id = sqlc.narg(profile_id))
+  AND (sqlc.narg(decision_id)::uuid IS NULL OR decision_id = sqlc.narg(decision_id))
 RETURNING *;
 
 -- Class H login lease held by a member (CHE-5989, W3-3b).
@@ -210,3 +213,25 @@ LIMIT 1;
 -- name: GetBrowserLoginLeaseForUser :one
 SELECT * FROM browser_lease
 WHERE id = $1 AND workspace_id = $2 AND user_id = $3 AND class = 'H';
+
+-- name: ListExpiredDecisionBrowserLeases :many
+-- Decisions that passed their expires_at while a queued or active lease still names them
+-- (CHE-4742, W3-13). The worker revokes each pair; a revoked lease drops out of this list.
+SELECT DISTINCT lease.workspace_id, lease.decision_id
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active')
+  AND request.expires_at IS NOT NULL AND request.expires_at <= clock_timestamp()
+ORDER BY lease.workspace_id, lease.decision_id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: IsBrowserGrantIssueClosed :one
+-- A once-per-issue grant ends when its issue reaches a done or closed status (CHE-4782, W3-19).
+-- A missing issue counts as closed: the grant covers nothing.
+SELECT COALESCE((
+    SELECT i.status IN ('done', 'cancelled') OR EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed', 'cancelled')
+    )
+    FROM issue i WHERE i.id = $1 AND i.workspace_id = $2
+), true)::bool AS closed;
