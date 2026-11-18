@@ -255,7 +255,9 @@ func TestDecisionRequestAllowedAgentsMatchTheAsker(t *testing.T) {
 	catalog := func(id string) string {
 		return `[{"key":"c00_restart","tool":"docker","subcommand":["compose","restart"],"human_step":"Run it on C00.","allowed_agents":["` + id + `"]}]`
 	}
-	ask := func() map[string]any { return cannotDoAsk(fixture, agentRunOption("docker", "compose", "restart", "doop")) }
+	ask := func() map[string]any {
+		return cannotDoAsk(fixture, agentRunOption("docker", "compose", "restart", "doop"))
+	}
 
 	setCannotDo(t, "block", catalog(createHandlerTestAgent(t, "other c00 agent", []byte("[]"))))
 	res := testutil.Call(t, testHandler.RequestDecision, fixture.askRequest(t, ask())).Want(http.StatusBadRequest)
