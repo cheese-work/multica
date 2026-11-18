@@ -485,14 +485,16 @@ test("no gated job or shared quality step continues past a failure", () => {
 });
 
 // A push only checks the paths it changed, so a main run that is cancelled or
-// left pending behind a newer push skips its commit for good.
+// left pending behind a newer push skips its commit for good. Fork ci.yml has no
+// push trigger (PR and merge queue only), so the rule applies to mobile-verify.yml,
+// which still runs on push to main.
 test("path-filtered workflows never cancel or supersede a main run", () => {
-  for (const name of ["ci.yml", "mobile-verify.yml"]) {
-    const source = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
-    const block = field(source, /^concurrency:\n((?:  .+\n)+)/m);
-    assert.match(block, /^  group: .*\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}$/m, name);
-    assert.match(block, /^  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m, name);
-  }
+  const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(field(ci, /^on:\n((?:  .+\n|\s*\n)+)/m), /^  push:/m, "ci.yml has no push trigger on the fork");
+  const source = readFileSync(new URL("../.github/workflows/mobile-verify.yml", import.meta.url), "utf8");
+  const block = field(source, /^concurrency:\n((?:  .+\n)+)/m);
+  assert.match(block, /^  group: .*\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}$/m);
+  assert.match(block, /^  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m);
 });
 
 test("quality checks run on frontend-build and, when frontend-build is skipped, frontend-quality", () => {

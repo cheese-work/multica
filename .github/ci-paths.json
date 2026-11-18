@@ -72,6 +72,7 @@
     "scripts/go-test-flakes.test.mjs",
     "Makefile",
     ".github/workflows/ci.yml",
+    "config/tevo-prod1-guard.json",
     ".github/ci-paths.json",
     "scripts/ci-scope.mjs",
     "scripts/ci-scope.test.mjs"
