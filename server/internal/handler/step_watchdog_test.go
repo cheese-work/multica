@@ -18,10 +18,14 @@ type watchdogFixture struct{ agentID, projectID, workflowID string }
 func newWatchdogFixture(t *testing.T) watchdogFixture {
 	t.Helper()
 	createTestCustomStatus(t, "approved", "started")
+	createTestCustomStatus(t, "need_decision", "started")
+	createTestCustomStatus(t, "merged", "started")
 	agentID := createHandlerTestAgent(t, "watchdog-"+uuid.NewString()[:8], []byte("[]"))
 	wf := createTestWorkflowSteps(t, "Watchdog "+workflowTestSuffix(), []map[string]any{
 		{"status_key": "backlog"}, {"status_key": "todo"}, {"status_key": "in_progress"},
 		{"status_key": "approved", "handler": map[string]any{"type": "agent", "id": agentID}},
+		{"status_key": "need_decision", "handler": map[string]any{"type": "agent", "id": agentID}},
+		{"status_key": "merged", "handler": map[string]any{"type": "agent", "id": agentID}},
 		{"status_key": "in_review"}, {"status_key": "blocked"},
 	})
 	projectID := createWorkflowTestProject(t, "Watchdog project")
@@ -178,4 +182,71 @@ func TestStepWatchdogCandidateNegatives(t *testing.T) {
 			t.Errorf("class = %+v, want block_budget with ErrWeeklyRunGuard", got)
 		}
 	})
+}
+
+// TestStepWatchdogNeedDecisionOwnership: an issue in need_decision with any
+// decision request is the decision worker's (an open request is the ask; the
+// wait-episode delivery in decision_wait_delivery.go owns answered, expired,
+// withdrawn and system-cancelled ones). With no request it is a candidate.
+func TestStepWatchdogNeedDecisionOwnership(t *testing.T) {
+	f := newWatchdogFixture(t)
+	request := func(t *testing.T, issueID string, over testutil.Cols) {
+		t.Helper()
+		cols := testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "asking_agent_id": f.agentID, "human_user_id": testUserID, "chat_session_id": uuid.NewString(), "escalation_class": "reversible", "origin": "asked"}
+		for k, v := range over {
+			cols[k] = v
+		}
+		dbfx.Insert(t, "decision_request", cols)
+	}
+	cases := map[string]testutil.Cols{
+		"open":                {"status": "open"},
+		"answered":            {"status": "answered"},
+		"cancelled expired":   {"status": "cancelled", "cancel_reason": "expired"},
+		"cancelled withdrawn": {"status": "cancelled", "cancel_reason": "agent_withdrawn"},
+	}
+	for name, cols := range cases {
+		t.Run(name+" request is the decision worker's", func(t *testing.T) {
+			id := f.stalledIssue(t, 25*time.Hour, 0, testutil.Cols{"status": "need_decision"})
+			request(t, id, cols)
+			if _, ok := candidateFor(t, id); ok {
+				t.Error("is a candidate, want none")
+			}
+		})
+	}
+	t.Run("no request is a candidate", func(t *testing.T) {
+		id := f.stalledIssue(t, 25*time.Hour, 0, testutil.Cols{"status": "need_decision"})
+		if _, ok := candidateFor(t, id); !ok {
+			t.Error("need_decision with no request is not a candidate")
+		}
+	})
+}
+
+// TestStepWatchdogCandidateBehindANonHandlerBatch: older issues in a step with
+// no handler must not fill the batch and hide a candidate behind them.
+func TestStepWatchdogCandidateBehindANonHandlerBatch(t *testing.T) {
+	f := newWatchdogFixture(t)
+	for _, age := range []time.Duration{30 * time.Hour, 29 * time.Hour, 28 * time.Hour} {
+		f.stalledIssue(t, age, 0, testutil.Cols{"status": "in_progress"}) // no handler in this workflow
+	}
+	want := f.stalledIssue(t, 25*time.Hour, 0)
+	cands, err := testHandler.stepWatchdogCandidates(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cands {
+		if uuidToString(c.Issue.ID) == want {
+			return
+		}
+	}
+	t.Errorf("candidate behind a full non-handler batch was hidden; got %d candidates", len(cands))
+}
+
+// TestStepWatchdogMergedIsAHandlerStep: plan r2 lists merged (Code Accepted) as a
+// handler step the watchdog covers.
+func TestStepWatchdogMergedIsAHandlerStep(t *testing.T) {
+	f := newWatchdogFixture(t)
+	id := f.stalledIssue(t, 25*time.Hour, 0, testutil.Cols{"status": "merged"})
+	if _, ok := candidateFor(t, id); !ok {
+		t.Error("an issue stalled in merged is not a candidate")
+	}
 }

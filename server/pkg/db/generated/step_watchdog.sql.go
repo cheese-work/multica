@@ -25,11 +25,12 @@ LEFT JOIN LATERAL (
 ) chg ON true
 WHERE i.assignee_type IN ('agent', 'squad')
   AND (i.project_id IS NOT NULL OR i.workflow_id IS NOT NULL)
-  AND i.status NOT IN ('backlog', 'merged', 'done', 'cancelled')
+  AND i.status NOT IN ('backlog', 'done', 'cancelled')
   AND NOT EXISTS (
     SELECT 1 FROM issue_status s
     WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed'))
   AND COALESCE(chg.act_at, i.created_at) < $1::timestamptz
+  AND (COALESCE(chg.act_at, i.created_at), i.id) > ($2::timestamptz, $3::uuid)
   AND NOT EXISTS (
     SELECT 1 FROM agent_task_queue t
     WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred'))
@@ -39,13 +40,15 @@ WHERE i.assignee_type IN ('agent', 'squad')
     WHERE p.id = i.parent_issue_id AND p.metadata->>'delivery_stop' = 'stopped')
   AND NOT (i.status = 'need_decision' AND EXISTS (
     SELECT 1 FROM decision_request d
-    WHERE d.workspace_id = i.workspace_id AND d.issue_id = i.id AND d.status = 'open'))
+    WHERE d.workspace_id = i.workspace_id AND d.issue_id = i.id))
 ORDER BY COALESCE(chg.act_at, i.created_at), i.id
-LIMIT $2::int
+LIMIT $4::int
 `
 
 type ListStepWatchdogCandidatesParams struct {
 	OlderThan pgtype.Timestamptz `json:"older_than"`
+	AfterAt   pgtype.Timestamptz `json:"after_at"`
+	AfterID   pgtype.UUID        `json:"after_id"`
 	RowLimit  int32              `json:"row_limit"`
 }
 
@@ -60,9 +63,19 @@ type ListStepWatchdogCandidatesRow struct {
 // updated_at: a comment must not reset the clock. occurrence_key names that
 // status occurrence (the activity row id, or created:<issue id> when the issue
 // has no status history), so it is never null. Whether the step has a handler
-// is decided in Go, from the workflow.
+// is decided in Go, from the workflow, so the caller pages with the (after_at,
+// after_id) keyset until it has enough candidates. A need_decision issue with
+// any decision request is the decision worker's: an open request is the ask, and
+// the wait-episode delivery owns answered, expired, withdrawn and cancelled ones.
+// ponytail: "any request" ignores age, so a stale request from an earlier
+// need_decision occurrence also hides the issue; scope it to the occurrence if seen.
 func (q *Queries) ListStepWatchdogCandidates(ctx context.Context, arg ListStepWatchdogCandidatesParams) ([]ListStepWatchdogCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listStepWatchdogCandidates, arg.OlderThan, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listStepWatchdogCandidates,
+		arg.OlderThan,
+		arg.AfterAt,
+		arg.AfterID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
