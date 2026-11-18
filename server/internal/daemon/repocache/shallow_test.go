@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func isShallow(t *testing.T, repo string) bool {
@@ -83,42 +85,82 @@ func TestShallowFetchCannotShallowGuardedCache(t *testing.T) {
 	}
 }
 
-// `git clone --local` drops its hardlinks when the source holds a `shallow`
-// entry, which would copy the whole cache for every isolated checkout. The
-// guard is lifted around that clone and back in place afterwards.
-func TestIsolatedLocalCloneKeepsHardlinksAndRestoresGuard(t *testing.T) {
+// An isolated checkout seeds from the cache while an external Git process,
+// which takes no repo lock, may fetch shallow into it. The guard must stay in
+// place for the whole seeding, and objects must still be hardlinked (local) or
+// borrowed (shared): `git clone` would drop both for a source holding a
+// `shallow` entry (CHE-7318).
+func TestIsolatedSeedingKeepsShallowGuardInPlace(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("local clones copy objects on Windows")
 	}
-	source := createFilterableTestRepo(t)
-	cache := New(t.TempDir(), nil)
-	barePath := seedBloblessCache(t, cache, "ws", source)
-	if err := gitFetch(barePath); err != nil {
-		t.Fatalf("gitFetch: %v", err)
-	}
-	base, err := resolveCommit(barePath, "HEAD")
-	if err != nil {
-		t.Fatalf("resolve HEAD: %v", err)
-	}
+	for _, shared := range []bool{false, true} {
+		name := map[bool]string{false: "local", true: "shared"}[shared]
+		t.Run(name, func(t *testing.T) {
+			source := createFilterableTestRepo(t)
+			cache := New(t.TempDir(), nil)
+			barePath := seedBloblessCache(t, cache, "ws", source)
+			if err := gitFetch(barePath); err != nil {
+				t.Fatalf("gitFetch: %v", err)
+			}
+			base, err := resolveCommit(barePath, "HEAD")
+			if err != nil {
+				t.Fatalf("resolve HEAD: %v", err)
+			}
 
-	dest := filepath.Join(t.TempDir(), "co")
-	if _, err := createIsolatedCheckoutContext(context.Background(), barePath, source, dest, "agent/t", "HEAD", base, "", false, false); err != nil {
-		t.Fatalf("createIsolatedCheckout: %v", err)
-	}
+			guard := filepath.Join(barePath, "shallow")
+			stop := make(chan struct{})
+			done := make(chan struct{})
+			var missing atomic.Bool
+			go func() {
+				defer close(done)
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if fi, err := os.Stat(guard); err != nil || !fi.IsDir() {
+						missing.Store(true)
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}()
 
-	if fi, err := os.Stat(filepath.Join(barePath, "shallow")); err != nil || !fi.IsDir() {
-		t.Fatalf("shallow guard not restored after the clone: %v", err)
-	}
-	linked := 0
-	packs, _ := filepath.Glob(filepath.Join(barePath, "objects", "pack", "*.pack"))
-	for _, pk := range packs {
-		a, errA := os.Stat(pk)
-		b, errB := os.Stat(filepath.Join(dest, ".git", "objects", "pack", filepath.Base(pk)))
-		if errA == nil && errB == nil && os.SameFile(a, b) {
-			linked++
-		}
-	}
-	if len(packs) == 0 || linked == 0 {
-		t.Fatalf("clone did not hardlink the cache's packs (%d packs, %d linked)", len(packs), linked)
+			dest := filepath.Join(t.TempDir(), "co")
+			_, err = createIsolatedCheckoutContext(context.Background(), barePath, source, dest, "agent/t", "HEAD", base, "", shared, false)
+			close(stop)
+			<-done
+			if err != nil {
+				t.Fatalf("createIsolatedCheckout: %v", err)
+			}
+			if missing.Load() {
+				t.Fatal("shallow guard was absent while the isolated checkout was seeded")
+			}
+			// An unguarded shallow fetch right after must still fail.
+			_, _ = runGitCombinedOutput("-C", barePath, "fetch", "--depth=1", "origin", "HEAD")
+			if isShallow(t, barePath) {
+				t.Fatal("cache shallow after seeding an isolated checkout")
+			}
+
+			if shared {
+				if !hasAlternates(dest) {
+					t.Fatal("shared checkout does not borrow the cache's objects")
+				}
+				return
+			}
+			linked := 0
+			packs, _ := filepath.Glob(filepath.Join(barePath, "objects", "pack", "*.pack"))
+			for _, pk := range packs {
+				a, errA := os.Stat(pk)
+				b, errB := os.Stat(filepath.Join(dest, ".git", "objects", "pack", filepath.Base(pk)))
+				if errA == nil && errB == nil && os.SameFile(a, b) {
+					linked++
+				}
+			}
+			if len(packs) == 0 || linked == 0 {
+				t.Fatalf("local checkout did not hardlink the cache's packs (%d packs, %d linked)", len(packs), linked)
+			}
+		})
 	}
 }
