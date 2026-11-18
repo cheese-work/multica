@@ -394,6 +394,18 @@ Chaque option d'une carte `decision` peut dire qui agit une fois l'option choisi
 
 Le paramètre d'espace de travail `decision_card_lint_mode` (`off`, `warn`, `block` ; `off` par défaut) vérifie la formulation d'une carte à options. En `warn`, la carte est créée et la réponse porte un conseil par constat. En `block`, le serveur répond `400` avec un code de motif et le chemin du champ, et ne crée aucune carte. Les codes sont : `weak_cons`, chaque inconvénient d'une option se limite à votre temps (« takes 1 minute of your time ») ou à une vérification ou revue de plus ; `option_markdown`, un tableau, un titre, une image, du HTML, un bloc de code ou un bloc Mermaid dans `label`, `what_happens`, `pros` ou `cons` (gras, italique, code en ligne, listes et liens sont permis) ; `option_leak`, un texte d'option qui désigne la recommandation (« recommended », « (rec) », ou du gras sur un seul libellé) ; `default_leak`, pour la classe `spend`, `deploy`, `publish`, `irreversible` ou `product_direction`, un `default_if_no_reply` qui nomme une option (écrivez « No action until you pick. »). Les formulations en anglais et en vietnamien sont reconnues. Les cartes d'action et les cartes de sujet de dérogation ne sont pas vérifiées. Lorsque le commentaire d'une carte sur l'issue ne mentionne pas la personne interrogée, le serveur ajoute la mention et journalise `mention_missing`; ce n'est jamais un refus.
 
+## Agents en arrière-plan
+
+Chaque tâche d’arrière-plan (`dm_title`, `quick_actions`, `compact`, `routing`) s’exécute comme une tâche d’un agent principal, puis d’un agent de secours. Affichez ou définissez la valeur par défaut de l’espace de travail, ou votre propre chaîne :
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # retour à la valeur par défaut de l’espace de travail
+```
+
+`--agent` et `--fallback` acceptent un identifiant ou un nom d’agent ; `none` efface le champ. `multica me` couvre `dm_title`, `quick_actions` et `compact` ; `routing` est réservé à l’espace de travail. Écrire dans l’espace de travail exige un propriétaire ou un administrateur, et les deux commandes refusent les jetons de tâche. Pour le comportement sans agent et les échéances, voir [Agents en arrière-plan](/background-agents).
+
 ## Vue d'ensemble des commandes
 
 | Commande | Rôle |
