@@ -45,7 +45,7 @@ func validateAskGuardSetting(value any) error {
 	if !ok {
 		return nil
 	}
-	for _, key := range []string{askguard.SettingKey, askguard.ReversibleSettingKey, askguard.OwnerScriptSettingKey, askguard.WaitingAudienceSettingKey} {
+	for _, key := range []string{askguard.SettingKey, askguard.ReversibleSettingKey, askguard.OwnerScriptSettingKey, askguard.WaitingAudienceSettingKey, askguard.WaitingOnSettingKey} {
 		v, present := config[key]
 		if !present {
 			continue
