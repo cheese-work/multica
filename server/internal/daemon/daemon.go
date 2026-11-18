@@ -9573,6 +9573,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	outputObserver := &taskOutputObserver{}
 	ctx = withTaskOutputObserver(ctx, outputObserver)
 	ctx = withTaskPREvents(ctx, negotiation.PREvent)
+	ctx = withTaskWakeupItems(ctx, negotiation.PREventWakeups)
 	// STOE-30: mirror the agent's cumulative token counters into task_usage
 	// while the run is live, so a long run's cost moves on the board instead of
 	// appearing only after it ends. The backend calls OnUsage from its protocol

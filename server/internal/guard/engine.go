@@ -21,6 +21,9 @@ type Engine struct {
 	Log    io.Writer
 	Out    io.Writer
 	Err    io.Writer
+	// Env reads an environment variable. nil reads none: only `guard check-pr`
+	// sets it, so no other call can take the merge-queue Git path.
+	Env func(string) string
 
 	eff  *Policy // Policy resolved for the current call
 	path string  // the call's directory inside its repository
@@ -122,18 +125,24 @@ type logRecord struct {
 // Exec runs tool with args under the policy and returns the exit code the
 // caller should use.
 func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, error) {
-	// Only git and gh act on a repository; the lockdown and the layer lookup
-	// below are about repositories, so sleep (plugin 2) skips both.
+	// Lockdown covers repository calls; sleep (plugin 2) is independent.
 	repoCall := tool != "sleep"
 	if repoCall && e.Policy.lockdown {
 		fmt.Fprintf(e.Err, "guard: refused: %s\n", lockdownMessage)
 		return 2, nil
 	}
 	args = e.expandAlias(ctx, tool, args)
+	if err := e.repositoryAccess(ctx, tool, args); err != nil {
+		d := refuse(2, "repository allowlist: %s", err)
+		fmt.Fprintln(e.Err, "guard: "+d.line)
+		e.log(&Plugin{Name: "repository-allowlist"}, tool, args, d)
+		return 2, nil
+	}
 	t := Target{}
-	// ponytail: one extra gh repo view and git call per guarded call when the
-	// policy has layers; cache per run if that shows up.
-	if repoCall && len(e.Policy.Layers) > 0 {
+	// Layer targeting uses gh selectors and the current clone. Git's workspace
+	// allowlist was already checked against its effective push destinations;
+	// commands such as clone/init need no existing GitHub repository.
+	if tool == "gh" && len(e.Policy.Layers) > 0 {
 		var ok bool
 		var why string
 		if t, ok, why = e.target(ctx, args); !ok {
