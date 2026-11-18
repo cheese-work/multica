@@ -1038,7 +1038,8 @@
     "more_runs_few": "Показать ещё {{count}}",
     "more_runs_many": "Показать ещё {{count}}",
     "queued_count_few": "В очереди: {{count}}",
-    "queued_count_many": "В очереди: {{count}}"
+    "queued_count_many": "В очереди: {{count}}",
+    "status_deferred": "Deferred"
   },
   "runs_timeline": {
     "title": "Запуски",
@@ -1365,7 +1366,8 @@
     "variant_my_any": "Любое отношение",
     "variant_my_assigned": "Назначено мне",
     "variant_my_created": "Создано мной",
-    "variant_my_involved": "Работа моих агентов"
+    "variant_my_involved": "Работа моих агентов",
+    "variant_my_requested": "Requested by me"
   },
   "plugins": {
     "panels": "Плагины",
@@ -1716,7 +1718,9 @@
       "max_fires": "Остановлено после {{count}} запусков",
       "loop": "Приостановлено: правило будило другие правила, которые будили его снова",
       "rate": "Приостановлено: более 12 запусков за час",
-      "hint": "Включите снова, чтобы возобновить; счётчик начнётся заново."
+      "hint": "Включите снова, чтобы возобновить; счётчик начнётся заново.",
+      "run_budget": "Paused: the issue used its run budget; a raise turns it back on",
+      "weekly_run_guard": "Paused: the issue hit the weekly run limit; it turns back on when a new PR event arrives or the count falls"
     },
     "detail": {
       "fires_one": "Сработало {{count}} раз",
@@ -1741,7 +1745,9 @@
     "paused_reason": {
       "max_fires": "достигнут лимит в {{count}} запусков",
       "loop": "правило будило другие правила, которые будили его снова",
-      "rate": "более 12 запусков за час"
+      "rate": "более 12 запусков за час",
+      "run_budget": "the issue used its run budget",
+      "weekly_run_guard": "the issue hit the weekly run limit"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
     "paused_banner_anonymous": "Wakeups paused at {{time}}",

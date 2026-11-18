@@ -946,7 +946,8 @@
     "strip_no_usage": "Sin uso registrado",
     "jump_to_run": "Ir a la ejecución",
     "queued_count_one": "{{count}} en cola",
-    "queued_count_other": "{{count}} en cola"
+    "queued_count_other": "{{count}} en cola",
+    "status_deferred": "Deferred"
   },
   "terminate_dialog": {
     "title": "¿Detener esta ejecución?",
@@ -1162,7 +1163,8 @@
     "variant_my_any": "Cualquier relación",
     "variant_my_assigned": "Asignadas a mí",
     "variant_my_created": "Creadas por mí",
-    "variant_my_involved": "Trabajo de mis agentes"
+    "variant_my_involved": "Trabajo de mis agentes",
+    "variant_my_requested": "Requested by me"
   },
   "plugins": {
     "panels": "Plugins",
@@ -1507,7 +1509,9 @@
       "max_fires": "Detenida tras alcanzar {{count}} ejecuciones",
       "loop": "Pausada: seguía activando reglas que la volvían a activar",
       "rate": "Pausada: más de 12 ejecuciones en una hora",
-      "hint": "Vuelve a activarla para reanudar; el contador se reinicia."
+      "hint": "Vuelve a activarla para reanudar; el contador se reinicia.",
+      "run_budget": "Paused: the issue used its run budget; a raise turns it back on",
+      "weekly_run_guard": "Paused: the issue hit the weekly run limit; it turns back on when a new PR event arrives or the count falls"
     },
     "detail": {
       "fires_one": "Activada {{count}} vez",
@@ -1530,7 +1534,9 @@
     "paused_reason": {
       "max_fires": "alcanzó su límite de {{count}} ejecuciones",
       "loop": "seguía activando reglas que la volvían a activar",
-      "rate": "más de 12 ejecuciones en una hora"
+      "rate": "más de 12 ejecuciones en una hora",
+      "run_budget": "the issue used its run budget",
+      "weekly_run_guard": "the issue hit the weekly run limit"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
     "paused_banner_anonymous": "Wakeups paused at {{time}}",

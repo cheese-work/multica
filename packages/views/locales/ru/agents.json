@@ -1210,5 +1210,22 @@
     "paused_by_note": "Paused by {{name}} · {{time}}",
     "paused_at_note": "Paused {{time}}",
     "paused_reason_note": "Reason: {{reason}}"
+  },
+  "background_use": {
+    "title": "Background agent",
+    "intro": "This agent does small jobs behind the scenes. It is not a chat agent for these jobs.",
+    "scope_workspace": "Workspace",
+    "scope_personal": "Personal · yours",
+    "link_workspace": "Workspace → Background agents",
+    "link_personal": "Personal → Background agents",
+    "member_note": "Workspace jobs are set by owners and admins. You see your own personal picks, not other people's.",
+    "jobs": {
+      "dm_title": "DM title",
+      "quick_actions": "Quick actions",
+      "compact": "Compact",
+      "routing": "Routing"
+    },
+    "access_note": "This agent is a workspace background agent. Narrowing access to \"Only me\" or \"Specific people\" makes this agent ineligible for its workspace background jobs. Those jobs then run their fallback agent, or the no-agent path if none is set.",
+    "access_note_readonly": "Only the agent's owner can change access. Narrowing it to \"Only me\" or \"Specific people\" would make this agent ineligible for its workspace background jobs. Those jobs then run their fallback agent, or the no-agent path if none is set."
   }
 }
