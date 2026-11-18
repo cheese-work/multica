@@ -176,3 +176,25 @@ func MentionedMembers(content string) []string {
 	}
 	return ids
 }
+
+// OwnerScriptSettingKey holds the mode of the owner-script guard (CHE-7138).
+const OwnerScriptSettingKey = "owner_script_guard"
+
+// OwnerScriptModeFromSettings reads OwnerScriptSettingKey. Unlike the other ask
+// guards a missing key is warn, not off: the guard records and never refuses
+// until a person sets block.
+func OwnerScriptModeFromSettings(raw []byte) (Mode, error) {
+	if len(raw) == 0 {
+		return ModeWarn, nil
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return "", fmt.Errorf("workspace settings: %w", err)
+	}
+	v, ok := settings[OwnerScriptSettingKey]
+	if !ok {
+		return ModeWarn, nil
+	}
+	s, _ := v.(string)
+	return ParseMode(s)
+}

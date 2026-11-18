@@ -31,6 +31,7 @@ type Service struct {
 	Decisions Decisions
 	Registry  Registry
 	Signer    Signer
+	Class3    *Class3Deny
 	Now       func() time.Time
 }
 
@@ -56,19 +57,32 @@ func (s *Service) now() time.Time {
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 func isHookDenial(err error) bool {
-	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid)
+	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrClassNotMintable) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid) ||
+		errors.Is(err, ErrClass3Denied) || errors.Is(err, ErrClass3Unchecked)
 }
 
-// check runs the user gate, then the decision for a class that needs one (S0 asks no one), and
-// returns when the lease must end at the latest.
-func (s *Service) check(ctx context.Context, subj Subject) (time.Time, error) {
+// check applies the class rules, runs the user gate, the class-3 check for a login profile, then the
+// decision for a class that needs one (S0 asks no one), and returns when the lease must end at the
+// latest. Mint, renew and the queued grant all come through here, so a profile moved to a class that
+// is not leased (H, S1) ends or drops its leases. leaseClass is the class the lease was granted
+// under: a profile that changed class since (S0 to S2 or back) would otherwise keep the old host,
+// token and decision rule, so any change ends or drops the lease.
+func (s *Service) check(ctx context.Context, subj Subject, leaseClass string) (time.Time, error) {
 	now := s.now()
 	limit := now.Add(MaxLeaseDuration)
+	if !mintable(subj.Profile.Class) || subj.Profile.Class != leaseClass {
+		return limit, ErrClassNotMintable
+	}
 	if err := s.Gate.Check(ctx, subj); err != nil {
 		return limit, err
 	}
-	if subj.Profile.Class == ClassS0 {
+	if !needsDecision(subj.Profile.Class) {
 		return limit, nil
+	}
+	// Class 3 is forbidden to every agent lease: no decision can allow it, so it is checked
+	// before one is asked for, and again at every renew and queued grant.
+	if err := s.Class3.checkClass3(subj.Profile.Hosts); err != nil {
+		return limit, err
 	}
 	exp, err := s.Decisions.Validate(ctx, subj)
 	if err != nil {
@@ -123,15 +137,14 @@ func (s *Service) Mint(ctx context.Context, r MintRequest) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// H is Cheese's login lease through the viewer (member auth); S1 is deferred and has no row.
-	if profile.Class != ClassS0 && profile.Class != ClassS2 {
+	if !mintable(profile.Class) {
 		return Result{}, ErrClassNotMintable
 	}
 	subj := Subject{
 		WorkspaceID: r.WorkspaceID, UserID: r.UserID, AgentID: r.AgentID, IssueID: r.IssueID,
 		TaskID: r.TaskID, Profile: profile, DecisionID: r.DecisionID,
 	}
-	limit, err := s.check(ctx, subj)
+	limit, err := s.check(ctx, subj, profile.Class)
 	if err != nil {
 		return Result{}, err
 	}
@@ -298,7 +311,7 @@ func (s *Service) Renew(ctx context.Context, ws, task, lease pgtype.UUID) (Resul
 	if err != nil {
 		return res, err
 	}
-	limit, err := s.check(ctx, subj)
+	limit, err := s.check(ctx, subj, l.Class)
 	if err != nil {
 		if isHookDenial(err) {
 			if endErr := s.endActive(ctx, l, endRevalidation); endErr != nil {
@@ -396,7 +409,7 @@ func (s *Service) advanceOne(ctx context.Context, ws pgtype.UUID, class string) 
 		if err != nil {
 			return err
 		}
-		limit, err := s.check(ctx, subj)
+		limit, err := s.check(ctx, subj, head.Class)
 		if isHookDenial(err) {
 			// The lease never held an instance and has no epoch, so it cannot be 'ended'.
 			_, err = q.DeleteQueuedBrowserLease(ctx, db.DeleteQueuedBrowserLeaseParams{ID: head.ID, WorkspaceID: ws})

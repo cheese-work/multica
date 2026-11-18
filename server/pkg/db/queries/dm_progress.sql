@@ -169,6 +169,8 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.issue_id = $1 AND p.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.root_issue_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2;
 
@@ -183,11 +185,13 @@ WITH gone AS (
     DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
 ), gone_deliveries AS (
     DELETE FROM dm_progress_delivery AS d WHERE d.lineage_id = $1 AND d.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.lineage_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps all six tables here.
+-- No FKs (repo rule): workspace delete sweeps all seven tables here.
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
 ), gone_events AS (
@@ -198,6 +202,8 @@ WITH gone_follows AS (
     DELETE FROM dm_progress_delivery AS d WHERE d.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;
 
@@ -244,7 +250,9 @@ SELECT g.issue_id,
                      WHEN i.id IS NULL THEN 'issue_gone'
                      WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
        COALESCE(i.status, '')::text AS status,
-       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status
+       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status,
+       (CASE WHEN i.status = 'cancelled' THEN i.duplicate_of_issue_id END)::uuid AS duplicate_of_issue_id,
+       f.reporting_root_id::uuid AS reporting_root_id
 FROM (
     SELECT p.issue_id,
            min(p.created_at) AS first_at,
@@ -294,3 +302,29 @@ UPDATE dm_progress_follow
 SET last_rendered_status = $3,
     last_immediate_at = CASE WHEN sqlc.arg('immediate')::boolean THEN sqlc.arg('at')::timestamptz ELSE last_immediate_at END
 WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active';
+
+-- name: CountDMProgressDescendantsByStatus :many
+-- Tracked descendants of a reporting root in one lane, grouped by status, so the
+-- epic-done predicate classifies each distinct status once however many issues
+-- the tree holds.
+SELECT i.status, count(*) AS total
+FROM dm_progress_follow f
+JOIN issue i ON i.id = f.issue_id
+WHERE f.lineage_id = $1 AND f.reporting_root_id = $2 AND f.state = 'active' AND f.issue_id <> $2
+GROUP BY i.status;
+
+-- name: EnsureDMProgressEpicEpisode :one
+-- The episode row of (lane, root), created at revision 1 on first use. The lane
+-- lock held by the caller serializes the read-then-fire that follows.
+INSERT INTO dm_progress_epic_episode (lineage_id, root_issue_id, workspace_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (lineage_id, root_issue_id) DO UPDATE SET workspace_id = dm_progress_epic_episode.workspace_id
+RETURNING *;
+
+-- name: FireDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET fired_at = now()
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NULL;
+
+-- name: InvalidateDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET revision = revision + 1, fired_at = NULL
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NOT NULL;

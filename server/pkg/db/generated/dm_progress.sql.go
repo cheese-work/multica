@@ -48,6 +48,47 @@ func (q *Queries) CountDMProgressDescendants(ctx context.Context, arg CountDMPro
 	return count, err
 }
 
+const countDMProgressDescendantsByStatus = `-- name: CountDMProgressDescendantsByStatus :many
+SELECT i.status, count(*) AS total
+FROM dm_progress_follow f
+JOIN issue i ON i.id = f.issue_id
+WHERE f.lineage_id = $1 AND f.reporting_root_id = $2 AND f.state = 'active' AND f.issue_id <> $2
+GROUP BY i.status
+`
+
+type CountDMProgressDescendantsByStatusParams struct {
+	LineageID       pgtype.UUID `json:"lineage_id"`
+	ReportingRootID pgtype.UUID `json:"reporting_root_id"`
+}
+
+type CountDMProgressDescendantsByStatusRow struct {
+	Status string `json:"status"`
+	Total  int64  `json:"total"`
+}
+
+// Tracked descendants of a reporting root in one lane, grouped by status, so the
+// epic-done predicate classifies each distinct status once however many issues
+// the tree holds.
+func (q *Queries) CountDMProgressDescendantsByStatus(ctx context.Context, arg CountDMProgressDescendantsByStatusParams) ([]CountDMProgressDescendantsByStatusRow, error) {
+	rows, err := q.db.Query(ctx, countDMProgressDescendantsByStatus, arg.LineageID, arg.ReportingRootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountDMProgressDescendantsByStatusRow{}
+	for rows.Next() {
+		var i CountDMProgressDescendantsByStatusRow
+		if err := rows.Scan(&i.Status, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteDMProgressByWorkspace = `-- name: DeleteDMProgressByWorkspace :exec
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
@@ -59,11 +100,13 @@ WITH gone_follows AS (
     DELETE FROM dm_progress_delivery AS d WHERE d.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1
 `
 
-// No FKs (repo rule): workspace delete sweeps all six tables here.
+// No FKs (repo rule): workspace delete sweeps all seven tables here.
 func (q *Queries) DeleteDMProgressByWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressByWorkspace, workspaceID)
 	return err
@@ -74,6 +117,8 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.issue_id = $1 AND p.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.root_issue_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2
 `
@@ -98,6 +143,8 @@ WITH gone AS (
     DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
 ), gone_deliveries AS (
     DELETE FROM dm_progress_delivery AS d WHERE d.lineage_id = $1 AND d.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.lineage_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2
 `
@@ -193,6 +240,34 @@ func (q *Queries) DropInheritedDMProgressReason(ctx context.Context, arg DropInh
 	return items, nil
 }
 
+const ensureDMProgressEpicEpisode = `-- name: EnsureDMProgressEpicEpisode :one
+INSERT INTO dm_progress_epic_episode (lineage_id, root_issue_id, workspace_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (lineage_id, root_issue_id) DO UPDATE SET workspace_id = dm_progress_epic_episode.workspace_id
+RETURNING lineage_id, root_issue_id, workspace_id, revision, fired_at
+`
+
+type EnsureDMProgressEpicEpisodeParams struct {
+	LineageID   pgtype.UUID `json:"lineage_id"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The episode row of (lane, root), created at revision 1 on first use. The lane
+// lock held by the caller serializes the read-then-fire that follows.
+func (q *Queries) EnsureDMProgressEpicEpisode(ctx context.Context, arg EnsureDMProgressEpicEpisodeParams) (DmProgressEpicEpisode, error) {
+	row := q.db.QueryRow(ctx, ensureDMProgressEpicEpisode, arg.LineageID, arg.RootIssueID, arg.WorkspaceID)
+	var i DmProgressEpicEpisode
+	err := row.Scan(
+		&i.LineageID,
+		&i.RootIssueID,
+		&i.WorkspaceID,
+		&i.Revision,
+		&i.FiredAt,
+	)
+	return i, err
+}
+
 const ensureDMProgressLane = `-- name: EnsureDMProgressLane :exec
 INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id)
 VALUES ($1, $2, $3)
@@ -208,6 +283,24 @@ type EnsureDMProgressLaneParams struct {
 func (q *Queries) EnsureDMProgressLane(ctx context.Context, arg EnsureDMProgressLaneParams) error {
 	_, err := q.db.Exec(ctx, ensureDMProgressLane, arg.LineageID, arg.WorkspaceID, arg.OwnerUserID)
 	return err
+}
+
+const fireDMProgressEpicEpisode = `-- name: FireDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET fired_at = now()
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NULL
+`
+
+type FireDMProgressEpicEpisodeParams struct {
+	LineageID   pgtype.UUID `json:"lineage_id"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+}
+
+func (q *Queries) FireDMProgressEpicEpisode(ctx context.Context, arg FireDMProgressEpicEpisodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, fireDMProgressEpicEpisode, arg.LineageID, arg.RootIssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getActiveDMProgressFollow = `-- name: GetActiveDMProgressFollow :one
@@ -482,6 +575,24 @@ func (q *Queries) InsertDMProgressMovedUnderEvents(ctx context.Context, arg Inse
 	return err
 }
 
+const invalidateDMProgressEpicEpisode = `-- name: InvalidateDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET revision = revision + 1, fired_at = NULL
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NOT NULL
+`
+
+type InvalidateDMProgressEpicEpisodeParams struct {
+	LineageID   pgtype.UUID `json:"lineage_id"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+}
+
+func (q *Queries) InvalidateDMProgressEpicEpisode(ctx context.Context, arg InvalidateDMProgressEpicEpisodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, invalidateDMProgressEpicEpisode, arg.LineageID, arg.RootIssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const issueParentChainLoops = `-- name: IssueParentChainLoops :one
 WITH RECURSIVE walk AS (
     SELECT i.id, i.parent_issue_id FROM issue i WHERE i.id = $1
@@ -636,7 +747,9 @@ SELECT g.issue_id,
                      WHEN i.id IS NULL THEN 'issue_gone'
                      WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
        COALESCE(i.status, '')::text AS status,
-       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status
+       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status,
+       (CASE WHEN i.status = 'cancelled' THEN i.duplicate_of_issue_id END)::uuid AS duplicate_of_issue_id,
+       f.reporting_root_id::uuid AS reporting_root_id
 FROM (
     SELECT p.issue_id,
            min(p.created_at) AS first_at,
@@ -668,6 +781,8 @@ type ListDMProgressLaneIssuesRow struct {
 	DenyReason         string             `json:"deny_reason"`
 	Status             string             `json:"status"`
 	LastRenderedStatus string             `json:"last_rendered_status"`
+	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 }
 
 // One row per distinct issue with pending rows in a lane, oldest first, in one
@@ -694,6 +809,8 @@ func (q *Queries) ListDMProgressLaneIssues(ctx context.Context, arg ListDMProgre
 			&i.DenyReason,
 			&i.Status,
 			&i.LastRenderedStatus,
+			&i.DuplicateOfIssueID,
+			&i.ReportingRootID,
 		); err != nil {
 			return nil, err
 		}

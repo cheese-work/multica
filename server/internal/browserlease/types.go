@@ -25,6 +25,14 @@ const (
 	HostC00 = "c00"
 )
 
+// mintable is the class rule for an agent lease (W3-12, D3 = A). S0 and S2 are leased. H is
+// Cheese's own login through the viewer, never an agent lease. S1 is deferred and rejected, as is
+// any other value.
+func mintable(class string) bool { return class == ClassS0 || class == ClassS2 }
+
+// needsDecision: S0 asks no one (user gate only); every other class needs a decision per lease.
+func needsDecision(class string) bool { return class != ClassS0 }
+
 var (
 	ErrClassNotMintable = errors.New("class cannot be leased to an agent")
 	ErrGateDenied       = errors.New("user or agent has no browser permission for the profile")
