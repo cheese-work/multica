@@ -67,15 +67,20 @@ const countIssueWakeupsLiveAtEntry = `-- name: CountIssueWakeupsLiveAtEntry :one
 SELECT count(*)::bigint FROM issue_wakeup w
 WHERE w.issue_id = $1 AND (w.enabled OR w.disabled_at >= (
     SELECT max(a.created_at) FROM activity_log a
-    WHERE a.issue_id = $1 AND a.action = 'status_changed' AND a.details->>'to' = 'agent_accepted'))
+    WHERE a.issue_id = $1 AND a.action = 'status_changed' AND a.details->>'to' = $2::text))
 `
+
+type CountIssueWakeupsLiveAtEntryParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Step    string      `json:"step"`
+}
 
 // Entering a done-category step disables the issue's wakeups in the same
 // transaction, so "enabled" after the write is always empty. A wakeup that was
 // live at entry is one still enabled, or disabled at or after the newest move
-// into agent_accepted (that move's own close rule).
-func (q *Queries) CountIssueWakeupsLiveAtEntry(ctx context.Context, issueID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssueWakeupsLiveAtEntry, issueID)
+// into the step being entered (that move's own close rule).
+func (q *Queries) CountIssueWakeupsLiveAtEntry(ctx context.Context, arg CountIssueWakeupsLiveAtEntryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssueWakeupsLiveAtEntry, arg.IssueID, arg.Step)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -129,18 +134,20 @@ func (q *Queries) GetNewestIssueRunByAgent(ctx context.Context, arg GetNewestIss
 }
 
 const listIssuePullRequestHeads = `-- name: ListIssuePullRequestHeads :many
-SELECT pr.state, pr.head_sha::text AS head_sha FROM github_pull_request pr
+SELECT pr.state, pr.head_sha::text AS head_sha, pr.base_ref::text AS base_ref, pr.default_branch::text AS default_branch FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
 UNION ALL
-SELECT pr.state, ''::text AS head_sha FROM vcs_pull_request pr
+SELECT pr.state, ''::text AS head_sha, ''::text AS base_ref, ''::text AS default_branch FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
 `
 
 type ListIssuePullRequestHeadsRow struct {
-	State   string `json:"state"`
-	HeadSha string `json:"head_sha"`
+	State         string `json:"state"`
+	HeadSha       string `json:"head_sha"`
+	BaseRef       string `json:"base_ref"`
+	DefaultBranch string `json:"default_branch"`
 }
 
 // Every pull request linked to the issue, GitHub and self-hosted, with the head
@@ -154,7 +161,12 @@ func (q *Queries) ListIssuePullRequestHeads(ctx context.Context, issueID pgtype.
 	items := []ListIssuePullRequestHeadsRow{}
 	for rows.Next() {
 		var i ListIssuePullRequestHeadsRow
-		if err := rows.Scan(&i.State, &i.HeadSha); err != nil {
+		if err := rows.Scan(
+			&i.State,
+			&i.HeadSha,
+			&i.BaseRef,
+			&i.DefaultBranch,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

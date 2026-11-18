@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
@@ -14,7 +15,8 @@ import (
 func checkHeldSettingsAsk(writer http.ResponseWriter, ask decisiontx.Ask, settings []byte) (hints []string, ok bool) {
 	mode, err := decisiontx.HeldModeFromSettings(settings)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		slog.Error("workspace settings unreadable for decision card check", "error", err)
+		writeError(writer, http.StatusInternalServerError, "workspace settings are unreadable")
 		return nil, false
 	}
 	hints, err = ask.CheckHeldSettings(mode, settings)
@@ -24,7 +26,8 @@ func checkHeldSettingsAsk(writer http.ResponseWriter, ask decisiontx.Ask, settin
 		return nil, false
 	}
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		slog.Error("workspace settings unreadable for decision card check", "error", err)
+		writeError(writer, http.StatusInternalServerError, "workspace settings are unreadable")
 		return nil, false
 	}
 	return hints, true

@@ -13,12 +13,13 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// Auto-close (CHE-6969): a child issue entering agent_accepted with a clean
-// PASS and nothing left to do takes the step's done edge itself, so the step's
-// agent does not start a run that only closes it.
+// Auto-close (CHE-6969, CHE-6970): a child issue entering agent_accepted or
+// merged with a clean PASS and nothing left to do takes the step's done edge
+// itself, so the step's agent does not start a run that only closes it.
 
 const (
 	statusAgentAccepted    = "agent_accepted"
+	statusMerged           = "merged"
 	postCloseWorkKey       = "post_close_work"
 	deliveryStopKey        = "delivery_stop"
 	cheeseStopPrefix       = "Blockers: Cheese stop"
@@ -67,11 +68,16 @@ func (h *Handler) autoCloseMode(ctx context.Context, workspaceID pgtype.UUID) st
 	return setting.Mode
 }
 
-// autoCloseOnAccept runs for an issue that just entered agent_accepted. It
+// entersAutoCloseStep reports whether entering status can close the issue.
+func entersAutoCloseStep(status string) bool {
+	return status == statusAgentAccepted || status == statusMerged
+}
+
+// autoCloseOnEntry runs for an issue that just entered agent_accepted or merged. It
 // returns done = true when block mode closed the issue, so the caller starts no
 // run; otherwise it returns a func the caller runs after its own dispatch (warn
 // mode: one activity row naming the run that followed), or nil.
-func (h *Handler) autoCloseOnAccept(ctx context.Context, issue db.Issue, intentID pgtype.UUID) (done bool, after func(started bool, agentID pgtype.UUID)) {
+func (h *Handler) autoCloseOnEntry(ctx context.Context, issue db.Issue, intentID pgtype.UUID) (done bool, after func(started bool, agentID pgtype.UUID)) {
 	mode := h.autoCloseMode(ctx, issue.WorkspaceID)
 	if mode == "off" {
 		return false, nil
@@ -115,13 +121,14 @@ func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []st
 		{"done_edge", func() (bool, error) { return h.hasDoneEdge(ctx, issue) }},
 		{"has_parent", func() (bool, error) { return issue.ParentIssueID.Valid, nil }},
 		{"verdict_pass_current", func() (bool, error) { return h.autoCloseVerdictHolds(ctx, issue) }},
+		{"prs_merged_into_default", func() (bool, error) { return h.linkedPRsMergedIntoDefault(ctx, issue) }},
 		{"no_open_child", func() (bool, error) { open, err := h.hasOpenChildren(ctx, issue); return !open, err }},
 		{"no_open_decision", func() (bool, error) {
 			open, err := q.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 			return !open, err
 		}},
 		{"no_live_wakeup", func() (bool, error) {
-			n, err := q.CountIssueWakeupsLiveAtEntry(ctx, issue.ID)
+			n, err := q.CountIssueWakeupsLiveAtEntry(ctx, db.CountIssueWakeupsLiveAtEntryParams{IssueID: issue.ID, Step: issue.Status})
 			return n == 0, err
 		}},
 		{"no_cheese_stop", func() (bool, error) { return !hasCheeseStopLine(issue.Description.String), nil }},
@@ -150,7 +157,7 @@ func (h *Handler) hasDoneEdge(ctx context.Context, issue db.Issue) (bool, error)
 	if err != nil || def == nil {
 		return false, err
 	}
-	for _, e := range def.EdgesOf(statusAgentAccepted) {
+	for _, e := range def.EdgesOf(issue.Status) {
 		if e.To == "done" && e.Guard == issueworkflow.GuardAgentDone {
 			return true, nil
 		}
@@ -202,6 +209,27 @@ func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (bo
 	}
 	for _, pr := range prs {
 		if details.HeadSHA == "" || pr.State != "merged" || pr.HeadSha != details.HeadSHA {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// linkedPRsMergedIntoDefault: on entry to merged, every linked PR merged into
+// its repository's default branch. A PR merged into another branch is a stack
+// layer, and a delivery that did not carry the base or the default branch is
+// unreadable: both keep the handler run. Entry to agent_accepted needs no PR
+// merged, so it passes.
+func (h *Handler) linkedPRsMergedIntoDefault(ctx context.Context, issue db.Issue) (bool, error) {
+	if issue.Status != statusMerged {
+		return true, nil
+	}
+	prs, err := h.Queries.ListIssuePullRequestHeads(ctx, issue.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range prs {
+		if pr.State != "merged" || pr.BaseRef == "" || pr.BaseRef != pr.DefaultBranch {
 			return false, nil
 		}
 	}

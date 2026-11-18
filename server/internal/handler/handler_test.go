@@ -1742,8 +1742,8 @@ func TestCreateCommentRejectsMalformedParentID(t *testing.T) {
 }
 
 func TestGetChatSessionRejectsMalformedSessionID(t *testing.T) {
-	req := newRequest("GET", "/api/chat/sessions/not-a-uuid", nil)
-	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	// The workspace middleware runs first in production, so the caller is a member.
+	req := withChatTestWorkspaceCtx(t, newRequest("GET", "/api/chat/sessions/not-a-uuid", nil))
 	req = withURLParam(req, "sessionId", "not-a-uuid")
 	testutil.Call(t, testHandler.GetChatSession, req).Want(http.StatusBadRequest)
 }

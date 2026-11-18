@@ -153,6 +153,44 @@ links, IDs and hex values are removed; the bound counts characters, not
 space-separated words, so text written without spaces is measured fairly.
 Hints never block a request.
 
+Human-ask guard (CHE-5753). A `human_steps` item is refused, with the field
+named, when it:
+
+- cites a UI path (`Settings > Members`, `A → B`) in `action` or a value
+  `source` and has no `observed` (where and when you saw the control);
+- names a relative repo file path in `action` or `command` and has no `files[]`
+  entry for it with `repo` (`owner/name`) and a 40-character commit `sha`, or an
+  `attachment_id` for a file that comes from an attachment;
+- has a `command` and no `dry_run` (`host`: the host shape you ran it on,
+  `result`: what it printed; a result that says "not run" is refused);
+- leaves a placeholder in the `command` (`<x>`, `…`, `...`, `YOUR_X`, `TODO`).
+
+Absolute and home paths (`/etc/hosts`, `~/Downloads/x.sh`) and URLs are the
+human's own host and stay free. The server renders `observed`, `files[]` and
+`dry_run` in the **Steps for you** section.
+
+The same four checks run on `--kind action` cards over the plain-text `steps`.
+`observed`, `files[]` and `dry_run` sit on the card itself. A command in a step
+is a fenced block, a code span with a space in it, a `$ ` shell line, or text
+after `run`, `execute` or `invoke`; any of them needs `dry_run`, and a
+placeholder in one is refused. A file is a relative path or a root file such as
+`setup.sh`, also inside backticks; a name is a git ref and stays free only after
+`branch` or `base`, or after `from`, `into`, `onto` or `with` on a line that has
+a git verb (`merge`, `rebase`, `checkout`, `switch`, `cherry-pick`, `pull`,
+`push`, `fetch`, `diff`, `reset`). A spaced `>` inside a command (the `command`
+field, a fenced block, a `$ ` line, text after `run`) is a shell redirection,
+not a UI path. A plain issue comment from an agent that mentions a person is
+already refused (ask guard S2). A plain comment with no member link that asks a
+person to act ("please", "you need to", "Cheese,", "steps for you", "vui lòng",
+"请"), or opens a sentence, line or list item with an imperative UI or shell verb
+("Open", "Click", "Run", "Go to", "Select", "Paste", ...), and cites a UI path, a
+repo file, a command or a placeholder is refused the same way, because a comment
+has no field for the evidence. An edit of an agent comment that already holds
+such an ask may keep it, but may not add or change a command, file or UI step.
+The person is
+asked with a decision or action request, which carries this guard; a comment
+that needs no answer takes `--notify-only`.
+
 The server renders the fields and source links into the stored ask, issue
 comment and DM message. The stored request also retains `source_comment_id`
 and `source_content_snapshot`. Editing the source comment does not rewrite

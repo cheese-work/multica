@@ -256,8 +256,9 @@ func TestRoutingFailoverGivesTheFallbackTheStepBrief(t *testing.T) {
 	resetDefaultWorkflow(t)
 	ctx := context.Background()
 	runtime := dbfx.Runtime(t, "ra-failover", testutil.Cols{"workspace_id": testWorkspaceID})
-	routing := dbfx.Agent(t, "ra-failover-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
-	fallback := dbfx.Agent(t, "ra-failover-fallback", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id=$1`, runtime)
+	routing := dbfx.Agent(t, "ra-failover-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID, "visibility": "workspace"})
+	fallback := dbfx.Agent(t, "ra-failover-fallback", runtime, testutil.Cols{"workspace_id": testWorkspaceID, "visibility": "workspace"})
 	t.Cleanup(func() {
 		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' - 'background_agents' WHERE id=$1`, testWorkspaceID)
 	})

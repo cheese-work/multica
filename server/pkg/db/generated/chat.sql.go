@@ -51,6 +51,7 @@ FROM agent_task_queue t
 WHERE t.id = $1
   AND t.chat_session_id = cs.id
   AND t.status = 'cancelled'
+  AND t.purpose IS DISTINCT FROM 'compaction'
   AND t.session_id IS NOT NULL
   AND t.runtime_id IS NOT NULL
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
@@ -58,6 +59,7 @@ WHERE t.id = $1
       SELECT 1 FROM agent_task_queue newer
       WHERE newer.chat_session_id = t.chat_session_id
         AND newer.id <> t.id
+        AND newer.purpose IS DISTINCT FROM 'compaction'
         AND newer.session_id IS NOT NULL
         AND newer.created_at > t.created_at
   )
@@ -88,7 +90,9 @@ WHERE t.id = $1
 // backwards onto the turn the user interrupted.
 //
 // A task dispatched before an in-place /compact (older compaction epoch) never
-// moves the pointer: its session predates the boundary.
+// moves the pointer: its session predates the boundary. A compaction task
+// (purpose = 'compaction') never moves it either, and its session never counts
+// as a newer owner of it (SEC-2).
 //
 // The newer-task lookup depends on
 // idx_agent_task_queue_chat_session (migration 472). Neither chat_pending_v3
@@ -354,6 +358,7 @@ SELECT EXISTS (
   JOIN chat_session cs ON cs.id = t.chat_session_id
   WHERE cs.id = $1
     AND t.session_id = cs.session_id
+    AND t.purpose IS DISTINCT FROM 'compaction'
     AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ) AS current
 `
@@ -1953,6 +1958,7 @@ WITH retired_sessions AS (
         OR COALESCE(r.channel_context_revision, 1) = $2::bigint
       )
       AND r.retired_session_id IS NOT NULL
+      AND r.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(r.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
 ), resume_overflow_at AS (
     -- completed_at alone, where the issue-side twin coalesces four columns:
@@ -1967,6 +1973,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.status = 'failed'
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
@@ -1983,6 +1990,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.session_id IS NOT NULL
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND t.status IN ('completed', 'failed', 'cancelled')
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
     ORDER BY t.session_id, t.completed_at DESC
@@ -2072,6 +2080,10 @@ type GetLastChatTaskSessionRow struct {
 // empty message baked into the conversation history: both must match, and
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
+//
+// Every CTE skips compaction tasks (purpose = 'compaction'): their sessions
+// belong to the background job, not to the DM, and a failed one stays in the
+// current epoch (SEC-2).
 //
 // Every CTE reads the DM's current compaction epoch only: a session recorded
 // before an in-place compact is the history the compact summarised away and
