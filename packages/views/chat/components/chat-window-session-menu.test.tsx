@@ -8,6 +8,12 @@ import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
 vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
+// Upstream virtualizes the history list (react-virtuoso); jsdom has no layout, so render every row.
+vi.mock("./session-history-list", () => ({
+  SessionHistoryList: ({ sessions, renderRow }: { sessions: unknown[]; renderRow: (s: never) => React.ReactNode }) => (
+    <>{sessions.map((s) => renderRow(s as never))}</>
+  ),
+}));
 vi.mock("@multica/core/hooks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/hooks")>()),
   useWorkspaceId: () => "ws-1",

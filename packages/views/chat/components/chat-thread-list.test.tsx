@@ -168,8 +168,9 @@ describe("ChatThreadList windowing", () => {
     renderList(null, {
       renderedSessions: Array.from({ length: 200 }, (_, i) => makeSession({ id: `history-${i}` })),
     });
+    // Fork wins (CHE-7026): the fork seeds a fixed 30-row window; upstream bounded below 30.
     expect(screen.getByText("Chat history-0")).toBeInTheDocument();
-    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThan(30);
+    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThanOrEqual(30);
     expect(screen.queryByText("Chat history-199")).not.toBeInTheDocument();
   });
 
@@ -182,7 +183,7 @@ describe("ChatThreadList windowing", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /Archived.*200/ }));
     expect(screen.getByText("Chat archived-0")).toBeInTheDocument();
-    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThan(30);
+    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThanOrEqual(30);
     expect(screen.queryByText("Chat archived-199")).not.toBeInTheDocument();
   });
 });
