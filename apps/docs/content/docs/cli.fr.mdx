@@ -419,6 +419,8 @@ multica browser status <lease-id>
 
 `status` n'affiche jamais de jeton. `renew` en affiche un nouveau. Un profil avec connexion exige `--decision`, l'id d'une demande de décision répondue sur le ticket.
 
+Le serveur renvoie l'URL de la passerelle depuis `MULTICA_BROWSER_GATEWAY_URLS`, un objet JSON qui associe chaque hôte à l'URL de sa passerelle (par exemple `{"c00":"https://c00.example.ts.net:35443"}`). Sans entrée pour l'hôte du bail, la CLI affiche un avertissement et aucune URL.
+
 ## Vue d'ensemble des commandes
 
 | Commande | Rôle |

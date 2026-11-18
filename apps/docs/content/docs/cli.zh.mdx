@@ -419,6 +419,8 @@ multica browser status <lease-id>
 
 `status` 从不输出令牌；`renew` 输出新令牌。登录配置文件需要 `--decision`，即该 Issue 上已回答的决策请求 ID。
 
+网关 URL 由服务器从 `MULTICA_BROWSER_GATEWAY_URLS` 返回，它是一个 JSON 对象，把每个主机映射到其网关 URL（例如 `{"c00":"https://c00.example.ts.net:35443"}`）。租约所在主机没有条目时，CLI 会输出警告且不输出 URL。
+
 ## 命令概览
 
 | 命令 | 用途 |

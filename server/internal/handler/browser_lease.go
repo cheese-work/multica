@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"os"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,7 @@ type browserLeaseResponse struct {
 	InstanceID    string     `json:"instance_id,omitempty"`
 	Epoch         int64      `json:"epoch,omitempty"`
 	Aud           string     `json:"aud,omitempty"`
+	GatewayURL    string     `json:"gateway_url,omitempty"`
 	QueuePosition int64      `json:"queue_position,omitempty"`
 	Token         string     `json:"token,omitempty"`
 	TokenExpires  *time.Time `json:"token_expires_at,omitempty"`
@@ -48,10 +50,22 @@ func browserLeaseResponseOf(res browserlease.Result) browserLeaseResponse {
 	}
 	if res.Token != "" {
 		out.Aud, out.Token = browserlease.Aud(res.Host), res.Token
+		out.GatewayURL = browserGatewayURL(res.Host)
 		exp := res.TokenExpires
 		out.TokenExpires = &exp
 	}
 	return out
+}
+
+// browserGatewayURL is the operator's endpoint for a host's gateway, from
+// MULTICA_BROWSER_GATEWAY_URLS (JSON object, host -> URL). Empty when unset or the host is
+// missing; the token audience is a label and never becomes a URL.
+func browserGatewayURL(host string) string {
+	var urls map[string]string
+	if json.Unmarshal([]byte(os.Getenv("MULTICA_BROWSER_GATEWAY_URLS")), &urls) != nil {
+		return ""
+	}
+	return urls[host]
 }
 
 func writeBrowserLeaseError(w http.ResponseWriter, err error) {

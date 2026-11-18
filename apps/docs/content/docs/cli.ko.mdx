@@ -419,6 +419,8 @@ multica browser status <lease-id>
 
 `status`는 토큰을 출력하지 않습니다. `renew`는 새 토큰을 출력합니다. 로그인 프로필에는 `--decision`(이슈에서 응답된 결정 요청의 ID)이 필요합니다.
 
+게이트웨이 URL은 서버가 `MULTICA_BROWSER_GATEWAY_URLS`(호스트별 게이트웨이 URL을 매핑하는 JSON 객체. 예: `{"c00":"https://c00.example.ts.net:35443"}`)에서 반환합니다. 리스 호스트의 항목이 없으면 CLI는 경고를 출력하고 URL은 출력하지 않습니다.
+
 ## 명령 개요
 
 | 명령 | 용도 |

@@ -459,6 +459,8 @@ multica browser status <lease-id>
 
 `status` never prints a token. `renew` prints a fresh one. A login profile needs `--decision`, the id of an answered decision request on the issue.
 
+The server returns the gateway URL from `MULTICA_BROWSER_GATEWAY_URLS`, a JSON object that maps each host to its gateway URL (for example `{"c00":"https://c00.example.ts.net:35443"}`). Without an entry for the lease's host, the CLI prints a warning and no URL.
+
 ## Command overview
 
 | Command | Purpose |

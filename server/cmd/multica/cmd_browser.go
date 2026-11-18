@@ -109,8 +109,8 @@ func runBrowserOp(cmd *cobra.Command, op browserOpRequest) error {
 	if err := json.Unmarshal(body, &lease); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
-	if aud, _ := lease["aud"].(string); aud != "" {
-		lease["gateway_url"] = browserGatewayURL(aud)
+	if _, hasToken := lease["token"]; hasToken && lease["gateway_url"] == nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: the server has no gateway URL for this lease's host (MULTICA_BROWSER_GATEWAY_URLS)")
 	}
 	if out, _ := cmd.Flags().GetString("output"); out == "json" {
 		return cli.PrintJSON(cmd.OutOrStdout(), lease)
@@ -143,11 +143,3 @@ func browserErrorText(body []byte) string {
 	return s
 }
 
-// browserGatewayURL turns the token audience "steel-gateway/<host>" into the URL to dial.
-func browserGatewayURL(aud string) string {
-	host := strings.TrimPrefix(aud, "steel-gateway/")
-	if strings.Contains(host, "://") {
-		return host
-	}
-	return "https://" + host
-}

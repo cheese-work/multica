@@ -43,7 +43,7 @@ func runBrowser(t *testing.T, args ...string) (stdout, stderr string, err error)
 }
 
 const activeLease = `{"lease_id":"l1","state":"active","class":"S0","instance_id":"i1","epoch":3,` +
-	`"aud":"steel-gateway/steel.example.ts.net:35443","token":"tok.secret","token_expires_at":"2026-11-18T07:00:00Z","lease_expires_at":"2026-11-18T09:00:00Z"}`
+	`"aud":"steel-gateway/c00","gateway_url":"https://c00.example.ts.net:35443","token":"tok.secret","token_expires_at":"2026-11-18T07:00:00Z","lease_expires_at":"2026-11-18T09:00:00Z"}`
 
 func TestBrowserLeasePrintsGatewayAndTokenToStdoutOnly(t *testing.T) {
 	var got map[string]string
@@ -56,7 +56,7 @@ func TestBrowserLeasePrintsGatewayAndTokenToStdoutOnly(t *testing.T) {
 		got["_path"] != "/browser/lease" || got["_auth"] != "Bearer mat_agent" {
 		t.Errorf("daemon got %v", got)
 	}
-	for _, want := range []string{"https://steel.example.ts.net:35443", "tok.secret", "l1"} {
+	for _, want := range []string{"https://c00.example.ts.net:35443", "tok.secret", "l1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out)
 		}
@@ -102,7 +102,7 @@ func TestBrowserLeaseJSONAddsGatewayURL(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("not json: %v\n%s", err, out)
 	}
-	if parsed["gateway_url"] != "https://steel.example.ts.net:35443" || parsed["token"] != "tok.secret" {
+	if parsed["gateway_url"] != "https://c00.example.ts.net:35443" || parsed["token"] != "tok.secret" {
 		t.Errorf("json = %v", parsed)
 	}
 }
@@ -120,5 +120,19 @@ func TestBrowserNeedsATask(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_PORT", "")
 	if _, _, err := runBrowser(t, "status", "l1"); err == nil || !strings.Contains(err.Error(), "MULTICA_DAEMON_PORT") {
 		t.Errorf("err = %v, want a MULTICA_DAEMON_PORT message", err)
+	}
+}
+
+// The token audience is a label, not an endpoint: with no gateway_url from the server the CLI
+// prints none rather than inventing "https://c00".
+func TestBrowserLeaseNeverBuildsAURLFromTheAudience(t *testing.T) {
+	var got map[string]string
+	fakeBrowserDaemon(t, http.StatusCreated, `{"lease_id":"l1","state":"active","aud":"steel-gateway/c00","token":"tok.secret"}`, &got)
+	stdout, _, err := runBrowser(t, "lease", "--profile", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "gateway_url") || strings.Contains(stdout, "https://c00") {
+		t.Errorf("stdout invents a gateway URL:\n%s", stdout)
 	}
 }

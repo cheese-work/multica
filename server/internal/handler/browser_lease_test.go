@@ -268,3 +268,22 @@ func TestBrowserLeaseStatusNeverReturnsATokenAndSeesTheEnd(t *testing.T) {
 		t.Fatalf("status after release: %d %s, want 409", w.Code, w.Body.String())
 	}
 }
+
+// The gateway URL comes from the operator's MULTICA_BROWSER_GATEWAY_URLS, keyed by host. The
+// token audience is only a label ("steel-gateway/c00") and is never turned into a URL.
+func TestBrowserLeaseResponseCarriesTheConfiguredGatewayURL(t *testing.T) {
+	t.Setenv("MULTICA_BROWSER_GATEWAY_URLS", `{"c00":"https://c00.example.ts.net:35443","x99":"http://127.0.0.1:4100"}`)
+	for host, want := range map[string]string{"c00": "https://c00.example.ts.net:35443", "x99": "http://127.0.0.1:4100"} {
+		out := browserLeaseResponseOf(browserlease.Result{Host: host, Token: "tok"})
+		if out.GatewayURL != want || out.Aud != "steel-gateway/"+host {
+			t.Errorf("host %s: gateway_url=%q aud=%q, want %q", host, out.GatewayURL, out.Aud, want)
+		}
+	}
+	if out := browserLeaseResponseOf(browserlease.Result{Host: "x99"}); out.GatewayURL != "" {
+		t.Errorf("no token: gateway_url=%q, want none", out.GatewayURL)
+	}
+	t.Setenv("MULTICA_BROWSER_GATEWAY_URLS", "")
+	if out := browserLeaseResponseOf(browserlease.Result{Host: "c00", Token: "tok"}); out.GatewayURL != "" {
+		t.Errorf("unconfigured: gateway_url=%q, want none", out.GatewayURL)
+	}
+}
