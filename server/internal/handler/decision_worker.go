@@ -110,6 +110,15 @@ func (worker *DecisionWorker) WakeLeaseExpiry() {
 // leaseExpiryRecheck bounds each sleep, so a decision whose expires_at moved is noticed.
 const leaseExpiryRecheck = 5 * time.Second
 
+// leaseExpiryWait turns the seconds to the next deadline (-1: none) into a sleep. With no
+// deadline it rests the whole recheck interval; a due one retries after 10 ms.
+func leaseExpiryWait(seconds float64) time.Duration {
+	if seconds < 0 {
+		return leaseExpiryRecheck
+	}
+	return min(leaseExpiryRecheck, time.Duration(seconds*float64(time.Second))+10*time.Millisecond)
+}
+
 // RunLeaseExpiry revokes the leases of a decision at its expires_at, even an answered one
 // (CHE-4742). It sleeps until the earliest live deadline instead of waiting for a worker
 // tick; revoking is idempotent, so any server instance may run it.
@@ -129,8 +138,8 @@ func (worker *DecisionWorker) RunLeaseExpiry(ctx context.Context) {
 		wait := leaseExpiryRecheck
 		if err := worker.handler.revokeLeasesOfExpiredDecisions(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("decision lease expiry failed", "error", err)
-		} else if seconds, err := worker.handler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err == nil && seconds >= 0 {
-			wait = min(wait, time.Duration(seconds*float64(time.Second))+10*time.Millisecond)
+		} else if seconds, err := worker.handler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err == nil {
+			wait = leaseExpiryWait(seconds)
 		}
 		if !timer.Stop() {
 			select {

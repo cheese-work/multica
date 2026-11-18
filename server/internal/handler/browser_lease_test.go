@@ -354,3 +354,50 @@ func TestAnsweredDecisionRevokesItsBrowserLeasesAtExpiry(t *testing.T) {
 		t.Fatalf("a lease of another decision was revoked: state = %q", state)
 	}
 }
+
+// With no live lease bound to an expiring decision there is no deadline: the query reports -1,
+// and the loop sleeps its recheck interval instead of polling every few milliseconds
+// (CHE-4742 review round 3). A due deadline reports 0 and a future one its distance.
+func TestLeaseExpiryDeadlineIdleDueAndFuture(t *testing.T) {
+	dbfx.Exec(t, `UPDATE browser_lease SET state = 'ended' WHERE state IN ('queued', 'active')`)
+	ctx := context.Background()
+	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait != -1 {
+		t.Fatalf("idle deadline = %v, err %v, want -1", wait, err)
+	}
+
+	fixture := newAskedRecordFixture(t)
+	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := uuidToString(record.Request.ID)
+	runtimeID := dbfx.Runtime(t, "CHE-4742 deadline runtime")
+	agentID := dbfx.Agent(t, "CHE-4742 deadline agent "+uuid.NewString(), runtimeID)
+	issueID := dbfx.Issue(t, "CHE-4742 deadline issue")
+	task := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "started_at": testutil.Raw("now()")})
+	seedDecisionBoundBrowserLease(t, task, decision)
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '100 seconds' WHERE id = $1`, decision)
+	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait < 90 || wait > 100 {
+		t.Fatalf("future deadline = %v, err %v, want about 100", wait, err)
+	}
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, decision)
+	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait != 0 {
+		t.Fatalf("due deadline = %v, err %v, want 0", wait, err)
+	}
+}
+
+func TestLeaseExpiryWait(t *testing.T) {
+	for _, tc := range []struct {
+		seconds float64
+		want    time.Duration
+	}{
+		{-1, leaseExpiryRecheck},
+		{0, 10 * time.Millisecond},
+		{2, 2*time.Second + 10*time.Millisecond},
+		{100, leaseExpiryRecheck},
+	} {
+		if got := leaseExpiryWait(tc.seconds); got != tc.want {
+			t.Errorf("leaseExpiryWait(%v) = %v, want %v", tc.seconds, got, tc.want)
+		}
+	}
+}

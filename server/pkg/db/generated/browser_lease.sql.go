@@ -953,7 +953,8 @@ func (q *Queries) LockBrowserLeaseQueue(ctx context.Context, dollar_1 string) er
 }
 
 const nextDecisionBrowserLeaseDeadline = `-- name: NextDecisionBrowserLeaseDeadline :one
-SELECT COALESCE(GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0), -1)::float8 AS wait_seconds
+SELECT CASE WHEN MIN(request.expires_at) IS NULL THEN -1
+            ELSE GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0) END::float8 AS wait_seconds
 FROM browser_lease lease
 JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
 WHERE lease.state IN ('queued', 'active') AND request.expires_at IS NOT NULL

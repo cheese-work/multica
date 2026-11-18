@@ -215,7 +215,8 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- name: NextDecisionBrowserLeaseDeadline :one
 -- Seconds until the earliest expires_at among decisions that still have a queued or active
 -- lease (CHE-4742). -1 when none; 0 when one is already due.
-SELECT COALESCE(GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0), -1)::float8 AS wait_seconds
+SELECT CASE WHEN MIN(request.expires_at) IS NULL THEN -1
+            ELSE GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0) END::float8 AS wait_seconds
 FROM browser_lease lease
 JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
 WHERE lease.state IN ('queued', 'active') AND request.expires_at IS NOT NULL;
