@@ -266,12 +266,13 @@ func TestM1bClaimWaitsForGatewayCooldownAfterRelease(t *testing.T) {
 		}
 		return got
 	}
-	for _, elapsed := range []time.Duration{time.Minute, gatewayFailureCooldown - time.Second} {
+	// Margins of 1 min before and 30 s after the 10 min edge keep a slow run from crossing it.
+	for _, elapsed := range []time.Duration{time.Minute, gatewayFailureCooldown - time.Minute} {
 		if got := claimAfter(elapsed); got != nil {
 			t.Fatalf("claimed %s %s after the failure, want the %s cooldown", util.UUIDToString(got.ID), elapsed, gatewayFailureCooldown)
 		}
 	}
-	if got := claimAfter(gatewayFailureCooldown + time.Second); got == nil || util.UUIDToString(got.ID) != child {
+	if got := claimAfter(gatewayFailureCooldown + 30*time.Second); got == nil || util.UUIDToString(got.ID) != child {
 		t.Fatalf("claim after cooldown = %v, want the released retry %s", got, child)
 	}
 }
