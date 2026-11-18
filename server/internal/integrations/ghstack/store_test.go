@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -237,5 +238,106 @@ func TestStoreReportWithNoLinkedIssueIsANoop(t *testing.T) {
 		Workspaces: []WorkspaceMode{{WorkspaceID: ws, Mode: ModeReport}}}
 	if err := NewStore(f.pool).Report(context.Background(), o); err != nil {
 		t.Fatalf("no linked issue must not be an error: %v", err)
+	}
+}
+
+// pr inserts an open PR row (no issue link) with head branch and snapshot base.
+func (f *storeFx) pr(t *testing.T, ws string, n int, head, base, state string) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(),
+		`INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, snapshot_base_ref, pr_created_at, pr_updated_at)
+		 VALUES ($1::uuid,$2,'acme','widgets',$3,'t',$4,'https://x',$5,$6,now(),now())`,
+		ws, f.inst, n, state, head, base); err != nil {
+		t.Fatalf("seed pr %d: %v", n, err)
+	}
+}
+
+func (f *storeFx) linkPR(t *testing.T, ws string, n int) {
+	t.Helper()
+	ctx := context.Background()
+	var issueID string
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO issue (workspace_id,title,creator_type,creator_id,number) VALUES ($1::uuid,'i','member',gen_random_uuid(),$2) RETURNING id::text`, ws, n).Scan(&issueID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`INSERT INTO issue_pull_request (issue_id, pull_request_id)
+		 SELECT $1::uuid, id FROM github_pull_request WHERE workspace_id=$2::uuid AND pr_number=$3 AND installation_id=$4`,
+		issueID, ws, n, f.inst); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreIsLinked(t *testing.T) {
+	f := newStoreFx(t)
+	ws := f.workspace(t, `{}`)
+	f.pr(t, ws, 1, "a", "main", "open")
+	f.pr(t, ws, 2, "b", "a", "open")
+	f.linkPR(t, ws, 2)
+	s := NewStore(f.pool)
+	for n, want := range map[int]bool{1: false, 2: true, 3: false} {
+		got, err := s.IsLinked(context.Background(), Job{InstallationID: f.inst, Owner: "acme", Repo: "widgets", PR: n})
+		if err != nil || got != want {
+			t.Fatalf("IsLinked(%d) = %v, %v; want %v", n, got, err, want)
+		}
+	}
+}
+
+// Sweep source: linked + open + base is the head branch of another open PR;
+// key order, strictly after the cursor, bounded by the limit.
+func TestStoreListLinkedStacked(t *testing.T) {
+	f := newStoreFx(t)
+	ws := f.workspace(t, `{}`)
+	f.pr(t, ws, 1, "a", "main", "open") // bottom: base is the default branch
+	f.pr(t, ws, 2, "b", "a", "open")    // stacked on 1, linked
+	f.pr(t, ws, 3, "c", "b", "open")    // stacked on 2, linked
+	f.pr(t, ws, 4, "d", "c", "open")    // stacked on 3, not linked
+	f.pr(t, ws, 5, "e", "zz", "open")   // lower PR not mirrored (missed webhook): still swept
+	f.pr(t, ws, 6, "f", "e", "closed")  // closed
+	f.pr(t, ws, 7, "g", "f", "open")    // base PR 6 is closed: still swept
+	for _, n := range []int{1, 2, 3, 5, 6, 7} {
+		f.linkPR(t, ws, n)
+	}
+	s := NewStore(f.pool)
+	ctx := context.Background()
+	at := func(n int) Job { return Job{InstallationID: f.inst, Owner: "acme", Repo: "widgets", PR: n} }
+	got, err := s.ListLinkedStacked(ctx, Job{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 || got[0] != at(2) || got[1] != at(3) || got[2] != at(5) || got[3] != at(7) {
+		t.Fatalf("stacked = %+v, want PRs 2,3,5,7", got)
+	}
+	got, _ = s.ListLinkedStacked(ctx, Job{}, 1)
+	if len(got) != 1 || got[0] != at(2) {
+		t.Fatalf("limit 1 = %+v", got)
+	}
+	got, _ = s.ListLinkedStacked(ctx, at(2), 10)
+	if len(got) != 3 || got[0] != at(3) || got[1] != at(5) || got[2] != at(7) {
+		t.Fatalf("after 2 = %+v", got)
+	}
+}
+
+// A linked PR whose lower PR is not mirrored (its webhook was missed) must
+// still reach the runner through the sweep.
+func TestSweepRunsLinkedPRWithUnmirroredBase(t *testing.T) {
+	f := newStoreFx(t)
+	ws := f.workspace(t, `{}`)
+	f.pr(t, ws, 5, "e", "zz", "open")
+	f.linkPR(t, ws, 5)
+	s := NewStore(f.pool)
+	ran := make(chan Job, 4)
+	d := &Dispatcher{Runner: runnerFunc(func(_ context.Context, j Job) error { ran <- j; return nil }), Links: s}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	d.Sweep(ctx)
+	select {
+	case j := <-ran:
+		if j.PR != 5 {
+			t.Fatalf("ran PR %d, want 5", j.PR)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep never ran the PR with an unmirrored base")
 	}
 }

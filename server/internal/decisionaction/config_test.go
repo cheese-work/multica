@@ -64,6 +64,7 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"guard policy", "workspace.settings", []string{"guard_policy"}, false},
 		{"title type to workflow map", "workspace.settings", []string{"workflow_by_type"}, false},
 		{"ask guard mode", "workspace.settings", []string{"ask_guard_mode"}, false},
+		{"design card guard", "workspace.settings", []string{"design_card_guard"}, false},
 		{"project description is out of scope", "project.description", nil, true},
 		{"members and roles", "member.role", nil, true},
 		{"unknown field", "", nil, true},

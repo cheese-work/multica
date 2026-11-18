@@ -74,6 +74,10 @@ type decisionRequestInput struct {
 	DMSession pgtype.UUID `json:"-"`
 	// Batch is set only by the batch proposal route (CHE-5412).
 	Batch *batchCard `json:"-"`
+	// OwnerScript is the owner-script guard's finished check (CHE-7138 S7a); its
+	// event is written with the message. Nil when the guard is off or no agent
+	// text is read.
+	OwnerScript *ownerScriptCheck `json:"-"`
 }
 
 // batchCard ties the requests of one batch to one shared card: they share the
@@ -181,6 +185,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input); err != nil || prior.Request.ID.Valid {
 			return prior, err
 		}
+	}
+	if input.OwnerScript, err = handler.checkOwnerScript(request.Context(), issue, agentID, taskID, input); err != nil {
+		return empty, err
 	}
 	intent, err := handler.Queries.GetDecisionIntentForTask(request.Context(), db.GetDecisionIntentForTaskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID, AgentID: agentID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -656,6 +663,11 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	}
 	if err := queries.CompleteDecisionIntent(ctx, db.CompleteDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: intent.ID, RequestID: created.ID}); err != nil {
 		return empty, err
+	}
+	if input.OwnerScript != nil {
+		if err := input.OwnerScript.writeDelivered(ctx, queries, issue, created, messageID, comment.ID); err != nil {
+			return empty, err
+		}
 	}
 	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action}, nil
 }

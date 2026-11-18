@@ -479,11 +479,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Fail closed until W3-4 (signer), W3-8/9 (user gate) and W3-11 (decision answer) fill the seams.
-	// W3-10 opens the decision request but honors no answer yet.
+	// Fail closed until W3-4 (signer) and W3-8/9 (user gate) fill the seams. Decisions are live: an
+	// answered decision (per lease or once per issue) is validated at every mint, renew and queued
+	// grant, and a mint with no decision opens the decision request (W3-10).
 	h.BrowserLeases = &browserlease.Service{
-		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: h.BrowserLeaseDecisions(),
+		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
 		Registry: browserlease.NameRegistry{Queries: queries},
+		Class3:   loadBrowserClass3Deny(),
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -3212,4 +3214,19 @@ func wecomMetricsOrNil(m *obsmetrics.WecomMetrics) wecom.Metrics {
 		return nil
 	}
 	return m
+}
+
+// loadBrowserClass3Deny reads class3-deny.txt from BROWSER_CLASS3_DENY_FILE. Without a loaded
+// list mint refuses every S2 lease (CHE-4782, W3-19), so a missing or bad file fails closed.
+func loadBrowserClass3Deny() *browserlease.Class3Deny {
+	path := os.Getenv("BROWSER_CLASS3_DENY_FILE")
+	if path == "" {
+		return nil
+	}
+	d, err := browserlease.LoadClass3Deny(path)
+	if err != nil {
+		slog.Error("browser lease: class-3 deny list not loaded; S2 leases stay refused", "error", err)
+		return nil
+	}
+	return d
 }

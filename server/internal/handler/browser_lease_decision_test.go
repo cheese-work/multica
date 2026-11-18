@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -17,14 +18,19 @@ func s2Fixture(t *testing.T) (browserLeaseFixture, string) {
 	f := newBrowserLeaseFixture(t, "running")
 	q := db.New(testPool)
 	prof, err := q.CreateBrowserProfile(context.Background(), db.CreateBrowserProfileParams{
-		WorkspaceID: parseUUID(testWorkspaceID), Name: "figma-login", Class: "S2",
+		WorkspaceID: parseUUID(testWorkspaceID), Name: "figma-login", Class: "S2", Hosts: []string{"figma.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The default fixture name embeds a UUID, which an ask refuses as a bare ID.
 	dbfx.Exec(t, `UPDATE agent SET name = 'Browser Lease Tester' WHERE id = $1`, f.agentID)
-	f.h.BrowserLeases.Decisions = f.h.BrowserLeaseDecisions()
+	deny, err := browserlease.ParseClass3Deny(strings.NewReader("[hosts]\npaypal.com\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.h.BrowserLeases.Class3 = deny
+	f.h.BrowserLeases.Decisions = f.h.BrowserLeaseDecisions(browserlease.NewDecisions(db.New(testPool)))
 	t.Cleanup(func() {
 		dbfx.Exec(t, `DELETE FROM decision_request WHERE workspace_id = $1 AND request_fingerprint LIKE 'server:browser_lease:%'`, testWorkspaceID)
 	})

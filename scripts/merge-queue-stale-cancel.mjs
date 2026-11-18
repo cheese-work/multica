@@ -2,6 +2,7 @@
 // Usage: node scripts/merge-queue-stale-cancel.mjs --repo owner/name [--dry-run]
 // Each run is a full sweep. Fail closed: a wrong cancel can eject a PR from the queue, never merge one.
 // Any API error stops the sweep (no further cancels) and exits non-zero; there is no retry loop.
+// The one exception: a run GitHub refuses to cancel (409 on cancel and on force-cancel) is skipped.
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -30,14 +31,21 @@ export async function isOnMain(api, repo, sha) {
 }
 
 // A run stuck in `queued` that GitHub never started answers cancel with 409; force-cancel clears it.
-// Any other error, or a 409 on force-cancel, still stops the sweep.
+// A 409 on force-cancel too means GitHub refuses to cancel this run at all: skip it (returns false) so
+// it cannot block the runs behind it. Any other error still stops the sweep.
 async function cancelRun(api, repo, id) {
   try {
     await api.post(`/repos/${repo}/actions/runs/${id}/cancel`);
   } catch (e) {
     if (e.status !== 409) throw e;
-    await api.post(`/repos/${repo}/actions/runs/${id}/force-cancel`);
+    try {
+      await api.post(`/repos/${repo}/actions/runs/${id}/force-cancel`);
+    } catch (e2) {
+      if (e2.status !== 409) throw e2;
+      return false;
+    }
   }
+  return true;
 }
 
 export async function sweep({ api, repo, dryRun = false, now = Date.now, print = console.log }) {
@@ -56,7 +64,10 @@ export async function sweep({ api, repo, dryRun = false, now = Date.now, print =
     if (dryRun) {
       print(`would cancel ${run.html_url} (${run.head_branch}, ${run.status})`);
     } else {
-      await cancelRun(api, repo, run.id);
+      if (!(await cancelRun(api, repo, run.id))) {
+        print(`skipped uncancellable run ${run.id}`);
+        continue;
+      }
       print(`cancelled ${run.html_url} (${run.head_branch}, ${run.status})`);
     }
     cancelled++;
