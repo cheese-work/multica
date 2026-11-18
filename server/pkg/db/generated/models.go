@@ -490,6 +490,8 @@ type BrowserLease struct {
 	EndReason      pgtype.Text        `json:"end_reason"`
 	CleanupAckedAt pgtype.Timestamptz `json:"cleanup_acked_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	Summary        []byte             `json:"summary"`
+	SummaryAt      pgtype.Timestamptz `json:"summary_at"`
 }
 
 type BrowserProfile struct {
