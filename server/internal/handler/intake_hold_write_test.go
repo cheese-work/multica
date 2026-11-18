@@ -379,9 +379,10 @@ func TestIntakeHoldCreateInWorkflowWithoutHandler(test *testing.T) {
 	}
 }
 
-// 8 (e), through the real request and answer path: a task sends a spend
-// request on a held issue, the person answers the card, and the agent move
-// passes only once the answer's wake_at has passed.
+// 8 (e), through the real request and answer path: a DM task sends a spend
+// request on a held issue. A DM request does not park the issue, so it stays
+// in backlog. The person answers the card; the agent move passes only once the
+// answer's wake_at has passed, and never after a withdrawal.
 func TestIntakeHoldAnswerHoldRealPath(test *testing.T) {
 	seedTestCatalog(test)
 	hold := newHoldFixture(test, func(entry map[string]any) { entry["exempt_escalation_classes"] = []string{"spend"} })
@@ -391,27 +392,26 @@ func TestIntakeHoldAnswerHoldRealPath(test *testing.T) {
 			name = "a withdrawn answer never passes"
 		}
 		test.Run(name, func(test *testing.T) {
-			fixture := newRequestCoreFixture(test, false)
+			fixture := newDMDecisionFixture(test)
 			dbfx.Exec(test, `UPDATE issue SET project_id = $1, status = 'backlog', created_at = now(), assignee_type = NULL, assignee_id = NULL WHERE id = $2`, hold.projectID, fixture.issueID)
+			body := fixture.dmBody()
+			body["escalation_class"] = "spend"
+			var view dmDecisionView
+			testutil.Call(test, testHandler.RequestDecision, fixture.request(body)).Want(http.StatusCreated).JSON(&view)
+			if got := holdIssueStatus(test, fixture.issueID); got != "backlog" {
+				test.Fatalf("the DM request moved the issue to %s, want it to stay in backlog", got)
+			}
+			if parks := dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1`, fixture.issueID); parks != 0 {
+				test.Fatalf("the DM request wrote %d park rows, want 0", parks)
+			}
+			wantIntakeRefusal(test, holdAgentPut(test, fixture.issueID, "in_progress"))
+
 			issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
 			if err != nil {
 				test.Fatal(err)
 			}
-			input := fixture.input()
-			input.EscalationClass = "spend"
-			result, err := testHandler.createDecisionRequest(fixture.request(), issue, input)
-			if err != nil {
-				test.Fatal(err)
-			}
-			// The request path parks the issue today; a park is a platform move and
-			// the issue stays held. Holding the issue without a park belongs to a
-			// later child.
-			if got := holdIssueStatus(test, fixture.issueID); got != "backlog" && got != "blocked" && got != "need_decision" {
-				test.Fatalf("the request moved the issue to %s", got)
-			}
-			wantIntakeRefusal(test, holdAgentPut(test, fixture.issueID, "in_progress"))
-
-			answer, err := testHandler.answerDecisionRequestTx(fixture.request(), issue.WorkspaceID, result.Request.ID, parseUUID(fixture.humanID), decisionCardAnswerInput{Text: "yes"})
+			request := fixture.request(body)
+			answer, err := testHandler.answerDecisionRequestTx(request, issue.WorkspaceID, parseUUID(view.ID), parseUUID(fixture.humanID), decisionCardAnswerInput{Text: "yes"})
 			if err != nil {
 				test.Fatal(err)
 			}
@@ -420,7 +420,7 @@ func TestIntakeHoldAnswerHoldRealPath(test *testing.T) {
 			}
 			wantIntakeRefusal(test, holdAgentPut(test, fixture.issueID, "in_progress"))
 			if withdraw {
-				if _, err := testHandler.disclaimDecisionAnswerTx(fixture.request(), issue.WorkspaceID, answer.Answer.ID, parseUUID(fixture.humanID)); err != nil {
+				if _, err := testHandler.disclaimDecisionAnswerTx(request, issue.WorkspaceID, answer.Answer.ID, parseUUID(fixture.humanID)); err != nil {
 					test.Fatal(err)
 				}
 				dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, answer.Answer.ID)
