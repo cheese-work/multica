@@ -37,6 +37,8 @@ interface PendingSendState {
   scopeId: string | null;
   bySession: Record<string, PendingSend>;
   hydrate: (scope: string) => Promise<void>;
+  /** Resolves when the disk load in flight (if any) has finished. */
+  whenHydrated: () => Promise<void>;
   /** Id for sending `content` in `sessionId`: the pending one when the text is unchanged. */
   begin: (sessionId: string, content: string) => string;
   /** Delivered or definitely rejected: forget the id. */
@@ -49,19 +51,29 @@ function isPendingSend(v: unknown): v is PendingSend {
   return typeof p?.clientMessageId === "string" && typeof p.content === "string";
 }
 
+// Module-level, not store state: nothing renders from it.
+let loading: Promise<void> | null = null;
+
 export const usePendingSendStore = create<PendingSendState>((set, get) => ({
   scopeId: null,
   bySession: {},
-  hydrate: async (scope) => {
-    if (get().scopeId === scope) return;
+  whenHydrated: async () => {
+    await loading;
+  },
+  hydrate: (scope) => {
+    if (get().scopeId === scope) return loading ?? Promise.resolve();
     set({ scopeId: scope, bySession: {} });
-    const onDisk = await draftPersistence.loadAll<unknown>(scope, DISK_PREFIX);
-    if (get().scopeId !== scope) return;
-    const restored: Record<string, PendingSend> = {};
-    for (const [key, value] of Object.entries(onDisk)) {
-      if (isPendingSend(value)) restored[key.slice(DISK_PREFIX.length)] = value;
-    }
-    set({ bySession: { ...restored, ...get().bySession } });
+    const run = (async () => {
+      const onDisk = await draftPersistence.loadAll<unknown>(scope, DISK_PREFIX);
+      if (get().scopeId !== scope) return;
+      const restored: Record<string, PendingSend> = {};
+      for (const [key, value] of Object.entries(onDisk)) {
+        if (isPendingSend(value)) restored[key.slice(DISK_PREFIX.length)] = value;
+      }
+      set({ bySession: { ...restored, ...get().bySession } });
+    })();
+    loading = run;
+    return run;
   },
   begin: (sessionId, content) => {
     const existing = get().bySession[sessionId];
@@ -95,6 +107,8 @@ export async function sendWithPendingId(
   opts: { attachmentIds?: string[]; askIds?: string[] } = {},
 ) {
   const pending = usePendingSendStore.getState();
+  // A retry right after a cold start must see the id restored from disk (B4).
+  await pending.whenHydrated();
   const clientMessageId = pending.begin(sessionId, content);
   try {
     const result = await api.sendChatMessage(sessionId, content, {
