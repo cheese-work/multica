@@ -1,7 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { parseWithFallback } from "../api/schema";
-import { AgentRuntimeSchema, EMPTY_RUNTIME } from "./schema";
+import {
+  AgentRuntimeSchema,
+  EMPTY_MACHINE_HISTORY,
+  EMPTY_RUNTIME,
+  MachineAuditPageSchema,
+  MachineHistoryPageSchema,
+  MachinePlannedSchema,
+} from "./schema";
 
 describe("runtime sharing response contract", () => {
   it("preserves grants from a new server and defaults missing grants to empty", () => {
@@ -187,5 +194,78 @@ describe("runtime update schedule response contract (CHE-5465)", () => {
   it("keeps the runtime when the schedule is malformed", () => {
     const parsed = AgentRuntimeSchema.parse({ ...base, name: "Claude", update_schedule: "x" });
     expect(parsed.name).toBe("Claude");
+  });
+});
+
+describe("machine history, audit and planned contract (CHE-5709)", () => {
+  const cycle = {
+    id: "c1",
+    state: "no_window",
+    outcome: "no_window",
+    outcome_detail: "3 runs still live",
+    outcome_source: "server",
+    from_commit: "aaaaaaa",
+    target_commit: "bbbbbbb",
+    notes: ["late_result"],
+    live_runs_at_end: 3,
+    started_at: "2026-11-18T19:00:00Z",
+    deadline_at: "2026-11-18T19:30:00Z",
+    finished_at: "2026-11-18T19:30:00Z",
+  };
+
+  it("keeps a history page from a new server", () => {
+    const page = parseWithFallback({ cycles: [cycle], next_cursor: "abc" }, MachineHistoryPageSchema, EMPTY_MACHINE_HISTORY, { endpoint: "test" });
+    expect(page).toMatchObject({ next_cursor: "abc", cycles: [cycle] });
+  });
+
+  it("reads an outcome a newer server added as unknown, and an open cycle as no outcome", () => {
+    const page = MachineHistoryPageSchema.parse({
+      cycles: [{ ...cycle, outcome: "exploded" }, { ...cycle, id: "c2", outcome: null, finished_at: null }],
+    });
+    expect(page.cycles.map((c) => c.outcome)).toEqual(["unknown", null]);
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("falls back field by field and drops a cycle with no id", () => {
+    const page = MachineHistoryPageSchema.parse({
+      cycles: [{ id: "c1", state: 7, notes: "x", live_runs_at_end: "many" }, { state: "draining" }, 42],
+    });
+    expect(page.cycles).toEqual([
+      expect.objectContaining({ id: "c1", state: "unknown", notes: [], live_runs_at_end: null, started_at: "", finished_at: null }),
+    ]);
+  });
+
+  it.each([null, "x", { cycles: "no" }, []])("falls back to an empty history for a malformed page: %j", (raw) => {
+    expect(parseWithFallback(raw, MachineHistoryPageSchema, EMPTY_MACHINE_HISTORY, { endpoint: "test" })).toEqual(EMPTY_MACHINE_HISTORY);
+  });
+
+  it("keeps audit events and tolerates missing names", () => {
+    const page = MachineAuditPageSchema.parse({
+      events: [
+        { id: "e1", at: "2026-11-18T19:00:00Z", kind: "runtime.pause", actor_type: "member", actor_name: "Cheese", target_id: "r1" },
+        { id: "e2" },
+        { kind: "runtime.resume" },
+      ],
+      next_cursor: null,
+    });
+    expect(page.events).toEqual([
+      expect.objectContaining({ id: "e1", kind: "runtime.pause", actor_name: "Cheese", target_id: "r1" }),
+      expect.objectContaining({ id: "e2", kind: "", at: "", actor_name: null, target_id: null }),
+    ]);
+  });
+
+  it("keeps planned times and deploys, and falls back when malformed", () => {
+    const planned = MachinePlannedSchema.parse({
+      timezone: "Asia/Ho_Chi_Minh",
+      next_runs: ["2026-11-19T02:00:00+07:00", 5],
+      server_deploys: [{ commit: "abc1234", version: "0.7.1", started_at: "2026-11-18T10:00:00Z" }, { version: "x" }],
+    });
+    expect(planned.next_runs).toEqual(["2026-11-19T02:00:00+07:00"]);
+    expect(planned.server_deploys).toEqual([{ commit: "abc1234", version: "0.7.1", started_at: "2026-11-18T10:00:00Z" }]);
+    expect(MachinePlannedSchema.parse({ next_runs: "x", server_deploys: null })).toEqual({
+      timezone: "Asia/Ho_Chi_Minh",
+      next_runs: [],
+      server_deploys: [],
+    });
   });
 });
