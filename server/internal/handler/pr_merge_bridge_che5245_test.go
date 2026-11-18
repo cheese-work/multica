@@ -254,7 +254,7 @@ func TestPRMergeBridgeKeepsChecksRedAndDeadline(t *testing.T) {
 
 func saveBridgeWorkflow(t *testing.T, id string, steps []map[string]any) *testutil.Response {
 	t.Helper()
-	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+id, map[string]any{"steps": steps}), "id", id)
+	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+id, map[string]any{"steps": steps, "lint_override": "bare-status fixture"}), "id", id)
 	req.Header.Set("X-Actor-Source", "interactive_jwt")
 	return testutil.Call(t, testHandler.UpdateIssueWorkflow, req)
 }
@@ -291,7 +291,7 @@ func TestPRMergedEdgeSaveFollowsSetting(t *testing.T) {
 		wf := createTestWorkflowSteps(t, "Stored "+workflowTestSuffix(), bridgeSteps)
 		setWorkspacePRMergeStatusForTest(t, "merged")
 		saveBridgeWorkflow(t, wf.ID, bridgeSteps).Want(http.StatusOK)
-		req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, map[string]any{"name": "Renamed " + workflowTestSuffix()}), "id", wf.ID)
+		req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, map[string]any{"name": "Renamed " + workflowTestSuffix(), "lint_override": "bare-status fixture"}), "id", wf.ID)
 		req.Header.Set("X-Actor-Source", "interactive_jwt")
 		testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusOK)
 	})
