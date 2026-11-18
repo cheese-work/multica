@@ -2,9 +2,11 @@ package browserlease
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -34,9 +36,11 @@ type Grant struct {
 	Withdrawn   bool
 }
 
-// GrantSource finds a once-per-issue grant by decision id. ok is false for any other decision.
+// GrantSource finds the once-per-issue grant that the lease's decision is. ok is false for any
+// other decision. An error says the decision is named but cannot count (ErrDecisionRequired
+// while unanswered, ErrDecisionInvalid otherwise).
 type GrantSource interface {
-	Grant(ctx context.Context, ws, decision pgtype.UUID) (g Grant, ok bool, err error)
+	Grant(ctx context.Context, s Subject) (g Grant, ok bool, err error)
 }
 
 // IssueState says whether an issue reached a done or closed status.
@@ -57,7 +61,7 @@ func (o OncePerIssue) Validate(ctx context.Context, s Subject) (*time.Time, erro
 	if !s.DecisionID.Valid {
 		return o.Next.Validate(ctx, s)
 	}
-	g, ok, err := o.Grants.Grant(ctx, s.WorkspaceID, s.DecisionID)
+	g, ok, err := o.Grants.Grant(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -100,4 +104,72 @@ func (q QueryIssueState) Closed(ctx context.Context, ws, issue pgtype.UUID) (boo
 		return false, errors.Join(errors.New("read issue status for browser grant"), err)
 	}
 	return closed, nil
+}
+
+// onceHeading starts the decision text of a once-per-issue ask. It differs from the per-lease
+// heading, so a per-lease decision is never read as a grant. The lines after it are the ones of
+// ScopeDecision; the duration line is the decision's own duration (0 names none, 7 days cap it).
+const onceHeading = "Lease a browser on this issue, once for all its tasks?"
+
+// OnceScopeDecision renders the decision text of the once-per-issue ask (ask_json "decision").
+func OnceScopeDecision(s Scope) string { return renderScope(onceHeading, s) }
+
+// DBGrants reads once-per-issue grants from the decision store, with the same answer rules as
+// DecisionValidator: a human decision, answered with ApproveLabel by an allowed answerer.
+type DBGrants struct {
+	Queries *db.Queries
+	Now     func() time.Time
+}
+
+func (g DBGrants) Grant(ctx context.Context, s Subject) (Grant, bool, error) {
+	d, err := g.Queries.GetBrowserLeaseDecision(ctx, db.GetBrowserLeaseDecisionParams{WorkspaceID: s.WorkspaceID, ID: s.DecisionID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Grant{}, false, nil
+	}
+	if err != nil {
+		return Grant{}, false, err
+	}
+	var ask struct {
+		Decision string `json:"decision"`
+	}
+	if json.Unmarshal(d.AskJson, &ask) != nil {
+		return Grant{}, false, nil
+	}
+	scope, once := parseScopeUnder(onceHeading, ask.Decision)
+	if !once {
+		return Grant{}, false, nil
+	}
+	now := time.Now().UTC()
+	if g.Now != nil {
+		now = g.Now().UTC()
+	}
+	if err := checkApproved(d, s, now); err != nil {
+		return Grant{}, true, err
+	}
+	if scope.Duration < 0 || d.AnswerEffectiveAt.Time.After(now) {
+		return Grant{}, true, invalid("grant not yet effective or duration invalid")
+	}
+	grant := Grant{
+		DecisionID: s.DecisionID, WorkspaceID: s.WorkspaceID, IssueID: scope.IssueID, AgentID: scope.AgentID,
+		ProfileID: scope.ProfileID, AnsweredAt: d.AnswerEffectiveAt.Time,
+	}
+	if scope.Class != ClassS2 {
+		return Grant{}, true, invalid("a once-per-issue grant covers S2 only")
+	}
+	if scope.Duration > 0 {
+		end := d.AnswerEffectiveAt.Time.Add(scope.Duration)
+		grant.EndsAt = &end
+	}
+	if d.ExpiresAt.Valid && (grant.EndsAt == nil || d.ExpiresAt.Time.Before(*grant.EndsAt)) {
+		end := d.ExpiresAt.Time
+		grant.EndsAt = &end
+	}
+	return grant, true, nil
+}
+
+// NewDecisions is the Decisions hook of the live service: a once-per-issue grant is judged by
+// OncePerIssue over the decision store and the issue row; any other decision by the per-lease
+// DecisionValidator (CHE-4740).
+func NewDecisions(q *db.Queries) Decisions {
+	return OncePerIssue{Grants: DBGrants{Queries: q}, Issues: QueryIssueState{Queries: q}, Next: &DecisionValidator{Queries: q}}
 }

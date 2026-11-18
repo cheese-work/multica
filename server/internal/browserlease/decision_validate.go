@@ -41,17 +41,21 @@ type Scope struct {
 
 // ScopeDecision renders the decision text of the ask (ask_json "decision"). The validator
 // reads the scope back from these lines, so the request that W3-10 creates must use it.
-func ScopeDecision(s Scope) string {
-	return fmt.Sprintf("%s\n%s: %s\n%s: %s\n%s: %s\n%s: %s\n%s: %d", scopeHeading,
-		keyAgent, uuid.UUID(s.AgentID.Bytes), keyIssue, uuid.UUID(s.IssueID.Bytes),
+func ScopeDecision(s Scope) string { return renderScope(scopeHeading, s) }
+
+func renderScope(heading string, s Scope) string {
+	return fmt.Sprintf("%s\n%s: %s\n%s: %s\n%s: %s\n%s: %s\n%s: %d",
+		heading, keyAgent, uuid.UUID(s.AgentID.Bytes), keyIssue, uuid.UUID(s.IssueID.Bytes),
 		keyProfile, uuid.UUID(s.ProfileID.Bytes), keyClass, s.Class, keyDurationS, int64(s.Duration/time.Second))
 }
 
 // parseScope reads the lines ScopeDecision writes. Any other shape, a repeated or an extra
 // line, is not a scope.
-func parseScope(decision string) (Scope, bool) {
+func parseScope(decision string) (Scope, bool) { return parseScopeUnder(scopeHeading, decision) }
+
+func parseScopeUnder(heading, decision string) (Scope, bool) {
 	lines := strings.Split(decision, "\n")
-	if len(lines) != scopeKeyCount+1 || lines[0] != scopeHeading {
+	if len(lines) != scopeKeyCount+1 || lines[0] != heading {
 		return Scope{}, false
 	}
 	got := map[string]string{}
@@ -101,29 +105,9 @@ func (v *DecisionValidator) Validate(ctx context.Context, s Subject) (*time.Time
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	if v.Now != nil {
-		now = v.Now().UTC()
-	}
-	switch {
-	case d.Authority != "human":
-		return nil, invalid("decision needs human authority")
-	case d.IssueID != s.IssueID || d.AskingAgentID != s.AgentID:
-		return nil, invalid("decision belongs to another agent or issue")
-	case d.Status == "cancelled" || d.WithdrawnAt.Valid:
-		return nil, invalid("decision withdrawn or cancelled")
-	case d.Status == "disclaimed":
-		return nil, invalid("decision answer disclaimed")
-	case d.ExpiresAt.Valid && !d.ExpiresAt.Time.After(now):
-		return nil, invalid("decision expired")
-	case d.Status == "open":
-		return nil, ErrDecisionRequired
-	case !d.AnswerText.Valid:
-		return nil, invalid("decision has no live answer")
-	case !isApproval(d):
-		return nil, invalid("answer is not the approving option")
-	case !mayAnswer(d, s):
-		return nil, invalid("answerer may not decide this class")
+	now := v.now()
+	if err := checkApproved(d, s, now); err != nil {
+		return nil, err
 	}
 	var ask struct {
 		Decision string `json:"decision"`
@@ -186,4 +170,38 @@ func mayAnswer(d db.GetBrowserLeaseDecisionRow, s Subject) bool {
 		return true
 	}
 	return s.Profile.Class == ClassS2 && d.AnsweredByUserID == s.UserID
+}
+
+func (v *DecisionValidator) now() time.Time {
+	if v.Now != nil {
+		return v.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// checkApproved holds the rules every lease decision shares, per-lease or once per issue: a
+// human decision for this agent and issue, still standing, answered with the approving option by
+// an allowed answerer.
+func checkApproved(d db.GetBrowserLeaseDecisionRow, s Subject, now time.Time) error {
+	switch {
+	case d.Authority != "human":
+		return invalid("decision needs human authority")
+	case d.IssueID != s.IssueID || d.AskingAgentID != s.AgentID:
+		return invalid("decision belongs to another agent or issue")
+	case d.Status == "cancelled" || d.WithdrawnAt.Valid:
+		return invalid("decision withdrawn or cancelled")
+	case d.Status == "disclaimed":
+		return invalid("decision answer disclaimed")
+	case d.ExpiresAt.Valid && !d.ExpiresAt.Time.After(now):
+		return invalid("decision expired")
+	case d.Status == "open":
+		return ErrDecisionRequired
+	case !d.AnswerText.Valid:
+		return invalid("decision has no live answer")
+	case !isApproval(d):
+		return invalid("answer is not the approving option")
+	case !mayAnswer(d, s):
+		return invalid("answerer may not decide this class")
+	}
+	return nil
 }

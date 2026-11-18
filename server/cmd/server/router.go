@@ -479,9 +479,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Fail closed until W3-4 (signer), W3-8/9 (user gate) and W3-10/11 (decisions) fill the seams.
+	// Fail closed until W3-4 (signer) and W3-8/9 (user gate) fill the seams. Decisions are live: an
+	// answered decision (per lease or once per issue) is validated at every mint, renew and queued grant.
 	h.BrowserLeases = &browserlease.Service{
-		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: browserlease.DenyAll{},
+		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: browserlease.NewDecisions(queries),
 		Registry: browserlease.NameRegistry{Queries: queries},
 		Class3:   loadBrowserClass3Deny(),
 	}

@@ -20,10 +20,10 @@ type fakeGrants struct {
 	m  map[pgtype.UUID]Grant
 }
 
-func (f *fakeGrants) Grant(_ context.Context, _, id pgtype.UUID) (Grant, bool, error) {
+func (f *fakeGrants) Grant(_ context.Context, s Subject) (Grant, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	g, ok := f.m[id]
+	g, ok := f.m[s.DecisionID]
 	return g, ok, nil
 }
 
@@ -228,7 +228,7 @@ func TestWithdrawingTheDecisionRevokesEveryLeaseItCovers(t *testing.T) {
 	}
 
 	rv := &Revoker{Queries: g.svc.Queries, Bus: bus}
-	got, err := rv.RevokeDecision(context.Background(), g.ws, g.grant.DecisionID)
+	got, err := rv.RevokeDecision(context.Background(), g.ws, g.grant.DecisionID, ReasonDecisionWithdrawn)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("revoked %d leases, err=%v; want 2", len(got), err)
 	}
@@ -251,10 +251,10 @@ func TestWithdrawingTheDecisionRevokesEveryLeaseItCovers(t *testing.T) {
 
 func TestRevokeDecisionNeedsAWorkspaceAndADecision(t *testing.T) {
 	rv := &Revoker{}
-	if _, err := rv.RevokeDecision(context.Background(), pgtype.UUID{}, newUUID()); !errors.Is(err, ErrNoWorkspace) {
+	if _, err := rv.RevokeDecision(context.Background(), pgtype.UUID{}, newUUID(), ReasonDecisionWithdrawn); !errors.Is(err, ErrNoWorkspace) {
 		t.Fatalf("no workspace: %v", err)
 	}
-	if _, err := rv.RevokeDecision(context.Background(), newUUID(), pgtype.UUID{}); err == nil {
+	if _, err := rv.RevokeDecision(context.Background(), newUUID(), pgtype.UUID{}, ReasonDecisionWithdrawn); err == nil {
 		t.Fatal("an empty decision id would revoke the whole workspace")
 	}
 }
@@ -280,6 +280,12 @@ func TestQueryIssueStateReadsStatusAndCategory(t *testing.T) {
 func (e *env) insertIssue(status string) pgtype.UUID {
 	e.t.Helper()
 	id := newUUID()
+	e.insertIssueWithID(id, status)
+	return id
+}
+
+func (e *env) insertIssueWithID(id pgtype.UUID, status string) {
+	e.t.Helper()
 	ctx := context.Background()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO workspace (id, name, slug) VALUES ($1, 'w3-19', $2) ON CONFLICT DO NOTHING`, e.ws, "w3-19-"+uuid.NewString()); err != nil {
@@ -293,7 +299,6 @@ func (e *env) insertIssue(status string) pgtype.UUID {
 		e.t.Fatal(err)
 	}
 	e.t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, id) })
-	return id
 }
 
 func TestQueryIssueStateHonoursACustomDoneCategory(t *testing.T) {

@@ -47,9 +47,6 @@ type Revoker struct {
 // ErrNoWorkspace rejects a filter without a workspace: it would match every workspace.
 var ErrNoWorkspace = errors.New("browserlease: revoke needs a workspace")
 
-// ErrNoDecision rejects a decision revoke without a decision id.
-var ErrNoDecision = errors.New("browserlease: revoke needs a decision")
-
 // Revoke ends every queued or active lease that matches f and publishes one revoke event per
 // lease before it returns. A lease that already ended is left alone and emits nothing.
 //
