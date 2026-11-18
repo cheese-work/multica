@@ -178,6 +178,8 @@ var concurrentIndexCleanups = map[string]string{
 	"999i_weekly_run_guard_allowance_issue_idx":                 "weekly_run_guard_allowance_issue_idx",
 	"999j_weekly_run_guard_refusal_action_idx":                  "weekly_run_guard_refusal_action_idx",
 	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
+	"999n_daemon_update_cycle_fire_uidx":                        "daemon_update_cycle_fire_uidx",
+	"999o_daemon_update_cycle_open_uidx":                        "daemon_update_cycle_open_uidx",
 	"999f_task_supplement_replay_due_idx":                       "task_supplement_replay_due_idx",
 	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
@@ -557,18 +559,6 @@ var concurrentIndexCleanups = map[string]string{
 	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
 	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
 	"930_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
-	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
-	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
-	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",
-	"916_ask_recovery_notice_comment_index":                     "idx_ask_recovery_notice_comment",
-	"918_ask_repair_root_task_index":                            "idx_ask_repair_root_task",
-	"99970_system1_label_labeller_key_idx":                      "system1_label_labeller_key",
-	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
-	"999h_weekly_run_guard_refusal_open_uidx":                   "weekly_run_guard_refusal_open_uidx",
-	"999i_weekly_run_guard_allowance_issue_idx":                 "weekly_run_guard_allowance_issue_idx",
-	"999j_weekly_run_guard_refusal_action_idx":                  "weekly_run_guard_refusal_action_idx",
-	"99996_dm_progress_pending_lineage_created_idx":             "dm_progress_pending_lineage_created_idx",
-	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
 }
 
 type requiredConcurrentIndex struct {
