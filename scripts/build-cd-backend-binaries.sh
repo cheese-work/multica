@@ -1,58 +1,72 @@
 #!/usr/bin/env bash
 # Compile the CD backend binaries on the CI runner so the image build only
-# packages them (CHE-7209). Same commands, flags and stamps as the Dockerfile
-# builder stages; the Go toolchain is the one the Dockerfile pins.
+# packages them (CHE-7209), with a GHA Go cache at fixed paths (CHE-7211).
+# Same commands, flags and stamps as the Dockerfile builder stages; the Go
+# toolchain is the one the Dockerfile pins.
 #
-# Env (required): RUNNER_TEMP GITHUB_SHA VERSION BUILD GOCACHE GOMODCACHE
-# Env (optional): CD_BACKEND_OUT   output dir (default $RUNNER_TEMP/cd-go/out)
+# Usage: build-cd-backend-binaries.sh guard   refuse a non-empty work dir, create it
+#        build-cd-backend-binaries.sh [build] compile (default)
+#
+# Everything lives under one work dir, /tmp/multica-go-cd (CD_GO_BASE overrides it
+# for tests): the source worktree src/, the toolchain go/, the module cache mod/,
+# the build cache build/ and the output out/. The cache paths are the same on every
+# runner, because Go keys cache objects by path and GitHub keys a cache entry by
+# its paths. "guard" runs before the cache restore; the workflow removes the work
+# dir when the job ends and the runner entrypoint wipes /tmp.
+#
+# Env (required): GITHUB_SHA VERSION BUILD GOCACHE GOMODCACHE   (build mode)
+# Env (optional): CD_BACKEND_OUT   output dir (default $CD_GO_BASE/out)
 #                 DATE             daemon build date stamp (default "unknown")
-#
-# GOCACHE and GOMODCACHE must be empty directories inside $RUNNER_TEMP: a job
-# never reads a cache another job wrote, and nothing lands in ~/.cache, ~/go or
-# the runner workspace root (CHE-2557). The workflow removes $RUNNER_TEMP/cd-go
-# when the job ends.
+#                 CD_GO_EXTRA_FLAGS extra go flags, e.g. -x (default none)
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail() { echo "::error::build-cd-backend-binaries: $*" >&2; exit 1; }
 
-: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+mode="${1:-build}"
+base="${CD_GO_BASE:-/tmp/multica-go-cd}"
+case "$base" in
+  /*) ;;
+  *) fail "Go work dir $base is not an absolute path" ;;
+esac
+case "$base" in
+  */../*|*/..|*/./*|*/.|//*|/) fail "Go work dir $base is not a normalized path" ;;
+esac
+
+if [ "$mode" = guard ]; then
+  # A leftover work dir would carry a stale cache or toolchain into this job.
+  if [ -e "$base" ] && { [ ! -d "$base" ] || [ -n "$(ls -A -- "$base")" ]; }; then
+    fail "Go work dir $base is not empty: refusing to reuse a cache the job does not own"
+  fi
+  mkdir -p -- "$base"
+  echo "guard: Go work dir $base is empty at start (runner ${RUNNER_NAME:-unknown})"
+  exit 0
+fi
+[ "$mode" = build ] || fail "unknown mode '$mode' (use guard or build)"
+
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 : "${VERSION:?VERSION is required}"
 : "${BUILD:?BUILD is required}"
 COMMIT="$GITHUB_SHA"
 DATE="${DATE:-unknown}"
 
-temp="$(realpath -m -- "$RUNNER_TEMP")"
-base="$temp/cd-go"
-
-# --- Cache guard: runs before any download or compile. ---
-guard_cache() {
-  local name="$1" value resolved
-  value="${!name:-}"
-  [ -n "$value" ] || fail "$name is not set: the Go cache must be a job-scoped directory under RUNNER_TEMP"
-  resolved="$(realpath -m -- "$value")"
-  case "$resolved" in
-    "$temp"/?*) ;;
-    *) fail "$name=$value is outside RUNNER_TEMP ($temp): refusing to use a cache the job does not own" ;;
-  esac
-  if [ -e "$resolved" ] && [ ! -d "$resolved" ]; then
-    fail "$name=$value is not a directory"
-  fi
-  if [ -d "$resolved" ] && [ -n "$(ls -A -- "$resolved")" ]; then
-    fail "$name=$value is not empty: the Go cache must be empty at the start of the job"
-  fi
-  mkdir -p -- "$resolved"
-  printf -v "$name" '%s' "$resolved"
-  echo "cache guard: $name=$resolved is empty at start (runner ${RUNNER_NAME:-unknown})"
-}
-guard_cache GOCACHE
-guard_cache GOMODCACHE
+# --- Path guard: runs before any download or compile. ---
+[ "$root" = "$base/src" ] || fail "source tree $root is not $base/src: Go keys cache objects by path, so compiling elsewhere would defeat the cache"
+for name in GOCACHE GOMODCACHE; do
+  [ -n "${!name:-}" ] || fail "$name is not set: the Go cache must be a fixed directory under $base"
+done
+[ "$GOCACHE" = "$base/build" ] || fail "GOCACHE=$GOCACHE is not $base/build: the cache path must be the same on every runner"
+[ "$GOMODCACHE" = "$base/mod" ] || fail "GOMODCACHE=$GOMODCACHE is not $base/mod: the cache path must be the same on every runner"
+for dir in "$GOCACHE" "$GOMODCACHE"; do
+  if [ -e "$dir" ] && [ ! -d "$dir" ]; then fail "$dir is not a directory"; fi
+done
+mkdir -p -- "$GOCACHE" "$GOMODCACHE"
 export GOCACHE GOMODCACHE
-[ "$GOCACHE" != "$GOMODCACHE" ] || fail "GOCACHE and GOMODCACHE must be different directories"
+echo "path guard: source $root, GOCACHE=$GOCACHE ($(find "$GOCACHE" -type f | wc -l) files), GOMODCACHE=$GOMODCACHE ($(find "$GOMODCACHE" -type f | wc -l) files), runner ${RUNNER_NAME:-unknown}"
 
-out="$(realpath -m -- "${CD_BACKEND_OUT:-$base/out}")"
-case "$out" in "$temp"/?*) ;; *) fail "CD_BACKEND_OUT=$out is outside RUNNER_TEMP" ;; esac
+out="${CD_BACKEND_OUT:-$base/out}"
+case "$out" in "$base"/?*) ;; *) fail "CD_BACKEND_OUT=$out is outside $base" ;; esac
+case "$out" in *..*) fail "CD_BACKEND_OUT=$out is not a normalized path" ;; esac
 if [ -d "$out" ] && [ -n "$(ls -A -- "$out")" ]; then
   fail "CD_BACKEND_OUT=$out is not empty"
 fi
@@ -67,20 +81,22 @@ case "$go_version" in
   *) fail "no pinned checksum for Go $go_version: add it to scripts/build-cd-backend-binaries.sh" ;;
 esac
 
-mkdir -p "$base/dl" "$base/toolchain" "$base/gopath" "$base/tmp" "$base/xdg-cache" "$base/xdg-config" "$out"
+mkdir -p "$base/dl" "$base/gopath" "$base/tmp" "$base/xdg-cache" "$base/xdg-config" "$out"
 tarball="$base/dl/go${go_version}.linux-amd64.tar.gz"
 curl -fsSL --retry 3 --retry-delay 2 --max-time 300 -o "$tarball" "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz"
 echo "${go_sha256}  ${tarball}" | sha256sum -c - >/dev/null || fail "Go ${go_version} tarball checksum mismatch"
-tar -xzf "$tarball" -C "$base/toolchain"
+# The tarball holds a top-level go/ directory: the toolchain lands in $base/go.
+tar -xzf "$tarball" -C "$base"
 rm -f "$tarball"
 
-export PATH="$base/toolchain/go/bin:$PATH"
-export GOROOT="$base/toolchain/go" GOTOOLCHAIN=local GOPATH="$base/gopath" GOTMPDIR="$base/tmp"
+export PATH="$base/go/bin:$PATH"
+export GOROOT="$base/go" GOTOOLCHAIN=local GOPATH="$base/gopath" GOTMPDIR="$base/tmp"
 export XDG_CACHE_HOME="$base/xdg-cache" XDG_CONFIG_HOME="$base/xdg-config"
 # One go build at a time, at most 3 compiles in it. -buildvcs=true stamps each
 # binary with the checkout's vcs.revision and vcs.modified. -modcacherw keeps
-# the module cache removable.
-export GOFLAGS="-p=3 -buildvcs=true -modcacherw"
+# the module cache removable. CD_GO_EXTRA_FLAGS adds go flags (the local cache
+# proof passes -x to count compile actions); the workflow leaves it unset.
+export GOFLAGS="-p=3 -buildvcs=true -modcacherw${CD_GO_EXTRA_FLAGS:+ $CD_GO_EXTRA_FLAGS}"
 go version | grep -F "go${go_version} " >/dev/null || fail "toolchain is not Go ${go_version}: $(go version)"
 
 started=$SECONDS

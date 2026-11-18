@@ -124,6 +124,12 @@ jobs:
     # This label is reserved for the separate cheese-work runner set on X99;
     # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
     runs-on: [self-hosted, linux, x64, cheese-x99]
+    # actions: read lets the Go cache budget check list caches; the job deletes none
+    # (deletion stays in cache-maintenance.yml).
+    permissions:
+      contents: read
+      packages: write
+      actions: read
     # 60, not 45: a busy X99 stretched the two image builds to 44+ minutes
     # (run 39791027247, attempt 1) and the cancel skipped the C00 deploy.
     timeout-minutes: 60
@@ -173,16 +179,67 @@ jobs:
           rm -f apps/web/.fork-changelog/entries.json
           echo 'Fork entries unavailable for this build.' >> "$GITHUB_STEP_SUMMARY"
 
-      # CHE-7209: the backend binaries compile here, on the runner, with job-scoped
-      # empty Go caches, instead of cold inside the 4 GiB dind. Dockerfile.cd-backend
-      # only packages and verifies them.
+      # CHE-7209: the backend binaries compile here, on the runner, instead of cold
+      # inside the 4 GiB dind. CHE-7211: with a GHA Go cache at fixed paths. Go keys
+      # cache objects by path, so source, toolchain and caches live at the same
+      # absolute paths under /tmp/multica-go-cd on every runner.
+      - name: Resolve the Go toolchain version
+        id: goversion
+        if: matrix.image == 'backend'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^FROM golang:\([0-9][0-9.]*\)-alpine .*/\1/p' Dockerfile | head -n 1)"
+          test -n "$version"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a non-empty Go work dir
+        if: matrix.image == 'backend'
+        shell: bash
+        run: bash scripts/build-cd-backend-binaries.sh guard
+
+      - name: Restore Go module cache
+        id: restore-mod
+        if: matrix.image == 'backend'
+        uses: actions/cache/restore@v6
+        with:
+          path: /tmp/multica-go-cd/mod
+          key: go-cd-mod-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-${{ hashFiles('server/go.sum') }}
+
+      - name: Restore Go build cache
+        id: restore-build
+        if: matrix.image == 'backend'
+        uses: actions/cache/restore@v6
+        with:
+          path: /tmp/multica-go-cd/build
+          key: go-cd-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-refs/heads/main-${{ hashFiles('server/**', 'scripts/build-daemon-binaries.sh') }}
+          restore-keys: |
+            go-cd-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-refs/heads/main-
+
+      - name: Create the source worktree
+        if: matrix.image == 'backend'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Detached worktree of the exact commit at the fixed path: -buildvcs=true still
+          # records the revision, and the compile path matches the cache entries.
+          git worktree add --detach /tmp/multica-go-cd/src "$GITHUB_SHA"
+
+      - name: Mark Go build cache epoch
+        if: matrix.image == 'backend'
+        shell: bash
+        run: touch -d '-1 hour' /tmp/multica-go-cd/go-build-epoch
+
       - name: Compile backend binaries on the runner
+        id: compile
         if: matrix.image == 'backend'
         timeout-minutes: 25
+        working-directory: /tmp/multica-go-cd/src
         env:
-          GOCACHE: ${{ runner.temp }}/cd-go/build
-          GOMODCACHE: ${{ runner.temp }}/cd-go/mod
-          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
+          GOROOT: /tmp/multica-go-cd/go
+          GOCACHE: /tmp/multica-go-cd/build
+          GOMODCACHE: /tmp/multica-go-cd/mod
+          CD_BACKEND_OUT: /tmp/multica-go-cd/out
         shell: bash
         run: |
           set -euo pipefail
@@ -198,14 +255,79 @@ jobs:
       - name: Check backend payloads against the source commit
         if: matrix.image == 'backend'
         env:
-          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
+          CD_BACKEND_OUT: /tmp/multica-go-cd/out
         shell: bash
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
-          . "$RUNNER_TEMP/cd-go/stamp.env"
-          PATH="$RUNNER_TEMP/cd-go/toolchain/go/bin:$PATH" GO=go GOFLAGS=-buildvcs=true GOTOOLCHAIN=local \
+          . /tmp/multica-go-cd/stamp.env
+          PATH="/tmp/multica-go-cd/go/bin:$PATH" GO=go GOFLAGS=-buildvcs=true GOTOOLCHAIN=local \
             python3 deploy/cd/check-backend-payloads.py --dir "$CD_BACKEND_OUT" --commit "$GITHUB_SHA" --version "$VERSION" --build "$BUILD"
+
+      # Keep only the objects this run used, so the saved entry does not grow by one
+      # generation per run (same prune as main-build.yml).
+      - name: Prune Go build cache to this run's entries
+        if: ${{ !cancelled() && matrix.image == 'backend' && steps.compile.outcome == 'success' }}
+        shell: bash
+        run: |
+          find /tmp/multica-go-cd/build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
+            ! -newer /tmp/multica-go-cd/go-build-epoch -exec rm -rf {} +
+
+      # Decides per key whether a save fits the free 10 GB cache tier. Fail closed: a
+      # crash, a timeout or an unreadable cache list writes no output, so no save runs.
+      - name: Check the cache budget before saving
+        id: budget
+        if: ${{ !cancelled() && matrix.image == 'backend' && steps.compile.outcome == 'success' && (steps.restore-build.outputs.cache-hit != 'true' || steps.restore-mod.outputs.cache-hit != 'true') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_HIT: ${{ steps.restore-build.outputs.cache-hit }}
+          MODULE_HIT: ${{ steps.restore-mod.outputs.cache-hit }}
+          BUILD_KEY: go-cd-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-refs/heads/main-${{ hashFiles('server/**', 'scripts/build-daemon-binaries.sh') }}
+          MODULE_KEY: go-cd-mod-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-${{ hashFiles('server/go.sum') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          # Build entry first, then module entry: the larger, more useful one gets the room.
+          if [ "$BUILD_HIT" != true ]; then
+            args+=(--candidate "$BUILD_KEY=$(du -sb /tmp/multica-go-cd/build | cut -f1)")
+          fi
+          if [ "$MODULE_HIT" != true ]; then
+            args+=(--candidate "$MODULE_KEY=$(du -sb /tmp/multica-go-cd/mod | cut -f1)")
+          fi
+          decisions="$(python3 .github/scripts/cache-policy.py --repo "$GITHUB_REPOSITORY" --check-save "${args[@]}")"
+          echo "$decisions"
+          {
+            echo '### Go cache save decisions'
+            echo '```'
+            echo "$decisions"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          allowed() { echo "$decisions" | jq -rs --arg key "$1" 'map(select(.key == $key and .save == true)) | length > 0'; }
+          {
+            echo "build_save=$(allowed "$BUILD_KEY")"
+            echo "module_save=$(allowed "$MODULE_KEY")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Save Go build cache
+        if: ${{ !cancelled() && matrix.image == 'backend' && steps.budget.outputs.build_save == 'true' && steps.restore-build.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: actions/cache/save@v6
+        with:
+          path: /tmp/multica-go-cd/build
+          key: go-cd-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-refs/heads/main-${{ hashFiles('server/**', 'scripts/build-daemon-binaries.sh') }}
+
+      - name: Save Go module cache
+        if: ${{ !cancelled() && matrix.image == 'backend' && steps.budget.outputs.module_save == 'true' && steps.restore-mod.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: actions/cache/save@v6
+        with:
+          path: /tmp/multica-go-cd/mod
+          key: go-cd-mod-${{ runner.os }}-${{ runner.arch }}-${{ steps.goversion.outputs.version }}-${{ hashFiles('server/go.sum') }}
 
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
       # Keep those release requirements and use a named BuildKit container that
@@ -264,7 +386,7 @@ jobs:
         if: matrix.image == 'backend'
         env:
           BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
-          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
+          CD_BACKEND_OUT: /tmp/multica-go-cd/out
         shell: bash
         run: |
           set -euo pipefail
@@ -280,7 +402,7 @@ jobs:
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           # The compile step stamped the binaries with the same values.
           # shellcheck disable=SC1091
-          . "$RUNNER_TEMP/cd-go/stamp.env"
+          . /tmp/multica-go-cd/stamp.env
           test "$VERSION" = "$upstream_version"
           test "$BUILD" = "$build_stamp"
           cd_binaries_sha256="$(sha256sum "$CD_BACKEND_OUT/SHA256SUMS" | cut -d' ' -f1)"
@@ -364,14 +486,17 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # Job-scoped Go toolchain, caches and binaries (CHE-7209, CHE-2557). Runs on
-      # failure too, so a cancelled or red job leaves nothing on X99.
-      - name: Remove the job-scoped Go caches
+      # Job-scoped Go toolchain, caches, source worktree and binaries (CHE-7209,
+      # CHE-7211, CHE-2557). Runs on failure too, so a cancelled or red job leaves
+      # nothing on X99.
+      - name: Remove the job-scoped Go work dir
         if: ${{ always() && matrix.image == 'backend' }}
         shell: bash
         run: |
-          chmod -R u+w "$RUNNER_TEMP/cd-go" 2>/dev/null || true
-          rm -rf "$RUNNER_TEMP/cd-go"
+          chmod -R u+w /tmp/multica-go-cd 2>/dev/null || true
+          git worktree remove --force /tmp/multica-go-cd/src 2>/dev/null || true
+          git worktree prune || true
+          rm -rf /tmp/multica-go-cd
 
   cd-qualification:
     needs: [build-images, d1-fixtures]
