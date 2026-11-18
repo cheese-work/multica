@@ -46,12 +46,18 @@ describe("DecisionSummary budget receipt", () => {
     ["superseded:source_unknown", "Not resumed: the original trigger is unknown."],
     ["superseded:source_not_delivered", "Not resumed: the original trigger has no work left."],
     ["superseded:future", "Not resumed."],
-    ["future_token", null],
   ])("%s", (outcome, line) => {
     const got = render({ receipt: { outcome, applied_at: at, ...topUp } });
     expect(got.effect).toBe("Applied. CHE-3461 now shows 0 of 25 runs.");
     expect(got.runs).toBe("44 of 25 → 0 of 25 (new window)");
     expect(got.outcome).toBe(line);
+  });
+
+  it("an unknown top-level token shows plain Applied. with no numbers and no outcome line", () => {
+    const got = render({ receipt: { outcome: "future_token", applied_at: at, ...topUp } });
+    expect(got.effect).toBe("Applied.");
+    expect(got.runs).toBeNull();
+    expect(got.outcome).toBeNull();
   });
 
   it("a raise shows the new cap and no new-window note", () => {
