@@ -186,14 +186,13 @@ describe("annotation draft submission through the real composer", () => {
     const onSubmit = vi.fn<Submit>(async () => "posted");
     const view = renderWithI18n(<Fixture onSubmit={onSubmit} />);
     selectText(view.container);
+    const showError = vi.spyOn(toast, "error").mockReturnValue("test-toast");
     fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
-    const input = await screen.findByRole("textbox", { name: "Comment" });
-    await act(async () => { (input as HTMLElement & { editor: Editor }).editor.commands.setContent("Over quota"); });
-    await waitFor(() => expect(popup(input).getByRole("button", { name: "Add annotation" })).toBeDisabled());
-    expect(popup(input).getByRole("button", { name: "Send all" })).toBeDisabled();
-    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    // Fork wins (CHE-7026): the fork blocks an extra annotation at add time with a
+    // toast instead of opening a composer whose Add button is disabled.
+    await waitFor(() => expect(showError).toHaveBeenCalled());
+    expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();
     expect(onSubmit).not.toHaveBeenCalled();
-    fireEvent.keyDown(input, { key: "Escape" });
     fireEvent.click(await screen.findByRole("button", { name: "Edit annotation 1" }));
     const edit = await screen.findByRole("textbox", { name: "Comment" });
     await type(edit, "Revised at quota");
