@@ -592,3 +592,43 @@ func TestBuildSearchQuery_CandidatesUseOneDrivingPattern(t *testing.T) {
 		t.Errorf("short-only query reads comments:\n%s", commentSource)
 	}
 }
+
+// CHE-7336: a short term of a multi-term query matches nearly every comment, so
+// the comment aggregate must not read comments for it (a sort and an aggregate
+// over the whole workspace when the driving term is widespread). It is asked once
+// per query, as a hashed lookup in the eligibility rule.
+func TestBuildSearchQuery_ShortTermDoesNotDriveCommentAggregate(t *testing.T) {
+	for _, q := range []string{"fuzzy s", "fuzzy se", "s fuzzy", "local db"} {
+		query, args := buildSearchQuery(q, splitSearchTerms(q), 0, false, false, []string{"done", "cancelled"})
+		start := strings.Index(query, "comment_matches AS MATERIALIZED")
+		end := strings.Index(query, "issue_matches AS (")
+		if start < 0 || end < start {
+			t.Fatalf("%q: comment_matches CTE not found:\n%s", q, query)
+		}
+		aggregate := query[start:end]
+		eligibility := query[end:]
+		shortParams := 0
+		for i, a := range args {
+			pattern, ok := a.(string)
+			if !ok || len(pattern) < 2 || pattern[0] != '%' || pattern[len(pattern)-1] != '%' {
+				continue
+			}
+			if len([]rune(strings.Trim(pattern, "%"))) >= 3 {
+				continue
+			}
+			shortParams++
+			param := fmt.Sprintf("$%d", i+1)
+			for _, flag := range []string{"BOOL_OR(lowered_comment.lowered LIKE " + param + ")", "content_folded LIKE " + param + " OR", "OR content_folded LIKE " + param} {
+				if strings.Contains(aggregate, flag) {
+					t.Errorf("%q: the comment aggregate reads the short pattern %s (%q):\n%s", q, param, pattern, aggregate)
+				}
+			}
+			if !strings.Contains(eligibility, "SELECT issue_id FROM comment_search_text WHERE workspace_id = $4 AND content_folded LIKE "+param+")") {
+				t.Errorf("%q: eligibility has no hashed lookup for the short pattern %s:\n%s", q, param, eligibility)
+			}
+		}
+		if shortParams == 0 {
+			t.Fatalf("%q: no short pattern found in the arguments", q)
+		}
+	}
+}

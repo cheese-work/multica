@@ -1181,7 +1181,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// term of 3 or more characters. A single term is the phrase, which was the only
 	// pattern before, so a short one keeps its candidates when it is a number
 	// (issue 12 and text that mentions 12).
-	drivingParam, longest := "", 2
+	const shortTermLen = 2
+	drivingParam, longest := "", shortTermLen
 	if len(terms) == 1 {
 		if hasNum || utf8.RuneCountInString(terms[0]) > longest {
 			drivingParam = phraseContainsParam
@@ -1192,6 +1193,24 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 				drivingParam, longest = termContainsParams[index], n
 			}
 		}
+	}
+
+	// A short term of a multi-term query matches nearly every comment, so reading
+	// each of them to set its flag costs a sort and an aggregate over the whole
+	// workspace. Comments are read for the patterns that can be served by a trigram
+	// index only; a short term asks the question "does any comment hold it" once, as
+	// a hashed lookup, in the eligibility rule below.
+	commentReadParams := []string{phraseContainsParam}
+	shortTerm := make([]bool, len(termContainsParams))
+	for index, term := range terms {
+		if len(termContainsParams) == 0 {
+			break
+		}
+		if utf8.RuneCountInString(term) <= shortTermLen {
+			shortTerm[index] = true
+			continue
+		}
+		commentReadParams = append(commentReadParams, termContainsParams[index])
 	}
 
 	terminalStatusesParam := ""
@@ -1315,12 +1334,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	commentCandidateFlags := []string{"aggregated_comments.comment_phrase"}
 	commentTerms := make([]string, 0, len(termContainsParams))
 	for index, termParam := range termContainsParams {
+		commentTerms = append(commentTerms, fmt.Sprintf("%s LIKE %s", loweredCommentContent, termParam))
+		if shortTerm[index] {
+			continue
+		}
 		alias := fmt.Sprintf("comment_term_%d", index)
 		commentFlagColumns = append(commentFlagColumns,
 			fmt.Sprintf("BOOL_OR(%s LIKE %s) AS %s", loweredCommentContent, termParam, alias),
 		)
 		commentCandidateFlags = append(commentCandidateFlags, "aggregated_comments."+alias)
-		commentTerms = append(commentTerms, fmt.Sprintf("%s LIKE %s", loweredCommentContent, termParam))
 	}
 
 	commentSnippetPredicate := fmt.Sprintf("%s LIKE %s", loweredCommentContent, phraseContainsParam)
@@ -1367,7 +1389,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
-		searchCommentSource(wsParam, textLikeParams, drivingParam != ""),
+		searchCommentSource(wsParam, commentReadParams, drivingParam != ""),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
@@ -1390,10 +1412,14 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	if len(termContainsParams) > 1 {
 		var allTerms []string
 		for index := range termContainsParams {
+			commentHasTerm := fmt.Sprintf("COALESCE(cm.comment_term_%d, FALSE)", index)
+			if shortTerm[index] {
+				commentHasTerm = fmt.Sprintf(
+					"im.issue_id IN (SELECT issue_id FROM comment_search_text WHERE workspace_id = %s AND content_folded LIKE %s)",
+					wsParam, termContainsParams[index])
+			}
 			allTerms = append(allTerms, fmt.Sprintf(
-				"(im.title_term_%[1]d OR im.description_term_%[1]d OR COALESCE(cm.comment_term_%[1]d, FALSE))",
-				index,
-			))
+				"(im.title_term_%[1]d OR im.description_term_%[1]d OR %[2]s)", index, commentHasTerm))
 		}
 		eligibleParts = append(eligibleParts, "("+strings.Join(allTerms, " AND ")+")")
 	}

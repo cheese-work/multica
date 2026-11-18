@@ -60,7 +60,7 @@ var benchVocabulary = strings.Fields(`
 	improve update remove create delete rename split extract inline format
 	network latency bandwidth throughput capacity monitor alert metric trace
 	feature flag rollout experiment variant control metric dashboard report
-	billing invoice payment refund currency tax region dialect language
+	billing invoice payment refund currency tax region locale language
 	upload download stream buffer chunk encode decode compress archive
 	notification inbox digest schedule reminder calendar timezone holiday
 `)
