@@ -65,8 +65,12 @@ type AgentRuntimeResponse struct {
 	// (CHE-2430). Pause is null when the machine takes claims;
 	// DaemonRunningTasks counts dispatched and running tasks across every
 	// runtime on the same daemon.
-	Pause              *RuntimePauseResponse `json:"pause"`
-	DaemonRunningTasks *int                  `json:"daemon_running_tasks"`
+	Pause              *RuntimePauseResponse   `json:"pause"`
+	DaemonRunningTasks *int                    `json:"daemon_running_tasks"`
+	UpdateSchedule     *UpdateScheduleResponse `json:"update_schedule"`
+	LastUpdateOutcome  *string                 `json:"last_update_outcome"`
+	// LastUpdateOutcomeAt is when that cycle finished (CHE-5708).
+	LastUpdateOutcomeAt *string `json:"last_update_outcome_at"`
 }
 
 func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
@@ -1342,6 +1346,10 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.attachDaemonPauseState(r.Context(), parseUUID(workspaceID), runtimes, resp); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load machine pause state")
+		return
+	}
+	if err := h.attachUpdateSchedules(r, runtimes, resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load update schedules")
 		return
 	}
 

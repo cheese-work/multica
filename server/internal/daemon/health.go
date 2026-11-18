@@ -15,6 +15,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/guard"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -533,6 +534,29 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		req.TaskID = activeTask.TaskID
 		req.AgentName = activeTask.AgentName
 		req.WorkDir = authorizedWorkDir
+
+		// The task token selects the workspace policy, never caller input.
+		settings := d.workspaceSettings(activeTask.WorkspaceID)
+		var stored struct {
+			GuardPolicy json.RawMessage `json:"guard_policy"`
+		}
+		if len(settings) > 0 {
+			if err := json.Unmarshal(settings, &stored); err != nil {
+				http.Error(w, "repository allowlist: unreadable workspace settings", http.StatusForbidden)
+				return
+			}
+		}
+		if len(stored.GuardPolicy) > 0 && string(stored.GuardPolicy) != "null" {
+			policy, err := guard.ParsePolicy(stored.GuardPolicy)
+			if err != nil {
+				http.Error(w, "repository allowlist: invalid workspace policy", http.StatusForbidden)
+				return
+			}
+			if err := policy.CheckRepository(req.URL); err != nil {
+				http.Error(w, "repository allowlist: "+err.Error(), http.StatusForbidden)
+				return
+			}
+		}
 
 		if d.repoCache == nil {
 			http.Error(w, "repo cache not initialized", http.StatusInternalServerError)

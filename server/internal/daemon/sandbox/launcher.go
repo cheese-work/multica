@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,62 @@ func (l *Launcher) Command(ctx context.Context, spec Spec) (*Run, error) {
 	return &Run{Cmd: cmd, log: l.logger(), began: time.Now()}, nil
 }
 
+// Wrap turns a prepared cmd into a sandboxed run in place, so the caller keeps
+// its own pipes, cancel and wait handling. Start cmd itself, call Started right
+// after, and Close after Wait. In ModeOn a refusal leaves cmd untouched and
+// there is no unsandboxed fallback. cmd.Env becomes the complete environment
+// (nil means empty, never inherited) and an empty cmd.Dir runs in spec.WorkDir.
+func (l *Launcher) Wrap(cmd *exec.Cmd, spec Spec) (*Run, error) {
+	spec.Env, spec.Argv = cmd.Env, append([]string{cmd.Path}, cmd.Args[min(1, len(cmd.Args)):]...)
+	if cmd.Dir != "" {
+		spec.chdir = cmd.Dir
+	}
+	switch l.Mode {
+	case ModeOn:
+		if err := checkWrap(cmd, spec); err != nil {
+			return nil, err
+		}
+		if err := l.SelfCheck(context.Background()); err != nil {
+			return nil, err
+		}
+		return l.wrap(cmd, spec)
+	case ModeAudit:
+		if err := checkWrap(cmd, spec); err != nil {
+			l.logger().Warn("sandbox audit: would refuse", "reason", err)
+		}
+		l.audit(context.Background(), spec)
+	}
+	return &Run{Cmd: cmd, log: l.logger(), began: time.Now()}, nil
+}
+
+// checkWrap refuses commands whose own settings the sandbox cannot honour.
+func checkWrap(cmd *exec.Cmd, spec Spec) error {
+	if cmd.Err != nil {
+		return cmd.Err
+	}
+	if len(cmd.ExtraFiles) > 0 {
+		return errors.New("sandbox: command already has ExtraFiles")
+	}
+	if cmd.Dir != "" && (!filepath.IsAbs(cmd.Dir) || !within(filepath.Clean(cmd.Dir), spec.WorkDir)) {
+		return fmt.Errorf("sandbox: command Dir %q is outside the work dir", cmd.Dir)
+	}
+	return nil
+}
+
+func (l *Launcher) wrap(cmd *exec.Cmd, spec Spec) (*Run, error) {
+	path, args, pins, sc, err := l.prepare(spec)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Path, cmd.Args = path, append([]string{path}, args...)
+	cmd.Env, cmd.Dir, cmd.ExtraFiles = spec.environ(), "", pins
+	sc.attach(cmd)
+	if orig := cmd.Cancel; orig != nil {
+		cmd.Cancel = func() error { _ = sc.kill(); return orig() }
+	}
+	return &Run{Cmd: cmd, scope: sc, pins: pins, log: l.logger(), began: time.Now()}, nil
+}
+
 func (l *Launcher) audit(ctx context.Context, spec Spec) {
 	if err := l.SelfCheck(ctx); err != nil {
 		l.logger().Warn("sandbox audit: would refuse", "reason", err)
@@ -82,18 +139,9 @@ func (l *Launcher) audit(ctx context.Context, spec Spec) {
 }
 
 func (l *Launcher) build(ctx context.Context, spec Spec) (*Run, error) {
-	path, err := exec.LookPath(l.bwrap())
-	if err != nil {
-		return nil, err
-	}
 	began := time.Now()
-	args, pins, err := l.pinned(spec)
+	path, args, pins, sc, err := l.prepare(spec)
 	if err != nil {
-		return nil, err
-	}
-	sc, err := newScope(l.CgroupRoot)
-	if err != nil {
-		closeFiles(pins)
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
@@ -101,6 +149,20 @@ func (l *Launcher) build(ctx context.Context, spec Spec) (*Run, error) {
 	cmd.ExtraFiles = pins
 	sc.attach(cmd)
 	return &Run{Cmd: cmd, scope: sc, pins: pins, log: l.logger(), began: began}, nil
+}
+
+// prepare resolves bwrap, pins the mount sources and creates the run cgroup.
+func (l *Launcher) prepare(spec Spec) (path string, args []string, pins []*os.File, sc *scope, err error) {
+	if path, err = exec.LookPath(l.bwrap()); err != nil {
+		return
+	}
+	if args, pins, err = l.pinned(spec); err != nil {
+		return
+	}
+	if sc, err = newScope(l.CgroupRoot); err != nil {
+		closeFiles(pins)
+	}
+	return
 }
 
 func closeFiles(fs []*os.File) {
@@ -150,13 +212,19 @@ func (s Spec) mkdirs() Spec {
 // Start starts the command and logs how long the launcher took.
 func (r *Run) Start() error {
 	err := r.Cmd.Start()
+	r.Started()
+	r.log.Debug("sandbox start", "elapsed", time.Since(r.began), "sandboxed", r.scope != nil, "error", err)
+	return err
+}
+
+// Started releases the mount pins and the cgroup handle. Call it right after
+// Cmd.Start when the caller starts the command itself (see Wrap).
+func (r *Run) Started() {
 	closeFiles(r.pins)
 	r.pins = nil
 	if r.scope != nil {
 		r.scope.releaseFD()
 	}
-	r.log.Debug("sandbox start", "elapsed", time.Since(r.began), "sandboxed", r.scope != nil, "error", err)
-	return err
 }
 
 // Kill SIGKILLs everything the run started, including re-parented children.

@@ -37,6 +37,8 @@ type Spec struct {
 	// NoDaemonAPI opts out of the daemon API forward: output-only runs and the
 	// self-check. Without it, an enforcement-on launch needs DaemonSocket.
 	NoDaemonAPI bool
+
+	chdir string // working directory inside WorkDir; Wrap sets it from cmd.Dir
 }
 
 var (
@@ -135,7 +137,11 @@ func (s Spec) args(pins []*os.File, bridgeExe string) []string {
 		}
 		args = append(args, flag, src, b.target())
 	}
-	args = append(args, "--chdir", s.WorkDir, "--")
+	chdir := s.WorkDir
+	if s.chdir != "" {
+		chdir = s.chdir
+	}
+	args = append(args, "--chdir", chdir, "--")
 	return append(args, s.command()...)
 }
 

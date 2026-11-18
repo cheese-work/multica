@@ -199,3 +199,23 @@ func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	}
 	return ErrWeeklyRunGuard
 }
+
+// weeklyGuardAdmits reports whether the guard would let a run of the agent
+// through now: under the limit, the guard off, or past the limit with an unused
+// progress event and below the ceiling. It only reads.
+func weeklyGuardAdmits(ctx context.Context, q *db.Queries, issueID, agentID pgtype.UUID) (bool, error) {
+	limit, err := WeeklyRunGuardLimit(ctx, q, issueID)
+	if err != nil || limit <= 0 || weeklyRunGuardMode(ctx, q, issueID) != WeeklyRunGuardBlock {
+		return err == nil, err
+	}
+	since := pgtype.Timestamptz{Time: time.Now().Add(-WeeklyRunGuardWindow), Valid: true}
+	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issueID, Since: since})
+	if err != nil || runs < limit {
+		return err == nil, err
+	}
+	if runs >= limit*WeeklyRunGuardCeilingFactor || !agentID.Valid {
+		return false, nil
+	}
+	events, err := q.CountIssueProgressEventsSince(ctx, db.CountIssueProgressEventsSinceParams{IssueID: issueID, AgentID: agentID, WindowStart: since})
+	return events > 0, err
+}

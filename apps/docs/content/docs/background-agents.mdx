@@ -1,0 +1,89 @@
+---
+title: Background Agents
+description: Choose which agent runs the small jobs behind the scenes, such as naming a DM, and what happens when none is set.
+---
+
+Some work happens behind the scenes: naming a DM, suggesting quick-action pills, compacting a long DM, and routing a workflow step. Each of these **background jobs** runs as a normal task of an agent you choose. No background job calls a model on its own.
+
+## Jobs
+
+| Job | What it does | Who can set it |
+|---|---|---|
+| `dm_title` | Names a DM from its first message. | Workspace default, or each member for their own DMs. |
+| `quick_actions` | Suggests quick-action pills in a DM. | Workspace default, or each member. |
+| `compact` | Compacts a long DM. | Workspace default, or each member. |
+| `routing` | Takes routing-only workflow steps. | Workspace default only. |
+
+Each job has a **primary** agent and an optional **fallback** agent.
+
+## Which agent runs a job
+
+For a trigger on a job, Multica picks the first match:
+
+1. **Your chain** for that job, if you set a primary agent.
+2. Otherwise the **workspace chain**, if it has a primary agent.
+3. Otherwise the [no-agent path](#when-no-agent-runs).
+
+Inside a chain the primary runs first, then the fallback. An unset, ineligible, archived, or unreachable agent is skipped. The fallback runs only when the primary's run fails on a provider error, or the primary misses a [deadline](#deadlines). Each trigger fails over once.
+
+If your own chain exists but every agent in it fails, Multica does not fall back to the workspace chain: your explicit choice is respected, and the no-agent path runs.
+
+## When no agent runs
+
+When no agent is set, or no agent produced a usable result, each job has a fixed result:
+
+| Job | No-agent behaviour |
+|---|---|
+| `dm_title` | A title cut from the first message (60 characters). No model call. |
+| `quick_actions` | No pills. No model call. |
+| `compact` | The DM's own agent compacts the DM, as it does today. |
+| `routing` | The workflow step's own handler agent runs the step, as it does today. |
+
+## Migration for existing workspaces
+
+If your workspace relies on the old direct model call for titles or pills, an owner must set the `dm_title` and `quick_actions` agents **before** the builds that remove the direct call are deployed. Without that step, titles fall back to the 60-character cut and pills stop. That is the intended no-agent behaviour, and it is visible in those workspaces.
+
+```bash
+multica workspace background-agents set dm_title --agent <agent> --fallback <agent>
+multica workspace background-agents set quick_actions --agent <agent>
+```
+
+## Deadlines
+
+A background task that is not claimed in time is cancelled, and a run that takes too long is failed. Either case moves the job to the next slot.
+
+| Job | Claim deadline | Run deadline | On deadline |
+|---|---|---|---|
+| `dm_title` | 10 s | 60 s | Next slot, then the 60-character title. |
+| `quick_actions` | 5 s | 20 s | Next slot, then no pills. An automatic pass shows no error; a manual refresh still reports failure. |
+| `compact` | 30 s | The existing compaction limits | The DM's own agent compacts, as today. |
+| `routing` | Workflow-step rules | Workflow-step rules | Workflow-step rules. |
+
+## CLI
+
+Show or set the workspace default:
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica workspace background-agents set quick_actions --agent none
+```
+
+Show or set your own chain:
+
+```bash
+multica me background-agents list
+multica me background-agents set dm_title --agent haiku
+multica me background-agents set dm_title --agent none   # back to the workspace default
+```
+
+- `<job>` is `dm_title`, `quick_actions`, `compact` or `routing`. `multica me` accepts the first three only.
+- `--agent` and `--fallback` take an agent id or name. `none` clears the field. Pass at least one.
+- `list` prints each job's agent, fallback and **source**: `user` (your chain), `workspace`, or `off` (the no-agent path). `--output json` prints the same data as JSON.
+- Writes to the workspace default need an owner or admin. Both commands are human-only: a task token is refused with a stable error code.
+
+## Next steps
+
+- [CLI reference](/cli) for the whole command set.
+- [Chat](/chat) for DMs.
+- [Quick Actions](/quick-actions) for issue quick actions.

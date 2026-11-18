@@ -67,7 +67,10 @@ func newScope(root string) (*scope, error) {
 
 // attach makes cmd start inside the scope, in its own process group.
 func (s *scope) attach(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, UseCgroupFD: true, CgroupFD: int(s.dir.Fd())}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid, cmd.SysProcAttr.UseCgroupFD, cmd.SysProcAttr.CgroupFD = true, true, int(s.dir.Fd())
 }
 
 // releaseFD closes the directory handle once the child exists.

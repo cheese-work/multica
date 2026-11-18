@@ -116,12 +116,24 @@ multica chat wakeup cancel <wakeup-id>
 `multica chat sessions --issue <issue> --for <user-id>` lists the DM lanes a
 decision request can use. See [decisions.md](decisions.md).
 
-## DM triage
+## Waiting DMs and snooze
 
-```bash
-multica chat attention [--stale] --output json   # DMs that wait for you, oldest first; --stale = yellow (4h) or red (24h) only
-multica chat later <session> 2h                  # snooze a DM: 90m, 2h, 1d12h, seconds or an RFC3339 time (1s..168h)
-```
+- `multica chat attention [--stale] [--output json]` lists the DMs that wait
+  for you, oldest first. `--stale` keeps only those past 4 h (yellow) or 24 h
+  (red).
+- `multica chat later <session> [duration|time] [--request-id <uuid>]` snoozes
+  a DM. A duration is `90m`, `2h`, `1d12h` or seconds; a time is RFC3339. The
+  server rejects values outside 1 s to 168 h. Retry a failed call with the same
+  `--request-id` so the retry does not extend the time.
 
-Retry `chat later` with the same `--request-id <uuid>` so the retry does not
-extend the time.
+## Closed DM segments
+
+A DM run reads only the open segment. These two commands read earlier, closed
+ones. The task token names the DM, so there is no session argument; another
+DM's divider id is not found.
+
+- `multica chat segments [--output table|json]` lists the closed segments of
+  this DM, oldest first: divider id, when it was written, message count.
+- `multica chat segment <divider-id> [--limit N] [--before <next_before>]`
+  reads one segment, newest page first. When `has_more` is true the reply
+  carries `next_before`; pass it as `--before` to read the next older page.

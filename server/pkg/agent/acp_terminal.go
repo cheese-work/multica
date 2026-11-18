@@ -149,11 +149,11 @@ func (c *hermesClient) acpTerminalCreate(params json.RawMessage) (map[string]any
 
 	var cmd *exec.Cmd
 	if len(p.Args) > 0 {
-		cmd = NewCommand(p.Command, nil).exec(c.terminalContext(), p.Args...)
+		cmd = c.terminalCommand(p.Command).exec(c.terminalContext(), p.Args...)
 	} else if runtime.GOOS == "windows" {
-		cmd = NewCommand("cmd.exe", nil).exec(c.terminalContext(), "/d", "/s", "/c", p.Command)
+		cmd = c.terminalCommand("cmd.exe").exec(c.terminalContext(), "/d", "/s", "/c", p.Command)
 	} else {
-		cmd = NewCommand("/bin/sh", nil).exec(c.terminalContext(), "-c", p.Command)
+		cmd = c.terminalCommand("/bin/sh").exec(c.terminalContext(), "-c", p.Command)
 	}
 	hideAgentWindow(cmd)
 	cmd.Dir = cwd
@@ -201,6 +201,13 @@ func (c *hermesClient) acpTerminalCreate(params json.RawMessage) (map[string]any
 	}()
 
 	return map[string]any{"terminalId": id}, nil
+}
+
+// terminalCommand is a task command started on the agent's behalf: it carries
+// the launch hook but not the runtime's launch prefix, which belongs to the
+// runtime CLI, not to the commands that CLI asks us to run.
+func (c *hermesClient) terminalCommand(path string) Command {
+	return Command{Path: path, hook: c.cfg.Launch}
 }
 
 func (c *hermesClient) terminalContext() context.Context {

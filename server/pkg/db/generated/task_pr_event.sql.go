@@ -25,7 +25,7 @@ WITH locked_task AS MATERIALIZED (
       AND d.event_id = $2
       AND (d.status IN ('delivering', 'delivered')
            OR (d.status = 'failed' AND d.failure_reason = 'turn_ended' AND d.attempt_count > 0))
-    RETURNING d.task_id, d.event_id, d.workspace_id, d.issue_id, d.status, d.failure_reason, d.attempt_count, d.created_at, d.updated_at, d.delivered_at
+    RETURNING d.task_id, d.event_id, d.workspace_id, d.issue_id, d.status, d.failure_reason, d.attempt_count, d.created_at, d.updated_at, d.delivered_at, d.item_kind, d.wakeup_id, d.wakeup_revision, d.receipt_ids, d.note
 ), moved AS (
     UPDATE issue_pr_event e
     SET status = 'delivered'
@@ -51,7 +51,7 @@ WITH locked_task AS MATERIALIZED (
            OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
                AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
 )
-SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at FROM acked
+SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, item_kind, wakeup_id, wakeup_revision, receipt_ids, note FROM acked
 `
 
 type AckTaskPREventDeliveredParams struct {
@@ -60,16 +60,21 @@ type AckTaskPREventDeliveredParams struct {
 }
 
 type AckTaskPREventDeliveredRow struct {
-	TaskID        pgtype.UUID        `json:"task_id"`
-	EventID       pgtype.UUID        `json:"event_id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Status        string             `json:"status"`
-	FailureReason pgtype.Text        `json:"failure_reason"`
-	AttemptCount  int32              `json:"attempt_count"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	EventID        pgtype.UUID        `json:"event_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	Status         string             `json:"status"`
+	FailureReason  pgtype.Text        `json:"failure_reason"`
+	AttemptCount   int32              `json:"attempt_count"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	DeliveredAt    pgtype.Timestamptz `json:"delivered_at"`
+	ItemKind       string             `json:"item_kind"`
+	WakeupID       pgtype.UUID        `json:"wakeup_id"`
+	WakeupRevision pgtype.Int4        `json:"wakeup_revision"`
+	ReceiptIds     []pgtype.UUID      `json:"receipt_ids"`
+	Note           pgtype.Text        `json:"note"`
 }
 
 // The provider can accept input before completion while its HTTP acknowledgement
@@ -88,6 +93,11 @@ func (q *Queries) AckTaskPREventDelivered(ctx context.Context, arg AckTaskPREven
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeliveredAt,
+		&i.ItemKind,
+		&i.WakeupID,
+		&i.WakeupRevision,
+		&i.ReceiptIds,
+		&i.Note,
 	)
 	return i, err
 }
@@ -101,7 +111,7 @@ WITH failed AS (
     WHERE task_id = $2
       AND event_id = $3
       AND status = 'delivering'
-    RETURNING task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at
+    RETURNING task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, item_kind, wakeup_id, wakeup_revision, receipt_ids, note
 ), moved AS (
     UPDATE issue_pr_event e
     SET status = 'next_turn'
@@ -109,7 +119,7 @@ WITH failed AS (
     WHERE e.id = failed.event_id
       AND e.status = 'delivering'
 )
-SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at FROM failed
+SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, item_kind, wakeup_id, wakeup_revision, receipt_ids, note FROM failed
 `
 
 type AckTaskPREventFailedParams struct {
@@ -119,16 +129,21 @@ type AckTaskPREventFailedParams struct {
 }
 
 type AckTaskPREventFailedRow struct {
-	TaskID        pgtype.UUID        `json:"task_id"`
-	EventID       pgtype.UUID        `json:"event_id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Status        string             `json:"status"`
-	FailureReason pgtype.Text        `json:"failure_reason"`
-	AttemptCount  int32              `json:"attempt_count"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	EventID        pgtype.UUID        `json:"event_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	Status         string             `json:"status"`
+	FailureReason  pgtype.Text        `json:"failure_reason"`
+	AttemptCount   int32              `json:"attempt_count"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	DeliveredAt    pgtype.Timestamptz `json:"delivered_at"`
+	ItemKind       string             `json:"item_kind"`
+	WakeupID       pgtype.UUID        `json:"wakeup_id"`
+	WakeupRevision pgtype.Int4        `json:"wakeup_revision"`
+	ReceiptIds     []pgtype.UUID      `json:"receipt_ids"`
+	Note           pgtype.Text        `json:"note"`
 }
 
 // A failed delivery returns its event to the next-turn path.
@@ -146,6 +161,11 @@ func (q *Queries) AckTaskPREventFailed(ctx context.Context, arg AckTaskPREventFa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeliveredAt,
+		&i.ItemKind,
+		&i.WakeupID,
+		&i.WakeupRevision,
+		&i.ReceiptIds,
+		&i.Note,
 	)
 	return i, err
 }
@@ -159,7 +179,7 @@ WITH next AS MATERIALIZED (
     WHERE d.task_id = $1
       AND d.status = 'pending'
       AND t.status = 'running'
-      AND cap.capability = 'task-supplement-pr-event-v1'
+      AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
     ORDER BY d.created_at, d.event_id
     FOR UPDATE OF d SKIP LOCKED
     LIMIT 1
@@ -238,7 +258,7 @@ WITH locked_task AS MATERIALIZED (
     JOIN task_pr_event_capability cap ON cap.task_id = t.id
     WHERE t.id = $1
       AND t.status = 'running'
-      AND cap.capability = 'task-supplement-pr-event-v1'
+      AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
     FOR UPDATE OF t
 ), claimed_event AS (
     UPDATE issue_pr_event e
@@ -253,7 +273,7 @@ INSERT INTO task_pr_event_delivery (task_id, event_id, workspace_id, issue_id, s
 SELECT $1, e.id, e.workspace_id, e.issue_id, 'pending'
 FROM claimed_event e
 ON CONFLICT DO NOTHING
-RETURNING task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at
+RETURNING task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, item_kind, wakeup_id, wakeup_revision, receipt_ids, note
 `
 
 type EnqueueTaskPREventDeliveryParams struct {
@@ -278,6 +298,11 @@ func (q *Queries) EnqueueTaskPREventDelivery(ctx context.Context, arg EnqueueTas
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeliveredAt,
+		&i.ItemKind,
+		&i.WakeupID,
+		&i.WakeupRevision,
+		&i.ReceiptIds,
+		&i.Note,
 	)
 	return i, err
 }
@@ -393,7 +418,7 @@ FROM agent_task_queue t
 JOIN task_pr_event_capability cap ON cap.task_id = t.id
 WHERE t.issue_id = $1
   AND t.status = 'running'
-  AND cap.capability = 'task-supplement-pr-event-v1'
+  AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
 ORDER BY t.created_at
 `
 
@@ -421,22 +446,30 @@ func (q *Queries) ListRunningPREventTaskIDs(ctx context.Context, issueID pgtype.
 const recordTaskPREventCapability = `-- name: RecordTaskPREventCapability :execrows
 
 INSERT INTO task_pr_event_capability (task_id, workspace_id, issue_id, capability)
-SELECT t.id, r.workspace_id, t.issue_id, 'task-supplement-pr-event-v1'
+SELECT t.id, r.workspace_id, t.issue_id,
+       CASE WHEN $1::boolean THEN 'task-supplement-pr-event-v2' ELSE 'task-supplement-pr-event-v1' END
 FROM agent_task_queue t
 JOIN agent_runtime r ON r.id = t.runtime_id
-WHERE t.id = $1
+WHERE t.id = $2
   AND t.status = 'running'
   AND t.issue_id IS NOT NULL
   AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro')
 ON CONFLICT DO NOTHING
 `
 
+type RecordTaskPREventCapabilityParams struct {
+	OfferV2 bool        `json:"offer_v2"`
+	TaskID  pgtype.UUID `json:"task_id"`
+}
+
 // Typed PR-event delivery to a live run (CHE-2298 a2). Separate from
 // task_supplement: that path joins comment and labels text as human guidance.
 // Called in the start transaction, after the task is running. A missing row is
 // the fail-closed value for old daemons, old servers and unsupported providers.
-func (q *Queries) RecordTaskPREventCapability(ctx context.Context, taskID pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, recordTaskPREventCapability, taskID)
+// v2 (v1 plus wakeup items, CHE-6971 SA-1) is recorded only when the daemon
+// offered it; otherwise the caller's v1 offer records v1.
+func (q *Queries) RecordTaskPREventCapability(ctx context.Context, arg RecordTaskPREventCapabilityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordTaskPREventCapability, arg.OfferV2, arg.TaskID)
 	if err != nil {
 		return 0, err
 	}

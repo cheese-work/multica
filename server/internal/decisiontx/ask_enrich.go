@@ -89,3 +89,16 @@ func Identity(ask string) string {
 	digest := sha256.Sum256([]byte(WithoutSourceTail(ask)))
 	return hex.EncodeToString(digest[:])
 }
+
+// IdentityWithoutReadTime is Identity of the ask with every claim's read time
+// blanked, so a re-ask that read the same state again at a later time keeps
+// the identity. It works on a copy: the ask's own claims keep "read at".
+func (ask Ask) IdentityWithoutReadTime() string {
+	claims := make([]StateClaim, len(ask.StateClaims))
+	for index, claim := range ask.StateClaims {
+		claim.ObservedAt = ""
+		claims[index] = claim
+	}
+	ask.StateClaims = claims
+	return Identity(ask.Content(""))
+}

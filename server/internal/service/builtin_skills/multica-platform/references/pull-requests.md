@@ -67,3 +67,28 @@ a URL. `unlink` removes the link and records an exclusion, so later webhooks for
 that pull request do not re-link it or auto-complete the issue. It is the
 supported way to detach a PR that should not drive this issue; it is not undone
 by pushing to the PR. Unlink only when the link is wrong.
+
+## Guard
+
+- `multica guard check-pr <pr-url|number|branch> [-R owner/name]` reads a pull
+  request back and checks it against the workspace policy and the repository's
+  `.github/agent-rules.yml`, read from the current tip of the PR's protected
+  base branch (never the PR branch). It edits nothing and is meant as a CI
+  check. Exit 0: passes. Exit 1: breaks a rule. Exit 2: the guard refuses (a
+  malformed rules file, an unreadable base branch, a locked-down policy).
+- `multica guard exec <tool> -- <args...>` runs a tool after the guard checked,
+  fixed or refused the call. It covers `gh pr create|edit|ready` and writes to
+  pull requests and issues through `gh api`. Exit code: the tool's own, 2 when
+  the guard refuses. Environment: `MULTICA_GUARD_POLICY` and
+  `MULTICA_GUARD_POLICY_SHA256` (signed policy file and digest),
+  `MULTICA_GUARD_LOG` (one JSON line per decision), `MULTICA_GUARD_REAL_<TOOL>`
+  (path of the real binary, for example `MULTICA_GUARD_REAL_GH`).
+- `multica guard plugin list` lists the plugins of every scope in the stored
+  policy. `multica guard plugin get <name>` shows every scope's definition of
+  one plugin.
+- `multica guard plugin set --file <policy.json> [--dry-run] [--out <path>] [--expires-in <s>]`
+  validates a policy document and writes the action file for
+  `multica decision request --action-file`. Nothing is sent and the stored
+  policy does not change until the decision is approved. `--dry-run` prints both
+  digests and the action. Deeper layers override shallower ones key by key; a
+  locked layer freezes the keys it sets.
