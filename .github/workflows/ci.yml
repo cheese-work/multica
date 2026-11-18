@@ -91,13 +91,29 @@ jobs:
       contents: read
       actions: read
       checks: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           package-manager-cache: false
+      # CHE-7342: the script's own unit tests run only when a PR changes the script, its tests or fixtures,
+      # so a bad script change on main cannot turn this check red on unrelated PRs. Other events run them.
+      - name: Decide whether the unit tests apply
+        id: wb_scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR" ] || gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename' | grep -Eq '^scripts/(warning-budget|fixtures/warnings/)'; then
+            echo unit=true >> "$GITHUB_OUTPUT"
+          else
+            echo unit=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Test warning regression fixtures
+        if: ${{ steps.wb_scope.outputs.unit == 'true' }}
         run: node --test scripts/warning-budget.test.mjs
       - name: Compare CI logs and annotations with successful main
         env:

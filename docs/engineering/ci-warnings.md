@@ -11,6 +11,8 @@ that history bound fails closed. Pull-request runs cannot provide trusted baseli
 The candidate cannot supply its own baseline. Missing main job evidence,
 unavailable logs and incomplete candidate jobs fail the check.
 
+The script's own unit tests (`scripts/warning-budget.test.mjs`) run only on pull requests that change `scripts/warning-budget*` or `scripts/fixtures/warnings/**`, and on non-PR runs. A broken script change on `main` then cannot turn this check red on unrelated PRs (CHE-7342). The budget comparison runs on every PR.
+
 Decision: the PR-only `migration-prefix-check`, `image-budget` and `go-lint`
 jobs have a strict zero-warning baseline. The Go job's tool steps run only
 on PRs, so its otherwise empty main executions are not meaningful baselines.
