@@ -54,7 +54,7 @@ func browserLeaseIDCmd(op, short string) *cobra.Command {
 
 func init() {
 	browserLeaseCmd.Flags().String("profile", "", "Browser profile id (required)")
-	browserLeaseCmd.MarkFlagRequired("profile")
+	_ = browserLeaseCmd.MarkFlagRequired("profile")
 	browserLeaseCmd.Flags().String("decision", "", "Answered decision request id (login profiles)")
 	browserCmd.AddCommand(
 		browserLeaseCmd,

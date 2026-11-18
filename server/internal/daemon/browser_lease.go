@@ -83,7 +83,7 @@ func (d *Daemon) browserLeaseHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		w.Write(reply)
+		_, _ = w.Write(reply)
 	}
 }
 
