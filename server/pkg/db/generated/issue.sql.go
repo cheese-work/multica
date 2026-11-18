@@ -2442,7 +2442,7 @@ UPDATE issue AS i SET
     duplicate_of_issue_id = changed.next_duplicate_of_issue_id,
     -- metadata.blocked_on names what a blocked issue waits for (CHE-6972); it
     -- is dropped by every write that leaves blocked, whichever writer moved it.
-    metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' END,
+    metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
     revision = i.revision + changed.did_change::integer,
     last_activity_at = CASE WHEN changed.did_activity
         THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
@@ -2549,7 +2549,7 @@ UPDATE issue AS i SET
     -- cannot leave a pointer on a reopened issue.
     duplicate_of_issue_id = CASE WHEN $2 = 'cancelled' AND i.status = 'cancelled' THEN i.duplicate_of_issue_id ELSE NULL END,
     -- metadata.blocked_on only lives while blocked (CHE-6972); see UpdateIssue.
-    metadata = CASE WHEN $2 = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' END,
+    metadata = CASE WHEN $2 = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
     position = CASE WHEN i.status IS DISTINCT FROM $2 THEN (
         SELECT COALESCE(MIN(target.position), 0) - 1
         FROM issue AS target

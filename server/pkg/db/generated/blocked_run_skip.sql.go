@@ -101,14 +101,15 @@ func (q *Queries) ListBlockedEntryLinkCandidates(ctx context.Context, arg ListBl
 
 const listBlockedEntryLinkedIssues = `-- name: ListBlockedEntryLinkedIssues :many
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via FROM issue
-WHERE status = 'blocked' AND metadata ? 'blocked_entry_link'
-ORDER BY updated_at
+WHERE status = 'blocked' AND metadata ? 'blocked_entry_link' AND id > $1::uuid
+ORDER BY id
 LIMIT 200
 `
 
-// CHE-6973: blocked issues whose entry run was skipped for a linked wakeup.
-func (q *Queries) ListBlockedEntryLinkedIssues(ctx context.Context) ([]Issue, error) {
-	rows, err := q.db.Query(ctx, listBlockedEntryLinkedIssues)
+// CHE-6973: blocked issues whose entry run was skipped for a linked wakeup, one
+// page after the given id so a long list of live links cannot hide a broken one.
+func (q *Queries) ListBlockedEntryLinkedIssues(ctx context.Context, afterID pgtype.UUID) ([]Issue, error) {
+	rows, err := q.db.Query(ctx, listBlockedEntryLinkedIssues, afterID)
 	if err != nil {
 		return nil, err
 	}

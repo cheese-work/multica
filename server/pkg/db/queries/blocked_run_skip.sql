@@ -9,10 +9,11 @@ WHERE issue_id = $1 AND agent_id = $2 AND enabled
 ORDER BY created_at, id;
 
 -- name: ListBlockedEntryLinkedIssues :many
--- CHE-6973: blocked issues whose entry run was skipped for a linked wakeup.
+-- CHE-6973: blocked issues whose entry run was skipped for a linked wakeup, one
+-- page after the given id so a long list of live links cannot hide a broken one.
 SELECT * FROM issue
-WHERE status = 'blocked' AND metadata ? 'blocked_entry_link'
-ORDER BY updated_at
+WHERE status = 'blocked' AND metadata ? 'blocked_entry_link' AND id > sqlc.arg('after_id')::uuid
+ORDER BY id
 LIMIT 200;
 
 -- name: WakeupHasRun :one

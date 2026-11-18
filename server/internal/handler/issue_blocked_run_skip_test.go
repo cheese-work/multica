@@ -121,7 +121,7 @@ func TestBlockedRunSkip_UnmatchedLinksKeepTheEntryRun(t *testing.T) {
 			dbfx.QueryRow(t, `SELECT gen_random_uuid()::text`).Scan(&other)
 			b.wakeup(t, other, map[string]any{"type": "other_issue", "issue_id": b.other, "state": "done"}, "")
 		},
-		"no deadline": func(b blockedSkip, t *testing.T) { b.linked(t, "expires_at = NULL") },
+		"no deadline":            func(b blockedSkip, t *testing.T) { b.linked(t, "expires_at = NULL") },
 		"deadline beyond 7 days": func(b blockedSkip, t *testing.T) { b.linked(t, "expires_at = now() + interval '8 days'") },
 		"end on timeout":         func(b blockedSkip, t *testing.T) { b.linked(t, "on_timeout = 'end'") },
 		"a last_error":           func(b blockedSkip, t *testing.T) { b.linked(t, "last_error = 'Condition pending: x'") },
@@ -240,7 +240,14 @@ func TestBlockedRunSkip_RearmStartsTheBlockedRunWhenTheLinkBreaks(t *testing.T) 
 	}
 }
 
-func TestBlockedRunSkip_FiredWakeupKeepsNoRearmAndLeavingBlockedDropsTheLink(t *testing.T) {
+func (b blockedSkip) linkKey(t *testing.T) *string {
+	t.Helper()
+	var link *string
+	dbfx.QueryRow(t, `SELECT metadata->>'blocked_entry_link' FROM issue WHERE id=$1`, b.issue).Scan(&link)
+	return link
+}
+
+func TestBlockedRunSkip_FiredWakeupRetiresTheLinkWithoutRearm(t *testing.T) {
 	b := newBlockedSkip(t, "block")
 	id := b.linked(t, "")
 	b.enter(t)
@@ -249,15 +256,76 @@ func TestBlockedRunSkip_FiredWakeupKeepsNoRearmAndLeavingBlockedDropsTheLink(t *
 	dbfx.Exec(t, `INSERT INTO agent_task_queue (id, agent_id, runtime_id, issue_id, status, context)
 		SELECT gen_random_uuid(), $1, runtime_id, $2, 'completed', jsonb_build_object('wakeup_id', $3::text) FROM agent WHERE id=$1`, b.agent, b.issue, id)
 	b.sweep(t)
-	if b.acts(t, "blocked_entry_rearmed") != 0 {
+	if b.acts(t, "blocked_entry_rearmed") != 0 || b.runs(t) != 0 {
 		t.Fatal("a wakeup that ran must not re-arm")
 	}
+	if b.linkKey(t) != nil {
+		t.Fatal("a settled link must be retired so the sweep stops selecting it")
+	}
+}
+
+func TestBlockedRunSkip_LeavingBlockedDropsTheLink(t *testing.T) {
+	b := newBlockedSkip(t, "block")
+	b.linked(t, "")
+	b.enter(t)
 	dbfx.Exec(t, `UPDATE issue SET status='in_progress' WHERE id=$1`, b.issue)
 	moveBlockedOn(t, b.issue, map[string]any{"status": "todo"}).Want(200)
-	var link *string
-	dbfx.QueryRow(t, `SELECT metadata->>'blocked_entry_link' FROM issue WHERE id=$1`, b.issue).Scan(&link)
-	if link != nil {
+	if b.linkKey(t) != nil {
 		t.Fatal("leaving blocked must drop blocked_entry_link")
+	}
+}
+
+// Review finding 1 (PR 1917): a refused re-arm must stay owed. The link stays
+// until a replacement run is admitted, and a pass after the refusal clears
+// starts it.
+func TestBlockedRunSkip_RefusedRearmStaysOwedUntilAdmitted(t *testing.T) {
+	b := newBlockedSkip(t, "block")
+	id := b.linked(t, "")
+	b.enter(t)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET enabled=false, disabled_at=now(), last_error='boom' WHERE id=$1`, id)
+	dbfx.Exec(t, `UPDATE agent SET scheduling_paused_at = now() WHERE id=$1`, b.agent)
+	t.Cleanup(func() { dbfx.Exec(t, `UPDATE agent SET scheduling_paused_at = NULL WHERE id=$1`, b.agent) })
+	b.sweep(t)
+	b.sweep(t)
+	if b.runs(t) != 0 {
+		t.Fatal("a paused agent must not get a run")
+	}
+	if b.linkKey(t) == nil {
+		t.Fatal("a refused re-arm must keep the link so a later pass retries")
+	}
+	if got := b.acts(t, "blocked_entry_rearm_refused"); got != 1 {
+		t.Fatalf("refusal rows = %d, want 1 (the same refusal is recorded once)", got)
+	}
+	dbfx.Exec(t, `UPDATE agent SET scheduling_paused_at = NULL WHERE id=$1`, b.agent)
+	b.sweep(t)
+	if b.runs(t) != 1 || b.acts(t, "blocked_entry_rearmed") != 1 || b.linkKey(t) != nil {
+		t.Fatalf("recovery: runs=%d rearmed=%d, want 1 and 1 with the link dropped", b.runs(t), b.acts(t, "blocked_entry_rearmed"))
+	}
+}
+
+// Review finding 2 (PR 1917): more than one page of live links must not starve
+// a broken link that sorts after them.
+func TestBlockedRunSkip_BrokenLinkBehindManyLiveLinksIsStillRearmed(t *testing.T) {
+	b := newBlockedSkip(t, "block")
+	for i := 0; i < 205; i++ {
+		other := dbfx.Issue(t, "blocked-skip-live", testutil.Cols{"status": "in_progress"})
+		live := dbfx.Issue(t, "blocked-skip-live-link", testutil.Cols{
+			"status": "blocked", "assignee_type": "agent", "assignee_id": b.agent,
+			"metadata": testutil.Raw(`'{"blocked_on":"issue:` + other + `"}'::jsonb`),
+		})
+		var w string
+		dbfx.QueryRow(t, `INSERT INTO issue_wakeup (id, workspace_id, issue_id, agent_id, created_by, instruction, kind, mode, condition, expires_at, on_timeout)
+			VALUES (gen_random_uuid(), $1, $2, $3, $3, 'continue', 'event', 'once', jsonb_build_object('type','other_issue','issue_id',$4::text,'state','done'), now() + interval '2 days', 'wake') RETURNING id::text`,
+			testWorkspaceID, live, b.agent, other).Scan(&w)
+		dbfx.Exec(t, `UPDATE issue SET metadata = metadata || jsonb_build_object('blocked_entry_link', $2::text), updated_at = now() - interval '1 day' WHERE id=$1`, live, w)
+		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id=$1`, live) })
+	}
+	id := b.linked(t, "")
+	b.enter(t)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET last_error='boom' WHERE id=$1`, id)
+	b.sweep(t)
+	if b.runs(t) != 1 {
+		t.Fatalf("broken link behind 205 live links: runs=%d, want 1", b.runs(t))
 	}
 }
 
