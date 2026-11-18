@@ -161,6 +161,8 @@ var concurrentIndexCleanups = map[string]string{
 	"997_ci_signature_owner_signature_uidx":         "ci_signature_owner_signature_uidx",
 	"998_ci_signature_owner_issue_uidx":             "ci_signature_owner_issue_uidx",
 	"999n_task_pr_event_delivery_wakeup_idx":        "task_pr_event_delivery_wakeup_idx",
+	"999n_daemon_update_cycle_fire_uidx":            "daemon_update_cycle_fire_uidx",
+	"999o_daemon_update_cycle_open_uidx":            "daemon_update_cycle_open_uidx",
 	"999_ci_failure_event_created_at_idx":           "ci_failure_event_created_at_idx",
 	"999c_ci_watch_event_notify_uidx":               "ci_watch_event_notify_uidx",
 	"9999939_agent_task_handoff_dispatch_idx":       "agent_task_queue_handoff_dispatch_uidx",
