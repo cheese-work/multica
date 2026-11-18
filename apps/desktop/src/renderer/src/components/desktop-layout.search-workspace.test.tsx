@@ -118,7 +118,7 @@ function input() {
 
 async function openSearch() {
   fireEvent.keyDown(document, { key: "k", code: "KeyK", metaKey: true });
-  await screen.findByRole("combobox");
+  await screen.findByRole("combobox", {}, NETWORK_WAIT);
 }
 
 async function notify(workspace: string) {
@@ -207,7 +207,8 @@ it("cancels an in-flight search when the production router switches workspace", 
   await openSearch();
   holdA = true;
   fireEvent.change(input(), { target: { value: "alpha" } });
-  await waitFor(() => expect(held.length).toBe(2), NETWORK_WAIT);
+  // Issues, projects and (fork) chat-message search each hold one request.
+  await waitFor(() => expect(held.length).toBe(3), NETWORK_WAIT);
   await notify("synthetic-b");
   await act(async () => {
     for (const { response, payload } of held.splice(0)) response.end(JSON.stringify(payload));

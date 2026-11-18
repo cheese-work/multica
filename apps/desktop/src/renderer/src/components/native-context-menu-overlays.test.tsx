@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -140,7 +140,11 @@ function AnnotationHost() {
 }
 
 async function openAnnotationNote() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
   const source = document.querySelector<HTMLElement>("[data-comment-content]")!;
+  // A press inside the card arms the capture; the selection is read on release.
+  fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
+  fireEvent.mouseDown(source, { button: 0 });
   const range = document.createRange();
   range.selectNodeContents(source);
   act(() => {
@@ -148,11 +152,20 @@ async function openAnnotationNote() {
     window.getSelection()!.addRange(range);
   });
   fireEvent.pointerUp(source);
+  fireEvent.mouseUp(source, { button: 0 });
+  fireEvent.click(source, { button: 0 });
   fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
   const note = await screen.findByRole("textbox", { name: "Comment" });
   note.focus();
   return note;
 }
+
+// jsdom has no Range geometry; the selection bubble needs a visible rect to appear.
+Range.prototype.getBoundingClientRect = () => new DOMRect(10, 10, 120, 20);
+Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
+Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
+// The composer is lazy-loaded; warm its module so the first render does not wait on a cold transform.
+beforeAll(() => import("../../../../../../packages/views/issues/components/annotation-composer"), 30_000);
 
 describe("NativeContextMenu inside an overlay", () => {
   it("keeps a comment annotation's note open while its own menu pastes", async () => {
