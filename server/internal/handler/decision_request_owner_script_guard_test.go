@@ -76,7 +76,18 @@ type ownerAskEntry struct {
 	name    string
 	surface string
 	cards   func(*testing.T, string) int
-	send    func(*testing.T, string) (status int, issueID, agentID, humanID string)
+	// send takes the person-facing text and, optionally, a seed that attaches
+	// files to the ask's issue and returns them as the ask's artifacts.
+	send func(*testing.T, string, ownerArtifactSeed) (status int, issueID, agentID, humanID string)
+}
+
+type ownerArtifactSeed func(t *testing.T, issueID string) []decisiontx.Artifact
+
+func (seed ownerArtifactSeed) artifacts(t *testing.T, issueID string) []decisiontx.Artifact {
+	if seed == nil {
+		return nil
+	}
+	return seed(t, issueID)
 }
 
 func ownerAskEntries() []ownerAskEntry {
@@ -84,28 +95,33 @@ func ownerAskEntries() []ownerAskEntry {
 		return dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, issueID)
 	}
 	return []ownerAskEntry{
-		{name: "decision", surface: "decision_ask", cards: cards, send: func(t *testing.T, body string) (int, string, string, string) {
+		{name: "decision", surface: "decision_ask", cards: cards, send: func(t *testing.T, body string, seed ownerArtifactSeed) (int, string, string, string) {
 			fixture := newRequestCoreFixture(t, false)
 			ask := fixture.structuredAsk()
 			ask.AgentDid = body
+			ask.Artifacts = seed.artifacts(t, fixture.issueID)
 			request := newRequest(http.MethodPost, "/api/decisions", map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": ask, "escalation_class": "spend"})
 			request.Header.Set("X-Actor-Source", "task_token")
 			request.Header.Set("X-Agent-ID", fixture.agentID)
 			request.Header.Set("X-Task-ID", fixture.taskID)
 			return testutil.Call(t, testHandler.RequestDecision, request).Code, fixture.issueID, fixture.agentID, fixture.humanID
 		}},
-		{name: "action", surface: "action_ask", cards: cards, send: func(t *testing.T, body string) (int, string, string, string) {
+		{name: "action", surface: "action_ask", cards: cards, send: func(t *testing.T, body string, seed ownerArtifactSeed) (int, string, string, string) {
 			enableActionRequests(t, true)
 			fixture := newRequestCoreFixture(t, false)
 			payload := fixture.actionBody()
 			ask := payload["ask"].(map[string]any)
 			ask["agent_did"] = body
+			if artifacts := seed.artifacts(t, fixture.issueID); artifacts != nil {
+				ask["artifacts"] = artifacts
+			}
 			ask["steps"] = []string{"Open Settings, Secrets, New secret; add the token you created."}
 			return testutil.Call(t, testHandler.RequestDecision, fixture.postAction(payload)).Code, fixture.issueID, fixture.agentID, fixture.humanID
 		}},
-		{name: "decision ask", surface: "decision_ask", cards: cards, send: func(t *testing.T, body string) (int, string, string, string) {
+		{name: "decision ask", surface: "decision_ask", cards: cards, send: func(t *testing.T, body string, seed ownerArtifactSeed) (int, string, string, string) {
 			fixture := newAskFixture(t)
 			fixture.details.AgentDid = body
+			fixture.details.Artifacts = seed.artifacts(t, fixture.issueID)
 			payload := fixture.askBody()
 			return testutil.Call(t, testHandler.AskDecision, fixture.askCall(payload)).Code, fixture.issueID, fixture.agentID, fixture.humanID
 		}},
@@ -143,7 +159,7 @@ func TestOwnerScriptGuardAskKindsAndFixtures(test *testing.T) {
 			for _, mode := range []string{"off", "warn", "block", ""} {
 				test.Run(entry.name+"/"+fixture.ID+"/mode="+mode, func(test *testing.T) {
 					setOwnerScriptGuard(test, mode)
-					status, issueID, agentID, humanID := entry.send(test, fixture.Text)
+					status, issueID, agentID, humanID := entry.send(test, fixture.Text, nil)
 					events := ownerEvents(test, issueID)
 					effective := mode
 					if effective == "" {
@@ -347,5 +363,135 @@ func TestOwnerScriptGuardEventIsNotInTheIssueTimeline(test *testing.T) {
 	entries := testHandler.mergeTimeline(newRequest(http.MethodGet, "/api/issues/x/timeline", nil), nil, activities, true)
 	if len(entries) != 1 || entries[0].Action == nil || *entries[0].Action != "status_changed" {
 		test.Fatalf("timeline has %d entries, want only status_changed", len(entries))
+	}
+}
+
+// ownerGuardOutcome sends text through one entry in one mode and reads back the
+// status, the cards written and the single guard event (nil when none).
+func ownerGuardOutcome(test *testing.T, entry ownerAskEntry, mode, text string, seed ownerArtifactSeed) (status, cards int, event *ownerEvent) {
+	test.Helper()
+	setOwnerScriptGuard(test, mode)
+	status, issueID, _, _ := entry.send(test, text, seed)
+	events := ownerEvents(test, issueID)
+	if len(events) > 1 {
+		test.Fatalf("events = %d, want at most one per check", len(events))
+	}
+	if len(events) == 1 {
+		event = &events[0]
+	}
+	return status, entry.cards(test, issueID), event
+}
+
+// wantOwnerGuard checks block refuses with a committed refusal event and warn
+// delivers with the same hits in its event.
+func wantOwnerGuard(test *testing.T, entry ownerAskEntry, text string, hits []string, seed ownerArtifactSeed) {
+	test.Helper()
+	status, cards, event := ownerGuardOutcome(test, entry, "block", text, seed)
+	if status != http.StatusUnprocessableEntity || cards != 0 {
+		test.Fatalf("block: status %d cards %d, want 422 and none", status, cards)
+	}
+	if event == nil || event.text("outcome") != "refused" || event.Details["delivered"] != false || strings.Join(event.hits(), ",") != strings.Join(hits, ",") {
+		test.Fatalf("block event = %+v, want refused with hits %v", event, hits)
+	}
+	status, cards, event = ownerGuardOutcome(test, entry, "warn", text, seed)
+	if status != http.StatusCreated || cards != 1 {
+		test.Fatalf("warn: status %d cards %d, want 201 and one", status, cards)
+	}
+	if event == nil || event.text("outcome") != "warned" || event.Details["delivered"] != true || strings.Join(event.hits(), ",") != strings.Join(hits, ",") {
+		test.Fatalf("warn event = %+v, want warned with hits %v", event, hits)
+	}
+}
+
+// F-1..F-8 use one comment id for the link; a message the link names is read.
+const ownerLinkedCommentID = "0197d3a2-0000-7000-8000-000000000001"
+
+func seedLinkedComment(test *testing.T, content string) {
+	test.Helper()
+	issueID := dbfx.Issue(test, "Owner script linked comment")
+	dbfx.Insert(test, "comment", testutil.Cols{"id": ownerLinkedCommentID, "workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "member", "author_id": testUserID, "content": content})
+}
+
+// F-8 through each ask handler: the link names a comment that no event covers.
+// The guard reads the linked comment itself, so the cue is R8 only when that
+// comment holds R1 to R7 features.
+func TestOwnerScriptGuardF8ReadsTheLinkedComment(test *testing.T) {
+	f8 := ownerscripttest.ByID("F-8")
+	for _, entry := range ownerAskEntries() {
+		test.Run(entry.name+"/unaddressed command comment", func(test *testing.T) {
+			seedLinkedComment(test, "Run this on the host:\n```text\n"+ownerscripttest.Command+"\n```")
+			wantOwnerGuard(test, entry, f8.Text, f8.Hits, nil)
+		})
+		test.Run(entry.name+"/linked comment without a command", func(test *testing.T) {
+			seedLinkedComment(test, "The service log shows:\n```log\n2026-11-18 10:00:01 error: connection refused\n```")
+			status, cards, event := ownerGuardOutcome(test, entry, "block", f8.Text, nil)
+			if status != http.StatusCreated || cards != 1 || event == nil || len(event.hits()) != 0 {
+				test.Fatalf("status %d cards %d event %+v, want delivered with no hits", status, cards, event)
+			}
+		})
+		test.Run(entry.name+"/link to no comment", func(test *testing.T) {
+			status, cards, event := ownerGuardOutcome(test, entry, "block", f8.Text, nil)
+			if status != http.StatusCreated || cards != 1 || event == nil || len(event.hits()) != 0 {
+				test.Fatalf("status %d cards %d event %+v, want delivered with no hits", status, cards, event)
+			}
+		})
+	}
+}
+
+// R2 and R6: a command is the first word, so a single command word counts.
+func TestOwnerScriptGuardSingleWordCommands(test *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		hits       []string
+	}{
+		{"bare fence", "Checked the host first.\n```\nsudo\n```", []string{"R2", "R6"}},
+		{"text fence", "```text\ndocker\n```", []string{"R6"}},
+		{"inline span", "then `make` it", []string{"R6"}},
+	} {
+		for _, entry := range ownerAskEntries() {
+			test.Run(entry.name+"/"+tc.name, func(test *testing.T) {
+				wantOwnerGuard(test, entry, tc.text, tc.hits, nil)
+			})
+		}
+	}
+}
+
+// R5: each ask attachment is read by name and first bytes.
+func TestOwnerScriptGuardAskArtifacts(test *testing.T) {
+	for _, tc := range []struct {
+		name, filename, body string
+		hits                 []string
+	}{
+		{"script extension", "deploy.sh", "echo hi\n", []string{"R5"}},
+		{"sql extension", "fix.SQL", "select 1;\n", []string{"R5"}},
+		{"shebang in a note", "notes.md", "#!/bin/sh\nls\n", []string{"R5"}},
+		{"plain note", "notes.md", "# Design\nrev 5\n", nil},
+	} {
+		for _, entry := range ownerAskEntries() {
+			if entry.name == "action" {
+				continue // an action ask has no artifacts field, so R5 has nothing to read there
+			}
+			test.Run(entry.name+"/"+tc.name, func(test *testing.T) {
+				store := withArtifactStorage(test)
+				seed := func(t *testing.T, issueID string) []decisiontx.Artifact {
+					id := seedArtifact(t, store, issueID, testWorkspaceID, tc.filename, tc.body)
+					return []decisiontx.Artifact{{AttachmentID: id, Label: "file", SHA256: sha256Of(tc.body)}}
+				}
+				if tc.hits == nil {
+					status, cards, event := ownerGuardOutcome(test, entry, "block", "Plain text with no command.", seed)
+					if status != http.StatusCreated || cards != 1 || event == nil || len(event.hits()) != 0 {
+						test.Fatalf("status %d cards %d event %+v, want delivered with no hits", status, cards, event)
+					}
+					return
+				}
+				wantOwnerGuard(test, entry, "Plain text with no command.", tc.hits, seed)
+				// The event holds ids and hits, never the file name or bytes.
+				if _, _, event := ownerGuardOutcome(test, entry, "warn", "Plain text with no command.", seed); event != nil {
+					raw, _ := json.Marshal(event.Details)
+					if strings.Contains(string(raw), tc.filename) || strings.Contains(string(raw), "echo hi") {
+						test.Fatalf("event holds attachment text: %s", raw)
+					}
+				}
+			})
+		}
 	}
 }

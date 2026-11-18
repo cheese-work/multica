@@ -30,7 +30,7 @@ import (
 //
 // OwnerScriptRuleVersion changes whenever a rule or a list below changes, so an
 // event says which rule set judged it.
-const OwnerScriptRuleVersion = 1
+const OwnerScriptRuleVersion = 2
 
 // maxOwnerScriptHMACs caps cmd_hmacs on one event.
 const maxOwnerScriptHMACs = 20
@@ -133,16 +133,9 @@ func startsWithCommand(line string) bool {
 	return len(words) > 0 && (commandWords[words[0]] || isScriptPath(words[0]))
 }
 
-// isCommandLine is the code-line test of R2 and R6. A single word that is only
-// a command name ("docker", "make") is a name, not a command, unless it is a
-// script path.
-func isCommandLine(line string) bool {
-	words := strings.Fields(stripPrompt(line))
-	if len(words) == 0 {
-		return false
-	}
-	return isScriptPath(words[0]) || commandWords[words[0]] && len(words) > 1
-}
+// isCommandLine is the code-line test of R2 and R6. A command is the first word
+// of the line (plan "Cases"), so a single command word counts.
+func isCommandLine(line string) bool { return startsWithCommand(line) }
 
 // OwnerScriptKey derives the HMAC key for cmd_hmacs from the server secret
 // with HKDF, so the stored hashes cannot be tested by anyone without it.

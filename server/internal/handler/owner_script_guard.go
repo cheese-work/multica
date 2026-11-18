@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -64,6 +66,7 @@ func (handler *Handler) checkOwnerScript(ctx context.Context, issue db.Issue, ag
 		return nil, nil
 	}
 	message := decisiontx.OwnerScriptMessageFromAsk(*input.Parsed, input.Footer)
+	message.Attachments = handler.ownerScriptAskAttachments(ctx, issue, input.Parsed.Artifacts)
 	features := decisiontx.ExtractOwnerScript(message)
 	if features.RunCue {
 		if message.Related, err = handler.ownerScriptRelated(ctx, issue, agentID, message.Texts); err != nil {
@@ -118,12 +121,17 @@ func nonNil(values []string) []string {
 }
 
 // ownerScriptRelated is the R8 context: a flagged message (R1 to R7) of this
-// author on this issue within the window, or one the text links to by comment.
+// author on this issue within the window, or a comment the text links to whose
+// own content or attachments hold R1 to R7 features. The linked comment is read
+// from the store, so it counts whoever wrote it and whether or not an event
+// covers it.
 func (handler *Handler) ownerScriptRelated(ctx context.Context, issue db.Issue, agentID pgtype.UUID, texts []string) (bool, error) {
 	var linked []string
 	for _, text := range texts {
 		for _, match := range ownerScriptCommentLink.FindAllStringSubmatch(text, -1) {
-			linked = append(linked, strings.ToLower(match[1]))
+			if id := strings.ToLower(match[1]); !slices.Contains(linked, id) && len(linked) < maxOwnerScriptLinks {
+				linked = append(linked, id)
+			}
 		}
 	}
 	var related bool
@@ -132,7 +140,59 @@ func (handler *Handler) ownerScriptRelated(ctx context.Context, issue db.Issue, 
 		  AND details->'rule_hits' ?| ARRAY['R1','R2','R3','R4','R5','R6','R7']
 		  AND (created_at > now() - interval '`+ownerScriptRelatedWindow+`' OR details->>'comment_id' = ANY($4::text[])))`,
 		issue.ID, ownerScriptAction, uuidToString(agentID), nonNil(linked)).Scan(&related)
-	return related, err
+	if err != nil || related {
+		return related, err
+	}
+	for _, id := range linked {
+		comment, err := handler.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: parseUUID(id), WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		message := decisiontx.OwnerScriptMessage{Texts: []string{comment.Content}}
+		attachments, err := handler.Queries.ListAttachmentsByComment(ctx, db.ListAttachmentsByCommentParams{CommentID: comment.ID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			return false, err
+		}
+		for _, attachment := range attachments {
+			message.Attachments = append(message.Attachments, decisiontx.OwnerScriptAttachment{Name: attachment.Filename})
+		}
+		if decisiontx.ExtractOwnerScript(message).Primary() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// maxOwnerScriptLinks caps the comments one message makes the guard read.
+const maxOwnerScriptLinks = 5
+
+// ownerScriptHeadBytes is how much of an attachment the guard reads for "#!".
+const ownerScriptHeadBytes = 256
+
+// ownerScriptAskAttachments is what R5 reads of an ask's artifacts: the stored
+// file name and the first bytes. An artifact that is not an attachment of the
+// issue is skipped here; the artifact check refuses it.
+func (handler *Handler) ownerScriptAskAttachments(ctx context.Context, issue db.Issue, artifacts []decisiontx.Artifact) []decisiontx.OwnerScriptAttachment {
+	var files []decisiontx.OwnerScriptAttachment
+	for _, artifact := range artifacts {
+		attachment, err := handler.sourceIssueAttachment(ctx, issue, artifact.AttachmentID, "artifact")
+		if err != nil {
+			continue
+		}
+		file := decisiontx.OwnerScriptAttachment{Name: attachment.Filename}
+		if handler.Storage != nil {
+			if reader, err := handler.Storage.GetReader(ctx, handler.Storage.KeyFromURL(attachment.Url)); err == nil {
+				head, _ := io.ReadAll(io.LimitReader(reader, ownerScriptHeadBytes))
+				reader.Close()
+				file.Head = string(head)
+			}
+		}
+		files = append(files, file)
+	}
+	return files
 }
 
 // ownerScriptRetryOf is the latest refused or held event of this author to this
