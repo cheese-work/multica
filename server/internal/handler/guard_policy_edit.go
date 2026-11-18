@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -201,7 +202,8 @@ func (handler *Handler) SetGuardPolicy(writer http.ResponseWriter, request *http
 		return nil
 	}
 	err := handler.Passkeys.SetGuardPolicy(ctx, userID, workspaceID, body.BaseSHA256, after, body.Assertion, check, write)
-	if stale, isStale := err.(guardPolicyStale); isStale {
+	var stale guardPolicyStale
+	if errors.As(err, &stale) {
 		writeGuardPolicyStale(writer, stale)
 		return
 	}
