@@ -2496,14 +2496,14 @@ describe("ApiClient", () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-10-27T02:50:00Z" }), { status: 201 }));
       vi.stubGlobal("fetch", fetchMock);
       await new ApiClient("https://api.example.test").sendChatMessage("session-1", "> C. CHE-2162\n\n1", [], "request-2");
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", steer: true, decision_request_id: "request-2" });
     });
 
     it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
       vi.stubGlobal("fetch", fetchMock);
       await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", steer: true, client_message_id: "c-1", ask_ids: ["a-1"] });
     });
 
     it("CHE-4153 attention actions post the exact displayed keys", async () => {
@@ -2538,6 +2538,7 @@ describe("ApiClient", () => {
       const [, init] = fetchMock.mock.calls[0]!;
       expect(JSON.parse(init?.body as string)).toEqual({
         content: "hello",
+        steer: true,
         attachment_ids: ["att-1", "att-2"],
       });
     });
@@ -2557,8 +2558,17 @@ describe("ApiClient", () => {
       await client.sendChatMessage("session-1", "hello");
       await client.sendChatMessage("session-1", "again", []);
 
-      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
-      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello", steer: true });
+      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again", steer: true });
+    });
+
+    it("sendChatMessage explicitly opts out of steering for Queue message", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z",
+      }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "next turn", undefined, { queue: true });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "next turn", steer: false });
     });
 
     it("sendChatMessage accepts the server's null attachment_ids for text-only sends", async () => {

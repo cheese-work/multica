@@ -16,10 +16,28 @@ import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 
 const wakeup = (id: string, instruction: string, fireAt: string): ChatWakeup => ({
   id,
+  chat_session_id: "session-1",
   agent_id: "agent-1",
+  title: "",
+  kind: "at",
+  interval_seconds: null,
   fire_at: fireAt,
+  next_eval_at: fireAt,
+  expires_at: fireAt,
   instruction,
-  status: "pending",
+  status: "active",
+  end_reason: null,
+  ended_at: null,
+  check_count: 0,
+  last_check_note: null,
+  last_checked_at: null,
+  last_task_id: null,
+  last_fired_at: null,
+  last_error: null,
+  source_message_id: null,
+  source_task_id: null,
+  created_at: "",
+  updated_at: "",
 });
 
 function renderChip(timeZone?: string) {

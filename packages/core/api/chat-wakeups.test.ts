@@ -25,7 +25,10 @@ describe("chat session wakeups", () => {
     const fetchMock = stubFetch([row]);
     const result = await new ApiClient("https://api.example.test").listChatSessionWakeups(sessionId);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.example.test/api/chat/sessions/${sessionId}/wakeups`);
-    expect(result).toEqual([row]);
+    // The merged wakeup schema fills the upstream fields and reads the fork's
+    // legacy "pending" status as "active".
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: wakeupId, agent_id: "a-1", fire_at: row.fire_at, instruction: "ping", status: "active" });
   });
 
   it("falls back to an empty list on a malformed response", async () => {

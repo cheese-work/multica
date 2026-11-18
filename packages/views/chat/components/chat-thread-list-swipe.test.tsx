@@ -64,7 +64,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     useQuery: (options: { queryKey: readonly unknown[] }) =>
       options.queryKey.includes("open-decisions")
         ? { data: [], isPending: false, isError: false, refetch: vi.fn() }
-        : { data: { tasks: [] } },
+        : options.queryKey.includes("my-wakeups") ? { data: [] } : { data: { tasks: [] } },
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
 });

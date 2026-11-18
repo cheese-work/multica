@@ -369,8 +369,10 @@ function useSettledImageURL(
   targetUrl: string,
   enabled: boolean,
   onLoadError?: () => void,
+  identity = targetUrl,
+  pending = false,
 ): string {
-  const [settled, setSettled] = useState<string | null>(null);
+  const [settled, setSettled] = useState<{ url: string; identity: string } | null>(null);
   const onErrorRef = useRef(onLoadError);
   onErrorRef.current = onLoadError;
 
@@ -385,13 +387,13 @@ function useSettledImageURL(
     let cancelled = false;
     const probe = new window.Image();
     if (typeof probe.decode !== "function") {
-      setSettled(targetUrl);
+      setSettled({ url: targetUrl, identity });
       return;
     }
     probe.src = targetUrl;
     probe.decode().then(
       () => {
-        if (!cancelled) setSettled(targetUrl);
+        if (!cancelled) setSettled({ url: targetUrl, identity });
       },
       () => {
         // Rejection covers both load failure and undecodable bytes.
@@ -401,9 +403,11 @@ function useSettledImageURL(
     return () => {
       cancelled = true;
     };
-  }, [targetUrl, enabled]);
+  }, [targetUrl, enabled, identity]);
 
-  return enabled && settled !== null ? settled : targetUrl;
+  return enabled && settled !== null && !(pending && settled.identity === identity)
+    ? settled.url
+    : targetUrl;
 }
 
 // Warms the browser cache for a sequence neighbour so paging to it swaps
@@ -415,6 +419,12 @@ export function PreviewImagePrefetch({ source }: { source: PreviewSource }) {
     state.attachmentId ?? undefined,
     state.mediaUrl,
     true,
+    {
+      refreshOnMount: true,
+      metadataSource: source.kind === "url" && state.attachmentId
+        ? "markdown-link"
+        : "workspace",
+    },
   );
 
   useEffect(() => {
@@ -744,7 +754,9 @@ function GenericPreviewPanel({
   renderHtmlFrame = renderViewerHtmlFrame,
   initialHtmlAddress = "",
   onHtmlAddressChange,
+  currentImageMetadata,
 }: {
+  currentImageMetadata?: Attachment;
   surface: "viewer" | "page";
   kind: PreviewKind | null;
   source: PreviewSource;
@@ -811,15 +823,25 @@ function GenericPreviewPanel({
     htmlLocation,
   };
 
-  // Gallery navigation hands this panel an attachment the reader never
-  // clicked, so — unlike the click-through path, where <Attachment> had
-  // already upgraded the URL — the viewer has to run the re-sign itself. A
-  // no-op for URLs that are already loadable (signed CDN, public storage).
+  // Cached attachment records can outlive their signed URLs. Reuse recent
+  // prefetch metadata and revalidate stale entries when opening the viewer.
+  // Bare CDN links keep their native URL and cookie-based access.
+  const cdnDomain = useConfigStore((s) => s.cdnDomain);
   const resigned = useResignedInlineMedia(
-    state.attachmentId ?? undefined,
+    kind === "image" ? state.attachmentId ?? undefined : undefined,
     state.mediaUrl,
     kind === "image",
+    {
+      refreshOnMount: kind === "image",
+      metadataSource: source.kind === "url" && state.attachmentId
+        ? "markdown-link"
+        : "workspace",
+      currentMetadata: kind === "image" ? currentImageMetadata : undefined,
+    },
   );
+  useEffect(() => {
+    if (kind === "image" && resigned.failed) onImageError?.();
+  }, [kind, resigned.failed, onImageError]);
   // Until that upgrade lands the picked URL may be one this client cannot
   // load natively (desktop, split-origin web); handed to <img> it would fail
   // and, in a sequence, read as a broken image to skip. Hold the previous
@@ -828,7 +850,10 @@ function GenericPreviewPanel({
   // The previous image stays on the canvas until this one has decoded — the
   // swap itself is what used to flash. Also absorbs the re-sign URL upgrade
   // (raw -> signed) without a second visible load.
-  const mediaUrl = useSettledImageURL(targetUrl, kind === "image", onImageError);
+  const mediaUrl = useSettledImageURL(
+    targetUrl, kind === "image", onImageError,
+    state.attachmentId ?? state.mediaUrl, resigned.pending,
+  );
   // A load error from the <img> belongs to the file being opened only when
   // that is what it shows — a frame held from the previous image never
   // reports against the next one.
@@ -837,7 +862,6 @@ function GenericPreviewPanel({
 
   // Video, audio and PDF stream straight from a URL the reader has never
   // loaded, so they get a freshly signed one rather than the record's.
-  const cdnDomain = useConfigStore((s) => s.cdnDomain);
   const streamed = useFreshStreamedMediaURL(
     state.attachmentId ??
       attachmentIdFromLocalUploadURL(state.mediaUrl) ??
@@ -864,8 +888,12 @@ function GenericPreviewPanel({
       toast.error(t(($) => $.attachment.copy_failed));
     }
   };
+  const copyableImageUrl = !resigned.pending && !resigned.failed && !imageFailed
+    ? mediaUrl
+    : "";
   const handleCopyImage = async () => {
-    if (await copyImage(mediaUrl)) {
+    if (!copyableImageUrl) return;
+    if (await copyImage(copyableImageUrl)) {
       toast.success(t(($) => $.image.image_copied));
     } else {
       toast.error(t(($) => $.image.copy_image_failed));
@@ -1096,7 +1124,7 @@ function GenericPreviewPanel({
           {canCopyImage && (
             <ChromeButton
               label={t(($) => $.image.copy_image)}
-              disabled={!mediaUrl}
+              disabled={!copyableImageUrl}
               onClick={() => void handleCopyImage()}
             >
               <Copy className="size-4" />
@@ -1294,7 +1322,7 @@ function GenericPreviewPanel({
               },
             }}
           >
-            {kind === "image" && imageFailed ? (
+            {kind === "image" && (imageFailed || resigned.failed) ? (
               <UnsupportedFallback
                 message={t(($) => $.attachment.preview_failed)}
                 onDownload={handleDownload}
@@ -2027,11 +2055,14 @@ function UnsupportedFallback({
  */
 export function AttachmentPreviewStandalone({
   attachment,
+  currentImageMetadata,
   renderHtmlFrame,
   initialHtmlAddress,
   onHtmlAddressChange,
 }: {
   attachment: Attachment;
+  /** Metadata authenticated by the page request for this open. */
+  currentImageMetadata?: Attachment;
   renderHtmlFrame?: HtmlFrameRenderer;
   /** Query and fragment an HTML file opens at. */
   initialHtmlAddress?: string;
@@ -2041,11 +2072,12 @@ export function AttachmentPreviewStandalone({
     () => ({ kind: "full", attachment }),
     [attachment],
   );
-  return <AttachmentSourceStandalone source={source} renderHtmlFrame={renderHtmlFrame} initialHtmlAddress={initialHtmlAddress} onHtmlAddressChange={onHtmlAddressChange} />;
+  return <AttachmentSourceStandalone source={source} currentImageMetadata={currentImageMetadata} renderHtmlFrame={renderHtmlFrame} initialHtmlAddress={initialHtmlAddress} onHtmlAddressChange={onHtmlAddressChange} />;
 }
 
-export function AttachmentSourceStandalone({ source, renderHtmlFrame, initialHtmlAddress, onHtmlAddressChange }: {
+export function AttachmentSourceStandalone({ source, currentImageMetadata, renderHtmlFrame, initialHtmlAddress, onHtmlAddressChange }: {
   source: PreviewSource;
+  currentImageMetadata?: Attachment;
   renderHtmlFrame?: HtmlFrameRenderer;
   initialHtmlAddress?: string;
   onHtmlAddressChange?: (address: string) => void;
@@ -2060,6 +2092,7 @@ export function AttachmentSourceStandalone({ source, renderHtmlFrame, initialHtm
   return (
     <div className="flex h-full w-full flex-col bg-black/95">
       <PreviewPanel
+        currentImageMetadata={currentImageMetadata}
         surface="page"
         kind={state.kind}
         source={source}

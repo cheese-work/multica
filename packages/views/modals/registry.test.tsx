@@ -21,8 +21,8 @@ vi.mock("./feedback", () => {
   loaded.names.push("feedback");
   return { FeedbackModal: () => <div>feedback</div> };
 });
-vi.mock("./issue-limit-upgrade-dialog", () => ({
-  IssueLimitUpgradeDialog: () => null,
+vi.mock("./limit-recovery-dialog", () => ({
+  LimitRecoveryDialog: () => null,
 }));
 
 import { ModalRegistry } from "./registry";

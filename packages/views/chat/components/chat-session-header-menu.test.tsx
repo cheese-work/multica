@@ -20,6 +20,7 @@ vi.mock("@multica/core/chat", () => ({
 vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
 vi.mock("./open-decisions-badge", () => ({ OpenDecisionsBadge: () => null }));
 vi.mock("./scheduled-wakeups-chip", () => ({ ScheduledWakeupsChip: () => null }));
+vi.mock("./chat-wakeups", () => ({ useChatWakeups: () => [], ChatWakeupHeaderButton: () => null }));
 vi.mock("../../navigation", () => ({
   AppLink: ({ children, href: _href, ...props }: { children: React.ReactNode; href?: string }) => (
     <a {...props}>{children}</a>

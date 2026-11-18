@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { chatWakeupsOptions } from "@multica/core/chat/queries";
-import { useCancelChatWakeup } from "@multica/core/chat/mutations";
+import { useCancelChatSessionWakeup } from "@multica/core/chat/mutations";
 import { useT } from "../../i18n";
 import { formatDateTimeWithZone } from "./message-time";
 
@@ -29,7 +29,7 @@ export function ScheduledWakeupsChip({
 }) {
   const { t } = useT("chat");
   const { data, isError, refetch } = useQuery(chatWakeupsOptions(sessionId));
-  const cancel = useCancelChatWakeup();
+  const cancel = useCancelChatSessionWakeup();
   // A failed first load is not "nothing scheduled": keep a way to retry.
   if (!data && isError) {
     return (
@@ -70,7 +70,7 @@ export function ScheduledWakeupsChip({
         </div>
         <ul className="flex flex-col gap-2">
           {wakeups.map((wakeup) => {
-            const time = formatDateTimeWithZone(wakeup.fire_at, undefined, timeZone);
+            const time = wakeup.fire_at ? formatDateTimeWithZone(wakeup.fire_at, undefined, timeZone) : "";
             return (
               <li key={wakeup.id} className="flex items-start gap-2" data-testid="scheduled-row">
                 <div className="min-w-0 flex-1">

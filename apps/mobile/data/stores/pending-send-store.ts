@@ -92,7 +92,7 @@ registerDraftCleanup(() => usePendingSendStore.getState().reset());
 export async function sendWithPendingId(
   sessionId: string,
   content: string,
-  opts: { attachmentIds?: string[]; askIds?: string[] } = {},
+  opts: { attachmentIds?: string[]; askIds?: string[]; queue?: boolean } = {},
 ) {
   const pending = usePendingSendStore.getState();
   const clientMessageId = pending.begin(sessionId, content);
@@ -101,6 +101,7 @@ export async function sendWithPendingId(
       attachmentIds: opts.attachmentIds,
       clientMessageId,
       askIds: opts.askIds,
+      queue: opts.queue,
     });
     pending.settle(sessionId);
     return result;
