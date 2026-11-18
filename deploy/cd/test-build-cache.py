@@ -132,10 +132,11 @@ class BuildCacheTests(unittest.TestCase):
         self.assertIn('maxUsedSpace = "8GB"', config)
         self.assertIn('minFreeSpace = "10GB"', config)
         self.assertFalse(any('docker container stop' in step.get('run', '') for step in steps))
-        commands = [step['run'] for step in steps if 'docker buildx build' in step.get('run', '')]
-        for command in commands:
-            self.assertIn('--cache-from type=gha,scope=cd-${{ matrix.image }}', command)
-            self.assertIn('--cache-to type=gha,mode=max,scope=cd-${{ matrix.image }}', command)
+        # CHE-7209: only the web leg keeps the GHA layer cache; the backend leg builds
+        # from prebuilt binaries and has no layer worth caching.
+        web = next(step['run'] for step in steps if step.get('name') == 'Build and publish immutable amd64 web')
+        self.assertIn('--cache-from type=gha,scope=cd-${{ matrix.image }}', web)
+        self.assertIn('--cache-to type=gha,mode=max,scope=cd-${{ matrix.image }}', web)
         runtime = next(step for step in steps if 'ACTIONS_RUNTIME_TOKEN' in str(step.get('with', {})))
         self.assertIn('core.setSecret', runtime['with']['script'])
 
@@ -342,6 +343,367 @@ echo bin > "$2"
                     self.assertEqual(manifest['image_digests'][image], 'sha256:' + digest * 64)
                     self.assertEqual(provenance['images'][image]['digest'], manifest['image_digests'][image])
                     self.assertEqual(provenance['images'][image]['source_sha'], source_sha)
+
+
+# ---------------------------------------------------------------------------
+# CHE-7209 (A1): compile the CD backend binaries on the X99 runner.
+# ---------------------------------------------------------------------------
+import re
+import shlex
+import shutil
+import textwrap
+
+SERVER_BINARIES = ['server', 'multica', 'migrate', 'maintenance',
+                   'backfill_task_usage_hourly', 'backfill_codex_usage_cache']
+DAEMON_KEYS = ['linux-amd64', 'linux-arm64', 'darwin-arm64', 'darwin-amd64']
+SHA = 'a' * 40
+VERSION = '1.2.3'
+BUILD = 'fork-20261118'
+CHECKER = ROOT / 'deploy/cd/check-backend-payloads.py'
+COMPILE_SCRIPT = ROOT / 'scripts/build-cd-backend-binaries.sh'
+CD_DOCKERFILE = ROOT / 'Dockerfile.cd-backend'
+
+
+def fake_go_output(path, revision=SHA, modified='false', ldflags='-s -w'):
+    lines = [f'{path}: go1.27.3', '\tpath\texample.com/x', '\tbuild\t-buildmode=exe', '\tbuild\t-compiler=gc',
+             f'\tbuild\t-ldflags="{ldflags}"', '\tbuild\tCGO_ENABLED=0', '\tbuild\tvcs=git']
+    if revision is not None:
+        lines.append(f'\tbuild\tvcs.revision={revision}')
+    lines += ['\tbuild\tvcs.time=2026-11-18T00:00:00Z', f'\tbuild\tvcs.modified={modified}']
+    return '\n'.join(lines) + '\n'
+
+
+def server_ldflags(version=VERSION, build=BUILD, commit=SHA):
+    return f'-s -w -X main.version={version} -X main.build={build} -X main.commit={commit}'
+
+
+def set_gover(root, path, text):
+    Path(root).parent.joinpath('gover', Path(path).name + '.gover').write_text(text)
+
+
+def make_payloads(root, mutate=None):
+    """Write a fake CD backend payload tree; the fake go answers from `<root>/../gover/<basename>.gover`."""
+    root = Path(root)
+    (root.parent / 'gover').mkdir(exist_ok=True)
+    (root / 'daemon-binaries').mkdir(parents=True)
+    entries = {}
+    for key in DAEMON_KEYS:
+        data = f'daemon {key}'.encode()
+        (root / 'daemon-binaries' / f'multica-{key}').write_bytes(data)
+        entries[key] = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
+    (root / 'daemon-binaries/manifest.json').write_text(json.dumps({'commit': SHA, 'version': f'{VERSION}-{BUILD}', 'binaries': entries}))
+    for name in SERVER_BINARIES:
+        (root / name).write_bytes(f'binary {name}'.encode())
+    files = [root / name for name in SERVER_BINARIES] + [root / 'daemon-binaries' / f'multica-{key}' for key in DAEMON_KEYS]
+    for path in files:
+        flags = server_ldflags() if path.name == 'server' else '-s -w'
+        set_gover(root, path, fake_go_output(path, ldflags=flags))
+    if mutate:
+        mutate(root)
+    return root
+
+
+def install_fake_go(directory):
+    fake = Path(directory, 'go')
+    fake.write_text('#!/bin/sh\n[ "$1 $2" = "version -m" ] || exit 9\ncat "$(dirname "$0")/gover/$(basename "$3").gover"\n')
+    fake.chmod(0o755)
+    return fake
+
+
+def run_checker(payloads, go, sha=SHA):
+    return subprocess.run(['python3', str(CHECKER), '--dir', str(payloads), '--commit', sha, '--version', VERSION, '--build', BUILD],
+                          env={**os.environ, 'GO': str(go)}, capture_output=True, text=True)
+
+
+def docker_stages(path):
+    stages, current = [], None
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith('FROM '):
+            current = {'from': line, 'lines': []}
+            stages.append(current)
+        elif current is not None and line and not line.startswith('#'):
+            current['lines'].append(line)
+    return stages
+
+
+def app_files(stage):
+    files = set()
+    for line in stage['lines']:
+        if not line.startswith('COPY '):
+            continue
+        tokens = [t for t in shlex.split(line)[1:] if not t.startswith('--')]
+        dest = tokens[-1].removeprefix('./')
+        for source in tokens[:-1]:
+            files.add(os.path.basename(source) if dest in ('.', '') else dest)
+    return files
+
+
+class CdBackendBinariesTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = yaml.safe_load((ROOT / '.github/workflows/cd-qualification.yml').read_text())
+        self.steps = self.workflow['jobs']['build-images']['steps']
+
+    # Acceptance 1
+    def test_runtime_stage_matches_the_dockerfile_runtime_stage(self):
+        original = docker_stages(ROOT / 'Dockerfile')[-1]
+        prebuilt = docker_stages(CD_DOCKERFILE)[-1]
+        self.assertEqual(original['from'], prebuilt['from'])
+        for keyword in ['RUN', 'WORKDIR', 'EXPOSE', 'ENTRYPOINT']:
+            self.assertEqual([l for l in original['lines'] if l.startswith(keyword + ' ')],
+                             [l for l in prebuilt['lines'] if l.startswith(keyword + ' ')], keyword)
+        self.assertEqual(app_files(original), app_files(prebuilt))
+        self.assertIn('daemon-binaries', app_files(prebuilt))
+        self.assertIn('server', app_files(prebuilt))
+
+    def test_binaries_are_verified_before_the_runtime_stage_copies_them(self):
+        stages = docker_stages(CD_DOCKERFILE)
+        verify = next(stage for stage in stages if stage['from'].endswith(' AS verify'))
+        text = '\n'.join(verify['lines'])
+        self.assertIn('CD_BINARIES_SHA256', text)
+        self.assertIn('sha256sum -c SHA256SUMS', text)
+        self.assertIn('COPY --from=cdbin', text)
+        runtime = stages[-1]
+        copies = [l for l in runtime['lines'] if l.startswith('COPY --from=')]
+        self.assertEqual({shlex.split(l)[1] for l in copies}, {'--from=verify'})
+        self.assertGreaterEqual(len(copies), 7)
+
+    # Acceptance 2
+    def test_script_builds_the_dockerfile_binaries_with_the_same_ldflags(self):
+        def builds(path, pattern):
+            return sorted(m.groups() for m in re.finditer(pattern, path.read_text()))
+        original = builds(ROOT / 'Dockerfile', r'go build -ldflags "([^"]*)" -o bin/(\w+) \./(cmd/\w+)')
+        script = builds(COMPILE_SCRIPT, r'go build -ldflags "([^"]*)" -o "\$out/(\w+)" \./(cmd/\w+)')
+        self.assertEqual(len(original), 5)
+        self.assertEqual(script, original)
+        text = COMPILE_SCRIPT.read_text()
+        self.assertIn('scripts/build-daemon-binaries.sh', text)
+        self.assertIn('multica-linux-amd64', text)
+        self.assertIn('CGO_ENABLED=0 GOOS=linux GOARCH=amd64', text)
+        self.assertIn('-p=3', text)
+        self.assertIn('-buildvcs=true', text)
+        self.assertNotIn('GOMEMLIMIT', text)
+
+    def test_script_uses_the_go_version_of_the_dockerfile_with_a_pinned_checksum(self):
+        version = re.search(r'^FROM golang:([0-9.]+)-alpine ', (ROOT / 'Dockerfile').read_text(), re.M).group(1)
+        text = COMPILE_SCRIPT.read_text()
+        self.assertIn('Dockerfile', text)
+        self.assertIn('golang:', text)
+        self.assertRegex(text, r'(?m)^\s*%s\) go_sha256=[0-9a-f]{64} ;;' % re.escape(version),
+                         'raising the Dockerfile Go version needs a pinned checksum in the script')
+        self.assertIn('no pinned checksum', text)
+        self.assertIn('sha256sum -c', text)
+        self.assertIn('GOTOOLCHAIN=local', text)
+
+    # Acceptance 3
+    def run_script(self, runner_temp, **env):
+        trap = Path(runner_temp, 'bin')
+        trap.mkdir(exist_ok=True)
+        for tool in ['go', 'curl']:
+            Path(trap, tool).write_text('#!/bin/sh\necho "$0 must not run before the cache guard" >&2\nexit 99\n')
+            Path(trap, tool).chmod(0o755)
+        return subprocess.run(['bash', str(COMPILE_SCRIPT)], cwd=ROOT, capture_output=True, text=True,
+                              env={**os.environ, 'PATH': f'{trap}:{os.environ["PATH"]}', 'RUNNER_TEMP': str(runner_temp),
+                                   'GITHUB_SHA': SHA, 'VERSION': VERSION, 'BUILD': BUILD, **env})
+
+    def test_cache_guard_refuses_paths_outside_runner_temp_or_not_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory, 'runner-temp')
+            temp.mkdir()
+            outside = Path(directory, 'outside')
+            outside.mkdir()
+            good = {'GOCACHE': str(temp / 'cd-go/build'), 'GOMODCACHE': str(temp / 'cd-go/mod')}
+            (temp / 'cd-go/build').mkdir(parents=True)
+            (temp / 'cd-go/mod').mkdir(parents=True)
+            (temp / 'cd-go/mod/old').write_text('stale')
+            (outside / 'x').write_text('x')
+            cases = {
+                'GOCACHE outside': {**good, 'GOCACHE': str(outside)},
+                'GOMODCACHE outside': {**good, 'GOMODCACHE': str(outside)},
+                'GOCACHE traversal': {**good, 'GOCACHE': str(temp / 'cd-go/build/../../../outside')},
+                'GOCACHE is RUNNER_TEMP': {**good, 'GOCACHE': str(temp)},
+                'GOMODCACHE not empty': good,
+                'GOCACHE unset': {**good, 'GOCACHE': ''},
+            }
+            for name, env in cases.items():
+                with self.subTest(name):
+                    result = self.run_script(temp, **env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotEqual(result.returncode, 99, result.stderr)
+                    self.assertNotIn('must not run', result.stderr)
+                    self.assertIn('cache', result.stderr.lower())
+            (temp / 'cd-go/mod/old').unlink()
+            (temp / 'cd-go/build/old').write_text('stale')
+            with self.subTest('GOCACHE not empty'):
+                result = self.run_script(temp, **good)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('must not run', result.stderr)
+
+    def test_workflow_removes_the_job_caches_even_after_a_failure(self):
+        cleanup = [step for step in self.steps if 'cd-go' in step.get('run', '') and 'rm -rf' in step.get('run', '')]
+        self.assertEqual(len(cleanup), 1)
+        self.assertIn('always()', cleanup[0]['if'])
+        self.assertEqual(self.steps[-1], cleanup[0], 'cleanup must be the last step')
+        compile_step = next(step for step in self.steps if 'build-cd-backend-binaries.sh' in step.get('run', ''))
+        env = compile_step.get('env', {})
+        self.assertEqual(env.get('GOCACHE'), '${{ runner.temp }}/cd-go/build')
+        self.assertEqual(env.get('GOMODCACHE'), '${{ runner.temp }}/cd-go/mod')
+
+    # Acceptance 4
+    def check(self, mutate=None, sha=SHA):
+        with tempfile.TemporaryDirectory() as directory:
+            fake = install_fake_go(directory)
+            return run_checker(make_payloads(Path(directory, 'payloads'), mutate), fake, sha)
+
+    def test_payload_check_passes_a_correct_set(self):
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_payload_check_fails_when_the_manifest_commit_differs_from_the_sha(self):
+        result = self.check(sha='b' * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('manifest commit', result.stderr)
+
+    def test_payload_check_fails_on_a_wrong_payload_sha256(self):
+        def mutate(root):
+            (root / 'daemon-binaries/multica-darwin-arm64').write_bytes(b'daemon darwin-arm64'[::-1])
+        result = self.check(mutate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('multica-darwin-arm64', result.stderr)
+
+    def test_payload_check_fails_on_a_wrong_payload_size(self):
+        def mutate(root):
+            manifest = json.loads((root / 'daemon-binaries/manifest.json').read_text())
+            manifest['binaries']['linux-arm64']['size'] += 1
+            (root / 'daemon-binaries/manifest.json').write_text(json.dumps(manifest))
+        result = self.check(mutate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('size', result.stderr)
+
+    def test_payload_check_fails_when_a_manifest_payload_is_missing(self):
+        def mutate(root):
+            manifest = json.loads((root / 'daemon-binaries/manifest.json').read_text())
+            del manifest['binaries']['darwin-amd64']
+            (root / 'daemon-binaries/manifest.json').write_text(json.dumps(manifest))
+        result = self.check(mutate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('darwin-amd64', result.stderr)
+
+    def test_payload_check_fails_on_a_binary_with_another_vcs_revision(self):
+        for victim in ['migrate', 'multica', 'daemon-binaries/multica-linux-amd64']:
+            def mutate(root, victim=victim):
+                path = root / victim
+                set_gover(root, path, fake_go_output(path, revision='c' * 40))
+            with self.subTest(victim):
+                result = self.check(mutate)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('vcs.revision', result.stderr)
+
+    def test_payload_check_fails_on_a_binary_without_vcs_revision_or_with_modified_tree(self):
+        def no_revision(root):
+            path = root / 'maintenance'
+            set_gover(root, path, fake_go_output(path, revision=None))
+        def modified(root):
+            path = root / 'server'
+            set_gover(root, path, fake_go_output(path, modified='true', ldflags=server_ldflags()))
+        for mutate in [no_revision, modified]:
+            with self.subTest(mutate.__name__):
+                result = self.check(mutate)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('vcs.', result.stderr)
+
+    def test_payload_check_fails_on_a_missing_server_stamp(self):
+        for label, flags in [('missing version', '-s -w -X main.build=%s -X main.commit=%s' % (BUILD, SHA)),
+                             ('missing build', '-s -w -X main.version=%s -X main.commit=%s' % (VERSION, SHA)),
+                             ('missing commit', '-s -w -X main.version=%s -X main.build=%s' % (VERSION, BUILD)),
+                             ('wrong commit', server_ldflags(commit='d' * 40)),
+                             ('no stamp', '-s -w')]:
+            def mutate(root, flags=flags):
+                path = root / 'server'
+                set_gover(root, path, fake_go_output(path, ldflags=flags))
+            with self.subTest(label):
+                result = self.check(mutate)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('main.', result.stderr)
+
+    @unittest.skipUnless(shutil.which('go') and shutil.which('git'), 'needs go and git')
+    def test_payload_check_reads_real_go_version_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory, 'repo')
+            repo.mkdir()
+            (repo / 'go.mod').write_text('module example.com/x\n\ngo 1.21\n')
+            (repo / 'main.go').write_text('package main\n\nvar version, build, commit string\n\nfunc main() {}\n')
+            git = ['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@example.com']
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run([*git, 'add', '.'], check=True)
+            subprocess.run([*git, 'commit', '-qm', 'x'], check=True)
+            sha = subprocess.run([*git, 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+            payloads = Path(directory, 'payloads')
+            (payloads / 'daemon-binaries').mkdir(parents=True)
+            env = {**os.environ, 'GOFLAGS': '-buildvcs=true', 'GOCACHE': directory + '/c', 'GOPATH': directory + '/p', 'GOTOOLCHAIN': 'local'}
+            ldflags = f'-s -w -X main.version={VERSION} -X main.build={BUILD} -X main.commit={sha}'
+            # Two real builds (stamped server, plain) are copied to every file name: the test
+            # reads real `go version -m` output, not Go cross-compilation.
+            subprocess.run(['go', 'build', '-ldflags', ldflags, '-o', str(payloads / 'server'), '.'], cwd=repo, env=env, check=True)
+            subprocess.run(['go', 'build', '-ldflags', '-s -w', '-o', str(payloads / 'plain'), '.'], cwd=repo, env=env, check=True)
+            for name in SERVER_BINARIES:
+                if name != 'server':
+                    shutil.copy(payloads / 'plain', payloads / name)
+            entries = {}
+            for key in DAEMON_KEYS:
+                target = payloads / 'daemon-binaries' / f'multica-{key}'
+                shutil.copy(payloads / 'plain', target)
+                entries[key] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'size': target.stat().st_size}
+            (payloads / 'plain').unlink()
+            (payloads / 'daemon-binaries/manifest.json').write_text(json.dumps({'commit': sha, 'version': f'{VERSION}-{BUILD}', 'binaries': entries}))
+            result = subprocess.run(['python3', str(CHECKER), '--dir', str(payloads), '--commit', sha, '--version', VERSION, '--build', BUILD],
+                                    env={**env, 'GO': 'go'}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            wrong = subprocess.run(['python3', str(CHECKER), '--dir', str(payloads), '--commit', 'e' * 40, '--version', VERSION, '--build', BUILD],
+                                   env={**env, 'GO': 'go'}, capture_output=True, text=True)
+            self.assertNotEqual(wrong.returncode, 0)
+
+    # Acceptance 5
+    def step_index(self, predicate):
+        return next(i for i, step in enumerate(self.steps) if predicate(step))
+
+    def test_backend_leg_compiles_and_checks_payloads_before_the_image_build(self):
+        compile_at = self.step_index(lambda s: 'build-cd-backend-binaries.sh' in s.get('run', ''))
+        check_at = self.step_index(lambda s: 'check-backend-payloads.py' in s.get('run', ''))
+        build_at = self.step_index(lambda s: s.get('name') == 'Build and publish immutable amd64 backend')
+        self.assertLess(compile_at, check_at)
+        self.assertLess(check_at, build_at)
+        for index in (compile_at, check_at):
+            self.assertEqual(self.steps[index]['if'], "matrix.image == 'backend'")
+        self.assertNotIn('continue-on-error', self.steps[check_at])
+
+    def test_backend_build_uses_prebuilt_binaries_and_no_layer_cache(self):
+        step = next(s for s in self.steps if s.get('name') == 'Build and publish immutable amd64 backend')
+        run = step['run']
+        for needle in ['--file Dockerfile.cd-backend', '--build-context cdbin=', 'CD_BINARIES_SHA256', '--builder "$BUILDX_BUILDER"',
+                       'test -n "$BUILDX_BUILDER"']:
+            self.assertIn(needle, run)
+        self.assertNotIn('--cache-from', run)
+        self.assertNotIn('--cache-to', run)
+        self.assertNotIn('--file Dockerfile .', run)
+
+    def test_both_legs_keep_attestations_labels_push_and_digest_check(self):
+        for name in ['Build and publish immutable amd64 backend', 'Build and publish immutable amd64 web']:
+            run = next(s for s in self.steps if s.get('name') == name)['run']
+            with self.subTest(name):
+                for needle in ['--platform linux/amd64', '--provenance=mode=max', '--sbom=true', '--push', '--metadata-file',
+                               'org.opencontainers.image.revision=${GITHUB_SHA}', 'org.opencontainers.image.source=',
+                               'containerimage.digest', '--tag']:
+                    self.assertIn(needle, run)
+        web = next(s for s in self.steps if s.get('name') == 'Build and publish immutable amd64 web')['run']
+        self.assertIn('--file Dockerfile.web', web)
+        self.assertIn('--cache-from', web)
+        self.assertIn('--cache-to', web)
+
+    def test_unrelated_workflow_parts_are_unchanged(self):
+        self.assertEqual(self.workflow['concurrency']['group'], 'cd-qualification-build-${{ github.ref }}')
+        self.assertIs(self.workflow['concurrency']['cancel-in-progress'], False)
+        self.assertEqual(sorted(self.workflow['jobs']), ['build-images', 'cd-qualification', 'd1-fixtures', 'fork-changelog'])
 
 
 if __name__ == '__main__':
