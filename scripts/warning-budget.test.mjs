@@ -372,3 +372,33 @@ test("a transient 503 in gh's bare 'gh: HTTP 503' format is retried (CHE-7032)",
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.logCalls, 3)
 })
+
+// CHE-7171: the main run that first ran a new job ended `failure` (its own warning-budget had no baseline),
+// so a `status=success` run filter hid the job's one green result forever. The job conclusion is what counts.
+test("a successful job inside a failed main run is a baseline (CHE-7171)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "warning-budget-failed-run-"))
+  try {
+    writeFileSync(join(dir, "gh"), `#!${process.execPath}
+const endpoint = process.argv[3]
+const out = (value) => process.stdout.write(typeof value === "string" ? value : JSON.stringify(value))
+if (endpoint.endsWith("/actions/runs/2")) out({ id: 2, workflow_id: 3, created_at: "2026-11-18T05:00:00Z", html_url: "pr-run", head_sha: "pr" })
+else if (endpoint.includes("/actions/workflows/3/runs?")) {
+  const status = new URLSearchParams(endpoint.split("?")[1]).get("status")
+  // Like GitHub: status=success lists only runs whose overall conclusion is success.
+  out({ workflow_runs: status === "success" ? [] : [{ id: 1, event: "push", head_branch: "main", conclusion: "failure", created_at: "2026-11-18T03:20:00Z", head_sha: "main", html_url: "failed-main-run" }] })
+} else if (endpoint.includes("/jobs?")) out({ jobs: [{ id: endpoint.includes("/runs/1/") ? 11 : 12, name: "decision-card-e2e", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/check-runs/5" }] })
+else if (endpoint.includes("/annotations?")) out([])
+else if (endpoint.endsWith("/logs")) out("")
+else throw new Error("Unexpected API request " + endpoint)
+`, { mode: 0o755 })
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./warning-budget.mjs", import.meta.url))], {
+      cwd: dir, encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", GITHUB_STEP_SUMMARY: "" },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const report = JSON.parse(readFileSync(join(dir, "warning-budget-report.json"), "utf8"))
+    assert.deepEqual(report.job_baselines["decision-card-e2e"], { run: "failed-main-run", sha: "main", job: "decision-card-e2e" })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
