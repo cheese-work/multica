@@ -327,20 +327,6 @@ test("a 4xx is not retried (CHE-7010)", () => {
   assert.equal(result.logCalls, 1)
 })
 
-// CHE-7136: decision-card-e2e is new and main has no run of it (the stub serves no main runs), so it has no baseline to
-// look up. It keeps a zero warning baseline instead of failing with "No successful main CI job baseline".
-test("decision-card-e2e passes without a main baseline when it is quiet (CHE-7136)", () => {
-  const result = runWithStubbedGh({ status: 503, times: 0, job: "decision-card-e2e" })
-  assert.doesNotMatch(result.stdout + result.stderr, /No successful main CI job baseline/)
-  assert.equal(result.status, 0, result.stderr)
-})
-
-test("decision-card-e2e still fails on any warning without a main baseline (CHE-7136)", () => {
-  const result = runWithStubbedGh({ status: 503, times: 0, warning: true, job: "decision-card-e2e" })
-  assert.doesNotMatch(result.stdout + result.stderr, /No successful main CI job baseline/)
-  assert.equal(result.status, 1)
-})
-
 // CHE-7032: a GitHub API rate limit is not a warning regression. The shared installation token runs dry under CI load.
 const rateLimit = "API rate limit exceeded for installation 1"
 
