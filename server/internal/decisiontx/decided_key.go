@@ -36,7 +36,12 @@ var KeyExcludedAskFields = []string{
 
 // KeyExcludedNestedFields names, as "Type.json_field", the only fields inside a
 // nested type left out of the key.
-var KeyExcludedNestedFields []string
+//
+// state_claims[].observed_at is when the sender ran the readback: every re-ask
+// carries a fresh one, and an old one fails claim validation after two hours.
+// Keeping it would make an unchanged re-ask miss (CHE-5682 test 15). The claim
+// text and its readback command stay in the key.
+var KeyExcludedNestedFields = []string{"StateClaim.observed_at"}
 
 // keyExactStrings lists the string fields kept as exact bytes. Every other
 // string is trimmed and its whitespace runs collapsed. Spacing inside a command
@@ -181,6 +186,9 @@ func keyStruct(value reflect.Value, exact bool) (map[string]any, error) {
 			continue
 		}
 		if structType == reflect.TypeFor[Ask]() && slices.Contains(KeyExcludedAskFields, name) {
+			continue
+		}
+		if slices.Contains(KeyExcludedNestedFields, structType.Name()+"."+name) {
 			continue
 		}
 		item, err := keyValue(value.Field(i), exact || keyExactStrings[structType.Name()+"."+name])
