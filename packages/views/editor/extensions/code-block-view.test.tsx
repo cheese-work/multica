@@ -224,7 +224,8 @@ describe("CodeBlockView — html language toggle", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
     const dialog = screen.getByRole("dialog");
-    expect(dialog.querySelector("iframe")?.getAttribute("srcdoc")).toBe("<p>unsaved draft</p>");
+    // Fork wins (CHE-7026): the fork wraps the document with its height and anchor scripts.
+    expect(dialog.querySelector("iframe")?.getAttribute("srcdoc")).toContain("<p>unsaved draft</p>");
     expect(within(dialog).queryByTestId("media-link-action")).toBeNull();
   });
 

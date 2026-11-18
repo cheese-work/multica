@@ -1797,11 +1797,14 @@ describe("useIssueSurfaceController", () => {
     expect(result.current.tableQuerySpec.filters.idle_only).toBe(true);
   });
 
-  it("filters the Gantt canvas by the same active set as Inbox and updates as work starts or finishes", async () => {
+  // Fork wins (CHE-7026): Gantt v2 (CHE-4312 G5) reads its own timeline query for
+  // every scope, so the upstream project-only gantt list never runs and this
+  // controller hands the canvas no rows. Upstream's idle/running Gantt filtering
+  // test targeted that dead path.
+  it("leaves Gantt rows to the timeline query instead of listing them itself", async () => {
     const rows = ["running", "queued", "idle"].map((id) => makeIssue({ id, status: "todo", start_date: "2026-01-01" }));
     listIssues.mockResolvedValue({ issues: rows, total: rows.length });
-    const tasks = [makeRunningTask("t1", "a1", "running"), { ...makeRunningTask("t2", "a2", "queued"), status: "queued" as const }];
-    getAgentTaskSnapshot.mockResolvedValue(tasks);
+    getAgentTaskSnapshot.mockResolvedValue([makeRunningTask("t1", "a1", "running")]);
     const store = getIssueSurfaceViewStore("project:p1");
     store.getState().setViewMode("gantt");
     store.getState().toggleAgentIdleFilter();
@@ -1809,11 +1812,10 @@ describe("useIssueSurfaceController", () => {
       () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: ["gantt"] }),
       { wrapper: makeWrapper(qc) },
     );
-    await waitFor(() => expect(result.current.filteredGanttIssues.map((i) => i.id)).toEqual(["idle"]));
-    act(() => qc.setQueryData(agentTaskSnapshotKeys.list("ws-1"), []));
-    await waitFor(() => expect(result.current.filteredGanttIssues).toHaveLength(3));
-    act(() => qc.setQueryData(agentTaskSnapshotKeys.list("ws-1"), [makeRunningTask("t3", "a3", "idle")]));
-    await waitFor(() => expect(result.current.filteredGanttIssues.map((i) => i.id)).toEqual(["running", "queued"]));
+    await waitFor(() => expect(result.current.viewMode).toBe("gantt"));
+    expect(result.current.allowGantt).toBe(true);
+    expect(result.current.filteredGanttIssues).toEqual([]);
+    expect(listIssues).not.toHaveBeenCalled();
   });
 
   it("keeps Table loading until working membership resolves, and lets the filter be disabled while pending", async () => {
