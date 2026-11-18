@@ -129,3 +129,54 @@ func (s *Store) insertIfChanged(ctx context.Context, workspaceID, issueID string
 	}
 	return nil
 }
+
+var _ Links = (*Store)(nil)
+
+// IsLinked reports whether PR N is linked to a Multica issue in any workspace.
+func (s *Store) IsLinked(ctx context.Context, j Job) (bool, error) {
+	var linked bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+		    WHERE pr.installation_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3 AND pr.pr_number = $4)`,
+		j.InstallationID, j.Owner, j.Repo, j.PR).Scan(&linked)
+	if err != nil {
+		return false, fmt.Errorf("check pull request link: %w", err)
+	}
+	return linked, nil
+}
+
+// ListLinkedStacked lists linked open PRs whose base is the head branch of
+// another open PR of the same repo, after the given PR in key order. The
+// default branch is not stored, so "non-default base" is read as "base is
+// another open PR's head": exactly the PRs that can sit above a layer. A layer
+// whose ancestor is not mirrored is left to the webhook.
+func (s *Store) ListLinkedStacked(ctx context.Context, after Job, limit int) ([]Job, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+		   FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+		  WHERE pr.state IN ('open', 'draft')
+		    AND pr.snapshot_base_ref IS NOT NULL
+		    AND EXISTS (
+		      SELECT 1 FROM github_pull_request below
+		       WHERE below.installation_id = pr.installation_id AND below.repo_owner = pr.repo_owner
+		         AND below.repo_name = pr.repo_name AND below.state IN ('open', 'draft')
+		         AND below.branch = pr.snapshot_base_ref AND below.pr_number <> pr.pr_number)
+		    AND (pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number) > ($1, $2, $3, $4)
+		  ORDER BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+		  LIMIT $5`,
+		after.InstallationID, after.Owner, after.Repo, after.PR, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list linked stacked pull requests: %w", err)
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.InstallationID, &j.Owner, &j.Repo, &j.PR); err != nil {
+			return nil, fmt.Errorf("scan linked stacked pull request: %w", err)
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
