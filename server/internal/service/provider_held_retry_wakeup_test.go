@@ -158,7 +158,7 @@ func (o ownerFixture) taskState(t *testing.T, id string) (status, reason string,
 // paused (CHE-1727 wakeups_paused), between failure and release cancels the
 // held row as wakeup_superseded. A pause is not replayed after the resume.
 func TestM1bReleaseFence(t *testing.T) {
-	const pause = `UPDATE workspace SET settings=COALESCE(settings,'{}'::jsonb)||'{"wakeups_paused":true}'::jsonb WHERE id=$2`
+	const pause = `UPDATE workspace SET settings=COALESCE(settings,'{}'::jsonb)||'{"wakeups_paused":true}'::jsonb WHERE id=$2 AND $1::text IS NOT NULL`
 	for _, tc := range []struct {
 		name, mutate string
 		superseded   bool
