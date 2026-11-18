@@ -269,6 +269,12 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
   assert.match(zero, /"migration-checks"/)
 })
 
+test("decision-card-e2e, added by commit 216defde8f, has a zero warning baseline until main runs it", () => {
+  const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"decision-card-e2e"/)
+})
+
 // CHE-7010: run the real script against a stubbed `gh` on PATH. The stub serves one job (a zero-baseline job, so no
 // baseline lookup) and fails the job-log endpoint with the given HTTP status for the first `times` calls.
 function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600, bare = false }) {
