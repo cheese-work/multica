@@ -143,6 +143,28 @@ type Manager struct {
 
 	ctx     context.Context
 	started bool
+
+	// extraSweeps run on every sweep pass (see AddSweep).
+	extraSweeps []func(ctx context.Context)
+}
+
+// AddSweep registers fn to run on every sweep pass, after the snapshot sweeps.
+// Packages that import this one (ghstack, CHE-4143) hook in here without an
+// import cycle. Call it before Start.
+func (manager *Manager) AddSweep(fn func(ctx context.Context)) {
+	if manager != nil {
+		manager.extraSweeps = append(manager.extraSweeps, fn)
+	}
+}
+
+// RateLimitPause is the remaining per-installation back-off, zero when none.
+func (manager *Manager) RateLimitPause(installationID int64) time.Duration {
+	return manager.rateLimitPause(installationID)
+}
+
+// ExtendRateLimit starts or extends the per-installation back-off.
+func (manager *Manager) ExtendRateLimit(installationID int64, d time.Duration) {
+	manager.extendRateLimit(installationID, d)
 }
 
 // NewManager wires the pipeline. onApplied is called once per PR row whose
@@ -755,6 +777,9 @@ func (manager *Manager) sweepOnce(ctx context.Context) {
 	manager.sweepRecheck(ctx)
 	manager.sweepConflictWatched(ctx)
 	manager.sweepClosedReplays(ctx)
+	for _, fn := range manager.extraSweeps {
+		fn(ctx)
+	}
 }
 
 // sweepClosedReplays hands every closed-PR replay still owed back to the
