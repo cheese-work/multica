@@ -239,3 +239,32 @@ func TestDisablingTheSteelPluginRevokesLeases(t *testing.T) {
 		t.Fatalf("lease state=%q reason=%q, want ended plugin_disabled", state, reason)
 	}
 }
+
+func TestBrowserLeaseStatusNeverReturnsATokenAndSeesTheEnd(t *testing.T) {
+	f := newBrowserLeaseFixture(t, "running")
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": f.profile})
+	var minted struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || minted.LeaseID == "" {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+
+	w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", minted.LeaseID)
+	var st struct {
+		State string `json:"state"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || w.Code != http.StatusOK || st.State != "active" || st.Token != "" {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+
+	if w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", uuid.NewString()); w.Code != http.StatusNotFound {
+		t.Fatalf("status of an unknown lease: %d %s, want 404", w.Code, w.Body.String())
+	}
+
+	f.call(t, f.h.ReleaseBrowserLease, "/x", nil, "leaseId", minted.LeaseID)
+	if w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", minted.LeaseID); w.Code != http.StatusConflict {
+		t.Fatalf("status after release: %d %s, want 409", w.Code, w.Body.String())
+	}
+}

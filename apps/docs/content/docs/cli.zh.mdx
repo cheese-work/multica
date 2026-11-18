@@ -406,6 +406,19 @@ multica me background-agents set dm_title --agent none   # 恢复为工作区默
 
 `--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
 
+## 浏览器租约
+
+在守护进程任务内租用共享的远程浏览器。命令经由本地守护进程转发，任务的守护进程凭据只保存在守护进程中，智能体从不持有。获批的租约只在 stdout 输出网关 URL 和短期令牌，不写入日志。排队中的租约只输出队列位置，不输出令牌。
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` 从不输出令牌；`renew` 输出新令牌。登录配置文件需要 `--decision`，即该 Issue 上已回答的决策请求 ID。
+
 ## 命令概览
 
 | 命令 | 用途 |

@@ -160,6 +160,30 @@ func (h *Handler) RenewBrowserLease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, browserLeaseResponseOf(res))
 }
 
+// StatusBrowserLease — GET /api/daemon/tasks/{id}/browser-leases/{leaseId}
+//
+// Reads the state of the task's own lease. It never signs, so it never returns a token and it
+// runs after the task ends.
+func (h *Handler) StatusBrowserLease(w http.ResponseWriter, r *http.Request) {
+	task, ws, ok := h.browserLeaseTask(w, r, false)
+	if !ok {
+		return
+	}
+	leaseID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "leaseId"), "lease_id")
+	if !ok {
+		return
+	}
+	res, err := h.BrowserLeases.Status(r.Context(), ws, task.ID, leaseID)
+	if errors.Is(err, browserlease.ErrGateDenied) {
+		err = browserlease.ErrNotFound // a missing row reads as a dropped lease
+	}
+	if err != nil {
+		writeBrowserLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, browserLeaseResponseOf(res))
+}
+
 // SteelBrowserPluginKey is the manifest key of the plugin that turns Steel leases on
 // (plugins/steel-browser, CHE-4730). Disabling or uninstalling it revokes every lease.
 const SteelBrowserPluginKey = "work.cheese.steel-browser"

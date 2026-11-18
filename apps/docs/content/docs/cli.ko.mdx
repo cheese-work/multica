@@ -406,6 +406,19 @@ multica me background-agents set dm_title --agent none   # 워크스페이스 �
 
 `--agent`와 `--fallback`은 에이전트 ID 또는 이름을 받고, `none`은 필드를 지웁니다. `multica me`는 `dm_title`, `quick_actions`, `compact`를 다루며 `routing`은 워크스페이스 전용입니다. 워크스페이스에 쓰려면 소유자 또는 관리자 권한이 필요하고, 두 명령 모두 태스크 토큰을 거부합니다. 에이전트 없음 동작과 제한 시간은 [백그라운드 에이전트](/background-agents)를 참고하세요.
 
+## 브라우저 리스
+
+데몬 작업 안에서 공유 원격 브라우저를 리스합니다. 명령은 로컬 데몬을 거치며, 작업의 데몬 자격 증명은 데몬만 보유합니다. 승인된 리스는 게이트웨이 URL과 단기 토큰을 stdout으로만 출력하며 로그에 남기지 않습니다. 대기 중인 리스는 대기 순번만 출력하고 토큰은 출력하지 않습니다.
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status`는 토큰을 출력하지 않습니다. `renew`는 새 토큰을 출력합니다. 로그인 프로필에는 `--decision`(이슈에서 응답된 결정 요청의 ID)이 필요합니다.
+
 ## 명령 개요
 
 | 명령 | 용도 |

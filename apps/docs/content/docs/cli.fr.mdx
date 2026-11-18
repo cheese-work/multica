@@ -406,6 +406,19 @@ multica me background-agents set dm_title --agent none   # retour à la valeur p
 
 `--agent` et `--fallback` acceptent un identifiant ou un nom d’agent ; `none` efface le champ. `multica me` couvre `dm_title`, `quick_actions` et `compact` ; `routing` est réservé à l’espace de travail. Écrire dans l’espace de travail exige un propriétaire ou un administrateur, et les deux commandes refusent les jetons de tâche. Pour le comportement sans agent et les échéances, voir [Agents en arrière-plan](/background-agents).
 
+## Baux de navigateur
+
+Dans une tâche du daemon, louez le navigateur distant partagé. La commande passe par le daemon local, qui détient l'identifiant daemon de la tâche ; l'agent ne le détient jamais. Un bail accordé affiche l'URL de la passerelle et un jeton de courte durée sur stdout uniquement ; rien n'est journalisé. Un bail en file affiche sa position et aucun jeton.
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` n'affiche jamais de jeton. `renew` en affiche un nouveau. Un profil avec connexion exige `--decision`, l'id d'une demande de décision répondue sur le ticket.
+
 ## Vue d'ensemble des commandes
 
 | Commande | Rôle |
