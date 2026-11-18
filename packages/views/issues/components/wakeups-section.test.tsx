@@ -498,7 +498,8 @@ describe("v2 sidebar", () => {
       waiting: ["MUL-2"], target: { type: "agent", id: "a", name: "Emacs" }, blocked: "",
     }];
     renderWithI18n(<WakeupsSection issueId="issue" />);
-    expect(screen.getByRole("button", { name: "Wakeups" })).toBeVisible();
+    // Fork wins (CHE-7026): the fork header carries its count in the button name.
+    expect(screen.getByRole("button", { name: "Wakeups 0" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /When all sub-issues finish/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Wakeup history · 1" }));
     const row = screen.getByRole("button", { name: /When all sub-issues finish/ });
