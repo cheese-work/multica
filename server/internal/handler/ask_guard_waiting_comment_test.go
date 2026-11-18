@@ -149,3 +149,20 @@ func TestWaitingAudienceChatLaneWarnsOnly(t *testing.T) {
 		t.Errorf("hits = %d, want 1", n)
 	}
 }
+
+// S2 and S4 both on block: S2 still refuses an untyped member mention (its
+// protection is kept), while the typed audiences S4 accepts still post when no
+// untyped member link is present.
+func TestWaitingAudienceCombinedWithS2Block(t *testing.T) {
+	setAskGuardMode(t, "block")
+	setWaitingAudienceMode(t, "block")
+	f := newAskGuardCommentFixture(t)
+	f.setStatus(t, "in_review")
+	f.post(t, map[string]any{"content": waitingPlainAsk, "ask": f.humanID}).Want(http.StatusCreated)
+	f.post(t, map[string]any{"content": waitingPlainAsk, "no_ask": true}).Want(http.StatusCreated)
+	f.post(t, map[string]any{"content": waitingPlainAsk + " " + f.mention(), "notify_only": true}).Want(http.StatusCreated)
+	f.post(t, map[string]any{"content": waitingPlainAsk + " " + f.mention(), "no_ask": true}).Want(http.StatusUnprocessableEntity)
+	if n := f.waitingHits(t); n != 0 {
+		t.Errorf("typed audiences wrote %d waiting hits", n)
+	}
+}
