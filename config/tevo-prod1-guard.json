@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "ci-wait",
+      "match": {
+        "tool": "gh"
+      },
+      "action": "deny",
+      "builtin": "ci-wait"
+    },
+    {
+      "name": "ci-wait-sleep",
+      "match": {
+        "tool": "sleep"
+      },
+      "action": "deny",
+      "builtin": "ci-wait"
+    },
+    {
+      "name": "gh-pr",
+      "match": {
+        "tool": "gh",
+        "subcommand": [
+          "pr"
+        ]
+      },
+      "action": "fix",
+      "builtin": "gh-pr"
+    },
+    {
+      "name": "gh-api",
+      "match": {
+        "tool": "gh",
+        "subcommand": [
+          "api"
+        ]
+      },
+      "action": "deny",
+      "builtin": "gh-api"
+    },
+    {
+      "name": "wakeup-create",
+      "match": {
+        "tool": "multica",
+        "subcommand": [
+          "issue",
+          "wakeup",
+          "create"
+        ]
+      },
+      "action": "shadow",
+      "builtin": "multica-wakeup"
+    },
+    {
+      "name": "wakeup-update",
+      "match": {
+        "tool": "multica",
+        "subcommand": [
+          "issue",
+          "wakeup",
+          "update"
+        ]
+      },
+      "action": "shadow",
+      "builtin": "multica-wakeup"
+    }
+  ],
+  "repository_allowlist": {
+    "tevo-studio": [
+      "ap004-duo-app",
+      "ap006-dramajoy",
+      "ap007-zonamatch-3",
+      "ap008-vpn",
+      "code-android-template",
+      "code-android-template-fork",
+      "ev001-weather-native",
+      "ev004-datingly",
+      "ev005-blood-sugar",
+      "ev008-short-drama-1",
+      "EVL003-Quran",
+      "mMonetize",
+      "mMonetize-sample",
+      "playevo-mobile-sdk",
+      "sa004-vpn",
+      "sa010-earth-map",
+      "sa039-astrology",
+      "sa042-vpn-4",
+      "sa053-Browser-3",
+      "sa056-zonamatch",
+      "sa065-emoji",
+      "sa067-4k-parallax-wallpaper",
+      "sa070-Ar-Drawing",
+      "sa071-virtual-number",
+      "sa073-supper-browser",
+      "sa074-universal-dual-app",
+      "sa075-astrology-2",
+      "sa077-astrology-3",
+      "sa078-weather",
+      "sa079-reelora",
+      "sa083-dramazen",
+      "st008-palios",
+      "tevo_iap",
+      "tg005-fixpdf",
+      "tt015-bible",
+      "tt023-battery-charging",
+      "tt025-ai-home-design",
+      "tt026-app-lock",
+      "VA023-AI-Learning-Language",
+      "code-android-gradle-plugin",
+      "flutter-template",
+      "playevo-example",
+      "tevo-license-mobile-sdk",
+      "flutter-ads",
+      "che-5179-template-sync-smoke"
+    ]
+  }
+}

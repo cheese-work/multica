@@ -41,7 +41,7 @@ func guardMulticaBin(t *testing.T) string {
 			return
 		}
 		guardBinPath = filepath.Join(guardBinDir, "multica")
-		build := exec.Command("go", "build", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
+		build := exec.Command("go", "build", "-buildvcs=false", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
 		build.Env = append(os.Environ(), "HOME="+guardBuildHome)
 		out, err := build.CombinedOutput()
 		if err != nil {
@@ -57,6 +57,37 @@ func guardMulticaBin(t *testing.T) string {
 func removeGuardMulticaBin() {
 	if guardBinDir != "" {
 		_ = os.RemoveAll(guardBinDir)
+	}
+}
+
+func TestGuardShimsEnforceRepositoryAllowlist(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shims")
+	}
+	tools := t.TempDir()
+	writeTool(t, tools, "git", `case "$1 $2" in
+"remote get-url") echo https://github.com/tevo-studio/sa041-downloader-5.git ;;
+"config --get") exit 1 ;;
+*) echo real-git "$@" ;;
+esac`)
+	writeTool(t, tools, "gh", `echo real-gh "$@"`)
+	agentEnv := map[string]string{"PATH": tools + ":/usr/bin:/bin"}
+	temp := t.TempDir()
+	settings := []byte(`{"guard_policy":{"version":1,"plugins":[],"repository_allowlist":{"tevo-studio":["sa039-astrology"]}}}`)
+	if err := writeGuardPolicy(agentEnv, temp, settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := frontGuardShims(agentEnv, temp, guardMulticaBin(t)); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"git push origin HEAD", "gh pr create -R tevo-studio/sa041-downloader-5 --title x", "gh pr comment 7 -R tevo-studio/sa041-downloader-5 --body x"} {
+		got := runInEnv(t, agentEnv, command+" 2>&1; echo exit=$?")
+		if !strings.Contains(got, "repository allowlist") || !strings.HasSuffix(got, "exit=2") || strings.Contains(got, "real-") {
+			t.Errorf("%s: %s", command, got)
+		}
+	}
+	if got := runInEnv(t, agentEnv, "git status"); got != "real-git status" {
+		t.Errorf("read: %s", got)
 	}
 }
 

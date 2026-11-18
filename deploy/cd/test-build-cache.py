@@ -237,8 +237,9 @@ esac
                         self.assertEqual(removed, '')
                     self.assertNotIn('unrelated-builder', removed)
 
-    def test_daemon_platforms_build_concurrently(self):
-        # CHE-3983: four serial cross-compiles were 460 s of the backend image build.
+    def test_daemon_platforms_build_one_at_a_time(self):
+        # CHE-3983 canary 1: four platforms at once beside the server stage got
+        # `compile: signal: killed` in the 4 GB X99 dind (CHE-731). One go build at a time.
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             go = workspace / 'go'
@@ -255,10 +256,16 @@ echo end >> "$GO_LOG"
                                     env={**os.environ, 'PATH': f'{workspace}:{os.environ["PATH"]}', 'GO_LOG': str(log)},
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            events = log.read_text().split()
-            self.assertEqual(events[:4], ['start'] * 4, 'platform builds ran one after another')
+            self.assertEqual(log.read_text().split(), ['start', 'end'] * 4, 'platform builds overlapped')
             manifest = json.loads((workspace / 'out/manifest.json').read_text())
             self.assertEqual(sorted(manifest['binaries']), ['darwin-amd64', 'darwin-arm64', 'linux-amd64', 'linux-arm64'])
+
+    def test_backend_go_compiles_fit_the_x99_dind_memory_limit(self):
+        # The two parallel stages inherit these from `deps`: at most 2 compiles each, ~1 GiB soft cap per process.
+        backend = (ROOT / 'Dockerfile').read_text()
+        deps = backend[backend.index('AS deps'):backend.index('AS builder')]
+        self.assertRegex(deps, r'(?m)^ENV .*GOFLAGS=-p=2\b')
+        self.assertRegex(deps, r'(?m)^ENV .*GOMEMLIMIT=1GiB\b')
 
     def test_daemon_platform_failure_fails_the_script(self):
         with tempfile.TemporaryDirectory() as directory:

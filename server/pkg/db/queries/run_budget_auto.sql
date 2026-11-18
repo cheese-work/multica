@@ -8,11 +8,15 @@
 -- its own error: the failed check names and the CI failure workflows recorded
 -- for the heads it pushed, so a loop shows across completed runs. ci_unknown
 -- fails closed: it is set unless each head the run pushed holds a finished row
--- for every name in the expected check set (expected_checks, the workspace
--- setting) and no row still queued or running. The snapshot keeps no producer
--- identity, so a name counts only as exactly one Checks API run: a commit status
--- of that name, or a second run of it, is ambiguous and fails closed. A stored snapshot alone is not
--- complete: a check that has not arrived yet has no row. An empty expected set
+-- for every expected check (expected_checks, the workspace setting, each a name,
+-- the GitHub App id that produces it and, for a GitHub Actions check, the workflow
+-- file that runs it) and no row still queued or running. A row satisfies an
+-- expected check only with the same name, the same app_id and, when the expected
+-- check names a workflow, a details_url run id that the github_workflow_run mirror
+-- records for this head under that workflow_path. So a finished run of that name
+-- from another App, from another workflow of the same App, or a commit status (no
+-- app_id), does not; a run whose workflow run is not mirrored does not either. A stored snapshot alone is not complete: a check that has
+-- not arrived yet has no row. An empty expected set
 -- is no evidence, so every pushed head reads as unknown. A head with no retained
 -- check results (they are kept only for a PR's current head, and CI failure
 -- events only while the ci_watcher flag is on) says nothing final either.
@@ -57,14 +61,24 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
            WHERE e.issue_id = t.issue_id AND e.kind = 'head_changed'
              AND e.observed_at >= COALESCE(t.started_at, t.created_at) AND e.observed_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
              AND (
-                 cardinality(sqlc.arg('expected_checks')::text[]) = 0
+                 cardinality(sqlc.arg('expected_names')::text[]) = 0
                  OR EXISTS (
-                     SELECT 1 FROM unnest(sqlc.arg('expected_checks')::text[]) x(name)
+                     SELECT 1 FROM generate_subscripts(sqlc.arg('expected_names')::text[], 1) x(i)
                      WHERE NOT EXISTS (
                          SELECT 1 FROM github_pull_request_check_run cr
-                         WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND cr.name = x.name
-                           AND NOT cr.is_status_context
-                         HAVING count(*) = 1 AND bool_and(cr.status = 'completed' AND cr.conclusion IS NOT NULL)
+                         WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND cr.name = (sqlc.arg('expected_names')::text[])[x.i]
+                           AND cr.app_id = (sqlc.arg('expected_app_ids')::bigint[])[x.i] AND NOT cr.is_status_context
+                           AND cr.status = 'completed' AND cr.conclusion IS NOT NULL
+                           AND (
+                               (sqlc.arg('expected_workflows')::text[])[x.i] = ''
+                               OR EXISTS (
+                                   SELECT 1 FROM github_workflow_run wr
+                                   JOIN github_pull_request p ON p.id = e.pull_request_id
+                                   WHERE wr.workspace_id = p.workspace_id AND wr.repo_owner = lower(p.repo_owner) AND wr.repo_name = lower(p.repo_name)
+                                     AND wr.head_sha = e.head_sha AND wr.workflow_path = (sqlc.arg('expected_workflows')::text[])[x.i]
+                                     AND wr.run_id = substring(cr.details_url from '^https://github\.com/[^/]+/[^/]+/actions/runs/([0-9]{1,18})/')::bigint
+                               )
+                           )
                      )
                  )
                  OR EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND (cr.status <> 'completed' OR cr.conclusion IS NULL))

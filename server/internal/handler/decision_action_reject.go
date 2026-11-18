@@ -78,6 +78,15 @@ func atStep(step string, err error) error {
 	return lockStep{step, err}
 }
 
+// busyStep names the step that refused, "unknown" when the refusal site is unnamed.
+func busyStep(err error) string {
+	var named lockStep
+	if errors.As(err, &named) {
+		return named.step
+	}
+	return "unknown"
+}
+
 // lockRefused reports an error the same transaction may succeed after: a lock
 // that was held (55P03, advisory try-locks), or a serialization failure.
 func lockRefused(err error) bool {
@@ -107,12 +116,7 @@ func retryActionTx(ctx context.Context, operation string, caller decisionActionC
 		action, err = attempt()
 	}
 	if actionTxBusy(err) {
-		step := "unknown"
-		var named lockStep
-		if errors.As(err, &named) {
-			step = named.step
-		}
-		slog.Warn("decision action: busy_retry", "operation", operation, "step", step, "action_id", uuidToString(caller.actionID), "issue_id", uuidToString(issueID), "error", err)
+		slog.Warn("decision action: busy_retry", "operation", operation, "step", busyStep(err), "action_id", uuidToString(caller.actionID), "issue_id", uuidToString(issueID), "error", err)
 	}
 	return action, err
 }
@@ -151,12 +155,17 @@ type decisionActionOutcome struct {
 	Result       json.RawMessage `json:"result,omitempty"`
 	ErrorCode    string          `json:"error_code,omitempty"`
 	ErrorMessage string          `json:"error_message,omitempty"`
+	// Receipt is set for an executed run-budget raise or top-up.
+	Receipt *RunBudgetReceipt `json:"receipt,omitempty"`
 }
 
-func newDecisionActionOutcome(action db.DecisionAction) decisionActionOutcome {
+// decisionActionOutcome reads the action as it stands now: the approve response
+// comes after the resume worker has run, so its receipt already has the worker's outcome.
+func (handler *Handler) decisionActionOutcome(ctx context.Context, action db.DecisionAction) decisionActionOutcome {
 	return decisionActionOutcome{
 		ID: uuidToString(action.ID), State: action.State, Result: action.Result,
 		ErrorCode: action.ErrorCode.String, ErrorMessage: action.ErrorMessage.String,
+		Receipt: runBudgetReceipt(ctx, handler.Queries, action),
 	}
 }
 
@@ -264,7 +273,7 @@ func (handler *Handler) GetDecisionActionOutcome(writer http.ResponseWriter, req
 		writeDecisionActionError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+	writeJSON(writer, http.StatusOK, handler.decisionActionOutcome(ctx, action))
 }
 
 // GetDecisionAction returns the card view of one action to the request's
@@ -305,16 +314,24 @@ func writeDecisionActionError(writer http.ResponseWriter, err error) {
 	var refusal decisionIntentRefusal
 	var proofRefusal passkey.Refusal
 	switch {
+	case errors.Is(err, errBusyRetry):
+		writeBusyRetry(writer, err)
 	case errors.As(err, &refusal):
 		writeError(writer, refusal.status, refusal.message)
 	case errors.As(err, &proofRefusal):
 		writeError(writer, proofRefusal.Status, proofRefusal.Message)
 	case actionTxBusy(err):
-		writer.Header().Set("Retry-After", "1")
-		writeError(writer, errBusyRetry.status, errBusyRetry.message)
+		writeBusyRetry(writer, err)
 	default:
 		writeError(writer, http.StatusInternalServerError, "failed to decide the action")
 	}
+}
+
+// writeBusyRetry answers 409 busy_retry with the refusing step, so a click that
+// meets a lock is diagnosable without the server log.
+func writeBusyRetry(writer http.ResponseWriter, err error) {
+	writer.Header().Set("Retry-After", "1")
+	writeJSON(writer, errBusyRetry.status, map[string]string{"error": errBusyRetry.message, "step": busyStep(err)})
 }
 
 // beginActionTx takes one pooled connection (bounded acquire) and bounds every
@@ -324,7 +341,7 @@ func (handler *Handler) beginActionTx(ctx context.Context, lockTimeout time.Dura
 	defer cancel()
 	transaction, err := handler.TxStarter.Begin(acquire)
 	if err != nil {
-		return nil, errBusyRetry
+		return nil, atStep("connection", errBusyRetry)
 	}
 	settings := fmt.Sprintf(`SET LOCAL lock_timeout = '%dms'; SET LOCAL statement_timeout = '10s'`, lockTimeout.Milliseconds())
 	if _, err := transaction.Exec(ctx, settings); err != nil {

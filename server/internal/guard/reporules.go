@@ -242,6 +242,11 @@ func isBadRules(err error) bool {
 // missing file and an unprotected base give no rules. A malformed file or a
 // failed read is an error.
 func (e *Engine) fetchRepoRules(ctx context.Context, repo, base string) (*Rules, []string, error) {
+	if e.queueGitContext(base) {
+		if rules, revs, handled, err := e.fetchRulesViaGit(ctx, repo, base); handled {
+			return rules, revs, err
+		}
+	}
 	segs := strings.Split(base, "/")
 	for i, s := range segs {
 		segs[i] = url.PathEscape(s)

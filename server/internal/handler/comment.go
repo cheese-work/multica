@@ -2664,6 +2664,11 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				continue
 			}
 			if reason := commentEnqueueFailureReason(err); reason != ReasonInternalError {
+				// A full review stage queues the mention server-side and starts
+				// it by itself (CHE-7011): report it as deferred, not refused.
+				if reason == ReasonStageQueueFull {
+					return DispatchDeferred, reason
+				}
 				return DispatchBlocked, reason
 			}
 			return internalError("enqueue_trigger", err)

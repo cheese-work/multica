@@ -136,6 +136,15 @@ export function createScrollRestorationAdapter(
       if (routeKey === null) return;
       useTabStore.getState().commitViewState(tabId, routeKey, entryKey, value);
     },
+    bindViewStateWriter() {
+      const tab = Object.values(useTabStore.getState().byWorkspace)
+        .flatMap((g) => g.tabs)
+        .find((t) => t.id === tabId);
+      if (!tab) return undefined;
+      const routeKey = splitTabUrl(tab.url).pathname;
+      return (entryKey, value) =>
+        useTabStore.getState().commitViewState(tabId, routeKey, entryKey, value);
+    },
     registerExternalSource(containerKey, source) {
       registerExternalScrollSource(tabId, containerKey, source);
     },

@@ -148,6 +148,24 @@ func (q *Queries) CloseProviderBreakerOnCanary(ctx context.Context, arg ClosePro
 	return result.RowsAffected(), nil
 }
 
+const ensureProviderBreaker = `-- name: EnsureProviderBreaker :exec
+INSERT INTO provider_breaker (workspace_id, provider)
+VALUES ($1, $2)
+ON CONFLICT (workspace_id, provider) DO NOTHING
+`
+
+type EnsureProviderBreakerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Provider    string      `json:"provider"`
+}
+
+// A held retry makes the breaker known: a closed row with no evidence, so the
+// release controller can start a canary. It never touches an existing row.
+func (q *Queries) EnsureProviderBreaker(ctx context.Context, arg EnsureProviderBreakerParams) error {
+	_, err := q.db.Exec(ctx, ensureProviderBreaker, arg.WorkspaceID, arg.Provider)
+	return err
+}
+
 const getProviderBreaker = `-- name: GetProviderBreaker :one
 SELECT pb.workspace_id, pb.provider, pb.state, pb.opened_at, pb.next_probe_at, pb.cool_off_s, pb.canary_task_id, pb.trip_evidence, pb.last_5xx_at, pb.last_success_at, pb.version, pb.canary_cool_off_s, pb.next_canary_at, pb.canary_starts, pb.last_release_at, pb.drain_cutoff_at, (
     (pb.next_probe_at IS NULL OR pb.next_probe_at <= now())

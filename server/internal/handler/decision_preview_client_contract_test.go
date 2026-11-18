@@ -18,6 +18,15 @@ import (
 // card shows "Details unavailable" and Approve stays disabled (CHE-6242). The two
 // lists must be equal.
 func TestActionPreviewTypesMatchWebClientList(t *testing.T) {
+	server, client := serverPreviewTypes(t), clientTypeList(t, "PREVIEWED_ACTION_TYPES")
+	if missing, extra := diffKeys(server, client), diffKeys(client, server); len(missing) > 0 || len(extra) > 0 {
+		t.Fatalf("server preview types and web PREVIEWED_ACTION_TYPES differ: add to the web list %v; remove from the web list %v", missing, extra)
+	}
+}
+
+// serverPreviewTypes is the set of case labels in actionPreviewFields.
+func serverPreviewTypes(t *testing.T) map[string]bool {
+	t.Helper()
 	fset := token.NewFileSet()
 	names, err := filepath.Glob("*.go")
 	if err != nil {
@@ -77,22 +86,25 @@ func TestActionPreviewTypesMatchWebClientList(t *testing.T) {
 		t.Fatal("found no action types in actionPreviewFields")
 	}
 
+	return server
+}
+
+// clientTypeList reads the string array `name` from the web client's preview module.
+func clientTypeList(t *testing.T, name string) map[string]bool {
+	t.Helper()
 	src, err := os.ReadFile("../../../packages/core/issues/decision-action-preview.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := regexp.MustCompile(`(?s)PREVIEWED_ACTION_TYPES = \[(.*?)\] as const`).FindSubmatch(src)
+	block := regexp.MustCompile(`(?s)` + name + ` = \[(.*?)\] as const`).FindSubmatch(src)
 	if block == nil {
-		t.Fatal("PREVIEWED_ACTION_TYPES not found in decision-action-preview.ts")
+		t.Fatalf("%s not found in decision-action-preview.ts", name)
 	}
-	client := map[string]bool{}
+	list := map[string]bool{}
 	for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(block[1], -1) {
-		client[string(m[1])] = true
+		list[string(m[1])] = true
 	}
-
-	if missing, extra := diffKeys(server, client), diffKeys(client, server); len(missing) > 0 || len(extra) > 0 {
-		t.Fatalf("server preview types and web PREVIEWED_ACTION_TYPES differ: add to the web list %v; remove from the web list %v", missing, extra)
-	}
+	return list
 }
 
 func valueAt(values []ast.Expr, i int) ast.Expr {

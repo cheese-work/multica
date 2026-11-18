@@ -392,7 +392,11 @@ export function useWakeupText() {
         ? t(($) => $.wakeups.paused.loop)
         : w.paused_reason === "rate"
           ? t(($) => $.wakeups.paused.rate)
-          : null;
+          : w.paused_reason === "run_budget"
+            ? t(($) => $.wakeups.paused.run_budget)
+            : w.paused_reason === "weekly_run_guard"
+              ? t(($) => $.wakeups.paused.weekly_run_guard)
+              : null;
   // The bare reason, for sentences that already say the rule was paused.
   const pausedReason = (w: Pick<IssueWakeup, "paused_reason" | "max_fires" | "fire_count">) =>
     w.paused_reason === "max_fires"
@@ -401,7 +405,11 @@ export function useWakeupText() {
         ? t(($) => $.wakeups.paused_reason.loop)
         : w.paused_reason === "rate"
           ? t(($) => $.wakeups.paused_reason.rate)
-          : null;
+          : w.paused_reason === "run_budget"
+            ? t(($) => $.wakeups.paused_reason.run_budget)
+            : w.paused_reason === "weekly_run_guard"
+              ? t(($) => $.wakeups.paused_reason.weekly_run_guard)
+              : null;
   const fires = (w: Pick<IssueWakeup, "max_fires" | "fire_count" | "mode">) => {
     const count = w.fire_count ?? 0;
     if (w.mode !== "continuous" || (!count && !w.max_fires)) return null;

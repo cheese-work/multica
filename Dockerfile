@@ -3,6 +3,10 @@ FROM golang:1.27.3-alpine AS deps
 
 RUN apk add --no-cache git
 
+# The builder and daemon-builder stages compile at the same time inside the 4 GB
+# X99 dind (CHE-731): cap each go build to 2 compiles and ~1 GiB per process.
+ENV GOFLAGS=-p=2 GOMEMLIMIT=1GiB
+
 WORKDIR /src
 
 # Cache dependencies

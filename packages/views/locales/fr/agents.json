@@ -1154,5 +1154,22 @@
     "paused_by_note": "Mis en pause par {{name}} · {{time}}",
     "paused_at_note": "Mis en pause {{time}}",
     "paused_reason_note": "Motif : {{reason}}"
+  },
+  "background_use": {
+    "title": "Agent d'arrière-plan",
+    "intro": "Cet agent effectue de petites tâches en arrière-plan. Ce n'est pas un agent de chat pour ces tâches.",
+    "scope_workspace": "Espace de travail",
+    "scope_personal": "Personnel · à vous",
+    "link_workspace": "Espace de travail → Agents d'arrière-plan",
+    "link_personal": "Personnel → Agents d'arrière-plan",
+    "member_note": "Les tâches de l'espace de travail sont définies par les propriétaires et les admins. Vous voyez vos choix personnels, pas ceux des autres.",
+    "jobs": {
+      "dm_title": "Titre du DM",
+      "quick_actions": "Actions rapides",
+      "compact": "Compactage",
+      "routing": "Routage"
+    },
+    "access_note": "Cet agent est un agent d'arrière-plan de l'espace de travail. Restreindre l'accès à « Moi uniquement » ou « Personnes précises » le rend inéligible à ses tâches d'arrière-plan de l'espace de travail. Ces tâches utilisent alors leur agent de secours, ou le chemin sans agent s'il n'y en a pas.",
+    "access_note_readonly": "Seul le propriétaire de l'agent peut modifier l'accès. Le restreindre à « Moi uniquement » ou « Personnes précises » rendrait cet agent inéligible à ses tâches d'arrière-plan de l'espace de travail. Ces tâches utilisent alors leur agent de secours, ou le chemin sans agent s'il n'y en a pas."
   }
 }

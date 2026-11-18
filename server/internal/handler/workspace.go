@@ -397,6 +397,9 @@ type UpdateWorkspaceRequest struct {
 	// TimeWakeupSkip sets settings.time_wakeup_skip alone (CHE-5987): the
 	// object {"mode": off|warn|block}. Owner only.
 	TimeWakeupSkip json.RawMessage `json:"time_wakeup_skip"`
+	// AutoClose sets settings.auto_close alone (CHE-6969): the object
+	// {"mode": off|warn|block}. Owner only.
+	AutoClose json.RawMessage `json:"auto_close"`
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
@@ -575,7 +578,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), validateCardLintSetting(req.Settings), ghstack.ValidateSetting(req.Settings), validateCommentWakeSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), validateCardLintSetting(req.Settings), validateIntakeHoldSetting(req.Settings), ghstack.ValidateSetting(req.Settings), validateCommentWakeSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -652,6 +655,16 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.TimeWakeupSkip = req.TimeWakeupSkip
+	}
+	if req.AutoClose != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateAutoClosePatch(req.AutoClose); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.AutoClose = req.AutoClose
 	}
 	if req.AskGuardMode != nil {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
