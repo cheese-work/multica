@@ -148,7 +148,7 @@ func TestIdleStartedGuardActRechecksUnderLock(test *testing.T) {
 
 func TestIdleStartedGuardActRetriesLeaderRoute(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
 	if fixture.status(test) != "need_decision" || fixture.receipt(test, "state") != "moved" {
 		test.Fatalf("status = %q, state = %q, want need_decision and moved", fixture.status(test), fixture.receipt(test, "state"))
@@ -156,7 +156,7 @@ func TestIdleStartedGuardActRetriesLeaderRoute(test *testing.T) {
 	if fixture.leaderTasks(test) != 0 {
 		test.Fatal("a leader task was admitted without a route")
 	}
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	fixture.sweep(test)
 	if fixture.receipt(test, "state") != "notified" || fixture.leaderTasks(test) != 1 || fixture.systemComments(test) != 1 {
 		test.Fatalf("state = %q, tasks = %d, comments = %d, want notified, 1, 1", fixture.receipt(test, "state"), fixture.leaderTasks(test), fixture.systemComments(test))
@@ -165,7 +165,7 @@ func TestIdleStartedGuardActRetriesLeaderRoute(test *testing.T) {
 
 func TestIdleStartedGuardActGivesUpAfterThreeNotifyFailures(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	for range 5 {
 		// Errors are the counted failures; the receipt state is the assertion.
 		_ = testHandler.SweepIdleStartedIssues(context.Background())
@@ -233,12 +233,12 @@ func (fixture idleActFixture) notifiedTo(test *testing.T) string {
 
 func TestIdleStartedGuardNotifiedSignalFollowsReceipt(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
 	if fixture.receipt(test, "state") != "moved" || fixture.notifiedTo(test) != "" {
 		test.Fatalf("state = %q, signal = %q, want moved and no signal", fixture.receipt(test, "state"), fixture.notifiedTo(test))
 	}
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	fixture.sweep(test)
 	if got, want := fixture.notifiedTo(test), fixture.status(test); got != want || want == "" {
 		test.Fatalf("signal = %q, want the status %q the guard notified at", got, want)
@@ -279,4 +279,18 @@ func TestIdleStartedGuardEndEpisodeKeepsReceiptWhenSignalClearFails(test *testin
 	if dbfx.Count(test, `SELECT count(*) FROM issue_idle_guard WHERE issue_id = $1`, fixture.issue) != 1 {
 		test.Fatal("the receipt row was deleted although the signal clear failed; no later scan can retry")
 	}
+}
+
+// breakRoute makes the alert unroutable: an archived squad now falls back to
+// the assignee (CHE-6101), so the assignee is archived too.
+func (fixture idleActFixture) breakRoute(test *testing.T) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agent)
+}
+
+func (fixture idleActFixture) fixRoute(test *testing.T) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = NULL WHERE id = $1`, fixture.agent)
 }

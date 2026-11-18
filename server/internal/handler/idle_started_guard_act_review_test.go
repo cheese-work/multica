@@ -167,9 +167,9 @@ func TestIdleStartedGuardActFallsBackToBlockedWithoutNeedDecision(test *testing.
 
 func TestIdleStartedGuardActNoticeSkipsIssueThatResumed(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	dbfx.Comment(test, fixture.issue, "back at it", testutil.Cols{"author_type": "member", "author_id": testUserID})
 	fixture.sweep(test)
 	if fixture.leaderTasks(test) != 0 {
@@ -182,9 +182,9 @@ func TestIdleStartedGuardActNoticeSkipsIssueThatResumed(test *testing.T) {
 
 func TestIdleStartedGuardActNoticeReusesTheDecisionWaitAlert(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	alert := dbfx.Task(test, fixture.leader, testutil.Cols{"issue_id": fixture.issue, "status": "completed", "runtime_id": handlerTestRuntimeID(test)})
 	dbfx.Exec(test, `UPDATE issue SET metadata = jsonb_set(metadata, '{decision_wait_alert_id}', to_jsonb($1::text)) WHERE id = $2`, alert, fixture.issue)
 	fixture.sweep(test)
@@ -198,7 +198,7 @@ func TestIdleStartedGuardActNoticeReusesTheDecisionWaitAlert(test *testing.T) {
 
 func TestIdleStartedGuardActKeepsTheStatusExplanationWhenAdmissionFails(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
 	if fixture.systemComments(test) != 1 || fixture.receipt(test, "comment_id") == "" {
 		test.Fatalf("system comments = %d, comment id = %q: the status explanation was lost with the failed admission", fixture.systemComments(test), fixture.receipt(test, "comment_id"))
