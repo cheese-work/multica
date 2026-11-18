@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
-import { agentTaskSnapshotKeys, workspaceWorkingAgentsKeys } from "@multica/core/agents/queries";
+import { workspaceWorkingAgentsKeys } from "@multica/core/agents/queries";
 import { issueUnreadKeys } from "@multica/core/issues/unread";
 import {
   getIssueSurfaceViewStore,
