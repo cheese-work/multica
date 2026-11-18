@@ -504,8 +504,13 @@ type ChatSessionUpdatedPayload struct {
 	Status *string `json:"status,omitempty"`
 	// Compacting is set only when a compaction task starts or ends; nil leaves
 	// the receiver's value untouched.
-	Compacting *bool  `json:"compacting,omitempty"`
-	UpdatedAt  string `json:"updated_at"`
+	Compacting *bool `json:"compacting,omitempty"`
+	// CompactAgentName is the agent running the compaction (set with
+	// Compacting=true). CompactFallbackReason is why the configured compaction
+	// agent was skipped and the DM agent runs it instead; empty otherwise.
+	CompactAgentName      string `json:"compact_agent_name,omitempty"`
+	CompactFallbackReason string `json:"compact_fallback_reason,omitempty"`
+	UpdatedAt             string `json:"updated_at"`
 }
 
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket
