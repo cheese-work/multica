@@ -498,6 +498,7 @@ type BrowserProfile struct {
 	Name        string             `json:"name"`
 	Class       string             `json:"class"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Hosts       []string           `json:"hosts"`
 }
 
 type ChannelBindingToken struct {
@@ -1411,6 +1412,7 @@ type DecisionRequest struct {
 	PingOutcome              pgtype.Text        `json:"ping_outcome"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	ReadAt                   pgtype.Timestamptz `json:"read_at"`
 }
 
 type DecisionWait struct {

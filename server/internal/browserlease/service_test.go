@@ -102,6 +102,7 @@ func newEnv(t *testing.T, instances ...string) *env {
 	e.svc = &Service{
 		Pool: testPool, Queries: q, Gate: e.hooks, Decisions: e.hooks,
 		Registry: NameRegistry{Queries: q}, Signer: e.signer, Now: func() time.Time { return e.now },
+		Class3: testClass3(t),
 	}
 	t.Cleanup(func() {
 		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile"} {
@@ -119,7 +120,21 @@ func newEnv(t *testing.T, instances ...string) *env {
 func (e *env) profile(class string) db.BrowserProfile {
 	e.t.Helper()
 	p, err := e.svc.Queries.CreateBrowserProfile(context.Background(), db.CreateBrowserProfileParams{
-		WorkspaceID: e.ws, Name: "p-" + uuid.NewString(), Class: class,
+		WorkspaceID: e.ws, Name: "p-" + uuid.NewString(), Class: class, Hosts: hostsFor(class),
+	})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return p
+}
+
+func (e *env) profileWithHosts(class string, hosts ...string) db.BrowserProfile {
+	e.t.Helper()
+	if hosts == nil {
+		hosts = []string{}
+	}
+	p, err := e.svc.Queries.CreateBrowserProfile(context.Background(), db.CreateBrowserProfileParams{
+		WorkspaceID: e.ws, Name: "p-" + uuid.NewString(), Class: class, Hosts: hosts,
 	})
 	if err != nil {
 		e.t.Fatal(err)
@@ -540,6 +555,33 @@ func TestReleaseQueuedDeletesAndReleaseEndedIsIdempotent(t *testing.T) {
 		t.Fatalf("phase = %s, want draining", inst.Phase)
 	}
 }
+
+// hostsFor gives a login (S2) profile a harmless site host; S0 profiles log in nowhere.
+func hostsFor(class string) []string {
+	if class == ClassS2 {
+		return []string{"example.com"}
+	}
+	return []string{}
+}
+
+func testClass3(t *testing.T) *Class3Deny {
+	t.Helper()
+	d, err := ParseClass3Deny(strings.NewReader(class3Fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+const class3Fixture = `# fixture, same shape as shared-browser steel-gateway/class3-deny.txt
+[hosts]
+paypal.com
+dashboard.stripe.com
+Mail.Google.com
+
+[patterns]
+github.com/settings/tokens
+`
 
 // reclassify moves a profile to another class after leases exist (W3-12: the class rules hold at
 // every mint, renew and queued grant, not only at the first mint).
