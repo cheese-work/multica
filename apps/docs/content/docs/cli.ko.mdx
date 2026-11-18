@@ -577,6 +577,9 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `guard` | `check-pr <pr-url\|number\|branch>` | 풀 리퀘스트를 정책과 저장소의 `.github/agent-rules.yml`에 비추어 변경 없이 검사합니다. 파일은 PR의 보호된 기본 브랜치의 현재 끝에서 데이터로 읽으며 PR 브랜치에서는 읽지 않습니다. 파일이 없으면 규칙이 추가되지 않고, 형식이 잘못된 파일이나 읽을 수 없는 기본 브랜치는 검사를 실패시킵니다. CI 검사로 사용합니다 | 종료 코드: 0 통과, 1 규칙 위반, 2 거부. `-R owner/name`으로 저장소 지정 |
 | `guard` | `plugin list\|get\|set` | 저장된 가드 정책을 읽거나(`list`, `get <name>`) 이를 대체하는 결정 액션 파일을 작성(`set --file <policy.json> --out <action.json>` 또는 `--dry-run`). 정책에는 워크스페이스 플러그인과 리뷰 규칙, 그리고 org·저장소·경로 레이어가 들어 있다. 더 깊은 레이어가 얕은 레이어를 키 단위로 덮어쓰며, `locked`가 붙은 레이어 또는 워크스페이스는 그 키를 더 깊은 레이어로부터 고정한다. `set`은 아무것도 전송하지 않으며, 사람이 passkey로 `workspace.settings.patch`를 승인한다. 데몬은 승인된 정책을 작업 트리 밖의 파일 `MULTICA_GUARD_POLICY`와 `MULTICA_GUARD_POLICY_SHA256`로 각 실행에 전달한다 | 출력: JSON 행(`--output table`은 표). `set`은 `before_sha256`과 `after_sha256`을 출력 |
 
+`repository_allowlist`는 소유자별 허용 저장소 이름을 지정하며 대소문자를 구분하지 않습니다. 지정한 소유자는 기본 거부하고 생략한 소유자는 제한하지 않습니다. 플러그인과 하위 계층보다 먼저 `gh pr create`, `gh pr comment`, `git push`, 인증된 `repo checkout`의 미승인 작업을 거부합니다. Git은 pushurl과 URL 재작성을 포함한 실제 대상을 확인하며 불명확하면 거부합니다. 승인 전에 daemon을 업데이트하세요. Cheese Work의 기준 파일은 `config/tevo-prod1-guard.json`입니다.
+
+
 ### 결정 제안
 
 작업 토큰은 사람이 패스키로 승인하는 관리 대상 작업을 제안할 수 있습니다. 제안 자체는 아무것도 변경하지 않습니다.
