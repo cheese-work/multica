@@ -157,7 +157,7 @@ A PR linked to a Multica issue triggers it. Ancestor PRs do not need an issue. M
 
 It never moves a PR from one stack to another, never unstacks, never reorders, and never merges, rebases or pushes. A chain with any bad ancestor is not linked at all, so Multica never creates a truncated stack. GitHub stacks merge bottom-up, and a person still merges the code. The walk covers at most 10 ancestors and counts only PRs whose head branch is in the same repository (a fork head does not count).
 
-It runs when a linked PR is opened, reopened, marked ready for review, synchronized, has its base branch edited, or when a PR below it merges. A bounded pass in the 10 minute reconcile also checks linked open PRs whose base is not the default branch, so a missed webhook is caught. One job runs per repository at a time. A GitHub failure never fails PR handling or the webhook.
+It runs when a linked PR is opened, reopened, marked ready for review, synchronized, has its base branch edited, or when a PR below it merges. A bounded pass in the 10 minute reconcile also checks linked open PRs whose base branch is not named `main` or `master`, so a missed webhook is caught. The sweep does not look up the repository's real default branch: if the default branch has another name, its PRs are checked too, and the pass changes nothing when the PR is not part of a stack. One job runs per repository at a time. A GitHub failure never fails PR handling or the webhook.
 
 ### Choose a mode
 
