@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"github.com/google/uuid"
 	"net/http"
 	"strings"
 	"testing"
@@ -93,5 +94,34 @@ func TestBrowserLeaseMintS2FindsTheOpenRequest(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT count(*) FROM decision_request WHERE workspace_id = $1 AND request_fingerprint LIKE 'server:browser_lease:%'`, testWorkspaceID).Scan(&n)
 	if n != 1 {
 		t.Fatalf("%d requests, want 1", n)
+	}
+}
+
+// The request is asked as the minting agent, not as the built-in agent or the issue's assignee:
+// the validator accepts only a decision that agent asked. After the user approves, the same
+// agent's mint with that ID succeeds, and another agent's mint is refused.
+func TestBrowserLeaseMintS2DecisionIsAskedAsTheMintingAgent(t *testing.T) {
+	f, profile := s2Fixture(t)
+	other := dbfx.Agent(t, "Other Assignee "+uuid.NewString(), dbfx.Runtime(t, "other runtime"))
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = (SELECT issue_id FROM agent_task_queue WHERE id = $1)`, f.taskID, other)
+	// S2 runs on a C00 instance; the fixture's X99 instance serves S0 only.
+	if _, err := db.New(testPool).CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: parseUUID(testWorkspaceID), Name: "c00-1"}); err != nil {
+		t.Fatal(err)
+	}
+	out := mintS2(t, f, profile)
+
+	var asking string
+	dbfx.QueryRow(t, `SELECT asking_agent_id::text FROM decision_request WHERE id = $1`, out.DecisionRequestID).Scan(&asking)
+	if asking != f.agentID {
+		t.Fatalf("request asked as %s, want the minting agent %s", asking, f.agentID)
+	}
+
+	dbfx.Exec(t, `UPDATE decision_request SET status = 'answered' WHERE id = $1`, out.DecisionRequestID)
+	dbfx.Exec(t, `INSERT INTO decision_answer (id, decision_request_id, content_snapshot, chat_message_ids, effective_at, answered_by_user_id, chosen_option_index, answer_source)
+		VALUES ($1, $2, $3, '{}', now() - interval '1 minute', $4, 0, 'card')`, uuid.NewString(), out.DecisionRequestID, browserlease.ApproveLabel, testUserID)
+
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": profile, "decision_id": out.DecisionRequestID})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint with the approved decision: %d %s", w.Code, w.Body.String())
 	}
 }

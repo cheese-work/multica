@@ -59,8 +59,9 @@ func (d browserLeaseDecisions) request(ctx context.Context, s browserlease.Subje
 	var created []decisionRequestResult
 	err = h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
-		// The plan takes the workspace lock, so concurrent mints find one request, not two.
-		plan, err := h.planRunBudgetDecisions(ctx, q, issue, []pgtype.UUID{s.UserID})
+		// The plan takes the workspace lock, so concurrent mints find one request, not two. It asks as
+		// the minting agent: the validator accepts only a decision that agent asked.
+		plan, err := h.planRunBudgetDecisionsAs(ctx, q, issue, agent, []pgtype.UUID{s.UserID})
 		if err != nil {
 			return err
 		}
