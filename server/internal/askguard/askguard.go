@@ -28,6 +28,11 @@ const SettingKey = "ask_guard_mode"
 // already allows. Its own key, so it reverts without touching SettingKey.
 const ReversibleSettingKey = "reversible_ask_guard"
 
+// WaitingAudienceSettingKey holds the mode of S4 (CHE-7289): an agent comment
+// on a waiting issue must carry a typed audience. Its own key, so S4 starts in
+// warn and reverts without touching SettingKey.
+const WaitingAudienceSettingKey = "waiting_audience_guard"
+
 type Mode string
 
 const (
@@ -53,6 +58,11 @@ func ModeFromSettings(raw []byte) (Mode, error) { return modeFromSettings(raw, S
 // ReversibleModeFromSettings reads ReversibleSettingKey the same way.
 func ReversibleModeFromSettings(raw []byte) (Mode, error) {
 	return modeFromSettings(raw, ReversibleSettingKey)
+}
+
+// WaitingAudienceModeFromSettings reads WaitingAudienceSettingKey the same way.
+func WaitingAudienceModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, WaitingAudienceSettingKey)
 }
 
 func modeFromSettings(raw []byte, key string) (Mode, error) {
@@ -135,6 +145,16 @@ func (g Guard) Hit(ctx context.Context, workspaceID pgtype.UUID, op Op) (Verdict
 		return Verdict{}, err
 	}
 	return Verdict{Event: &ev, Block: mode == ModeBlock}, nil
+}
+
+// RecordWarn stores the operation as a warn event whatever the workspace
+// ask_guard_mode is, for a rule that has its own mode (S4). The event is never
+// a block event, so the recovery pass, which reads block events, never acts on
+// it: the refusal itself is the fix.
+func (g Guard) RecordWarn(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, result, err := g.record(ctx, workspaceID, ModeWarn, op)
+	g.Metrics.RecordAskGuardEvent(string(ModeWarn), result)
+	return err
 }
 
 func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, op Op) (db.AskGuardEvent, string, error) {
