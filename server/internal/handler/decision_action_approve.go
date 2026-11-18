@@ -550,6 +550,7 @@ func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db
 	if err := handler.completeDecisionActionPostCommit(context.WithoutCancel(ctx), action); err != nil {
 		slog.Warn("decision action: post-commit work failed", "action_id", uuidToString(action.ID), "error", err)
 	}
+	handler.withdrawStaleRunBudgetCards(context.WithoutCancel(ctx), action)
 }
 
 // completeDecisionActionPostCommit broadcasts the change, wakes the delivery

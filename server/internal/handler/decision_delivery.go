@@ -462,7 +462,17 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	outcome := "skipped_ineligible"
 	var queued db.AgentTaskQueue
 	var comments, cleared []db.Comment
-	if eligible {
+	// A held issue gets no dispatch (CHE-6911 E3, row 1). The outcome stays
+	// skipped_ineligible, so the answer, re-ask or retraction is acknowledged as
+	// today; the wakeup capture is skipped too, so a later release cannot replay
+	// the old answer. An unassigned or member recipient still gets its comment.
+	heldSkip := false
+	if eligible && snapshot.recipient.ID.Valid {
+		if heldSkip, err = intakeHoldSkips(ctx, transaction, uuidToString(snapshot.issue.ID), "decision_wake"); err != nil {
+			return false, err
+		}
+	}
+	if eligible && !heldSkip {
 		if snapshot.kind == "" {
 			for _, answer := range snapshot.answers {
 				if err := captureDecisionAnswerWakeup(ctx, transaction, snapshot.issue.ID, answer.ID, workspaceID); err != nil {

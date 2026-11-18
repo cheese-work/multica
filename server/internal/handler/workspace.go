@@ -400,6 +400,9 @@ type UpdateWorkspaceRequest struct {
 	// AutoClose sets settings.auto_close alone (CHE-6969): the object
 	// {"mode": off|warn|block}. Owner only.
 	AutoClose json.RawMessage `json:"auto_close"`
+	// BlockedRunSkip sets settings.blocked_run_skip alone (CHE-6973): the
+	// object {"mode": off|warn|block}. Owner only.
+	BlockedRunSkip json.RawMessage `json:"blocked_run_skip"`
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
@@ -668,6 +671,16 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.AutoClose = req.AutoClose
+	}
+	if req.BlockedRunSkip != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateBlockedRunSkipPatch(req.BlockedRunSkip); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.BlockedRunSkip = req.BlockedRunSkip
 	}
 	if req.AskGuardMode != nil {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {

@@ -79,6 +79,16 @@ func (h *Handler) ListWorkspaceAuditEvents(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to list audit events")
 		return
 	}
+	if err := h.writeAuditPage(w, r, wsUUID, rows, limit); err != nil {
+		slog.Error("resolve audit names failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list audit events")
+	}
+}
+
+// writeAuditPage turns up to limit+1 rows into one page (the extra row only
+// proves a next page exists), resolves names, and writes it. Shared by the
+// workspace and the machine audit readers. It writes nothing on error.
+func (h *Handler) writeAuditPage(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, rows []db.ListWorkspaceAuditEventsRow, limit int) error {
 	page := AuditEventsPage{Events: []AuditEventResponse{}}
 	if len(rows) > limit {
 		rows = rows[:limit]
@@ -88,9 +98,7 @@ func (h *Handler) ListWorkspaceAuditEvents(w http.ResponseWriter, r *http.Reques
 	}
 	names, err := h.auditNames(r, wsUUID, rows)
 	if err != nil {
-		slog.Error("resolve audit names failed", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to list audit events")
-		return
+		return err
 	}
 	for _, row := range rows {
 		ev := AuditEventResponse{
@@ -115,6 +123,7 @@ func (h *Handler) ListWorkspaceAuditEvents(w http.ResponseWriter, r *http.Reques
 		page.Events = append(page.Events, ev)
 	}
 	writeJSON(w, http.StatusOK, page)
+	return nil
 }
 
 func parseAuditReadQuery(w http.ResponseWriter, r *http.Request) (db.ListWorkspaceAuditEventsParams, int, bool) {
