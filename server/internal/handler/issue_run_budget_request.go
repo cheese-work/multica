@@ -145,8 +145,12 @@ func (h *Handler) openRunBudgetActionCards(ctx context.Context, q *db.Queries, i
 	if kind == "raise" {
 		params["new_cap"] = newCap
 	}
-	if refusal, err := service.FindOpenRunBudgetRefusal(ctx, q, issue.ID, windowID); err == nil {
-		params["refusal_id"] = uuidToString(refusal)
+	// The card names the occurrence it was opened for and the fingerprint carries
+	// it, so a revived refusal gets its own card instead of the old one (CHE-6198).
+	fingerprint := fmt.Sprintf("%srun_budget_action:%s:%s:%d", serverDecisionFingerprint, kind, windowID, newCap)
+	if refusal, generation, err := service.FindOpenRunBudgetRefusal(ctx, q, issue.ID, windowID); err == nil {
+		params["refusal_id"], params["refusal_generation"] = uuidToString(refusal), generation
+		fingerprint += fmt.Sprintf(":g%d", generation)
 	} else if !errors.Is(err, service.ErrRunBudgetRefusalNotFound) {
 		return nil, nil, err
 	}
@@ -160,7 +164,7 @@ func (h *Handler) openRunBudgetActionCards(ctx context.Context, q *db.Queries, i
 	}
 	input := decisionRequestInput{
 		Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
-		Fingerprint: fmt.Sprintf("%srun_budget_action:%s:%s:%d", serverDecisionFingerprint, kind, windowID, newCap),
+		Fingerprint: fingerprint,
 	}
 	var links []RunBudgetActionLink
 	var results []decisionRequestResult
