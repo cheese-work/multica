@@ -6036,40 +6036,12 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			go func(t Task, slot int, claim *inflightClaim) {
 				defer taskWG.Done()
-<<<<<<< ours
 				defer d.taskDone()
 				defer d.inflight.end(t.ID, claim)
-				defer func() {
-					// Release local capacity before waking the poller. The task's
-					// terminal callback and local cleanup have both finished at this
-					// point, so a successor that was previously blocked by agent
-					// capacity or per-(issue, agent) serialization can be claimed
-					// immediately instead of waiting for PollInterval.
-					sem <- slot
-					signalPollerWakeup(wakeup)
-				}()
-				d.handleTask(parentCtx, t, slot)
-			}(t, slot, claim)
-||||||| base
-				defer d.activeTasks.Add(-1)
-				defer func() {
-					// Release local capacity before waking the poller. The task's
-					// terminal callback and local cleanup have both finished at this
-					// point, so a successor that was previously blocked by agent
-					// capacity or per-(issue, agent) serialization can be claimed
-					// immediately instead of waiting for PollInterval.
-					sem <- slot
-					signalPollerWakeup(wakeup)
-				}()
-				d.handleTask(parentCtx, t, slot)
-			}(t, slot)
-=======
-				defer d.activeTasks.Add(-1)
 				executionSlot := newTaskSlotLease(sem, slot, wakeup)
 				defer executionSlot.release()
 				d.handleTask(parentCtx, t, executionSlot)
-			}(t, slot)
->>>>>>> theirs
+			}(t, slot, claim)
 			dispatched++
 		}
 		d.exitClaim()
@@ -9794,15 +9766,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		if briefErr != nil {
 			return TaskResult{}, fmt.Errorf("prepare fresh OpenCode session after clock check: %w", briefErr)
 		}
-<<<<<<< ours
 		runtimeBrief = freshBrief
 		runtimeBriefWritten = true
-		prompt = BuildPrompt(task, provider, promptOptions...)
-||||||| base
-		prompt = BuildPrompt(task, provider, promptOptions...)
-=======
 		prompt, skillInvocation = buildRuntimePrompt(task, provider, env.SkillDirectories, promptOptions...)
->>>>>>> theirs
 	}
 	// Built after the clock-guard rebuild so the byte counts describe the
 	// brief and prompt actually launched.
@@ -10076,18 +10042,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	stopUsageFlush := d.startUsageFlush(ctx, task.ID, &liveUsage, taskLog)
 	defer stopUsageFlush()
-<<<<<<< ours
-	result, tools, err := d.executeWithDowngrade(ctx, runProxy, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
-||||||| base
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
-=======
 	// MUL-9427: forward the account's rate-limit state the CLI reports, so the
 	// runtime pages show how much of the plan's windows is left.
 	observeRateLimits, stopRateLimitFlush := d.startRateLimitFlush(ctx, task.ID, taskLog)
 	execOpts.OnRateLimits = observeRateLimits
 	defer stopRateLimitFlush()
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
->>>>>>> theirs
+	result, tools, err := d.executeWithDowngrade(ctx, runProxy, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
 	}

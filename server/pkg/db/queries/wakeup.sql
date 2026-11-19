@@ -283,17 +283,9 @@ SELECT
     -- keep copying the registering run's step. A wakeup a member registered
     -- starts from the issue's status.
     COALESCE(
-<<<<<<< ours
         sqlc.narg(wakeup_step)::text,
-        (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = $3),
-        (SELECT i.status FROM issue i WHERE i.id = $3)
-||||||| base
-        (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = $3),
-        (SELECT i.status FROM issue i WHERE i.id = $3)
-=======
         (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = sqlc.narg(issue_id)),
         (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id))
->>>>>>> theirs
     ),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 FROM enqueue_agent

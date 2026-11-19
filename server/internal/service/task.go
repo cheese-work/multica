@@ -22,14 +22,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
-<<<<<<< ours
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/dmnotify"
-	"github.com/multica-ai/multica/server/internal/entitlement"
-||||||| base
-	"github.com/multica-ai/multica/server/internal/entitlement"
-=======
->>>>>>> theirs
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/inbox"
@@ -62,7 +56,6 @@ type TaskService struct {
 	Wakeup    TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
-<<<<<<< ours
 	// MergeFacts is the facts source every wakeup service built on this task
 	// service reads when it judges a merge_eligibility candidate, so the claim
 	// and start checks in the daemon handler see what the scheduler saw.
@@ -79,15 +72,6 @@ type TaskService struct {
 	// caller's transaction (CHE-5244): the sub-issue claim owes its parent's
 	// completion decision, and the intent commits with the claim. Nil skips it.
 	PRMergeOwe func(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) error
-	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
-	// Nil keeps self-hosted and isolated test services unlimited.
-	Entitlements entitlement.Provider
-||||||| base
-	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
-	// Nil keeps self-hosted and isolated test services unlimited.
-	Entitlements entitlement.Provider
-=======
->>>>>>> theirs
 	// SourceContextStorage is used only by the bounded 30-day cleanup pass for
 	// terminal quick-create captures. Nil disables it where storage is absent.
 	SourceContextStorage SourceContextObjectStore
@@ -2306,7 +2290,6 @@ func (s *TaskService) EnqueueQuickCreateTaskWithSourceContext(ctx context.Contex
 }
 
 func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID, capture *SourceContextCapture) (db.AgentTaskQueue, error) {
-<<<<<<< ours
 	if err := RequireActiveIssueProject(ctx, s.Queries, parentIssueID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -2320,15 +2303,6 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	if err := RequireActiveProject(ctx, s.Queries, workspaceID, projectID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("preflight quick-create issue capacity: %w", err)
-	}
-||||||| base
-	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("preflight quick-create issue capacity: %w", err)
-	}
-=======
->>>>>>> theirs
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
@@ -2508,7 +2482,6 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	if canInvoke != nil && !canInvoke(agent) {
 		return nil, ErrRerunInvokeNotAllowed
 	}
-<<<<<<< ours
 	// CHE-607: this is a manual-retry admission path AgentReadiness never
 	// covered (task.go has no call to it) — refuse the same way a trigger
 	// would rather than let the click reach the held provider and surface as
@@ -2518,15 +2491,6 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	} else if held {
 		return nil, ErrSourceContextRetryProviderHeld
 	}
-	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
-		return nil, fmt.Errorf("preflight quick-create issue capacity: %w", err)
-	}
-||||||| base
-	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
-		return nil, fmt.Errorf("preflight quick-create issue capacity: %w", err)
-	}
-=======
->>>>>>> theirs
 	overlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -3128,21 +3092,11 @@ func (s *TaskService) SendDirectChatMessage(
 	attachmentIDs []pgtype.UUID,
 	uploaderType string,
 	uploaderID pgtype.UUID,
-<<<<<<< ours
 	sentVia string,
 	opts DirectChatSendOptions,
-||||||| base
-=======
 	steer ...bool,
->>>>>>> theirs
 ) (*DirectChatSendResult, error) {
-<<<<<<< ours
-	return s.sendDirectChatMessageWith(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, sentVia, opts, nil)
-||||||| base
-	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, nil)
-=======
-	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, nil, len(steer) > 0 && steer[0])
->>>>>>> theirs
+	return s.sendDirectChatMessageWith(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, sentVia, opts, nil, len(steer) > 0 && steer[0])
 }
 
 func (s *TaskService) sendDirectChatMessageWith(
@@ -3165,6 +3119,7 @@ func (s *TaskService) sendDirectChatMessageWith(
 	}
 	plan.Options = opts
 	plan.submission = submission
+	plan.Steer = steer
 	var out DirectChatSendResult
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		var err error
@@ -3177,7 +3132,7 @@ func (s *TaskService) sendDirectChatMessageWith(
 			"error", err)
 		return nil, err
 	}
-	if out.Replayed {
+	if out.Replayed || out.Steered {
 		return &out, nil
 	}
 	s.RecordHumanDelegation(ctx, plan.Attribution)
@@ -3197,6 +3152,9 @@ type DirectChatSendPlan struct {
 	Options DirectChatSendOptions
 	// submission is the idempotent-submission receipt, set by sendDirectChatMessageWith.
 	submission *chatSubmission
+	// Steer asks to bind a plain human message to the running turn as a
+	// supplement (upstream's steer); set by sendDirectChatMessageWith.
+	Steer bool
 }
 
 // PlanDirectChatSend resolves the overlay and attribution of a direct-chat send
@@ -3235,7 +3193,7 @@ func (s *TaskService) SendDirectChatMessageTx(
 	sentVia string,
 ) (DirectChatSendResult, error) {
 	overlay, attr := plan.overlay, plan.Attribution
-	submission := plan.submission
+	submission, steer := plan.submission, plan.Steer
 	attrSource, attrEvidenceKind, attrEvidenceRef := plan.attrSource, plan.attrEvidenceKind, plan.attrEvidenceRef
 	var out DirectChatSendResult
 	err := func() error {
@@ -3403,30 +3361,14 @@ func (s *TaskService) SendDirectChatMessageTx(
 		// Bind guidance to the root input batch, including when it joins a retry.
 		// The delivery receipt still names the exact running attempt.
 		msg, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-<<<<<<< ours
 			ID:              dbid.NewV7(),
 			ChatSessionID:   session.ID,
 			Role:            "user",
 			Content:         content,
-			TaskID:          task.ID,
+			TaskID:          chatInputOwnerID(task),
 			MessageKind:     pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
 			SentVia:         pgtype.Text{String: sentVia, Valid: sentVia != ""},
 			ClientMessageID: pgtype.Text{String: plan.Options.ClientMessageID, Valid: plan.Options.ClientMessageID != ""},
-||||||| base
-			ID:            dbid.NewV7(),
-			ChatSessionID: session.ID,
-			Role:          "user",
-			Content:       content,
-			TaskID:        task.ID,
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
-=======
-			ID:            dbid.NewV7(),
-			ChatSessionID: session.ID,
-			Role:          "user",
-			Content:       content,
-			TaskID:        chatInputOwnerID(task),
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
->>>>>>> theirs
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
@@ -3560,7 +3502,6 @@ func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.Ch
 			return ErrChatAskNotOpen
 		}
 	}
-<<<<<<< ours
 	if err := qtx.SetChatAttentionAsksWaiting(ctx, db.SetChatAttentionAsksWaitingParams{Ids: askIDs, MessageID: messageID, TaskID: taskID}); err != nil {
 		return fmt.Errorf("mark targeted asks waiting: %w", err)
 	}
@@ -3569,12 +3510,6 @@ func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.Ch
 
 // NotifyDirectChatSent announces a committed direct-chat task.
 func (s *TaskService) NotifyDirectChatSent(ctx context.Context, task db.AgentTaskQueue) {
-||||||| base
-=======
-	if out.Steered {
-		return &out, nil
-	}
->>>>>>> theirs
 	slog.Info("direct chat task enqueued",
 		"task_id", util.UUIDToString(task.ID),
 		"chat_session_id", util.UUIDToString(task.ChatSessionID),
@@ -3740,7 +3675,6 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-<<<<<<< ours
 	return s.CancelTasksForAgentInTx(ctx, agentID, nil)
 }
 
@@ -3749,33 +3683,16 @@ func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UU
 // hook error rolls the cancel back (the admin audit row, CHE-5646).
 func (s *TaskService) CancelTasksForAgentInTx(ctx context.Context, agentID pgtype.UUID, inTx TerminateHook) ([]db.AgentTaskQueue, error) {
 	cancelled, err := s.terminateTasksWithHook(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.CancelAgentTasksByAgent(ctx, agentID)
-	}, inTx)
-	if err != nil {
-||||||| base
-	var cancelled []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
+		cancelled, err := qtx.CancelAgentTasksByAgent(ctx, agentID)
 		if err != nil {
-			return err
-		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
-	}); err != nil {
-=======
-	var cancelled []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
-		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := qtx.WithdrawChatTaskSupplementsByAgent(ctx, agentID); err != nil {
-			return err
+			return nil, err
 		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
-	}); err != nil {
->>>>>>> theirs
+		return cancelled, nil
+	}, inTx)
+	if err != nil {
 		return nil, err
 	}
 	for _, t := range cancelled {
@@ -4584,24 +4501,12 @@ func (s *TaskService) RetireCancelledTaskSession(ctx context.Context, taskID pgt
 
 func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID pgtype.UUID) bool {
 	var (
-<<<<<<< ours
-		task    db.AgentTaskQueue
-		payload protocol.ChatCancelFinalizedPayload
-		changed bool
-		settled bool
-		stopped *db.ChatMessage
-||||||| base
-		task    db.AgentTaskQueue
-		payload protocol.ChatCancelFinalizedPayload
-		changed bool
-		settled bool
-=======
 		task       db.AgentTaskQueue
 		payload    protocol.ChatCancelFinalizedPayload
 		changed    bool
 		settled    bool
+		stopped    *db.ChatMessage
 		queuedChat []db.AgentTaskQueue
->>>>>>> theirs
 	)
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		// Lock the task's chat_session first. chat_draft_restore has no FK
@@ -6086,14 +5991,10 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
-<<<<<<< ours
 	// dmNotified is the DM's coalesced inbox record, written in the same
 	// transaction as the reply and announced only after the commit.
 	var dmNotified *dmnotify.Notified
-||||||| base
-=======
 	var queuedChat []db.AgentTaskQueue
->>>>>>> theirs
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -6892,7 +6793,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
-<<<<<<< ours
 	var dmNotified *dmnotify.Notified
 	var failureMsg *db.ChatMessage
 	// retryProviderHoldNotice: set inside the transaction below when a retry
@@ -6916,14 +6816,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
 					return err
 				}
+	var queuedChat []db.AgentTaskQueue
 			}
 		}
-||||||| base
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-=======
-	var queuedChat []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
->>>>>>> theirs
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
 		}
@@ -6958,26 +6853,12 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			return err
 		}
 		task = t
-<<<<<<< ours
 		if t.Status == "failed" && failureReason == taskfailure.ReasonAgentProviderServerError.String() {
 			if err := recordProviderServerFailure(ctx, qtx, t); err != nil {
 				return err
 			}
 		}
 
-||||||| base
-
-		// Atomic with the status flip, same as the completion path. A failed
-		// coordinator that already received the recovery comment has consumed
-		// the obligation: the pre-existing delivered_comment_ids coverage check
-		// never looked at the covering task's status either.
-		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
-			return err
-		}
-
-=======
-
->>>>>>> theirs
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.
 		//
@@ -7084,7 +6965,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 		}
 		if createRetry {
-<<<<<<< ours
 			// SEC-1 rule 4: skip, never abort — this transaction carries the
 			// parent's failed status.
 			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
@@ -7094,24 +6974,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 		}
 		if createRetry {
-			child, cerr := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
-				NewTaskID:            dbid.NewV7(),
-				ID:                   taskID,
-				FireAt:               retryFireAt,
-				MaxAttempts:          retryMaxAttempts,
-				RuntimeMcpOverlay:    retryOverlay.Overlay,
-				RuntimeConnectedApps: retryOverlay.ConnectedApps,
-			})
-||||||| base
-			child, cerr := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
-				NewTaskID:            dbid.NewV7(),
-				ID:                   taskID,
-				FireAt:               retryFireAt,
-				MaxAttempts:          retryMaxAttempts,
-				RuntimeMcpOverlay:    retryOverlay.Overlay,
-				RuntimeConnectedApps: retryOverlay.ConnectedApps,
-			})
-=======
 			var child db.AgentTaskQueue
 			_, cerr := qtx.LockAgentForTaskEnqueue(ctx, t.AgentID)
 			if cerr == nil {
@@ -7124,7 +6986,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 					RuntimeConnectedApps: retryOverlay.ConnectedApps,
 				})
 			}
->>>>>>> theirs
 			switch {
 			case cerr == nil:
 				if nerr := noteRunInserted(ctx, qtx, t.IssueID, child.ID); nerr != nil {
@@ -7183,7 +7044,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 		}
 
-<<<<<<< ours
 		if heldRetry.engaged && retried == nil {
 			child, decision, herr := createHeldProviderRetry(ctx, qtx, tx, t, heldRetry,
 				func(ctx context.Context, q *db.Queries, p db.CreateRetryTaskParams) (db.AgentTaskQueue, error) {
@@ -7198,8 +7058,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			retried = child
 		}
 
-||||||| base
-=======
 		if retried != nil && t.ChatSessionID.Valid {
 			// The retry reads guidance from the root input batch. Retire the old
 			// attempt's delivery receipts instead of scheduling separate turns.
@@ -7207,16 +7065,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				return err
 			}
 		}
-		// Atomic with the status flip, same as the completion path. A failed
-		// coordinator that already received the recovery comment has consumed
-		// the obligation: the pre-existing delivered_comment_ids coverage check
-		// never looked at the covering task's status either.
-		queuedChat, err = settleTerminalTaskState(ctx, qtx, t)
-		if err != nil {
-			return err
-		}
-
->>>>>>> theirs
 		// A terminal non-retried chat failure is a visible assistant outcome.
 		// Persist it while the session lock and failure transaction are still
 		// held, then reanchor the next direct head. Otherwise the successor could
@@ -7260,7 +7108,10 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			failureMsg = &failure
 		}
-		return SettleTerminalTaskState(ctx, qtx, t)
+		// Settled last, after the failure row, so a requeued supplement turn
+		// anchors behind it (fork order; upstream settles earlier).
+		queuedChat, err = settleTerminalTaskState(ctx, qtx, t)
+		return err
 	}); err != nil {
 		if errors.Is(err, ErrClaimNotUnstarted) {
 			return nil, false, err
@@ -7293,13 +7144,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
-<<<<<<< ours
 	dmnotify.Publish(s.Bus, dmNotified)
 	s.publishChatMessageInSuccessor(ctx, task, failureMsg)
-||||||| base
-=======
 	s.publishRequeuedChatTasks(ctx, queuedChat)
->>>>>>> theirs
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast
@@ -8604,6 +8451,20 @@ func markMuseRecoveryCleanupUnconfirmed(ctx context.Context, qtx *db.Queries, fa
 // before commit.
 type TerminateHook func(ctx context.Context, q *db.Queries, tasks []db.AgentTaskQueue) error
 
+// retainChatSupplementsForRetryFailed keeps chat guidance in the original
+// input batch for tasks an infrastructure sweep will retry, instead of creating
+// a turn that could run before that retry (upstream v0.11.0).
+func retainChatSupplementsForRetryFailed(ctx context.Context, q *db.Queries, failed []db.AgentTaskQueue) error {
+	for _, task := range failed {
+		if task.ChatSessionID.Valid && task.Status == "failed" && retryEligible(task.FailureReason.String, task) {
+			if err := q.RetainChatTaskSupplementsForRetry(ctx, task.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error), inTx TerminateHook) ([]db.AgentTaskQueue, error) {
 	if s.TxStarter == nil {
 		failed, err := fail(s.Queries)
@@ -8613,12 +8474,19 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 		if err := markMuseRecoveryCleanupUnconfirmed(ctx, s.Queries, failed); err != nil {
 			return failed, err
 		}
-		if err := SettleTerminalTaskState(ctx, s.Queries, failed...); err != nil {
+		if err := retainChatSupplementsForRetryFailed(ctx, s.Queries, failed); err != nil {
+			return failed, err
+		}
+		queuedChat, err := settleTerminalTaskState(ctx, s.Queries, failed...)
+		if err != nil {
 			return failed, err
 		}
 		if inTx != nil {
-			return failed, inTx(ctx, s.Queries, failed)
+			if err := inTx(ctx, s.Queries, failed); err != nil {
+				return failed, err
+			}
 		}
+		s.publishRequeuedChatTasks(ctx, queuedChat)
 		return failed, nil
 	}
 	tx, err := s.TxStarter.Begin(ctx)
@@ -8630,19 +8498,9 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 
 	held := map[pgtype.UUID]bool{}
 	var failed []db.AgentTaskQueue
-<<<<<<< ours
+	var queuedChat []db.AgentTaskQueue
 	for {
 		sp, err := tx.Begin(ctx)
-||||||| base
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		failed, err = fail(qtx)
-=======
-	var queuedChat []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		failed, err = fail(qtx)
->>>>>>> theirs
 		if err != nil {
 			return nil, fmt.Errorf("begin savepoint: %w", err)
 		}
@@ -8664,7 +8522,6 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 			}
 			break
 		}
-<<<<<<< ours
 		if err := sp.Rollback(ctx); err != nil {
 			return nil, fmt.Errorf("rollback savepoint: %w", err)
 		}
@@ -8675,7 +8532,12 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 	if err := markMuseRecoveryCleanupUnconfirmed(ctx, qtx, failed); err != nil {
 		return nil, err
 	}
-	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+	if err := retainChatSupplementsForRetryFailed(ctx, qtx, failed); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	queuedChat, err = settleTerminalTaskState(ctx, qtx, failed...)
+	if err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, s.recordStageRefusal(ctx, err)
 	}
@@ -8685,24 +8547,6 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-||||||| base
-		return SettleTerminalTaskState(ctx, qtx, failed...)
-	}); err != nil {
-=======
-		// Infrastructure sweeps schedule their retries after this transaction.
-		// Retain guidance in that same input batch instead of creating a turn
-		// that could run before the original request's retry.
-		for _, task := range failed {
-			if task.ChatSessionID.Valid && task.Status == "failed" && retryEligible(task.FailureReason.String, task) {
-				if err := qtx.RetainChatTaskSupplementsForRetry(ctx, task.ID); err != nil {
-					return err
-				}
-			}
-		}
-		queuedChat, err = settleTerminalTaskState(ctx, qtx, failed...)
-		return err
-	}); err != nil {
->>>>>>> theirs
 		return nil, err
 	}
 	s.publishRequeuedChatTasks(ctx, queuedChat)
@@ -8867,11 +8711,11 @@ func settleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	for _, task := range tasks {
 		taskIDs = append(taskIDs, task.ID)
 		if err := settleCompactionTask(ctx, q, task); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := settleChatTurns(ctx, q, tasks); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return nil, fmt.Errorf("settle terminal task supplements: %w", err)
@@ -8886,15 +8730,14 @@ func settleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 			queued = append(queued, next...)
 		}
 	}
-<<<<<<< ours
 	if _, err := q.SettleTerminalChatTaskSupplements(ctx, taskIDs); err != nil {
-		return fmt.Errorf("settle terminal chat task supplements: %w", err)
+		return nil, fmt.Errorf("settle terminal chat task supplements: %w", err)
 	}
 	if _, err := q.SettleTerminalTaskPREventDeliveries(ctx, taskIDs); err != nil {
-		return fmt.Errorf("settle terminal task PR events: %w", err)
+		return nil, fmt.Errorf("settle terminal task PR events: %w", err)
 	}
 	if err := SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...); err != nil {
-		return err
+		return nil, err
 	}
 	var failedTaskIDs, issueIDs []pgtype.UUID
 	for _, task := range tasks {
@@ -8904,15 +8747,15 @@ func settleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		}
 	}
 	if len(failedTaskIDs) == 0 {
-		return nil
+		return queued, nil
 	}
 	if err := q.LockIssuesForLeaderFailureMarker(ctx, issueIDs); err != nil {
-		return fmt.Errorf("lock leader failure marker issues: %w", err)
+		return nil, fmt.Errorf("lock leader failure marker issues: %w", err)
 	}
 	if err := q.SetSquadLeaderFailureMarkers(ctx, failedTaskIDs); err != nil {
-		return fmt.Errorf("set leader failure markers: %w", err)
+		return nil, fmt.Errorf("set leader failure markers: %w", err)
 	}
-	return nil
+	return queued, nil
 }
 
 func clearSquadLeaderFailureMarker(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
@@ -8923,11 +8766,6 @@ func clearSquadLeaderFailureMarker(ctx context.Context, q *db.Queries, task db.A
 		return fmt.Errorf("clear leader failure marker: %w", err)
 	}
 	return nil
-||||||| base
-	return SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...)
-=======
-	return queued, SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...)
->>>>>>> theirs
 }
 
 // SettleDeliveredDelegatedFailureRecoveries retires every delegated-failure

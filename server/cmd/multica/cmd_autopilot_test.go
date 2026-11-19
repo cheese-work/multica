@@ -1386,7 +1386,6 @@ func TestAutopilotTriggerRequestError_SurfacesRefusalToTheUser(t *testing.T) {
 		}
 	})
 }
-<<<<<<< ours
 
 func TestRunAutopilotUpdateSendsDescriptionGuard(t *testing.T) {
 	const (
@@ -1474,8 +1473,6 @@ func TestRunAutopilotUpdateGuardFailsClosedOnOldServer(t *testing.T) {
 		t.Fatalf("old server received %d PATCH(es), want zero", patches)
 	}
 }
-||||||| base
-=======
 
 func TestRunAutopilotListTableShowsSquadAssignee(t *testing.T) {
 	const squadID = "22222222-2222-2222-2222-222222222222"
@@ -1590,4 +1587,3 @@ func TestFormatAutopilotAssignee(t *testing.T) {
 		})
 	}
 }
->>>>>>> theirs

@@ -131,20 +131,12 @@ func init() {
 	// create
 	autopilotCreateCmd.Flags().String("title", "", "Autopilot title (required)")
 	autopilotCreateCmd.Flags().String("description", "", "Autopilot description (used as the run prompt)")
-<<<<<<< ours
-	autopilotCreateCmd.Flags().String("agent", "", "Assignee agent (name or ID) — required")
-	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue, run_only or script (required)")
-	autopilotCreateCmd.Flags().String("script", "", "Allowlisted script name to run (requires --mode script). The description is never executed.")
-	autopilotCreateCmd.Flags().StringArray("arg", nil, "Argument passed to the script (repeatable; requires --script)")
-||||||| base
-	autopilotCreateCmd.Flags().String("agent", "", "Assignee agent (name or ID) — required")
-	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue or run_only (required)")
-=======
 	autopilotCreateCmd.Flags().String("agent", "", "Assignee agent (name or ID)")
 	autopilotCreateCmd.Flags().String("squad", "", "Assignee squad (name or ID)")
 	autopilotCreateCmd.Flags().String("squad-id", "", "Assignee squad ID (canonical UUID)")
-	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue or run_only (required)")
->>>>>>> theirs
+	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue, run_only or script (required)")
+	autopilotCreateCmd.Flags().String("script", "", "Allowlisted script name to run (requires --mode script). The description is never executed.")
+	autopilotCreateCmd.Flags().StringArray("arg", nil, "Argument passed to the script (repeatable; requires --script)")
 	autopilotCreateCmd.Flags().String("project", "", "Project ID (optional)")
 	autopilotCreateCmd.Flags().String("issue-title-template", "", "Template for issue titles (create_issue mode). Only {{date}} (UTC, YYYY-MM-DD) is interpolated; any other {{...}} token is rejected at create-time.")
 	autopilotCreateCmd.Flags().StringArray("subscriber", nil, "Member subscriber to notify for issues this autopilot creates (name or user ID; repeatable)")
@@ -543,7 +535,6 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-<<<<<<< ours
 	if cmd.Flags().Changed("if-description-sha256") {
 		if !cmd.Flags().Changed("description") {
 			return fmt.Errorf("--if-description-sha256 requires --description")
@@ -560,24 +551,6 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("if-description-sha256")
 		body["expected_description_sha256"] = v
 	}
-	if cmd.Flags().Changed("agent") {
-		v, _ := cmd.Flags().GetString("agent")
-		agentID, resolveErr := resolveAgent(ctx, client, v)
-		if resolveErr != nil {
-			return fmt.Errorf("resolve agent: %w", resolveErr)
-		}
-		body["assignee_type"] = "agent"
-		body["assignee_id"] = agentID
-||||||| base
-	if cmd.Flags().Changed("agent") {
-		v, _ := cmd.Flags().GetString("agent")
-		agentID, resolveErr := resolveAgent(ctx, client, v)
-		if resolveErr != nil {
-			return fmt.Errorf("resolve agent: %w", resolveErr)
-		}
-		body["assignee_type"] = "agent"
-		body["assignee_id"] = agentID
-=======
 	assigneeType, assigneeID, hasAssignee, err := resolveAutopilotAssigneeFromFlags(ctx, client, cmd, false)
 	if err != nil {
 		return err
@@ -585,7 +558,6 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	if hasAssignee {
 		body["assignee_type"] = assigneeType
 		body["assignee_id"] = assigneeID
->>>>>>> theirs
 	}
 	if cmd.Flags().Changed("project") {
 		v, _ := cmd.Flags().GetString("project")

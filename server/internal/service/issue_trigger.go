@@ -187,46 +187,29 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if !agent.RuntimeID.Valid {
 			return declineRun(dispatch.ReasonAgentRuntimeRequired)
 		}
-<<<<<<< ours
 		if !canAccess(agent) || (blockedResume && !probe.CanResumeBlockedIssue(agent)) {
-			return IssueRunTrigger{}, false
-||||||| base
-		if !canAccess(agent) {
-			return IssueRunTrigger{}, false
-=======
-		if !canAccess(agent) {
 			return declineRun(dispatch.ReasonInvocationNotAllowed)
 		}
 		if source == RunSourceStatus && probe.IsSelfLoop != nil && probe.IsSelfLoop(issue.AssigneeID) {
 			return declineRun(dispatch.ReasonAlreadyActive)
->>>>>>> theirs
 		}
 		if source == RunSourceAssign && !in.IsCreate && !in.EnteredHandoffStep && probe.SuppressActiveSelfAssignment != nil &&
 			probe.SuppressActiveSelfAssignment(issue.AssigneeID) {
 			return declineRun(dispatch.ReasonAlreadyActive)
 		}
-<<<<<<< ours
 		// A step entered under the agent's own run queues behind it. A run
 		// already queued covers a new step only when it works that step: one
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
-				return IssueRunTrigger{}, false
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.waitingOnOpenDecision(ctx, issue) {
+				return declineRun(dispatch.ReasonCoalesced)
+			}
+			if s.headAlreadyReviewed(ctx, issue) {
+				return declineRun(dispatch.ReasonReviewHeadAnswered)
 			}
 		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
-			return IssueRunTrigger{}, false
-||||||| base
-		// A step entered under the agent's own run queues behind it; one
-		// already queued covers the new step too.
-		if (source == RunSourceStatus || in.EnteredHandoffStep) && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
-			return IssueRunTrigger{}, false
-=======
-		// A step entered under the agent's own run queues behind it; one
-		// already queued covers the new step too.
-		if (source == RunSourceStatus || in.EnteredHandoffStep) && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
 			return declineRun(dispatch.ReasonCoalesced)
->>>>>>> theirs
 		}
 		return IssueRunTrigger{
 			IssueID:      issue.ID,
@@ -255,36 +238,20 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return declineRun(dispatch.ReasonTargetUnavailable)
 		}
 		verdict, err := AgentReadiness(ctx, s.runtimeLookup(s.Queries), leader)
-<<<<<<< ours
 		// Only a BLOCKED leader stops the handoff, as for a direct agent: a
 		// waitable one (offline, provider breaker hold) queues and runs when the
 		// wait ends. Skipping it here would lose the handoff for good (CHE-4408).
-		if err != nil || verdict.Blocked() {
-			return IssueRunTrigger{}, false
-||||||| base
-		if err != nil || !verdict.Ready() {
-			return IssueRunTrigger{}, false
-=======
 		if err != nil {
 			return declineRun(dispatch.ReasonInternalError)
 		}
-		if !verdict.Ready() {
+		if verdict.Blocked() {
 			return declineRun(verdict.Reason)
->>>>>>> theirs
 		}
-<<<<<<< ours
 		if !canAccess(leader) || (blockedResume && !probe.CanResumeBlockedIssue(leader)) {
-			return IssueRunTrigger{}, false
-||||||| base
-		if !canAccess(leader) {
-			return IssueRunTrigger{}, false
-=======
-		if !canAccess(leader) {
 			return declineRun(dispatch.ReasonInvocationNotAllowed)
 		}
 		if source == RunSourceStatus && probe.IsSelfLoop != nil && probe.IsSelfLoop(squad.LeaderID) {
 			return declineRun(dispatch.ReasonAlreadyActive)
->>>>>>> theirs
 		}
 		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, squad.LeaderID) {
 			return declineRun(dispatch.ReasonCoalesced)

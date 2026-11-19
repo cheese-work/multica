@@ -497,12 +497,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	invitationRateLimits.Recipient.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_RECIPIENT_24H", invitationRateLimits.Recipient.Limit)
 	h.InvitationRateLimiters = handler.NewMemoryInvitationRateLimiters(invitationRateLimits)
 	h.Metrics = opts.BusinessMetrics
-<<<<<<< ours
 	configureMergeReceiptOIDC(h)
-||||||| base
-=======
 	h.InboxReads.Metrics = opts.InboxReadMetrics
->>>>>>> theirs
 	h.FeatureFlags = opts.FeatureFlags
 	h.ThemeStore = themeStoreFromEnv()
 	h.TaskService.FeatureFlags = opts.FeatureFlags
@@ -1936,17 +1932,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetWorkspace)
 					r.Put("/pin", h.SetWorkspacePinned)
 					r.Get("/members", h.ListMembersWithUser)
-<<<<<<< ours
 					r.Get("/provider-breakers", h.ListProviderBreakers)
-					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
-||||||| base
-					r.Post("/leave", h.LeaveWorkspace)
-=======
 					// Paid-feature states for read-only and upgrade UI; the
 					// server enforces on every write regardless.
 					r.Get("/features", h.GetWorkspaceFeatures)
-					r.Post("/leave", h.LeaveWorkspace)
->>>>>>> theirs
+					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
 					// integrations tab no longer renders blank for non-admins;

@@ -1843,11 +1843,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 
 	// A running turn receives text only, so a comment that carries files is
-<<<<<<< ours
-	// always a normal trigger.
+	// always a normal trigger. A member's explicit skill selection is the
+	// same: the text-only channel cannot invoke a skill, so the comment
+	// needs a turn of its own.
 	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer != nil && *req.Steer}
-	// Determine author identity: agent (via X-Agent-ID header) or member.
-	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	// A recipient that already runs a turn on this issue takes a member's comment
 	// into that turn whether or not the author asked to steer: a second run would
 	// answer the same issue twice (CHE-5286). A turn that cannot take input keeps
@@ -1856,22 +1855,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if steer.empty() && req.Steer == nil && authorType == "member" {
 		steer.All, steer.Implicit = true, true
 	}
-	if len(attachmentIDs) > 0 {
-||||||| base
-	// always a normal trigger.
-	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer}
-	if len(attachmentIDs) > 0 {
-=======
-	// always a normal trigger. A member's explicit skill selection is the
-	// same: the text-only channel cannot invoke a skill, so the comment
-	// needs a turn of its own.
-	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer}
 	if len(attachmentIDs) > 0 || (authorType == "member" && strings.Contains(req.Content, "](slash://skill/")) {
->>>>>>> theirs
 		steer = commentSteerRequest{}
 	}
 
-<<<<<<< ours
 	// CHE-408: refuse agent-authored content that does not cite this issue's
 	// declared required source. Must stay ahead of the insert transaction below
 	// AND of triggerTasksForComment, which fires after the commit — rejecting
@@ -1887,12 +1874,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-||||||| base
-	// Determine author identity: agent (via X-Agent-ID header) or member.
-	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-
-=======
->>>>>>> theirs
 	// sourceTaskID captures the agent's currently-executing task when it posts
 	// via the CLI (X-Task-ID header). Stamping it on the comment row keeps the
 	// originator inheritance chain (resolveOriginatorFromTriggerComment →
@@ -2965,51 +2946,10 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		}
 		return commentMergeError
 	}
-<<<<<<< ours
 	var row db.AgentTaskQueue
 	err = h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
 		row, e = q.MergeCommentIntoPendingTask(ctx, params)
 		return e
-||||||| base
-	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
-	row, err := h.Queries.MergeCommentIntoPendingTask(ctx, db.MergeCommentIntoPendingTaskParams{
-		IssueID:                 issue.ID,
-		AgentID:                 trigger.Agent.ID,
-		NewTriggerCommentID:     newTriggerCommentID,
-		NewOriginatorUserID:     attr.UserID,
-		NewAccountableUserID:    attr.AccountableUserID,
-		NewOriginatorSource:     pgtype.Text{String: attr.Source.String(), Valid: true},
-		NewDelegatedFromTaskID:  attr.DelegatedFromTaskID,
-		NewRuleVersionID:        attr.RuleVersionID,
-		NewTriggerEvidenceKind:  pgtype.Text{String: string(attr.EvidenceKind), Valid: attr.EvidenceKind != ""},
-		NewTriggerEvidenceRefID: attr.EvidenceRefID,
-		NewTriggerSummary:       h.TaskService.BuildCommentTriggerSummary(ctx, issue.WorkspaceID, newTriggerCommentID),
-		NewRuntimeMcpOverlay:    overlay,
-		NewRuntimeConnectedApps: connectedApps,
-		HeadSha:                 headSha,
-=======
-	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
-	var leaderSquadID pgtype.UUID
-	if trigger.Squad != nil {
-		leaderSquadID = trigger.Squad.ID
-	}
-	row, err := h.Queries.MergeCommentIntoPendingTask(ctx, db.MergeCommentIntoPendingTaskParams{
-		NewLeaderSquadID:        leaderSquadID,
-		IssueID:                 issue.ID,
-		AgentID:                 trigger.Agent.ID,
-		NewTriggerCommentID:     newTriggerCommentID,
-		NewOriginatorUserID:     attr.UserID,
-		NewAccountableUserID:    attr.AccountableUserID,
-		NewOriginatorSource:     pgtype.Text{String: attr.Source.String(), Valid: true},
-		NewDelegatedFromTaskID:  attr.DelegatedFromTaskID,
-		NewRuleVersionID:        attr.RuleVersionID,
-		NewTriggerEvidenceKind:  pgtype.Text{String: string(attr.EvidenceKind), Valid: attr.EvidenceKind != ""},
-		NewTriggerEvidenceRefID: attr.EvidenceRefID,
-		NewTriggerSummary:       h.TaskService.BuildCommentTriggerSummary(ctx, issue.WorkspaceID, newTriggerCommentID),
-		NewRuntimeMcpOverlay:    overlay,
-		NewRuntimeConnectedApps: connectedApps,
-		HeadSha:                 headSha,
->>>>>>> theirs
 	})
 	if err != nil {
 		if isNotFound(err) {
@@ -3051,7 +2991,12 @@ func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigge
 		return db.MergeCommentIntoPendingTaskParams{}, attribution.Result{}, err
 	}
 	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
+	var leaderSquadID pgtype.UUID
+	if trigger.Squad != nil {
+		leaderSquadID = trigger.Squad.ID
+	}
 	return db.MergeCommentIntoPendingTaskParams{
+		NewLeaderSquadID:        leaderSquadID,
 		IssueID:                 issue.ID,
 		AgentID:                 trigger.Agent.ID,
 		NewTriggerCommentID:     newTriggerCommentID,
@@ -3318,19 +3263,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			return task, err
 		}
 	case commentTriggerSourceMentionAgent:
-<<<<<<< ours
 		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{}); err != nil {
-||||||| base
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed); err != nil {
-=======
-		var err error
-		if trigger.Squad != nil {
-			_, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
-		} else {
-			_, err = h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed)
-		}
-		if err != nil {
->>>>>>> theirs
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
@@ -4248,34 +4181,6 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}
-<<<<<<< ours
-		trigger := commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: hasPending}
-		if authorType == "agent" {
-			if guestTriggers, handled := h.routeGuestSquadLeaderFallback(ctx, issue, parentComment, authorID, opts); handled {
-				for _, guestTrigger := range guestTriggers {
-					if guestTrigger.Agent.ID == agentUUID && guestTrigger.Squad != nil {
-						trigger.Source = commentTriggerSourceMentionSquadLeader
-						trigger.Squad = guestTrigger.Squad
-						trigger.NonLeaderAgentReply = guestTrigger.NonLeaderAgentReply
-						break
-					}
-				}
-			}
-			if trigger.Squad == nil && issue.AssigneeType.Valid && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
-				squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
-					ID:          issue.AssigneeID,
-					WorkspaceID: issue.WorkspaceID,
-				})
-				if err == nil && !squad.ArchivedAt.Valid && squad.LeaderID == agentUUID {
-					trigger.Source = commentTriggerSourceMentionSquadLeader
-					trigger.Squad = &squad
-				}
-			}
-		}
-		add(trigger)
-||||||| base
-		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: hasPending})
-=======
 		squad := h.assignedSquadLedBy(ctx, issue, agentUUID)
 		if squad != nil && authorType == "agent" && authorID == uuidToString(agentUUID) {
 			suppress := h.shouldSuppressSquadLeaderSelfTrigger(ctx, issue.ID, agentUUID, squad.ID)
@@ -4296,8 +4201,23 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 		}
-		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, Squad: squad, AlreadyPending: hasPending})
->>>>>>> theirs
+		trigger := commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, Squad: squad, AlreadyPending: hasPending}
+		if authorType == "agent" {
+			if guestTriggers, handled := h.routeGuestSquadLeaderFallback(ctx, issue, parentComment, authorID, opts); handled {
+				for _, guestTrigger := range guestTriggers {
+					if guestTrigger.Agent.ID == agentUUID && guestTrigger.Squad != nil {
+						trigger.Source = commentTriggerSourceMentionSquadLeader
+						trigger.Squad = guestTrigger.Squad
+						trigger.NonLeaderAgentReply = guestTrigger.NonLeaderAgentReply
+						break
+					}
+				}
+			}
+			if trigger.Source == commentTriggerSourceMentionAgent && trigger.Squad != nil && !trigger.Squad.ArchivedAt.Valid {
+				trigger.Source = commentTriggerSourceMentionSquadLeader
+			}
+		}
+		add(trigger)
 		addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID)})
 	}
 	return triggers, targets

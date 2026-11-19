@@ -140,16 +140,12 @@ type IssueResponse struct {
 	// SourceContext is detail-only. List, board, search, and children responses
 	// deliberately omit the potentially large immutable snapshot.
 	SourceContext *sourceContextDetailResponse `json:"source_context,omitempty"`
-<<<<<<< ours
 	// IntakeHold is detail-only (CHE-6911): the list endpoints do not compute
 	// it. Absent for an issue with a parent and in a project with no entry.
 	IntakeHold *intakehold.ReadField `json:"intake_hold,omitempty"`
-||||||| base
-=======
 	// RunOutcome is set only on the response to the caller's own update
 	// (#10845); see IssueRunOutcome.
 	RunOutcome *IssueRunOutcome `json:"run_outcome,omitempty"`
->>>>>>> theirs
 	// duplicateOfIssueID is the raw mark, kept off the wire; see DuplicateOf.
 	duplicateOfIssueID pgtype.UUID
 }
@@ -4481,19 +4477,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if writeIssueCreatePropertyError(w, err) {
 		return
 	}
-<<<<<<< ours
-	if writeIssueLimitReached(w, err) {
-		return
-	}
 	if writeProjectAdmissionError(w, err) {
 		return
 	}
-||||||| base
-	if writeIssueLimitReached(w, err) {
-		return
-	}
-=======
->>>>>>> theirs
 	if writeIssueNumberCollision(w, err) {
 		return
 	}
@@ -5363,15 +5349,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 	)
-<<<<<<< ours
-	willRun = willRun && !suppressRun
-||||||| base
-	willRun = willRun && !req.SuppressRun
-=======
 	logDeclinedIssueRun(r.Context(), issue, trigger)
 	runDecided := willRun
-	willRun = willRun && !req.SuppressRun
->>>>>>> theirs
+	willRun = willRun && !suppressRun
 
 	updatedPayload := map[string]any{
 		"issue":                resp,
@@ -5468,36 +5448,30 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// A workflow handoff counts as a fresh assignment even when the step's
 	// handler already owns the issue: entering the step is the handler's cue
 	// to work on it, with the step's brief as the handoff note. (MUL-7420)
-<<<<<<< ours
+	// The handoff run goes first, under the intent and the step's brief; the
+	// caller's outcome reports what became of it (#10845). A write that starts
+	// no run still reports why (declined or suppressed).
+	var runStarted bool
 	if willRun {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
 		intentID := recIntentID(statusRec)
 		dispatchCtx = service.WithStatusHandoffComments(dispatchCtx, handoffContextIDs(statusRec, existingContext))
-		if h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote) && !intentID.Valid {
+		resp.RunOutcome, runStarted = h.resolveIssueRun(r, withHandoffIntent(dispatchCtx, intentID), issue, trigger, runDecided, suppressRun, actorType, actorID, workspaceID, handoffNote)
+		if runStarted && !intentID.Valid {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
-	} else if statusRec != nil {
-		h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
+	} else {
+		if statusRec != nil {
+			h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
+		}
+		resp.RunOutcome, _ = h.resolveIssueRun(r, dispatchCtx, issue, trigger, runDecided, suppressRun, actorType, actorID, workspaceID, handoffNote)
 	}
 	// The new comment's explicit mentions start their own runs, under the
 	// comment's author. Published after the handoff run so the handler's run
 	// is the one the move is known by.
 	h.publishHandoffComment(r.Context(), issue, statusRec, actorType, actorID)
-||||||| base
-	if handoff != nil && req.StopPreviousAssigneeRuns {
-		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
-	}
-	if willRun {
-		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote)
-	}
-=======
-	if handoff != nil && req.StopPreviousAssigneeRuns {
-		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
-	}
-	resp.RunOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.SuppressRun, actorType, actorID, workspaceID, handoffNote)
->>>>>>> theirs
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
 	// conditions): the write recorded the change; process it now. A failure
@@ -6501,13 +6475,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-<<<<<<< ours
-||||||| base
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
-=======
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 		var runOutcome *IssueRunOutcome
->>>>>>> theirs
 		if hasFieldUpdate {
 			h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
 			// The warning comment bumps the revision; build the response from the
@@ -6544,15 +6512,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				},
 				h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 			)
-<<<<<<< ours
-			willRun = willRun && !suppressRun
-||||||| base
-			willRun = willRun && !req.Updates.SuppressRun
-=======
 			logDeclinedIssueRun(r.Context(), issue, trigger)
 			runDecided := willRun
-			willRun = willRun && !req.Updates.SuppressRun
->>>>>>> theirs
+			willRun = willRun && !suppressRun
 			batchPayload := map[string]any{
 				"issue":                      resp,
 				"assignee_changed":           assigneeChanged,
@@ -6591,17 +6553,21 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// Same single predicate as UpdateIssue — batch must not grow its own
 			// copy of the enqueue rule (the historical source of four-entry-point
 			// drift, MUL-3375). suppress_run applies batch-wide.
-<<<<<<< ours
+			var runStarted bool
 			if willRun {
 				if handoff != nil {
 					h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 				}
 				intentID := recIntentID(statusRec)
-				if h.dispatchIssueRun(withHandoffIntent(h.actingTaskContext(r), intentID), issue, trigger, actorType, actorID, batchHandoffNote) && !intentID.Valid {
+				runOutcome, runStarted = h.resolveIssueRun(r, withHandoffIntent(h.actingTaskContext(r), intentID), issue, trigger, runDecided, suppressRun, actorType, actorID, workspaceID, batchHandoffNote)
+				if runStarted && !intentID.Valid {
 					h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 				}
-			} else if statusRec != nil {
-				h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
+			} else {
+				if statusRec != nil {
+					h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
+				}
+				runOutcome, _ = h.resolveIssueRun(r, h.actingTaskContext(r), issue, trigger, runDecided, suppressRun, actorType, actorID, workspaceID, batchHandoffNote)
 			}
 
 			if statusChanged && issue.ParentIssueID.Valid {
@@ -6615,19 +6581,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 					childDoneReopened = append(childDoneReopened, issue)
 				}
 			}
-||||||| base
-			if handoff != nil && req.Updates.StopPreviousAssigneeRuns {
-				h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
-			}
-			if willRun {
-				h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote)
-			}
-=======
-			if handoff != nil && req.Updates.StopPreviousAssigneeRuns {
-				h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
-			}
-			runOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.Updates.SuppressRun, actorType, actorID, workspaceID, batchHandoffNote)
->>>>>>> theirs
 
 			// No status change — not even → cancelled — cancels active tasks here,
 			// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.

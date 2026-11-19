@@ -313,7 +313,6 @@ func TestUpdateCommentKeepsTheLatestEditsSuppression(t *testing.T) {
 		t.Fatalf("the latest edit starts A, but an earlier edit's choice stayed: %v", saved.SuppressedAgentIds)
 	}
 }
-<<<<<<< ours
 
 // CHE-5286: a comment for an agent that already runs a turn on the issue joins
 // that turn, even when the comment starts a new thread and the author did not
@@ -394,8 +393,6 @@ func TestCompletionReplaysAnUnreadMemberSteer(t *testing.T) {
 		})
 	}
 }
-||||||| base
-=======
 
 func TestCreateCommentSteerKeepsSkillCapsuleCommentsAsOwnTurns(t *testing.T) {
 	f := newSupplementFixture(t, "codex", "running", true)
@@ -423,4 +420,3 @@ func TestCreateCommentSteerKeepsSkillCapsuleCommentsAsOwnTurns(t *testing.T) {
 		t.Fatalf("follow-up trigger = %s, want the skill-capsule comment %s", trigger, created.ID)
 	}
 }
->>>>>>> theirs

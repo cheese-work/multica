@@ -29,19 +29,11 @@ const maxPreviewTriggerIssues = 500
 func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID string, issue db.Issue) service.IssueTriggerProbe {
 	return service.IssueTriggerProbe{
 		CanAccessAgent: nil, // allow-all; gate lives at the write boundary
-<<<<<<< ours
 		CanResumeBlockedIssue: func(agent db.Agent) bool {
 			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, uuidToString(issue.WorkspaceID))
 		},
-		IsSelfLoop: func() bool {
-			return h.isAgentRunningOnIssue(r, actorType, issue)
-||||||| base
-		IsSelfLoop: func() bool {
-			return h.isAgentRunningOnIssue(r, actorType, issue)
-=======
 		IsSelfLoop: func(targetAgentID pgtype.UUID) bool {
 			return h.isAgentRunningOnIssue(r, actorType, issue, targetAgentID)
->>>>>>> theirs
 		},
 		SuppressActiveSelfAssignment: func(agentID pgtype.UUID) bool {
 			suppress := h.shouldSuppressActiveSelfAssignment(r.Context(), actorType, actorID, issue.ID, agentID)
@@ -134,9 +126,10 @@ type IssueRunOutcome struct {
 // The write probe admits every caller, so a promotion can start a private
 // agent the caller may not invoke. Its outcome would then expose that agent's
 // readiness, so the caller gets no outcome; the server log keeps the cause.
-func (h *Handler) resolveIssueRun(r *http.Request, issue db.Issue, trigger service.IssueRunTrigger, willRun, suppressRun bool, actorType, actorID, workspaceID, handoffNote string) *IssueRunOutcome {
+func (h *Handler) resolveIssueRun(r *http.Request, dispatchCtx context.Context, issue db.Issue, trigger service.IssueRunTrigger, willRun, suppressRun bool, actorType, actorID, workspaceID, handoffNote string) (*IssueRunOutcome, bool) {
 	if issue.AssigneeType.String != "agent" && issue.AssigneeType.String != "squad" {
-		return nil
+		// No agent or squad to run: nothing to dispatch or report.
+		return nil, false
 	}
 	var status DispatchStatus
 	var reason DispatchReasonCode
@@ -144,21 +137,24 @@ func (h *Handler) resolveIssueRun(r *http.Request, issue db.Issue, trigger servi
 	case willRun && suppressRun:
 		status, reason = DispatchDeferred, ReasonDeferred
 	case willRun:
-		status, reason = h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote)
+		status, reason = h.dispatchIssueRunOutcome(dispatchCtx, issue, trigger, actorType, actorID, handoffNote)
 	case trigger.DeclineReason != "":
 		status, reason = declinedRunStatus(trigger.DeclineReason), trigger.DeclineReason
 	default:
-		return nil
+		return nil, false
 	}
+	// started is what the fork's handed-wakeup bookkeeping keys on; it is
+	// independent of whether the caller may see the outcome.
+	started := willRun && !suppressRun && issueRunStarted(status)
 	if !h.callerCanInvokeIssueAssignee(r, issue, actorType, actorID, workspaceID) {
-		return nil
+		return nil, started
 	}
 	return &IssueRunOutcome{
 		TargetType: issue.AssigneeType.String,
 		TargetID:   uuidToString(issue.AssigneeID),
 		Status:     status,
 		ReasonCode: reason,
-	}
+	}, started
 }
 
 // declinedRunStatus maps a decline reason to its status, matching the comment
@@ -193,14 +189,14 @@ func (h *Handler) callerCanInvokeIssueAssignee(r *http.Request, issue db.Issue, 
 	return h.invokeAgentDecision(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID)
 }
 
-// dispatchIssueRun executes the enqueue side effect for a decision produced by
-<<<<<<< ours
-// WillEnqueueRun. handoffNote is a legacy API input retained for installed
-// clients and travels only with a run that actually starts. The squad path
-// still flows through enqueueSquadLeaderTask so the leader access gate and
-// pending dedup stay in one place. It reports whether an executable run now
-// carries the write: a run it started, or an unstarted one that held the slot.
-func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+// dispatchIssueRunOutcome executes the enqueue side effect for a decision produced by
+// WillEnqueueRun and reports what happened. handoffNote is a legacy API input
+// retained for installed clients and travels only with a run that actually
+// starts. The squad path still flows through enqueueSquadLeaderTask so the
+// leader access gate and pending dedup stay in one place. The status is
+// DispatchQueued when it started a run and DispatchCoalesced when an
+// unstarted one that carries the write held the slot; see issueRunStarted.
+func (h *Handler) dispatchIssueRunOutcome(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (status DispatchStatus, reason DispatchReasonCode) {
 	intentID := handoffIntentFrom(ctx)
 	if trigger.BlockedEntry {
 		lastTask, skip, err := h.TaskService.SkipBlockedDispatch(ctx, issue, trigger.AgentID, actorType)
@@ -209,7 +205,7 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		} else if skip {
 			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask, actorType, actorID)
 			h.skipHandoffIntent(ctx, intentID, "blocked_unchanged_inputs")
-			return false
+			return DispatchDeferred, ReasonDeferred
 		}
 	}
 	// Checked here as well as at the queue door so the activity names the actor
@@ -218,15 +214,15 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 	if err := service.StopGate(ctx, h.Queries, issue.ID); errors.As(err, &notConfirmed) {
 		h.recordStopNotConfirmed(ctx, issue, actorType, actorID, notConfirmed)
 		h.skipHandoffIntent(ctx, intentID, "stop_not_confirmed")
-		return false
+		return DispatchBlocked, ReasonAdmissionDeferred
 	}
 	if issue.Status == statusAgentAccepted {
 		closed, after := h.autoCloseOnAccept(ctx, issue, intentID)
 		if closed {
-			return false
+			return DispatchBlocked, ReasonTargetUnavailable
 		}
 		if after != nil {
-			defer func() { after(started, trigger.AgentID) }()
+			defer func() { after(issueRunStarted(status), trigger.AgentID) }()
 		}
 	}
 	if intentID.Valid {
@@ -235,58 +231,77 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 			// The intent stays pending: the run is still owed, and the recovery
 			// sweep (CHE-2299 S1c) finds it.
 			slog.Error("dispatch handoff intent failed", "issue_id", uuidToString(issue.ID), "intent_id", uuidToString(intentID), "error", err)
-			return false
+			return DispatchBlocked, ReasonInternalError
 		}
-		return intent.State == handoffDispatched
+		if intent.State == handoffDispatched {
+			return DispatchQueued, ReasonQueued
+		}
+		return DispatchDeferred, ReasonDeferred
 	}
-||||||| base
-// WillEnqueueRun. handoffNote is a legacy API input retained for installed
-// clients and travels only with a run that actually starts. The squad path
-// still flows through enqueueSquadLeaderTask so the leader access gate and
-// pending dedup stay in one place.
-func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) {
-=======
-// WillEnqueueRun and reports what happened. handoffNote is a legacy API input
-// retained for installed clients and travels only with a run that actually
-// starts. The squad path still flows through enqueueSquadLeaderTask so the
-// leader access gate and pending dedup stay in one place.
-func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (DispatchStatus, DispatchReasonCode) {
->>>>>>> theirs
 	switch trigger.AssigneeType {
 	case "agent":
 		// The member who performed this assign/promote is the accountable human
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
-<<<<<<< ours
 		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
 		if errors.Is(err, service.ErrDuplicatePendingTask) {
 			// A sibling run holds the slot. It delivers this write only if it
 			// is queued and is the assignment-level run for the step the issue
 			// is in now; see HasQueuedRunCarryingIssueWrite.
-			return h.queuedRunCarriesWrite(ctx, issue, trigger.AgentID)
+			if h.queuedRunCarriesWrite(ctx, issue, trigger.AgentID) {
+				return DispatchCoalesced, ReasonCoalesced
+			}
+			return DispatchDeferred, ReasonAlreadyActive
 		}
-		// Anything else is a real enqueue failure that was previously
-		// discarded silently (CHE-486).
-		if err != nil {
-			slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
-			return false
-		}
-		return true
-||||||| base
-		_, _ = h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
-=======
-		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
 		if err == nil {
 			return DispatchQueued, ReasonQueued
 		}
+		// A real enqueue failure was previously discarded silently (CHE-486).
 		return issueEnqueueFailure(issue, issue.AssigneeID, err)
->>>>>>> theirs
 	case "squad":
-<<<<<<< ours
-		// Delivery only when the leader's run was queued.
-		return h.enqueueSquadLeaderTaskOutcome(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote, trigger.WorkflowHandoff) == squadEnqueueLeader
+		status, reason = h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
+		// The leader's pending run holds the slot; as for an agent, it delivers
+		// this write only when it is queued and carries it.
+		if status == DispatchCoalesced && !h.queuedRunCarriesWrite(ctx, issue, trigger.AgentID) {
+			return DispatchDeferred, ReasonAlreadyActive
+		}
+		return status, reason
 	}
-	return false
+	return DispatchBlocked, ReasonTargetUnavailable
+}
+
+// dispatchIssueRun reports whether an executable run now carries the write: a
+// run it started, or an unstarted one that held the slot. Callers that need
+// the reason use dispatchIssueRunOutcome.
+func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	status, _ := h.dispatchIssueRunOutcome(ctx, issue, trigger, actorType, actorID, handoffNote)
+	return issueRunStarted(status)
+}
+
+func issueRunStarted(status DispatchStatus) bool {
+	return status == DispatchQueued || status == DispatchCoalesced
+}
+
+// issueEnqueueFailure types an enqueue error on the issue write path. A
+// pending task that won the slot already covers the write; the service logs
+// that coalesce at debug. Anything else is logged here.
+func issueEnqueueFailure(issue db.Issue, agentID pgtype.UUID, err error) (DispatchStatus, DispatchReasonCode) {
+	if errors.Is(err, service.ErrDuplicatePendingTask) {
+		return DispatchCoalesced, ReasonCoalesced
+	}
+	log := slog.Default()
+	if issue.AssigneeType.String == "squad" {
+		log = log.With("squad_id", uuidToString(issue.AssigneeID))
+	}
+	log.Warn("issue write: run enqueue failed",
+		"issue_id", uuidToString(issue.ID),
+		"agent_id", uuidToString(agentID),
+		"error", err,
+	)
+	if errors.Is(err, service.ErrIssueInTriage) {
+		return DispatchBlocked, ReasonIssueInTriage
+	}
+	return DispatchBlocked, commentEnqueueFailureReason(err)
 }
 
 // withIssueWriteTaint reads the taint of the task making this assignment or
@@ -321,35 +336,7 @@ func (h *Handler) withIssueWriteExternalRead(w http.ResponseWriter, r *http.Requ
 		slog.Error("could not read requesting task", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to update issue")
 		return ctx, false
-||||||| base
-		h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
-=======
-		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
 	}
-	return DispatchBlocked, ReasonTargetUnavailable
-}
-
-// issueEnqueueFailure types an enqueue error on the issue write path. A
-// pending task that won the slot already covers the write; the service logs
-// that coalesce at debug. Anything else is logged here.
-func issueEnqueueFailure(issue db.Issue, agentID pgtype.UUID, err error) (DispatchStatus, DispatchReasonCode) {
-	if errors.Is(err, service.ErrDuplicatePendingTask) {
-		return DispatchCoalesced, ReasonCoalesced
-	}
-	log := slog.Default()
-	if issue.AssigneeType.String == "squad" {
-		log = log.With("squad_id", uuidToString(issue.AssigneeID))
-	}
-	log.Warn("issue write: run enqueue failed",
-		"issue_id", uuidToString(issue.ID),
-		"agent_id", uuidToString(agentID),
-		"error", err,
-	)
-	if errors.Is(err, service.ErrIssueInTriage) {
-		return DispatchBlocked, ReasonIssueInTriage
->>>>>>> theirs
-	}
-<<<<<<< ours
 	if !ok || !(actor.ExternalRead || len(actor.TaintIds) > 0) {
 		return ctx, true
 	}
@@ -428,10 +415,6 @@ func (h *Handler) taintQueuedRunCarryingWrite(ctx context.Context, arg db.TaintQ
 		return err
 	})
 	return n, err
-||||||| base
-=======
-	return DispatchBlocked, commentEnqueueFailureReason(err)
->>>>>>> theirs
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the

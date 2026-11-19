@@ -2630,23 +2630,9 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to upsert skill file")
 		return
 	}
-<<<<<<< ours
-	resp, err := skillWithFilesInTx(r.Context(), qtx, skill)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list skill files")
-		return
-	}
 	if !h.auditSkillFileChange(w, r, qtx, skill, beforeFiles, resp) {
 		return
 	}
-||||||| base
-	resp, err := skillWithFilesInTx(r.Context(), qtx, skill)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list skill files")
-		return
-	}
-=======
->>>>>>> theirs
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return

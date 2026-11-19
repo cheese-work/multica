@@ -1980,18 +1980,10 @@ wide-markdown issue content. desktop starts signed in. --cdp exposes a Chrome
 DevTools Protocol port (printed by up and status --json) for Playwright's
 connectOverCDP; the port is kept for later runs until --no-cdp.
 
-<<<<<<< ours
-down keeps the database, the CLI profile and the allocated slot.
-destroy consumes them.
-up only reports stale environments; up --gc (or gc) collects them.
-||||||| base
-down keeps the database, the CLI profile and the allocated slot.
-destroy consumes them.
-=======
 down keeps the database, the CLI profile and the allocated slot; with
 --components (make down C=daemon) it stops only those and leaves the rest
 running. destroy consumes them and always acts on the whole environment.
->>>>>>> theirs
+up only reports stale environments; up --gc (or gc) collects them.
 EOF
 }
 

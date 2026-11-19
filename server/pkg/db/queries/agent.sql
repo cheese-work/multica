@@ -370,41 +370,6 @@ LIMIT @page_limit;
 -- Workflow handoffs pass their original step and source revision explicitly.
 -- A fire_at value admits a durable deferred task outside the pending slot;
 -- existing callers omit it and continue to insert queued tasks.
-<<<<<<< ours
--- gate_head/gate_required carry the run budget's review gate (CHE-2226). A run
--- admitted as the issue's reviewer records the head in issue_review_admission in
--- this same statement, so the claim and the task row commit or roll back
--- together. When the budget is spent (gate_required) only the statement that
--- inserted the claim writes a task; a concurrent loser writes none and the
--- caller sees no row.
-WITH provider_hold AS MATERIALIZED (
-    -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
-    -- snapshot. A due probe remains eligible for M3a's atomic canary election.
-    SELECT jsonb_build_object('provider_hold', jsonb_build_object(
-        'provider', pb.provider, 'since', now(),
-        'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))
-    )) AS context
-    FROM provider_breaker pb
-    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = $1
-    WHERE $3::uuid IS NOT NULL AND pb.provider = sqlc.narg('hold_provider')::text
-      AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
-          pb.next_probe_at > now() OR EXISTS (
-              SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
-                AND canary.status IN ('dispatched', 'running', 'waiting_local_directory')
-          )
-      )))
-), review_claim AS (
-    INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
-    SELECT i.workspace_id, i.id, sqlc.narg('gate_head')::text, $1
-    FROM issue i
-    WHERE i.id = $3
-      AND COALESCE(sqlc.narg('gate_head')::text, '') <> ''
-      AND lock_task_owner_rows($1, $3, $2)
-    ON CONFLICT (issue_id, head_sha) DO NOTHING
-    RETURNING issue_id
-)
-||||||| base
-=======
 -- Lock the selected agent tuple so a rebind that commits during the owner-fence
 -- wait refreshes the runtime used by INSERT. Materialize that locked route once.
 WITH enqueue_agent AS MATERIALIZED (
@@ -413,8 +378,39 @@ WITH enqueue_agent AS MATERIALIZED (
     WHERE a.id = sqlc.arg(agent_id)
       AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid))
     FOR KEY SHARE OF a
+),
+-- gate_head/gate_required carry the run budget's review gate (CHE-2226). A run
+-- admitted as the issue's reviewer records the head in issue_review_admission in
+-- this same statement, so the claim and the task row commit or roll back
+-- together. When the budget is spent (gate_required) only the statement that
+-- inserted the claim writes a task; a concurrent loser writes none and the
+-- caller sees no row.
+provider_hold AS MATERIALIZED (
+    -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
+    -- snapshot. A due probe remains eligible for M3a's atomic canary election.
+    SELECT jsonb_build_object('provider_hold', jsonb_build_object(
+        'provider', pb.provider, 'since', now(),
+        'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))
+    )) AS context
+    FROM provider_breaker pb
+    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = sqlc.arg(agent_id)
+    WHERE sqlc.narg(issue_id)::uuid IS NOT NULL AND pb.provider = sqlc.narg('hold_provider')::text
+      AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
+          pb.next_probe_at > now() OR EXISTS (
+              SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
+                AND canary.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
+      )))
+), review_claim AS (
+    INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
+    SELECT i.workspace_id, i.id, sqlc.narg('gate_head')::text, sqlc.arg(agent_id)
+    FROM issue i
+    WHERE i.id = sqlc.narg(issue_id)
+      AND COALESCE(sqlc.narg('gate_head')::text, '') <> ''
+      AND EXISTS (SELECT 1 FROM enqueue_agent)
+    ON CONFLICT (issue_id, head_sha) DO NOTHING
+    RETURNING issue_id
 )
->>>>>>> theirs
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
@@ -423,22 +419,12 @@ INSERT INTO agent_task_queue (
     workflow_step, pull_request_id, taint_ids, trigger_kind, fire_at, id
 )
 SELECT
-<<<<<<< ours
-    $1, $2, $3,
+    sqlc.arg(agent_id), enqueue_agent.runtime_id, sqlc.narg(issue_id),
     CASE
         WHEN EXISTS (SELECT 1 FROM provider_hold) OR sqlc.narg(fire_at)::timestamptz IS NOT NULL THEN 'deferred'
         ELSE 'queued'
     END,
-    $4, sqlc.narg(trigger_comment_id),
-||||||| base
-    $1, $2, $3,
-    CASE WHEN sqlc.narg(fire_at)::timestamptz IS NULL THEN 'queued' ELSE 'deferred' END,
-    $4, sqlc.narg(trigger_comment_id),
-=======
-    sqlc.arg(agent_id), enqueue_agent.runtime_id, sqlc.narg(issue_id),
-    CASE WHEN sqlc.narg(fire_at)::timestamptz IS NULL THEN 'queued' ELSE 'deferred' END,
     sqlc.arg(priority), sqlc.narg(trigger_comment_id),
->>>>>>> theirs
     COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
     sqlc.narg(trigger_summary),
     COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
@@ -469,8 +455,7 @@ SELECT
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
-<<<<<<< ours
-    COALESCE(sqlc.narg(workflow_step)::text, (SELECT i.status FROM issue i WHERE i.id = $3)),
+    COALESCE(sqlc.narg(workflow_step)::text, (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id))),
     -- The PR whose head the review is stamped with, so a later head can find
     -- and supersede this run (CHE-2307). A replacement passes the exact PR
     -- (pull_request_id): rebuilding it from the head would pick the newest of
@@ -479,8 +464,8 @@ SELECT
     -- step advancing to in_review later does not make it a review.
     COALESCE(sqlc.narg('pull_request_id')::uuid, (SELECT pr.id FROM github_pull_request pr
        JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-      WHERE ipr.issue_id = $3
-        AND (SELECT i.status FROM issue i WHERE i.id = $3) IN ('in_review', 'agent_review')
+      WHERE ipr.issue_id = sqlc.narg(issue_id)
+        AND (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id)) IN ('in_review', 'agent_review')
         AND COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         AND pr.head_sha = sqlc.narg('head_sha')::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
@@ -488,21 +473,10 @@ SELECT
     -- other source, but only the request knows which task is acting.
     COALESCE(sqlc.narg('taint_ids')::text[], '{}'),
     sqlc.narg(trigger_kind),
-||||||| base
-    COALESCE(sqlc.narg(workflow_step)::text, (SELECT i.status FROM issue i WHERE i.id = $3)),
-=======
-    COALESCE(sqlc.narg(workflow_step)::text, (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id))),
->>>>>>> theirs
     sqlc.narg(fire_at),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-<<<<<<< ours
-WHERE lock_task_owner_rows($1, $3, $2)
-  AND (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
-||||||| base
-WHERE lock_task_owner_rows($1, $3, $2)
-=======
 FROM enqueue_agent
->>>>>>> theirs
+WHERE (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING *;
 
 -- name: CreateDeferredChannelIssueTask :one
@@ -513,8 +487,14 @@ RETURNING *;
 -- Channel /issue media resolves after issue creation. Persist the assigned
 -- issue task up front for crash safety, but keep it inert until attachment
 -- binding settles or the fire_at fallback is promoted by the normal sweeper.
-<<<<<<< ours
-WITH provider_hold AS MATERIALIZED (
+WITH enqueue_agent AS MATERIALIZED (
+    SELECT a.id, COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid) AS runtime_id
+    FROM agent a
+    WHERE a.id = sqlc.arg(agent_id)
+      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid))
+    FOR KEY SHARE OF a
+),
+provider_hold AS MATERIALIZED (
     -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
     -- snapshot. A due probe remains eligible for M3a's atomic canary election.
     SELECT jsonb_build_object('provider_hold', jsonb_build_object(
@@ -522,8 +502,8 @@ WITH provider_hold AS MATERIALIZED (
         'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))
     )) AS context
     FROM provider_breaker pb
-    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = $1
-    WHERE $3::uuid IS NOT NULL AND pb.provider = sqlc.narg('hold_provider')::text
+    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = sqlc.arg(agent_id)
+    WHERE sqlc.narg(issue_id)::uuid IS NOT NULL AND pb.provider = sqlc.narg('hold_provider')::text
       AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
           pb.next_probe_at > now() OR EXISTS (
               SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
@@ -531,16 +511,6 @@ WITH provider_hold AS MATERIALIZED (
           )
       )))
 )
-||||||| base
-=======
-WITH enqueue_agent AS MATERIALIZED (
-    SELECT a.id, COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid) AS runtime_id
-    FROM agent a
-    WHERE a.id = sqlc.arg(agent_id)
-      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid))
-    FOR KEY SHARE OF a
-)
->>>>>>> theirs
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
@@ -634,9 +604,8 @@ SELECT
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-<<<<<<< ours
-WHERE lock_task_owner_rows($1, NULL, $2)
-  AND lock_active_project(NULLIF($4::jsonb->>'project_id','')::uuid, (SELECT a.workspace_id FROM agent a WHERE a.id=$1))
+FROM enqueue_agent
+WHERE lock_active_project(NULLIF(sqlc.narg(context)::jsonb->>'project_id','')::uuid, (SELECT a.workspace_id FROM agent a WHERE a.id = sqlc.arg(agent_id)))
 RETURNING *;
 
 -- name: CreateBackgroundTask :one
@@ -697,11 +666,6 @@ WHERE id IN (
       AND atq.context->>'member_id' = @member_id::text
       AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 )
-||||||| base
-WHERE lock_task_owner_rows($1, NULL, $2)
-=======
-FROM enqueue_agent
->>>>>>> theirs
 RETURNING *;
 
 -- name: LinkTaskToIssue :exec
@@ -761,7 +725,6 @@ SELECT
     p.agent_id, COALESCE(a.runtime_id, p.runtime_id), p.issue_id, p.chat_session_id, p.autopilot_run_id,
     CASE WHEN sqlc.narg(fire_at)::timestamptz IS NOT NULL THEN 'deferred' ELSE 'queued' END,
     CASE WHEN p.chat_session_id IS NOT NULL THEN GREATEST(p.priority, 3) ELSE p.priority END,
-<<<<<<< ours
     p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary,
     -- A held retry (CHE-1736 M1.2) is stamped with the M3c provider_hold marker in
     -- the same INSERT, so the row is never promotable before it is marked.
@@ -771,16 +734,9 @@ SELECT
             'since', now(),
             'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))))
         ELSE p.context END,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
-||||||| base
-    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary, p.context,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
-=======
-    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary, p.context,
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity'
               OR COALESCE(a.runtime_id, p.runtime_id) IS DISTINCT FROM p.runtime_id THEN NULL
          ELSE p.session_id END,
->>>>>>> theirs
     p.work_dir,
     p.attempt + 1, COALESCE(sqlc.narg(max_attempts)::int, p.max_attempts), p.id,
     p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
@@ -810,19 +766,13 @@ SELECT
 FROM agent_task_queue p
 LEFT JOIN agent a ON a.id = p.agent_id
 WHERE p.id = $1
-<<<<<<< ours
   -- One successor per failed task (CHE-4581). A pending slot only dedupes
   -- queued/dispatched children, so a replay after the child started, finished,
   -- or was deferred would otherwise mint a second one. Callers other than
   -- FailTask lock the parent row first so a concurrent replay sees the child.
   AND NOT EXISTS (SELECT 1 FROM agent_task_queue prior WHERE prior.retry_of_task_id = p.id)
-  AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
-  AND lock_active_project(CASE WHEN p.issue_id IS NULL THEN NULLIF(p.context->>'project_id','')::uuid END, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
-||||||| base
-  AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
-=======
   AND lock_task_owner_rows(p.agent_id, p.issue_id, COALESCE(a.runtime_id, p.runtime_id))
->>>>>>> theirs
+  AND lock_active_project(CASE WHEN p.issue_id IS NULL THEN NULLIF(p.context->>'project_id','')::uuid END, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
 ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
@@ -891,14 +841,8 @@ WHERE p.id = sqlc.arg(source_task_id)
   AND p.issue_id IS NULL
   AND p.chat_session_id IS NULL
   AND p.autopilot_run_id IS NULL
-<<<<<<< ours
-  AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
-  AND lock_active_project(NULLIF(p.context->>'project_id','')::uuid, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
-||||||| base
-  AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
-=======
   AND lock_task_owner_rows(p.agent_id, p.issue_id, COALESCE(a.runtime_id, p.runtime_id))
->>>>>>> theirs
+  AND lock_active_project(NULLIF(p.context->>'project_id','')::uuid, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
 RETURNING *;
 
 -- name: DeleteUnstartedQuickCreateRetryTask :execrows
@@ -1280,13 +1224,7 @@ WHERE id = @task_id
 -- queue so another poll can retry immediately instead of waiting for stale
 -- dispatch recovery. The dispatched_at CAS prevents an old handler from
 -- rolling back a newer reclaim.
-<<<<<<< ours
 -- Writes one requeue_claim_failure agent_task_event row for the ops page.
-WITH upd AS (
-UPDATE agent_task_queue
-||||||| base
-UPDATE agent_task_queue
-=======
 -- An undelivered claim follows the current binding when returned to the queue.
 -- Lock the agent before the task, as the binding transaction does.
 WITH enqueue_agent AS MATERIALIZED (
@@ -1294,9 +1232,9 @@ WITH enqueue_agent AS MATERIALIZED (
     WHERE a.id = (SELECT agent_id FROM agent_task_queue WHERE id = @task_id)
       AND lock_task_owner_rows(a.id, NULL, NULL)
     FOR KEY SHARE OF a
-)
+),
+upd AS (
 UPDATE agent_task_queue AS task
->>>>>>> theirs
 SET status = 'queued',
     runtime_id = COALESCE(enqueue_agent.runtime_id, task.runtime_id),
     dispatched_at = NULL,
@@ -1307,13 +1245,15 @@ SET status = 'queued',
     applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
-<<<<<<< ours
-WHERE agent_task_queue.id = @task_id
-  AND agent_task_queue.runtime_id = @runtime_id
-  AND agent_task_queue.status = 'dispatched'
-  AND agent_task_queue.started_at IS NULL
-  AND agent_task_queue.dispatched_at = @dispatched_at
-RETURNING *
+FROM enqueue_agent
+WHERE task.id = @task_id
+  AND task.agent_id = enqueue_agent.id
+  AND task.runtime_id = @runtime_id
+  AND task.status = 'dispatched'
+  AND task.started_at IS NULL
+  AND task.dispatched_at = @dispatched_at
+  AND lock_task_owner_rows(task.agent_id, task.issue_id, COALESCE(enqueue_agent.runtime_id, task.runtime_id))
+RETURNING task.*
 ),
 ev AS (
     INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
@@ -1328,24 +1268,6 @@ rel AS (
     WHERE state = 'half_open' AND canary_task_id IN (SELECT id FROM upd)
 )
 SELECT * FROM upd;
-||||||| base
-WHERE id = @task_id
-  AND runtime_id = @runtime_id
-  AND status = 'dispatched'
-  AND started_at IS NULL
-  AND dispatched_at = @dispatched_at
-RETURNING *;
-=======
-FROM enqueue_agent
-WHERE task.id = @task_id
-  AND task.agent_id = enqueue_agent.id
-  AND task.runtime_id = @runtime_id
-  AND task.status = 'dispatched'
-  AND task.started_at IS NULL
-  AND task.dispatched_at = @dispatched_at
-  AND lock_task_owner_rows(task.agent_id, task.issue_id, COALESCE(enqueue_agent.runtime_id, task.runtime_id))
-RETURNING task.*;
->>>>>>> theirs
 
 -- name: ReclaimStaleDispatchedTaskForRuntime :one
 -- Re-delivers a task whose previous claim likely succeeded server-side but

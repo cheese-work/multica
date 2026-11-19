@@ -392,18 +392,8 @@ func (s *AutopilotService) ensureWebhookCreateIssueTask(ctx context.Context, aut
 		if resolveErr != nil {
 			return fmt.Errorf("dispatch for webhook delivery: resolve squad leader: %w", resolveErr)
 		}
-<<<<<<< ours
-		task, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, autopilot.AssigneeID, pgtype.UUID{}, OriginDerived)
-		if err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
-			return fmt.Errorf("dispatch for webhook delivery: repair squad task: %w", err)
-||||||| base
-		task, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, autopilot.AssigneeID, pgtype.UUID{}, OriginDerived)
-		if err != nil {
-			return fmt.Errorf("dispatch for webhook delivery: repair squad task: %w", err)
-=======
 		if !s.autopilotAdmitInvoke(ctx, autopilot, leader, pgtype.UUID{}, run.TriggerID) {
 			return fmt.Errorf("not allowed to invoke private squad leader")
->>>>>>> theirs
 		}
 		task, err = s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, autopilot.AssigneeID, pgtype.UUID{}, OriginDerived)
 	} else {
@@ -412,19 +402,7 @@ func (s *AutopilotService) ensureWebhookCreateIssueTask(ctx context.Context, aut
 	if errors.Is(err, ErrDuplicatePendingTask) {
 		return nil
 	}
-<<<<<<< ours
-	// ErrDuplicatePendingTask means a concurrent repair attempt (or the
-	// original dispatch) already won the enqueue race for this issue/agent —
-	// the same benign coalesce outcome C1-C4 classify, not a repair failure
-	// (CHE-561).
-	task, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue)
-	if err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
-||||||| base
-	task, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue)
 	if err != nil {
-=======
-	if err != nil {
->>>>>>> theirs
 		return fmt.Errorf("dispatch for webhook delivery: repair issue task: %w", err)
 	}
 	s.linkDispatchTask(ctx, &run, task)
@@ -886,7 +864,6 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return &errDispatchSkipped{reason: "recent duplicate autopilot issue: " + util.UUIDToString(duplicate.ID), code: dispatch.ReasonAlreadyActive}
 	}
 
-<<<<<<< ours
 	// A title with {{date}} names one day's issue: refuse when any issue, open or
 	// closed, already has it (CHE-5757). A provider-failure recovery re-creates
 	// the issue on purpose, so it is exempt.
@@ -898,12 +875,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		}
 	}
 
-	issueNumber, err := AllocateIssueNumber(ctx, qtx, ap.WorkspaceID, issueCountPolicy)
-||||||| base
-	issueNumber, err := AllocateIssueNumber(ctx, qtx, ap.WorkspaceID, issueCountPolicy)
-=======
 	issueNumber, err := qtx.IncrementIssueCounter(ctx, ap.WorkspaceID)
->>>>>>> theirs
 	if err != nil {
 		return fmt.Errorf("increment issue counter: %w", err)
 	}

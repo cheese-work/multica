@@ -224,17 +224,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				commands = initializer.availableCommands()
 			}
 		}
-<<<<<<< ours
-		err := writeClaudeInput(inputWriter, prompt, promptUUID)
-||||||| base
-		err := writeClaudeInput(inputWriter, prompt)
-=======
 		blocks := []string{prompt}
 		if opts.SkillInvocation != nil {
 			blocks = opts.SkillInvocation.claudeTextBlocks(commands)
 		}
-		err := writeClaudeInput(inputWriter, blocks...)
->>>>>>> theirs
+		err := writeClaudeInput(inputWriter, promptUUID, blocks...)
 		if err != nil {
 			closeStdin()
 			if supplements != nil {
@@ -1341,16 +1335,8 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	return args
 }
 
-<<<<<<< ours
-func writeClaudeInput(w io.Writer, prompt, promptUUID string) error {
-	data, err := buildClaudeInput(prompt, promptUUID)
-||||||| base
-func writeClaudeInput(w io.Writer, prompt string) error {
-	data, err := buildClaudeInput(prompt)
-=======
-func writeClaudeInput(w io.Writer, prompts ...string) error {
-	data, err := buildClaudeInput(prompts...)
->>>>>>> theirs
+func writeClaudeInput(w io.Writer, promptUUID string, prompts ...string) error {
+	data, err := buildClaudeInput(promptUUID, prompts...)
 	if err != nil {
 		return err
 	}
@@ -1360,17 +1346,11 @@ func writeClaudeInput(w io.Writer, prompts ...string) error {
 	return nil
 }
 
-<<<<<<< ours
-func buildClaudeInput(prompt, promptUUID string) ([]byte, error) {
-||||||| base
-func buildClaudeInput(prompt string) ([]byte, error) {
-=======
-func buildClaudeInput(prompts ...string) ([]byte, error) {
+func buildClaudeInput(promptUUID string, prompts ...string) ([]byte, error) {
 	content := make([]map[string]string, 0, len(prompts))
 	for _, prompt := range prompts {
 		content = append(content, map[string]string{"type": "text", "text": prompt})
 	}
->>>>>>> theirs
 	payload := map[string]any{
 		"type": "user",
 		"uuid": promptUUID,

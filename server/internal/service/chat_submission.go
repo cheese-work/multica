@@ -101,13 +101,7 @@ func (s *TaskService) LookupDirectChatSubmission(ctx context.Context, session db
 
 // SendDirectChatMessageWithSubmission requires a real transaction even for
 // callers which construct TaskService without its usual database wiring.
-<<<<<<< ours
-func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, session db.ChatSession, agent db.Agent, userID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, actorType string, actorID pgtype.UUID, sentVia string, opts DirectChatSendOptions, submissionID pgtype.UUID) (*DirectChatSendResult, error) {
-||||||| base
-func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, session db.ChatSession, agent db.Agent, userID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, actorType string, actorID, submissionID pgtype.UUID) (*DirectChatSendResult, error) {
-=======
-func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, session db.ChatSession, agent db.Agent, userID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, actorType string, actorID, submissionID pgtype.UUID, steer ...bool) (*DirectChatSendResult, error) {
->>>>>>> theirs
+func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, session db.ChatSession, agent db.Agent, userID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, actorType string, actorID pgtype.UUID, sentVia string, opts DirectChatSendOptions, submissionID pgtype.UUID, steer ...bool) (*DirectChatSendResult, error) {
 	if !submissionID.Valid {
 		return nil, errors.New("submission_id is required for keyed chat send")
 	}
@@ -120,13 +114,7 @@ func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, s
 	} else if response != nil {
 		return &DirectChatSendResult{Replayed: true, Acceptance: response}, nil
 	}
-<<<<<<< ours
-	return s.sendDirectChatMessageWith(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, sentVia, opts, &submission)
-||||||| base
-	return s.sendDirectChatMessage(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, &submission)
-=======
-	return s.sendDirectChatMessage(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, &submission, len(steer) > 0 && steer[0])
->>>>>>> theirs
+	return s.sendDirectChatMessageWith(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, sentVia, opts, &submission, len(steer) > 0 && steer[0])
 }
 
 func (submission chatSubmission) store(ctx context.Context, q *db.Queries, sent *DirectChatSendResult, attachmentsRequested bool) error {

@@ -46,7 +46,6 @@ unresolved reachable vulnerability.
 
 Every Go binary retains its compiler version in the standard Go build metadata;
 use `go version -m <binary>` when auditing a downloaded release artifact.
-<<<<<<< ours
 
 ## Release build stamps
 
@@ -90,8 +89,6 @@ Local builds, PR artifacts, release tags, and archive names are unchanged.
 For an unpublished GoReleaser snapshot, leave `RELEASE_BUILD_STAMP` unset; for
 a release outside the workflow, set `UPSTREAM_VERSION` and `RELEASE_BUILD_STAMP`
 before running GoReleaser.
-||||||| base
-=======
 
 ## Stable release promotion
 
@@ -144,4 +141,3 @@ For a faulty release, publish a higher patch version through the same gate.
 Do not move Latest backwards: already installed Windows arm64 clients predating
 the downgrade guard may install the older binary. Removing `make_latest: false`
 reintroduces the incomplete-release window and is not a version rollback.
->>>>>>> theirs

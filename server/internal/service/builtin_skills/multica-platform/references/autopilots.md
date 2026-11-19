@@ -36,15 +36,9 @@ Execution modes:
 ```bash
 multica autopilot list --output json
 multica autopilot get <autopilot-id> --output json
-<<<<<<< ours
 multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only|script [--script <name> --arg <value>] --output json
-||||||| base
-multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only --output json
-=======
-multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only --output json
 multica autopilot create --title "<title>" --description "<task prompt>" --squad <squad-name-or-id> --mode create_issue|run_only --output json
 multica autopilot update <autopilot-id> --squad <squad-name-or-id> --output json
->>>>>>> theirs
 multica autopilot update <autopilot-id> --status active|paused --output json
 multica autopilot runs <autopilot-id> --output json
 multica autopilot trigger-add <autopilot-id> --kind schedule --cron "0 9 * * *" --timezone Asia/Shanghai --output json

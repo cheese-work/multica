@@ -341,18 +341,12 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 	for _, apply := range options {
 		apply(&opts)
 	}
-<<<<<<< ours
-	body := buildPromptBody(task, provider)
+	body := buildPromptBodyWithOptions(task, provider, opts)
 	// A background job prompt is the bounded input only (CHE-4100): none of the
 	// run-scoped blocks below, which carry the originator's name and email.
 	if task.BackgroundJob != "" {
 		return body
 	}
-||||||| base
-	body := buildPromptBody(task, provider)
-=======
-	body := buildPromptBodyWithOptions(task, provider, opts)
->>>>>>> theirs
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -366,17 +360,13 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 }
 
 func buildPromptBody(task Task, provider string) string {
-<<<<<<< ours
-	if task.BackgroundJob != "" {
-		return buildBackgroundPrompt(task)
-	}
-||||||| base
-=======
 	return buildPromptBodyWithOptions(task, provider, promptOpts{})
 }
 
 func buildPromptBodyWithOptions(task Task, provider string, opts promptOpts) string {
->>>>>>> theirs
+	if task.BackgroundJob != "" {
+		return buildBackgroundPrompt(task)
+	}
 	if task.WakeupID != "" {
 		var b strings.Builder
 		fmt.Fprintf(&b, "You are running as a local coding agent for a Multica workspace.\n\nYour assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
@@ -396,16 +386,8 @@ func buildPromptBodyWithOptions(task Task, provider string, opts promptOpts) str
 	if task.ChatSessionID != "" {
 		return buildChatPromptWithOptions(task, opts)
 	}
-<<<<<<< ours
 	if task.TriggerCommentID != "" && !task.isStatusHandoff() {
-		return buildCommentPrompt(task, provider)
-||||||| base
-	if task.TriggerCommentID != "" {
-		return buildCommentPrompt(task, provider)
-=======
-	if task.TriggerCommentID != "" {
 		return buildCommentPromptWithOptions(task, provider, opts)
->>>>>>> theirs
 	}
 	if task.AutopilotRunID != "" {
 		return buildAutopilotPrompt(task)
@@ -982,17 +964,11 @@ func buildChatPromptWithOptions(task Task, opts promptOpts) string {
 		if task.PriorSessionID != "" && task.ChatResumeMessage != nil {
 			message = *task.ChatResumeMessage
 		}
+		if task.ChatDecisionContext != "" {
+			b.WriteString(task.ChatDecisionContext + "\n")
+		}
 		fmt.Fprintf(&b, "User message:\n%s\n", message)
 	}
-<<<<<<< ours
-	if task.ChatDecisionContext != "" {
-		b.WriteString(task.ChatDecisionContext + "\n")
-	}
-	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
-||||||| base
-	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
-=======
->>>>>>> theirs
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments
 	// live behind a signed CDN with a short TTL, so by the time the agent
@@ -1040,7 +1016,6 @@ func buildChatPromptWithOptions(task Task, opts promptOpts) string {
 	return b.String()
 }
 
-<<<<<<< ours
 // replyStateBlock tells a DM turn how to declare its outcome (plan r4 T6-T8) and lists the ask ids
 // it may name. The server refuses an invalid outcome and records the turn as unclassified.
 func replyStateBlock(openAskIDs []string) string {
@@ -1061,8 +1036,6 @@ func replyStateBlock(openAskIDs []string) string {
 	return b.String()
 }
 
-||||||| base
-=======
 // explicitSkillSelectionBlock renders bound skill names for a turn prompt.
 // Shared by the chat and comment prompt builders so both surfaces name
 // skills identically, by materialized directory name when the
@@ -1106,7 +1079,6 @@ func explicitSkillSelectionBlock(task Task, refs []SlashSkillRef, directories ma
 	return b.String()
 }
 
->>>>>>> theirs
 // channelDisplayName renders a chat_channel_type for prompt copy. The mapping
 // itself lives in execenv so the per-turn prompt (here) and the runtime brief
 // (execenv.writeOutput) cannot drift into naming the same platform differently.

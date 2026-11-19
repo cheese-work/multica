@@ -863,32 +863,13 @@ func notifyMentionedMembers(
 	details []byte,
 ) map[string]bool {
 	notified := map[string]bool{}
-<<<<<<< ours
 	// Collect the member IDs to notify, each with why (see mentionSourceRank).
 	recipientIDs := map[string]string{}
 	// How the mention reached each member for inbox snoozing. Naming someone
-	// outranks reaching them through a squad, which outranks @all.
-||||||| base
-	// Collect the set of member IDs to notify, each with how the mention
-	// reached them. Naming someone outranks reaching them through a squad,
-	// which outranks @all.
-	recipientIDs := map[string]bool{}
-=======
-	// Collect the set of member IDs to notify, each with how the mention
-	// reached them. Naming someone outranks reaching them through @all.
-	recipientIDs := map[string]bool{}
->>>>>>> theirs
+	// outranks reaching them through @all.
 	via := map[string]string{}
 	reach := func(id, how string) {
-<<<<<<< ours
-		if via[id] == inbox.MentionViaMember || (via[id] == inbox.MentionViaSquad && how == inbox.MentionViaAll) {
-||||||| base
-		recipientIDs[id] = true
-		if via[id] == inbox.MentionViaMember || (via[id] == inbox.MentionViaSquad && how == inbox.MentionViaAll) {
-=======
-		recipientIDs[id] = true
 		if via[id] == inbox.MentionViaMember {
->>>>>>> theirs
 			return
 		}
 		via[id] = how
@@ -907,57 +888,6 @@ func notifyMentionedMembers(
 			recordMentionSource(recipientIDs, m.ID, "direct")
 			reach(m.ID, inbox.MentionViaMember)
 		}
-<<<<<<< ours
-		if m.Type == "squad" {
-			squadIDs = append(squadIDs, m.ID)
-		}
-	}
-
-	// Expand each @squad mention to its human members. Agent members of a
-	// squad are reached via comment-trigger / assignment paths, not the
-	// mention-inbox path, so we only seed member-typed recipients here.
-	for _, sid := range squadIDs {
-		squadUUID, err := util.ParseUUID(sid)
-		if err != nil {
-			continue
-		}
-		members, err := queries.ListSquadMembers(context.Background(), squadUUID)
-		if err != nil {
-			slog.Error("failed to list squad members for @squad mention", "squad_id", sid, "error", err)
-			continue
-		}
-		for _, sm := range members {
-			if sm.MemberType == "member" {
-				recordMentionSource(recipientIDs, util.UUIDToString(sm.MemberID), "squad")
-				reach(util.UUIDToString(sm.MemberID), inbox.MentionViaSquad)
-			}
-		}
-||||||| base
-		if m.Type == "squad" {
-			squadIDs = append(squadIDs, m.ID)
-		}
-	}
-
-	// Expand each @squad mention to its human members. Agent members of a
-	// squad are reached via comment-trigger / assignment paths, not the
-	// mention-inbox path, so we only seed member-typed recipients here.
-	for _, sid := range squadIDs {
-		squadUUID, err := util.ParseUUID(sid)
-		if err != nil {
-			continue
-		}
-		members, err := queries.ListSquadMembers(context.Background(), squadUUID)
-		if err != nil {
-			slog.Error("failed to list squad members for @squad mention", "squad_id", sid, "error", err)
-			continue
-		}
-		for _, sm := range members {
-			if sm.MemberType == "member" {
-				reach(util.UUIDToString(sm.MemberID), inbox.MentionViaSquad)
-			}
-		}
-=======
->>>>>>> theirs
 	}
 
 	// If @all is present, expand to all workspace members.

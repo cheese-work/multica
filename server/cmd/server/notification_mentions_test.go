@@ -158,7 +158,9 @@ func TestNotification_MentionRecordsItsSource(t *testing.T) {
 	}
 
 	got := sourcesFor("[@Direct](mention://member/"+directID+") [@Both](mention://member/"+bothID+") [@Squad](mention://squad/"+squadID+")", directID, squadOnlyID, bothID)
-	want := map[string]string{directID: "direct", squadOnlyID: "squad", bothID: "direct"}
+	// Upstream v0.11.0: an @squad mention triggers the leader only; it no longer
+	// notifies the squad's human members.
+	want := map[string]string{directID: "direct", bothID: "direct"}
 	if len(got) != len(want) {
 		t.Fatalf("direct + squad mention sources = %v, want %v", got, want)
 	}
@@ -170,6 +172,6 @@ func TestNotification_MentionRecordsItsSource(t *testing.T) {
 
 	got = sourcesFor("[@All](mention://all/all) [@Squad](mention://squad/"+squadID+")", directID, squadOnlyID)
 	if got[directID] != "all" || got[squadOnlyID] != "all" {
-		t.Fatalf("@all + squad mention sources = %v, want all for every member (@all outranks squad)", got)
+		t.Fatalf("@all + squad mention sources = %v, want all for every member (@squad adds nothing on top of @all)", got)
 	}
 }

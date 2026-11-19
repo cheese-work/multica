@@ -236,7 +236,6 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
-<<<<<<< ours
 	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
 	// that writes merge receipts (CHE-5594). Nil leaves the route off.
 	MergeReceiptBroker *cibroker.Broker
@@ -253,12 +252,7 @@ type Handler struct {
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
 	ActionRequestsEnabled  bool
-||||||| base
-	Queries                *db.Queries
-=======
 	InboxReads             *inboxread.Guard
-	Queries                *db.Queries
->>>>>>> theirs
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -685,7 +679,8 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 
 	if h.IssueService != nil {
 		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {
-			return h.enqueueSquadLeaderTask(ctx, issue, triggerCommentID, authorType, authorID, "")
+			status, _ := h.enqueueSquadLeaderTask(ctx, issue, authorType, authorID, "", false)
+			return status == DispatchQueued
 		}
 	}
 

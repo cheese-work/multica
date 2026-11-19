@@ -146,15 +146,6 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 		if pr, err := provider.ParsePullRequest(body); err != nil {
 			slog.Warn("vcs: bad pull_request payload", "provider", conn.Provider, "err", err)
 		} else {
-<<<<<<< ours
-			if err := h.mirrorVCSPullRequest(r.Context(), conn, pr); err != nil {
-				slog.Error("vcs: pull_request event failed", "provider", conn.Provider, "err", err)
-				writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
-				return
-			}
-||||||| base
-			h.mirrorVCSPullRequest(r.Context(), conn, pr)
-=======
 			if systemHook {
 				ws, err := h.Queries.GetWorkspace(r.Context(), conn.WorkspaceID)
 				if err != nil {
@@ -183,8 +174,11 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			h.mirrorVCSPullRequest(r.Context(), conn, pr)
->>>>>>> theirs
+			if err := h.mirrorVCSPullRequest(r.Context(), conn, pr); err != nil {
+				slog.Error("vcs: pull_request event failed", "provider", conn.Provider, "err", err)
+				writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
+				return
+			}
 		}
 	case vcs.EventCIStatus:
 		if st, err := provider.ParseCIStatus(body); err != nil {
@@ -198,11 +192,6 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-<<<<<<< ours
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) error {
-||||||| base
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) {
-=======
 // A system hook covers the entire GitLab instance. Only repositories explicitly
 // configured in this workspace may affect its issues; a similarly named repo
 // on another host or under another namespace must not match.
@@ -257,8 +246,7 @@ func gitLabRepoURLMatchesInstance(repo, instance *url.URL) bool {
 	return false
 }
 
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) {
->>>>>>> theirs
+func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) error {
 	if ev.RepoOwner == "" || ev.RepoName == "" || ev.Number == 0 {
 		slog.Warn("vcs: pull_request missing repo identity", "provider", conn.Provider)
 		return nil

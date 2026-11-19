@@ -1,10 +1,4 @@
-<<<<<<< ours
-.PHONY: help makehelp dev server daemon cli multica build test lint-go lint-go-diff migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
-||||||| base
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
-=======
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-start selfhost-build selfhost-build-start selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
->>>>>>> theirs
+.PHONY: help makehelp dev server daemon cli multica build test lint-go lint-go-diff migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-start selfhost-build selfhost-build-start selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -170,12 +164,8 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack
 #   make up C=desktop           Electron against this environment's backend
 #   make up C=desktop ARGS=--cdp  ...signed in, with a DevTools port for Playwright
 #   make up ARGS=--ephemeral    agent-owned, expires, collected by `make gc`
-<<<<<<< ours
 #   make up ARGS=--gc           also collect stale environments (never the default)
-||||||| base
-=======
 #   make down C=daemon          stop only the daemon; api and web keep running
->>>>>>> theirs
 
 up: ## Start this checkout's environment (C=api,web,daemon,desktop; default api,web)
 	@bash scripts/dev-env.sh up $(if $(C),--components $(C)) $(ARGS)

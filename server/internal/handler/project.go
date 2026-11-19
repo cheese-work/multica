@@ -841,13 +841,18 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-<<<<<<< ours
 	if delegatesKeyPresent {
 		delegates, ok := h.parseDecisionDelegates(w, r, wsUUID, userID, req.DecisionDelegates)
 		if !ok {
 			return
 		}
 		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
+	}
+	var admission featureAdmission
+	if access.privateAddition != "" {
+		if admission, ok = h.requireFeatureAddition(w, r, prevProject.WorkspaceID, entitlement.FeaturePrivateProjects, access.privateAddition); !ok {
+			return
+		}
 	}
 	// The access update (visibility, members) runs inside the same transaction
 	// as the update and its audit row, so a rejected member list leaves the
@@ -883,22 +888,8 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.writeProjectWriteError(w, r, err, "update")
-||||||| base
-	project, ok := h.writeProjectUpdate(w, r, params, access, userID)
-	if !ok {
-=======
-	var admission featureAdmission
-	if access.privateAddition != "" {
-		if admission, ok = h.requireFeatureAddition(w, r, prevProject.WorkspaceID, entitlement.FeaturePrivateProjects, access.privateAddition); !ok {
-			return
-		}
-	}
-	project, ok := h.writeProjectUpdate(w, r, params, access, userID)
-	if !ok {
->>>>>>> theirs
 		return
 	}
-<<<<<<< ours
 	project = updatedProject
 	if access.visibility != "" {
 		slog.Info("project visibility changed", append(logger.RequestAttrs(r),
@@ -907,10 +898,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if len(access.addIDs) > 0 {
 		h.publishProjectMembersChanged(project, parseUUIDOrInvalid(userID))
 	}
-||||||| base
-=======
 	admission.admitted(r.Context())
->>>>>>> theirs
 	resp := projectToResponse(project)
 	h.fillProjectIssueStats(r.Context(), &resp, project)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)

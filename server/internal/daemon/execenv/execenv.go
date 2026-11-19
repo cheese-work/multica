@@ -670,17 +670,11 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, CodexBinaryPath: params.CodexBinaryPath, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs, Managed: params.HarnessProfile == HarnessProfileManaged}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
-<<<<<<< ours
 		if params.HarnessProfile == HarnessProfileManaged {
 			if env.PreparedSkillNames, err = prepareManagedCodex(envRoot, codexHome, params.Task.AgentSkills, params.McpConfig, logger); err != nil {
 				return nil, fmt.Errorf("execenv: prepare managed codex: %w", err)
 			}
-		} else if env.PreparedSkillNames, err = hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
-||||||| base
-		if env.PreparedSkillNames, err = hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
-=======
-		if env.PreparedSkillNames, err = hydrateCodexSkillsTracked(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger, env.SkillDirectories); err != nil {
->>>>>>> theirs
+		} else if env.PreparedSkillNames, err = hydrateCodexSkillsTracked(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger, env.SkillDirectories); err != nil {
 			return nil, fmt.Errorf("execenv: hydrate codex skills: %w", err)
 		}
 		env.CodexHome = codexHome
@@ -1009,29 +1003,15 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 			return nil
 		}
 		env.CodexHome = codexHome
-<<<<<<< ours
 		if params.HarnessProfile == HarnessProfileManaged {
 			managedSkillNames, err := prepareManagedCodex(env.RootDir, codexHome, params.Task.AgentSkills, params.McpConfig, logger)
 			if err != nil {
 				logger.Warn("execenv: refresh managed codex home failed; forcing fresh prepare", "error", err)
 				return nil
-||||||| base
-		preparedSkillNames, err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger)
-		if err != nil && preparedSkillNames == nil {
-			logger.Warn("execenv: refresh codex skills failed before materialization completed; forcing fresh prepare", "error", err)
-			if cleanupErr := os.RemoveAll(filepath.Join(codexHome, "skills")); cleanupErr != nil {
-				logger.Warn("execenv: remove incomplete reused codex skills failed", "error", cleanupErr)
-=======
-		preparedSkillNames, err := hydrateCodexSkillsTracked(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger, env.SkillDirectories)
-		if err != nil && preparedSkillNames == nil {
-			logger.Warn("execenv: refresh codex skills failed before materialization completed; forcing fresh prepare", "error", err)
-			if cleanupErr := os.RemoveAll(filepath.Join(codexHome, "skills")); cleanupErr != nil {
-				logger.Warn("execenv: remove incomplete reused codex skills failed", "error", cleanupErr)
->>>>>>> theirs
 			}
 			env.PreparedSkillNames = managedSkillNames
 		} else {
-			preparedSkillNames, err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger)
+			preparedSkillNames, err := hydrateCodexSkillsTracked(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger, env.SkillDirectories)
 			if err != nil && preparedSkillNames == nil {
 				logger.Warn("execenv: refresh codex skills failed before materialization completed; forcing fresh prepare", "error", err)
 				if cleanupErr := os.RemoveAll(filepath.Join(codexHome, "skills")); cleanupErr != nil {

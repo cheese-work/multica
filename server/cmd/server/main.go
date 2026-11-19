@@ -819,7 +819,6 @@ func main() {
 	if h.TelegramOutbound != nil {
 		h.TelegramOutbound.Start(sweepCtx)
 	}
-<<<<<<< ours
 	// CHE-3418: a malformed GITHUB_ALLOWED_ACCOUNT_IDS must stop startup. It also
 	// installs the refresh pipeline's workspace filter, so it runs before the
 	// workers start.
@@ -835,15 +834,12 @@ func main() {
 	} else if n > 0 {
 		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
 	}
-||||||| base
-=======
 	if h.WeixinOutbound != nil {
 		h.WeixinOutbound.Start(sweepCtx)
 	}
 	if h.WeixinInstall != nil {
 		go h.WeixinInstall.RunCleanup(sweepCtx)
 	}
->>>>>>> theirs
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
 	h.PRRefresh.Start(sweepCtx)

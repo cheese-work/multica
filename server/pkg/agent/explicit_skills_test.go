@@ -71,7 +71,7 @@ func TestClaudeSkillCommandBlockSpacing(t *testing.T) {
 func TestExplicitSkillsProviderInputs(t *testing.T) {
 	s := testSkillInvocation(t)
 	blocks := s.claudeTextBlocks(map[string]bool{"first-multica": true})
-	wire, err := buildClaudeInput(blocks...)
+	wire, err := buildClaudeInput("test-prompt-uuid", blocks...)
 	if err != nil {
 		t.Fatal(err)
 	}

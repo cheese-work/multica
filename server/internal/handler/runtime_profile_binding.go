@@ -21,16 +21,11 @@ type profileMachineBindingResult struct {
 	teardowns []service.RuntimeTeardownResult
 }
 
-// Binding and retirement are atomic. The profile lock also prevents a stale
+// Binding and retirement run in the caller's transaction, so they commit
+// atomically with the caller's audit row. The profile lock also prevents a stale
 // daemon from recreating a removed instance before the binding commits.
-func (h *Handler) bindRuntimeProfileMachine(ctx context.Context, params db.UpdateRuntimeProfileParams) (profileMachineBindingResult, error) {
+func (h *Handler) bindRuntimeProfileMachine(ctx context.Context, qtx *db.Queries, params db.UpdateRuntimeProfileParams) (profileMachineBindingResult, error) {
 	var result profileMachineBindingResult
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return result, err
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
 	profile, err := qtx.LockRuntimeProfileForDelete(ctx, db.LockRuntimeProfileForDeleteParams{ID: params.ID, WorkspaceID: params.WorkspaceID})
 	if err != nil {
 		return result, err
@@ -81,9 +76,6 @@ func (h *Handler) bindRuntimeProfileMachine(ctx context.Context, params db.Updat
 	}
 	result.profile, err = qtx.UpdateRuntimeProfile(ctx, params)
 	if err != nil {
-		return result, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return result, err
 	}
 	return result, nil

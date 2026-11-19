@@ -631,7 +631,7 @@ func TestBuildClaudeInputEncodesUserMessage(t *testing.T) {
 	t.Parallel()
 
 	promptUUID := "b60ccafe-dc53-4479-a651-11063fa3ed32"
-	data, err := buildClaudeInput("say pong", promptUUID)
+	data, err := buildClaudeInput(promptUUID, "say pong")
 	if err != nil {
 		t.Fatalf("buildClaudeInput: %v", err)
 	}
@@ -1397,7 +1397,6 @@ func TestBuildClaudeArgsManagedSkillSettingsWins(t *testing.T) {
 		t.Fatalf("unrelated custom arg was dropped: %v", args)
 	}
 }
-<<<<<<< ours
 
 func TestBuildClaudeArgs_AppendSystemPromptFile(t *testing.T) {
 	base := buildClaudeArgs(ExecOptions{}, slog.Default())
@@ -1446,8 +1445,6 @@ func TestBuildClaudeArgs_PersonalGolden(t *testing.T) {
 		}
 	}
 }
-||||||| base
-=======
 
 func TestClaudeExecuteReportsRateLimits(t *testing.T) {
 	t.Parallel()
@@ -1504,4 +1501,3 @@ func TestClaudeExecuteReportsRateLimits(t *testing.T) {
 		t.Fatal("rate_limit_event did not reach OnRateLimits")
 	}
 }
->>>>>>> theirs

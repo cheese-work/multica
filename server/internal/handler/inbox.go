@@ -9,12 +9,8 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
-<<<<<<< ours
-	"github.com/jackc/pgx/v5/pgconn"
-||||||| base
-=======
 	"github.com/jackc/pgx/v5"
->>>>>>> theirs
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -30,25 +26,6 @@ type InboxItemResponse struct {
 	Type          string  `json:"type"`
 	Severity      string  `json:"severity"`
 	IssueID       *string `json:"issue_id"`
-<<<<<<< ours
-	Title         string  `json:"title"`
-	Body          *string `json:"body"`
-	Read          bool    `json:"read"`
-	Archived      bool    `json:"archived"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
-	ChatSessionID *string `json:"chat_session_id"`
-	IssueStatus   *string `json:"issue_status"`
-	IssuePriority *string `json:"issue_priority"`
-||||||| base
-	Title         string  `json:"title"`
-	Body          *string `json:"body"`
-	Read          bool    `json:"read"`
-	Archived      bool    `json:"archived"`
-	CreatedAt     string  `json:"created_at"`
-	IssueStatus   *string `json:"issue_status"`
-	IssuePriority *string `json:"issue_priority"`
-=======
 	// The issue's identifier (MUL-123), so a client links to the canonical
 	// issue URL. Opening `/issues/<uuid>` instead rewrites the address once
 	// the issue loads, and on web that mounts the whole page a second time.
@@ -59,9 +36,10 @@ type InboxItemResponse struct {
 	Read            bool    `json:"read"`
 	Archived        bool    `json:"archived"`
 	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	ChatSessionID   *string `json:"chat_session_id"`
 	IssueStatus     *string `json:"issue_status"`
 	IssuePriority   *string `json:"issue_priority"`
->>>>>>> theirs
 	// Issue fields the inbox filters match on. List rows always carry them
 	// (an empty label list included), which is how a client tells a server
 	// that supports those filters from an older one.

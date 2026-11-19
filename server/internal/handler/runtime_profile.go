@@ -193,19 +193,6 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 
-<<<<<<< ours
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create runtime profile")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	profile, err := qtx.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
-||||||| base
-	profile, err := h.Queries.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
-=======
 	// Older clients omit the machine. Prefer the caller's sole local machine;
 	// never guess between multiple machines owned by that caller.
 	req.DaemonID = strings.TrimSpace(req.DaemonID)
@@ -232,8 +219,15 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile, err := h.Queries.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
->>>>>>> theirs
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create runtime profile")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	profile, err := qtx.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
 		WorkspaceID:    wsUUID,
 		DaemonID:       machines[0],
 		DisplayName:    req.DisplayName,
@@ -398,7 +392,15 @@ func (h *Handler) UpdateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		params.Enabled = pgtype.Bool{Bool: *req.Enabled, Valid: true}
 	}
 
-<<<<<<< ours
+	if req.DaemonID != nil {
+		machine := strings.TrimSpace(*req.DaemonID)
+		if machine == "" {
+			writeError(w, http.StatusBadRequest, "daemon_id cannot be empty")
+			return
+		}
+		params.DaemonID = strToText(machine)
+	}
+
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
@@ -418,26 +420,15 @@ func (h *Handler) UpdateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
 		return
 	}
-	profile, err := qtx.UpdateRuntimeProfile(r.Context(), params)
-||||||| base
-	profile, err := h.Queries.UpdateRuntimeProfile(r.Context(), params)
-=======
 	var profile db.RuntimeProfile
-	var err error
 	var binding profileMachineBindingResult
 	if req.DaemonID != nil {
-		machine := strings.TrimSpace(*req.DaemonID)
-		if machine == "" {
-			writeError(w, http.StatusBadRequest, "daemon_id cannot be empty")
-			return
-		}
-		params.DaemonID = strToText(machine)
-		binding, err = h.bindRuntimeProfileMachine(r.Context(), params)
+		// Binds inside this transaction so the audit row commits with it.
+		binding, err = h.bindRuntimeProfileMachine(r.Context(), qtx, params)
 		profile = binding.profile
 	} else {
-		profile, err = h.Queries.UpdateRuntimeProfile(r.Context(), params)
+		profile, err = qtx.UpdateRuntimeProfile(r.Context(), params)
 	}
->>>>>>> theirs
 	if err != nil {
 		if errors.Is(err, errProfileMachineUnavailable) {
 			writeError(w, http.StatusBadRequest, err.Error())
