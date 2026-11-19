@@ -54,6 +54,15 @@ func TestChooseQuickFirst(t *testing.T) {
 		{"child of Quick, odd", qf, now, with(func(f *quickFirstFacts) {
 			f.HasParent, f.ParentFlow, f.Number, f.Routed = true, qf.WorkflowID, 3, false
 		}), true, true, ""},
+		{"child of Quick, type not listed", qf, now, with(func(f *quickFirstFacts) {
+			f.Title, f.HasParent, f.ParentFlow, f.Routed = "docs(x): a", true, qf.WorkflowID, false
+		}), true, true, ""},
+		{"child of Quick, title without a type", qf, now, with(func(f *quickFirstFacts) {
+			f.Title, f.HasParent, f.ParentFlow, f.Routed = "plain", true, qf.WorkflowID, false
+		}), true, true, ""},
+		{"child of a non-Quick parent, type not listed", qf, now, with(func(f *quickFirstFacts) {
+			f.Title, f.HasParent = "docs(x): a", true
+		}), false, false, quickReasonTypeNotListed},
 		{"child of a non-Quick parent, even", qf, now, with(func(f *quickFirstFacts) { f.HasParent = true }), false, false, quickReasonParentNotQuick},
 	}
 	for _, tc := range cases {

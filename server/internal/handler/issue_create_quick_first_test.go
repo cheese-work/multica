@@ -340,6 +340,20 @@ func TestQuickFirstChildFollowsItsParent(t *testing.T) {
 	}
 }
 
+// A child follows a Quick parent whatever its own title type is: the types
+// list gates the root draw, not inheritance.
+func TestQuickFirstChildOfQuickFollowsWithAnUnlistedType(t *testing.T) {
+	f := newQuickFirstFixture(t)
+	f.setting(t, f.on(nil), nil)
+	quickParent := f.create(t, true, nil)
+	for _, title := range []string{"docs(y): child ", "plain child "} {
+		child := f.create(t, false, map[string]any{"parent_issue_id": quickParent.ID, "title": title + workflowTestSuffix()})
+		if o := issueOverride(t, child.ID); o != f.quick {
+			t.Fatalf("child %q of a Quick parent: override %q, want Quick", title, o)
+		}
+	}
+}
+
 func TestQuickFirstWindowEdges(t *testing.T) {
 	f := newQuickFirstFixture(t)
 	now := time.Now().UTC()
