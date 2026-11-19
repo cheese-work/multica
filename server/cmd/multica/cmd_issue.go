@@ -2553,6 +2553,7 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		}
 		result["pr_auto_complete_disabled"] = *prAutoCompleteDisabled
 	}
+	reportIssueRunOutcome(os.Stderr, result, noStart)
 
 	return printIssueUpdateResult(cmd, result)
 }
@@ -2646,6 +2647,7 @@ func runIssueAssign(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "Issue %s assigned to %s.\n", issueDisplayKey(result), displayTarget)
 	}
+	reportIssueRunOutcome(os.Stderr, result, noStart)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
@@ -2746,6 +2748,7 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "Issue %s status changed to %s.\n", issueDisplayKey(result), status)
 	}
+	reportIssueRunOutcome(os.Stderr, result, noStart)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "json" {

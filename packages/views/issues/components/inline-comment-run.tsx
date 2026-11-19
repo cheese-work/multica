@@ -11,7 +11,6 @@ import { useTaskMessages } from "@multica/core/chat/queries";
 import { useCancelIssueRun, useRetryIssueRun } from "@multica/core/issues/mutations";
 import { issueTimelineOptions } from "@multica/core/issues/queries";
 import { commentSupplementReceipts } from "@multica/core/issues/run-steering";
-import { PRE_RUN_STATUSES } from "@multica/core/issues/run-status";
 import { dispatchReasonCode } from "@multica/core/api";
 import type { AgentTask, TimelineEntry } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -24,7 +23,8 @@ import { AgentTranscriptDialog, StepBody } from "../../common/task-transcript/ag
 import { buildTimeline } from "../../common/task-transcript/build-timeline";
 import { buildSteps, groupSteps, isCallStep, isGroupRow, type TraceRow } from "../../common/task-transcript/build-steps";
 import { traceEventSummary, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
-import { redactProse, redactSecrets } from "../../common/task-transcript/redact";
+import { redactSecrets } from "../../common/task-transcript/redact";
+import { runOutputFindKey } from "../utils/timeline-find-units";
 import { ReadonlyContent } from "../../editor";
 import { useLocale, useT, useTimeAgo } from "../../i18n";
 import { formatDuration } from "../../agents/components/agent-activity-hover-content";
@@ -38,7 +38,7 @@ import { useRunAnimationVisibility, useRunDisclosureMotion } from "./use-run-com
 
 function thinkingPreview(content: string | undefined, formatText: (text: string) => string): string {
   // Redact the complete content before clipping so a split credential cannot leak.
-  return traceEventSummary({ type: "thinking", content: redactProse(formatText(content ?? "")) });
+  return traceEventSummary({ type: "thinking", content: redactSecrets(formatText(content ?? "")) });
 }
 
 export function useInlineCommentRunState() {
@@ -133,7 +133,7 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
   // Keep the last activity visible after a tool returns, until new progress arrives.
   const activitySummary = current && isCallStep(current)
     ? redactSecrets(traceToolArgSummary(current.call?.input, { formatText }) || current.tool)
-    : current?.kind === "text" ? redactProse(formatText(current.item.content ?? ""))
+    : current?.kind === "text" ? redactSecrets(formatText(current.item.content ?? ""))
     : current?.kind === "thinking" ? thinkingPreview(current.item.content, formatText) || t(($) => $.inline_run.thinking)
     : current?.kind === "error" ? t(($) => $.inline_run.error)
     : t(($) => $.inline_run.waiting_response);
@@ -234,7 +234,7 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
       </div>
       <div className={cn(showIdentity && "pl-8")}>
         {replyTo}
-        {output && <div className="mt-2 text-body"><ReadonlyContent content={redactProse(output)} /></div>}
+        {output && <div className="mt-2 text-body" data-find-unit={runOutputFindKey(task.id)}><ReadonlyContent content={redactSecrets(output)} /></div>}
         {needsAction && rawError && <TruncatedTooltip content={rawError} focusable>
           <p
             className="mt-1.5 line-clamp-4 whitespace-pre-wrap break-words rounded-md border bg-muted/50 px-2.5 py-1.5 font-mono text-caption text-muted-foreground">
@@ -258,6 +258,8 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
     </section>
   );
 }
+
+const PRE_RUN_STATUSES: AgentTask["status"][] = ["queued", "dispatched", "waiting_local_directory"];
 
 interface DeliveredSteer {
   id: string;
@@ -344,7 +346,7 @@ function InlineStep({ row, live, formatText }: { row: TraceRow; live: boolean; f
   const summary = call
     ? toolSummary || row.tool
     : grouped ? toolSummary ? `${row.tool} · ${toolSummary}` : row.tool
-    : row.kind === "text" ? traceEventSummary({ ...row.item, content: redactProse(formatText(row.item.content ?? "")) }) || t(($) => $.inline_run.message)
+    : row.kind === "text" ? traceEventSummary({ ...row.item, content: redactSecrets(formatText(row.item.content ?? "")) }) || t(($) => $.inline_run.message)
     : row.kind === "thinking" ? thinkingPreview(row.item.content, formatText) || t(($) => $.inline_run.thinking)
     : t(($) => $.inline_run.error);
   return <details className="min-w-0 text-caption" onToggle={onToggle}>

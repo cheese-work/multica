@@ -39,50 +39,8 @@ const allowedDevOrigins = process.env.CORS_ALLOWED_ORIGINS
   : undefined;
 
 const nextConfig: NextConfig = {
-  logging: {
-    incomingRequests: {
-      ignore: [
-        /^\/api\/search\/suggestions(?:\?|$)/,
-        /^\/api\/(?:issues|projects)\/search(?:\?|$)/,
-        /^\/[^/]+\/search(?:\?|$)/,
-      ],
-    },
-  },
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
-  // Image builds set this: `pnpm typecheck` already gates every PR (CHE-3983).
-  ...(process.env.NEXT_SKIP_TYPECHECK === "true"
-    ? { typescript: { ignoreBuildErrors: true } }
-    : {}),
-  transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
-  outputFileTracingIncludes: {
-    "/changelog": ["./.fork-changelog/entries.json"],
-  },
-  // CI's self-hosted builders run `next build` inside a memory-capped (4GiB,
-  // 2-CPU) nested container, and the build OOM-kills there without these.
-  // webpackMemoryOptimizations plus a non-persistent production webpack
-  // cache trim the compile footprint. `cpus` defaults to the host's core
-  // count (56 on X99), not the container's quota, and would fork that many
-  // page-data workers. webpackBuildWorker must stay explicit: Next only
-  // enables it by default when there is no custom `webpack` hook, and
-  // without it the compiler's heap stays in the main process through the
-  // TypeScript phase, which OOM-kills the build again (CHE-702).
-  experimental: {
-    cpus: 2,
-    webpackMemoryOptimizations: true,
-    webpackBuildWorker: true,
-  },
-  webpack: (config, { dev }) => {
-    if (config.cache && !dev) {
-      config.cache = Object.freeze({ type: "memory" });
-    }
-    return config;
-  },
-  // `next dev` drops a compiled page after 60s idle and keeps only a few.
-  // The E2E global setup warms every route once, so keep them all for the run.
-  onDemandEntries: {
-    maxInactiveAge: 60 * 60 * 1000,
-    pagesBufferLength: 50,
-  },
+  transpilePackages: ["@multica/core", "@multica/ui", "@multica/views", "@multica/ee"],
   ...(allowedDevOrigins && allowedDevOrigins.length > 0
     ? { allowedDevOrigins }
     : {}),

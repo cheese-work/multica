@@ -7,10 +7,9 @@ import {
   ListEnd,
   Loader2,
   Pencil,
-  Square,
   Trash2,
 } from "@multica/ui/icons";
-import type { ChatHeadSupplement, ChatQueuedTask } from "@multica/core/types";
+import type { ChatQueuedTask, ChatWakeup } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
@@ -26,16 +25,12 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 
 interface ChatQueueProps {
   tasks: ChatQueuedTask[];
+  /** Names the wakeup behind a queued wakeup turn. */
+  wakeups?: ChatWakeup[];
   headStatus: string | undefined;
-  /** Whether the running reply can take a steered follow-up. Absent (an older
-   *  server) reads as unsupported; `starting` waits, it is never unsupported. */
-  headSupplement: ChatHeadSupplement | undefined;
-  /** Adds the follow-up to the running reply. */
-  onSteer: (taskId: string) => Promise<void> | void;
-  /** Stops the running reply, then sends the follow-up now. */
-  onStopAndSend: (taskId: string) => Promise<void> | void;
-  /** Blocks Steer and Stop & send independently of the head task's status —
-   *  used when the caller may no longer invoke the agent, since either one
+  onSendNow: (taskId: string) => Promise<void> | void;
+  /** Blocks "send now" independently of the head task's status — used when the
+   *  caller may no longer invoke the agent, since steering a queued task
    *  dispatches a run the server would refuse (MUL-6380). */
   sendNowDisabled?: boolean;
   onEdit: (taskId: string) => Promise<void> | void;
@@ -45,10 +40,9 @@ interface ChatQueueProps {
 
 export function ChatQueue({
   tasks,
+  wakeups,
   headStatus,
-  headSupplement,
-  onSteer,
-  onStopAndSend,
+  onSendNow,
   sendNowDisabled = false,
   onEdit,
   onRemove,
@@ -60,25 +54,29 @@ export function ChatQueue({
     headStatus === "dispatched" ||
     headStatus === "running" ||
     headStatus === "waiting_local_directory";
-  const canStopAndSend = !sendNowDisabled && dispatchableHead;
-  const canSteer = canStopAndSend && headSupplement === "capable";
-  // Each blocked state needs its own copy: "wait for the reply to start" is
-  // actionable, "you cannot run this agent" is not — telling a user to wait for
-  // something waiting cannot fix is the bug (MUL-6380). A starting run is
-  // waited on; an unsupported one keeps the message queued.
-  const steerLabel = t(($) =>
-    canSteer
+  const canSendNow = !sendNowDisabled && dispatchableHead;
+  // The two blocked states need different copy: "wait for the reply to start"
+  // is actionable, "you cannot run this agent" is not — telling a user to wait
+  // for something waiting cannot fix is the bug (MUL-6380).
+  const sendNowLabel = t(($) =>
+    canSendNow
       ? $.queue.steer
       : sendNowDisabled
         ? $.queue.steer_no_permission
-        : !dispatchableHead
-          ? $.queue.steer_unavailable
-          : headSupplement === "starting"
-            ? $.queue.steer_starting
-            : $.queue.steer_unsupported,
+        : $.queue.steer_unavailable,
   );
 
   if (tasks.length === 0) return null;
+
+  const queuedLabel = (task: ChatQueuedTask) => {
+    if (task.wakeup_id) {
+      const title = wakeups?.find((w) => w.id === task.wakeup_id)?.title;
+      return title
+        ? t(($) => $.wakeup.queue_label, { title })
+        : t(($) => $.wakeup.queue_fallback);
+    }
+    return task.content?.trim() || t(($) => $.queue.fallback);
+  };
 
   const run = async (key: string, action: () => Promise<void> | void) => {
     setBusyAction(key);
@@ -115,21 +113,12 @@ export function ChatQueue({
             "animate-in fade-in slide-in-from-bottom-2 duration-300",
           )}
         >
-          {!canSteer ? (
-            <p
-              data-slot="chat-queue-reason"
-              className="px-3.5 pt-1.5 text-caption text-muted-foreground"
-            >
-              {steerLabel}
-            </p>
-          ) : null}
           <div
             data-slot="chat-queue-list"
             className="max-h-40 overflow-y-auto px-2 py-1"
           >
             {tasks.map((task) => {
               const sendNowKey = `send-now:${task.task_id}`;
-              const stopKey = `stop-and-send:${task.task_id}`;
               const editKey = `edit:${task.task_id}`;
               const removeKey = `remove:${task.task_id}`;
               const clearKey = `clear:${task.task_id}`;
@@ -145,20 +134,20 @@ export function ChatQueue({
                     aria-hidden="true"
                   />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                    {task.content?.trim() || t(($) => $.queue.fallback)}
+                    {queuedLabel(task)}
                   </span>
                   <div className="flex shrink-0 items-center gap-0.5">
                     <span
                       className="shrink-0"
-                      title={steerLabel}
+                      title={sendNowLabel}
                     >
                       <Button
                         variant="ghost"
                         size="xs"
                         className="px-1.5 font-normal text-muted-foreground"
-                        disabled={busyAction !== null || !canSteer}
-                        aria-label={steerLabel}
-                        onClick={() => void run(sendNowKey, () => onSteer(task.task_id))}
+                        disabled={busyAction !== null || !canSendNow}
+                        aria-label={sendNowLabel}
+                        onClick={() => void run(sendNowKey, () => onSendNow(task.task_id))}
                       >
                         {busyAction === sendNowKey ? (
                           <Loader2 className="animate-spin" aria-hidden="true" />
@@ -195,7 +184,7 @@ export function ChatQueue({
                           />
                         }
                       >
-                        {busyAction === editKey || busyAction === stopKey || busyAction === clearKey ? (
+                        {busyAction === editKey || busyAction === clearKey ? (
                           <Loader2 className="animate-spin" aria-hidden="true" />
                         ) : (
                           <Ellipsis aria-hidden="true" />
@@ -207,13 +196,6 @@ export function ChatQueue({
                         sideOffset={6}
                         className="w-auto"
                       >
-                        <DropdownMenuItem
-                          disabled={busyAction !== null || !canStopAndSend}
-                          onClick={() => void run(stopKey, () => onStopAndSend(task.task_id))}
-                        >
-                          <Square aria-hidden="true" />
-                          {t(($) => $.queue.stop_and_send)}
-                        </DropdownMenuItem>
                         <DropdownMenuItem
                           disabled={busyAction !== null}
                           onClick={() => void run(editKey, () => onEdit(task.task_id))}

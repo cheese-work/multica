@@ -186,5 +186,101 @@
   {
     "from": "660_inbox_item_snoozed_at",
     "to": "999p47_inbox_item_snoozed_at"
+  },
+  {
+    "from": "661_chat_task_supplement",
+    "to": "999q01_chat_task_supplement"
+  },
+  {
+    "from": "662_chat_task_supplement_message",
+    "to": "999q02_chat_task_supplement_message"
+  },
+  {
+    "from": "663_chat_task_supplement_task",
+    "to": "999q03_chat_task_supplement_task"
+  },
+  {
+    "from": "664_chat_task_supplement_workspace",
+    "to": "999q04_chat_task_supplement_workspace"
+  },
+  {
+    "from": "665_weixin_state",
+    "to": "999q05_weixin_state"
+  },
+  {
+    "from": "666_weixin_login_expiry_idx",
+    "to": "999q06_weixin_login_expiry_idx"
+  },
+  {
+    "from": "667_issue_origin_weixin_chat",
+    "to": "999q07_issue_origin_weixin_chat"
+  },
+  {
+    "from": "668_issue_origin_weixin_chat_validate",
+    "to": "999q08_issue_origin_weixin_chat_validate"
+  },
+  {
+    "from": "669_weixin_login_session_unique_index",
+    "to": "999q09_weixin_login_session_unique_index"
+  },
+  {
+    "from": "670_weixin_login_session_primary_key",
+    "to": "999q10_weixin_login_session_primary_key"
+  },
+  {
+    "from": "671_weixin_account_state_unique_index",
+    "to": "999q11_weixin_account_state_unique_index"
+  },
+  {
+    "from": "672_weixin_account_state_primary_key",
+    "to": "999q12_weixin_account_state_primary_key"
+  },
+  {
+    "from": "673_runtime_rate_limit",
+    "to": "999q13_runtime_rate_limit"
+  },
+  {
+    "from": "674_runtime_profile_daemon",
+    "to": "999q14_runtime_profile_daemon"
+  },
+  {
+    "from": "675_chat_wakeup",
+    "to": "999q15_chat_wakeup"
+  },
+  {
+    "from": "676_chat_wakeup_due_idx",
+    "to": "999q16_chat_wakeup_due_idx"
+  },
+  {
+    "from": "677_chat_wakeup_session_idx",
+    "to": "999q17_chat_wakeup_session_idx"
+  },
+  {
+    "from": "678_chat_wakeup_requester_idx",
+    "to": "999q18_chat_wakeup_requester_idx"
+  },
+  {
+    "from": "679_entitlement_limit_overage",
+    "to": "999q19_entitlement_limit_overage"
+  },
+  {
+    "from": "680_entitlement_limit_overage_scope_idx",
+    "to": "999q20_entitlement_limit_overage_scope_idx"
+  },
+  {
+    "from": "681_project_folder",
+    "to": "999q21_project_folder"
+  },
+  {
+    "from": "682_project_folder_name_idx",
+    "to": "999q22_project_folder_name_idx"
+  },
+  {
+    "from": "683_entitlement_feature_attempt",
+    "to": "999q23_entitlement_feature_attempt"
+  },
+  {
+    "from": "684_entitlement_feature_attempt_scope_idx",
+    "to": "999q24_entitlement_feature_attempt_scope_idx"
   }
 ]

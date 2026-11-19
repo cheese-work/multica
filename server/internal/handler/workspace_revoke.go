@@ -134,7 +134,20 @@ func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, audi
 		if err != nil {
 			return empty, err
 		}
+<<<<<<< ours
 		if err := service.SettleTerminalTaskState(ctx, qtx, result.CancelledTasks...); err != nil {
+||||||| base
+		if err = service.SettleTerminalTaskState(ctx, qtx, result.CancelledTasks...); err != nil {
+=======
+		cancelledIDs := make([]pgtype.UUID, 0, len(result.CancelledTasks))
+		for _, task := range result.CancelledTasks {
+			cancelledIDs = append(cancelledIDs, task.ID)
+		}
+		if err = qtx.WithdrawChatTaskSupplementsByTasks(ctx, cancelledIDs); err != nil {
+			return empty, err
+		}
+		if err = service.SettleTerminalTaskState(ctx, qtx, result.CancelledTasks...); err != nil {
+>>>>>>> theirs
 			return empty, err
 		}
 

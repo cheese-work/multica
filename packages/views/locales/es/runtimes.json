@@ -351,11 +351,6 @@
       "completed": "Actualización completa. El daemon se está reiniciando...",
       "failed": "La actualización falló",
       "timeout": "Tiempo agotado"
-    },
-    "phase": {
-      "download": "Downloading",
-      "verify": "Verifying",
-      "install": "Installing"
     }
   },
   "charts": {
@@ -393,17 +388,18 @@
     "pending_health_warning": "Esperando la sincronización del daemon",
     "pending_health_error": "Error de registro",
     "pending_health_disabled": "Desactivado",
-    "pending_cli_unknown": "esperando"
+    "pending_cli_unknown": "esperando",
+    "col_rate_limits": "Límites"
   },
   "profiles": {
     "cta": "Añadir runtime",
     "add_custom": "Añadir runtime personalizado",
     "this_machine": "esta máquina",
     "unassigned_title": "Runtimes personalizados sin máquina",
-    "unassigned_description": "Estos runtimes del espacio de trabajo no están conectados a ninguna máquina. Conecta una máquina con los comandos correspondientes, o usa las acciones de la fila para editarlos o eliminarlos.",
+    "unassigned_description": "Vuelve a conectar la máquina asignada, o edita un runtime antiguo para asignarle una máquina.",
     "dialog_title": "Runtimes personalizados",
-    "dialog_description": "Las definiciones de runtimes personalizados son de todo el espacio de trabajo y se sincronizan con cada máquina conectada. Una máquina registra el runtime cuando el comando está disponible allí.",
-    "create_dialog_description": "Configura un comando personalizado desde {{machine}}. La definición se sincroniza en todo el espacio de trabajo y solo se registra en las máquinas donde ese comando está disponible.",
+    "dialog_description": "Cada runtime personalizado pertenece a una sola máquina.",
+    "create_dialog_description": "Solo {{machine}} registrará este comando personalizado.",
     "learn_more": "Ver guía de configuración",
     "close": "Cerrar",
     "add_new": "Runtime personalizado nuevo",
@@ -441,6 +437,9 @@
       "step_family_hint": "Selecciona la CLI con la que es compatible este comando.",
       "step_details_label": "Configura el runtime",
       "step_progress": "Paso {{current}} de {{total}}",
+      "machine_label": "Máquina (opcional)",
+      "machine_placeholder": "Mantener las máquinas actuales",
+      "machine_hint": "Al seleccionar una máquina se eliminan las copias sin uso de las otras máquinas.",
       "family_label": "Runtime base",
       "family_locked_hint": "El runtime base no se puede cambiar después de la creación.",
       "display_name_label": "Nombre visible",
@@ -700,92 +699,37 @@
       "connected": "{{name}} conectado a Multica"
     }
   },
-  "machine_pause": {
-    "title": "Machine",
-    "taking_work": "Taking work",
-    "tasks_running_one": "{{count}} task running",
-    "offline": "Offline",
-    "offline_last_seen": "Last seen {{time}}. Pause still stops new work.",
-    "pause": "Pause",
-    "resume": "Resume",
-    "menu_hint": "Stops new work. Running tasks finish. The pause ends by itself.",
-    "reasons": {
-      "maintenance": {
-        "name": "maintenance",
-        "label": "Maintenance",
-        "hint": "Planned work. Ends after 2 h"
-      },
-      "incident": {
-        "name": "incident",
-        "label": "Incident",
-        "hint": "Something is wrong. Ends after 30 min"
-      },
-      "suspended": {
-        "name": "suspended",
-        "label": "Suspended",
-        "hint": "Out of service. Ends after 30 min"
-      },
-      "scheduled_update": {
-        "name": "scheduled update",
-        "label": "Scheduled update",
-        "hint": "Daily update window. Lifts itself when it ends"
-      }
-    },
-    "paused": "Paused: {{reason}}",
-    "paused_offline": "Paused: {{reason}} · Offline",
-    "draining_one": "Draining: {{count}} task left",
-    "draining_offline_one": "Draining: {{count}} task left (last report {{time}})",
-    "safe_to_shut_down": "Safe to shut down",
-    "paused_by": "by {{name}}, {{time}}",
-    "ends_in": "Ends in {{duration}} ({{time}})",
-    "duration": {
-      "hours_minutes": "{{hours}} h {{minutes}} min",
-      "hours": "{{hours}} h",
-      "minutes": "{{minutes}} min"
-    },
-    "ended": "The {{reason}} pause ended at {{time}}. {{machine}} is taking work again.",
-    "ended_offline": "The {{reason}} pause ended at {{time}}. {{machine}} takes work again when it reconnects.",
-    "no_rights": "Only the machine owner and the workspace owner can pause or resume.",
-    "no_rights_ask": "Only the machine owner and the workspace owner can pause or resume. Ask {{names}}.",
-    "error": {
-      "title": "Machine state not loaded",
-      "hint": "Pause and Resume are off until it loads.",
-      "alert": "Could not load the machine state. Check your connection and retry.",
-      "retry": "Retry"
-    },
-    "toast": {
-      "pause_failed": "Could not pause the machine",
-      "resume_failed": "Could not resume the machine"
-    },
-    "banner": {
-      "paused": "{{machine}} is paused: {{reason}}.",
-      "tasks_left_one": "{{count}} task left.",
-      "tasks_left_stale_one": "{{count}} task left (offline; count may be stale).",
-      "drained": "Safe to shut down.",
-      "ends_in": "Ends in {{duration}}.",
-      "ends_soon": "Ends in {{duration}}. {{machine}} takes work again then.",
-      "tasks_left_other": "{{count}} tasks left.",
-      "tasks_left_stale_other": "{{count}} tasks left (offline; count may be stale).",
-      "close": "Hide machine banner",
-      "summary_one": "{{count}} machine needs attention.",
-      "summary_other": "{{count}} machines need attention.",
-      "tasks_wait_one": "{{count}} task waits for agents on it.",
-      "tasks_wait_other": "{{count}} tasks wait for agents on it.",
-      "tasks_wait_total_one": "{{count}} task waits for agents on them.",
-      "tasks_wait_total_other": "{{count}} tasks wait for agents on them.",
-      "next_to_end": "Next to end: {{machine}} pause, {{duration}}.",
-      "details": "Details",
-      "machine_of": "{{machine}} ({{owner}}'s machine)",
-      "offline": "{{machine}} is offline.",
-      "last_seen": "Last seen {{time}}.",
-      "new_event": "New",
-      "icon_paused": "{{machine}} is paused",
-      "icon_offline": "{{machine}} is offline",
-      "hide": "Hide machine banner: {{summary}}",
-      "show": "Show machine banner: {{summary}}"
-    },
-    "draining_offline_other": "Draining: {{count}} tasks left (last report {{time}})",
-    "tasks_running_other": "{{count}} tasks running",
-    "draining_other": "Draining: {{count}} tasks left"
+  "rate_limits": {
+    "title": "Límites",
+    "caption": "Los informa la CLI mientras se ejecutan tareas",
+    "updated": "Actualizado {{ago}}",
+    "empty_title": "Aún no hay datos de límites",
+    "empty_hint": "Se registran la próxima vez que este runtime ejecute una tarea. Las cuentas con clave de API no tienen límites de plan.",
+    "window_session": "Sesión",
+    "window_session_hours": "Sesión de {{hours}} h",
+    "window_weekly": "Semanal",
+    "window_weekly_opus": "Semanal · Opus",
+    "window_weekly_sonnet": "Semanal · Sonnet",
+    "window_generic": "Otro límite",
+    "short_session": "Sesión",
+    "short_weekly": "Semana",
+    "short_weekly_opus": "Opus",
+    "short_weekly_sonnet": "Sonnet",
+    "short_generic": "Otro",
+    "used": "{{pct}} % usado",
+    "limited": "Límite alcanzado",
+    "resets_in": "Se restablece en {{duration}}",
+    "resets_at": "Se restablece {{time}}",
+    "reset_since": "Restablecido desde el último informe",
+    "verdict_ahead": "{{pct}} % por delante del ritmo · se agota en unos {{duration}}",
+    "verdict_on_pace": "Al ritmo actual dura hasta el restablecimiento",
+    "verdict_limited": "Se reanuda tras el restablecimiento",
+    "credits": "Créditos",
+    "credits_balance": "Quedan {{balance}}",
+    "credits_unlimited": "Ilimitados",
+    "credits_none": "Ninguno",
+    "duration_minutes": "{{minutes}} min",
+    "duration_hours": "{{hours}} h {{minutes}} min",
+    "duration_days": "{{days}} d {{hours}} h"
   }
 }

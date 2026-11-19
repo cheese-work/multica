@@ -126,7 +126,7 @@ import { useArchiveInboxBatchWithUndo, useArchiveInboxWithUndo, useRestoreInbox 
 import { useInboxSnooze } from "./use-inbox-snooze";
 import { InboxAppRequest } from "../../common/app-requests";
 import { useT } from "../../i18n";
-import { useIssueLimitUpgradePrompt } from "../../modals/use-issue-limit-upgrade-prompt";
+import { useLimitRecoveryPrompt } from "../../modals/use-limit-recovery-prompt";
 
 
 /** The phone's Inbox list, apart from the Work panel section's. */
@@ -136,8 +136,7 @@ export function InboxPage() {
   const queryClient = useQueryClient();
   const { t } = useT("inbox");
   const { t: tCommon } = useT("common");
-  const showIssueLimitUpgradePrompt = useIssueLimitUpgradePrompt();
-  const showAutopilotQuotaRecoveryPrompt = useIssueLimitUpgradePrompt(
+  const showAutopilotQuotaRecoveryPrompt = useLimitRecoveryPrompt(
     "autopilot_quota",
   );
   const { searchParams, replace } = useNavigation();
@@ -1080,13 +1079,6 @@ export function InboxPage() {
                   await retrySourceContextMutation.mutateAsync(detailItem.details!.task_id!);
                   toast.success(t(($) => $.toasts.source_context_retry_started));
                 } catch (error) {
-                  if (
-                    error instanceof ApiError &&
-                    errorCode(error) === "issue_limit_reached"
-                  ) {
-                    showIssueLimitUpgradePrompt();
-                    return;
-                  }
                   toast.error(
                     error instanceof ApiError &&
                       errorCode(error) === "source_context_retry_unavailable"

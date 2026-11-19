@@ -103,9 +103,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
 	"chat_submission_receipt":            workspaceDelete,
+<<<<<<< ours
 	"chat_task_supplement":               workspaceDelete,
 	"chat_turn_outcome":                  workspaceDelete, // workspace_id; removed by workspace id, even after its root session was hard-deleted.
 	"chat_wakeup":                        workspaceDelete,
+||||||| base
+=======
+	"chat_wakeup":                        workspaceDelete,
+>>>>>>> theirs
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
@@ -137,6 +142,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
+	"entitlement_feature_attempt":        workspaceDelete,
+	"entitlement_limit_overage":          workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
 	"github_dispatch_halt":               workspaceDelete,
 	"github_dispatch_halt_audit":         workspaceDelete,
@@ -254,6 +261,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"plugin_package_version":             workspaceDelete,
 	"plugin_package_file":                workspaceDelete,
 	"project":                            workspaceDelete,
+	"project_folder":                     workspaceDelete,
 	"project_member":                     workspaceDelete,
 	"project_subscriber":                 workspaceDelete,
 	"project_resource":                   workspaceDelete,
@@ -293,8 +301,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"sys_cron_executions":                workspaceDeleteKeep,
 	"theme_store_download":               workspaceDeleteKeep, // per registry theme, not workspace-owned
 	"task_context_receipt":               workspaceDelete,
+	"runtime_rate_limit":                 workspaceDelete,
 	"task_message":                       workspaceDelete,
+<<<<<<< ours
 	"silence_alert_receipt":              workspaceDelete, // CHE-2990 per-task alert receipt; removed with its task in DeleteTaskBatch.
+||||||| base
+=======
+	"chat_task_supplement":               workspaceDelete,
+>>>>>>> theirs
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,
 	"task_pr_event_capability":           workspaceDelete, // CHE-2298 a2
@@ -316,6 +330,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"wecom_install_session":              workspaceDelete,
+	"weixin_login_session":               workspaceDelete,
+	"weixin_account_state":               workspaceDelete,
 	"workspace_composio_connection":      workspaceDelete,
 	"agent_app":                          workspaceDelete,
 	"app_action_rule":                    workspaceDelete,

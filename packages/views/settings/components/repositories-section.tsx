@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   FolderGit2,
@@ -74,7 +74,6 @@ import { useT } from "../../i18n";
 import { SettingsCard, SettingsSection } from "./settings-layout";
 import type { useConnectGitHub } from "./use-connect-github";
 import { GitHubMark } from "./github-mark";
-import { CIWatcherPanel } from "./ci-watcher-panel";
 
 const EMPTY_REPOSITORIES: WorkspaceRepo[] = [];
 
@@ -146,7 +145,6 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
   const [draft, setDraft] = useState<RepositoryDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [pendingRemovalIndex, setPendingRemovalIndex] = useState<number | null>(null);
-  const [ciWatchOpen, setCIWatchOpen] = useState<ReadonlySet<string>>(new Set());
   const {
     connecting: connectingGitHub,
     connect: connectGitHub,
@@ -176,13 +174,14 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
     [githubData?.installations],
   );
   const githubConnectConfigured = githubData?.configured === true;
+  const canManageGitHub = canManageWorkspace && githubData?.can_manage === true;
   const githubBrowseConfigured =
     githubData?.repository_browse_configured === true;
   const githubRepositoriesQuery = useInfiniteQuery({
     ...githubInstallationRepositoriesOptions(wsId, selectedInstallationID),
     enabled:
       githubPickerOpen &&
-      canManageWorkspace &&
+      canManageGitHub &&
       githubBrowseConfigured &&
       !!selectedInstallationID,
   });
@@ -230,7 +229,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
     if (handledCallback.current === callbackKey) return;
     const connected = navigation.searchParams.get("github_connected") === "1";
     const githubError = navigation.searchParams.get("github_error");
-    if ((!connected && !githubError) || !canManageWorkspace) return;
+    if ((!connected && !githubError) || !canManageGitHub) return;
     if (
       !githubError &&
       (githubInstallationsPending || githubInstallationsFetching)
@@ -240,11 +239,32 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
 
     handledCallback.current = callbackKey;
     if (githubError) {
-      toast.error(
-        githubError === "installation_not_allowed"
-          ? t(($) => $.repositories.github_installation_not_allowed)
-          : t(($) => $.repositories.github_connect_failed),
-      );
+      switch (githubError) {
+        case "missing_authorization":
+          toast.error(t(($) => $.github.errors.missing_authorization));
+          break;
+        case "installation_not_authorized":
+          toast.error(t(($) => $.github.errors.installation_not_authorized));
+          break;
+        case "invalid_state":
+          toast.error(t(($) => $.github.errors.invalid_state));
+          break;
+        case "missing_params":
+        case "bad_installation_id":
+          toast.error(t(($) => $.github.errors.incomplete_callback));
+          break;
+        case "bad_workspace":
+          toast.error(t(($) => $.github.errors.bad_workspace));
+          break;
+        case "verification_failed":
+          toast.error(t(($) => $.github.errors.verification_failed));
+          break;
+        case "persist_failed":
+          toast.error(t(($) => $.github.errors.persist_failed));
+          break;
+        default:
+          toast.error(t(($) => $.repositories.github_connect_failed));
+      }
     } else if (githubInstallations.length > 0 && githubBrowseConfigured) {
       const installationID = navigation.searchParams.get("github_installation") ?? githubInstallations[0]!.id;
       if (githubInstallations.some((installation) => installation.id === installationID)) {
@@ -264,7 +284,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
     const search = next.toString();
     navigation.replace(`${navigation.pathname}${search ? `?${search}` : ""}`);
   }, [
-    canManageWorkspace,
+    canManageGitHub,
     githubBrowseConfigured,
     githubInstallations,
     githubInstallationsFetching,
@@ -275,7 +295,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
 
   useEffect(() => {
     const installationID = connectedInstallationID;
-    if (!installationID || !canManageWorkspace || githubInstallationsPending || githubInstallationsFetching) return;
+    if (!installationID || !canManageGitHub || githubInstallationsPending || githubInstallationsFetching) return;
     if (!githubInstallations.some((installation) => installation.id === installationID)) return;
     if (githubBrowseConfigured) {
       setSelectedInstallationID(installationID);
@@ -286,7 +306,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
       toast.error(t(($) => $.repositories.github_browse_not_configured));
     }
     resetConnection();
-  }, [connectedInstallationID, resetConnection, canManageWorkspace, githubInstallations, githubInstallationsPending, githubInstallationsFetching, githubBrowseConfigured, t]);
+  }, [connectedInstallationID, resetConnection, canManageGitHub, githubInstallations, githubInstallationsPending, githubInstallationsFetching, githubBrowseConfigured, t]);
 
   const preselectingRepositories = githubPickerOpen &&
     selectedInstallationID === preselectInstallationID &&
@@ -426,11 +446,6 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
 
   if (!workspace) return null;
 
-  const githubItemDisabled =
-    connectingGitHub ||
-    !githubBrowseConfigured ||
-    (!githubConnectConfigured && githubInstallations.length === 0);
-
   return (
     <SettingsSection
       title={t(($) => $.repositories.section_title)}
@@ -444,40 +459,31 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
               <ChevronDown />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-auto min-w-56">
-              <DropdownMenuItem
-                disabled={githubItemDisabled}
-                onClick={() =>
-                  githubInstallations.length > 0
-                    ? openGitHubPicker()
-                    : void connectGitHub()
-                }
-              >
-                {connectingGitHub ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : (
-                  <GitHubMark className="size-4" />
-                )}
-                <span className="flex flex-col">
-                  <span>
-                    {githubInstallations.length > 0
-                      ? t(($) => $.repositories.choose_from_github)
-                      : t(($) => $.repositories.connect_github)}
-                  </span>
-                  {!githubBrowseConfigured ? (
-                    <span className="text-caption text-muted-foreground">
-                      {t(($) => $.repositories.github_browse_not_configured)}
-                    </span>
+              {canManageGitHub ? (
+                <>
+                  {githubInstallations.length > 0 ? (
+                    <DropdownMenuItem disabled={!githubBrowseConfigured} onClick={openGitHubPicker}>
+                      <GitHubMark className="size-4" />
+                      <span className="flex flex-col">
+                        <span>{t(($) => $.repositories.choose_from_github)}</span>
+                        {!githubBrowseConfigured ? (
+                          <span className="text-caption text-muted-foreground">
+                            {t(($) => $.repositories.github_browse_not_configured)}
+                          </span>
+                        ) : null}
+                      </span>
+                    </DropdownMenuItem>
                   ) : null}
-                </span>
-              </DropdownMenuItem>
-              {githubInstallations.length > 0 && githubData?.can_manage === true ? (
-                <DropdownMenuItem
-                  disabled={connectingGitHub || !githubConnectConfigured}
-                  onClick={() => void connectGitHub()}
-                >
-                  <Plus />
-                  {t(($) => $.repositories.github_add_account_or_organization)}
-                </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={connectingGitHub || !githubConnectConfigured}
+                    onClick={() => void connectGitHub()}
+                  >
+                    {connectingGitHub ? <LoaderCircle className="animate-spin" /> : <GitHubMark className="size-4" />}
+                    {githubInstallations.length > 0
+                      ? t(($) => $.github.add_account)
+                      : t(($) => $.repositories.connect_github)}
+                  </DropdownMenuItem>
+                </>
               ) : null}
               <DropdownMenuItem
                 onClick={() => setDraft({ index: null, url: "", description: "" })}
@@ -501,12 +507,11 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
           repositories.map((repository, index) => {
             const identity = repositoryIdentity(repository.url);
             const onGitHub = identity?.startsWith("github.com/") ?? false;
-            const ciRepo = onGitHub ? (identity?.slice("github.com/".length) ?? "") : "";
-            const ciWatchable = canManageWorkspace && /^[^/]+\/[^/]+$/.test(ciRepo);
-            const ciOpen = ciWatchable && ciWatchOpen.has(ciRepo);
             return (
-              <Fragment key={`${index}:${repository.url}`}>
-              <div className="flex min-h-14 items-center gap-3 px-4 py-2.5">
+              <div
+                key={`${index}:${repository.url}`}
+                className="flex min-h-14 items-center gap-3 px-4 py-2.5"
+              >
                 <span
                   aria-hidden="true"
                   className="flex size-5 shrink-0 items-center justify-center text-muted-foreground"
@@ -529,22 +534,6 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
                     </p>
                   ) : null}
                 </div>
-                {ciWatchable ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-expanded={ciOpen}
-                    onClick={() =>
-                      setCIWatchOpen((open) => {
-                        const next = new Set(open);
-                        if (!next.delete(ciRepo)) next.add(ciRepo);
-                        return next;
-                      })
-                    }
-                  >
-                    {t(($) => $.ci_watch.title)}
-                  </Button>
-                ) : null}
                 {canManageWorkspace ? (
                   <DropdownMenu>
                     <DropdownMenuTrigger
@@ -584,12 +573,6 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
                   </DropdownMenu>
                 ) : null}
               </div>
-              {ciOpen ? (
-                <div className="space-y-3 px-4 pb-4">
-                  <CIWatcherPanel wsId={wsId} repo={ciRepo} />
-                </div>
-              ) : null}
-              </Fragment>
             );
           })
         )}
@@ -727,18 +710,6 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
                   {githubInstallations[0].account_login}
                 </span>
               </p>
-            ) : null}
-
-            {githubData?.can_manage === true ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void connectGitHub()}
-                disabled={connectingGitHub || !githubConnectConfigured}
-                aria-busy={connectingGitHub || undefined}
-              >
-                {t(($) => $.repositories.github_add_account_or_organization)}
-              </Button>
             ) : null}
 
             <div className="relative">

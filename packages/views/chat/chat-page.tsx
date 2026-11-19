@@ -1,56 +1,44 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Bot, MessageSquare, Plus, Search } from "@multica/ui/icons";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Bot, MessageSquare, Plus } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
-import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
-import { autoCompactThresholdTokens, resolveAutoCompact } from "@multica/core/workspace/auto-compact";
-import {
-  getCurrentSlug,
-  getWorkspaceRehydrationGeneration,
-  subscribeToWorkspaceRehydration,
-} from "@multica/core/platform";
+import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
+import { getCurrentSlug } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
-import { chatKeys, chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { CollectionPageState } from "../layout/collection-page";
 import { CollapsedNavTrigger, PageHeader } from "../layout/page-header";
 import { PanelHeader } from "../layout/panel-nav";
 import { useListColumnCollapsed } from "../layout/app-shell-context";
 import { ListColumn } from "../layout/list-column";
-import { useBackOrReplace, useNavigation } from "../navigation";
+import { useNavigation } from "../navigation";
 import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
+import { ChatWakeupStrip, useChatWakeups } from "./components/chat-wakeups";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
-import { useChatRename } from "./components/use-chat-rename";
-import { useChatFork } from "./components/use-chat-fork";
-import { useDmSessionSurface } from "./components/use-dm-session-surface";
-import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
 import { useChatController } from "./components/use-chat-controller";
+import { useChatAnnotations } from "./components/use-chat-annotations";
 import { OfflineBanner } from "./components/offline-banner";
 import { NoAgentBanner } from "./components/no-agent-banner";
 import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
-import { InteractiveLoginBanner } from "./components/interactive-login-banner";
-import { ChatAnnotationContext } from "./components/chat-annotation-context";
-import { useChatAnnotations } from "./components/use-chat-annotations";
-import { useQuoteRequest } from "./components/use-quote-request";
 import { ChatAppRequests } from "../common/app-requests";
 import { useRegisterCommandBarContext } from "../search/register-context";
-import { useSearchStore } from "@multica/core/command-bar";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -61,11 +49,7 @@ import { useSearchStore } from "@multica/core/command-bar";
  * Selection is URL-addressable via `?session=<id>` so a thread can be
  * deep-linked, opened from a notification, and survive refresh. The chat
  * store's `activeSessionId` stays the source of truth (both surfaces read
- * it); the URL is kept in sync in both directions. One store → URL effect is
- * the only writer: user selection and "new chat" record a `push` intent in the
- * store first so Back walks list > A > B, and every other change (a new chat
- * receiving its server ID, archive, delete, realtime) replaces the entry.
- * An unsent new chat is `?new=1`. `?agent=<id>` is the
+ * it); the URL is kept in sync in both directions. `?agent=<id>` is the
  * complementary one-shot deep link for a NEW chat: it starts a fresh compose
  * bound to that agent and is then stripped from the URL.
  *
@@ -76,16 +60,10 @@ import { useSearchStore } from "@multica/core/command-bar";
  * style).
  */
 export function ChatPage() {
-  // The DM list chip lives for as long as Chat is open; leaving Chat resets it.
-  useEffect(() => () => useChatStore.getState().resetListView(), []);
   const { t } = useT("chat");
-  const { t: tSearch } = useT("search");
   const { pathname, searchParams, push, replace } = useNavigation();
-  const backOrReplace = useBackOrReplace();
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
-  const workspace = useCurrentWorkspace();
-  const qc = useQueryClient();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -104,79 +82,29 @@ export function ChatPage() {
   useQuickActionsPendingTimeout(c.activeSessionId ?? null, quickActionsPending);
   // Toast when an accepted refresh later fails in the daemon (async half).
   useQuickActionsFailureToast(c.activeSessionId ?? null);
+  const wakeups = useChatWakeups(c.activeSessionId);
   const regenerateQuickActions = useRegenerateChatQuickActions();
+  const annotations = useChatAnnotations({
+    sessionId: c.activeSessionId,
+    agentName: c.activeAgent?.name,
+    enabled: !c.isSessionArchived && !c.isAgentArchived && !c.isAgentAccessRevoked && c.isAgentRuntimeBound && !c.noAgent,
+  });
   const urlSession = searchParams.get("session") || null;
   const urlAgent = searchParams.get("agent") || null;
-  // `?new=1` is an unsent new chat, so Back from it and a refresh behave.
-  const urlNew = searchParams.get("new") === "1";
-  // `?message=` is a one-shot jump from a decision card; it only applies once
-  // the list shows the session named beside it.
-  const urlMessage = searchParams.get("message") || null;
-  // A cached transcript can predate the target (a card opened right after it
-  // was proposed). The first miss refetches once and re-arms the jump; only a
-  // miss on fresh data is reported.
-  const jumpKey = urlSession && urlMessage ? `${urlSession}:${urlMessage}` : null;
-  const [retriedJump, setRetriedJump] = useState<string | null>(null);
-  const [refetchingJump, setRefetchingJump] = useState(false);
-  const settleJump = (outcome: "landed" | "missing") => {
-    if (outcome === "missing" && urlSession && jumpKey && retriedJump !== jumpKey) {
-      setRetriedJump(jumpKey);
-      setRefetchingJump(true);
-      void qc
-        .refetchQueries({ queryKey: chatKeys.messagesPage(urlSession), exact: true })
-        .catch(() => {})
-        .finally(() => setRefetchingJump(false));
-      return;
-    }
-    if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
-    replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
-  };
-
-  const showsMessageList =
-    c.hasMessages ||
-    !!c.currentSession?.continued_from_session_id ||
-    !!c.currentSession?.continued_into_session_id ||
-    !!c.currentSession?.forked_from_session_id;
-  // The list reports a missing target; an empty chat never mounts it, so the
-  // jump settles here once the chat has loaded and has nothing to scroll to.
-  const emptyChatLoaded =
-    !!c.currentSession && c.messagesLoaded && !c.showSkeleton && !showsMessageList;
-  const jumpTargetsEmptyChat = !!urlMessage && urlSession === c.activeSessionId && emptyChatLoaded;
-  const settledEmptyJump = useRef<string | null>(null);
-  useEffect(() => {
-    // Forget the target once the URL drops it, so the same hit can settle again.
-    if (!urlMessage) {
-      settledEmptyJump.current = null;
-      if (retriedJump) setRetriedJump(null);
-    }
-    if (!jumpTargetsEmptyChat || refetchingJump) return;
-    // The refetched chat settles once more: first pass retries, second reports.
-    const settleKey = `${urlMessage}:${retriedJump === jumpKey ? "retried" : "first"}`;
-    if (settledEmptyJump.current === settleKey) return;
-    settledEmptyJump.current = settleKey;
-    settleJump("missing");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target and pass
-  }, [jumpTargetsEmptyChat, urlMessage, refetchingJump, retriedJump]);
-
-  // A user navigation asks for a history entry; anything else replaces the
-  // current one. The intent is one-shot: the store → URL effect consumes it.
-  // A change to the URL the user is already on records nothing, so the intent
-  // cannot outlive the effect that would consume it.
-  const requestNav = (mode: "push" | "replace", newChat: boolean) =>
-    useChatStore.getState().requestNav({ mode, newChat });
-  const navIntent = useChatStore((s) => s.navIntent);
-  // The write this page made and the router has not published yet. The store
-  // updates in the same tick, so the effect runs again (the consumed intent
-  // is itself a store change) before the URL shows the target. That run must
-  // not read the stale URL as a request to change it back.
-  const pendingWrite = useRef<{ liveSession: string | null } | null>(null);
 
   // "Composing a brand-new chat" — the user hit ⊕ but hasn't sent yet, so no
-  // session exists. The URL owns it (`?new=1`), so Back, Forward and refresh
-  // agree with the pane. At compact widths it decides list-vs-conversation;
-  // on desktop the conversation pane is always mounted.
-  const composingNew = urlNew;
-  const { handleRename, renameRequest } = useChatRename(c.currentSession);
+  // session exists. At compact widths this decides list-vs-conversation; on desktop the
+  // conversation pane is always mounted so it only needs to reset itself once a
+  // real session takes over.
+  const [composingNew, setComposingNew] = useState(false);
+  useEffect(() => {
+    // Read the LIVE store value for the same reason as the session sync
+    // effects below: under StrictMode's double-invoke this effect replays
+    // with the render-captured snapshot, and a stale non-null session (a
+    // persisted chat the URL→store effect already cleared) would revert the
+    // composingNew=true that the later `?agent=` intent effect just set.
+    if (useChatStore.getState().activeSessionId) setComposingNew(false);
+  }, [c.activeSessionId]);
 
   // Two-way sync between the URL (`?session=`) and the chat store's
   // activeSessionId. Both effects read the LIVE store value via
@@ -191,59 +119,23 @@ export function ChatPage() {
   // URL → store: deep link, refresh, notification click, back/forward.
   useEffect(() => {
     if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
-    pendingWrite.current = null;
     if (urlSession !== useChatStore.getState().activeSessionId) {
       c.setActiveSession(urlSession);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile URL/route changes, not store updates
-  }, [isCurrentChatRoute, workspaceSlug, urlSession, urlNew]);
+  }, [isCurrentChatRoute, workspaceSlug, urlSession]);
 
-  // The workspace layout publishes the workspace in an effect, and the chat
-  // store rehydrates from that workspace one microtask later. A page that
-  // mounts in the same commit syncs the URL before either has happened (or is
-  // skipped by the guard above), and the rehydration then replaces the
-  // selection the URL names; the store → URL effect would write that back and
-  // strip a deep link. The URL stays authoritative when it names a thread, so
-  // re-apply it after every rehydration. A URL without a thread leaves the
-  // workspace's persisted selection to the store → URL effect as before.
-  const rehydrations = useSyncExternalStore(
-    subscribeToWorkspaceRehydration,
-    getWorkspaceRehydrationGeneration,
-    () => 0,
-  );
+  // store → URL: thread selection, "new chat", and sessions created by sending.
   useEffect(() => {
     if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
-    if (urlSession && urlSession !== useChatStore.getState().activeSessionId) {
-      c.setActiveSession(urlSession);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-apply the URL after a rehydration, not on every URL change
-  }, [rehydrations]);
-
-  // store → URL: the single URL writer. A user selection or new chat arrives
-  // with a `push` intent; a session created by sending, archive advancing the
-  // selection, a delete and realtime changes carry none and replace.
-  useEffect(() => {
-    const intent = useChatStore.getState().consumeNavIntent();
-    if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
-    const base = wsPaths.chat();
     const live = useChatStore.getState().activeSessionId;
-    const keepNewChat = intent ? intent.newChat : urlNew;
-    const target = live ? `${base}?session=${live}` : keepNewChat ? `${base}?new=1` : base;
-    const current = urlSession
-      ? `${base}?session=${urlSession}`
-      : urlNew
-        ? `${base}?new=1`
-        : base;
-    if (target === current) {
-      pendingWrite.current = null;
-      return;
+    const current = searchParams.get("session") || null;
+    if (live !== current) {
+      const base = wsPaths.chat();
+      replace(live ? `${base}?session=${live}` : base);
     }
-    if (!intent && pendingWrite.current?.liveSession === live) return;
-    pendingWrite.current = { liveSession: live };
-    if (intent?.mode === "push") push(target);
-    else replace(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile store/route changes, not URL updates
-  }, [isCurrentChatRoute, workspaceSlug, c.activeSessionId, navIntent]);
+  }, [isCurrentChatRoute, workspaceSlug, c.activeSessionId]);
 
   const listCollapsed = useListColumnCollapsed();
 
@@ -261,48 +153,35 @@ export function ChatPage() {
 
   const handleSelect = (session: ChatSession) => {
     supersedeAgentIntent();
-    if (session.id !== urlSession) requestNav("push", false);
     c.handleSelectSession(session);
+    setComposingNew(false);
   };
-  const { handleFork } = useChatFork(c.currentSession, handleSelect);
 
   // Single archive path for both entry points (thread-list row + conversation
-  // header). The server accepts the archive first; a failure keeps the session
-  // open. Then, when the archived chat is the one in view, move the pane off
-  // it: on desktop advance to the next chat (Inbox-style); when compact go back
-  // through history. Archiving any other chat leaves the view put.
-  const dm = useDmSessionSurface({
-    session: c.currentSession,
-    sessions: c.sessions,
-    send: c.handleSend,
-    onOpenSession: handleSelect,
-    onArchived: (session) => {
-      if (session.id !== useChatStore.getState().activeSessionId) return;
-      if (isCompact) backOrReplace(wsPaths.chat());
-      else c.advanceSelectionAfterArchive(session);
-    },
-    onUnseen: (session) => {
-      if (session.id !== useChatStore.getState().activeSessionId) return;
-      if (isCompact) backOrReplace(wsPaths.chat());
-      else c.setActiveSession(null);
-    },
-    onRename: handleRename,
-    onFork: canForkSession(c.currentSession) ? handleFork : undefined,
-  });
+  // header). When the archived chat is the one in view, move the pane off it:
+  // on desktop advance to the next chat (Inbox-style); when compact drop back to
+  // the list, which reads more naturally than being thrown into an unrelated
+  // conversation full-screen. Archiving any other chat leaves the view put.
   const handleArchive = (session: ChatSession) => {
     supersedeAgentIntent();
-    return dm.archive(session);
+    if (session.id === c.activeSessionId) {
+      if (isCompact) {
+        c.setActiveSession(null);
+        setComposingNew(false);
+      } else {
+        c.advanceSelectionAfterArchive(session);
+      }
+    }
+    c.archiveSession(session.id);
   };
 
-  const startNewChat = (agent: Agent | null, { fromIntent = false } = {}) => {
+  const startNewChat = (agent: Agent | null) => {
     // A manual ⊕ pick outranks a pending deep link; when called FROM the
     // intent effect the ref is already set to this param, so this is a no-op.
     supersedeAgentIntent();
-    // The deep link already owns the current entry: it becomes `?new=1`.
-    if (fromIntent) requestNav("replace", true);
-    else if (urlSession || !urlNew) requestNav("push", true);
     if (agent) c.handleStartNewChat(agent);
     else c.handleNewChat();
+    setComposingNew(true);
   };
 
   const changeProjectContext = (projectId: string | null) => {
@@ -312,9 +191,7 @@ export function ChatPage() {
     // project for an existing conversation starts a clean session, and a
     // compact layout must stay in the compose pane after activeSessionId is
     // cleared.
-    if ((!c.currentSession || projectId !== null) && (urlSession || !urlNew)) {
-      requestNav(c.currentSession ? "push" : "replace", true);
-    }
+    if (!c.currentSession || projectId !== null) setComposingNew(true);
   };
 
   // The command bar calls the page's own handlers so archiving or re-scoping
@@ -360,7 +237,8 @@ export function ChatPage() {
     const agent = c.availableAgents.find((a) => a.id === urlAgent);
     if (agent) {
       consumedAgentIntent.current = urlAgent;
-      startNewChat(agent, { fromIntent: true });
+      startNewChat(agent);
+      replace(wsPaths.chat());
       return;
     }
     if (c.agentsSettled) {
@@ -375,7 +253,6 @@ export function ChatPage() {
     <NewChatButton
       agents={c.availableAgents}
       userId={c.user?.id}
-      sessions={c.sessions}
       onStart={startNewChat}
       side="bottom"
     />
@@ -383,16 +260,6 @@ export function ChatPage() {
 
   const listHeader = (
     <PanelHeader as="h1" title={t(($) => $.page.title)} leading={<CollapsedNavTrigger />}>
-      {isCompact && (
-        <IconButton
-          label={tSearch(($) => $.trigger.label)}
-          tooltipSide="bottom"
-          className="text-muted-foreground"
-          onClick={() => useSearchStore.getState().setOpen(true)}
-        >
-          <Search />
-        </IconButton>
-      )}
       {newChatButton}
     </PanelHeader>
   );
@@ -405,8 +272,6 @@ export function ChatPage() {
         activeSessionId={c.activeSessionId}
         onSelectSession={handleSelect}
         onArchive={handleArchive}
-        loadState={c.sessionsLoaded ? undefined : c.sessionsFailed ? "error" : "loading"}
-        onRetry={() => void c.refetchSessions()}
       />
     </div>
   );
@@ -428,9 +293,9 @@ export function ChatPage() {
       }
     />
   );
-  // Back follows real history; the list is only the fallback.
   const backToList = () => {
-    if (c.activeSessionId || urlNew) backOrReplace(wsPaths.chat());
+    c.setActiveSession(null);
+    setComposingNew(false);
   };
 
   // The conversation pane: message list / skeleton / empty above a persistent
@@ -440,28 +305,8 @@ export function ChatPage() {
   // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
-  const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
-  const autoCompactTokens = autoCompactThresholdTokens(autoCompact, c.currentSession?.context_window);
-  const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
-  const annotation = useChatAnnotations({
-    sessionId: c.activeSessionId,
-    messages: c.messages,
-    agentName: c.activeAgent?.name,
-    enabled:
-      !c.isSessionArchived &&
-      !c.isAgentArchived &&
-      !c.isAgentAccessRevoked &&
-      c.isAgentRuntimeBound &&
-      !c.noAgent,
-  });
   const conversation = (
-    <ChatAnnotationContext.Provider value={annotation.scope}>
-    <div
-      ref={annotation.cardRef}
-      {...annotation.captureProps}
-      className="flex flex-1 flex-col min-h-0 @container"
-    >
-      {annotation.popup}
+    <div className="flex flex-1 flex-col min-h-0 @container">
       {c.currentSession && (
         <ChatSessionHeader
           leading={
@@ -481,42 +326,20 @@ export function ChatPage() {
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
-          onUnarchive={dm.unarchive}
-          onTogglePin={dm.togglePin}
-          onMarkUnseen={dm.markUnseen}
-          onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
-          renameRequest={renameRequest}
-          autoCompactThresholdTokens={autoCompactTokens}
-          onCompact={() => void c.handleSend("/compact")}
-          onSetPreset={(name) =>
-            // The server answers /preset without a session event: refetch so the picker shows the new choice.
-            void c.handleSend(`/preset ${name}`).then((sent) => {
-              if (sent && workspace) void qc.invalidateQueries({ queryKey: chatKeys.sessions(workspace.id) });
-            })
-          }
         />
       )}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : showsMessageList ? (
+      ) : c.hasMessages ? (
         <ChatMessageList
           key={c.activeSessionId}
-          onQuoteMessage={quote}
           messages={c.messages}
-          continuedFromSessionId={c.currentSession?.continued_from_session_id}
-          continuedIntoSessionId={c.currentSession?.continued_into_session_id}
-          sessionId={c.activeSessionId}
-          forkedFromSessionId={c.currentSession?.forked_from_session_id}
-          forkLastMessageId={c.currentSession?.fork_last_message_id}
-          forkMessageCount={c.currentSession?.fork_message_count}
-          sessions={c.sessionsLoaded ? c.sessions : undefined}
           pendingTask={c.pendingTask}
           availability={c.availability}
+          firstItemIndex={c.firstItemIndex}
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
-          jumpToMessageId={urlSession === c.activeSessionId && !refetchingJump ? urlMessage : null}
-          onJumpSettled={settleJump}
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={
             !!c.pendingTaskId ||
@@ -535,6 +358,8 @@ export function ChatPage() {
               : undefined
           }
           quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+          annotations={annotations}
+          wakeups={wakeups}
         />
       ) : (
         <EmptyState
@@ -563,12 +388,13 @@ export function ChatPage() {
         <ChatAppRequests sessionId={c.activeSessionId} />
       </div>
 
+      <ChatWakeupStrip sessionId={c.activeSessionId} wakeups={wakeups} />
+
       <ChatQueue
         tasks={queuedTasks}
+        wakeups={wakeups}
         headStatus={c.pendingTask?.status}
-        headSupplement={c.pendingTask?.head_supplement}
-        onSteer={c.handleSteerQueuedTask}
-        onStopAndSend={c.handleStopAndSendQueuedTask}
+        onSendNow={c.handleSendQueuedTaskNow}
         sendNowDisabled={c.isAgentAccessRevoked}
         onEdit={c.handleEditQueuedTask}
         onRemove={c.handleRemoveQueuedTask}
@@ -576,10 +402,8 @@ export function ChatPage() {
       />
 
       <ChatInput
-        {...dm.inputProps}
+        onSend={c.handleSend}
         restoreDraftRequest={c.restoreDraftRequest}
-        quoteRequest={quoteRequest}
-        onQuoteApplied={handleQuoteApplied}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}
         onRestoreDraftApplied={c.handleRestoreDraftApplied}
@@ -587,13 +411,13 @@ export function ChatPage() {
         onStop={c.handleStop}
         isRunning={!!c.pendingTaskId}
         allowSubmitWhileRunning={c.pendingTask?.supports_queue === true}
+        canSteerWhileRunning={c.pendingTask?.can_supplement}
         disabled={
+          c.isSessionArchived ||
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
-          !c.isAgentRuntimeBound ||
-          c.currentSession?.compacting === true
+          !c.isAgentRuntimeBound
         }
-        compacting={c.currentSession?.compacting === true}
         noAgent={c.noAgent}
         agentArchived={c.isAgentArchived}
         agentAccessRevoked={c.isAgentAccessRevoked}
@@ -605,14 +429,10 @@ export function ChatPage() {
         onProjectChange={changeProjectContext}
         isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
-        annotationScope={annotation.input}
+        annotations={annotations}
       />
     </div>
-    {dm.dialogs}
-    </ChatAnnotationContext.Provider>
   );
-
-  if (c.interactiveLoginRequired) return <InteractiveLoginBanner />;
 
   // -- Compact: list / conversation toggle -----------------------------------
   if (isCompact) {

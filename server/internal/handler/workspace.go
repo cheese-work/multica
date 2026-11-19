@@ -1801,10 +1801,18 @@ func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request,
 			},
 		},
 		{
+<<<<<<< ours
 			name: "delete dm progress follows",
 			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
+||||||| base
+=======
+			name: "delete chat supplements",
+			run:  func() error { return qtx.DeleteChatTaskSupplementsByWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+>>>>>>> theirs
 			name: "delete chat pins",
 			run:  func() error { return qtx.DeleteChatPinnedAgentsByWorkspace(ctx, requester.WorkspaceID) },
 		},
@@ -1857,6 +1865,14 @@ func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request,
 		{
 			name: "delete autopilot quota periods",
 			run:  func() error { return qtx.DeleteWorkspaceAutopilotQuotaPeriods(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete entitlement limit overages",
+			run:  func() error { return qtx.DeleteWorkspaceEntitlementLimitOverages(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete entitlement feature attempts",
+			run:  func() error { return qtx.DeleteWorkspaceEntitlementFeatureAttempts(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete chat messages",

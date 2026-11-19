@@ -1,15 +1,12 @@
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, renderHook, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { notificationPreferenceKeys } from "@multica/core/notification-preferences/queries";
 import enSettings from "../../locales/en/settings.json";
 import { NotificationsTab } from "./notifications-tab";
-import { useSettingsSearchIndex } from "./use-settings-search-index";
-
-const state = vi.hoisted(() => ({ mutate: vi.fn() }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-a" }));
 vi.mock("@multica/core/paths", () => ({
@@ -23,16 +20,16 @@ vi.mock("../../navigation", () => ({
     </a>
   ),
 }));
+const { mutate } = vi.hoisted(() => ({ mutate: vi.fn() }));
 vi.mock("@multica/core/notification-preferences/mutations", () => ({
-  useUpdateNotificationPreferences: () => ({ mutate: state.mutate }),
+  useUpdateNotificationPreferences: () => ({ mutate }),
 }));
-vi.mock("./browser-notification-setting", () => ({
-  BrowserNotificationSetting: () => null,
-  browserNotificationSettingAvailable: () => false,
-}));
+vi.mock("./browser-notification-setting", () => ({ BrowserNotificationSetting: () => null }));
 
-afterEach(cleanup);
-beforeEach(() => vi.clearAllMocks());
+afterEach(() => {
+  cleanup();
+  mutate.mockReset();
+});
 
 function renderTab(preferences: Record<string, string> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
@@ -56,7 +53,6 @@ describe("Inbox notification settings", () => {
       (el) => el.textContent,
     );
     expect(lines).toEqual([
-      "Only decisions and issues assigned to me",
       "About you",
       "Assignments",
       "Mentions",
@@ -73,6 +69,24 @@ describe("Inbox notification settings", () => {
     ]);
     expect(within(inbox).getByRole("switch", { name: "Priority & Due date" })).not.toBeChecked();
     expect(within(inbox).getByRole("switch", { name: "Comments" })).toBeChecked();
+  });
+
+  it("leaves status changes off until you turn them on", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    const statusChanges = within(screen.getByRole("region", { name: "Inbox" })).getByRole("switch", {
+      name: "Status changes",
+    });
+    expect(statusChanges).not.toBeChecked();
+
+    await user.click(statusChanges);
+    expect(mutate).toHaveBeenCalledWith({ status_changes: "all" }, expect.anything());
+  });
+
+  it("shows status changes on once you turned them on", () => {
+    renderTab({ status_changes: "all" });
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    expect(within(inbox).getByRole("switch", { name: "Status changes" })).toBeChecked();
   });
 
   it.each<{ preferences: Record<string, string>; shown: string }>([
@@ -145,42 +159,5 @@ describe("notification setting hierarchy", () => {
     expect(within(system).queryByText("Enable system notifications first.")).toBeNull();
     expect(within(system).queryByText("Applies to Inbox notifications and chat replies.")).toBeNull();
     qc.clear();
-  });
-});
-
-describe("notification delivery scope", () => {
-  it("makes the delivery scope discoverable in settings search", () => {
-    const { result } = renderHook(() => useSettingsSearchIndex([{ value: "notifications", label: "Notifications" }]), {
-      wrapper: ({ children }) => (
-        <I18nProvider locale="en" resources={{ en: { settings: enSettings } }}>
-          {children}
-        </I18nProvider>
-      ),
-    });
-    expect(result.current).toContainEqual({
-      tab: "notifications",
-      anchor: "unassigned_activity",
-      title: "Only decisions and issues assigned to me",
-    });
-  });
-
-  it("defaults to all activity and preserves unrelated mutes when narrowing", async () => {
-    renderTab({ comments: "muted", system_notifications: "muted" });
-    const control = screen.getByRole("switch", { name: "Only decisions and issues assigned to me" });
-    expect(control).not.toBeChecked();
-    await userEvent.click(control);
-    expect(state.mutate).toHaveBeenCalledWith(
-      { comments: "muted", system_notifications: "muted", unassigned_activity: "muted" },
-      expect.any(Object),
-    );
-  });
-
-  it("restores all activity without changing event controls", async () => {
-    renderTab({ unassigned_activity: "muted", mentions: "muted" });
-    const control = screen.getByRole("switch", { name: "Only decisions and issues assigned to me" });
-    expect(control).toBeChecked();
-    await userEvent.click(control);
-    expect(state.mutate).toHaveBeenCalledWith({ mentions: "muted" }, expect.any(Object));
-    expect(screen.getByRole("switch", { name: "Mentions" })).not.toBeChecked();
   });
 });

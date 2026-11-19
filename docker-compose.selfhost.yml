@@ -259,6 +259,7 @@ services:
       # (bot_token_encrypted), so this single deployment-wide key is all
       # the operator needs to set here.
       MULTICA_TELEGRAM_SECRET_KEY: ${MULTICA_TELEGRAM_SECRET_KEY:-}
+<<<<<<< ours
       # Same value as the frontend's: set means this instance serves /docs, so
       # /api/config advertises the path and in-app docs links stay on the
       # origin the visitor reached.
@@ -267,6 +268,10 @@ services:
       # 401 = healthy) before it lets skipped recurring autopilots run again.
       # Empty (the default) leaves the probe unconfigured; see .env.example.
       MULTICA_PROVIDER_RECOVERY_BASE_URL: ${MULTICA_PROVIDER_RECOVERY_BASE_URL:-}
+||||||| base
+=======
+      MULTICA_WEIXIN_SECRET_KEY: ${MULTICA_WEIXIN_SECRET_KEY:-}
+>>>>>>> theirs
       # Tool steps shown in the streamed reply: auto (default; details in
       # private chats, kind of work in groups), off, summary or detail.
       MULTICA_TELEGRAM_TOOL_PROGRESS: ${MULTICA_TELEGRAM_TOOL_PROGRESS:-}

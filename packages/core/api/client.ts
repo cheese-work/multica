@@ -1,14 +1,12 @@
+import type { ListWeixinInstallationsResponse, WeixinLogin } from "../types/weixin";
+import { ListWeixinInstallationsSchema, WeixinLoginSchema, EMPTY_WEIXIN_INSTALLATIONS, INVALID_WEIXIN_LOGIN } from "../weixin/schema";
 import type { ZodType } from "zod";
-import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
-import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
-import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
-import type { ProviderBreaker } from "../types/provider-breaker";
+import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
-import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
-import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
+import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
+import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema } from "./schemas";
 import { archivedInboxQuery, type ArchivedInboxFilters } from "../inbox/filters";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
-import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
@@ -21,7 +19,6 @@ import type {
   BatchIssuePropertyOps,
   BatchUpdateIssuesResponse,
   IssueDuplicates,
-  IssueRelations,
   GroupedIssuesResponse,
   ListIssuesResponse,
   SearchIssuesResponse,
@@ -41,8 +38,6 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
-  AgentSchedulingImpact,
-  AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
@@ -59,9 +54,6 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
-  AffectedMachine,
-  RuntimePause,
-  RuntimePauseReason,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
@@ -78,7 +70,6 @@ import type {
   IssueReaction,
   Workspace,
   WorkspaceRepo,
-  WorkspaceExportPrivacy,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -113,24 +104,16 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   TaskContextReceiptResponse,
+  RuntimeRateLimitsResponse,
   Attachment,
-  AttachmentRevisionDiff,
   ChatSession,
-  ChatAttentionView,
-  ChatAttentionBatch,
-  ChatContinueResponse,
-  ChatSessionUsage,
-  ChatWakeup,
-  ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
-  ChatSearchPage,
   ChatDraftRestoresResponse,
+  ChatWakeup,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
-  ChatSupplement,
-  ResendChatSupplementResponse,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
   SendChatMessageResponse,
@@ -198,10 +181,8 @@ import type {
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
-  NotificationChannelsResponse,
   NotificationPreferenceResponse,
   NotificationPreferences,
-  UpdateNotificationChannelRequest,
   PluginHookResult,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -282,8 +263,8 @@ import type {
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
   WorkspaceSubscriptionSummary,
-  IssueLimitUsage,
   WorkspaceSubscriptionPrices,
+  WorkspaceFeatures,
   CreateWorkspaceSubscriptionCheckoutRequest,
   CreateWorkspaceSubscriptionCheckoutResponse,
   WorkspaceSubscriptionSeatReconcileResult,
@@ -293,7 +274,6 @@ import type {
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   SourceContextPreview,
-  CommentPreview,
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
@@ -312,65 +292,26 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseOrThrow, parseWithFallback } from "./schema";
-import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
-import {
-  CIWatchConfigSchema,
-  CIWatchEventsSchema,
-  EMPTY_CI_WATCH_EVENTS,
-  type CIWatchConfig,
-  type CIWatchEvent,
-} from "../ci-watch/schema";
-import {
-  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyBatchOutcomeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
-} from "./passkey-schema";
+import { parseWithFallback } from "./schema";
 import { getApiRequestObserver } from "./request-observer";
 import {
   RuntimeProfileSchema,
-  AgentDecisionSettingSchema,
-  type AgentDecisionSetting,
-  BackgroundAgentsSchema,
-  type BackgroundAgents,
-  type BackgroundAgentsRead,
-  DelegatedWritesSchema,
-  type DelegatedWrites,
-  OpenDecisionRequestListSchema,
-  DecisionRequestCardListSchema,
-  DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentListSchema,
   AttachmentResponseSchema,
-  AttachmentRevisionDiffSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
+  ChatWakeupListSchema,
   ChatMessageListSchema,
   ChatMessagesPageSchema,
-  ChatSearchPageSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
-  ChatContinueResponseSchema,
-  ChatSessionUsageSchema,
-  EMPTY_CHAT_SESSION_USAGE,
-  ChatWakeupsSchema,
-  EMPTY_CHAT_WAKEUPS,
-  ChatForkResponseSchema,
-  EMPTY_CHAT_CONTINUE_RESPONSE,
-  EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
-  ChatSupplementSchema,
-  EMPTY_CHAT_SUPPLEMENT,
-  ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
-  ChatAttentionEnvelopeSchema,
-  ChatAttentionBatchSchema,
-  EMPTY_CHAT_ATTENTION_VIEW,
-  EMPTY_CHAT_ATTENTION_BATCH,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
   IssueDuplicatesResponseSchema,
@@ -440,13 +381,13 @@ import {
   IssueSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
-  CommentPreviewSchema,
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  RuntimeRateLimitsResponseSchema,
   SearchIssuesResponseSchema,
   ProjectSchema,
   ArchiveProjectResponseSchema,
@@ -478,16 +419,15 @@ import {
   BillingCheckoutSessionStatusSchema,
   CreateBillingPortalSessionResponseSchema,
   WorkspaceSubscriptionSummarySchema,
-  IssueLimitUsageSchema,
   BatchUpdateIssuesResponseSchema,
   UNCONFIRMED_BATCH_UPDATE,
   WorkspaceSubscriptionPricesSchema,
+  WorkspaceFeaturesSchema,
   CreateWorkspaceSubscriptionCheckoutResponseSchema,
   WorkspaceSubscriptionSeatReconcileResultSchema,
   WorkspaceSeatPurchasePreviewSchema,
   PurchaseWorkspaceSeatsResponseSchema,
   CreateWorkspaceSubscriptionPortalResponseSchema,
-  WorkspaceExportPrivacySchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -524,6 +464,7 @@ import {
   EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
   EMPTY_CANCEL_TASK_RESPONSE,
   EMPTY_CHAT_DRAFT_RESTORES,
+  EMPTY_CHAT_WAKEUP_LIST,
   CreateFeedbackResponseSchema,
   EMPTY_CREATE_FEEDBACK_RESPONSE,
   InboxUnreadSummarySchema,
@@ -554,8 +495,6 @@ import {
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
   EMPTY_INBOX_ITEMS,
-  NotificationChannelsResponseSchema,
-  EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
   EMPTY_SNOOZED_INBOX,
   NotificationPreferenceResponseSchema,
   EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
@@ -566,9 +505,11 @@ import {
   ListIssueWorkflowsResponseSchema,
   IssueWorkflowSchema,
   IssueWorkflowDryRunResponseSchema,
+  EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE,
   EMPTY_ISSUE_WORKFLOW,
   EMPTY_ISSUE_WORKFLOW_DRY_RUN,
   WorkflowHandoffPreviewSchema,
+  EMPTY_WORKFLOW_HANDOFF_PREVIEW,
   IssueWorkflowBriefPreviewSchema,
   IssuePropertySchema,
   ListPropertiesResponseSchema,
@@ -604,12 +545,8 @@ import {
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
-  RuntimeUpdateSchema,
-  MALFORMED_RUNTIME_UPDATE,
   SkillSchema,
   EMPTY_SKILL,
-  AgentPresetListSchema,
-  PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillVersionSchema,
@@ -705,13 +642,6 @@ export interface LoginResponse {
   user: User;
 }
 
-function parseBackgroundAgentsRead(raw: unknown, etag: string | null, method: "GET" | "PUT"): BackgroundAgentsRead | null {
-  const value = parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
-    endpoint: `${method} /api/workspaces/{id}/background-agents`,
-  });
-  return value ? { value, etag } : null;
-}
-
 function parseSearchIndexResponse<T>(raw: unknown, schema: ZodType, endpoint: string): T {
   const parsed = parseWithFallback<T | null>(raw, schema, null, { endpoint });
   if (parsed === null) throw new Error(`Malformed response from ${endpoint}`);
@@ -745,6 +675,12 @@ function assertAgentConversationStartersWriteSupported(data: {
     throw new Error(
       "This server version does not support agent conversation starters. Update the server before saving them.",
     );
+  }
+}
+
+function assertWebhookPayloadConditionsWriteSupported(data: Pick<UpdateAutopilotTriggerRequest, "event_filters">): void {
+  if (data.event_filters?.some((filter) => filter.conditions?.length) && !configStore.getState().webhookPayloadConditionsSupported) {
+    throw new Error("This server version does not support webhook payload conditions. Update the server before saving them.");
   }
 }
 
@@ -1199,6 +1135,15 @@ export class ApiClient {
     return res.json() as Promise<T>;
   }
 
+  /**
+   * A JSON request to an endpoint this client has no method for, with the
+   * same auth, workspace scoping and errors. For packages that own their
+   * endpoints (packages/ee); parse the result before using it.
+   */
+  request(path: string, init?: RequestInit): Promise<unknown> {
+    return this.fetch<unknown>(path, init);
+  }
+
   // Auth
   async sendCode(email: string): Promise<void> {
     await this.fetch("/auth/send-code", {
@@ -1227,10 +1172,6 @@ export class ApiClient {
 
   async issueCliToken(): Promise<{ token: string }> {
     return this.fetch("/api/cli-token", { method: "POST" });
-  }
-
-  async issueDesktopToken(): Promise<{ token: string }> {
-    return this.fetch("/api/auth/desktop-token", { method: "POST" });
   }
 
   /**
@@ -1352,7 +1293,6 @@ export class ApiClient {
     if (params?.assignee_types?.length) search.set("assignee_types", params.assignee_types.join(","));
     if (params?.creator_id) search.set("creator_id", params.creator_id);
     if (params?.created_by_user_id) search.set("created_by_user_id", params.created_by_user_id);
-    if (params?.requested_by_id) search.set("requested_by_id", params.requested_by_id);
     if (params?.project_id) search.set("project_id", params.project_id);
     if (params?.assignee_filters?.length) {
       search.set("assignee_filters", params.assignee_filters.map((f) => `${f.type}:${f.id}`).join(","));
@@ -1426,7 +1366,6 @@ export class ApiClient {
     if (params.assignee_ids?.length) search.set("assignee_ids", params.assignee_ids.join(","));
     if (params.creator_id) search.set("creator_id", params.creator_id);
     if (params.created_by_user_id) search.set("created_by_user_id", params.created_by_user_id);
-    if (params.requested_by_id) search.set("requested_by_id", params.requested_by_id);
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.involves_user_id) search.set("involves_user_id", params.involves_user_id);
     if (params.metadata && Object.keys(params.metadata).length > 0) {
@@ -1667,70 +1606,6 @@ export class ApiClient {
     await this.fetch(`/api/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
   }
 
-  async listProviderBreakers(workspaceId: string): Promise<ProviderBreaker[]> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/provider-breakers`);
-    const parsed = parseWithFallback<{ breakers: ProviderBreaker[] } | null>(raw, ProviderBreakerListSchema, null, { endpoint: "GET /api/workspaces/:id/provider-breakers" });
-    if (!parsed) throw new Error("Could not load provider breakers");
-    return parsed.breakers;
-  }
-
-  async resetProviderBreaker(workspaceId: string, provider: string): Promise<void> {
-    await this.fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/provider-breakers/${encodeURIComponent(provider)}/reset`, { method: "POST" });
-  }
-
-  private wakeupDefinitionsPath(scope: WakeupDefinitionScope): string {
-    switch (scope.kind) {
-      case "workspace":
-        return "/api/wakeup-definitions";
-      case "project":
-        return `/api/projects/${encodeURIComponent(scope.id)}/wakeup-definitions`;
-      case "issue":
-        return `/api/issues/${encodeURIComponent(scope.id)}/wakeup-definitions`;
-    }
-  }
-
-  async listWakeupDefinitions(scope: WakeupDefinitionScope): Promise<WakeupDefinitionList> {
-    const raw = await this.fetch<unknown>(this.wakeupDefinitionsPath(scope));
-    const parsed = parseWithFallback<WakeupDefinitionList | null>(raw, WakeupDefinitionListSchema, null, { endpoint: "GET wakeup-definitions" });
-    if (!parsed) throw new Error("Could not load wakeup definitions");
-    return parsed;
-  }
-
-  async getEffectiveWakeupRule(scope: WakeupDefinitionScope, ruleKey: string): Promise<WakeupEffectiveRule> {
-    const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}/effective`);
-    const parsed = parseWithFallback<WakeupEffectiveRule | null>(raw, WakeupEffectiveRuleSchema, null, { endpoint: "GET wakeup-definitions/:rule/effective" });
-    if (!parsed) throw new Error("Could not load the effective wakeup rule");
-    return parsed;
-  }
-
-  /** What a config would resolve to at this scope, without saving it. An empty `rule_key` previews a new custom rule. */
-  async previewWakeupDefinition(scope: WakeupDefinitionScope, input: { rule_key: string; config: WakeupDefinitionConfig }): Promise<WakeupEffectiveRule> {
-    const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/preview`, { method: "POST", body: JSON.stringify(input) });
-    const parsed = parseWithFallback<WakeupEffectiveRule | null>(raw, WakeupEffectiveRuleSchema, null, { endpoint: "POST wakeup-definitions/preview" });
-    if (!parsed) throw new Error("Could not preview the wakeup rule");
-    return parsed;
-  }
-
-  /** Creates (`revision` "0") or replaces one rule's definition; a stale revision is refused with 409. */
-  async saveWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, input: { revision: string; config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
-    const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}`, { method: "PUT", body: JSON.stringify(input) });
-    const parsed = parseWithFallback<WakeupDefinition | null>(raw, WakeupDefinitionSchema, null, { endpoint: "PUT wakeup-definitions/:rule" });
-    if (!parsed) throw new Error("Could not read the saved wakeup definition");
-    return parsed;
-  }
-
-  /** Creates a custom root rule under a server-assigned key, at a workspace or project. */
-  async createWakeupDefinition(scope: Exclude<WakeupDefinitionScope, { kind: "issue" }>, input: { config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
-    const raw = await this.fetch<unknown>(this.wakeupDefinitionsPath(scope), { method: "POST", body: JSON.stringify({ ...input, revision: "0" }) });
-    const parsed = parseWithFallback<WakeupDefinition | null>(raw, WakeupDefinitionSchema, null, { endpoint: "POST wakeup-definitions" });
-    if (!parsed) throw new Error("Could not read the created wakeup definition");
-    return parsed;
-  }
-
-  async deleteWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, revision: string): Promise<void> {
-    await this.fetch(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}?revision=${encodeURIComponent(revision)}`, { method: "DELETE" });
-  }
-
   async disableIssueWakeup(issueId: string, wakeupId: string): Promise<void> {
     await this.fetch(`/api/issues/${encodeURIComponent(issueId)}/wakeups/${encodeURIComponent(wakeupId)}/disable`, { method: "POST" });
   }
@@ -1740,9 +1615,14 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    // Throws SchemaValidationError (logged with the failing paths) so the UI
-    // can tell unreadable data from a network failure.
-    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
+    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
+      endpoint: "GET /api/issues/:id",
+    });
+    if (!issue) {
+      // parseWithFallback already logged the zod issues + raw payload.
+      throw new Error("GET /api/issues/:id returned a malformed issue");
+    }
+    return issue;
   }
 
   async createIssue(
@@ -1796,18 +1676,6 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
-  }
-
-  async getCommentPreview(commentId: string): Promise<CommentPreview> {
-    const raw = await this.fetch<unknown>(`/api/comments/${commentId}/preview`);
-    const preview = parseWithFallback<CommentPreview | null>(
-      raw,
-      CommentPreviewSchema,
-      null,
-      { endpoint: "GET /api/comments/:id/preview" },
-    );
-    if (!preview) throw new Error("Invalid comment preview response");
-    return preview;
   }
 
   async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
@@ -1908,14 +1776,6 @@ export class ApiClient {
     });
   }
 
-  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
-  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
-    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
-      method: "PUT",
-      body: JSON.stringify({ workflow_id: workflowId }),
-    });
-  }
-
   async moveIssue(id: string, data: MoveIssueRequest): Promise<Issue> {
     return this.fetch(`/api/issues/${id}/move`, {
       method: "POST",
@@ -1931,38 +1791,6 @@ export class ApiClient {
       { duplicate_of: null, duplicates: [] },
       { endpoint: "GET /api/issues/:id/duplicates" },
     );
-  }
-
-  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal, includeMentions = false): Promise<IssueRelations> {
-    const { IssueRelationsResponseSchema } = await import("./issue-relations-schema");
-    const params = new URLSearchParams({ workspace_id: workspaceId, depth: String(depth) });
-    if (includeMentions) params.set("include", "mentions");
-    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations?${params}`, { signal });
-    const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
-    if (!graph) throw new Error("Invalid issue relations response");
-    return graph;
-  }
-
-  /** One keyset page of POST /api/issues/timeline. A malformed body throws. */
-  async getIssueActualTimeline(workspaceId: string, body: IssueTimelineRequest, signal?: AbortSignal): Promise<IssueTimelineResponse> {
-    const { IssueTimelineResponseSchema } = await import("./issue-graph-schema");
-    const raw = await this.fetch<unknown>(`/api/issues/timeline?${new URLSearchParams({ workspace_id: workspaceId })}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-      signal,
-    });
-    return parseOrThrow(raw, IssueTimelineResponseSchema, { endpoint: "POST /api/issues/timeline" });
-  }
-
-  /** One keyset page of POST /api/issues/relations/batch. A malformed body throws. */
-  async getIssueRelationsBatch(workspaceId: string, body: RelationsBatchRequest, signal?: AbortSignal): Promise<RelationsBatchResponse> {
-    const { RelationsBatchResponseSchema } = await import("./issue-graph-schema");
-    const raw = await this.fetch<unknown>(`/api/issues/relations/batch?${new URLSearchParams({ workspace_id: workspaceId })}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-      signal,
-    });
-    return parseOrThrow(raw, RelationsBatchResponseSchema, { endpoint: "POST /api/issues/relations/batch" });
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
@@ -1994,33 +1822,6 @@ export class ApiClient {
       ChildIssueProgressResponseSchema,
       { progress: [] },
       { endpoint: "GET /api/issues/child-progress" },
-    );
-  }
-
-  async getIssueRunBudget(issueId: string) {
-    return parseRunBudget(await this.fetch<unknown>(`/api/issues/${issueId}/run-budget`));
-  }
-
-  /** Opens a raise or top-up request (A1d). One link per owner asked; creating it moves no budget. */
-  async requestRunBudgetAction(
-    issueId: string,
-    body: { kind: "raise" | "top_up"; new_cap?: number; window_id: string },
-  ): Promise<RunBudgetActionResponse> {
-    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/run-budget/requests`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    return parseRunBudgetActionResponse(raw);
-  }
-
-  async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
-    const raw = await this.fetch<unknown>("/api/issues/limit-usage");
-    if (raw == null) return null;
-    return parseWithFallback<IssueLimitUsage | null>(
-      raw,
-      IssueLimitUsageSchema,
-      null,
-      { endpoint: "GET /api/issues/limit-usage" },
     );
   }
 
@@ -2082,7 +1883,7 @@ export class ApiClient {
         ...(parentId ? { parent_id: parentId } : {}),
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
-        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : { steer: false }),
+        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : {}),
       }),
     });
   }
@@ -2130,28 +1931,6 @@ export class ApiClient {
     return parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
       endpoint: "GET /api/issues/:id/timeline",
     });
-  }
-
-  /**
-   * The timeline plus the server's truncation signal. The server keeps the
-   * newest 2000 entries and names the affected kinds in `X-Timeline-Truncated`
-   * ("activity", "comment" or "activity,comment"); `listTimeline` drops that
-   * header. `truncated` is true only when ACTIVITY rows were cut, because
-   * status changes are activity rows (a comment-only cut hides none).
-   */
-  async listTimelineWithMeta(
-    issueId: string,
-  ): Promise<{ entries: TimelineEntry[]; truncated: boolean }> {
-    const res = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
-      extraHeaders: { "Content-Type": "application/json" },
-    });
-    const raw: unknown = await res.json();
-    return {
-      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
-        endpoint: "GET /api/issues/:id/timeline",
-      }),
-      truncated: (res.headers.get("X-Timeline-Truncated") ?? "").split(",").includes("activity"),
-    };
   }
 
   async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {
@@ -2422,10 +2201,10 @@ export class ApiClient {
   }
 
   /**
-   * Returns env metadata for an agent: every `custom_env` value is the
-   * masked `"****"` marker, never plaintext. Admits the agent's owner or
-   * a workspace owner/admin (MUL-5438); calls from agent-actor sessions
-   * get a 403. MUL-2600.
+   * Returns the plaintext `custom_env` map for an agent. Admits the
+   * agent's owner or a workspace owner/admin (MUL-5438); calls from
+   * agent-actor sessions get a 403. Every successful call writes an
+   * `agent_env_revealed` activity_log row server-side. MUL-2600.
    */
   async getAgentEnv(id: string): Promise<AgentEnvResponse> {
     return this.fetch(`/api/agents/${id}/env`);
@@ -2454,29 +2233,6 @@ export class ApiClient {
   // Permission: agent owner or workspace admin/owner. Server returns the
   // count of cancelled rows; broadcasts task:cancelled for each so other
   // surfaces can clear their live cards.
-  async pauseAgent(id: string, reason?: string): Promise<Agent> {
-    return this.fetch(`/api/agents/${id}/pause`, {
-      method: "POST",
-      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
-    });
-  }
-
-  async resumeAgent(id: string): Promise<Agent> {
-    return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
-  }
-
-  async pauseWorkspace(id: string): Promise<Workspace> {
-    return this.fetch(`/api/workspaces/${id}/pause`, { method: "POST" });
-  }
-
-  async resumeWorkspace(id: string): Promise<Workspace> {
-    return this.fetch(`/api/workspaces/${id}/resume`, { method: "POST" });
-  }
-
-  async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
-    return this.fetch(`/api/agents/${id}/scheduling-impact`);
-  }
-
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
   }
@@ -2523,14 +2279,6 @@ export class ApiClient {
       headers: workspaceHeader(workspaceSlug),
     });
     return parseWithFallback(raw, AgentRuntimeSchema.array(), [], { endpoint: "listRuntimes" });
-  }
-
-  // Off machines holding queued tasks the caller is affected by (CHE-2674).
-  async listAffectedMachines(): Promise<AffectedMachine[]> {
-    const raw = await this.fetch<unknown>("/api/runtimes/affected");
-    return parseWithFallback(raw, AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES, {
-      endpoint: "listAffectedMachines",
-    }).machines;
   }
 
   async listCloudRuntimeNodes(
@@ -2723,6 +2471,19 @@ export class ApiClient {
     );
   }
 
+  // Paid-feature states for read-only and upgrade UI (MUL-9482). A response
+  // that cannot be read falls back to every feature available: the server
+  // still enforces on write.
+  async getWorkspaceFeatures(workspaceId: string): Promise<WorkspaceFeatures> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/features`);
+    return parseWithFallback<WorkspaceFeatures>(
+      raw,
+      WorkspaceFeaturesSchema,
+      { features: {} },
+      { endpoint: "GET /api/workspaces/:id/features" },
+    );
+  }
+
   async getWorkspaceSubscriptionPrices(): Promise<WorkspaceSubscriptionPrices | null> {
     const raw = await this.fetch<unknown>("/api/cloud-subscriptions/prices");
     return parseWithFallback<WorkspaceSubscriptionPrices | null>(
@@ -2897,29 +2658,6 @@ export class ApiClient {
     return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_RUNTIME, { endpoint: "updateRuntime" });
   }
 
-  // Pause the whole machine hosting this runtime (CHE-2430). Only the machine
-  // owner and the workspace owner may call it; the server answers 403 otherwise.
-  async pauseRuntimeMachine(
-    runtimeId: string,
-    reason: RuntimePauseReason,
-  ): Promise<RuntimePause> {
-    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/pause`, {
-      method: "PUT",
-      body: JSON.stringify({ reason }),
-    });
-    return parseWithFallback(
-      raw,
-      RuntimePauseSchema,
-      { reason, paused_by: null, paused_at: "", expires_at: "" },
-      { endpoint: "pauseRuntimeMachine" },
-    );
-  }
-
-  // Idempotent: resuming a machine that is not paused still answers 204.
-  async resumeRuntimeMachine(runtimeId: string): Promise<void> {
-    await this.fetch(`/api/runtimes/${runtimeId}/pause`, { method: "DELETE" });
-  }
-
   // Confirmed counterpart to a runtime access restriction PATCH. The PATCH
   // returns a structured 409 when teammates still have bound agents or active
   // tasks on the runtime; callers present that plan, then submit its exact
@@ -3007,6 +2745,16 @@ export class ApiClient {
     await this.fetch(
       `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
       { method: "DELETE" },
+    );
+  }
+
+  async getRuntimeRateLimits(runtimeId: string): Promise<RuntimeRateLimitsResponse> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/rate-limits`);
+    return parseWithFallback<RuntimeRateLimitsResponse>(
+      raw,
+      RuntimeRateLimitsResponseSchema,
+      { rate_limits: null },
+      { endpoint: "GET /api/runtimes/:id/rate-limits" },
     );
   }
 
@@ -3204,15 +2952,7 @@ export class ApiClient {
     runtimeId: string,
     updateId: string,
   ): Promise<RuntimeUpdate> {
-    const raw = await this.fetch<unknown>(
-      `/api/runtimes/${runtimeId}/update/${updateId}`,
-    );
-    return parseWithFallback<RuntimeUpdate>(
-      raw,
-      RuntimeUpdateSchema,
-      { ...MALFORMED_RUNTIME_UPDATE, id: updateId, runtime_id: runtimeId },
-      { endpoint: "GET /api/runtimes/{id}/update/{updateId}" },
-    );
+    return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
   }
 
   // Both discovery endpoints feed a UI state machine (poll while
@@ -3467,8 +3207,8 @@ export class ApiClient {
   }
 
   // Inbox
-  async listInbox(): Promise<InboxItem[]> {
-    const raw = await this.fetch<unknown>("/api/inbox");
+  async listInbox(signal?: AbortSignal): Promise<InboxItem[]> {
+    const raw = await this.fetch<unknown>("/api/inbox", { signal });
     return parseWithFallback(raw, InboxItemListSchema, EMPTY_INBOX_ITEMS, {
       endpoint: "GET /api/inbox",
     });
@@ -3526,8 +3266,8 @@ export class ApiClient {
   }
 
   // The viewer's snoozed issues, soonest back first (MUL-9333).
-  async listSnoozedInbox(): Promise<SnoozedInboxIssue[]> {
-    const raw = await this.fetch<unknown>("/api/inbox/snoozed");
+  async listSnoozedInbox(signal?: AbortSignal): Promise<SnoozedInboxIssue[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/snoozed", { signal });
     return parseWithFallback(raw, SnoozedInboxListSchema, EMPTY_SNOOZED_INBOX, {
       endpoint: "GET /api/inbox/snoozed",
     });
@@ -3549,8 +3289,8 @@ export class ApiClient {
   // to that has unread inbox items. Backs the workspace-switcher dot for
   // OTHER workspaces. Schema-guarded so a contract drift hides the dot rather
   // than crashing the sidebar.
-  async getInboxUnreadSummary(): Promise<InboxWorkspaceUnread[]> {
-    const raw = await this.fetch<unknown>("/api/inbox/unread-summary");
+  async getInboxUnreadSummary(signal?: AbortSignal): Promise<InboxWorkspaceUnread[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/unread-summary", { signal });
     return parseWithFallback(raw, InboxUnreadSummarySchema, EMPTY_INBOX_UNREAD_SUMMARY, {
       endpoint: "GET /api/inbox/unread-summary",
     });
@@ -3621,35 +3361,6 @@ export class ApiClient {
     );
   }
 
-  async getNotificationChannels(workspaceSlug?: string): Promise<NotificationChannelsResponse> {
-    const raw = await this.fetch<unknown>("/api/notification-channels", {
-      headers: workspaceHeader(workspaceSlug),
-    });
-    return parseWithFallback(
-      raw,
-      NotificationChannelsResponseSchema,
-      EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
-      { endpoint: "GET /api/notification-channels" },
-    );
-  }
-
-  async updateNotificationChannel(
-    req: UpdateNotificationChannelRequest,
-    workspaceSlug?: string,
-  ): Promise<NotificationChannelsResponse> {
-    const raw = await this.fetch<unknown>("/api/notification-channels", {
-      method: "PATCH",
-      headers: workspaceHeader(workspaceSlug),
-      body: JSON.stringify(req),
-    });
-    return parseWithFallback(
-      raw,
-      NotificationChannelsResponseSchema,
-      EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
-      { endpoint: "PATCH /api/notification-channels" },
-    );
-  }
-
   // App Config
   async getConfig(): Promise<AppConfigResponse> {
     const raw = await this.fetch<unknown>("/api/config");
@@ -3716,129 +3427,11 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number; threshold_tokens_200k?: number; threshold_tokens_1m?: number } | null; harness_profile?: "personal" | "managed" | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     });
-  }
-
-  // Null when the response is malformed: callers must not show a guessed value.
-  async getAgentDecisionSetting(): Promise<AgentDecisionSetting | null> {
-    const raw: unknown = await this.fetch("/api/agent-decisions/brief");
-    return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
-      endpoint: "GET /api/agent-decisions/brief",
-    });
-  }
-
-  // CHE-4123: null when the response is malformed, so a guessed value is never
-  // shown or saved back over the real one. `etag` is the version the next save
-  // must present (null from a server that sends none).
-  async getBackgroundAgents(workspaceId: string): Promise<BackgroundAgentsRead | null> {
-    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
-      extraHeaders: { "Content-Type": "application/json" },
-    });
-    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "GET");
-  }
-
-  // Owner/admin + human-actor only; replaces the whole value. An unset slot is
-  // sent as null. With `etag` the server refuses with 409 `background_agents_conflict`
-  // (body: `current`, `etag`) when someone saved since that read. Null result:
-  // the response was malformed, so re-read.
-  async updateBackgroundAgents(
-    workspaceId: string,
-    value: Record<string, unknown>,
-    etag?: string | null,
-  ): Promise<BackgroundAgentsRead | null> {
-    const res = await this.fetchRaw(`/api/workspaces/${workspaceId}/background-agents`, {
-      method: "PUT",
-      body: JSON.stringify(value),
-      extraHeaders: { "Content-Type": "application/json", ...(etag ? { "If-Match": etag } : {}) },
-    });
-    return parseBackgroundAgentsRead(await res.json(), res.headers.get("ETag"), "PUT");
-  }
-
-  // CHE-4124: the caller's own picks (`{}` when none). Null when the response is
-  // malformed, so a guessed value is never shown.
-  async getMyBackgroundAgents(workspaceId: string): Promise<BackgroundAgents | null> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/me/background-agents`);
-    return parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
-      endpoint: "GET /api/workspaces/{id}/me/background-agents",
-    });
-  }
-
-  // Merges per job and per field; a null slot clears the personal pick. Any
-  // workspace member may call it, for their own picks only.
-  async updateMyBackgroundAgents(
-    workspaceId: string,
-    patch: Record<string, Record<string, string | null>>,
-  ): Promise<BackgroundAgents | null> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/me/background-agents`, {
-      method: "PUT",
-      body: JSON.stringify(patch),
-    });
-    return parseWithFallback<BackgroundAgents | null>(raw, BackgroundAgentsSchema, null, {
-      endpoint: "PUT /api/workspaces/{id}/me/background-agents",
-    });
-  }
-
-  // CHE-4617: null when the response is malformed, so a guessed rule is never
-  // shown or saved back over the real one.
-  async getDelegatedWrites(workspaceId: string): Promise<DelegatedWrites | null> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`);
-    return parseWithFallback<DelegatedWrites | null>(raw, DelegatedWritesSchema, null, {
-      endpoint: "GET /api/workspaces/{id}/delegated-writes",
-    });
-  }
-
-  // Human owner/admin only; replaces the whole rule.
-  async updateDelegatedWrites(workspaceId: string, rule: DelegatedWrites): Promise<DelegatedWrites> {
-    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`, {
-      method: "PUT",
-      body: JSON.stringify(rule),
-    });
-    // The save succeeded; a malformed echo falls back to the rule that was sent.
-    return parseWithFallback<DelegatedWrites>(raw, DelegatedWritesSchema, rule, {
-      endpoint: "PUT /api/workspaces/{id}/delegated-writes",
-    });
-  }
-
-  // Owner + human-actor only; the server clears an earlier stop when turned on.
-  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
-    return this.fetch("/api/agent-decisions/setting", {
-      method: "PUT",
-      body: JSON.stringify({ enabled }),
-    });
-  }
-
-  // CHE-766: owner/admin + human-actor only, kill-switch gated server-side
-  // (server/internal/handler/workspace_export_privacy.go). A disabled flag or
-  // absent ACL surfaces here as a thrown ApiError (403/503), not a parsed
-  // value — callers must render "unavailable", never a fabricated default.
-  //
-  // Unlike other endpoints in this file, a malformed response is NOT given a
-  // safe-looking fallback via parseWithFallback: retention days and redaction
-  // mode are confirmed server state an admin acts on ("saved: 90 days"). A
-  // fallback number here would misrepresent how long the audit trail
-  // actually survives — worse than surfacing nothing. Parse strictly and
-  // throw; the caller's existing load_failed / reportSaveError paths already
-  // handle a thrown error correctly.
-  async getWorkspaceExportPrivacy(id: string): Promise<WorkspaceExportPrivacy> {
-    const raw = await this.fetch<unknown>(
-      `/api/workspaces/${id}/export-privacy`,
-    );
-    return WorkspaceExportPrivacySchema.parse(raw);
-  }
-
-  async updateWorkspaceExportPrivacy(
-    id: string,
-    data: { redaction_mode?: string; manifest_retention_days?: number },
-  ): Promise<WorkspaceExportPrivacy> {
-    const raw = await this.fetch<unknown>(
-      `/api/workspaces/${id}/export-privacy`,
-      { method: "PATCH", body: JSON.stringify(data) },
-    );
-    return WorkspaceExportPrivacySchema.parse(raw);
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
@@ -4301,7 +3894,7 @@ export class ApiClient {
     // Rendering can degrade to an empty list; absence checks must fail closed.
     const skills = parseWithFallback<SkillSummary[] | null>(
       raw,
-      options?.requireValidResponse ? SkillSummaryListSchema.unwrap().removeDefault() : SkillSummaryListSchema,
+      options?.requireValidResponse ? SkillSummaryListSchema.removeDefault() : SkillSummaryListSchema,
       options?.requireValidResponse ? null : EMPTY_SKILL_SUMMARY_LIST,
       { endpoint: "GET /api/skills" },
     );
@@ -4381,21 +3974,6 @@ export class ApiClient {
     return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
       endpoint: "POST /api/skills/:id/refresh",
     });
-  }
-
-  async listAgentPresets(agentId: string): Promise<AgentPreset[]> {
-    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets`);
-    return parseWithFallback<AgentPreset[]>(raw, AgentPresetListSchema, [], {
-      endpoint: "GET /api/agents/:id/presets",
-    });
-  }
-
-  /** `/preset <TAB>` source: `base`, `reset`, then the presets that can run now. */
-  async getAgentPresetCompletions(agentId: string): Promise<string[]> {
-    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets/completions`);
-    return parseWithFallback(raw, PresetCompletionsSchema, { names: [] }, {
-      endpoint: "GET /api/agents/:id/presets/completions",
-    }).names;
   }
 
   // Content history, newest first. Metadata only; fetch one version for its
@@ -4555,48 +4133,6 @@ export class ApiClient {
     });
   }
 
-  async getChatSessionUsage(id: string): Promise<ChatSessionUsage> {
-    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/usage`);
-    return parseWithFallback(raw, ChatSessionUsageSchema, EMPTY_CHAT_SESSION_USAGE, {
-      endpoint: "GET /api/chat/sessions/:id/usage",
-    });
-  }
-
-  /** Pending one-shot turns agents scheduled in this DM, soonest first. */
-  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
-    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/wakeups`);
-    return parseWithFallback(raw, ChatWakeupsSchema, EMPTY_CHAT_WAKEUPS, {
-      endpoint: "GET /api/chat/sessions/:id/wakeups",
-    });
-  }
-
-  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
-    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
-  }
-
-  async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
-    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
-      method: "POST",
-      body: JSON.stringify({ summary }),
-    });
-    return parseWithFallback(raw, ChatContinueResponseSchema, EMPTY_CHAT_CONTINUE_RESPONSE, {
-      endpoint: "POST /api/chat/sessions/:id/continue",
-    });
-  }
-
-  async forkChatSession(
-    id: string,
-    data: { idempotency_key: string; message?: string; attachment_ids?: string[] },
-  ): Promise<ChatForkResponse> {
-    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/fork`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-    return parseWithFallback(raw, ChatForkResponseSchema, EMPTY_CHAT_FORK_RESPONSE, {
-      endpoint: "POST /api/chat/sessions/:id/fork",
-    });
-  }
-
   async createChatSession(
     data: {
       agent_id: string;
@@ -4683,136 +4219,9 @@ export class ApiClient {
     });
   }
 
-  async disclaimDecisionAnswer(answerId: string): Promise<void> {
-    await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
-  }
-
-  /** A gated class also sends the revisions from `challengeDecisionAnswer` and the signed assertion. */
-  async answerDecisionRequest(
-    requestId: string,
-    input: { option?: string; text?: string; covers_ack?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
-  ): Promise<void> {
-    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
-  }
-
-  /** The files a decision request approves, with the changed hunks against the revision each supersedes. */
-  async listDecisionArtifacts(requestId: string): Promise<DecisionArtifact[]> {
-    const raw: unknown = await this.fetch(`/api/decisions/${encodeURIComponent(requestId)}/artifacts`);
-    return parseWithFallback(raw, DecisionArtifactListSchema, { artifacts: [] }, {
-      endpoint: "GET /api/decisions/:id/artifacts",
-    }).artifacts;
-  }
-
-  // Passkey and decision-action ceremonies. Responses are strict: a drifted shape throws
-  // (see parsePasskeyResponse) so a malformed body is never read as an approval.
-  private async passkeyPost<T>(path: string, schema: Parameters<typeof parsePasskeyResponse<T>>[1], body?: unknown): Promise<T> {
-    const raw: unknown = await this.fetch(path, { method: "POST", ...(body !== undefined && { body: JSON.stringify(body) }) });
-    return parsePasskeyResponse(raw, schema, `POST ${path}`);
-  }
-
-  startPasskeyEnrollment(): Promise<PasskeyEnrollStart> {
-    return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
-  }
-
-  async listPasskeys(): Promise<PasskeySummary[]> {
-    const raw: unknown = await this.fetch("/api/passkeys");
-    return parsePasskeyResponse(raw, PasskeyListSchema, "GET /api/passkeys").passkeys;
-  }
-
-  async finishPasskeyEnrollment(input: {
-    ceremony_id: string; code: string; attestation: unknown; assertion?: PasskeyAssertionEnvelope;
-  }): Promise<void> {
-    await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
-  }
-
-  challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
-    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
-  }
-
-  // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
-  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; tag?: string; expires_at: string }> {
-    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
-  }
-
-  async confirmPasskeyRevocationByCode(passkeyId: string, input: { ceremony_id: string; code: string }): Promise<void> {
-    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/confirm`, PasskeyRevokedSchema, input);
-  }
-
-  async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
-    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
-  }
-
-  /** Binds a challenge to exactly this option and trimmed text; the answer must repeat them. */
-  challengeDecisionAnswer(requestId: string, input: { option?: string; text?: string }): Promise<PasskeyAnswerChallenge> {
-    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/answer/challenge`, PasskeyAnswerChallengeSchema, input);
-  }
-
-  challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
-    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/challenge`, PasskeyChallengeSchema);
-  }
-
-  approveDecisionAction(
-    actionId: string,
-    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; preview_sha256?: string; secrets?: Record<string, string> },
-  ): Promise<PasskeyDecisionOutcome> {
-    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
-  }
-
-  /** Binds a challenge to the items the person chose to approve (`choices`: action id to "approve" | "reject"). Refused when none is approved: nothing to sign. */
-  challengeDecisionBatch(batchId: string, choices: Record<string, string>): Promise<PasskeyChallenge> {
-    return this.passkeyPost(`/api/decision-actions/batches/${encodeURIComponent(batchId)}/challenge`, PasskeyChallengeSchema, { choices });
-  }
-
-  /** One call decides every item. `payload_sha256` and `assertion` cover the approved items only; with none approved both are left out. */
-  approveDecisionBatch(
-    batchId: string,
-    input: { payload_sha256: string; assertion?: PasskeyAssertionEnvelope; choices: Record<string, string> },
-  ): Promise<PasskeyBatchOutcome> {
-    return this.passkeyPost(`/api/decision-actions/batches/${encodeURIComponent(batchId)}/approve`, PasskeyBatchOutcomeSchema, input);
-  }
-
-  /** Revoke (B v9 S6): its own challenge, bound to the word "revoke" so an approval's assertion cannot revoke. */
-  challengeDecisionRevoke(requestId: string): Promise<PasskeyChallenge> {
-    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke/challenge`, PasskeyChallengeSchema);
-  }
-
-  async revokeDecision(requestId: string, input: { reason: string; assertion: PasskeyAssertionEnvelope }): Promise<void> {
-    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke`, { method: "POST", body: JSON.stringify(input) });
-  }
-
-  /** Ends a pending action as rejected. No passkey: declining changes nothing. */
-  rejectDecisionAction(actionId: string): Promise<PasskeyDecisionOutcome> {
-    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/reject`, PasskeyDecisionOutcomeSchema);
-  }
-
-  async getDecisionAction(actionId: string): Promise<DecisionActionView> {
-    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}`);
-    return parsePasskeyResponse(raw, DecisionActionViewSchema, "GET /api/decision-actions/:id");
-  }
-
-  async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
-    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}/outcome`);
-    return parsePasskeyResponse(raw, PasskeyDecisionOutcomeSchema, "GET /api/decision-actions/:id/outcome");
-  }
-
-  async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
-    const raw: unknown = await this.fetch("/api/decisions/open");
-    return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
-      endpoint: "GET /api/decisions/open",
-    });
-  }
-
-  /** The viewer's own used (answered or withdrawn) decision cards on one issue. */
-  async listIssueDecisionCards(issueId: string): Promise<DecisionRequestCard[]> {
-    const raw: unknown = await this.fetch(`/api/decisions/issue-cards?issue=${encodeURIComponent(issueId)}`);
-    return parseWithFallback(raw, DecisionRequestCardListSchema, [], {
-      endpoint: "GET /api/decisions/issue-cards",
-    });
-  }
-
   async listChatMessagesPage(
     sessionId: string,
-    params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
+    params: { before?: { created_at: string; id: string } | null; limit?: number } = {},
   ): Promise<ChatMessagesPage> {
     const limit = params.limit ?? 50;
     const query = new URLSearchParams({ limit: String(limit) });
@@ -4820,8 +4229,6 @@ export class ApiClient {
       query.set("before_created_at", params.before.created_at);
       query.set("before_id", params.before.id);
     }
-    // Anchored window centred on one message; the server rejects a cursor with it.
-    if (params.around) query.set("around", params.around);
     try {
       const raw: unknown = await this.fetch(
         `/api/chat/sessions/${sessionId}/messages/page?${query.toString()}`,
@@ -4843,7 +4250,7 @@ export class ApiClient {
       // the fallback page reports has_more: false and there is no follow-up
       // request to translate. A 404 on a cursor request is an unexpected state
       // and propagates instead of duplicating the whole list.
-      if (err instanceof ApiError && err.status === 404 && !params.before && !params.around) {
+      if (err instanceof ApiError && err.status === 404 && !params.before) {
         const messages = await this.listChatMessages(sessionId);
         return { messages, limit, has_more: false, next_cursor: null };
       }
@@ -4851,37 +4258,17 @@ export class ApiClient {
     }
   }
 
-  /** Search the caller's DMs by title and message text (`q` is 1-200 characters). */
-  async searchChats(params: { q: string; limit?: number; cursor?: string | null }): Promise<ChatSearchPage> {
-    const query = new URLSearchParams({ q: params.q });
-    if (params.limit) query.set("limit", String(params.limit));
-    if (params.cursor) query.set("cursor", params.cursor);
-    const raw: unknown = await this.fetch(`/api/chat/search?${query.toString()}`);
-    return parseWithFallback(
-      raw,
-      ChatSearchPageSchema,
-      { results: [], next_cursor: null },
-      { endpoint: "GET /api/chat/search" },
-    );
-  }
-
   async sendChatMessage(
     sessionId: string,
     content: string,
     attachmentIds?: string[],
-    decisionRequestId?: string,
-    options?: { clientMessageId?: string; askIds?: string[] },
+    options?: { queue?: boolean },
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
+      steer: boolean;
       attachment_ids?: string[];
-      decision_request_id?: string;
-      client_message_id?: string;
-      ask_ids?: string[];
-    } = { content };
-    if (decisionRequestId) body.decision_request_id = decisionRequestId;
-    if (options?.clientMessageId) body.client_message_id = options.clientMessageId;
-    if (options?.askIds && options.askIds.length > 0) body.ask_ids = options.askIds;
+    } = { content, steer: options?.queue !== true };
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
@@ -4942,48 +4329,6 @@ export class ApiClient {
     );
   }
 
-  /**
-   * Adds a queued follow-up to the running task instead of stopping it. The
-   * server answers 409 with a stable `code` when the run cannot take it; the
-   * follow-up then stays queued.
-   */
-  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
-    const raw = await this.fetch<unknown>(
-      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
-      { method: "POST" },
-    );
-    return parseWithFallback(raw, ChatSupplementSchema, EMPTY_CHAT_SUPPLEMENT, {
-      endpoint: "POST /api/chat/sessions/:id/tasks/:taskId/steer",
-    });
-  }
-
-  /**
-   * Sends a steered message that did not arrive as a new queued run. Pass
-   * `confirmPossibleDuplicate` only after the user accepted the duplicate
-   * warning for an `uncertain` receipt; the server refuses it otherwise.
-   */
-  async resendChatSupplement(
-    sessionId: string,
-    messageId: string,
-    options: { confirmPossibleDuplicate?: boolean } = {},
-  ): Promise<ResendChatSupplementResponse> {
-    const raw = await this.fetch<unknown>(
-      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          confirm_possible_duplicate: options.confirmPossibleDuplicate === true,
-        }),
-      },
-    );
-    return parseWithFallback(
-      raw,
-      ResendChatSupplementResponseSchema,
-      { task_id: "", supplement: EMPTY_CHAT_SUPPLEMENT },
-      { endpoint: "POST /api/chat/sessions/:id/messages/:messageId/supplement/resend" },
-    );
-  }
-
   async clearQueuedChatTasks(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/queued-tasks`, {
       method: "DELETE",
@@ -5017,6 +4362,45 @@ export class ApiClient {
     });
   }
 
+  /** A 404 means the backend predates chat wakeups: nothing to show. */
+  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/wakeups`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return [];
+      throw err;
+    }
+    return parseWithFallback(raw, ChatWakeupListSchema, EMPTY_CHAT_WAKEUP_LIST, {
+      endpoint: "GET /api/chat/sessions/{id}/wakeups",
+    });
+  }
+
+  async cancelChatWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  async retryChatWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}/retry`, {
+      method: "POST",
+    });
+  }
+
+  async listMyChatWakeups(): Promise<ChatWakeup[]> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/chat/my-wakeups`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return [];
+      throw err;
+    }
+    return parseWithFallback(raw, ChatWakeupListSchema, EMPTY_CHAT_WAKEUP_LIST, {
+      endpoint: "GET /api/chat/my-wakeups",
+    });
+  }
+
   async listPendingChatTasks(workspace?: WorkspaceScope): Promise<PendingChatTasksResponse> {
     return this.fetch(`/api/chat/pending-tasks`, { headers: workspaceHeader(workspace) });
   }
@@ -5027,57 +4411,6 @@ export class ApiClient {
 
   async markChatSessionRead(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
-  }
-
-  // DM attention actions (plan r4 T3-T5). Every call carries the exact subject keys the UI
-  // displayed; the server acts on those keys only.
-  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
-      method: "POST",
-      body: JSON.stringify({ subject_keys: subjectKeys }),
-    });
-    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
-      endpoint: "POST /api/chat/sessions/:id/attention/xong",
-    }).attention;
-  }
-
-  async chatAttentionLater(
-    sessionId: string,
-    subjectKeys: string[],
-    options: { durationSeconds?: number; requestId: string },
-  ): Promise<ChatAttentionView> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
-      method: "POST",
-      body: JSON.stringify({
-        subject_keys: subjectKeys,
-        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
-        request_id: options.requestId,
-      }),
-    });
-    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
-      endpoint: "POST /api/chat/sessions/:id/attention/later",
-    }).attention;
-  }
-
-  async chatAttentionXongAll(subjectKeys: string[]): Promise<ChatAttentionBatch> {
-    const raw = await this.fetch<unknown>("/api/chat/attention/xong-all", {
-      method: "POST",
-      body: JSON.stringify({ subject_keys: subjectKeys }),
-    });
-    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
-      endpoint: "POST /api/chat/attention/xong-all",
-    });
-  }
-
-  async chatAttentionUndoXongAll(batchId: string): Promise<ChatAttentionBatch> {
-    const raw = await this.fetch<unknown>(`/api/chat/attention/xong-all/${batchId}/undo`, { method: "POST" });
-    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
-      endpoint: "POST /api/chat/attention/xong-all/:id/undo",
-    });
-  }
-
-  async markChatSessionUnread(sessionId: string): Promise<void> {
-    await this.fetch(`/api/chat/sessions/${sessionId}/unread`, { method: "POST" });
   }
 
   // Advertises the durable draft-restore capability (#5219). The server only
@@ -5120,22 +4453,6 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
-    });
-  }
-
-  // Diff between two revisions of an attachment (CHE-5295). `full` keeps every
-  // unchanged line instead of folding them.
-  async getAttachmentRevisionDiff(
-    id: string,
-    from: number,
-    to: number,
-    full = false,
-  ): Promise<AttachmentRevisionDiff> {
-    const q = new URLSearchParams({ from: String(from), to: String(to) });
-    if (full) q.set("full", "1");
-    const raw = await this.fetch<unknown>(`/api/attachments/${id}/diff?${q}`);
-    return parseOrThrow<AttachmentRevisionDiff>(raw, AttachmentRevisionDiffSchema, {
-      endpoint: "GET /api/attachments/{id}/diff",
     });
   }
 
@@ -5384,20 +4701,13 @@ export class ApiClient {
     await this.fetch(`/api/labels/${id}`, { method: "DELETE" });
   }
 
-  // Workspace workflows (MUL-7420). Reads are open to any workspace member;
-  // creating, editing and deleting a workflow is owner/admin only. Adoption
-  // (creating a workflow, pointing a project at one) is gated server-side by
-  // the project_workflows_v1 flag and returns 403 when it is off.
+  // Workspace workflows (MUL-7420). Any workspace member may read and create
+  // workflows; only the workflow owner and workspace admins may edit or delete.
   async listIssueWorkflows(): Promise<ListIssueWorkflowsResponse> {
     const raw = await this.fetch<unknown>(`/api/issue-workflows`);
-    // An empty list is an answer ("no workflow is stored"), and callers let a
-    // status change skip its handoff confirmation on it. Fail closed on a body
-    // that is not a workflow list instead of falling back to an empty one.
-    const list = ListIssueWorkflowsResponseSchema.safeParse(raw);
-    if (!list.success || !Array.isArray((raw as { workflows?: unknown } | null)?.workflows)) {
-      throw new Error("malformed GET /api/issue-workflows response");
-    }
-    return list.data as ListIssueWorkflowsResponse;
+    return parseWithFallback(raw, ListIssueWorkflowsResponseSchema, EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE, {
+      endpoint: "GET /api/issue-workflows",
+    });
   }
 
   async createIssueWorkflow(data: IssueWorkflowWriteRequest): Promise<IssueWorkflow> {
@@ -5492,12 +4802,9 @@ export class ApiClient {
     if (status) query.set("status", status);
     if (projectId) query.set("project_id", projectId);
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/workflow-handoff?${query.toString()}`);
-    const parsed = parseWithFallback<WorkflowHandoffPreview | null>(raw, WorkflowHandoffPreviewSchema, null, {
+    return parseWithFallback(raw, WorkflowHandoffPreviewSchema, EMPTY_WORKFLOW_HANDOFF_PREVIEW, {
       endpoint: "GET /api/issues/{id}/workflow-handoff",
     });
-    // Fail closed: the caller shows an error and a retry instead of applying a move.
-    if (!parsed) throw new Error("workflow handoff preview is malformed");
-    return parsed;
   }
 
   /**
@@ -6075,6 +5382,7 @@ export class ApiClient {
   }
 
   async createAutopilotTrigger(autopilotId: string, data: CreateAutopilotTriggerRequest): Promise<AutopilotTrigger> {
+    assertWebhookPayloadConditionsWriteSupported(data);
     return this.fetch(`/api/autopilots/${autopilotId}/triggers`, {
       method: "POST",
       body: JSON.stringify(data),
@@ -6082,6 +5390,7 @@ export class ApiClient {
   }
 
   async updateAutopilotTrigger(autopilotId: string, triggerId: string, data: UpdateAutopilotTriggerRequest): Promise<AutopilotTrigger> {
+    assertWebhookPayloadConditionsWriteSupported(data);
     return this.fetch(`/api/autopilots/${autopilotId}/triggers/${triggerId}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -6187,42 +5496,6 @@ export class ApiClient {
       EMPTY_GITHUB_CONNECT_RESPONSE,
       { endpoint: "GET /api/workspaces/:id/github/connect" },
     );
-  }
-
-  private ciWatchPath(workspaceId: string, repo: string): string {
-    return `/api/workspaces/${workspaceId}/ci-watch/repos/${encodeURIComponent(repo)}`;
-  }
-
-  /** Owner/admin only. A flag-off server answers 403 `ci_watcher_disabled`. */
-  async getCIWatchConfig(workspaceId: string, repo: string): Promise<CIWatchConfig> {
-    const raw = await this.fetch<unknown>(this.ciWatchPath(workspaceId, repo));
-    return parseOrThrow<CIWatchConfig>(raw, CIWatchConfigSchema, {
-      endpoint: "GET /api/workspaces/:id/ci-watch/repos/:repo",
-    });
-  }
-
-  /** Partial update: only the fields in `patch` change. Answers the saved config. */
-  async updateCIWatchConfig(
-    workspaceId: string,
-    repo: string,
-    patch: Record<string, unknown>,
-  ): Promise<CIWatchConfig> {
-    const raw = await this.fetch<{ config?: unknown }>(this.ciWatchPath(workspaceId, repo), {
-      method: "PUT",
-      body: JSON.stringify(patch),
-    });
-    return parseOrThrow<CIWatchConfig>(raw?.config, CIWatchConfigSchema, {
-      endpoint: "PUT /api/workspaces/:id/ci-watch/repos/:repo",
-    });
-  }
-
-  async listCIWatchEvents(workspaceId: string, repo: string, limit = 50): Promise<CIWatchEvent[]> {
-    const raw = await this.fetch<unknown>(
-      `${this.ciWatchPath(workspaceId, repo)}/events?limit=${limit}`,
-    );
-    return parseWithFallback(raw, CIWatchEventsSchema, EMPTY_CI_WATCH_EVENTS, {
-      endpoint: "GET /api/workspaces/:id/ci-watch/repos/:repo/events",
-    });
   }
 
   async listGitHubInstallations(workspaceId: string): Promise<ListGitHubInstallationsResponse> {
@@ -6881,6 +6154,30 @@ export class ApiClient {
       EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
       { endpoint: "POST /api/wecom/binding/redeem" },
     );
+  }
+
+  async listWeixinInstallations(workspaceId: string): Promise<ListWeixinInstallationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/weixin/installations`);
+    return parseWithFallback(raw, ListWeixinInstallationsSchema, EMPTY_WEIXIN_INSTALLATIONS, { endpoint: "GET /api/workspaces/:id/weixin/installations" });
+  }
+
+  async beginWeixinLogin(workspaceId: string, agentId: string): Promise<WeixinLogin> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/weixin/logins?${search}`, { method: "POST" });
+    return parseWithFallback(raw, WeixinLoginSchema, INVALID_WEIXIN_LOGIN, { endpoint: "POST /api/workspaces/:id/weixin/logins" });
+  }
+
+  async pollWeixinLogin(workspaceId: string, loginId: string, verifyCode = "", signal?: AbortSignal): Promise<WeixinLogin> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/weixin/logins/${loginId}/poll`, { method: "POST", body: JSON.stringify({ verify_code: verifyCode }), signal });
+    return parseWithFallback(raw, WeixinLoginSchema, INVALID_WEIXIN_LOGIN, { endpoint: "POST /api/workspaces/:id/weixin/logins/:loginId/poll" });
+  }
+
+  async cancelWeixinLogin(workspaceId: string, loginId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/weixin/logins/${loginId}`, { method: "DELETE" });
+  }
+
+  async deleteWeixinInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/weixin/installations/${installationId}`, { method: "DELETE" });
   }
 
   async listTelegramInstallations(

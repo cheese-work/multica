@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
@@ -528,6 +529,12 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		private = true
 		privateMemberIDs = ids
 	}
+	var admission featureAdmission
+	if private {
+		if admission, ok = h.requireFeatureAddition(w, r, wsUUID, entitlement.FeaturePrivateProjects, privateProjectOpCreate); !ok {
+			return
+		}
+	}
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	creatorID, ok := parseUUIDOrBadRequest(w, actorID, "creator_id")
@@ -641,6 +648,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to commit project create")
 		return
 	}
+	admission.admitted(r.Context())
 
 	if len(resourceRows) == 0 {
 		resp := projectToResponse(project)
@@ -833,6 +841,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+<<<<<<< ours
 	if delegatesKeyPresent {
 		delegates, ok := h.parseDecisionDelegates(w, r, wsUUID, userID, req.DecisionDelegates)
 		if !ok {
@@ -874,8 +883,22 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.writeProjectWriteError(w, r, err, "update")
+||||||| base
+	project, ok := h.writeProjectUpdate(w, r, params, access, userID)
+	if !ok {
+=======
+	var admission featureAdmission
+	if access.privateAddition != "" {
+		if admission, ok = h.requireFeatureAddition(w, r, prevProject.WorkspaceID, entitlement.FeaturePrivateProjects, access.privateAddition); !ok {
+			return
+		}
+	}
+	project, ok := h.writeProjectUpdate(w, r, params, access, userID)
+	if !ok {
+>>>>>>> theirs
 		return
 	}
+<<<<<<< ours
 	project = updatedProject
 	if access.visibility != "" {
 		slog.Info("project visibility changed", append(logger.RequestAttrs(r),
@@ -884,6 +907,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if len(access.addIDs) > 0 {
 		h.publishProjectMembersChanged(project, parseUUIDOrInvalid(userID))
 	}
+||||||| base
+=======
+	admission.admitted(r.Context())
+>>>>>>> theirs
 	resp := projectToResponse(project)
 	h.fillProjectIssueStats(r.Context(), &resp, project)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)

@@ -29,13 +29,17 @@
  * (packages/views/chat/components/chat-window.tsx ~262-345):
  *   seed messages → seed pendingTask → flip activeSessionId → POST →
  *   patch pendingTask with server task_id + created_at.
+ *
+ * During a reply on a queue-capable server, Send asks to add the message to
+ * that reply (`steer`) and the composer's Queue action keeps it for the next
+ * turn. The server decides whether steering applies; an accepted steer keeps
+ * the running head instead of seeding a new turn.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   View,
 } from "react-native";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
@@ -44,7 +48,6 @@ import type {
   Agent,
   ChatMessage,
   ChatPendingTask,
-  ChatSession,
 } from "@multica/core/types";
 import {
   enqueuePendingChatTask,
@@ -54,7 +57,6 @@ import {
 import { refetchChatSessionsAfterCommit } from "@multica/core/chat/session-list";
 import { canAssignAgentToIssue } from "@multica/core/permissions/rules";
 import { api } from "@/data/api";
-import { sendWithPendingId } from "@/data/stores/pending-send-store";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
@@ -70,39 +72,29 @@ import {
   useCreateChatSession,
   useDeleteChatSession,
   useMarkChatSessionRead,
-  useSetChatSessionArchived,
-  useSetChatSessionPinned,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
   useChatDraftsStore,
 } from "@/data/stores/chat-drafts-store";
-import { useChatSessionActionsStore } from "@/data/stores/chat-session-actions-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
-  seedAcceptedPendingTask,
+  reconcileAcceptedChatSend,
 } from "@/data/realtime/chat-ws-updaters";
-import {
-  ArchivedSendInterceptedError,
-  buildArchivedSendAlertButtons,
-  splitChatSessions,
-  unarchiveThenSendOnce,
-} from "@/lib/chat-dm-stats-archive";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
+import { queuedChatMessages } from "@/lib/chat-queued-messages";
 import {
   dispatchReasonCode,
 } from "@/lib/dispatch-reason";
 import { useT } from "@/lib/i18n";
 import { useAgentPresence } from "@/lib/use-agent-presence";
 import { Header } from "@/components/ui/header";
-import { Text } from "@/components/ui/text";
 import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
-import { QueuedFollowUps } from "@/components/chat/queued-follow-ups";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
@@ -153,20 +145,15 @@ export default function ChatTab() {
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
-  const { active: activeSessions } = useMemo(
-    () => splitChatSessions(sessions),
-    [sessions],
-  );
-
   // ── Auto-hydrate active session on first Chat tab entry ────────────────
   // Mobile-only deviation from web: web's chat-window opens to an empty
   // state when no `activeSessionId` is persisted; on a phone, picking
-  // a session is 4 taps, so jump straight to the most recent active session.
+  // a session is 4 taps, so jump straight to the most recent session.
   // Hydration is one-shot per workspace.
   const [hydratedWs, setHydratedWs] = useState<string | null>(null);
   if (wsId && hydratedWs !== wsId) {
     setHydratedWs(wsId);
-    if (sessions.length > 0) setActiveSessionId((activeSessions[0] ?? sessions[0]).id);
+    if (sessions.length > 0) setActiveSessionId(sessions[0].id);
   }
   const { data: messages = [], isLoading: messagesLoading } = useQuery(
     chatMessagesOptions(activeSessionId),
@@ -175,6 +162,7 @@ export default function ChatTab() {
     pendingChatTaskOptions(activeSessionId),
   );
   const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
+  const queuedMessages = queuedChatMessages(pendingTask, messages);
   // Live execution trace for the in-flight task. `task:message` WS events
   // append rows to this same cache key via `appendTaskMessage`, so the
   // list/pill stay in sync without a polling fetch. `enabled` is gated by
@@ -250,10 +238,8 @@ export default function ChatTab() {
   const draftKey = activeSessionId ?? DRAFT_NEW_SESSION;
   const draft = useChatDraftsStore((s) => s.drafts[draftKey] ?? "");
   const setDraft = useChatDraftsStore((s) => s.setDraft);
-  const draftScope = useChatDraftsStore((s) => s.scopeId);
+  const clearDraft = useChatDraftsStore((s) => s.clearDraft);
   const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
-  const beginSend = useChatDraftsStore((s) => s.beginSend);
-  const finishSend = useChatDraftsStore((s) => s.finishSend);
 
   // ── Realtime ───────────────────────────────────────────────────────────
   useChatSessionRealtime(activeSessionId, () => {
@@ -281,112 +267,6 @@ export default function ChatTab() {
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
   const deleteSession = useDeleteChatSession();
-  const setPinned = useSetChatSessionPinned();
-  const setArchived = useSetChatSessionArchived();
-
-  const actionPending = useChatSessionActionsStore((s) =>
-    activeSession ? (s.pendingBySession[activeSession.id] ?? null) : null,
-  );
-  const undoToast = useChatSessionActionsStore((s) => s.undoToast);
-  const beginSessionAction = useChatSessionActionsStore(
-    (s) => s.beginSessionAction,
-  );
-  const endSessionAction = useChatSessionActionsStore(
-    (s) => s.endSessionAction,
-  );
-  const showArchiveUndo = useChatSessionActionsStore((s) => s.showArchiveUndo);
-  const dismissArchiveUndo = useChatSessionActionsStore(
-    (s) => s.dismissArchiveUndo,
-  );
-
-  const handleUnarchive = useCallback(
-    async (session: ChatSession): Promise<boolean> => {
-      if (!beginSessionAction(session.id, "unarchive")) return false;
-      try {
-        await setArchived.mutateAsync({
-          sessionId: session.id,
-          archived: false,
-        });
-        dismissArchiveUndo();
-        return true;
-      } catch (err) {
-        Alert.alert(
-          t("sessions.unarchive_failed"),
-          err instanceof Error ? err.message : undefined,
-        );
-        return false;
-      } finally {
-        endSessionAction(session.id);
-      }
-    },
-    [beginSessionAction, endSessionAction, setArchived, dismissArchiveUndo, t],
-  );
-
-  const handleArchive = useCallback(
-    async (session: ChatSession): Promise<boolean> => {
-      if (!beginSessionAction(session.id, "archive")) return false;
-      try {
-        await setArchived.mutateAsync({
-          sessionId: session.id,
-          archived: true,
-        });
-        if (activeSessionId === session.id) {
-          const nextActive = activeSessions.find((s) => s.id !== session.id);
-          setActiveSessionId(nextActive?.id ?? null);
-        }
-        showArchiveUndo({
-          sessionId: session.id,
-          title: session.title || t("sessions.new_chat"),
-        });
-        return true;
-      } catch (err) {
-        Alert.alert(
-          t("sessions.archive_failed"),
-          err instanceof Error ? err.message : undefined,
-        );
-        return false;
-      } finally {
-        endSessionAction(session.id);
-      }
-    },
-    [
-      beginSessionAction,
-      endSessionAction,
-      setArchived,
-      activeSessionId,
-      activeSessions,
-      showArchiveUndo,
-      t,
-    ],
-  );
-
-  const handleTogglePin = useCallback(
-    async (session: ChatSession) => {
-      try {
-        await setPinned.mutateAsync({
-          sessionId: session.id,
-          pinned: !session.pinned,
-        });
-      } catch (err) {
-        Alert.alert(
-          t("sessions.pin_failed"),
-          err instanceof Error ? err.message : undefined,
-        );
-      }
-    },
-    [setPinned, t],
-  );
-
-  const handleOpenStatistics = useCallback(
-    (session: ChatSession) => {
-      if (!wsSlug) return;
-      router.push({
-        pathname: "/[workspace]/chat-statistics",
-        params: { workspace: wsSlug, sessionId: session.id },
-      });
-    },
-    [wsSlug],
-  );
 
   // ── Send burst ─────────────────────────────────────────────────────────
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
@@ -415,26 +295,29 @@ export default function ChatTab() {
     [activeSessionId, currentAgent, createSession],
   );
 
-  const executeSend = useCallback(
+  const handleSend = useCallback(
     async (
       content: string,
       attachmentIds: string[] = [],
+      options: { clearDraft?: boolean; queue?: boolean } = {},
     ) => {
       if (!currentAgent) return;
+      // Invoke permission was revoked while this session was open — the server
+      // would refuse before persisting anything. The composer is disabled in
+      // this state; this is the belt-and-braces guard.
       if (accessRevoked) {
         Alert.alert(
           t("alerts.no_permission_title"),
           t("alerts.no_permission_message"),
         );
-        // Throw so the composer restores the text it cleared on submit.
-        throw new Error("chat send refused: access revoked");
+        return;
       }
       if (!runtimeBound) {
         Alert.alert(
           t("alerts.runtime_title"),
           t("alerts.runtime_message"),
         );
-        throw new Error("chat send refused: no runtime bound");
+        return;
       }
 
       const isNewSession = !activeSessionId;
@@ -442,6 +325,9 @@ export default function ChatTab() {
       try {
         sessionId = await ensureSession();
       } catch (err) {
+        // Session create runs the same invoke gate as a send, so a permission
+        // change refuses here too — and this is the only layer that sees the
+        // reason code (MUL-6380).
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
         throw err;
       }
@@ -476,50 +362,34 @@ export default function ChatTab() {
           ),
       );
       if (isNewSession) {
-        // Session creation is async: promote in the scope the send started
-        // in, and do not select the session if the user switched away.
-        promoteNewDraft(sessionId, draftScope);
-        if (useChatDraftsStore.getState().scopeId === draftScope) {
-          setActiveSessionId(sessionId);
-        }
+        promoteNewDraft(sessionId);
+        setActiveSessionId(sessionId);
       }
 
       try {
-        // A retry of the same text reuses its client_message_id (A22), so a
-        // timeout that hid a delivered send cannot store a second message.
-        const result = await sendWithPendingId(sessionId, content, {
+        // One request per tap, never replayed: a send whose outcome is unknown
+        // fails visibly and keeps the draft, so a retry is the user's choice.
+        const result = await api.sendChatMessage(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          queue: options.queue,
         });
-        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
-          old?.map((message) =>
-            message.id === optimistic.id
-              ? {
-                  ...message,
-                  id: result.message_id,
-                  task_id: result.task_id,
-                  created_at: result.created_at,
-                }
-              : message,
-          ),
-        );
-        seedAcceptedPendingTask(qc, {
+        // Replace the local bubble before reconciling pending state. When the
+        // server says this is a follow-up, its real message id lets the shared
+        // queue filter hide it immediately instead of waiting for the refetch.
+        reconcileAcceptedChatSend(qc, {
           chat_session_id: sessionId,
-          task_id: result.task_id,
-          created_at: result.created_at,
-          message_id: result.message_id,
-          content,
+          optimistic_message_id: optimistic.id,
           optimistic_task_id: optimisticTaskId,
-          supports_queue: result.supports_queue,
-          queued: result.queued,
+          content,
+          result,
         });
-        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         // This send just committed the new session's server-derived title.
         if (isNewSession) {
           void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
         }
-        // No draft clear here: the composer already emptied the input on
-        // submit and restores it if this send throws. Clearing now would
-        // erase whatever the user typed while the request was pending.
+        if (options.clearDraft !== false) {
+          clearDraft(sessionId);
+        }
       } catch (err) {
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
@@ -528,6 +398,9 @@ export default function ChatTab() {
           chatKeys.pendingTask(sessionId),
           (old) => removePendingChatTask(old, optimisticTaskId),
         );
+        // The composer restores the draft on a thrown rejection but says nothing
+        // about it, so a revoked-permission 403 used to read as a silent no-op
+        // (MUL-6380). Name the cause here: only this layer sees the error body.
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
         throw err;
       }
@@ -543,75 +416,8 @@ export default function ChatTab() {
       sendFailureMessage,
       t,
       promoteNewDraft,
-      draftScope,
+      clearDraft,
     ],
-  );
-
-  const handleSend = useCallback(
-    async (
-      content: string,
-      attachmentIds: string[] = [],
-    ) => {
-      if (activeSession?.status === "archived") {
-        const archivedSession = activeSession;
-        const newerSession = archivedSession.continued_into_session_id
-          ? (sessions.find(
-              (s) => s.id === archivedSession.continued_into_session_id,
-            ) ?? null)
-          : null;
-
-        const messageParts = [
-          t("archived_send.question"),
-          newerSession
-            ? t("archived_send.newer", {
-                title: newerSession.title || t("sessions.new_chat"),
-              })
-            : null,
-          t("archived_send.kept"),
-        ].filter(Boolean);
-
-        return new Promise<void>((resolve, reject) => {
-          const confirmUnarchiveAndSend = () => {
-            unarchiveThenSendOnce(
-              () => handleUnarchive(archivedSession),
-              () => executeSend(content, attachmentIds),
-            ).then(resolve, reject);
-          };
-
-          const cancelIntercept = () => {
-            reject(new ArchivedSendInterceptedError());
-          };
-
-          const buttons = buildArchivedSendAlertButtons({
-            platform: Platform.OS,
-            hasNewer: newerSession !== null,
-            labels: {
-              openNewer: t("archived_send.open_newer"),
-              confirm: t("archived_send.confirm"),
-              cancel: t("archived_send.cancel"),
-            },
-            onOpenNewer: () => {
-              if (!newerSession) return;
-              setSelectedAgentId(null);
-              setActiveSessionId(newerSession.id);
-              reject(new ArchivedSendInterceptedError());
-            },
-            onConfirm: confirmUnarchiveAndSend,
-            onCancel: cancelIntercept,
-          });
-
-          Alert.alert(
-            t("archived_send.title"),
-            messageParts.join("\n\n"),
-            buttons,
-            { cancelable: true, onDismiss: cancelIntercept },
-          );
-        });
-      }
-
-      return executeSend(content, attachmentIds);
-    },
-    [activeSession, sessions, t, handleUnarchive, executeSend],
   );
 
   // ── Cancel in-flight ───────────────────────────────────────────────────
@@ -657,39 +463,33 @@ export default function ChatTab() {
     if (selectRequest && selectRequest === appliedSelect) consumeSelect();
   }, [selectRequest, appliedSelect, consumeSelect]);
 
-  const handleDeleteSession = useCallback(
-    (session: ChatSession) => {
-      if (session.status !== "archived") return;
-      Alert.alert(
-        t("alerts.delete_title"),
-        session.title || t("sessions.new_chat"),
-        [
-          { text: t("common:actions.cancel"), style: "cancel" },
-          {
-            text: t("alerts.delete_confirm"),
-            style: "destructive",
-            onPress: () => {
-              const id = session.id;
-              if (activeSessionId === id) {
-                setActiveSessionId(null);
-              }
-              deleteSession.mutate(id);
-            },
+  const handleDeleteActive = useCallback(() => {
+    if (!activeSession) return;
+    Alert.alert(
+      t("alerts.delete_title"),
+      activeSession.title || t("sessions.new_chat"),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("alerts.delete_confirm"),
+          style: "destructive",
+          onPress: () => {
+            const id = activeSession.id;
+            setActiveSessionId(null);
+            deleteSession.mutate(id);
           },
-        ],
-        { cancelable: true },
-      );
-    },
-    [activeSessionId, deleteSession, t],
-  );
+        },
+      ],
+      { cancelable: true },
+    );
+  }, [activeSession, deleteSession, t]);
 
   // ── Composer disabled-state ────────────────────────────────────────────
-  const isArchiveActionPending = actionPending !== null;
   const disabled =
     !currentAgent ||
     accessRevoked ||
     availability === "none" ||
-    isArchiveActionPending ||
+    isArchived === true ||
     !runtimeBound;
   const disabledReason = !currentAgent
     ? t("composer.no_agent")
@@ -697,13 +497,11 @@ export default function ChatTab() {
       ? t("composer.revoked")
       : availability === "none"
         ? t("composer.no_agents")
-        : actionPending === "archive"
-          ? t("header.archiving")
-          : actionPending === "unarchive"
-            ? t("header.unarchiving")
-            : !runtimeBound
-              ? t("composer.runtime_required")
-              : undefined;
+        : isArchived
+          ? t("composer.archived")
+          : !runtimeBound
+            ? t("composer.runtime_required")
+          : undefined;
 
   return (
     <View className="flex-1 bg-background">
@@ -723,12 +521,8 @@ export default function ChatTab() {
         }
         right={
           <ChatSessionActions
-            session={activeSession}
-            onOpenStatistics={handleOpenStatistics}
-            onTogglePin={(session) => void handleTogglePin(session)}
-            onArchive={(session) => void handleArchive(session)}
-            onUnarchive={(session) => void handleUnarchive(session)}
-            onDelete={handleDeleteSession}
+            showMore={!!activeSession}
+            onMorePress={handleDeleteActive}
             onNewPress={handleNewChat}
           />
         }
@@ -740,62 +534,19 @@ export default function ChatTab() {
       >
         <ChatMessageList
           messages={visibleMessages}
-          sessionId={activeSessionId}
           loading={messagesLoading}
           hasSessions={sessions.length > 0}
           agent={currentAgent}
           onPickPrompt={(text) => setDraft(draftKey, text)}
           onQuickAction={(action) =>
-            // A refused or failed send already alerted; the rejection only
-            // exists so the composer can restore its text.
-            handleSend(action.prompt, []).catch(() => {})
+            handleSend(action.prompt, [], { clearDraft: false })
           }
           quickActionsDisabled={sending || disabled}
           pendingTask={pendingTask}
           liveTaskMessages={liveTaskMessages}
+          queuedMessages={queuedMessages}
           availability={presenceAvailability}
         />
-        {undoToast ? (
-          <View className="mx-3 mb-2 flex-row items-center justify-between rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
-            <Text
-              numberOfLines={1}
-              className="flex-1 pr-3 text-xs text-foreground"
-            >
-              {t("sessions.archived_toast")} · {undoToast.title}
-            </Text>
-            <Pressable
-              onPress={() => {
-                const target = sessions.find(
-                  (s) => s.id === undoToast.sessionId,
-                );
-                const fallbackSession: ChatSession = target ?? {
-                  id: undoToast.sessionId,
-                  workspace_id: wsId ?? "",
-                  agent_id: currentAgent?.id ?? "",
-                  creator_id: userId ?? "",
-                  title: undoToast.title,
-                  status: "archived",
-                  has_unread: false,
-                  created_at: "",
-                  updated_at: "",
-                };
-                void handleUnarchive(fallbackSession).then((ok) => {
-                  if (ok) {
-                    setSelectedAgentId(null);
-                    setActiveSessionId(undoToast.sessionId);
-                  }
-                });
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={t("sessions.undo")}
-              className="min-h-[36px] justify-center rounded-md px-2 active:bg-accent"
-            >
-              <Text className="text-xs font-semibold text-primary">
-                {t("sessions.undo")}
-              </Text>
-            </Pressable>
-          </View>
-        ) : null}
         {runtimeBound ? (
           <OfflineBanner
             agentName={currentAgent?.name}
@@ -804,28 +555,16 @@ export default function ChatTab() {
         ) : currentAgent ? (
           <RuntimeRequiredBanner agentName={currentAgent.name} />
         ) : null}
-        {activeSessionId ? (
-          <QueuedFollowUps
-            sessionId={activeSessionId}
-            tasks={pendingTask?.queued_tasks ?? []}
-            headStatus={pendingTask?.status}
-            headSupplement={pendingTask?.head_supplement}
-            noPermission={accessRevoked}
-          />
-        ) : null}
         <ChatComposer
-          draftKey={draftKey}
           value={draft}
-          onChangeText={(next) => setDraft(draftKey, next, draftScope)}
+          onChangeText={(next) => setDraft(draftKey, next)}
           onSend={handleSend}
-          onSendStart={(text) => beginSend(draftKey, text)}
-          onSendSettled={finishSend}
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}
+          allowSendWhileSending={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}
-          archived={isArchived}
         />
       </KeyboardAvoidingView>
 

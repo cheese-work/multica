@@ -1,32 +1,24 @@
-import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncExternalStore } from "react";
+import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
-import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
-import { ApiClient } from "@multica/core/api/client";
+import type { AgentTask, Attachment, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { ApiError } from "@multica/core/api/client";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
-import { useIssueTitleDraftStore } from "@multica/core/issues/stores/unsent-edit-drafts";
-// Imported from the barrel (not the submodule path) so this is the exact
-// same module instance issue-detail.tsx reads through the barrel mock below
-// — the submodule path resolves to a second, disconnected instance under
-// Vitest's mock graph once the barrel is mocked.
-import { useIssueDisclosureStore, useCommentCollapseStore } from "@multica/core/issues/stores";
+import { useCommentCollapseStore } from "@multica/core/issues/stores";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
 } from "@multica/core/issues/stores/sub-issue-display-store";
-import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import enAgents from "../../locales/en/agents.json";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
-import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 import { useIssueSidebarSectionsStore } from "@multica/core/issues/stores/issue-sidebar-sections-store";
+import { useSubIssuesCollapseStore } from "@multica/core/issues/stores/sub-issues-collapse-store";
 
 vi.mock("./issue-wakeup-header-chip", () => ({
   IssueWakeupHeaderChip: ({ onOpen }: { onOpen: () => void }) => (
@@ -36,13 +28,8 @@ vi.mock("./issue-wakeup-header-chip", () => ({
 
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
-const mockNavigation = vi.hoisted(() => ({ current: null as null | object }));
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
 const mockLocalDirectoryHint = vi.hoisted(() => vi.fn());
-// The banner has its own suite; here only its place in the page matters.
-vi.mock("./issue-decision-banner", () => ({
-  IssueDecisionBanner: () => <div data-testid="decision-banner" />,
-}));
 vi.mock("../../projects/components/local-directory-hint", () => ({
   LocalDirectoryHint: (props: unknown) => {
     mockLocalDirectoryHint(props);
@@ -61,74 +48,6 @@ const descriptionSelectionAction = vi.hoisted(() => ({ current: undefined as { l
 // so the `useCommentDraftStore(s => s.getAttachments(key))` selector keeps a
 // stable identity. A fresh `[]` per call would loop useSyncExternalStore.
 const emptyDraftAttachments = vi.hoisted(() => [] as unknown[]);
-
-// Minimal real subscription backing for the useCommentDraftStore mock below,
-// used only by the "latch survives reason ending" regression — every other
-// test in this file needs `drafts: {}` and nothing more, so this stays
-// separate from that fixed default rather than replacing it. Unlike
-// `descriptionMeasurement.current` (set once before render, read on the next
-// natural re-render), the latch test mutates `drafts` mid-test and needs
-// React to actually re-render in response — a bare mutable ref does not do
-// that on its own, so this backs the mock hook with a genuine
-// useSyncExternalStore subscription, matching what real Zustand provides.
-const mockDraftStoreState = vi.hoisted(() => {
-  type Draft = { content: string; attachments: { status: string }[]; updatedAt: number; annotations?: ReplyAnnotation[] };
-  let drafts: Record<string, Draft> = {};
-  const listeners = new Set<() => void>();
-  return {
-    getDrafts: () => drafts,
-    setDraft: (key: string, draft: Draft | undefined) => {
-      const next = { ...drafts };
-      if (draft) next[key] = draft;
-      else delete next[key];
-      drafts = next;
-      for (const listener of listeners) listener();
-    },
-    reset: () => {
-      drafts = {};
-      for (const listener of listeners) listener();
-    },
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
-});
-
-// jsdom has no Range.getClientRects, and this file exercises description
-// lifecycle/integration, not disclosure geometry (canonical coverage for the
-// measurement math lives in description-measurement.test.ts and the
-// disclosure primitive's own test in description-disclosure.test.tsx). Report
-// no overflow by default so the description renders exactly as before these
-// tests were written.
-const descriptionMeasurement = vi.hoisted(() => ({
-  current: {
-    totalRows: 1,
-    hiddenRows: 0,
-    hasOverflow: false,
-    lineHeight: 20,
-    previewText: "",
-  },
-}));
-vi.mock("./description-measurement", () => ({
-  DESCRIPTION_PREVIEW_LINES: 12,
-  measureDescription: () => descriptionMeasurement.current,
-}));
-
-// Controllable per-test: the description upload path's uploadWithToast.
-const mockUploadWithToast = vi.hoisted(() => vi.fn());
-// Controllable per-test: the description drop zone's captured onDrop, so a
-// test can simulate a file drop without a real DataTransfer/DOM drop event.
-const descDropZoneOnDrop = vi.hoisted(() => ({ current: null as ((files: File[]) => void) | null }));
-// Spy on the description editor's imperative uploadFile so tests can assert
-// call order against the disclosure store's expand call.
-const descEditorUploadFile = vi.hoisted(() => vi.fn());
-// Captured onUploadFile prop passed to the description's ContentEditor. The
-// mocked editor's imperative uploadFile() is a bare spy (it has no document to
-// insert a placeholder into), so tests that need the actual
-// handleDescriptionUpload → uploadWithToast → bind path invoke this directly,
-// exactly as the real editor would internally on a paste/drop/select.
-const descOnUploadFile = vi.hoisted(() => ({ current: null as ((file: File) => Promise<unknown>) | null }));
 
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => mockViewport.isMobile,
@@ -213,6 +132,8 @@ vi.mock("@multica/core/paths", async () => {
   };
 });
 
+const settingsPush = vi.hoisted(() => vi.fn());
+
 // Mock navigation
 vi.mock("../../navigation", async () => ({
   // Real hold hook (pure React) the header's Inbox actions read through.
@@ -225,11 +146,10 @@ vi.mock("../../navigation", async () => ({
     </a>
   ),
   useNavigation: () => ({
-    push: vi.fn(),
+    push: settingsPush,
     pathname: "/issues/issue-1",
     getShareableUrl: (p: string) => `https://app.multica.com${p}`,
   }),
-  useOptionalNavigation: () => mockNavigation.current,
   useBackOrReplace: () => vi.fn(),
   NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -251,19 +171,11 @@ vi.mock("../../editor", async () => ({
     "../../editor/use-composer-submit",
   )),
   useEditorUpload: () => ({
-    uploadWithToast: mockUploadWithToast,
+    uploadWithToast: vi.fn(),
     upload: vi.fn(),
     uploading: false,
   }),
-  // issue-detail.tsx's description is the only unconditional useFileDropZone
-  // caller that renders before any comment/reply composer in the tree (those
-  // gate their own onDrop behind `enabled`, but a real per-instance ref is
-  // still registered on every mount). Capture the first registration per
-  // test/render pass so a later comment-card mount doesn't clobber it.
-  useFileDropZone: ({ onDrop }: { onDrop: (files: File[]) => void }) => {
-    if (!descDropZoneOnDrop.current) descDropZoneOnDrop.current = onDrop;
-    return { isDragOver: false, dropZoneProps: {} };
-  },
+  useFileDropZone: () => ({ isDragOver: false, dropZoneProps: {} }),
   FileDropOverlay: () => null,
   // No-op so comment-card's AttachmentList can render without hitting the
   // real API singleton; tests that care about download wiring should write
@@ -293,8 +205,7 @@ vi.mock("../../editor", async () => ({
   isPreviewable: () => false,
   ReadonlyContent: ({ content }: { content: string }) => {
     readonlyContentRenders.push(content);
-    const scrollRoot = useRichContentScrollRoot();
-    return <div data-testid="readonly-content" data-timeline-scroll-root={scrollRoot?.hasAttribute("data-issue-timeline-scroll") ? "" : undefined}>{content}</div>;
+    return <div data-testid="readonly-content">{content}</div>;
   },
   ContentEditor: forwardRef(function MockContentEditor(
     {
@@ -305,16 +216,11 @@ vi.mock("../../editor", async () => ({
       flushPendingOnUnmount,
       onReady,
       selectionAction,
-      onUploadFile,
-      ariaLabel,
     }: any,
     ref: any,
   ) {
     const initialValue = syncedValue ?? defaultValue ?? "";
-    if (syncedValue !== undefined) {
-      descriptionSelectionAction.current = selectionAction;
-      descOnUploadFile.current = onUploadFile ?? null;
-    }
+    if (syncedValue !== undefined) descriptionSelectionAction.current = selectionAction;
     const valueRef = useRef(initialValue);
     const baseRef = useRef(initialValue);
     const [editorValue, setEditorValue] = useState(initialValue);
@@ -359,7 +265,7 @@ vi.mock("../../editor", async () => ({
       // Mocks track ids only — no document to draw into.
       insertUploadPlaceholder: () => true,
       settleUploadPlaceholder: () => false,
-      uploadFile: descEditorUploadFile,
+      uploadFile: () => {},
     }));
     return (
       <textarea
@@ -371,7 +277,6 @@ vi.mock("../../editor", async () => ({
           onUpdate?.(e.target.value, baseRef.current);
         }}
         placeholder={placeholder}
-        aria-label={ariaLabel}
         data-testid="rich-text-editor"
         data-flush-on-unmount={flushPendingOnUnmount ? "true" : undefined}
       />
@@ -495,16 +400,6 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ...(await vi.importActual<
     typeof import("@multica/core/issues/stores/sub-issues-collapse-store")
   >("@multica/core/issues/stores/sub-issues-collapse-store")),
-  // Real store, non-persisted: backs description show-more/show-less across
-  // this file's issue-switch and remount assertions.
-  ...(await vi.importActual<
-    typeof import("@multica/core/issues/stores/issue-disclosure-store")
-  >("@multica/core/issues/stores/issue-disclosure-store")),
-  // Real store: the title edit draft must survive the unmount/remount the
-  // "restores an unsaved title edit" test performs.
-  ...(await vi.importActual<
-    typeof import("@multica/core/issues/stores/unsent-edit-drafts")
-  >("@multica/core/issues/stores/unsent-edit-drafts")),
   // Real store, in-memory: the sidebar reads its section order and visibility.
   ...(await vi.importActual<
     typeof import("@multica/core/issues/stores/issue-sidebar-sections-store")
@@ -547,16 +442,10 @@ vi.mock("@multica/core/issues/stores", async () => ({
   })),
   useCommentDraftStore: Object.assign(
     (selector?: any) => {
-      // Real subscription (not a bare re-invoked function): `drafts` is read
-      // through useSyncExternalStore against `mockDraftStoreState`, so a
-      // mid-test `setDraft`/`reset` call actually schedules a re-render —
-      // every other test's `drafts: {}` default behaves identically to
-      // before, since the backing store starts (and is reset) empty.
-      const drafts = useSyncExternalStore(mockDraftStoreState.subscribe, mockDraftStoreState.getDrafts);
       const state = {
-        drafts,
+        drafts: {} as Record<string, { content: string; attachments: unknown[]; updatedAt: number }>,
         getDraft: () => undefined,
-        getAnnotations: (draftKey: string) => drafts[draftKey]?.annotations ?? emptyDraftAttachments,
+        getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
         setDraft: () => {},
@@ -570,18 +459,10 @@ vi.mock("@multica/core/issues/stores", async () => ({
       return selector ? selector(state) : state;
     },
     {
-      // useClearOnDraftConsumed (CHE-4288) subscribes to draft transitions; this file never drives it.
-      subscribe: () => () => {},
       getState: () => ({
-        drafts: mockDraftStoreState.getDrafts(),
+        drafts: {} as Record<string, { content: string; attachments: unknown[]; updatedAt: number }>,
         getDraft: () => undefined,
-        getAnnotations: (draftKey: string) => mockDraftStoreState.getDrafts()[draftKey]?.annotations ?? emptyDraftAttachments,
-        updateAnnotation: (draftKey: string, annotationId: string, note: string) => {
-          const draft = mockDraftStoreState.getDrafts()[draftKey];
-          if (draft) mockDraftStoreState.setDraft(draftKey, {
-            ...draft, annotations: draft.annotations?.map(annotation => annotation.id === annotationId ? { ...annotation, note } : annotation),
-          });
-        },
+        getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
         setDraft: () => {},
@@ -618,13 +499,16 @@ vi.mock("@multica/core/issues/stores", async () => ({
 // layout.
 const scrollIntoViewSpy = vi.hoisted(() => vi.fn());
 const scrollToIndexSpy = vi.hoisted(() => vi.fn());
-const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
+const scrollIntoViewIndexSpy = vi.hoisted(() => vi.fn());
+const mockVirtualWindow = vi.hoisted(() => ({
+  enabled: false, delayedViewport: false, lateScrollReset: false, offscreenViewport: false, contentSettlesAbove: false, pendingSizeCorrection: false, holdAtIndex: false,
+  targetId: "", targetHeight: 100, scrollParent: null as HTMLElement | null,
+}));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
-    { data, itemContent, computeItemKey, initialTopMostItemIndex }: {
+    { data, itemContent, computeItemKey, customScrollParent, totalListHeightChanged }: {
       data: unknown[];
-      initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
       customScrollParent?: HTMLElement;
@@ -632,31 +516,75 @@ vi.mock("react-virtuoso", () => ({
     },
     ref: any,
   ) {
-    const [firstIndex, setFirstIndex] = useState(
-      Number.isFinite(virtualWindow.size) && initialTopMostItemIndex
-        ? initialTopMostItemIndex.index
-        : virtualWindow.initialIndex,
-    );
-    // Real Virtuoso opens AT initialTopMostItemIndex; record it as the placement
-    // so deep-link tests can tell "list opened at the target" from "page scrolled".
+    const [windowStart, setWindowStart] = useState(0);
+    const correctionTimer = useRef<ReturnType<typeof setInterval> | null>(null);
     useEffect(() => {
-      if (initialTopMostItemIndex) scrollToIndexSpy(initialTopMostItemIndex);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+      if (!mockVirtualWindow.holdAtIndex || !customScrollParent) return;
+      correctionTimer.current = setInterval(() => { customScrollParent.scrollTop = 0; }, 10);
+      return () => { if (correctionTimer.current) clearInterval(correctionTimer.current); };
+    }, [customScrollParent]);
+    const viewportMeasured = useRef(!mockVirtualWindow.delayedViewport && !mockVirtualWindow.offscreenViewport);
+    useEffect(() => {
+      const measured = () => {
+        viewportMeasured.current = true;
+        totalListHeightChanged?.(1000);
+      };
+      if (mockVirtualWindow.offscreenViewport && customScrollParent) {
+        const list = document.querySelector('[data-testid="virtuoso-mock"]')?.parentElement;
+        if (list) list.getBoundingClientRect = () => new DOMRect(0, 1000 - customScrollParent.scrollTop, 400, 100);
+        // Content above the list can still grow once after the first reveal
+        // and push the list back out of view before it measures.
+        let settled = !mockVirtualWindow.contentSettlesAbove;
+        const timer = window.setInterval(() => {
+          if (customScrollParent.scrollTop <= 0) return;
+          if (!settled) { settled = true; customScrollParent.scrollTop = 0; return; }
+          window.clearInterval(timer);
+          measured();
+        }, 10);
+        return () => window.clearInterval(timer);
+      }
+      if (!mockVirtualWindow.delayedViewport) { measured(); return; }
+      const timer = window.setTimeout(measured, 100);
+      return () => window.clearTimeout(timer);
+    }, [totalListHeightChanged, customScrollParent]);
+    useEffect(() => {
+      if ((!mockVirtualWindow.lateScrollReset && !mockVirtualWindow.holdAtIndex) || !customScrollParent) return;
+      mockVirtualWindow.scrollParent = customScrollParent;
+      Object.defineProperty(customScrollParent, "clientHeight", { configurable: true, value: 200 });
+      customScrollParent.getBoundingClientRect = () => new DOMRect(0, 0, 400, 200);
+      const target = document.getElementById(`comment-${mockVirtualWindow.targetId}`);
+      if (target) {
+        target.getBoundingClientRect = () => new DOMRect(0, 250 - customScrollParent.scrollTop, 400, mockVirtualWindow.targetHeight);
+        const row = target.closest<HTMLElement>("[data-item-index]");
+        if (row) row.getBoundingClientRect = () => new DOMRect(0, -customScrollParent.scrollTop, 400, 500);
+      }
+    }, [customScrollParent, windowStart, data]);
+    const jump = (location: { index: number; offset?: number; done?: () => void }) => {
+      if (location.offset !== undefined && customScrollParent && mockVirtualWindow.holdAtIndex) {
+        if (correctionTimer.current) clearInterval(correctionTimer.current);
+        customScrollParent.scrollTop = location.offset;
+      }
+      if (mockVirtualWindow.enabled && viewportMeasured.current) setWindowStart(Math.max(0, location.index - 2));
+      if (mockVirtualWindow.lateScrollReset && customScrollParent) {
+        window.setTimeout(() => { customScrollParent.scrollTop = location.offset ?? 0; location.done?.(); }, 80);
+      } else if (!mockVirtualWindow.pendingSizeCorrection && !mockVirtualWindow.holdAtIndex) location.done?.();
+    };
     useImperativeHandle(ref, () => ({
-      // Real Virtuoso ref methods are not exercised by tests in this file
-      // since the deep-link cold-path drives the container's scrollTop on the
-      // real DOM node, not Virtuoso's imperative API.
-      scrollIntoView: vi.fn(),
+      scrollIntoView: (location: { index: number; done?: () => void }) => {
+        scrollIntoViewIndexSpy(location);
+        jump(location);
+      },
       scrollToIndex: (location: { index: number }) => {
         scrollToIndexSpy(location);
-        if (Number.isFinite(virtualWindow.size)) setFirstIndex(location.index);
+        jump(location);
       },
     }));
+    const start = mockVirtualWindow.enabled ? windowStart : 0;
+    const visible = mockVirtualWindow.enabled ? data.slice(start, start + 8) : data;
     return (
       <div data-testid="virtuoso-mock">
-        {data.slice(firstIndex, firstIndex + virtualWindow.size).map((item, offset) => (
-          <div data-timeline-index={firstIndex + offset} key={computeItemKey(firstIndex + offset, item)}>{itemContent(firstIndex + offset, item) as React.ReactElement}</div>
+        {visible.map((item, i) => (
+          <div key={computeItemKey(start + i, item)} data-item-index={start + i}>{itemContent(start + i, item) as React.ReactElement}</div>
         ))}
       </div>
     );
@@ -666,10 +594,17 @@ vi.mock("react-virtuoso", () => ({
 // jsdom's HTMLElement.prototype.scrollIntoView is a no-op stub; replace it
 // with a spy so the deep-link effect's call can be observed.
 beforeEach(() => {
-  useIssueTitleDraftStore.setState({ drafts: {} });
-  virtualWindow.size = Infinity;
-  virtualWindow.initialIndex = 0;
-  Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ width: 0, height: 0 }] });
+  mockVirtualWindow.enabled = false;
+  mockVirtualWindow.pendingSizeCorrection = false;
+  mockVirtualWindow.holdAtIndex = false;
+  mockVirtualWindow.delayedViewport = false;
+  mockVirtualWindow.offscreenViewport = false;
+  mockVirtualWindow.contentSettlesAbove = false;
+  mockVirtualWindow.lateScrollReset = false;
+  mockVirtualWindow.targetId = "";
+  mockVirtualWindow.targetHeight = 100;
+  mockVirtualWindow.scrollParent = null;
+  scrollIntoViewIndexSpy.mockClear();
   scrollIntoViewSpy.mockClear();
   scrollToIndexSpy.mockClear();
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -680,13 +615,6 @@ beforeEach(() => {
   // The resolved-expand store is module-global (not per-mount like the old
   // useState); reset so one test's expansions can't leak into the next.
   useResolvedExpandStore.setState({ expandedByIssue: {} });
-  // Same module-global concern for the description/thread disclosure store.
-  useIssueDisclosureStore.setState({
-    descriptionExpandedIssueIds: new Set(),
-    expandedThreadIdsByIssue: {},
-  });
-  // Same concern for the useCommentDraftStore mock's backing state.
-  mockDraftStoreState.reset();
   useCommentCollapseStore.setState({ collapsedByIssue: {} });
 });
 
@@ -790,6 +718,7 @@ const mockTimeline: TimelineEntry[] = [
 // ---------------------------------------------------------------------------
 
 import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
+import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import { READING_COLUMN } from "../../layout/reading-column";
 import {
   IssueSurfaceSelectionProvider,
@@ -820,35 +749,6 @@ function renderIssueDetail(issueId = "issue-1") {
       </QueryClientProvider>
     </I18nProvider>,
   );
-}
-
-/**
- * The description's own Attach-file hidden input, disambiguated from every
- * other FileUploadButton on the page (comment composer, reply composer): it
- * is the one whose nearest ancestor containing the description editor is
- * closest (smallest depth) — every other input's nearest such ancestor is
- * the shared page root.
- */
-function descriptionFileInput(): HTMLInputElement {
-  const descriptionEditor = document.querySelector("[data-description-editor]");
-  if (!descriptionEditor) throw new Error("description editor not found");
-  const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'));
-  let closest: HTMLInputElement | null = null;
-  let closestDepth = Number.POSITIVE_INFINITY;
-  for (const input of inputs) {
-    let depth = 0;
-    for (let ancestor: HTMLElement | null = input.parentElement; ancestor; ancestor = ancestor.parentElement, depth++) {
-      if (ancestor.contains(descriptionEditor)) {
-        if (depth < closestDepth) {
-          closest = input;
-          closestDepth = depth;
-        }
-        break;
-      }
-    }
-  }
-  if (!closest) throw new Error("description Attach-file input not found");
-  return closest;
 }
 
 /**
@@ -900,10 +800,6 @@ function renderIssueDetailWithHighlight(
 const highlightedCommentBackgroundClass =
   "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
 
-function timelineRow(element: Element) {
-  return element.closest("[data-timeline-index]")!;
-}
-
 function hasHighlightedCommentBackground(root: ParentNode | null): boolean {
   if (!root) return false;
 
@@ -920,23 +816,18 @@ function hasHighlightedCommentBackground(root: ParentNode | null): boolean {
 // Tests
 // ---------------------------------------------------------------------------
 
+
+// Timeline thread rows render inside a stable wrapper (MUL-9409), so row order
+// and adjacency are compared at the wrapper level.
+function threadRow(el: Element): Element {
+  return el.closest("[data-thread-row]") ?? el;
+}
 describe("IssueDetail (shared)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
     readonlyContentRenders.length = 0;
     descriptionSelectionAction.current = undefined;
-    descriptionMeasurement.current = {
-      totalRows: 1,
-      hiddenRows: 0,
-      hasOverflow: false,
-      lineHeight: 20,
-      previewText: "",
-    };
-    mockUploadWithToast.mockReset();
-    descDropZoneOnDrop.current = null;
-    descEditorUploadFile.mockClear();
-    descOnUploadFile.current = null;
     mockViewport.isMobile = false;
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
@@ -1045,17 +936,6 @@ describe("IssueDetail (shared)", () => {
     }));
   });
 
-  it("bounds the add-property popover to the available viewport", async () => {
-    renderIssueDetail();
-    await screen.findByText(mockIssue.title);
-    fireEvent.click(screen.getByText("Add property"));
-    expect(await screen.findByTestId("add-property-popover")).toHaveClass(
-      "max-h-(--available-height)",
-      "overflow-y-auto",
-      "overscroll-contain",
-    );
-  });
-
   it("counts comment files as deliverables, a re-upload once as v2, never the description's (MUL-7649)", async () => {
     const file = (id: string, over: Partial<Attachment>): Attachment => ({
       id,
@@ -1128,6 +1008,73 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByRole("dialog", { name: /deliverables$/ })).toBeNull();
   });
 
+  it.each([100, 1200])("keeps a %i-pixel deliverable reply visible while the virtual list corrects its size", async (height) => {
+    mockVirtualWindow.enabled = true;
+    mockVirtualWindow.holdAtIndex = true;
+    mockVirtualWindow.targetId = "image-reply";
+    mockVirtualWindow.targetHeight = height;
+    const history = Array.from({ length: 120 }, (_, index) => ({
+      ...mockTimeline[0]!, id: `history-${index}`, parent_id: null, source_task_id: undefined,
+      content: `Historical comment ${index}`,
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    const root = history[115]!;
+    const image: Attachment = { id: "deep-image", workspace_id: "ws-1", issue_id: "issue-1",
+      comment_id: "image-reply", chat_session_id: null, chat_message_id: null,
+      uploader_type: "agent", uploader_id: "agent-1", filename: "deep-image.png",
+      content_type: "image/png", size_bytes: 100, url: "/image.png", download_url: "/image.png",
+      markdown_url: "/image.png", created_at: root.created_at };
+    mockApiObj.listTimeline.mockResolvedValue([...history, {
+      ...root, id: "image-reply", parent_id: root.id, content: "Deep image explanation", attachments: [image],
+    }]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "View all 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(hasHighlightedCommentBackground(
+      document.getElementById("comment-image-reply"),
+    )).toBe(true));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 150)); });
+    expect(mockVirtualWindow.scrollParent?.scrollTop).toBe(height === 100 ? 200 : 234);
+    expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+    expect(mockApiObj.listComments).not.toHaveBeenCalled();
+    const jumps = scrollIntoViewIndexSpy.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(scrollIntoViewIndexSpy.mock.calls.length).toBeGreaterThan(jumps));
+  });
+
+  it("finds text in comments the timeline has not mounted, without mounting the history (MUL-9538)", async () => {
+    mockVirtualWindow.enabled = true;
+    const history = Array.from({ length: 40 }, (_, index) => ({
+      ...mockTimeline[0]!, id: `history-${index}`, parent_id: null, source_task_id: undefined,
+      content: index === 30 ? "The **needle** is in this one" : `Historical comment ${index}`,
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    mockApiObj.listTimeline.mockResolvedValue(history);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    // Find only answers in a visible page; jsdom lays nothing out.
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects")
+      .mockReturnValue([new DOMRect(0, 0, 1, 1)] as unknown as DOMRectList);
+    try {
+      renderIssueDetail();
+      await screen.findByText("Historical comment 0");
+
+      fireEvent.keyDown(document, { key: "f", code: "KeyF", ctrlKey: true });
+      fireEvent.change(await screen.findByRole("textbox", { name: "Find in issue..." }), { target: { value: "needle" } });
+
+      // Counted from the comment's Markdown while it is not mounted.
+      await waitFor(() => expect(screen.getByRole("search")).toHaveTextContent("1/1"));
+      // Landing on it mounts that comment, not the history before it.
+      await waitFor(() => expect(scrollIntoViewIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 30 })));
+      await waitFor(() => expect(document.getElementById("comment-history-30")).not.toBeNull());
+      expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+      expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument();
+    } finally {
+      rects.mockRestore();
+    }
+  });
+
   it("opens source-context creation from both a root comment and a reply", async () => {
     mockApiObj.listTimeline.mockResolvedValue([
       { ...mockTimeline[0], id: "source-root", parent_id: null },
@@ -1178,34 +1125,6 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Create sub-issue from here")).not.toBeInTheDocument();
   });
 
-  // A cold visit to /issues/:id?focus=wakeups: the sidebar and the Wakeups
-  // heading do not exist until the issue has loaded, so the deep link must
-  // survive the skeleton and be consumed only once the page can receive it.
-  it("keeps the wakeups deep link through the loading skeleton and consumes it once loaded", async () => {
-    const replace = vi.fn();
-    mockNavigation.current = {
-      push: vi.fn(),
-      replace,
-      back: vi.fn(),
-      pathname: "/acme/issues/issue-1",
-      searchParams: new URLSearchParams("focus=wakeups"),
-      hash: "",
-      getShareableUrl: (p: string) => p,
-    };
-    try {
-      let resolveIssue!: (issue: Issue) => void;
-      mockApiObj.getIssue.mockReturnValue(new Promise<Issue>((resolve) => { resolveIssue = resolve; }));
-      renderIssueDetail();
-      await Promise.resolve();
-      expect(replace).not.toHaveBeenCalled();
-
-      resolveIssue(mockIssue);
-      await waitFor(() => expect(replace).toHaveBeenCalledWith("/acme/issues/issue-1"));
-    } finally {
-      mockNavigation.current = null;
-    }
-  });
-
   it("keeps an embedded host's sidebar closed while loading", () => {
     mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
     const queryClient = createTestQueryClient();
@@ -1229,18 +1148,6 @@ describe("IssueDetail (shared)", () => {
     expect(
       screen.getAllByRole("generic").some((el) => el.getAttribute("data-slot") === "skeleton"),
     ).toBe(true);
-  });
-
-  // The list is only a seed for rows another view already loaded. Opening an
-  // issue must not pay for a workspace-wide list request to read a cache.
-  it("does not request the workspace issue list", async () => {
-    mockApiObj.getIssue.mockResolvedValue(mockIssue);
-    renderIssueDetail();
-    await waitFor(() => {
-      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
-    });
-
-    expect(mockApiObj.listIssues).not.toHaveBeenCalled();
   });
 
   it("sizes the skeleton and the loaded column from the same reading container", async () => {
@@ -1310,8 +1217,7 @@ describe("IssueDetail (shared)", () => {
     // layout jump caused by swapping a long react-markdown tree for ProseMirror.
     // Title and comment/reply composers remain readonly-first.
     expect(await screen.findByDisplayValue("Add JWT auth to the backend")).toBeInTheDocument();
-    // The sidebar minimap's "you are here" card repeats the title, so scope to the heading.
-    expect(screen.getByText("Implement authentication", { selector: "#find-title-issue-1" })).toBeInTheDocument();
+    expect(screen.getByText("Implement authentication")).toBeInTheDocument();
     expect(screen.queryByTestId("title-editor")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("rich-text-editor")).toHaveLength(1);
     expect(contentEditorMounts.count).toBe(1);
@@ -1537,24 +1443,7 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Parent issue")).not.toBeInTheDocument();
     // The "+ Add property" affordance is always offered while any
     // optional field is still hidden.
-    expect(screen.getByText("Add property")).toBeInTheDocument();
-  });
-
-  it("shows how the issue was created, and nothing for older issues (CHE-6098)", async () => {
-    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, created_via: "dialog" });
-    const { unmount } = renderIssueDetail();
-    await waitFor(() => {
-      expect(screen.getByText("Created via")).toBeInTheDocument();
-    });
-    expect(screen.getByText("Create dialog")).toBeInTheDocument();
-    unmount();
-
-    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, created_via: "" });
-    renderIssueDetail();
-    await waitFor(() => {
-      expect(screen.getByText("Properties")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("Created via")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add property" })).toBeInTheDocument();
   });
 
   it("hides every optional property row when none are set", async () => {
@@ -1579,7 +1468,27 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByTestId("project-picker")).toBeInTheDocument();
     // No parent → no standalone Parent issue section either.
     expect(screen.queryByText("Parent issue")).not.toBeInTheDocument();
-    expect(screen.getByText("Add property")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add property" })).toBeInTheDocument();
+  });
+
+  it("keeps the Properties header free of add and settings buttons", async () => {
+    renderIssueDetail();
+    const disclosure = await screen.findByRole("button", { name: "Properties" });
+    const header = disclosure.parentElement!;
+    expect(within(header).queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Properties options" })).not.toBeInTheDocument();
+    // Folding the section hides the inline Add property row with the rest of the grid.
+    fireEvent.click(disclosure);
+    expect(screen.queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+  });
+
+  it("adds an optional field from the inline Add property row and closes the popover", async () => {
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Add property" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start date" }));
+    // The popover closes (its other options are gone) and the new row is rendered.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument());
+    expect(screen.getAllByText("Start date")[0]).toBeVisible();
   });
 
   it("uses a non-resizable layout with the sidebar sheet closed by default on mobile", async () => {
@@ -1593,30 +1502,6 @@ describe("IssueDetail (shared)", () => {
 
     expect(screen.queryByTestId("panel-group")).not.toBeInTheDocument();
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
-  });
-
-  // CHE-3472: a card-parked issue carries an object in metadata.decision_park.
-  // The page must open it, not show "does not exist". getIssue runs the real
-  // client (fetch + schema parse) instead of the module mock.
-  it("opens an issue whose metadata carries the decision-park object", async () => {
-    const parked = {
-      ...mockIssue,
-      metadata: { decision_park: { status: "blocked", to: "need_decision", set: "opt" }, status_summary: "Blocked" },
-    };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(parked), {
-      status: 200, headers: { "Content-Type": "application/json" },
-    })));
-    mockApiObj.getIssue.mockImplementation((id: string) => new ApiClient("https://api.example.test").getIssue(id));
-
-    renderIssueDetail();
-
-    await waitFor(() => {
-      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
-    });
-    expect(
-      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
-    ).not.toBeInTheDocument();
-    vi.unstubAllGlobals();
   });
 
   // The peek's close button lives in the host's trailing controls, so every
@@ -1802,9 +1687,7 @@ describe("IssueDetail (shared)", () => {
     expect(scrollIntoViewSpy).not.toHaveBeenCalled();
   });
 
-  it("hides metadata content from the sidebar and shows a button when the bag has keys", async () => {
-    // Metadata is agent-facing; the sidebar only exposes a button that opens
-    // the raw JSON on demand. Keys are NOT rendered inline anywhere.
+  it("keeps metadata collapsed by default when the bag has keys", async () => {
     mockApiObj.getIssue.mockResolvedValue({
       ...mockIssue,
       metadata: {
@@ -1816,42 +1699,24 @@ describe("IssueDetail (shared)", () => {
     renderIssueDetail();
 
     await waitFor(() => {
-      // Trigger label includes a "· N" count so users can see payload size
-      // before clicking — accept any count via regex.
       expect(screen.getByRole("button", { name: /^Metadata\b/ })).toBeInTheDocument();
     });
 
-    // Key names are not rendered in the sidebar prior to opening the dialog.
+    // Keys stay hidden until the section is expanded.
     expect(screen.queryByText("pr_url")).not.toBeInTheDocument();
     expect(screen.queryByText("pipeline_status")).not.toBeInTheDocument();
   });
 
-  it("opens a dialog with formatted JSON when the Metadata button is clicked", async () => {
+  it("expands metadata inline from the shared sidebar header", async () => {
     mockApiObj.getIssue.mockResolvedValue({
       ...mockIssue,
-      metadata: {
-        pr_url: "https://example.com/pr/1",
-        pipeline_status: "running",
-      },
+      metadata: { pipeline_status: "running" },
     });
-
     renderIssueDetail();
-
-    const button = await screen.findByRole("button", { name: /^Metadata\b/ });
-    fireEvent.click(button);
-
-    // The dialog renders a <pre> containing the formatted JSON; checking the
-    // exact serialized payload also verifies the indent / structure.
-    const expected = JSON.stringify(
-      { pr_url: "https://example.com/pr/1", pipeline_status: "running" },
-      null,
-      2,
-    );
-    await waitFor(() => {
-      const pre = document.querySelector("pre");
-      expect(pre).not.toBeNull();
-      expect(pre!.textContent).toBe(expected);
-    });
+    fireEvent.click(await screen.findByRole("button", { name: /^Metadata\b/ }));
+    expect(screen.getByText("pipeline_status")).toBeVisible();
+    expect(screen.getByText("running")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("hides the Metadata button entirely when the bag is empty", async () => {
@@ -1899,7 +1764,7 @@ describe("IssueDetail (shared)", () => {
     const agentBlock = container.querySelector(`[data-run-comment-id="${taskId}"]`)!;
     expect(agentBlock).not.toBeNull();
     expect(userBlock.contains(agentBlock)).toBe(false);
-    expect(timelineRow(agentBlock).previousElementSibling).toBe(timelineRow(userBlock));
+    expect(threadRow(agentBlock).parentElement).toBe(userBlock.parentElement);
     expect(agentBlock.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
     const running: AgentTask = { ...task, status: "running", started_at: task.created_at, delivered_comment_ids: [root.id] };
     act(() => client.setQueryData(issueKeys.tasks("issue-1"), [running]));
@@ -1967,8 +1832,8 @@ describe("IssueDetail (shared)", () => {
     const firstComment = container.querySelector(`#comment-${first.id}`);
     expect(latestComment).not.toBeNull();
     expect(firstComment).not.toBeNull();
-    expect(timelineRow(latestComment!).nextElementSibling).toBe(timelineRow(run!));
-    expect(timelineRow(firstComment!).nextElementSibling).not.toBe(timelineRow(run!));
+    expect(threadRow(latestComment!).nextElementSibling).toBe(threadRow(run));
+    expect(threadRow(firstComment!).nextElementSibling).not.toBe(threadRow(run));
   });
 
   it("keeps the running block after its delivered comment and one queued block after later replies", async () => {
@@ -2010,7 +1875,7 @@ describe("IssueDetail (shared)", () => {
     expect(rootContent!.compareDocumentPosition(runningBlock!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(runningBlock!.compareDocumentPosition(firstComment!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(firstComment!.compareDocumentPosition(latestComment!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(timelineRow(latestComment!).nextElementSibling).toBe(timelineRow(queuedBlock!));
+    expect(threadRow(latestComment!).nextElementSibling).toBe(threadRow(queuedBlock!));
     expect(container.querySelectorAll(`[data-run-comment-id="${queued.id}"]`)).toHaveLength(1);
   });
 
@@ -2057,9 +1922,8 @@ describe("IssueDetail (shared)", () => {
     const replyBlock = container.querySelector("#comment-assignment-reply")!;
     const parentBlock = container.querySelector("#comment-comment-1")!;
     if (parentId) {
-      expect(parentBlock).not.toContainElement(replyBlock as HTMLElement);
-      expect(replyBlock.closest("[data-thread-root]")).toHaveAttribute("data-thread-root", parentId);
-      expect(replyBlock.closest(`[data-run-slot-id="${task.id}"]`)).not.toBeNull();
+      expect(parentBlock).toContainElement(replyBlock as HTMLElement);
+      expect(parentBlock.querySelector(`[data-run-slot-id="${task.id}"]`)).not.toBeNull();
     } else {
       expect(parentBlock).not.toContainElement(replyBlock as HTMLElement);
       expect(container.querySelector(`[data-run-slot-id="${task.id}"]`)).toBe(assignmentSlot);
@@ -2073,1060 +1937,6 @@ describe("IssueDetail (shared)", () => {
     act(() => queryClient.setQueryData(issueKeys.tasks("issue-1"), [completed]));
     await waitFor(() => expect(within(replyBlock as HTMLElement).queryByRole("button", { name: "Stop" })).not.toBeInTheDocument());
     expect(within(replyBlock as HTMLElement).getByRole("button", { name: "Open full log" })).toBe(headerLog);
-  });
-
-  // Canonical coverage for the latch itself (01-DESIGN "Durable state and
-  // transition matrix", "New reply / edit / active run" row): an active
-  // interaction must not just force a compact thread open for its duration —
-  // it must LATCH the length-expanded preference so the thread stays open
-  // after the interaction ends. `issue-disclosure-store.test.ts` only proves
-  // `setThreadExpanded` is a correct setter; it cannot prove anything about
-  // when the component calls it. This is that proof.
-  it("latches a thread's length-expanded preference when an active edit draft forces it open, surviving after the draft clears", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `latch-reply-${i}`,
-      parent_id: root.id,
-      content: `Reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
-
-    await screen.findByText("Reply 3");
-    // Compact window: latest three visible (1, 2, 3), oldest (0) hidden.
-    expect(screen.queryByText("Reply 0")).not.toBeInTheDocument();
-    await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    // Introduce an active reply draft on the root — the same draft-store key
-    // (`reply:${issueId}:${rootId}`) `rootIdsWithActiveReplyDraft` reads.
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
-        content: "typing a reply...",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-
-    // forceThreadOpen's pin fires: the thread opens fully, including the
-    // reply the compact window was hiding, and the latch effect persists
-    // that expansion into useIssueDisclosureStore. Show less itself is
-    // withheld while the pin is active (comment-card.tsx: `!forceThreadExpanded`
-    // gates it) — that's a different, already-covered rule — so this only
-    // asserts the reply is visible and the pin is what's showing it.
-    await screen.findByText("Reply 0");
-    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
-
-    // Clear the draft — the interaction ends (reply sent), exactly like
-    // useCommentDraftStore's clearDraft on a successful submit.
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, undefined);
-    });
-
-    // The temporary pin is gone (no active draft), but 01-DESIGN line 56
-    // requires the latch to survive: the previously-compact reply must
-    // REMAIN visible, not refold now that the reason has cleared.
-    await waitFor(() => expect(screen.queryByText("Reply 0")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
-    // Assert the durable store entry itself, not just rendered rows — the
-    // rows alone can't distinguish "still latched" from "some other pin
-    // happens to still be active."
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-  });
-
-  // CHE-1935: the reply box is already visible in the compact state, so a typed reply draft must
-  // neither unfold the thread (hidden replies would mount above the box and push it away) nor
-  // latch the expansion. An edit draft on a hidden reply still does both.
-  it("keeps a compact thread compact and unlatched while a reply draft is typed (CHE-1935)", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `che1935-reply-${i}`,
-      parent_id: root.id,
-      content: `C1935 reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
-
-    await screen.findByText("C1935 reply 3");
-    await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
-        content: "t",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-
-    // Let the latch effect run, then assert the thread did not move.
-    await act(async () => {});
-    expect(screen.queryByText("C1935 reply 0")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Show \d+ more repl/ })).toBeInTheDocument();
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-  });
-
-  it("still unfolds and latches a compact thread while an edit draft sits on a hidden reply (CHE-1935)", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `che1935-edit-reply-${i}`,
-      parent_id: root.id,
-      content: `C1935 edit reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
-
-    await screen.findByText("C1935 edit reply 3");
-    await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
-        content: "editing",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-
-    await screen.findByText("C1935 edit reply 0");
-    await waitFor(() =>
-      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
-    );
-  });
-
-  // CHE-479 regression: Fold All (search-command.tsx's foldAllCommentThreads
-  // -> useIssueDisclosureStore.collapseAllThreads) must not have its
-  // full-collapse intent immediately undone by the latch effect above for a
-  // root whose only reason for compact-window absence is that Fold All
-  // itself just cleared it. Before the fix, `collapseAllThreads` clearing
-  // `expandedThreadIdsByIssue` changed the latch effect's
-  // `expandedThreadLengths` dependency and re-fired it on the same tick;
-  // with an active reply draft already present, `!expandedThreadLengths.has(rootId)`
-  // read true again and the effect immediately re-latched the root open,
-  // silently undoing the fold.
-  it("does not let Fold All be immediately undone by the latch when an edit draft is already active on a folded root (CHE-479)", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `foldall-latch-reply-${i}`,
-      parent_id: root.id,
-      content: `Foldall reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
-
-    await screen.findByText("Foldall reply 3");
-    await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    // Start an active reply draft on the root — same latch reason as the
-    // test above — so forceThreadOpen's pin is active and the latch effect
-    // has already persisted the length-expansion for this root.
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
-        content: "typing a reply...",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-    await screen.findByText("Foldall reply 0");
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-
-    // Fold All: the same store call search-command.tsx's
-    // foldAllCommentThreads makes on useIssueDisclosureStore.
-    act(() => {
-      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
-    });
-
-    // The fold must stick: the length-expanded entry stays cleared, even
-    // though the reply draft is still active on this exact root. Continued
-    // typing on this SAME still-active draft must not re-latch it either —
-    // per 01-DESIGN line 56 the latch fires on a reason *starting*, not on
-    // every keystroke of a reason that is already accounted for, and Fold
-    // All's own row explicitly only promises the temporary pin ("Active
-    // edit pins prevent focus loss") keeps the draft reachable, not that the
-    // length preference stays expanded.
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
-        content: "typing a reply... continued",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-    await screen.findByText("Foldall reply 0");
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-
-    // A genuinely NEW reason after the fold — this draft ending and a fresh
-    // one starting on the same root — must still latch normally: Fold All's
-    // suppression must not permanently block future latching.
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "", attachments: [], updatedAt: Date.now() });
-    });
-    await waitFor(() => expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy());
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
-        content: "a brand new reply draft",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-    await waitFor(() =>
-      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
-    );
-  });
-
-  // CHE-479: a second Fold All must not resurrect suppression for a root
-  // that the FIRST Fold All folded but that has since organically re-latched
-  // (its draft ended and a new one started, per the test above), if that
-  // second Fold All did not itself re-fold this root. `justFoldedRootIdsByIssue`
-  // is overwritten wholesale by each `collapseAllThreads` call — this proves
-  // a stale suppression entry from an earlier fold occurrence cannot leak
-  // into a later, unrelated one.
-  it("does not let a stale fold suppression from an earlier Fold All block a later, unrelated latch (CHE-479)", async () => {
-    const root = mockTimeline[0]!;
-    const other = { ...mockTimeline[1]!, id: "foldall-stale-other-root", content: "Other root" };
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `foldall-stale-reply-${i}`,
-      parent_id: root.id,
-      content: `Stale fold reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, other, ...replies]);
-    renderIssueDetail();
-    await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    // Expand root, then fold everything (first Fold All folds `root`).
-    act(() => {
-      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [root.id]);
-    });
-    act(() => {
-      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
-    });
-    expect(useIssueDisclosureStore.getState().justFoldedRootIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-
-    // A second Fold All happens with nothing expanded (e.g. the user ran the
-    // command again with everything already compact) — it no-ops and does
-    // NOT produce a new justFoldedRootIdsByIssue entry naming `root`, so the
-    // original suppression should no longer apply to `root` once superseded
-    // by any later, distinct justFoldedRoots state.
-    act(() => {
-      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [other.id]);
-    });
-    act(() => {
-      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
-    });
-    expect(useIssueDisclosureStore.getState().justFoldedRootIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-
-    // Now start a fresh reply draft on `root` — this must latch normally:
-    // the second, unrelated Fold All's justFoldedRoots (naming only `other`)
-    // must not carry forward suppression for `root`.
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
-        content: "a fresh reply after an unrelated fold",
-        attachments: [],
-        updatedAt: Date.now(),
-      });
-    });
-    await waitFor(() =>
-      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
-    );
-  });
-
-  it("latches a thread's length-expanded preference when an active run forces it open, surviving after the run completes", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `latch-run-reply-${i}`,
-      parent_id: root.id,
-      content: `Run reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    // An active (queued) run anchored to the newest reply, with no published
-    // reply of its own yet — the exact shape `rootIdsWithActiveRun` looks for.
-    const task: AgentTask = {
-      id: "ba2e8d1c-7f9b-4e2a-9c1d-latchrun001", agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
-      status: "queued", priority: 0, created_at: "2026-01-16T00:05:00Z",
-      started_at: null, dispatched_at: null, completed_at: null, result: null, error: null,
-      trigger_comment_id: replies[3]!.id, delivered_comment_ids: [],
-    };
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    mockApiObj.listTasksByIssue.mockResolvedValue([task]);
-    const client = createTestQueryClient();
-    render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QueryClientProvider client={client}><IssueDetail issueId="issue-1" /></QueryClientProvider>
-      </I18nProvider>,
-    );
-
-    // The active run is present from the first render (it's in the initial
-    // `listTasksByIssue` mock, unlike the draft scenario above where the
-    // draft starts mid-test), so the pin is already active by the time
-    // anything mounts — the compact-window reply is visible immediately, and
-    // the latch effect has already persisted the expansion.
-    await screen.findByText("Run reply 3");
-    await screen.findByText("Run reply 0");
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-
-    // The run completes — the pin's reason ends.
-    const completed: AgentTask = { ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z" };
-    mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
-    act(() => {
-      client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
-    });
-
-    // 01-DESIGN line 56 requires the latch to survive run completion exactly
-    // as it does draft-clearing: the reply stays visible and the store entry
-    // is not removed.
-    await waitFor(() => expect(screen.queryByText("Run reply 0")).toBeInTheDocument());
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-  });
-
-  // Regression for the gap Sol's review caught in PR #31 (CHE-380 stage 6):
-  // `rootIdsWithActiveRun` originally only matched a run's `anchorCommentId`
-  // against the thread's REPLIES, so a run anchored directly to the root
-  // comment itself (no reply on it yet) never entered the set. Because
-  // root-anchored runs render inside comment-card.tsx's own `open` gate
-  // (`!isCollapsed || forceThreadExpanded`), a manually collapsed root could
-  // hide a newly active run with no way to reveal it short of manually
-  // un-collapsing. `anchorCommentId === rootId` closes that gap.
-  //
-  // Sol's follow-up review required the lifecycle to be observed, not
-  // assumed: render collapsed with no run present, THEN inject the
-  // root-anchored run so its slot's appearance is an actual assertion
-  // rather than baked into the initial mock data, and check the manual
-  // collapse preference itself (not just the Stop button) both while the
-  // run is active and after it completes.
-  it("force-opens a manually collapsed root when an active run anchors directly to the root, not just to one of its replies", async () => {
-    const root = mockTimeline[0]!;
-    const taskId = "ba2e8d1c-7f9b-4e2a-9c1d-rootanchor01";
-    // Root is manually collapsed with no run in play yet — the starting
-    // state Sol's review requires observing before any run is injected.
-    useCommentCollapseStore.getState().toggle("issue-1", root.id);
-    mockApiObj.listTimeline.mockResolvedValue([root]);
-    mockApiObj.listTasksByIssue.mockResolvedValue([]);
-    const client = createTestQueryClient();
-    const { container } = render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QueryClientProvider client={client}><IssueDetail issueId="issue-1" /></QueryClientProvider>
-      </I18nProvider>,
-    );
-    await waitFor(() => expect(client.getQueryData(issueKeys.tasks("issue-1"))).toEqual([]));
-    expect(container.querySelector(`[data-run-id="${taskId}"]`)).toBeNull();
-    expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
-
-    // Inject the root-anchored queued run after the collapsed/no-run state
-    // has already rendered, mirroring how a run actually arrives mid-session.
-    const task: AgentTask = {
-      id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
-      status: "queued", priority: 0, created_at: "2026-01-16T00:05:00Z",
-      started_at: null, dispatched_at: null, completed_at: null, result: null, error: null,
-      trigger_comment_id: root.id, delivered_comment_ids: [],
-    };
-    mockApiObj.listTasksByIssue.mockResolvedValue([task]);
-    act(() => {
-      client.setQueryData(issueKeys.tasks("issue-1"), [task]);
-    });
-
-    // `forceThreadOpen`'s pin must beat manual collapse: the root-anchored
-    // run's slot has to become visible despite `isCollapsed` being true, or
-    // the active output is invisible with no affordance to reveal it. Check
-    // both the DOM slot and the underlying collapse preference itself — the
-    // pin must override the gate without mutating the preference it overrides.
-    await screen.findByRole("button", { name: "Stop" });
-    expect(container.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
-    expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
-
-    // The run completes — `isActiveCommentRun` no longer matches it, so
-    // `rootIdsWithActiveRun` drops the root and `forceThreadOpen`'s pin
-    // releases. Manual collapse was never mutated by the pin, so with
-    // `isCollapsed` still true the root's `open` gate closes again and the
-    // root-anchored run's slot — including its "Completed" summary, which
-    // only rendered because the pin forced `open` true — leaves the DOM.
-    // `delivered_comment_ids` is set to the root here because that is what a
-    // real completion does (comment-runs.ts's anchor resolution reads
-    // `delivered_comment_ids` once a task is no longer queued/dispatched,
-    // per buildCommentRunView's `usesPlannedCoverage`); leaving it `[]` (as
-    // it correctly is at `queued`, before delivery is known) would make the
-    // run resolve with no anchor and fall out to the standalone-run render
-    // path (issue-detail.tsx's `item.kind === "run"` timeline branch, gated
-    // by nothing but timeline order) instead of the root-anchored path this
-    // test exists to exercise (comment-card.tsx's `{open && ...}` block) —
-    // an unanchored completed run would trivially "pass" a bare
-    // Stop-button-gone assertion while proving nothing about the collapse
-    // pin. Assert the node's absence directly (not just the Stop button) so
-    // a stale intermediate render, where completion has landed but the
-    // collapse re-close hasn't yet, can't pass this assertion.
-    const completed: AgentTask = {
-      ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z", delivered_comment_ids: [root.id],
-    };
-    mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
-    act(() => {
-      client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
-    });
-    await waitFor(() => expect(container.querySelector(`[data-run-id="${taskId}"]`)).toBeNull());
-    expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
-  });
-
-  it("latches a thread's length-expanded preference when a target reveal forces it open, surviving after the target releases", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `latch-target-reply-${i}`,
-      parent_id: root.id,
-      content: `Target reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    const queryClient = createTestQueryClient();
-    // Built directly (not via renderIssueDetailWithHighlight) so the target
-    // reveal can actually "release" by rerendering with highlightCommentId
-    // cleared — 01-DESIGN "Target reveal" row: "replacement/cancellation/view
-    // exit releases it." targetRootId is purely a function of this prop; it
-    // has no internal timeout, so releasing it means the caller (here, the
-    // rerender) stops passing it, exactly like a consumed deep link.
-    const { rerender } = render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QueryClientProvider client={queryClient}>
-          <IssueDetail issueId="issue-1" highlightCommentId={replies[0]!.id} />
-        </QueryClientProvider>
-      </I18nProvider>,
-    );
-
-    // The target (the oldest, compact-window-hidden reply) is revealed.
-    await screen.findByText("Target reply 0");
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-
-    // The deep link is consumed — the caller stops passing highlightCommentId,
-    // releasing the pin (targetRootId becomes null).
-    rerender(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QueryClientProvider client={queryClient}>
-          <IssueDetail issueId="issue-1" />
-        </QueryClientProvider>
-      </I18nProvider>,
-    );
-
-    // This is finding 1's regression: without the fix, targetRootId's pin
-    // drops with nothing having latched it, and the thread silently refolds,
-    // hiding the reply the user was just shown.
-    await waitFor(() => expect(screen.queryByText("Target reply 0")).toBeInTheDocument());
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-  });
-
-  it("does not latch a thread's length preference merely because in-page find opened and closed", async () => {
-    // find.open must force a compact thread open (so its content is
-    // searchable) WITHOUT writing anything durable — 01-DESIGN "Find open /
-    // close" row: "no write to any fold preference." This is the negative
-    // control that keeps the target-reveal latch from over-latching.
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `latch-find-reply-${i}`,
-      parent_id: root.id,
-      content: `Find reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    // useInPageFind's Cmd/Ctrl+F handler gates on the container having a
-    // non-empty getClientRects() — real in a browser, always empty in jsdom.
-    // Scoped to this test only: no other test in this file drives find.open,
-    // and stubbing it globally risks masking an unrelated visibility bug in
-    // a future test.
-    const originalGetClientRects = Element.prototype.getClientRects;
-    Element.prototype.getClientRects = function (this: Element) {
-      return [{ width: 1, height: 1 }] as unknown as DOMRectList;
-    };
-    try {
-      renderIssueDetail();
-      await screen.findByText("Find reply 3");
-      expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument();
-
-      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
-      fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: "Find reply 0" } });
-      await screen.findByText("Find reply 0");
-      // The pin is doing the work here — nothing has latched yet.
-      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-
-      // Escape is handled by FindBar's own input, not a global listener.
-      const findInput = screen.getByPlaceholderText("Find in issue...");
-      fireEvent.keyDown(findInput, { key: "Escape" });
-
-      // Closing find drops the pin. Per row 58, no durable entry was ever
-      // written for this root, so it refolds — this is the correct, intended
-      // behavior for find (unlike the draft/run/target latches above).
-      await waitFor(() => expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument());
-      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-    } finally {
-      Element.prototype.getClientRects = originalGetClientRects;
-    }
-  });
-
-  // CHE-436: 01-DESIGN "Find and target reveal lifecycle" — find must reveal
-  // EVERY fold class, not just manual collapse/length (already covered by
-  // "does not latch..." above and the pre-existing forceThreadOpen tests).
-  // This closes the gap CHE-436 was scoped to fix: a resolved-bar root and a
-  // reply-resolution conclusion fold both stayed folded under find before
-  // this change, because `expandedResolvedIds`/`flattenGroups` read the raw
-  // (non-overridden) resolved-expand store.
-  describe("find reveals resolved-thread folds (CHE-436)", () => {
-    async function openFind() {
-      const originalGetClientRects = Element.prototype.getClientRects;
-      Element.prototype.getClientRects = function (this: Element) {
-        return [{ width: 1, height: 1 }] as unknown as DOMRectList;
-      };
-      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
-      return () => {
-        Element.prototype.getClientRects = originalGetClientRects;
-      };
-    }
-
-    it("reveals a resolved root (folded to a bar) while find is open, and refolds it on close", async () => {
-      const resolvedRoot: TimelineEntry = {
-        ...mockTimeline[0]!,
-        id: "resolved-root",
-        content: "Resolved root body — findable sentinel",
-        resolved_at: "2026-01-19T00:00:00Z",
-      };
-      mockApiObj.listTimeline.mockResolvedValue([resolvedRoot]);
-      renderIssueDetail();
-
-      // Folded to a bar by default — the body text is not in the DOM, only
-      // the "N resolved comment(s) from ..." bar button.
-      await screen.findByRole("button", { name: /resolved comment/ });
-      expect(screen.queryByText("Resolved root body — findable sentinel")).not.toBeInTheDocument();
-
-      const restoreGetClientRects = await openFind();
-      try {
-        fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: "Resolved root body" } });
-        await screen.findByText("Resolved root body — findable sentinel");
-        // Row 58: find never writes the resolved-expand preference.
-        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
-
-        const findInput = screen.getByPlaceholderText("Find in issue...");
-        fireEvent.keyDown(findInput, { key: "Escape" });
-
-        await waitFor(() =>
-          expect(screen.queryByText("Resolved root body — findable sentinel")).not.toBeInTheDocument(),
-        );
-        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
-      } finally {
-        restoreGetClientRects();
-      }
-    });
-
-    it("reveals a reply-resolution conclusion fold (other replies hidden behind it) while find is open", async () => {
-      const root = { ...mockTimeline[0]!, id: "concl-root", content: "Conclusion root" };
-      const hiddenReply: TimelineEntry = {
-        ...mockTimeline[1]!,
-        id: "concl-hidden",
-        parent_id: root.id,
-        content: "Hidden middle reply — findable sentinel",
-        created_at: "2026-01-16T00:01:00Z",
-      };
-      const resolutionReply: TimelineEntry = {
-        ...mockTimeline[1]!,
-        id: "concl-resolution",
-        parent_id: root.id,
-        content: "The resolution reply",
-        created_at: "2026-01-16T00:02:00Z",
-        resolved_at: "2026-01-17T00:00:00Z",
-      };
-      mockApiObj.listTimeline.mockResolvedValue([root, hiddenReply, resolutionReply]);
-      renderIssueDetail();
-
-      await screen.findByText("The resolution reply");
-      expect(screen.queryByText("Hidden middle reply — findable sentinel")).not.toBeInTheDocument();
-
-      const restoreGetClientRects = await openFind();
-      try {
-        fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: "Hidden middle reply" } });
-        await screen.findByText("Hidden middle reply — findable sentinel");
-        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(root.id)).toBeFalsy();
-
-        const findInput = screen.getByPlaceholderText("Find in issue...");
-        fireEvent.keyDown(findInput, { key: "Escape" });
-
-        await waitFor(() =>
-          expect(screen.queryByText("Hidden middle reply — findable sentinel")).not.toBeInTheDocument(),
-        );
-      } finally {
-        restoreGetClientRects();
-      }
-    });
-
-    it("disables the manual Collapse control on an open thread while find is open, with a localized reason, and re-enables it on close", async () => {
-      const root = mockTimeline[0]!;
-      const { container } = renderIssueDetail();
-      await screen.findByText("Started working on this");
-
-      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
-      const collapseButton = () => within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
-      expect(collapseButton()).toBeEnabled();
-
-      const restoreGetClientRects = await openFind();
-      try {
-        fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: root.content } });
-        await waitFor(() => expect(collapseButton()).toBeDisabled());
-        expect(collapseButton()).toHaveAttribute(
-          "title",
-          "Can't collapse while find is open",
-        );
-        // The manual-collapse store itself is untouched — this is a UI-level
-        // disable, not a state write.
-        expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(false);
-
-        const findInput = screen.getByPlaceholderText("Find in issue...");
-        fireEvent.keyDown(findInput, { key: "Escape" });
-        await waitFor(() => expect(collapseButton()).toBeEnabled());
-      } finally {
-        restoreGetClientRects();
-      }
-    });
-
-    it("CHE-5437: a real click on Collapse thread collapses a thread with no replies to its one-line header and hides the reply box", async () => {
-      const root = { ...mockTimeline[0]!, id: "lonely-root", content: "Lonely root body" };
-      mockApiObj.listTimeline.mockResolvedValue([root]);
-      const { container } = renderIssueDetail();
-      await screen.findByText("Lonely root body");
-
-      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
-      // A real pointer press focuses the button; the focus pin must not
-      // read the collapse control's own focus as "the user is interacting".
-      const button = within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
-      fireEvent.mouseDown(button);
-      act(() => button.focus());
-      fireEvent.click(button);
-
-      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
-      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
-      // One line: the summary stays in the header, the body block is gone.
-      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
-      expect(rootWrapper().querySelector(`#comment-body-${root.id}`)).toBeNull();
-      expect(within(rootWrapper()).getByText("Lonely root body")).toBeInTheDocument();
-    });
-
-    it("CHE-5437: Collapse thread works while the reply box holds unsent text, and the text is still in the draft store", async () => {
-      const root = { ...mockTimeline[0]!, id: "draft-root", content: "Draft root body" };
-      mockApiObj.listTimeline.mockResolvedValue([root]);
-      const { container } = renderIssueDetail();
-      await screen.findByText("Draft root body");
-      const draftKey = `reply:issue-1:${root.id}`;
-      act(() => mockDraftStoreState.setDraft(draftKey, { content: "half-typed reply", attachments: [], updatedAt: 1 }));
-
-      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
-      fireEvent.click(within(rootWrapper()).getByRole("button", { name: "Collapse thread" }));
-
-      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
-      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
-      expect(mockDraftStoreState.getDrafts()[draftKey]?.content).toBe("half-typed reply");
-    });
-
-    it("CHE-5437: withholds Show less while an edit draft forces the length open, so the button is never a dead click", async () => {
-      const root = mockTimeline[0]!;
-      const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-        ...mockTimeline[1]!,
-        id: `dead-reply-${i}`,
-        parent_id: root.id,
-        content: `Dead reply ${i}`,
-        created_at: `2026-01-16T00:0${i}:00Z`,
-      }));
-      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-      renderIssueDetail();
-      await screen.findByText("Dead reply 3");
-
-      act(() => mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "typing a reply...", attachments: [], updatedAt: 1 }));
-      await screen.findByText("Dead reply 0");
-      expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
-    });
-
-    it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
-      mockApiObj.getIssue.mockResolvedValue({
-        ...mockIssue,
-        description: "A short description",
-      });
-      renderIssueDetail();
-      await screen.findByText("A short description");
-
-      const restoreGetClientRects = await openFind();
-      try {
-        // A short description never becomes collapsed/inert (description-
-        // disclosure.tsx's own "canDisclose" gate) — assert the SHARED
-        // reveal wiring at least doesn't regress: the description stays
-        // visible and the store is never written while find is open.
-        await waitFor(() => expect(screen.getByText("A short description")).toBeInTheDocument());
-        expect(useIssueDisclosureStore.getState().descriptionExpandedIssueIds.has("issue-1")).toBe(false);
-      } finally {
-        restoreGetClientRects();
-      }
-    });
-  });
-
-  // Sol's CHE-436 PR #43 review, blocking finding 2: closing find with no
-  // active match (no query, or a query with zero matches) must restore the
-  // PRE-open row to its pre-open offset within the scroll container, not
-  // re-center it — 01-DESIGN.md:74 "preserve offset where possible". Before
-  // the fix, the entry anchor was captured in an effect keyed on
-  // `[find.open]`, which only runs AFTER the same render already flattened
-  // every fold open — so the "pre-open" snapshot was actually a post-reveal
-  // one, and the restore always re-centered regardless.
-  it("restores the pre-open row to its original offset (not centered) when find closes with no active match", async () => {
-    const root = mockTimeline[0]!;
-    mockApiObj.listTimeline.mockResolvedValue([root]);
-
-    // Every element reports the same fixed size; only the root row's THIS
-    // test cares about, and it is deliberately NOT at the position centering
-    // would produce (which depends on container height/2), so a passing
-    // "top === originalTop - scrollDelta" assertion below could not be
-    // satisfied by the old centering math except by coincidence.
-    const originalGetClientRects = Element.prototype.getClientRects;
-    const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
-    Element.prototype.getClientRects = function (this: Element) {
-      return [{ width: 1, height: 1 }] as unknown as DOMRectList;
-    };
-    // Container top pinned at 0, height 400. Root row starts 130px from the
-    // container's top edge before find opens, and (since nothing in the
-    // timeline changes shape here) stays there for the rest of the test —
-    // scrollTop deltas are what the restore effect must apply on top of this
-    // fixed layout to reproduce the original 130px offset after any
-    // intervening scroll.
-    let containerScrollTop = 0;
-    Element.prototype.getBoundingClientRect = function (this: Element) {
-      if (this.hasAttribute("data-issue-timeline-scroll")) {
-        return { top: 0, bottom: 400, height: 400, left: 0, right: 800, width: 800 } as DOMRect;
-      }
-      if (this.id === `comment-${root.id}`) {
-        return { top: 130 - containerScrollTop, bottom: 160 - containerScrollTop, height: 30, left: 0, right: 800, width: 800 } as DOMRect;
-      }
-      return originalGetBoundingClientRect.call(this);
-    };
-
-    try {
-      renderIssueDetail();
-      await screen.findByText("Started working on this");
-
-      const container = document.querySelector("[data-issue-timeline-scroll]") as HTMLElement;
-      Object.defineProperty(container, "scrollTop", {
-        get: () => containerScrollTop,
-        set: (v: number) => { containerScrollTop = v; },
-        configurable: true,
-      });
-
-      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
-      await screen.findByPlaceholderText("Find in issue...");
-
-      // Simulate the user scrolling away from the entry row WHILE find is
-      // open (no query typed — the no-match/never-searched path 01-DESIGN
-      // calls out explicitly). The entry anchor was captured before this
-      // scroll happened (pre-open), so its target offset (130) predates it.
-      containerScrollTop = 500;
-
-      const findInput = screen.getByPlaceholderText("Find in issue...");
-      fireEvent.keyDown(findInput, { key: "Escape" });
-      await waitFor(() => expect(screen.queryByPlaceholderText("Find in issue...")).not.toBeInTheDocument());
-      await act(async () => {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      });
-
-      // Restore must move scrollTop back toward 0 so the root row's offset
-      // returns to its captured pre-open value (130px from the container
-      // top) — NOT leave it at the scrolled-away 500, and NOT center it
-      // (centering in a 400px container against a 30px-tall row targets
-      // scrollTop ≈ 500 + 130 - 185 = 445, a value this assertion also
-      // rules out).
-      await waitFor(() => {
-        expect(containerScrollTop).toBeCloseTo(0, 0);
-      });
-    } finally {
-      Element.prototype.getClientRects = originalGetClientRects;
-      Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
-    }
-  });
-
-  // CHE-476 (CHE-380 Gap A): restores 01-DESIGN line 51's original scope,
-  // narrowed out of PR #31/CHE-435 because bare focus/selection with no
-  // unsaved change produces no useCommentDraftStore entry —
-  // `rootIdsWithActiveReplyDraft` above genuinely cannot see it (see its
-  // comment). `rootIdsWithActiveFocusOrSelection` closes that gap by reading
-  // `document.activeElement` / `document.getSelection()` directly against
-  // each thread root's DOM subtree.
-  it("refuses Show less while the thread being collapsed contains the focused element, with no unsaved draft", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `focus-reply-${i}`,
-      parent_id: root.id,
-      content: `Focus reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    const { container } = renderIssueDetail();
-    await screen.findByText("Focus reply 3");
-    // Expand past the compact window — Show less only renders once expanded.
-    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
-    await screen.findByRole("button", { name: "Show less" });
-
-    // Focus something inside this thread's subtree that carries no draft —
-    // the reply composer's placeholder input itself, before any typing.
-    // The composer starts as a lazy shell; activate it first so the real
-    // editor mounts.
-    const threadWrapper = container.querySelector(`[data-thread-root="${root.id}"] [data-testid="reply-composer-shell"]`)!.closest("[data-thread-root]") as HTMLElement;
-    fireEvent.click(within(threadWrapper).getByTestId("reply-composer-shell"));
-    const replyBox = await within(threadWrapper).findByPlaceholderText("Leave a reply...");
-    act(() => {
-      (replyBox as HTMLElement).focus();
-      fireEvent.focusIn(replyBox);
-    });
-
-    // No draft content was typed, so rootIdsWithActiveReplyDraft does not
-    // cover this — only the focus signal does. Show less must be withheld.
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
-
-    // Blurring releases the pin — Show less returns.
-    act(() => {
-      (replyBox as HTMLElement).blur();
-      fireEvent.focusOut(replyBox);
-    });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
-  });
-
-  it("refuses Show less while the thread being collapsed contains a non-collapsed text selection, with no unsaved draft", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `sel-reply-${i}`,
-      parent_id: root.id,
-      content: `Sel reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    const { container } = renderIssueDetail();
-    await screen.findByText("Sel reply 3");
-    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
-    await screen.findByRole("button", { name: "Show less" });
-
-    const textNode = container.querySelector(`#comment-${replies[3]!.id} [data-testid="readonly-content"]`)!.firstChild as Node;
-    const range = document.createRange();
-    range.selectNodeContents(textNode);
-    const sel = window.getSelection()!;
-    act(() => {
-      sel.removeAllRanges();
-      sel.addRange(range);
-      fireEvent(document, new Event("selectionchange"));
-    });
-
-    // AC 2: a real range with no unsaved change still blocks Show less.
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
-
-    act(() => {
-      sel.removeAllRanges();
-      fireEvent(document, new Event("selectionchange"));
-    });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
-  });
-
-  it("refuses Show less for a cross-boundary selection anchored inside the collapsing thread but extending outside it", async () => {
-    // Terra review (CHE-476 PR #36): commonAncestorContainer is the wrong
-    // containment test — a selection that starts in-thread and ends outside
-    // it has a common ancestor ABOVE both roots, so the old check missed it
-    // and Show less would hide the anchored text. anchorNode containment
-    // (01-DESIGN-v3.md:51: refusal keys off the Selection's anchor) fixes it.
-    const root = mockTimeline[0]!;
-    const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "boundary-other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `boundary-reply-${i}`,
-      parent_id: root.id,
-      content: `Boundary reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies, otherRoot]);
-    const { container } = renderIssueDetail();
-    await screen.findByText("Boundary reply 3");
-    await screen.findByText("Other root");
-    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
-    await screen.findByRole("button", { name: "Show less" });
-
-    const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
-    const anchorNode = container.querySelector(`#comment-${replies[3]!.id} [data-testid="readonly-content"]`)!.firstChild as Node;
-    const focusNode = within(otherWrapper).getByText("Other root").firstChild as Node;
-    const sel = window.getSelection()!;
-    act(() => {
-      sel.removeAllRanges();
-      sel.setBaseAndExtent(anchorNode, 0, focusNode, 1);
-      fireEvent(document, new Event("selectionchange"));
-    });
-
-    // The selection's commonAncestorContainer sits above both roots, but its
-    // anchor is still inside root's subtree — Show less must stay withheld.
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
-
-    act(() => {
-      sel.removeAllRanges();
-      fireEvent(document, new Event("selectionchange"));
-    });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
-  });
-
-  it("does not block Show less on a thread when focus is inside a different thread that is not being collapsed", async () => {
-    const root = mockTimeline[0]!;
-    const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `scope-reply-${i}`,
-      parent_id: root.id,
-      content: `Scope reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies, otherRoot]);
-    const { container } = renderIssueDetail();
-    await screen.findByText("Scope reply 3");
-    await screen.findByText("Other root");
-    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
-    const showLess = await screen.findByRole("button", { name: "Show less" });
-
-    // Focus lands in the OTHER thread's own reply composer — AC 3 requires
-    // the refusal to stay scoped to the subtree actually being collapsed.
-    const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
-    fireEvent.click(within(otherWrapper).getByTestId("reply-composer-shell"));
-    const otherReplyBox = await within(otherWrapper).findByPlaceholderText("Leave a reply...");
-    act(() => {
-      (otherReplyBox as HTMLElement).focus();
-      fireEvent.focusIn(otherReplyBox);
-    });
-
-    // root's own Show less must remain available throughout.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
-  });
-
-  it("does not block Show less for a collapsed caret-only selection with no unsaved draft", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `caret-reply-${i}`,
-      parent_id: root.id,
-      content: `Caret reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    const { container } = renderIssueDetail();
-    await screen.findByText("Caret reply 3");
-    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
-    const showLess = await screen.findByRole("button", { name: "Show less" });
-
-    const textNode = container.querySelector(`#comment-${replies[3]!.id} [data-testid="readonly-content"]`)!.firstChild as Node;
-    const range = document.createRange();
-    range.setStart(textNode, 0);
-    range.collapse(true);
-    const sel = window.getSelection()!;
-    act(() => {
-      sel.removeAllRanges();
-      sel.addRange(range);
-      fireEvent(document, new Event("selectionchange"));
-    });
-
-    // AC 4: a caret (isCollapsed === true) is not a "selection" for this
-    // purpose — Show less must remain available.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
-  });
-
-  // CHE-554: pressing "Show N more replies" moves focus onto the button
-  // itself before the click completes — `mousedown` focuses the button,
-  // which fires `focusin` and joins the root in
-  // `rootIdsWithActiveFocusOrSelection`, which forces `lengthExpanded` via
-  // `forceThreadOpen`/`forceThreadExpanded`. That flips `hiddenCount` to 0
-  // and the button's render guard (comment-card.tsx: `!lengthExpanded &&
-  // threadProjection.hiddenCount > 0`) unmounts it mid-gesture, so the
-  // `mouseup`/`click` that should call `onThreadLengthExpandChange` lands on
-  // a detached node and never fires. Mirrors the real event order: focusin
-  // fires (mousedown's default focus action) BEFORE the click completes.
-  it("expands and persists on Show more even though the button's own mousedown focuses it mid-gesture", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `showmore-reply-${i}`,
-      parent_id: root.id,
-      content: `Showmore reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
-    await screen.findByText("Showmore reply 3");
-    expect(screen.queryByText("Showmore reply 0")).not.toBeInTheDocument();
-
-    const showMore = await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    // Real browsers focus the pressed button as part of `mousedown`'s
-    // default action, and that focus change fires `focusin` synchronously
-    // — before `mouseup`/`click` are dispatched. Reproduce that exact
-    // ordering rather than relying on Testing Library's `click()` helper,
-    // which never dispatches a `mousedown`-driven focus transition.
-    act(() => {
-      fireEvent.mouseDown(showMore);
-      showMore.focus();
-      fireEvent.focusIn(showMore);
-    });
-    act(() => {
-      fireEvent.mouseUp(showMore);
-      fireEvent.click(showMore);
-    });
-
-    // The click must still land: replies become visible and the expansion
-    // is written to the durable store, surviving the button's own unmount.
-    await waitFor(() => expect(screen.queryByText("Showmore reply 0")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
-  });
-
-  // CHE-554 keyboard path: Tab focuses the button BEFORE any activation key
-  // is pressed, so `rootIdsWithActiveFocusOrSelection` already contains the
-  // root by the time Enter/Space fires the `click` — an even earlier version
-  // of the same race than the mouse path above. Confirms the fix covers
-  // keyboard activation too, per the task's explicit requirement.
-  it("expands and persists on Show more when activated by keyboard while already focused", async () => {
-    const root = mockTimeline[0]!;
-    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
-      ...mockTimeline[1]!,
-      id: `showmore-kb-reply-${i}`,
-      parent_id: root.id,
-      content: `Showmore kb reply ${i}`,
-      created_at: `2026-01-16T00:0${i}:00Z`,
-    }));
-    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
-    await screen.findByText("Showmore kb reply 3");
-
-    const showMore = await screen.findByRole("button", { name: /Show \d+ more repl/ });
-
-    // Focus lands on the button first (as Tab would produce), well before
-    // any key is pressed — this is what makes the keyboard path a stricter
-    // reproduction than the mouse path: the root already carries the
-    // focus-only pin at the moment activation begins.
-    act(() => {
-      showMore.focus();
-      fireEvent.focusIn(showMore);
-    });
-    expect(document.activeElement).toBe(showMore);
-
-    // Enter/Space activation on a <button type="button"> dispatches `click`
-    // directly (jsdom and real browsers both do this as part of the
-    // button's default keydown handling) — there is no separate
-    // `mousedown`/`mouseup` pair on the keyboard path.
-    act(() => {
-      fireEvent.keyDown(showMore, { key: "Enter", code: "Enter" });
-      fireEvent.click(showMore);
-      fireEvent.keyUp(showMore, { key: "Enter", code: "Enter" });
-    });
-
-    await waitFor(() => expect(screen.queryByText("Showmore kb reply 0")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
-    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
   });
 
   it("keeps each queued run after its request and moves it in place to its reply's time", async () => {
@@ -3149,9 +1959,9 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => expect(container.querySelectorAll('[data-run-slot-id]')).toHaveLength(3));
     const slots = tasks.map((task) => container.querySelector(`[data-run-slot-id="${task.id}"]`)!);
     const [secondRow, thirdRow] = [second, third].map((request) => container.querySelector(`#comment-${request.id}`)!);
-    expect(timelineRow(secondRow!).previousElementSibling).toBe(timelineRow(slots[0]!));
-    expect(timelineRow(secondRow!).nextElementSibling).toBe(timelineRow(slots[1]!));
-    expect(timelineRow(thirdRow!).nextElementSibling).toBe(timelineRow(slots[2]!));
+    expect(threadRow(secondRow!).previousElementSibling).toBe(threadRow(slots[0]!));
+    expect(threadRow(secondRow!).nextElementSibling).toBe(threadRow(slots[1]!));
+    expect(threadRow(thirdRow!).nextElementSibling).toBe(threadRow(slots[2]!));
     fireEvent.click(within(slots[0] as HTMLElement).getByRole("button", { name: /View activity/ }));
     await within(slots[0] as HTMLElement).findByText("No activity recorded yet.");
     for (const index of [0, 1]) {
@@ -3167,29 +1977,7 @@ describe("IssueDetail (shared)", () => {
         client.setQueryData(issueKeys.timeline("issue-1"), timeline);
       });
       await screen.findByText(reply.content!);
-      // task 0's reply (answer-0) is projected onto root itself (comment-runs.ts
-      // rewrites its parent_id to root.id since its anchor IS the root) — this
-      // run keeps the root-anchored AgentRunComment identity, so its DOM node
-      // is reused in place (`toBe(slots[0])`) exactly as before.
-      //
-      // task 1's reply (answer-1) is a SIBLING nested reply of root, distinct
-      // from the "request-two" comment task 1 was originally anchored to
-      // (queued, pre-reply) — projectThreadDisplay is the sole thread-display
-      // input (01-DESIGN "Thread selection and run placement") and gives every
-      // published reply its own chronological slot, so the run's controls
-      // relocate from their prior post-"request-two" run-only slot to
-      // answer-1's own slot. A new DOM node at the new position is the
-      // intended v2 behavior, not a regression — the old anchor-recursion
-      // model's DOM-identity-across-relocation guarantee is exactly what
-      // 01-DESIGN's per-reply chronological slotting replaces.
-      if (index === 0) {
-        expect(container.querySelector(`[data-run-slot-id="${tasks[index]!.id}"]`)).toBe(slots[index]);
-      } else {
-        const relocated = container.querySelector(`#comment-${reply.id}`)!;
-        expect(relocated).not.toBeNull();
-        expect(relocated.querySelector(`[data-run-id="${tasks[index]!.id}"]`)).not.toBeNull();
-        slots[index] = relocated;
-      }
+      expect(container.querySelector(`[data-run-slot-id="${tasks[index]!.id}"]`)).toBe(slots[index]);
       expect(slots[index]!.textContent).toContain(reply.content);
       expect(container.querySelectorAll(`[data-run-id="${tasks[index]!.id}"]`)).toHaveLength(1);
     }
@@ -3197,9 +1985,9 @@ describe("IssueDetail (shared)", () => {
     expect(within(slots[0] as HTMLElement).queryByRole("button", { name: /View activity/ })).not.toBeInTheDocument();
     // Answers land at their own time, after the requests; the queued run
     // stays with its request.
-    expect(timelineRow(thirdRow!).nextElementSibling).toBe(timelineRow(slots[2]!));
-    expect(timelineRow(slots[2]!).nextElementSibling).toBe(timelineRow(slots[0]!));
-    expect(timelineRow(slots[0]!).nextElementSibling).toBe(timelineRow(slots[1]!));
+    expect(threadRow(thirdRow!).nextElementSibling).toBe(threadRow(slots[2]!));
+    expect(threadRow(slots[2]!).nextElementSibling).toBe(threadRow(slots[0]!));
+    expect(threadRow(slots[0]!).nextElementSibling).toBe(threadRow(slots[1]!));
     expect(container.querySelector(`[data-run-slot-id="${tasks[2]!.id}"]`)).toBe(slots[2]);
     expect(within(slots[2] as HTMLElement).getByText("Waiting for an available agent.")).toBeInTheDocument();
   });
@@ -3217,8 +2005,7 @@ describe("IssueDetail (shared)", () => {
     const { container } = renderIssueDetail();
     await screen.findByText(answer.content);
     await waitFor(() => expect(container.querySelectorAll(`[data-run-id="${second.id}"]`)).toHaveLength(1));
-    expect(container.querySelector(`[data-run-id="${second.id}"]`)?.closest("[data-thread-root]"))
-      .toHaveAttribute("data-thread-root", root.id);
+    expect(container.querySelector(`#comment-${root.id}`)?.querySelector(`[data-run-id="${second.id}"]`)).not.toBeNull();
   });
 
   // MUL-7628: Elon was asked first but replied last; his review used to render
@@ -3247,7 +2034,6 @@ describe("IssueDetail (shared)", () => {
     const { container } = renderIssueDetail();
 
     await screen.findByText("Review complete");
-    fireEvent.click(screen.getByRole("button", { name: /Show \d+ more repl/ }));
     const order = ["ask-elon", "ask-steve", "steve-fixed", "elon-review", "follow-up"].map((id) => `comment-${id}`);
     expect(Array.from(container.querySelectorAll("[id]"), (element) => element.id).filter((id) => order.includes(id)))
       .toEqual(order);
@@ -3275,7 +2061,7 @@ describe("IssueDetail (shared)", () => {
     const userReply = container.querySelector("#comment-user-reply")!;
     const agentBlock = container.querySelector(`[data-run-comment-id="${task.id}"]`)!;
     expect(userReply.contains(agentBlock)).toBe(false);
-    expect(timelineRow(userReply).nextElementSibling).toBe(timelineRow(agentBlock));
+    expect(threadRow(userReply).nextElementSibling).toBe(threadRow(agentBlock));
     expect(within(agentBlock as HTMLElement).getByRole("button", { name: "Retry run" })).toBeInTheDocument();
     expect(container.querySelectorAll(`[data-run-id="${task.id}"]`)).toHaveLength(1);
   });
@@ -3480,21 +2266,6 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
-  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
-  it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
-    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unavailable", 503, "Service Unavailable"));
-
-    renderIssueDetail("issue-1");
-
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    expect(
-      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
-    ).not.toBeInTheDocument();
-    mockApiObj.getIssue.mockResolvedValue(mockIssue);
-    fireEvent.click(retry);
-    expect(await screen.findByText(mockIssue.title)).toBeInTheDocument();
-  });
-
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
     mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
@@ -3673,7 +2444,7 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue on behalf of Test User")).toBeInTheDocument();
-      // Fork default: Details starts open (upstream v0.10.0 starts collapsed).
+      fireEvent.click(screen.getByText("Details"));
       const creatorRow = screen.getByText("Created by").parentElement!;
       expect(creatorRow).toHaveTextContent("Claude Agent");
       expect(within(creatorRow).getByRole("link", { name: "On behalf of Test User" }))
@@ -3697,7 +2468,7 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue")).toBeInTheDocument();
-      // Fork default: Details starts open.
+      fireEvent.click(screen.getByText("Details"));
       expect(screen.queryByText(/On behalf of/)).not.toBeInTheDocument();
       expect(screen.queryByText("Requested by")).not.toBeInTheDocument();
     });
@@ -3714,7 +2485,7 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue on behalf of Unknown")).toBeInTheDocument();
-      // Fork default: Details starts open.
+      fireEvent.click(screen.getByText("Details"));
       expect(screen.getByText("Created by").parentElement).toHaveTextContent("On behalf of Unknown");
     });
   });
@@ -3786,69 +2557,6 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText(/changed priority/i)).toBeInTheDocument();
   });
 
-  // CHE-1728: at 390 px a truncating sentence cut the woken agent's name while
-  // the PR/comment/run links stayed visible. jsdom has no layout, so the guard
-  // is the rule itself: below `sm` the sentence wraps instead of truncating.
-  it("lets a wakeup row wrap on phones instead of truncating who was woken", async () => {
-    mockApiObj.listTimeline.mockResolvedValue([
-      {
-        type: "activity",
-        id: "act-wakeup",
-        actor_type: "system",
-        actor_id: "",
-        action: "wakeup_triggered",
-        details: {
-          rule: "pr_merged",
-          pr_number: 252,
-          pr_url: "https://github.com/o/r/pull/252",
-          target_type: "agent",
-          target_id: "agent-1",
-          outcome: "woke",
-        },
-        created_at: "2026-01-18T00:00:00Z",
-      },
-    ] as TimelineEntry[]);
-
-    renderIssueDetail();
-
-    const sentence = await screen.findByText(/PR #252 merged/);
-    const text = sentence.closest("span.min-w-0, span.truncate, span.break-words") as HTMLElement;
-    const classes = text.className.split(/\s+/);
-    expect(classes).not.toContain("truncate");
-    expect(classes).toContain("sm:truncate");
-    expect(text.parentElement!.className.split(/\s+/)).toContain("flex-wrap");
-  });
-
-  // CHE-1726 admit sheet (docs/ux/CHE-1726.yml) names these wakeup row elements.
-  it("exposes the stable ids the CHE-1726 admit sheet names on a wakeup row", async () => {
-    mockApiObj.listTimeline.mockResolvedValue([
-      {
-        type: "activity",
-        id: "act-wakeup-ids",
-        actor_type: "system",
-        actor_id: "",
-        action: "wakeup_triggered",
-        details: {
-          rule: "pr_merged",
-          pr_number: 252,
-          pr_url: "https://github.com/o/r/pull/252",
-          comment_id: "c1",
-          target_type: "agent",
-          target_id: "agent-1",
-          outcome: "woke",
-        },
-        created_at: "2026-01-18T00:00:00Z",
-      },
-    ] as TimelineEntry[]);
-
-    renderIssueDetail();
-
-    expect(await screen.findByTestId("wakeup-activity-sentence")).toHaveTextContent(/PR #252 merged/);
-    expect(screen.getByTestId("wakeup-activity-chip")).toHaveTextContent("System rule");
-    expect(screen.getByTestId("wakeup-activity-pr-link")).toHaveAttribute("href", "https://github.com/o/r/pull/252");
-    expect(screen.getByTestId("wakeup-activity-comment-link")).toHaveAttribute("href", expect.stringContaining("#comment-c1"));
-  });
-
   // Duplicate marks (MUL-7349) name another issue; the identifier is a link
   // to it, and a mark removed because its original was deleted is plain text.
   it("links a duplicate mark to the issue it names", async () => {
@@ -3891,27 +2599,6 @@ describe("IssueDetail (shared)", () => {
     // Reopening replaces the status row, so the unmarked row says where it went.
     expect(screen.getByText(/and moved it to Todo/i)).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "MUL-9" })).toHaveLength(2);
-  });
-
-  // CHE-2309: a refused review run names the superseded run whose runner is
-  // not confirmed stopped; the raw action key must never reach the timeline.
-  it("renders a stop_not_confirmed activity as readable text", async () => {
-    mockApiObj.listTimeline.mockResolvedValue([
-      {
-        type: "activity",
-        id: "act-stop-not-confirmed",
-        actor_type: "member",
-        actor_id: "user-1",
-        action: "stop_not_confirmed",
-        details: { task_id: "run-123", message: "stop not confirmed for run run-123" },
-        created_at: "2026-01-18T02:00:00Z",
-      },
-    ] as unknown as TimelineEntry[]);
-
-    renderIssueDetail();
-
-    expect(await screen.findByText(/stop not confirmed for run run-123/i)).toBeInTheDocument();
-    expect(screen.queryByText("stop_not_confirmed")).not.toBeInTheDocument();
   });
 
   // MUL-7429: an automatic status change says why, and the per-issue switch
@@ -4203,17 +2890,63 @@ describe("IssueDetail (shared)", () => {
     try {
       renderIssueDetail();
       await screen.findByText("Long discussion root");
-      // Fork wins (CHE-7026): long threads fold to a short tail (thread-length fold +
-      // Virtuoso rows), so the 200 replies are never all mounted. Upstream's test
-      // assumed every reply gets a VirtualThreadRow anchor; the bound that matters
-      // — offscreen bodies are not mounted — holds more strongly under the fold.
-      expect(document.getElementById("comment-offscreen-reply-0")).toBeNull();
-      expect(screen.queryByText("Offscreen body 0")).toBeNull();
-      expect(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body")).length).toBeLessThan(10);
+      expect(document.getElementById("comment-offscreen-reply-199")).not.toBeNull();
+      expect(screen.queryByText("Offscreen body 199")).toBeNull();
+      expect(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body"))).toHaveLength(0);
     } finally { vi.unstubAllGlobals(); }
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
+    it.each([
+      { kind: "root", delayedViewport: false, lateScrollReset: false },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false },
+      { kind: "root", delayedViewport: true, lateScrollReset: false },
+      { kind: "reply", delayedViewport: false, lateScrollReset: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, offscreenViewport: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, offscreenViewport: true, contentSettlesAbove: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, pendingSizeCorrection: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, holdAtIndex: true },
+    ])("keeps long history virtualized for a $kind (late viewport: $delayedViewport, late scroll: $lateScrollReset, below fold: $offscreenViewport, settling above: $contentSettlesAbove)", async ({ kind, delayedViewport, lateScrollReset, offscreenViewport, contentSettlesAbove, pendingSizeCorrection, holdAtIndex }) => {
+      mockVirtualWindow.holdAtIndex = !!holdAtIndex;
+      mockVirtualWindow.pendingSizeCorrection = !!pendingSizeCorrection;
+      mockVirtualWindow.enabled = true;
+      mockVirtualWindow.delayedViewport = delayedViewport;
+      mockVirtualWindow.offscreenViewport = !!offscreenViewport;
+      mockVirtualWindow.contentSettlesAbove = !!contentSettlesAbove;
+      mockVirtualWindow.lateScrollReset = lateScrollReset;
+      const history = Array.from({ length: 120 }, (_, index) => ({
+        ...mockTimeline[0]!,
+        id: `history-${index}`,
+        parent_id: null,
+        source_task_id: undefined,
+        content: `Historical comment ${index}`,
+        created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      }));
+      const root = history[115]!;
+      const target = kind === "root" ? root : {
+        ...root,
+        id: "deep-reply",
+        parent_id: root.id,
+        content: "Offscreen reply target",
+      };
+      mockVirtualWindow.targetId = target.id;
+      mockApiObj.listTimeline.mockResolvedValue(kind === "root" ? history : [...history, target]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      renderIssueDetailWithHighlight(target.id);
+
+      await waitFor(() => expect(hasHighlightedCommentBackground(
+        document.getElementById(`comment-${target.id}`),
+      )).toBe(true));
+      if (lateScrollReset || holdAtIndex) {
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 150)); });
+        expect(mockVirtualWindow.scrollParent?.scrollTop).toBe(200);
+      }
+      expect(screen.queryByTestId("virtuoso-mock")).not.toBeNull();
+      expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+      expect(document.getElementById("comment-history-0")).toBeNull();
+      expect(scrollIntoViewIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 115 }));
+    });
+
     it("waits for run grouping before consuming the comment landing", async () => {
       let finishTasks!: (tasks: AgentTask[]) => void;
       mockApiObj.listTasksByIssue.mockReturnValue(new Promise<AgentTask[]>((resolve) => { finishTasks = resolve; }));
@@ -4226,213 +2959,79 @@ describe("IssueDetail (shared)", () => {
       expect(landedBeforeGrouping).toBe(false);
     });
 
-    it.each(["root", "reply"])("reveals a virtualized-out %s annotation from the footer and preserves the pending edit", async (sourceKind) => {
-      virtualWindow.size = 1;
-      virtualWindow.initialIndex = 41;
-      const root = { ...mockTimeline[0]!, id: "offscreen-note-root", content: "Root annotation source" };
-      const replies = Array.from({ length: 40 }, (_, index) => ({
-        ...mockTimeline[1]!, id: `offscreen-note-reply-${index}`, parent_id: root.id,
-        content: `Reply annotation source ${index}`, resolved_at: null,
-        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
-      }));
-      const source = sourceKind === "root" ? root : replies[0]!;
-      const draftKey = `reply:issue-1:${root.id}`;
-      mockDraftStoreState.setDraft(draftKey, {
-        content: "", attachments: [], updatedAt: Date.now(), annotations: [{
-          id: "offscreen-note", sourceCommentId: source.id, sourceActorName: "Source author",
-          quote: source.content, start: 0, prefix: "", suffix: "", note: "Original offscreen note",
-        }],
+    describe("on a route that already recorded the landing", () => {
+      function renderOverLandedRoute(props: Partial<React.ComponentProps<typeof IssueDetail>> = {}) {
+        mockApiObj.listTasksByIssue.mockResolvedValue([]);
+        const viewState = new Map([["highlight:issue-1", "comment-2"]]);
+        const adapter: ScrollRestorationAdapter = {
+          get: () => undefined,
+          getViewState: (key) => viewState.get(key),
+          setViewState: (key, value) => {
+            if (value === undefined) viewState.delete(key);
+            else viewState.set(key, value);
+          },
+        };
+        render(
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <QueryClientProvider client={createTestQueryClient()}>
+              <ScrollRestorationProvider adapter={adapter}>
+                <IssueDetail issueId="issue-1" highlightCommentId="comment-2" {...props} />
+              </ScrollRestorationProvider>
+            </QueryClientProvider>
+          </I18nProvider>,
+        );
+      }
+
+      it("does not replay it when the view merely remounts", async () => {
+        renderOverLandedRoute();
+        await waitFor(() => expect(document.getElementById("comment-comment-2")).not.toBeNull());
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 100)); });
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(false);
       });
-      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [root.id]);
-      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
-      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
-      Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
-      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-      renderIssueDetail();
-      const footer = await screen.findByTestId("comment-reply-input");
-      expect(document.querySelector(`[data-comment-content="${source.id}"]`)).toBeNull();
-      fireEvent.click(within(footer).getByRole("button", { name: "1 annotation" }));
-      const annotations = await screen.findByRole("dialog", { name: "1 annotation" });
-      fireEvent.click(within(annotations).getByRole("button", { name: "Edit annotation 1" }));
-      const editor = await screen.findByRole("textbox", { name: "Comment" });
-      expect(editor).toHaveValue("Original offscreen note");
-      expect(footer).not.toBeInTheDocument();
-      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: sourceKind === "root" ? 0 : 1 }));
-      expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(1);
-      expect(document.getElementById(`comment-${replies[39]!.id}`)).toBeNull();
-      expect(screen.getAllByTestId("annotation-note")).toHaveLength(1);
-      fireEvent.change(editor, { target: { value: "Saved offscreen note" } });
-      fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
-      expect(mockDraftStoreState.getDrafts()[draftKey]?.annotations?.[0]?.note).toBe("Saved offscreen note");
-    });
 
-    it("opens a saved reply annotation from the virtual footer composer", async () => {
-      const root = { ...mockTimeline[0]!, id: "footer-root", content: "Root annotation source" };
-      const reply = { ...mockTimeline[1]!, id: "footer-reply", parent_id: root.id, content: "Reply annotation source" };
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
-        content: "", attachments: [], updatedAt: Date.now(), annotations: [{
-          id: "footer-note", sourceCommentId: reply.id, sourceActorName: "Reply author",
-          quote: reply.content, start: 0, prefix: "", suffix: "", note: "Edit this reply note",
-        }],
+      // MUL-9492: a Work panel click on another page cannot clear the issue
+      // route's record before it navigates there.
+      it("lands a pending request anyway and reports it", async () => {
+        const onHighlightLanded = vi.fn();
+        renderOverLandedRoute({ highlightRequestToken: 3, highlightRequestPending: true, onHighlightLanded });
+        await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+        expect(onHighlightLanded).toHaveBeenCalledTimes(1);
       });
-      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
-      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
-      Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
-      mockApiObj.listTimeline.mockResolvedValue([root, reply]);
-      renderIssueDetail();
-      const footer = await screen.findByTestId("comment-reply-input");
-      expect(footer.closest("[data-annotation-thread]")).toHaveAttribute("data-annotation-thread", `reply:issue-1:${root.id}`);
-      fireEvent.click(within(footer).getByRole("button", { name: "1 annotation" }));
-      const annotations = await screen.findByRole("dialog", { name: "1 annotation" });
-      fireEvent.click(within(annotations).getByRole("button", { name: "Edit annotation 1" }));
-      expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Edit this reply note");
-      expect(scrollIntoViewSpy).toHaveBeenCalled();
-      expect(screen.getAllByTestId("annotation-marker")).toHaveLength(1);
     });
 
-    it("captures annotation selections in a virtual reply row", async () => {
-      const root = { ...mockTimeline[0]!, id: "annotation-root", content: "Root annotation source" };
-      const reply = { ...mockTimeline[1]!, id: "annotation-reply", parent_id: root.id, content: "Reply annotation source" };
-      mockApiObj.listTimeline.mockResolvedValue([root, reply]);
-      renderIssueDetail();
-      await screen.findByText(reply.content);
-      const source = document.querySelector<HTMLElement>(`[data-comment-content="${reply.id}"]`)!;
-      expect(source.closest("[data-annotation-thread]")).toHaveAttribute("data-annotation-thread", `reply:issue-1:${root.id}`);
-      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
-      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
-      Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
-      fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
-      const range = document.createRange();
-      range.selectNodeContents(source);
-      act(() => {
-        window.getSelection()!.removeAllRanges();
-        window.getSelection()!.addRange(range);
+    it("restarts a comment landing that a timeline update cancels while it is still aligning", async () => {
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      // The anchor keeps moving for 300ms, like reply heights settling, so the
+      // alignment loop is still running when the update arrives.
+      let driftStart = 0;
+      const drift = () => {
+        driftStart ||= performance.now();
+        return Math.min(performance.now() - driftStart, 300);
+      };
+      const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const container = this.closest<HTMLElement>("[data-tab-scroll-root]");
+        if (this === container) return new DOMRect(0, 0, 400, 200);
+        if (this.id === "comment-comment-2" && container) {
+          return new DOMRect(0, 250 + drift() - container.scrollTop, 400, 100);
+        }
+        return new DOMRect(0, 0, 0, 0);
       });
-      fireEvent.pointerUp(source);
-      expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
-    });
-
-    it("mounts only nearby comment rows with the rich-content scroll root after a minimap jump", async () => {
-      virtualWindow.size = 2;
-      const first = { ...mockTimeline[0]!, id: "minimap-first", content: "Minimap starting thread" };
-      const root = { ...first, id: "minimap-root", content: "Minimap long thread" };
-      const replies = Array.from({ length: 40 }, (_, index) => ({
-        ...mockTimeline[1]!, id: `minimap-reply-${index}`, parent_id: root.id,
-        content: `Minimap reply body ${index}`, resolved_at: null,
-        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
-      }));
-      mockApiObj.listTimeline.mockResolvedValue([first, root, ...replies]);
-      renderIssueDetail();
-      await screen.findByText(first.content);
-      const rail = await screen.findByRole("navigation", { name: "Jump to comment thread" });
-      fireEvent.click(within(rail).getByRole("button", { name: /Minimap reply body 30/ }));
-      await waitFor(() => expect(document.getElementById(`comment-${replies[30]!.id}`)).toBeInTheDocument());
-      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 32 }));
-      expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(2);
-      expect(document.getElementById(`comment-${root.id}`)).toBeNull();
-      expect(document.getElementById(`comment-${replies[0]!.id}`)).toBeNull();
-      expect(document.getElementById(`comment-${replies[31]!.id}`)).toBeInTheDocument();
-      expect(within(document.getElementById(`comment-${replies[30]!.id}`)!).getByTestId("readonly-content")).toHaveAttribute("data-timeline-scroll-root");
-    });
-
-    it("virtualizes replies as individual rows when landing inside a long thread", async () => {
-      virtualWindow.size = 1;
-      const root = { ...mockTimeline[0]!, id: "row-root", content: "Root outside reply viewport" };
-      const replies = Array.from({ length: 40 }, (_, index) => ({
-        ...mockTimeline[1]!, id: `row-reply-${index}`, parent_id: root.id,
-        content: `Reply row body ${index}`, resolved_at: null,
-        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
-      }));
-      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-      renderIssueDetailWithHighlight(replies[30]!.id);
-      await waitFor(() => expect(hasHighlightedCommentBackground(
-        document.getElementById(`comment-${replies[30]!.id}`),
-      )).toBe(true));
-      expect(screen.queryByText(root.content)).not.toBeInTheDocument();
-      expect(screen.queryByText(replies[0]!.content)).not.toBeInTheDocument();
-      expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(1);
-      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 31 }));
-    });
-
-    it("virtualizes the live landing row for a deleted off-screen reply", async () => {
-      virtualWindow.size = 1;
-      const root = { ...mockTimeline[0]!, id: "deleted-row-root" };
-      const replies = Array.from({ length: 10 }, (_, index) => ({
-        ...mockTimeline[1]!, id: `deleted-row-${index}`, parent_id: root.id,
-        content: `Deleted thread reply ${index}`, resolved_at: null,
-        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
-      }));
-      const deleted = { ...replies[7]!, deleted_at: "2026-01-17T00:00:00Z", content: "" };
-      mockApiObj.listTimeline.mockResolvedValue([root, ...replies.map(reply => reply.id === deleted.id ? deleted : reply)]);
-      renderIssueDetailWithHighlight(deleted.id);
-      await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById(`comment-${replies[6]!.id}`))).toBe(true));
-      expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(1);
-      expect(document.getElementById(`comment-${deleted.id}`)).toBeNull();
-    });
-
-    it("keeps a bounded virtual window when landing on an off-screen deep link", async () => {
-      virtualWindow.size = 2;
-      const comments = Array.from({ length: 60 }, (_, index) => ({
-        ...mockTimeline[0]!, id: `virtual-comment-${index}`, content: `Virtual body ${index}`,
-        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
-      }));
-      mockApiObj.listTimeline.mockResolvedValue(comments);
-      renderIssueDetailWithHighlight(comments[45]!.id);
-
-      await waitFor(() => expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument());
-      await waitFor(() => expect(hasHighlightedCommentBackground(
-        document.getElementById(`comment-${comments[45]!.id}`),
-      )).toBe(true));
-      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 45 }));
-      expect(screen.queryByText("Virtual body 0")).not.toBeInTheDocument();
-      expect(document.querySelectorAll('[id^="comment-virtual-comment-"]').length).toBeLessThanOrEqual(2);
-    });
-
-    it("finds a folded off-screen reply without mounting unrelated threads", async () => {
-      virtualWindow.size = 2;
-      const comments = Array.from({ length: 40 }, (_, index) => ({
-        ...mockTimeline[0]!, id: `find-root-${index}`, content: `Search root ${index}`,
-        resolved_at: index === 30 ? "2026-01-17T00:00:00Z" : null,
-        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
-      }));
-      const reply = { ...mockTimeline[1]!, id: "offscreen-reply", parent_id: comments[30]!.id,
-        content: "Unique hidden needle", created_at: "2026-01-16T01:00:00Z" };
-      const secondReply = { ...reply, id: "second-offscreen-reply", parent_id: comments[35]!.id };
-      mockApiObj.listTimeline.mockResolvedValue([...comments, reply, secondReply]);
-      useCommentCollapseStore.getState().toggle("issue-1", comments[30]!.id);
-      const rects = vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ width: 1, height: 1 }] as unknown as DOMRectList);
       try {
-        renderIssueDetail();
-        await screen.findByText("Search root 0");
-        fireEvent.keyDown(document, { key: "f", ctrlKey: true });
-        expect(screen.queryByText("Unique hidden needle")).not.toBeInTheDocument();
-        fireEvent.change(await screen.findByPlaceholderText("Find in issue..."), { target: { value: "Unique hidden needle" } });
-
-        await waitFor(() => expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument());
-        await screen.findByText("Unique hidden needle");
-        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 31 }));
-        expect(screen.queryByText("Search root 0")).not.toBeInTheDocument();
-        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(comments[30]!.id)).toBeFalsy();
-        expect(useCommentCollapseStore.getState().isCollapsed("issue-1", comments[30]!.id)).toBe(true);
-        expect(document.querySelectorAll('[id^="comment-find-root-"]').length).toBeLessThanOrEqual(2);
-        await screen.findByText("1/2");
-        const input = screen.getByPlaceholderText("Find in issue...");
-        fireEvent.keyDown(input, { key: "Enter" });
-        await screen.findByText("2/2");
-        await waitFor(() => expect(document.getElementById("comment-second-offscreen-reply")).not.toBeNull());
-        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 36 }));
-        fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-        await screen.findByText("1/2");
-        await waitFor(() => expect(document.getElementById("comment-offscreen-reply")).not.toBeNull());
-        fireEvent.keyDown(input, { key: "Escape" });
-        await waitFor(() => expect(screen.queryByPlaceholderText("Find in issue...")).not.toBeInTheDocument());
-        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(comments[30]!.id)).toBeFalsy();
-        expect(useCommentCollapseStore.getState().isCollapsed("issue-1", comments[30]!.id)).toBe(true);
+        const { queryClient } = renderIssueDetailWithHighlight("comment-2");
+        await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+        const container = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+        act(() => {
+          queryClient.setQueryData<TimelineEntry[]>(["issues", "timeline", "issue-1"], (old) => [
+            ...(old ?? []),
+            { ...mockTimeline[0]!, id: "comment-late", content: "Arrived mid-landing", created_at: "2026-01-18T00:00:00Z" },
+          ]);
+        });
+        expect(driftStart).toBeGreaterThan(0);
+        expect(performance.now() - driftStart).toBeLessThan(300);
+        // 250 + 300 drift - 16 top gap: where the comment sits once settled.
+        await waitFor(() => expect(container.scrollTop).toBe(534), { timeout: 2000 });
       } finally {
-        rects.mockRestore();
+        rect.mockRestore();
       }
     });
 
@@ -4462,9 +3061,7 @@ describe("IssueDetail (shared)", () => {
       await waitFor(() => expect(container.querySelector(`#comment-${target.id}`))
         .toHaveClass(highlightedCommentBackgroundClass));
       expect(container.querySelector(`#comment-${root.id}`))
-        .not.toContainElement(container.querySelector(`#comment-${target.id}`) as HTMLElement);
-      expect(container.querySelector(`#comment-${target.id}`)?.closest("[data-thread-root]"))
-        .toHaveAttribute("data-thread-root", root.id);
+        .toContainElement(container.querySelector(`#comment-${target.id}`) as HTMLElement);
       expect(screen.getAllByText(target.content)).toHaveLength(1);
       expect(container.querySelectorAll(`[data-run-id="${run.id}"]`)).toHaveLength(1);
       expect(within(container.querySelector(`#comment-${target.id}`) as HTMLElement)
@@ -4710,155 +3307,6 @@ describe("IssueDetail (shared)", () => {
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
     });
-
-    // CHE-436 acceptance criterion 4: replaying a notification for a reply
-    // deep inside a long thread (r2 of 10, well outside the default
-    // latest-three compact window) must land exactly on r2, not on the root
-    // or on a neighboring reply — proof the target-root latch (01-04) and
-    // the committed-generation gate (CHE-436) actually resolve to the right
-    // DOM node once the thread force-opens.
-    it("lands exactly on r2 of a 10-reply thread, not the root or a neighboring reply", async () => {
-      const root = { ...mockTimeline[0]!, id: "ten-reply-root", content: "Ten-reply root" };
-      const replies: TimelineEntry[] = Array.from({ length: 10 }, (_, i) => ({
-        ...mockTimeline[1]!,
-        id: `r${i + 1}`,
-        parent_id: root.id,
-        content: `Reply r${i + 1}`,
-        created_at: `2026-01-16T00:${String(i).padStart(2, "0")}:00Z`,
-      }));
-      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-
-      renderIssueDetailWithHighlight("r2", "issue-1");
-
-      await waitFor(() => expect(document.getElementById("comment-r2")).not.toBeNull());
-      await waitFor(() =>
-        expect(hasHighlightedCommentBackground(document.getElementById("comment-r2"))).toBe(true),
-      );
-      // Not a neighboring reply (sibling row, so `hasHighlightedCommentBackground`'s
-      // descendant walk is a clean, non-nested check here).
-      expect(hasHighlightedCommentBackground(document.getElementById("comment-r1"))).toBe(false);
-      expect(hasHighlightedCommentBackground(document.getElementById("comment-r3"))).toBe(false);
-      // Not the root ITSELF (its own tint class, not r2's — the root wrapper
-      // contains r2 as a descendant, so the recursive helper would always
-      // read true here regardless of which row actually got the tint).
-      const rootEl = document.getElementById(`comment-${root.id}`);
-      expect(rootEl?.className ?? "").not.toContain(highlightedCommentBackgroundClass);
-    });
-
-    // Sol's CHE-436 PR #43 review, blocking finding 3: the landing effect's
-    // own re-render (triggered by its OWN `setHighlightedId` call, since
-    // `highlightedId` is component state) must not tear down its own
-    // just-scheduled fade timeout/centering rAF. Before the fix,
-    // `disclosureReveal.isCommitted` was a fresh function on every render, so
-    // it was a fresh value in this effect's dependency array on every render
-    // — including the one this same effect's `setHighlightedId` call causes —
-    // which re-ran the effect's cleanup (cancelling the fade timer) the
-    // instant after it started, then bailed out of a fresh landing because
-    // `didHighlightRef` was already set. The visible symptom: the highlight
-    // never fades, because the timer that would clear it was cancelled
-    // before it could fire.
-    it("fades the landed highlight after its own state update triggers a rerender", async () => {
-      renderIssueDetailWithHighlight("comment-2");
-
-      await waitFor(() =>
-        expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true),
-      );
-
-      // The fade timeout is 2500ms; poll well past it with real timers. If
-      // the landing effect's cleanup fired prematurely (cancelling the
-      // timeout), this never becomes false and the test times out.
-      await waitFor(
-        () => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(false),
-        { timeout: 4000, interval: 100 },
-      );
-    }, 6000);
-
-    // CHE-436 acceptance criterion 5: a missing/deleted target must never
-    // report false success by falling back to highlighting the root (or any
-    // other node) — the landing effect requires the exact target element to
-    // exist in the DOM before it records anything.
-    it("never reports false success on the root when the deep-link target comment no longer exists", async () => {
-      const root = { ...mockTimeline[0]!, id: "missing-target-root", content: "Root stays here" };
-      mockApiObj.listTimeline.mockResolvedValue([root]);
-
-      renderIssueDetailWithHighlight("deleted-comment-id", "issue-1");
-
-      await screen.findByText("Root stays here");
-      // Give the landing effect every chance to (incorrectly) fire.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      expect(hasHighlightedCommentBackground(document.getElementById(`comment-${root.id}`))).toBe(false);
-      expect(document.getElementById("comment-deleted-comment-id")).toBeNull();
-    });
-
-    // Sol's CHE-436 PR #43 review, blocking finding 1: a consumed memento
-    // (this exact target already landed once, in an earlier mount — e.g. a
-    // tab switch back) must still reveal the target's fold, even though it
-    // correctly skips the scroll/highlight/re-write. 01-DESIGN.md:76 —
-    // "Memento restoration may suppress scrolling but must not suppress
-    // revealing the target." Before the fix, the memento-consumed branch
-    // returned before ever reaching the resolved-thread auto-expand logic,
-    // so a target inside a still-collapsed resolved thread stayed hidden
-    // forever on a memento-restored mount.
-    it("still reveals a resolved-thread target on mount even when its memento was already consumed", async () => {
-      const timelineWithResolvedThread: TimelineEntry[] = [
-        ...mockTimeline,
-        {
-          type: "comment",
-          id: "comment-3",
-          actor_type: "member",
-          actor_id: "user-1",
-          content: "Resolved root",
-          parent_id: null,
-          created_at: "2026-01-18T00:00:00Z",
-          updated_at: "2026-01-18T00:00:00Z",
-          comment_type: "comment",
-          resolved_at: "2026-01-19T00:00:00Z",
-        } as TimelineEntry,
-        {
-          type: "comment",
-          id: "reply-1",
-          actor_type: "member",
-          actor_id: "user-1",
-          content: "Reply inside resolved thread",
-          parent_id: "comment-3",
-          created_at: "2026-01-18T01:00:00Z",
-          updated_at: "2026-01-18T01:00:00Z",
-          comment_type: "comment",
-        } as TimelineEntry,
-      ];
-      mockApiObj.listTimeline.mockResolvedValue(timelineWithResolvedThread);
-
-      // Fake adapter reporting the memento as already consumed for this exact
-      // target — the scenario a real remount-after-tab-switch produces.
-      const adapter: ScrollRestorationAdapter = {
-        get: () => undefined,
-        getViewState: (key) => (key === "highlight:issue-1" ? "reply-1" : undefined),
-        setViewState: vi.fn(),
-      };
-
-      const queryClient = createTestQueryClient();
-      render(
-        <I18nProvider locale="en" resources={TEST_RESOURCES}>
-          <QueryClientProvider client={queryClient}>
-            <ScrollRestorationProvider adapter={adapter}>
-              <IssueDetail issueId="issue-1" highlightCommentId="reply-1" />
-            </ScrollRestorationProvider>
-          </QueryClientProvider>
-        </I18nProvider>,
-      );
-
-      // The thread must still auto-expand and reveal the reply, exactly like
-      // a fresh (non-memento) landing — the memento only suppresses the
-      // scroll/highlight/re-write that follows, never the reveal itself.
-      await waitFor(() => {
-        expect(document.getElementById("comment-reply-1")).not.toBeNull();
-      });
-      // The memento was already consumed for this target, so the effect must
-      // not write it again.
-      expect(adapter.setViewState).not.toHaveBeenCalled();
-    });
   });
 
   it("marks a reply-resolved thread as resolved on the quick-jump rail", async () => {
@@ -4925,7 +3373,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      const nav = await screen.findByRole("navigation", { name: "Jump to comment thread" });
+      const nav = await screen.findByRole("navigation", { name: "Quick navigation" });
       expect(document.getElementById("comment-reply-1")).toBeNull();
       expect(within(nav).queryByRole("button", { name: /: Reply inside resolved thread$/ })).toBeNull();
       act(() => within(nav).getByRole("button", { name: "Resolved root (resolved)" }).focus());
@@ -5059,7 +3507,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      const nav = await screen.findByRole("navigation", { name: "Jump to comment thread" });
+      const nav = await screen.findByRole("navigation", { name: "Quick navigation" });
       expect(document.getElementById("comment-reply-2")).toBeNull();
       fireEvent.click(within(nav).getByRole("button", { name: /: Pushed a fix$/ }));
 
@@ -5228,169 +3676,6 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByDisplayValue("Issue two draft")).toBeVisible();
   });
 
-  it("expands a collapsed description before a dropped file inserts", async () => {
-    descriptionMeasurement.current = {
-      totalRows: 13,
-      hiddenRows: 1,
-      hasOverflow: true,
-      lineHeight: 20,
-      previewText: "Add JWT auth to the backend",
-    };
-    mockUploadWithToast.mockResolvedValue(undefined);
-    renderIssueDetail();
-
-    await screen.findByDisplayValue("Add JWT auth to the backend");
-    const editor = document.querySelector("[data-description-editor]")!;
-    expect(editor).toHaveAttribute("aria-hidden", "true");
-    expect(descDropZoneOnDrop.current).toBeTruthy();
-
-    // Assert the ordering at the moment uploadFile is actually invoked, not
-    // after `act` flushes: the expansion must have already committed to the
-    // DOM (no aria-hidden/inert) by the time this fires.
-    let editorWasInertAtInsert: boolean | null = null;
-    descEditorUploadFile.mockImplementationOnce(() => {
-      editorWasInertAtInsert = editor.hasAttribute("aria-hidden") || editor.hasAttribute("inert");
-    });
-
-    const droppedFile = new File(["x"], "dropped.png", { type: "image/png" });
-    await act(async () => {
-      descDropZoneOnDrop.current!([droppedFile]);
-    });
-
-    expect(editorWasInertAtInsert).toBe(false);
-    expect(editor).not.toHaveAttribute("aria-hidden");
-    expect(descEditorUploadFile).toHaveBeenCalledWith(droppedFile);
-  });
-
-  it("expands a collapsed description before an Attach-file selection inserts", async () => {
-    descriptionMeasurement.current = {
-      totalRows: 13,
-      hiddenRows: 1,
-      hasOverflow: true,
-      lineHeight: 20,
-      previewText: "Add JWT auth to the backend",
-    };
-    mockUploadWithToast.mockResolvedValue(undefined);
-    renderIssueDetail();
-
-    await screen.findByDisplayValue("Add JWT auth to the backend");
-    const editor = document.querySelector("[data-description-editor]")!;
-    expect(editor).toHaveAttribute("aria-hidden", "true");
-
-    let editorWasInertAtInsert: boolean | null = null;
-    descEditorUploadFile.mockImplementationOnce(() => {
-      editorWasInertAtInsert = editor.hasAttribute("aria-hidden") || editor.hasAttribute("inert");
-    });
-
-    const selectedFile = new File(["x"], "selected.png", { type: "image/png" });
-    const fileInput = descriptionFileInput();
-    expect(fileInput).toBeTruthy();
-    await act(async () => {
-      Object.defineProperty(fileInput, "files", { value: [selectedFile], configurable: true });
-      fireEvent.change(fileInput);
-    });
-
-    expect(editorWasInertAtInsert).toBe(false);
-    expect(editor).not.toHaveAttribute("aria-hidden");
-    expect(descEditorUploadFile).toHaveBeenCalledWith(selectedFile);
-  });
-
-  it("keeps focus on Show less after expanding, instead of dropping it via collapseDisabled", async () => {
-    // Regression: `onFocusCapture` on the wrapper around DescriptionDisclosure
-    // fired for ANY focus inside it, including the Show more/less button
-    // itself. Focusing "Show more" then expanding flipped `descriptionFocused`
-    // true from that same focus event; on the next render the button (now
-    // "Show less") read `disabled={expanded && collapseDisabled}` and became
-    // disabled while the browser's focus was still on it — a disabled element
-    // cannot hold focus, so focus silently dropped to <body>. The guard must
-    // only count focus landing inside the actual editor as "editing."
-    descriptionMeasurement.current = {
-      totalRows: 13,
-      hiddenRows: 1,
-      hasOverflow: true,
-      lineHeight: 20,
-      previewText: "Add JWT auth to the backend",
-    };
-    renderIssueDetail();
-
-    await screen.findByDisplayValue("Add JWT auth to the backend");
-    const showMore = screen.getByRole("button", { name: /Show more/ });
-    act(() => showMore.focus());
-    fireEvent.keyDown(showMore, { key: "Enter" });
-    fireEvent.click(showMore);
-
-    const showLess = await screen.findByRole("button", { name: "Show less" });
-    expect(showLess).not.toBeDisabled();
-    expect(document.activeElement).toBe(showLess);
-  });
-
-  it("re-enables Show less once a pending upload's attachment ids are bound", async () => {
-    descriptionMeasurement.current = {
-      totalRows: 13,
-      hiddenRows: 1,
-      hasOverflow: true,
-      lineHeight: 20,
-      previewText: "Add JWT auth to the backend",
-    };
-    const attachment: Attachment = {
-      id: "attach-1",
-      workspace_id: "ws-1",
-      issue_id: "issue-1",
-      comment_id: null,
-      chat_session_id: null,
-      chat_message_id: null,
-      uploader_type: "member",
-      uploader_id: "user-1",
-      filename: "pasted.png",
-      url: "https://files.example.com/attach-1",
-      download_url: "https://files.example.com/attach-1",
-      markdown_url: "/api/attachments/attach-1/download",
-      content_type: "image/png",
-      size_bytes: 100,
-      created_at: "2026-01-20T00:00:00Z",
-    };
-    mockUploadWithToast.mockResolvedValue(attachment);
-    mockApiObj.updateIssue.mockResolvedValue({
-      ...mockIssue,
-      description: "Add JWT auth to the backend ![pasted](/api/attachments/attach-1/download)",
-      revision: 4,
-    });
-    renderIssueDetail();
-
-    await screen.findByDisplayValue("Add JWT auth to the backend");
-    fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
-    await screen.findByRole("button", { name: "Show less" });
-
-    // handleDescriptionUpload is passed as ContentEditor's onUploadFile prop;
-    // the real editor invokes it internally on paste/drop/insert. The mocked
-    // editor's imperative uploadFile() has no document to insert into, so
-    // this is the one path that actually exercises
-    // handleDescriptionUpload → uploadWithToast → descPendingAttachments.
-    expect(descOnUploadFile.current).toBeTruthy();
-    const file = new File(["x"], "pasted.png", { type: "image/png" });
-    await act(async () => {
-      await descOnUploadFile.current!(file);
-    });
-    expect(mockUploadWithToast).toHaveBeenCalledWith(file);
-
-    const showLess = await screen.findByRole("button", { name: "Show less" });
-    expect(showLess).toBeDisabled();
-
-    // Reference the pasted attachment from the markdown so it binds on save.
-    const editor = screen.getByTestId("rich-text-editor");
-    fireEvent.change(editor, {
-      target: { value: "Add JWT auth to the backend ![pasted](/api/attachments/attach-1/download)" },
-    });
-    await waitFor(() =>
-      expect(mockApiObj.updateIssue).toHaveBeenCalledWith(
-        "issue-1",
-        expect.objectContaining({ attachment_ids: ["attach-1"] }),
-      ),
-    );
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).not.toBeDisabled());
-  });
-
   it("keeps a title draft visible when its captured content conflicts", async () => {
     mockApiObj.updateIssue.mockRejectedValueOnce({
       body: { code: "revision_conflict" },
@@ -5448,105 +3733,20 @@ describe("IssueDetail (shared)", () => {
     expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(callsBeforeDiscard);
   });
 
-  it("restores an unsaved title edit after the page unmounts and remounts", async () => {
-    mockApiObj.updateIssue.mockRejectedValueOnce(new Error("offline"));
-    const first = renderIssueDetail();
-    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
-    const editor = await screen.findByTestId("title-editor");
-    fireEvent.change(editor, { target: { value: "Half-typed title" } });
-    fireEvent.blur(editor);
-    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalled());
-    first.unmount();
-
-    renderIssueDetail();
-    expect(await screen.findByDisplayValue("Half-typed title")).toBeVisible();
-  });
-
-  it("keeps a newer title edit when an earlier save succeeds while the user keeps typing", async () => {
-    let finishSave!: (issue: unknown) => void;
-    mockApiObj.updateIssue.mockImplementationOnce(
-      () => new Promise((resolve) => { finishSave = resolve; }),
-    );
-    const first = renderIssueDetail();
-    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
-    const editor = await screen.findByTestId("title-editor");
-    fireEvent.change(editor, { target: { value: "First title" } });
-    fireEvent.blur(editor);
-    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalled());
-    fireEvent.change(editor, { target: { value: "First title, then more" } });
-    finishSave({ ...mockIssue, title: "First title" });
-    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
-    first.unmount();
-
-    renderIssueDetail();
-    expect(await screen.findByDisplayValue("First title, then more")).toBeVisible();
-  });
-
-  it("keeps a title edit that returns to the old title while another title save is in flight", async () => {
-    let finishSave!: (issue: unknown) => void;
-    mockApiObj.updateIssue.mockImplementationOnce(
-      () => new Promise((resolve) => { finishSave = resolve; }),
-    );
-    const first = renderIssueDetail();
-    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
-    const editor = await screen.findByTestId("title-editor");
-    fireEvent.change(editor, { target: { value: "Saved title" } });
-    fireEvent.blur(editor);
-    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
-    // The editor goes back to the title the server still holds, then the save lands.
-    fireEvent.change(editor, { target: { value: "Implement authentication" } });
-    finishSave({ ...mockIssue, title: "Saved title" });
-    await waitFor(() =>
-      expect(useIssueTitleDraftStore.getState().getDraft(mockIssue.id)?.value).toBe("Implement authentication"),
-    );
-    first.unmount();
-
-    renderIssueDetail();
-    expect(await screen.findByDisplayValue("Implement authentication")).toBeVisible();
-  });
-
-  it("keeps a title edit that matches the in-flight title when that save then fails", async () => {
-    let failSave!: (error: unknown) => void;
-    mockApiObj.updateIssue.mockImplementationOnce(
-      () => new Promise((_resolve, reject) => { failSave = reject; }),
-    );
-    const first = renderIssueDetail();
-    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
-    const editor = await screen.findByTestId("title-editor");
-    fireEvent.change(editor, { target: { value: "Saved title" } });
-    fireEvent.blur(editor);
-    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
-    // The optimistic cache already shows "Saved title"; typing it again must not drop the draft.
-    fireEvent.change(editor, { target: { value: "Other" } });
-    fireEvent.change(editor, { target: { value: "Saved title" } });
-    fireEvent.blur(editor);
-    failSave(new Error("offline"));
-    await waitFor(() =>
-      expect(useIssueTitleDraftStore.getState().getDraft(mockIssue.id)?.value).toBe("Saved title"),
-    );
-    first.unmount();
-
-    renderIssueDetail();
-    expect(await screen.findByDisplayValue("Saved title")).toBeVisible();
+  it("returns to the issue title and description from the outline", async () => {
+    // Destination behavior is covered by thread-minimap.test.tsx; this tests the scroller wiring.
+    mockApiObj.listTimeline.mockResolvedValue([mockTimeline.find((entry) => entry.type === "comment")!]);
+    const { container } = renderIssueDetail();
+    const tick = await screen.findByRole("button", { name: "Issue description" });
+    const scroller = container.querySelector<HTMLDivElement>("[data-tab-scroll-root]")!;
+    scroller.scrollTop = 800;
+    fireEvent.click(tick);
+    expect(scroller.scrollTop).toBe(0);
   });
 
   describe("sub-issues list", () => {
-    it("places the decision banner after title, description and sub-issues, before activity", async () => {
-      mockApiObj.listChildIssues.mockResolvedValue({
-        issues: [{ ...mockIssue, id: "child-1", number: 11, identifier: "TES-11", title: "Fix login flow", parent_issue_id: "issue-1" }],
-      });
-      renderIssueDetail();
-      const banner = await screen.findByTestId("decision-banner");
-      const subIssue = await screen.findByText("Fix login flow");
-      const description = document.querySelector("[data-description-editor]")!;
-      const activity = screen.getByText("Activity", { selector: "h2" });
-      const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-      expect(follows(description, banner)).toBe(true);
-      expect(follows(subIssue, banner)).toBe(true);
-      expect(follows(banner, activity)).toBe(true);
-    });
-
     beforeEach(() => {
+      useSubIssuesCollapseStore.setState({ collapsedIssueIds: new Set() });
       useSubIssueDisplayStore.setState({
         rowProperties: { ...DEFAULT_SUB_ISSUE_ROW_PROPERTIES },
         rowPropertyIds: [],
@@ -5571,6 +3771,183 @@ describe("IssueDetail (shared)", () => {
       due_date: null,
       priority: "none",
       ...overrides,
+    });
+
+    const inlineChildren = () => within(document.querySelector<HTMLElement>('[class~="group/sub-issues"]')!);
+    const findInlineChild = (title: string) => waitFor(() => inlineChildren().getByText(title));
+
+    it("offers direct sidebar child links and an independent disclosure", async () => {
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [
+          subIssue({ id: "child-open", identifier: "TES-11", title: "Open destination", status: "todo" }),
+          subIssue({ id: "child-done", identifier: "TES-12", title: "Custom completion", status: "verified", status_category: "done" }),
+          subIssue({ id: "child-cancelled", identifier: "TES-13", title: "Cancelled destination", status: "cancelled" }),
+        ],
+      });
+      const { container } = renderIssueDetail();
+      await waitFor(() => expect(container.querySelector('[data-issue-sidebar-section="sub_issues"]')).not.toBeNull());
+      const sidebar = within(container.querySelector<HTMLElement>('[data-issue-sidebar-section="sub_issues"]')!);
+      expect(sidebar.getAllByRole("link")).toHaveLength(3);
+      expect(sidebar.getByRole("link", { name: /TES-11 Open destination/ })).toHaveAttribute("href", "/test/issues/child-open");
+      expect(sidebar.getByRole("link", { name: /TES-13 Cancelled destination/ })).toBeInTheDocument();
+      expect(sidebar.getByRole("progressbar", { name: "Sub-issues" })).toHaveAttribute("aria-valuenow", "1");
+      expect(sidebar.getByRole("progressbar", { name: "Sub-issues" })).toHaveAttribute("aria-valuemax", "3");
+      const toggle = sidebar.getByRole("button", { name: "Sub-issues" });
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(sidebar.queryAllByRole("link")).toHaveLength(0);
+      expect(inlineChildren().getByText("Open destination")).toBeInTheDocument();
+      fireEvent.click(toggle);
+      expect(sidebar.getAllByRole("link")).toHaveLength(3);
+    });
+
+    const stagedSidebarChildren = () => Array.from({ length: 25 }, (_, i) => subIssue({
+      id: `child-${i + 1}`,
+      number: i + 1,
+      identifier: `TES-${i + 1}`,
+      title: `Child ${i + 1}`,
+      stage: i % 3 === 0 ? 2 : i % 3 === 1 ? 1 : null,
+      status: i === 1 || i >= 20 ? "verified" : i === 2 ? "declined" : i === 5 ? "cancelled" : "todo",
+      status_category: i === 1 || i >= 20 ? "done" : i === 2 ? "closed" : undefined,
+    }));
+
+    it.each([false, true])("expands unfinished-first sidebar children in place (mobile: %s)", async (isMobile) => {
+      mockViewport.isMobile = isMobile;
+      mockApiObj.listChildIssues.mockResolvedValue({ issues: stagedSidebarChildren() });
+      const { container } = renderIssueDetail();
+      await findInlineChild("Child 25");
+      const section = container.querySelector<HTMLDivElement>('[class~="group/sub-issues"]')!;
+      const inlineOrder = inlineChildren().getAllByText(/^Child \d+$/).map((row) => row.textContent);
+      fireEvent.click(within(section).getByRole("button", { name: "Sub-issues" }));
+      const scroller = container.querySelector<HTMLDivElement>("[data-tab-scroll-root]")!;
+      scroller.scrollTop = 600;
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
+      vi.spyOn(section, "getBoundingClientRect").mockReturnValue({ top: -200 } as DOMRect);
+      let sheet: HTMLElement | undefined;
+      if (isMobile) {
+        fireEvent.click(screen.getByRole("button", { name: enIssues.detail.sidebar_tooltip }));
+        sheet = await screen.findByRole("dialog");
+      }
+      const sidebar = within(document.querySelector<HTMLElement>('[data-issue-sidebar-section="sub_issues"]')!);
+      const childLinks = () => sidebar.getAllByRole("link").map((link) => link.getAttribute("href"));
+      const urls = (numbers: number[]) => numbers.map((n) => `/test/issues/child-${n}`);
+      const firstTen = [5, 8, 11, 14, 17, 20, 1, 4, 7, 10];
+      expect(childLinks()).toEqual(urls(firstTen));
+      expect(sidebar.getByText("6/25")).toBeInTheDocument();
+      expect(sidebar.getByRole("progressbar")).toHaveAttribute("aria-valuemax", "25");
+      expect(sidebar.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "6");
+      const showMore = sidebar.getByRole("button", { name: "Show 15 more" });
+      expect(showMore).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(showMore);
+      expect(childLinks()).toEqual(urls([
+        5, 8, 11, 14, 17, 20, 1, 4, 7, 10, 13, 16, 19, 9, 12, 15, 18,
+        2, 23, 22, 25, 3, 6, 21, 24,
+      ]));
+      expect(inlineChildren().queryByText("Child 25")).not.toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(600);
+      if (isMobile) {
+        expect(screen.getByRole("dialog")).toBe(sheet);
+        expect(document.querySelector('[data-slot="sheet-overlay"]')).not.toBeNull();
+      }
+      const collapse = sidebar.getByRole("button", { name: "Collapse" });
+      expect(collapse).toHaveAttribute("aria-expanded", "true");
+      fireEvent.click(collapse);
+      expect(childLinks()).toEqual(urls(firstTen));
+      expect(sidebar.getByRole("button", { name: "Show 15 more" })).toHaveAttribute("aria-expanded", "false");
+      expect(sidebar.getByText("6/25")).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(600);
+      expect(inlineChildren().queryByText("Child 25")).not.toBeInTheDocument();
+      if (isMobile) {
+        expect(screen.getByRole("dialog")).toBe(sheet);
+        expect(document.querySelector('[data-slot="sheet-overlay"]')).not.toBeNull();
+        fireEvent.keyDown(sheet!, { key: "Escape" });
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      }
+      fireEvent.click(within(section).getByRole("button", { name: "Sub-issues" }));
+      expect(inlineChildren().getAllByText(/^Child \d+$/).map((row) => row.textContent)).toEqual(inlineOrder);
+    });
+
+    it("keeps inline stage order including completed children at the ten-child limit", async () => {
+      mockApiObj.listChildIssues.mockResolvedValue({ issues: stagedSidebarChildren().slice(0, 10) });
+      const { container } = renderIssueDetail();
+      await findInlineChild("Child 10");
+      const sidebar = within(container.querySelector<HTMLElement>('[data-issue-sidebar-section="sub_issues"]')!);
+      expect(sidebar.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(
+        [2, 5, 8, 1, 4, 7, 10, 3, 6, 9].map((n) => `/test/issues/child-${n}`),
+      );
+      expect(sidebar.queryByRole("button", { name: /Show .* more|Collapse|View all/ })).not.toBeInTheDocument();
+      expect(sidebar.getByText("1/10")).toBeInTheDocument();
+    });
+
+    it("shows the remaining count when only one child is hidden", async () => {
+      mockApiObj.listChildIssues.mockResolvedValue({ issues: stagedSidebarChildren().slice(0, 11) });
+      const { container } = renderIssueDetail();
+      await findInlineChild("Child 11");
+      const sidebar = within(container.querySelector<HTMLElement>('[data-issue-sidebar-section="sub_issues"]')!);
+      expect(sidebar.getAllByRole("link")).toHaveLength(10);
+      fireEvent.click(sidebar.getByRole("button", { name: "Show 1 more" }));
+      expect(sidebar.getAllByRole("link")).toHaveLength(11);
+      fireEvent.click(sidebar.getByRole("button", { name: "Collapse" }));
+      expect(sidebar.getAllByRole("link")).toHaveLength(10);
+    });
+
+    it("leaves the sidebar slot empty while loading and when no children exist", async () => {
+      let resolveChildren!: (value: { issues: Issue[] }) => void;
+      mockApiObj.listChildIssues.mockImplementation(() => new Promise((resolve) => {
+        resolveChildren = resolve;
+      }));
+      const { container } = renderIssueDetail();
+      await screen.findByText("Implement authentication");
+      const sidebar = () => container.querySelector('[data-issue-sidebar-section="sub_issues"]');
+      expect(sidebar()?.childElementCount).toBe(0);
+      await act(async () => resolveChildren({ issues: [] }));
+      expect(sidebar()?.childElementCount).toBe(0);
+    });
+
+    it("removes cached sidebar links after a child query loses access", async () => {
+      let rejectChildren!: (reason: unknown) => void;
+      mockApiObj.listChildIssues.mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectChildren = reject;
+      }));
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(issueKeys.children("ws-1", "issue-1"), [
+        subIssue({ id: "child-private", identifier: "TES-11", title: "Previously authorized child" }),
+      ]);
+      const { container } = render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      const sidebar = () => container.querySelector<HTMLElement>('[data-issue-sidebar-section="sub_issues"]')!;
+      await waitFor(() => expect(within(sidebar()).getByRole("link", { name: /Previously authorized child/ })).toBeInTheDocument());
+      await act(async () => rejectChildren(new ApiError("Access denied", 403, "Forbidden")));
+      await waitFor(() => expect(sidebar().childElementCount).toBe(0));
+    });
+
+    it("jumps from the outline to the expanded sub-issues section without comments", async () => {
+      // Preview/order behavior lives in thread-minimap.test.tsx; this tests the real section.
+      mockApiObj.listTimeline.mockResolvedValue([]);
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [subIssue({ id: "child-1", title: "Child destination" })],
+      });
+      const { container } = renderIssueDetail();
+      await findInlineChild("Child destination");
+      const section = container.querySelector<HTMLDivElement>(".group\\/sub-issues")!;
+      fireEvent.click(within(section).getByRole("button", { name: "Sub-issues" }));
+      expect(within(section).queryByText("Child destination")).not.toBeInTheDocument();
+
+      const scroller = container.querySelector<HTMLDivElement>("[data-tab-scroll-root]")!;
+      scroller.scrollTop = 600;
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
+      vi.spyOn(section, "getBoundingClientRect").mockReturnValue({ top: -200 } as DOMRect);
+      fireEvent.click(within(screen.getByRole("navigation", { name: "Quick navigation" }))
+        .getByRole("button", { name: "Sub-issues" }));
+
+      expect(await findInlineChild("Child destination")).toBeInTheDocument();
+      await waitFor(() => expect(scroller.scrollTop).toBe(284));
     });
 
     it("renders priority, labels, due date and nested progress on rows", async () => {
@@ -5600,7 +3977,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Fix login flow");
+      await findInlineChild("Fix login flow");
       // Label chips ride inside the row link.
       expect(screen.getByText("backend")).toBeInTheDocument();
       expect(screen.getByText("auth")).toBeInTheDocument();
@@ -5610,7 +3987,7 @@ describe("IssueDetail (shared)", () => {
       const due = screen.getByText("Jan 1");
       expect(due.closest("span")?.className).toContain("text-destructive");
       // Bare row shows no due date / no progress chip of its own.
-      const bareRow = screen.getByText("Ship dashboards").closest("a");
+      const bareRow = inlineChildren().getByText("Ship dashboards").closest("a");
       expect(bareRow?.textContent).not.toContain("/");
     });
 
@@ -5637,7 +4014,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Fix login flow");
+      await findInlineChild("Fix login flow");
       expect(screen.queryByText("backend")).not.toBeInTheDocument();
       expect(screen.queryByText("Jan 1")).not.toBeInTheDocument();
     });
@@ -5679,7 +4056,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Fix login flow");
+      await findInlineChild("Fix login flow");
       // Chip renders only on the row that has a value for the property.
       expect(await screen.findByText("Sprint 3")).toBeInTheDocument();
       expect(screen.getAllByText("Sprint 3")).toHaveLength(1);
@@ -5732,7 +4109,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Wrapped up");
+      await findInlineChild("Wrapped up");
       const due = screen.getByText("Jan 1");
       expect(due.closest("span")?.className).not.toContain("text-destructive");
       expect(due.closest("span")?.className).toContain("text-muted-foreground");
@@ -6143,8 +4520,7 @@ describe("IssueDetail (shared)", () => {
     expect(container.querySelector('[data-run-slot-id="initial-assignment"]')).toBe(initialSlot);
     const mentionBlock = container.querySelector("#comment-later-mention")!;
     expect(initialSlot.compareDocumentPosition(mentionBlock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(container.querySelector('[data-run-id="mentioned-run"]')?.closest("[data-thread-root]"))
-      .toHaveAttribute("data-thread-root", "later-mention");
+    expect(mentionBlock.querySelector('[data-run-id="mentioned-run"]')).not.toBeNull();
   });
 
   // MUL-7211 regression: a standalone run's published reply belongs at the

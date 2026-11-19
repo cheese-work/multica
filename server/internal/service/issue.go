@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/multica-ai/multica/server/internal/attribution"
 	"log/slog"
 	"sort"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/attribution"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
-	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
@@ -43,12 +43,19 @@ type IssueService struct {
 	// Metrics as "PostHog only", so leaving it unset is safe.
 	Metrics     *obsmetrics.BusinessMetrics
 	TaskService *TaskService
+<<<<<<< ours
 	// Entitlements supplies Cloud's effective issue-count instruction. Nil is
 	// the self-hosted unlimited path.
 	Entitlements entitlement.Provider
 	// SquadDispatcher overrides default squad leader enqueue on issue create,
 	// allowing handler-level access gating.
 	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
+||||||| base
+	// Entitlements supplies Cloud's effective issue-count instruction. Nil is
+	// the self-hosted unlimited path.
+	Entitlements entitlement.Provider
+=======
+>>>>>>> theirs
 }
 
 func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.Client, ts *TaskService) *IssueService {
@@ -281,7 +288,7 @@ type IssueCreateResult struct {
 //
 // A healthy create is byte-identical to before this existed — the allocation
 // query is untouched and nothing extra is read on the way through. The collision
-// is the signal: AllocateIssueNumber bumps the counter inside the same
+// is the signal: IncrementIssueCounter bumps the counter inside the same
 // transaction as the INSERT, so the unique violation rolls the increment back
 // too and every later create in that workspace retries the same taken number
 // forever. Moving the counter first is what makes the second attempt land on a
@@ -342,7 +349,6 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 // Caller-owned validation is limited to transport-shaped checks: title
 // required, RFC3339 date format, assignee pair sanity.
 func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts IssueCreateOpts) (IssueCreateResult, error) {
-	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, p.WorkspaceID)
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
 		return IssueCreateResult{}, fmt.Errorf("begin tx: %w", err)
@@ -575,6 +581,20 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		return IssueCreateResult{DuplicateIssue: &dup}, ErrActiveDuplicate
 	}
 
+<<<<<<< ours
+||||||| base
+	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
+	if err != nil {
+		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
+	}
+
+=======
+	issueNumber, err := qtx.IncrementIssueCounter(ctx, p.WorkspaceID)
+	if err != nil {
+		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
+	}
+
+>>>>>>> theirs
 	// New issues sort to the top of their (workspace, status) column for
 	// manual ordering. Computed inside the tx, after IncrementIssueCounter
 	// has already taken the workspace row lock, so two concurrent creates

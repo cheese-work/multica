@@ -1469,6 +1469,7 @@ func commentMentionsAnyone(content string) bool {
 // to a squad. Assign and backlog-promotion paths use this directly; comment
 // paths go through computeCommentAgentTriggers so preview and create share the
 // same trigger set.
+<<<<<<< ours
 // It returns true only when a leader task was actually enqueued.
 func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string) bool {
 	return h.enqueueSquadLeaderTaskOutcome(ctx, issue, triggerCommentID, authorType, authorID, handoffNote, false) != squadEnqueueNone
@@ -1486,12 +1487,25 @@ const (
 
 // enqueueSquadLeaderTaskOutcome is enqueueSquadLeaderTask reporting who got the run.
 func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string, workflowHandoff bool) squadEnqueueOutcome {
+||||||| base
+// It returns true only when a leader task was actually enqueued.
+func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, authorType, authorID, handoffNote string, workflowHandoff bool) bool {
+=======
+// It reports whether a leader task was enqueued and, if not, why.
+func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, authorType, authorID, handoffNote string, workflowHandoff bool) (DispatchStatus, DispatchReasonCode) {
+>>>>>>> theirs
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,
 	})
 	if err != nil {
+<<<<<<< ours
 		return squadEnqueueNone
+||||||| base
+		return false
+=======
+		return DispatchBlocked, ReasonTargetUnavailable
+>>>>>>> theirs
 	}
 
 	// The gate must judge the SAME top-of-chain human the enqueue path will
@@ -1515,7 +1529,13 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		leaderOriginator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
 	}
 	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, authorType, authorID, leaderOriginator, uuidToString(issue.WorkspaceID)) {
+<<<<<<< ours
 		return squadEnqueueNone
+||||||| base
+		return false
+=======
+		return DispatchBlocked, ReasonInvocationNotAllowed
+>>>>>>> theirs
 	}
 
 	if !workflowHandoff {
@@ -1525,8 +1545,25 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 			// Key dedup on the reviewed head (TEN-356).
 			HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
 		})
+<<<<<<< ours
 		if err != nil || hasPending {
 			return squadEnqueueNone
+||||||| base
+		if err != nil || hasPending {
+			return false
+=======
+		if err != nil {
+			slog.WarnContext(ctx, "issue write: squad leader pending lookup failed",
+				"issue_id", uuidToString(issue.ID),
+				"squad_id", uuidToString(squad.ID),
+				"leader_id", uuidToString(squad.LeaderID),
+				"error", err,
+			)
+			return DispatchBlocked, ReasonInternalError
+		}
+		if hasPending {
+			return DispatchCoalesced, ReasonCoalesced
+>>>>>>> theirs
 		}
 	}
 
@@ -1539,12 +1576,29 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		_, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID))
 	}
 	if err != nil {
+<<<<<<< ours
 		slog.Warn("enqueue squad leader task failed",
 			"issue_id", uuidToString(issue.ID),
 			"squad_id", uuidToString(squad.ID),
 			"leader_id", uuidToString(squad.LeaderID),
 			"error", err)
 		return squadEnqueueNone
+||||||| base
+		slog.Warn("enqueue squad leader task failed",
+			"issue_id", uuidToString(issue.ID),
+			"squad_id", uuidToString(squad.ID),
+			"leader_id", uuidToString(squad.LeaderID),
+			"error", err)
+		return false
+=======
+		return issueEnqueueFailure(issue, squad.LeaderID, err)
+>>>>>>> theirs
 	}
+<<<<<<< ours
 	return squadEnqueueLeader
+||||||| base
+	return true
+=======
+	return DispatchQueued, ReasonQueued
+>>>>>>> theirs
 }

@@ -110,16 +110,20 @@ WITH locked_task AS MATERIALIZED (
       AND t.agent_id = $3
       AND r.workspace_id = $4
       AND t.status = 'running'
+      AND (
+          $5::uuid IS NULL
+          OR (t.is_leader_task AND t.squad_id = $5::uuid)
+      )
       AND cap.capability = 'task-supplement-v1'
       AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
-      AND ($5::text <> 'agent' OR (
+      AND ($6::text <> 'agent' OR (
           (SELECT count(*) FROM task_supplement s
            JOIN comment c ON c.id = s.comment_id
-           WHERE s.task_id = t.id AND c.author_type = 'agent') < $6::int
+           WHERE s.task_id = t.id AND c.author_type = 'agent') < $7::int
           AND (SELECT count(*) FROM task_supplement s
                JOIN comment c ON c.id = s.comment_id
                WHERE s.task_id = t.id AND c.author_type = 'agent'
-                 AND s.author_id = $7) < $8::int
+                 AND s.author_id = $8) < $9::int
       ))
     FOR UPDATE OF t
 ), inserted AS (
@@ -127,8 +131,13 @@ WITH locked_task AS MATERIALIZED (
         task_id, workspace_id, issue_id, comment_id, author_id,
         client_request_id, status, implicit
     )
+<<<<<<< HEAD
     SELECT t.id, $4, t.issue_id, $9, $7,
            $10, 'pending', $11::bool
+=======
+    SELECT t.id, $4, t.issue_id, $10, $8,
+           $11, 'pending'
+>>>>>>> v0.11.0
     FROM locked_task t
     RETURNING task_id, workspace_id, issue_id, comment_id, author_id, client_request_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, implicit, replay_attempts, replay_next_at
 )
@@ -138,6 +147,7 @@ JOIN locked_task ON locked_task.id = inserted.task_id
 `
 
 type BindCommentTaskSupplementParams struct {
+<<<<<<< HEAD
 	TaskID              pgtype.UUID `json:"task_id"`
 	IssueID             pgtype.UUID `json:"issue_id"`
 	AgentID             pgtype.UUID `json:"agent_id"`
@@ -149,6 +159,19 @@ type BindCommentTaskSupplementParams struct {
 	CommentID           pgtype.UUID `json:"comment_id"`
 	ClientRequestID     pgtype.UUID `json:"client_request_id"`
 	Implicit            bool        `json:"implicit"`
+=======
+	TaskID                pgtype.UUID `json:"task_id"`
+	IssueID               pgtype.UUID `json:"issue_id"`
+	AgentID               pgtype.UUID `json:"agent_id"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	RequiredLeaderSquadID pgtype.UUID `json:"required_leader_squad_id"`
+	AuthorType            string      `json:"author_type"`
+	MaxAgentBindings      int32       `json:"max_agent_bindings"`
+	AuthorID              pgtype.UUID `json:"author_id"`
+	MaxBindingsPerAgent   int32       `json:"max_bindings_per_agent"`
+	CommentID             pgtype.UUID `json:"comment_id"`
+	ClientRequestID       pgtype.UUID `json:"client_request_id"`
+>>>>>>> v0.11.0
 }
 
 type BindCommentTaskSupplementRow struct {
@@ -183,6 +206,7 @@ func (q *Queries) BindCommentTaskSupplement(ctx context.Context, arg BindComment
 		arg.IssueID,
 		arg.AgentID,
 		arg.WorkspaceID,
+		arg.RequiredLeaderSquadID,
 		arg.AuthorType,
 		arg.MaxAgentBindings,
 		arg.AuthorID,
@@ -1021,7 +1045,11 @@ func (q *Queries) SettleTerminalTaskSupplements(ctx context.Context, taskIds []p
 
 const startAgentTaskWithSupplement = `-- name: StartAgentTaskWithSupplement :one
 WITH candidate AS MATERIALIZED (
+<<<<<<< HEAD
     SELECT t.id, t.issue_id, t.chat_session_id, t.task_kind, r.workspace_id, r.provider
+=======
+    SELECT t.id, t.issue_id, t.chat_session_id, r.workspace_id, r.provider
+>>>>>>> v0.11.0
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = $2
@@ -1040,7 +1068,7 @@ WITH candidate AS MATERIALIZED (
     FROM candidate
     WHERE $3::boolean
       AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
-      AND issue_id IS NOT NULL
+      AND (issue_id IS NOT NULL OR chat_session_id IS NOT NULL)
     ON CONFLICT DO NOTHING
     RETURNING task_id
 ), chat_capability AS (

@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { CoreProvider } from "@multica/core/platform";
 import type { WSClient } from "@multica/core/api/ws-client";
 import { installUserTimingCap } from "@multica/core/diagnostics";
+import { registerEE } from "@multica/ee";
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
 import type { SupportedLocale } from "@multica/core/i18n";
 import packageJson from "../package.json";
@@ -72,6 +73,8 @@ function deriveWsUrl(): string | undefined {
 // to the package.json version so local dev still reports something useful.
 const WEB_VERSION =
   process.env.NEXT_PUBLIC_APP_VERSION || packageJson.version || "dev";
+
+registerEE();
 
 export function WebProviders({
   children,

@@ -88,8 +88,14 @@ exit 1
 				t.Fatalf("seed managed workdir: %+v, %v", prepared, err)
 			}
 			task.PriorWorkDir = prepared.WorkDir
+<<<<<<< ours
 			d.handleTask(context.Background(), task, 0)
 			var report map[string]any
+||||||| base
+			d.handleTask(context.Background(), task, 0)
+=======
+			d.handleTask(context.Background(), task, newTestTaskSlot(0))
+>>>>>>> theirs
 			select {
 			case report = <-reports:
 				if report["retired_session_id"] != "ses-old" {

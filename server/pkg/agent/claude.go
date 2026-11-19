@@ -161,11 +161,15 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	if opts.EnableTaskSupplement {
 		supplements = newClaudeSupplementSession(runCtx)
 	}
+	initializer := supplements
+	if initializer == nil && opts.SkillInvocation != nil {
+		initializer = newClaudeSupplementSession(runCtx)
+	}
 	var closeStdinOnce sync.Once
 	closeStdin := func() {
 		closeStdinOnce.Do(func() { _ = stdin.Close() })
-		if supplements != nil {
-			supplements.end()
+		if initializer != nil {
+			initializer.end()
 		}
 	}
 	// Capture stderr into both the daemon log (as before) and a bounded tail
@@ -211,13 +215,26 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	writeDone := make(chan error, 1)
 	promptUUID := uuid.NewString()
 	go func() {
-		if supplements != nil {
-			if initErr := supplements.initialize(inputWriter, opts.HandshakeTimeout); initErr != nil {
-				b.cfg.Logger.Warn("Claude additional messages unavailable; continuing normally", "error", initErr)
-				supplements.end()
+		var commands map[string]bool
+		if initializer != nil {
+			if initErr := initializer.initialize(inputWriter, opts.HandshakeTimeout, opts.EnableTaskSupplement); initErr != nil {
+				b.cfg.Logger.Warn("Claude initialization unavailable; continuing with text input", "error", initErr)
+				initializer.end()
+			} else if !slashCommandsDisabled(b.cfg.LaunchPrefix, opts.ExtraArgs, opts.CustomArgs) {
+				commands = initializer.availableCommands()
 			}
 		}
+<<<<<<< ours
 		err := writeClaudeInput(inputWriter, prompt, promptUUID)
+||||||| base
+		err := writeClaudeInput(inputWriter, prompt)
+=======
+		blocks := []string{prompt}
+		if opts.SkillInvocation != nil {
+			blocks = opts.SkillInvocation.claudeTextBlocks(commands)
+		}
+		err := writeClaudeInput(inputWriter, blocks...)
+>>>>>>> theirs
 		if err != nil {
 			closeStdin()
 			if supplements != nil {
@@ -248,6 +265,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
 		seenUsage := make(map[string]struct{})
+		rateLimits := newRateLimitTracker(opts.OnRateLimits)
 		eventCount := 0
 		invalidEventCount := 0
 		assistantEventCount := 0
@@ -259,8 +277,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		pendingControls := 0
 		closeRequested := false
 		closeAfterControls := func() {
-			if supplements != nil {
-				supplements.end()
+			if initializer != nil {
+				initializer.end()
 			}
 			controlMu.Lock()
 			defer controlMu.Unlock()
@@ -349,6 +367,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if b.handleUser(msg, msgCh) {
 					sawAsyncLaunch = true
 				}
+			case "rate_limit_event":
+				if update, ok := parseClaudeRateLimitEvent(msg.RateLimitInfo); ok {
+					rateLimits.apply(update)
+				}
 			case "system":
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
@@ -434,8 +456,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					}
 				}(msg, reply)
 			case "control_response":
-				if supplements != nil {
-					supplements.handleResponse(msg.Response)
+				if initializer != nil {
+					initializer.handleResponse(msg.Response)
 				}
 			}
 		}
@@ -785,6 +807,9 @@ type claudeSDKMessage struct {
 
 	// log fields
 	Log *claudeLogEntry `json:"log,omitempty"`
+
+	// rate_limit_event fields
+	RateLimitInfo json.RawMessage `json:"rate_limit_info,omitempty"`
 
 	// control request fields
 	RequestID string          `json:"request_id,omitempty"`
@@ -1316,8 +1341,16 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	return args
 }
 
+<<<<<<< ours
 func writeClaudeInput(w io.Writer, prompt, promptUUID string) error {
 	data, err := buildClaudeInput(prompt, promptUUID)
+||||||| base
+func writeClaudeInput(w io.Writer, prompt string) error {
+	data, err := buildClaudeInput(prompt)
+=======
+func writeClaudeInput(w io.Writer, prompts ...string) error {
+	data, err := buildClaudeInput(prompts...)
+>>>>>>> theirs
 	if err != nil {
 		return err
 	}
@@ -1327,18 +1360,23 @@ func writeClaudeInput(w io.Writer, prompt, promptUUID string) error {
 	return nil
 }
 
+<<<<<<< ours
 func buildClaudeInput(prompt, promptUUID string) ([]byte, error) {
+||||||| base
+func buildClaudeInput(prompt string) ([]byte, error) {
+=======
+func buildClaudeInput(prompts ...string) ([]byte, error) {
+	content := make([]map[string]string, 0, len(prompts))
+	for _, prompt := range prompts {
+		content = append(content, map[string]string{"type": "text", "text": prompt})
+	}
+>>>>>>> theirs
 	payload := map[string]any{
 		"type": "user",
 		"uuid": promptUUID,
 		"message": map[string]any{
-			"role": "user",
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": prompt,
-				},
-			},
+			"role":    "user",
+			"content": content,
 		},
 	}
 	data, err := json.Marshal(payload)

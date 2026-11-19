@@ -3,7 +3,13 @@
 -- are one state transition. A missing row is the fail-closed value for old
 -- daemons, old servers, unsupported providers and application rollback.
 WITH candidate AS MATERIALIZED (
+<<<<<<< ours
     SELECT t.id, t.issue_id, t.chat_session_id, t.task_kind, r.workspace_id, r.provider
+||||||| base
+    SELECT t.id, t.issue_id, r.workspace_id, r.provider
+=======
+    SELECT t.id, t.issue_id, t.chat_session_id, r.workspace_id, r.provider
+>>>>>>> theirs
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = @task_id
@@ -22,7 +28,7 @@ WITH candidate AS MATERIALIZED (
     FROM candidate
     WHERE @enable_task_supplement::boolean
       AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
-      AND issue_id IS NOT NULL
+      AND (issue_id IS NOT NULL OR chat_session_id IS NOT NULL)
     ON CONFLICT DO NOTHING
     RETURNING task_id
 ), chat_capability AS (
@@ -144,6 +150,10 @@ WITH locked_task AS MATERIALIZED (
       AND t.agent_id = @agent_id
       AND r.workspace_id = @workspace_id
       AND t.status = 'running'
+      AND (
+          sqlc.narg('required_leader_squad_id')::uuid IS NULL
+          OR (t.is_leader_task AND t.squad_id = sqlc.narg('required_leader_squad_id')::uuid)
+      )
       AND cap.capability = 'task-supplement-v1'
       AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
       AND (@author_type::text <> 'agent' OR (
