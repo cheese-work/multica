@@ -1166,6 +1166,23 @@ func TestRouter_IssueCommand_Creates(t *testing.T) {
 	}
 }
 
+// CHE-6387, rule 7: an issue made by a channel /issue command keeps created_via
+// NULL (filter value "unknown"); the router must not set it.
+func TestRouter_IssueCommand_LeavesCreatedViaNull(t *testing.T) {
+	h := newHarness(t)
+	h.binder.appendResult = AppendResult{DedupMarked: true, IssueCommand: &IssueCommand{Title: "Fix login"}}
+	h.issues.result = service.IssueCreateResult{Issue: db.Issue{ID: uuidFromString(t, "77777777-7777-7777-7777-777777777777"), Number: 42, Title: "Fix login"}}
+	if err := h.router.Handle(context.Background(), p2pMessage(t)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !h.issues.called {
+		t.Fatal("expected issue create")
+	}
+	if h.issues.params.CreatedVia.Valid {
+		t.Fatalf("created_via = %q, want NULL for an integration-channel issue", h.issues.params.CreatedVia.String)
+	}
+}
+
 func TestRouter_IssueCommandWithMediaBindsWithoutChatRun(t *testing.T) {
 	h := newHarness(t)
 	issueTaskID := uuidFromString(t, "99999999-9999-4999-8999-999999999999")

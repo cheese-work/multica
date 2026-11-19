@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -842,6 +843,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		OriginType:    pgtype.Text{String: "autopilot", Valid: true},
 		OriginID:      ap.ID,
 		RequestedByID: requestedBy,
+		CreatedVia:    pgtype.Text{String: issuecreatedvia.Autopilot, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
