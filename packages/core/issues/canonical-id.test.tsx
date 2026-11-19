@@ -9,7 +9,7 @@ import { setApiInstance } from "../api";
 import { ApiError, type ApiClient } from "../api/client";
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
-import { issueDetailViewOptions, issueKeys } from "./queries";
+import { issueDetailOptions, issueDetailViewOptions, issueKeys } from "./queries";
 import { isIssueUuid, isNotFoundError, useCanonicalIssue } from "./canonical-id";
 
 const ISSUE_UUID = "cb240efb-154c-42a8-ae92-42b02676feca";
@@ -327,6 +327,37 @@ describe("primary issue reads under the app query defaults", () => {
   it("fails the detail view read after one request", async () => {
     const { result } = renderHook(() => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID)), { wrapper: createWrapper(qc) });
     await waitFor(() => expect(result.current.isError).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The hover card reads the same detail entry with the plain options. When it
+// starts the request first, the page joins that in-flight read and must still
+// show its error after one failed request (CHE-7523 finding).
+describe("primary issue reads that join an in-flight hover-card read", () => {
+  let qc: QueryClient;
+  let getIssue: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    qc = createQueryClient();
+    getIssue = vi.fn(async () => { throw new ApiError("unavailable", 503, "Service Unavailable"); });
+    setApiInstance({ getIssue } as unknown as ApiClient);
+  });
+  afterEach(() => { qc.clear(); vi.restoreAllMocks(); });
+
+  const settled = { timeout: 500 };
+
+  it("fails the UUID detail read after one request", async () => {
+    renderHook(() => useQuery(issueDetailOptions("ws-1", ISSUE_UUID)), { wrapper: createWrapper(qc) });
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the identifier resolution after one request", async () => {
+    renderHook(() => useQuery(issueDetailOptions("ws-1", "TRS-134")), { wrapper: createWrapper(qc) });
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
     expect(getIssue).toHaveBeenCalledTimes(1);
   });
 });

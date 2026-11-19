@@ -525,13 +525,17 @@ export function sidebarIssuesOptions(
   });
 }
 
-/** The issue page's own reads fail at once; the app default retry would delay the Retry button. */
-export const primaryIssueRead = { retry: false } as const;
-
+/**
+ * Detail reads fail at once: the issue page shows Retry after the first failed
+ * request. Every observer of this entry shares the options (the hover card
+ * included) because a page that joins an in-flight read keeps that read's retry
+ * policy, so a per-observer opt-out would still wait on the app default.
+ */
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+    retry: false,
   });
 }
 
@@ -555,7 +559,7 @@ export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
-    ...primaryIssueRead,
+    retry: false,
     refetchOnMount: authoritative ? false : "always",
     initialData: () => (listRow?.description != null ? listRow : undefined),
   });

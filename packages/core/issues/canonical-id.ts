@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
-import { issueDetailOptions, issueKeys, primaryIssueRead } from "./queries";
+import { issueDetailOptions, issueKeys } from "./queries";
 import { useIssueReadState } from "./read-state";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -90,7 +90,6 @@ export function useCanonicalIssue(
 
   const resolve = useQuery({
     ...issueDetailOptions(wsId, routeId),
-    ...primaryIssueRead,
     enabled: resolveEnabled,
   });
 
@@ -98,7 +97,6 @@ export function useCanonicalIssue(
 
   const detail = useQuery({
     ...issueDetailOptions(wsId, canonicalId ?? ""),
-    ...primaryIssueRead,
     enabled: enabled && !!canonicalId && !!wsId,
     // Ignored once the entry holds data, so a row already patched by a realtime
     // event is never overwritten by this older resolution response.
