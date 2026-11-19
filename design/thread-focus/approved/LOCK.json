@@ -1,0 +1,187 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "che-6385",
+  "page_note": "Proposal page 'CHE-6385 · thread focus'. Direction B only (Follow default, unread marker only). 25 frames at the exact versions in UX verdict 01a1f18c-f1f2-731a-b945-f49091c42d15; direction A frames stay on the canvas as history and are not locked. Prototype start: kpQ01u8mPy (https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod/proto?frame=kpQ01u8mPy).",
+  "screens": [
+    {
+      "screen": "b-a-follow-default",
+      "frame_id": "iaeZnixDyD",
+      "updatedAt": "2026-11-18T15:09:37.422Z",
+      "content_sha256": "126ea0146b5eae060db74aabcee762d01547a92fc658a60f2a99ba27ce3c6a74"
+    },
+    {
+      "screen": "b-b-agent-group-opened-link-row",
+      "frame_id": "Vf27zqFPd7",
+      "updatedAt": "2026-11-16T20:23:28.642Z",
+      "content_sha256": "4847123a7206b8555021f605b7b361f0a4920566dcc2f11aaf34d749a4156766"
+    },
+    {
+      "screen": "b-c-view-popover-unread-marker",
+      "frame_id": "cMNzhLglth",
+      "updatedAt": "2026-11-18T15:32:15.696Z",
+      "content_sha256": "bc6ec19618434712f555d3b3755f8222c1841cb55cbbebd1940cc7c92b1ea3a5"
+    },
+    {
+      "screen": "b-d-focus-override",
+      "frame_id": "L_jGz1tA6p",
+      "updatedAt": "2026-11-18T15:32:37.474Z",
+      "content_sha256": "6e0bd84a08315f9c05e58a2cbe86aa5a3bb67080256155b43482b52cd5554f22"
+    },
+    {
+      "screen": "b-d2-focus-hidden-shown",
+      "frame_id": "SrxqJi90Xa",
+      "updatedAt": "2026-11-18T15:31:48.694Z",
+      "content_sha256": "cb22568dfc31778502437a19afa77fa2970ec531b4d787de07586eeb359972d2"
+    },
+    {
+      "screen": "b-e-all-view",
+      "frame_id": "NX-cgUem2y",
+      "updatedAt": "2026-11-16T20:22:22.461Z",
+      "content_sha256": "d01aef5b5cfddabb240a9ea884167783f9a5956ff1fd626d5d9255e44e5b67fb"
+    },
+    {
+      "screen": "b-f-states",
+      "frame_id": "HHAmeNMDw9",
+      "updatedAt": "2026-11-16T14:41:20.320Z",
+      "content_sha256": "d071ea16873b33e1272ec990058d85700de1a58e87e1f44fd09ca66f25a24151"
+    },
+    {
+      "screen": "b-g-waiting-1-of-2",
+      "frame_id": "YFiQcbzD7A",
+      "updatedAt": "2026-11-16T20:19:22.958Z",
+      "content_sha256": "d6760227aca9f46b0f256cf13da2e8f96c23ad99b3b030cfd196399a94b033ec"
+    },
+    {
+      "screen": "b-h-waiting-2-of-2",
+      "frame_id": "3k2I0WCV2J",
+      "updatedAt": "2026-11-16T20:19:47.490Z",
+      "content_sha256": "543f258fc27279c5b6f78e91f2d87ab07fa9504ba406fec70129e2a955938761"
+    },
+    {
+      "screen": "components",
+      "frame_id": "_W3uHQuwdF",
+      "updatedAt": "2026-11-18T21:35:17.951Z",
+      "content_sha256": "cb4b779723dd78290235826faa7d348a7d78a9c10758f02fd79530d67c1baccf"
+    },
+    {
+      "screen": "doc-b-a",
+      "frame_id": "W8qKsyBUvQ",
+      "updatedAt": "2026-11-18T15:13:48.780Z",
+      "content_sha256": "fcb2587877b55d193ed8f58f43f271e4d57aa4703d264537b6159b26e4369ae8"
+    },
+    {
+      "screen": "doc-b-b",
+      "frame_id": "qS1_ldy9zi",
+      "updatedAt": "2026-11-18T15:13:55.588Z",
+      "content_sha256": "f1add49129df3fece9bbc56d96f2721e2b9cd4557a0a8e0158785a7318af2d1a"
+    },
+    {
+      "screen": "doc-b-c",
+      "frame_id": "70b40Q0Os8",
+      "updatedAt": "2026-11-18T15:32:27.546Z",
+      "content_sha256": "4fddcc77ec882c0d8eb2ed68903dce2fb97cb5664f8ee8619b2e1a1cc54cd293"
+    },
+    {
+      "screen": "doc-b-d-b-e",
+      "frame_id": "VkrFK83ytF",
+      "updatedAt": "2026-11-18T15:32:34.473Z",
+      "content_sha256": "2c46dbbc32ba61ca23560753f598cdec1cb850e6bb39778c5f198a25f0197c37"
+    },
+    {
+      "screen": "doc-b-f",
+      "frame_id": "14mFx77nWp",
+      "updatedAt": "2026-11-18T15:15:31.875Z",
+      "content_sha256": "97ed343a896af104a8d31c444344f3313a1634569fe1742229fbd519e7a809fd"
+    },
+    {
+      "screen": "doc-s-a",
+      "frame_id": "vRhBLklmy3",
+      "updatedAt": "2026-11-18T15:15:40.261Z",
+      "content_sha256": "615da06fc157c38293a9db3320bc754c88849d61d5251a261a5771de62327444"
+    },
+    {
+      "screen": "doc-s-b",
+      "frame_id": "PfJIE4F9zc",
+      "updatedAt": "2026-11-18T15:15:48.584Z",
+      "content_sha256": "885b9a319299fcf09004c540b8bfa90c9882c41840c7e3ba023e41e5a7254ba5"
+    },
+    {
+      "screen": "doc-s-c",
+      "frame_id": "KRpLoTHVJ0",
+      "updatedAt": "2026-11-18T15:15:57.095Z",
+      "content_sha256": "c61334796d6edbfe1eb5247df6d23b49df9d1b340a8ff7a5e49eec0fcae29a0d"
+    },
+    {
+      "screen": "index-start",
+      "frame_id": "kpQ01u8mPy",
+      "updatedAt": "2026-11-18T15:32:42.728Z",
+      "content_sha256": "57455405776133acc773a04c66c5efda24fc156f05ff73ec4a370bb47c65fae9"
+    },
+    {
+      "screen": "motion",
+      "frame_id": "hmmC1Pq87b",
+      "updatedAt": "2026-11-18T15:11:41.408Z",
+      "content_sha256": "e49cad01e5121d80b006e96242e4996b984745e5c097a5ea02e7b637e6290b53"
+    },
+    {
+      "screen": "motion-played",
+      "frame_id": "7n7qZ6aX4K",
+      "updatedAt": "2026-11-18T21:35:11.168Z",
+      "content_sha256": "cfdbde3329cb116c9b935271a8f0e54eb94039452d3f8736a2c7e5d77bd2c333"
+    },
+    {
+      "screen": "s-a-card-placement",
+      "frame_id": "LZpAu8plwy",
+      "updatedAt": "2026-11-16T14:39:22.731Z",
+      "content_sha256": "768680f73adc30e291a7c11e8aa9feb0e65e8e853649541d3e0d4e48930fa6ff"
+    },
+    {
+      "screen": "s-b-ask-thread",
+      "frame_id": "YOhz1szjhV",
+      "updatedAt": "2026-11-16T14:47:53.147Z",
+      "content_sha256": "f6da09eb599b015133435e5a6d2ac0d9439d4049354ae757ccc57aca61c246ec"
+    },
+    {
+      "screen": "s-c-pick-submitted",
+      "frame_id": "JcaWYZ7tyo",
+      "updatedAt": "2026-11-16T14:38:40.518Z",
+      "content_sha256": "c18e796348e1699fcba4594937451ad17bfea9de473e760520cdd38868a53a06"
+    },
+    {
+      "screen": "tokens",
+      "frame_id": "taTwiY7Dx_",
+      "updatedAt": "2026-11-18T15:11:23.010Z",
+      "content_sha256": "f4dbde998413d2d8a8034713d39b2558a2f5bcd161fe4533b49737f1c3cdf8b6"
+    }
+  ],
+  "export_sha256": "0af1faa3f6dd2aabc36275f7345a3f647b3f680c89d1d45d29e368c29dcff418",
+  "export_sha256_note": "sha256 of `sha256sum design/thread-focus/approved/*.html | LC_ALL=C sort -k2` run inside this directory (25 lines). Each file is the get_frame `html` field exactly as returned, plus one trailing newline. content_sha256 is the sha256 of that file.",
+  "exported_at": "2026-11-19 10:17 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / X99",
+  "issue": "CHE-6446",
+  "parent_issue": "CHE-6385",
+  "selection_id": "01a1ef32-0a5c-7658-a241-c1e8e0bcd966",
+  "ux_verdict_id": "01a1f18c-f1f2-731a-b945-f49091c42d15",
+  "ux_verdict": "HOLD, not PASS: scores 7-8 of 10 on six criteria, no blocking lint finding; HOLD only because G3 check_design_completeness, CHE-6853, CHE-6854 and CHE-6628 are not live.",
+  "waiver": {
+    "waived": [
+      "G3 check_design_completeness",
+      "CHE-6853",
+      "CHE-6854",
+      "CHE-6628"
+    ],
+    "scope": "exactly the 25 frame versions listed in screens[]",
+    "decision_card": "01a1f1a0-aed2-74d2-98c0-b79165d2b3fd",
+    "decision_answer": "01a1f1ac-7353-7055-a64a-e786420740a4",
+    "decided_at": "2026-11-19 09:39 ICT",
+    "decided_by": "Cheese",
+    "note": "A frame edited after these versions is outside the waiver and needs its own re-score."
+  },
+  "byte_check": {
+    "reference": "/tmp/che6446-rescore-19nov/ on X99, 25 get_frame exports by x99-codex-terra-ux (19 Nov 2026 09:03 ICT), used for sloplint in the verdict",
+    "reference_list_sha256": "0af1faa3f6dd2aabc36275f7345a3f647b3f680c89d1d45d29e368c29dcff418",
+    "result": "identical, 25 of 25 files"
+  }
+}

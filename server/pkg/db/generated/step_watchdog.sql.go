@@ -11,6 +11,40 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimStepWatchdogAction = `-- name: ClaimStepWatchdogAction :one
+INSERT INTO issue_step_watchdog_action (id, workspace_id, issue_id, occurrence_key, action, outcome, details)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (issue_id, occurrence_key, action) DO NOTHING
+RETURNING id
+`
+
+type ClaimStepWatchdogActionParams struct {
+	ID            pgtype.UUID `json:"id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	OccurrenceKey string      `json:"occurrence_key"`
+	Action        string      `json:"action"`
+	Outcome       string      `json:"outcome"`
+	Details       []byte      `json:"details"`
+}
+
+// CHE-6116 S2. Claims (issue, occurrence, action) in the transaction of the
+// effect; no row back means another sweeper already holds the claim.
+func (q *Queries) ClaimStepWatchdogAction(ctx context.Context, arg ClaimStepWatchdogActionParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, claimStepWatchdogAction,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.OccurrenceKey,
+		arg.Action,
+		arg.Outcome,
+		arg.Details,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listStepWatchdogCandidates = `-- name: ListStepWatchdogCandidates :many
 SELECT i.id,
        COALESCE(chg.act_key, 'created:' || i.id::text)::text AS occurrence_key,
@@ -92,4 +126,24 @@ func (q *Queries) ListStepWatchdogCandidates(ctx context.Context, arg ListStepWa
 		return nil, err
 	}
 	return items, nil
+}
+
+const stepWatchdogActionClaimed = `-- name: StepWatchdogActionClaimed :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_step_watchdog_action
+  WHERE issue_id = $1 AND occurrence_key = $2 AND action = $3) AS claimed
+`
+
+type StepWatchdogActionClaimedParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	OccurrenceKey string      `json:"occurrence_key"`
+	Action        string      `json:"action"`
+}
+
+// CHE-6116 S2. True when (issue, occurrence, action) already has its ledger row.
+func (q *Queries) StepWatchdogActionClaimed(ctx context.Context, arg StepWatchdogActionClaimedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, stepWatchdogActionClaimed, arg.IssueID, arg.OccurrenceKey, arg.Action)
+	var claimed bool
+	err := row.Scan(&claimed)
+	return claimed, err
 }

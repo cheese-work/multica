@@ -353,6 +353,7 @@ func TestUpdateIssueRejectsStatusOutsideNamedWorkflow(t *testing.T) {
 func TestDefaultLimitsStatusesInAndOutsideProjects(t *testing.T) {
 	seedTestCatalog(t)
 	resetDefaultWorkflow(t)
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
 	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
 	statusName := "Ship " + workflowTestSuffix()[10:]
 	var wf IssueWorkflowResponse
