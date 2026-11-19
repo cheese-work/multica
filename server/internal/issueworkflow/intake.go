@@ -50,7 +50,7 @@ func ParseIntakeLines(text string) map[string]string {
 	out := map[string]string{}
 	for _, line := range strings.Split(text, "\n") {
 		m := intakeLineRe.FindStringSubmatch(strings.TrimRight(line, "\r"))
-		if m == nil || m[2] == "" {
+		if len(m) < 3 || m[2] == "" {
 			continue
 		}
 		for _, name := range IntakeLines {
