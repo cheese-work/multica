@@ -15,7 +15,7 @@ import (
 func inspectProcesses(_ context.Context, pids []int) map[int]Process {
 	procs := make(map[int]Process, len(pids))
 	for _, pid := range pids {
-		cmdline, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+		cmdline, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "cmdline"))
 		if err != nil {
 			continue
 		}

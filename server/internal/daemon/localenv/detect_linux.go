@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// procDir is the procfs mount; a constant so the path joins below stay portable-looking.
+const procDir = "/proc"
+
 func listListeners(ctx context.Context) ([]Listener, error) {
 	inodes := make(map[string]int)
 	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
@@ -20,7 +23,7 @@ func listListeners(ctx context.Context) ([]Listener, error) {
 	if len(inodes) == 0 {
 		return nil, nil
 	}
-	procs, err := os.ReadDir("/proc")
+	procs, err := os.ReadDir(procDir)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +36,7 @@ func listListeners(ctx context.Context) ([]Listener, error) {
 		if err != nil {
 			continue
 		}
-		base := filepath.Join("/proc", p.Name())
+		base := filepath.Join(procDir, p.Name())
 		fds, err := os.ReadDir(filepath.Join(base, "fd"))
 		if err != nil {
 			continue

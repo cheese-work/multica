@@ -722,7 +722,7 @@ func TestReview8545PostgresSlowCallIsCutOffInsideTheLease(t *testing.T) {
 			if !call.hasDeadline || call.budget > 200*time.Millisecond {
 				t.Fatalf("request deadline present=%v, remaining budget=%s, want at most 200ms", call.hasDeadline, call.budget)
 			}
-			if call.err != context.DeadlineExceeded {
+			if !errors.Is(call.err, context.DeadlineExceeded) {
 				t.Fatalf("provider context error = %v, want DeadlineExceeded", call.err)
 			}
 

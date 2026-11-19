@@ -175,7 +175,8 @@ func (s *Store) Themes(ctx context.Context) ([]Theme, error) {
 		}
 		return nil, err
 	}
-	return v.([]Theme), nil
+	fresh, _ := v.([]Theme)
+	return fresh, nil
 }
 
 // Theme finds one theme of the registry by id.
@@ -254,7 +255,8 @@ func (s *Store) cached(ctx context.Context, key string, load func(context.Contex
 	if err != nil {
 		return nil, err
 	}
-	return v.([]byte), nil
+	data, _ := v.([]byte)
+	return data, nil
 }
 
 func (s *Store) fetchIndex(ctx context.Context) ([]Theme, error) {
@@ -264,7 +266,7 @@ func (s *Store) fetchIndex(ctx context.Context) ([]Theme, error) {
 	}
 	var idx index
 	if err := json.Unmarshal(body, &idx); err != nil {
-		return nil, fmt.Errorf("%w: index.json: %v", ErrUpstream, err)
+		return nil, fmt.Errorf("%w: index.json: %w", ErrUpstream, err)
 	}
 	themes := make([]Theme, 0, len(idx.Themes))
 	seen := map[string]bool{}
@@ -338,7 +340,7 @@ func (s *Store) get(ctx context.Context, u *url.URL, limit int64) ([]byte, error
 	req.Header.Set("User-Agent", "multica-theme-store")
 	res, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
+		return nil, fmt.Errorf("%w: %w", ErrUpstream, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -346,7 +348,7 @@ func (s *Store) get(ctx context.Context, u *url.URL, limit int64) ([]byte, error
 	}
 	data, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
+		return nil, fmt.Errorf("%w: %w", ErrUpstream, err)
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrUpstream, u.Redacted(), limit)
@@ -391,7 +393,8 @@ func (c *lru) get(key string) ([]byte, bool) {
 		return nil, false
 	}
 	c.order.MoveToFront(el)
-	return el.Value.(*lruEntry).data, true
+	entry, _ := el.Value.(*lruEntry)
+	return entry.data, true
 }
 
 func (c *lru) put(key string, data []byte) {
@@ -401,14 +404,15 @@ func (c *lru) put(key string, data []byte) {
 		return
 	}
 	if el, ok := c.items[key]; ok {
-		c.size -= int64(len(el.Value.(*lruEntry).data))
+		old, _ := el.Value.(*lruEntry)
+		c.size -= int64(len(old.data))
 		c.order.Remove(el)
 	}
 	c.items[key] = c.order.PushFront(&lruEntry{key: key, data: data})
 	c.size += int64(len(data))
 	for c.size > c.max {
 		last := c.order.Back()
-		entry := last.Value.(*lruEntry)
+		entry, _ := last.Value.(*lruEntry)
 		c.order.Remove(last)
 		delete(c.items, entry.key)
 		c.size -= int64(len(entry.data))

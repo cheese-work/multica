@@ -900,8 +900,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 var errProjectAccessRejected = errors.New("project access update rejected")
 
 // applyProjectAccessUpdate applies a prepared access update (member adds, then
-// visibility) on the update's transaction queries, as writeProjectUpdate does
-// for the non-fork path. It writes the HTTP error itself and returns
+// visibility) on the update's transaction queries. It writes the HTTP error itself and returns
 // errProjectAccessRejected.
 func (h *Handler) applyProjectAccessUpdate(w http.ResponseWriter, r *http.Request, q *db.Queries, project db.Project, access projectAccessUpdate, actorUserID string) (db.Project, error) {
 	ctx := r.Context()

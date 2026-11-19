@@ -100,15 +100,15 @@ func TestGC_LocalCodexHomeRetentionGuards(t *testing.T) {
 				}
 			}
 			if name == "local sessions" {
-				writeFile(t, filepath.Join(taskDir, "codex-home/sessions/rollout.jsonl"), 8)
+				writeFile(t, filepath.Join(taskDir, "codex-home", "sessions", "rollout.jsonl"), 8)
 			}
 			if name == "archived sessions" {
-				writeFile(t, filepath.Join(taskDir, "codex-home/archived_sessions/rollout.jsonl"), 8)
+				writeFile(t, filepath.Join(taskDir, "codex-home", "archived_sessions", "rollout.jsonl"), 8)
 			}
 			if name == "sessions inside root" {
 				store := filepath.Join(taskDir, "conversation")
 				writeFile(t, filepath.Join(store, "rollout.jsonl"), 8)
-				if err := os.Symlink(store, filepath.Join(taskDir, "codex-home/sessions")); err != nil {
+				if err := os.Symlink(store, filepath.Join(taskDir, "codex-home", "sessions")); err != nil {
 					t.Skipf("symlink unavailable: %v", err)
 				}
 			}
@@ -143,7 +143,7 @@ func TestGC_LocalRetentionLogsActualCleanup(t *testing.T) {
 		Kind: execenv.GCKindIssue, IssueID: "issue", WorkspaceID: "ws", LocalDirectory: true,
 		CompletedAt: time.Now().Add(-24 * time.Hour),
 	})
-	writeFile(t, filepath.Join(taskDir, "codex-home/cache/remote_plugin_catalog/catalog.json"), 64)
+	writeFile(t, filepath.Join(taskDir, "codex-home", "cache", "remote_plugin_catalog", "catalog.json"), 64)
 	d.runGC(context.Background())
 	assertGone(t, taskDir, "codex-home/cache/remote_plugin_catalog")
 	if strings.Contains(logs.String(), "eligible for cleanup") {
@@ -168,7 +168,7 @@ func TestGC_LocalCodexHomeRechecksActivity(t *testing.T) {
 			meta := execenv.GCMeta{Kind: execenv.GCKindChat, ChatSessionID: "chat", WorkspaceID: "ws",
 				LocalDirectory: true, CompletedAt: time.Now().Add(-15 * 24 * time.Hour)}
 			taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws", "local-task", &meta)
-			writeFile(t, filepath.Join(taskDir, "codex-home/state_5.sqlite"), 32)
+			writeFile(t, filepath.Join(taskDir, "codex-home", "state_5.sqlite"), 32)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			action := d.shouldCleanTaskDir(ctx, taskDir)
@@ -221,7 +221,7 @@ func TestGC_LocalCodexHomeAfterSessionStoreRemoval(t *testing.T) {
 				Kind: execenv.GCKindChat, ChatSessionID: "chat", WorkspaceID: "ws",
 				LocalDirectory: true, CompletedAt: time.Now().Add(-15 * 24 * time.Hour),
 			})
-			writeFile(t, filepath.Join(taskDir, "codex-home/state_5.sqlite"), 32)
+			writeFile(t, filepath.Join(taskDir, "codex-home", "state_5.sqlite"), 32)
 			store := filepath.Join(t.TempDir(), "conversation")
 			writeFile(t, filepath.Join(store, "rollout.jsonl"), 64)
 			if err := os.Symlink(store, filepath.Join(taskDir, "codex-home", sessionDir)); err != nil {
@@ -249,8 +249,8 @@ func TestGC_LocalCodexHomeKeepsUnresolvableSessionLink(t *testing.T) {
 		Kind: execenv.GCKindChat, ChatSessionID: "chat", WorkspaceID: "ws",
 		LocalDirectory: true, CompletedAt: time.Now().Add(-15 * 24 * time.Hour),
 	})
-	writeFile(t, filepath.Join(taskDir, "codex-home/state_5.sqlite"), 32)
-	if err := os.Symlink("sessions", filepath.Join(taskDir, "codex-home/sessions")); err != nil {
+	writeFile(t, filepath.Join(taskDir, "codex-home", "state_5.sqlite"), 32)
+	if err := os.Symlink("sessions", filepath.Join(taskDir, "codex-home", "sessions")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	d.gcWorkspace(context.Background(), filepath.Dir(taskDir), &gcStats{})

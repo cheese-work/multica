@@ -46,8 +46,7 @@ func TestThemeStoreRoutes(t *testing.T) {
 	zip := []byte("PK theme")
 	sum := sha256.Sum256(zip)
 	var upstream atomic.Int32
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstream.Add(1)
 		switch r.URL.Path {
 		case "/index.json":

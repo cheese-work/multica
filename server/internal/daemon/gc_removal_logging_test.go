@@ -57,7 +57,7 @@ func TestGC_RemovalLogsLifecycleReason(t *testing.T) {
 				meta = nil
 			}
 			taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws", "owned-task", meta)
-			writeFile(t, filepath.Join(taskDir, "output/result.md"), 8)
+			writeFile(t, filepath.Join(taskDir, "output", "result.md"), 8)
 			past := time.Now().Add(-73 * time.Hour)
 			if err := os.Chtimes(taskDir, past, past); err != nil {
 				t.Fatal(err)

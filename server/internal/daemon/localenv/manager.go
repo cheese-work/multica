@@ -463,7 +463,7 @@ func (m *Manager) probe(e *entry) {
 			return
 		}
 		if resp, err := m.client.Get(ready); err == nil {
-			io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			if resp.StatusCode < http.StatusInternalServerError {
 				m.setRunning(e)

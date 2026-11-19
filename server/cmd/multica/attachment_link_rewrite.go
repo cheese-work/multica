@@ -117,7 +117,7 @@ func (m *attachmentLinkMatcher) matchPath(target string) (int, bool) {
 		if err == nil && strings.EqualFold(parsed.Scheme, "file") {
 			target = parsed.Path
 			if len(target) > 2 && target[0] == '/' && target[2] == ':' {
-				target = target[1:] // file:///C:/x → C:/x
+				target = target[1:] // strip the leading slash of a Windows drive path
 			}
 		} else if err == nil && parsed.Scheme != "" {
 			return -1, false

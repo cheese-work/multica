@@ -330,7 +330,7 @@ func runIssueBatchUpdate(cmd *cobra.Command, args []string) error {
 		cancel()
 		if err != nil {
 			if start > 0 {
-				printIssueBatchResults(cmd, combined)
+				_ = printIssueBatchResults(cmd, combined)
 				return fmt.Errorf("batch update stopped after %d of %d issues: %w", start, len(ids), err)
 			}
 			return fmt.Errorf("batch update: %w", err)

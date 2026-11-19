@@ -371,7 +371,7 @@ func (s *environmentService) saveReported() {
 	}
 	path := filepath.Join(s.stateDir, environmentReportedFile)
 	if err := os.WriteFile(path+".tmp", data, 0o600); err == nil {
-		os.Rename(path+".tmp", path)
+		_ = os.Rename(path+".tmp", path)
 	}
 }
 
@@ -552,7 +552,7 @@ func (d *Daemon) environmentFocusHandler() http.HandlerFunc {
 		switch {
 		case err == nil:
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]bool{"focused": true})
+			_ = json.NewEncoder(w).Encode(map[string]bool{"focused": true})
 		case errors.Is(err, localenv.ErrAppGone):
 			writeEnvironmentFocusError(w, http.StatusNotFound, "gone", err.Error())
 		case errors.Is(err, localenv.ErrFocusUnsupported):
@@ -569,10 +569,10 @@ func (d *Daemon) environmentFocusHandler() http.HandlerFunc {
 func writeEnvironmentFocusError(w http.ResponseWriter, status int, reason, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"reason": reason, "error": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"reason": reason, "error": message})
 }
 
 func writeEnvironmentResponse(w http.ResponseWriter, resp environmentResponse) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }

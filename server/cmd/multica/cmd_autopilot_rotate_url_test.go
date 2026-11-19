@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -199,8 +200,8 @@ func TestAutopilotRotateURLCLI(t *testing.T) {
 			err = cmd.Wait()
 			exit := 0
 			if err != nil {
-				exitErr, ok := err.(*exec.ExitError)
-				if !ok {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
 					t.Fatal(err)
 				}
 				exit = exitErr.ExitCode()

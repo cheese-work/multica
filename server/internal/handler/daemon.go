@@ -2176,7 +2176,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		if wantAck {
 			response["force_rechecked_runtime_ids"] = []string{}
 		}
-		writeMeasuredJSON(w, http.StatusOK, response)
+		_, _ = writeMeasuredJSON(w, http.StatusOK, response)
 	}
 
 	// max_tasks semantics (MUL-4257 review): a negative count is malformed; zero

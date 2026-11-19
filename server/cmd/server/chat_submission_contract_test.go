@@ -144,7 +144,7 @@ func TestChatSubmissionConcurrentFirstSendAndPersistentReplay(t *testing.T) {
 			<-start
 			status, result, err := submissionHTTP(server.URL, testToken, testWorkspaceID, "POST", path, body)
 			if err != nil || status != http.StatusCreated {
-				errors <- fmt.Errorf("status=%d response=%v error=%v", status, result, err)
+				errors <- fmt.Errorf("status=%d response=%v error=%w", status, result, err)
 				return
 			}
 			results <- result

@@ -1711,7 +1711,7 @@ func TestListIssuePullRequestSummaries(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("summaries for issue = %+v, want #61 and #62", got)
 	}
-	if pr := got[61]; pr.State != "open" || pr.Provider != "github" || pr.RepoName != "widget" || pr.HtmlURL == "" {
+	if pr := got[61]; pr.State != "open" || pr.Provider != "github" || pr.RepoName != "widget" || pr.HTMLURL == "" {
 		t.Errorf("#61 = %+v, want an open github PR on widget with a URL", pr)
 	}
 	if pr := got[62]; pr.State != "merged" {

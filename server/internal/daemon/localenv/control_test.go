@@ -4,6 +4,7 @@ package localenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -138,17 +139,17 @@ func TestManagerRestartReportsCleanedUpCode(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(task.RootDir, ".multica")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Restart(id, func(string) (Task, bool) { return task, true }); err != ErrGone {
+	if _, err := m.Restart(id, func(string) (Task, bool) { return task, true }); !errors.Is(err, ErrGone) {
 		t.Fatalf("Restart = %v, want ErrGone", err)
 	}
 }
 
 func TestManagerUnknownIDs(t *testing.T) {
 	m, _ := newTestManager(t)
-	if _, err := m.LogTail("0123456789abcdef", 10, 100); err != ErrUnknown {
+	if _, err := m.LogTail("0123456789abcdef", 10, 100); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("LogTail(unknown) = %v, want ErrUnknown", err)
 	}
-	if _, err := m.LogTail("../../etc", 10, 100); err != ErrUnknown {
+	if _, err := m.LogTail("../../etc", 10, 100); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("LogTail(path) = %v, want ErrUnknown", err)
 	}
 }
@@ -241,7 +242,7 @@ func TestDetectorStopsOnlyTheListeningProcess(t *testing.T) {
 		t.Fatal("the listening process is still running")
 	}
 
-	if err := d.Stop(ctx, Environment{Source: SourceDetected, Port: port, pid: os.Getpid()}); err != ErrUnknown {
+	if err := d.Stop(ctx, Environment{Source: SourceDetected, Port: port, pid: os.Getpid()}); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("Stop(self) = %v, want ErrUnknown", err)
 	}
 }

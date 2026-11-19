@@ -299,11 +299,11 @@ func (b *museappBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			return nil, err // Explicit refusal before a task could be queued.
 		}
 		if execResp.TaskID != "" {
-			if cleanupErr := b.cancelRemoteTask(mc, execResp.TaskID); cleanupErr == nil {
+			cleanupErr := b.cancelRemoteTask(mc, execResp.TaskID)
+			if cleanupErr == nil {
 				return nil, err
-			} else {
-				err = errors.Join(err, cleanupErr)
 			}
+			err = errors.Join(err, cleanupErr)
 		}
 		return museappUnconfirmedSession(err), nil
 	}
@@ -563,10 +563,10 @@ func (b *museappBackend) cancelRemoteTask(mc museappEndpointConfig, taskID strin
 	defer cancel()
 	var response museappCancelResponse
 	if err := b.doJSONWithConfig(ctx, mc, http.MethodPost, museappTaskPath(taskID, "/cancel"), nil, &response); err != nil {
-		return fmt.Errorf("Muse worker stop unconfirmed: %w", err)
+		return fmt.Errorf("museapp: worker stop unconfirmed: %w", err)
 	}
 	if !response.ExecutionStopped {
-		return fmt.Errorf("Muse worker stop unconfirmed: receptionist must confirm execution_stopped=true after the worker and its tools stop; check the worker before manually rerunning")
+		return fmt.Errorf("museapp: worker stop unconfirmed: receptionist must confirm execution_stopped=true after the worker and its tools stop; check the worker before manually rerunning")
 	}
 	return nil
 }

@@ -208,7 +208,7 @@ func logExcerpt(path string) string {
 	return strings.Join(lines, "\n")
 }
 
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-/]*[\x40-\x7e]`)
 
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 

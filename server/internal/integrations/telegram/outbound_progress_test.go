@@ -486,7 +486,8 @@ func TestStepFeedKeepsTheNewestSteps(t *testing.T) {
 
 func TestParseProgressMode(t *testing.T) {
 	for raw, want := range map[string]ProgressMode{
-		"": ProgressAuto, "auto": ProgressAuto, " Off ": ProgressOff, "summary": ProgressSummary, "DETAIL": ProgressDetail,
+		"": ProgressAuto, "auto": ProgressAuto, "summary": ProgressSummary, "DETAIL": ProgressDetail,
+		" Off ": ProgressOff, //nolint:gocritic // the padded key is the input under test
 	} {
 		if got, ok := ParseProgressMode(raw); !ok || got != want {
 			t.Errorf("ParseProgressMode(%q) = %s, %v; want %s", raw, got, ok, want)

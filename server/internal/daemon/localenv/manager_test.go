@@ -4,6 +4,7 @@ package localenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -123,7 +124,7 @@ func TestManagerStartsSupervisesAndStops(t *testing.T) {
 	if groupAlive(env.pgid) {
 		t.Fatal("process group still alive after Stop")
 	}
-	if _, err := m.Stop(task, "web"); err != ErrNotFound {
+	if _, err := m.Stop(task, "web"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second Stop = %v, want ErrNotFound", err)
 	}
 }
@@ -245,7 +246,7 @@ func TestManagerScopesEnvironmentsToTheIssue(t *testing.T) {
 	if got := m.List(otherIssue); len(got) != 0 {
 		t.Fatalf("another issue sees %d environments", len(got))
 	}
-	if _, err := m.Stop(otherIssue, "web"); err != ErrNotFound {
+	if _, err := m.Stop(otherIssue, "web"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another issue stopped the environment: %v", err)
 	}
 }
@@ -253,7 +254,7 @@ func TestManagerScopesEnvironmentsToTheIssue(t *testing.T) {
 func TestManagerRefusesDirectoriesOutsideTheTask(t *testing.T) {
 	m, task := newTestManager(t)
 	outside := t.TempDir()
-	writeConfig(t, outside, fmt.Sprintf("[environments.web]\nstart = \"%s\"", helperCommand("serve")))
+	writeConfig(t, outside, fmt.Sprintf("[environments.web]\nstart = %q", helperCommand("serve")))
 	if _, err := m.Start(task, outside, "web", ""); err == nil {
 		t.Fatal("Start accepted a directory outside the task")
 	}

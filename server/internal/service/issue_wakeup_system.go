@@ -1643,10 +1643,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 		facts["outcome"], facts["reason"] = "none", string(dispatch.ReasonProjectAccessBlocked)
-		if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 			return err
 		}
-		if err = note(wakeupActivityTriggered, facts); err != nil {
+		if err := note(wakeupActivityTriggered, facts); err != nil {
 			return err
 		}
 		return commit()

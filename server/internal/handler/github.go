@@ -1567,7 +1567,7 @@ type IssuePullRequestSummaryResponse struct {
 	Number    int32  `json:"number"`
 	Title     string `json:"title"`
 	State     string `json:"state"`
-	HtmlURL   string `json:"html_url"`
+	HTMLURL   string `json:"html_url"`
 }
 
 // ListIssuePullRequestSummaries returns every linked PR in the workspace,
@@ -1603,7 +1603,7 @@ func (h *Handler) ListIssuePullRequestSummaries(w http.ResponseWriter, r *http.R
 			Number:    row.PrNumber,
 			Title:     row.Title,
 			State:     row.State,
-			HtmlURL:   row.HtmlUrl,
+			HTMLURL:   row.HtmlUrl,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
