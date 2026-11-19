@@ -1563,7 +1563,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	event := r.Header.Get("X-GitHub-Event")
 	deliveryGUID := r.Header.Get("X-GitHub-Delivery")
-	ctx := r.Context()
+	ctx := withDeliveryID(r.Context(), deliveryGUID)
 	switch event {
 	case "ping":
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "pong"})
@@ -2166,6 +2166,9 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		return fmt.Errorf("github: begin mirror transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := recordMergeQueue(ctx, tx, ws, p); err != nil {
+		return err
+	}
 	qtx := h.Queries.WithTx(tx)
 	prevState := ""
 	prev, err := qtx.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
@@ -2196,7 +2199,9 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		ChangedFiles: p.PullRequest.ChangedFiles, IsReopen: p.Action == "reopened",
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		// The mirror row is newer than this delivery. Nothing else was written,
+		// but the merge-queue rows above stand.
+		return tx.Commit(ctx)
 	}
 	if err != nil {
 		return fmt.Errorf("github: upsert pr: %w", err)

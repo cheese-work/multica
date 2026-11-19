@@ -141,34 +141,7 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 	// persistErr is a backoff that could not be stored. Collection ends and the
 	// run fails: it is retried once the ledger is back, never spent blindly.
 	var persistErr error
-	// stop reports whether err ends all further API calls, recording why.
-	stop := func(err error) bool {
-		var rl *RateLimitError
-		var se *settleError
-		// A settlement the ledger did not store leaves its balance stale: end
-		// collection and fail the run, even when err also carries a limit.
-		stopped := errors.As(err, &se)
-		if stopped {
-			if persistErr == nil {
-				persistErr = se
-			}
-			partial(PartialBudget)
-		}
-		switch {
-		case errors.Is(err, ErrNoBudget):
-			partial(PartialBudget)
-		case errors.Is(err, ErrBackoff):
-			partial(PartialBackoff)
-		case errors.As(err, &rl):
-			if perr := c.Budget.Limited(ctx, run.InstallationID, rl); perr != nil && persistErr == nil {
-				persistErr = fmt.Errorf("ciwatch: store github backoff: %w", perr)
-			}
-			partial(PartialBackoff)
-		default:
-			return stopped
-		}
-		return true
-	}
+	stop := c.stopper(ctx, run, partial, &persistErr)
 
 	jobs, ok, truncated := c.failedJobs(ctx, run, partial, stop)
 	ev.FailedJobCount = len(jobs)
@@ -185,7 +158,7 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 		if ev.Evidence == EvidencePartial && ev.PartialReason != PartialLogTruncated && ev.PartialReason != PartialRedactionError {
 			break // budget/backoff/fetch ended collection
 		}
-		lines, err := c.tail(ctx, run, ev.Jobs[i].JobID)
+		lines, err := c.tail(ctx, run, ev.Jobs[i].JobID, maxExcerptLine)
 		switch {
 		case err == nil:
 			ev.Jobs[i].Excerpt = LimitTail(lines, maxExcerptByte)
@@ -264,10 +237,43 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 	return failed, ok, truncated
 }
 
+// stopper returns the function that reports whether an error ends all further
+// API calls, recording why through partial. A backoff or a settlement that
+// could not be stored goes to *persistErr.
+func (c *Collector) stopper(ctx context.Context, run Run, partial func(string), persistErr *error) func(error) bool {
+	return func(err error) bool {
+		var rl *RateLimitError
+		var se *settleError
+		// A settlement the ledger did not store leaves its balance stale: end
+		// collection and fail the run, even when err also carries a limit.
+		stopped := errors.As(err, &se)
+		if stopped {
+			if *persistErr == nil {
+				*persistErr = se
+			}
+			partial(PartialBudget)
+		}
+		switch {
+		case errors.Is(err, ErrNoBudget):
+			partial(PartialBudget)
+		case errors.Is(err, ErrBackoff):
+			partial(PartialBackoff)
+		case errors.As(err, &rl):
+			if perr := c.Budget.Limited(ctx, run.InstallationID, rl); perr != nil && *persistErr == nil {
+				*persistErr = fmt.Errorf("ciwatch: store github backoff: %w", perr)
+			}
+			partial(PartialBackoff)
+		default:
+			return stopped
+		}
+		return true
+	}
+}
+
 var errRedact = errors.New("ciwatch: redaction failed")
 
 // tail downloads one job log under the byte and time limits and returns its redacted tail.
-func (c *Collector) tail(ctx context.Context, run Run, jobID int64) (lines []string, err error) {
+func (c *Collector) tail(ctx context.Context, run Run, jobID int64, maxLines int) (lines []string, err error) {
 	timeout, limit, redact := c.LogTimeout, c.MaxLogBytes, c.Redact
 	if timeout == 0 {
 		timeout = defLogTimeout
@@ -295,7 +301,7 @@ func (c *Collector) tail(ctx context.Context, run Run, jobID int64) (lines []str
 		return nil, err
 	}
 	defer body.Close()
-	lines, err = redact(&capReader{r: body, left: limit}, maxExcerptLine)
+	lines, err = redact(&capReader{r: body, left: limit}, maxLines)
 	switch {
 	case err == nil:
 		return lines, nil

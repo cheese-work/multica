@@ -53,7 +53,10 @@ func KeyForTimeout(repo, checkKey string) string {
 }
 
 // TestID names a Go test with its package.
-type TestID struct{ Package, Name string }
+type TestID struct {
+	Package string `json:"package"`
+	Name    string `json:"name"`
+}
 
 // JobRun is one job of a main-evidence run.
 type JobRun struct {
