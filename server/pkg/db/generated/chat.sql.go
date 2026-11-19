@@ -901,7 +901,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    fire_at, channel_context_revision, id
+    fire_at, channel_context_revision, purpose, source_chat_session_id, context, id
 )
 SELECT
     $1, $2, NULL,
@@ -917,7 +917,10 @@ SELECT
     $14,
     $6::timestamptz,
     $15::bigint,
-    COALESCE($16::uuid, gen_random_uuid())
+    $16::text,
+    $17::uuid,
+    $18::jsonb,
+    COALESCE($19::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id
 `
@@ -938,6 +941,9 @@ type CreateChatTaskParams struct {
 	TriggerEvidenceKind    pgtype.Text        `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID   pgtype.UUID        `json:"trigger_evidence_ref_id"`
 	ChannelContextRevision pgtype.Int8        `json:"channel_context_revision"`
+	Purpose                pgtype.Text        `json:"purpose"`
+	SourceChatSessionID    pgtype.UUID        `json:"source_chat_session_id"`
+	Context                []byte             `json:"context"`
 	ID                     pgtype.UUID        `json:"id"`
 }
 
@@ -965,6 +971,9 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
 		arg.ChannelContextRevision,
+		arg.Purpose,
+		arg.SourceChatSessionID,
+		arg.Context,
 		arg.ID,
 	)
 	var i AgentTaskQueue

@@ -19,7 +19,7 @@ func TestPublishChatCompactingCarriesSessionOwner(t *testing.T) {
 	creator := util.MustParseUUID("11111111-1111-4111-8111-111111111111")
 	session := db.ChatSession{ID: util.MustParseUUID("22222222-2222-4222-8222-222222222222"), CreatorID: creator}
 
-	svc.publishChatCompacting("ws", session, true)
+	svc.publishChatCompacting("ws", session, true, "", "")
 
 	if len(got) != 1 || got[0].ChatSessionOwnerID != util.UUIDToString(creator) {
 		t.Fatalf("compacting event owner = %+v, want %s", got, util.UUIDToString(creator))

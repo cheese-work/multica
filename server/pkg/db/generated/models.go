@@ -1331,6 +1331,15 @@ type DecisionAnswer struct {
 	AnsweredLabel           pgtype.Text        `json:"answered_label"`
 	StateVersion            int64              `json:"state_version"`
 	HindsightAckedVersion   int64              `json:"hindsight_acked_version"`
+	UndoUntil               pgtype.Timestamptz `json:"undo_until"`
+}
+
+type DecisionBackingLane struct {
+	SessionID   pgtype.UUID        `json:"session_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatorID   pgtype.UUID        `json:"creator_id"`
+	TopicID     pgtype.UUID        `json:"topic_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type DecisionBoundWrite struct {
@@ -1389,6 +1398,18 @@ type DecisionIntentTarget struct {
 	ConsumedByRequestID pgtype.UUID        `json:"consumed_by_request_id"`
 }
 
+type DecisionPick struct {
+	ID                pgtype.UUID        `json:"id"`
+	DecisionRequestID pgtype.UUID        `json:"decision_request_id"`
+	Revision          int32              `json:"revision"`
+	MemberID          pgtype.UUID        `json:"member_id"`
+	FirstShownAt      pgtype.Timestamptz `json:"first_shown_at"`
+	PickedAt          pgtype.Timestamptz `json:"picked_at"`
+	ReadMs            pgtype.Int4        `json:"read_ms"`
+	Matched           pgtype.Bool        `json:"matched"`
+	Surface           string             `json:"surface"`
+}
+
 type DecisionRequest struct {
 	ID                       pgtype.UUID        `json:"id"`
 	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
@@ -1431,6 +1452,21 @@ type DecisionRequest struct {
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 	ReadAt                   pgtype.Timestamptz `json:"read_at"`
+	Route                    pgtype.Text        `json:"route"`
+	WouldAutoApply           pgtype.Bool        `json:"would_auto_apply"`
+	AutoApplyRuleID          pgtype.UUID        `json:"auto_apply_rule_id"`
+}
+
+type DecisionSnooze struct {
+	ID                pgtype.UUID        `json:"id"`
+	MemberID          pgtype.UUID        `json:"member_id"`
+	DecisionRequestID pgtype.UUID        `json:"decision_request_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UntilAt           pgtype.Timestamptz `json:"until_at"`
+	CondIssueID       pgtype.UUID        `json:"cond_issue_id"`
+	CondStatus        pgtype.Text        `json:"cond_status"`
+	ClearedAt         pgtype.Timestamptz `json:"cleared_at"`
+	ClearReason       pgtype.Text        `json:"clear_reason"`
 }
 
 type DecisionWait struct {
@@ -2921,6 +2957,140 @@ type MergePauseState struct {
 	IsSet        pgtype.Bool        `json:"is_set"`
 	FetchedAt    pgtype.Timestamptz `json:"fetched_at"`
 	Error        pgtype.Text        `json:"error"`
+}
+
+type MergeQueueAssociation struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	CauseKey       string             `json:"cause_key"`
+	EpochID        pgtype.UUID        `json:"epoch_id"`
+	LinkedIssueIds []pgtype.UUID      `json:"linked_issue_ids"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	EndedAt        pgtype.Timestamptz `json:"ended_at"`
+	EndReason      pgtype.Text        `json:"end_reason"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type MergeQueueEnqueueEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	PrNumber      int32              `json:"pr_number"`
+	NodeID        string             `json:"node_id"`
+	NodeCreatedAt pgtype.Timestamptz `json:"node_created_at"`
+	ActorLogin    pgtype.Text        `json:"actor_login"`
+	ActorType     pgtype.Text        `json:"actor_type"`
+	ActorClass    string             `json:"actor_class"`
+	HeadOid       pgtype.Text        `json:"head_oid"`
+	HeadState     string             `json:"head_state"`
+	Tie           bool               `json:"tie"`
+	Label         pgtype.Text        `json:"label"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MergeQueueEpoch struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	CauseKey       string             `json:"cause_key"`
+	EpochNo        int32              `json:"epoch_no"`
+	Kind           string             `json:"kind"`
+	State          string             `json:"state"`
+	OwnerIssueID   pgtype.UUID        `json:"owner_issue_id"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	LastProbeAt    pgtype.Timestamptz `json:"last_probe_at"`
+	OpenedAt       pgtype.Timestamptz `json:"opened_at"`
+	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
+	Resolution     pgtype.Text        `json:"resolution"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MergeQueueEvidence struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	Kind           string             `json:"kind"`
+	IntakeID       pgtype.UUID        `json:"intake_id"`
+	EpochID        pgtype.UUID        `json:"epoch_id"`
+	RunID          pgtype.Int8        `json:"run_id"`
+	RunAttempt     pgtype.Int4        `json:"run_attempt"`
+	Signature      pgtype.Text        `json:"signature"`
+	FailingTests   []byte             `json:"failing_tests"`
+	Checks         []byte             `json:"checks"`
+	RunCreatedAt   pgtype.Timestamptz `json:"run_created_at"`
+	RunCompletedAt pgtype.Timestamptz `json:"run_completed_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type MergeQueueIntake struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RepoOwner       string             `json:"repo_owner"`
+	RepoName        string             `json:"repo_name"`
+	PrNumber        int32              `json:"pr_number"`
+	RemovalNodeID   pgtype.Text        `json:"removal_node_id"`
+	DeliveryID      pgtype.Text        `json:"delivery_id"`
+	Routing         string             `json:"routing"`
+	Status          string             `json:"status"`
+	Delivery        string             `json:"delivery"`
+	DeliveryReason  pgtype.Text        `json:"delivery_reason"`
+	HeldIssueIds    []pgtype.UUID      `json:"held_issue_ids"`
+	Reason          pgtype.Text        `json:"reason"`
+	BeforeCommitOid pgtype.Text        `json:"before_commit_oid"`
+	HeadOid         pgtype.Text        `json:"head_oid"`
+	BuildRunID      pgtype.Int8        `json:"build_run_id"`
+	RemovedAt       pgtype.Timestamptz `json:"removed_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MergeQueuePrClose struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	BaseBranch     pgtype.Text        `json:"base_branch"`
+	Merged         bool               `json:"merged"`
+	MergeCommitSha pgtype.Text        `json:"merge_commit_sha"`
+	ClosedAt       pgtype.Timestamptz `json:"closed_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type MergeQueueState struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	State       string             `json:"state"`
+	ChangedAt   pgtype.Timestamptz `json:"changed_at"`
+}
+
+type MergeQueueWait struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	IntakeID    pgtype.UUID        `json:"intake_id"`
+	WakeupID    pgtype.UUID        `json:"wakeup_id"`
+	Kind        string             `json:"kind"`
+	State       string             `json:"state"`
+	Recovered   bool               `json:"recovered"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	MetAt       pgtype.Timestamptz `json:"met_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type MergeReceiptFact struct {
