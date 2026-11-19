@@ -338,6 +338,7 @@ WHERE session.workspace_id = sqlc.arg('workspace_id')
   AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
   AND (sqlc.narg('session_id')::uuid IS NULL OR session.id = sqlc.narg('session_id')::uuid)
 ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10;
@@ -349,6 +350,7 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.decision_topic_id = sqlc.arg('topic_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
 ORDER BY session.created_at, session.id
 LIMIT 1;
 
@@ -359,12 +361,25 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.agent_id = sqlc.arg('agent_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
 ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 1;
 
 -- name: LockDecisionTopicLane :exec
 -- Serializes the find-or-create of a person's DM for one topic.
 SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || sqlc.arg('workspace_id')::uuid::text || ':' || sqlc.arg('creator_id')::uuid::text || ':' || sqlc.arg('topic_id')::uuid::text, 0));
+
+-- name: GetDecisionBackingLane :one
+-- The member's hidden lane for a topic, if one is registered (plan r4 3.7). Call under LockDecisionTopicLane.
+SELECT session_id FROM decision_backing_lane
+WHERE workspace_id = sqlc.arg('workspace_id') AND creator_id = sqlc.arg('creator_id') AND topic_id = sqlc.arg('topic_id');
+
+-- name: IsDecisionBackingLane :one
+SELECT EXISTS (SELECT 1 FROM decision_backing_lane WHERE session_id = sqlc.arg('session_id'));
+
+-- name: CreateDecisionBackingLane :exec
+INSERT INTO decision_backing_lane (session_id, workspace_id, creator_id, topic_id)
+VALUES (sqlc.arg('session_id'), sqlc.arg('workspace_id'), sqlc.arg('creator_id'), sqlc.arg('topic_id'));
 
 -- name: ListDecisionTopicSessions :many
 SELECT chat_session.id, chat_session.creator_id FROM chat_session

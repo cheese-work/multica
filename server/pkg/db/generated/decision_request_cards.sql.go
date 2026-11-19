@@ -325,6 +325,8 @@ LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = r
 WHERE request.authority = 'human' AND request.workspace_id = $1
     AND request.human_user_id = $2
     AND request.status = 'open'
+    -- The pill and the DM badge count visible DMs only; the decisions screen reads by member (plan r4 3.7).
+    AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = request.chat_session_id)
 ORDER BY request.created_at, request.id
 `
 

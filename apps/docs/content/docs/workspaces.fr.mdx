@@ -125,6 +125,10 @@ Un événement qui ne peut pas être envoyé comme avis va plutôt à l'agent do
 
 Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
 
+### Écran de décision
+
+Le paramètre d'espace de travail `decision_screen` (`off` par défaut, `on`) masque la conversation qui porte la demande de décision d'un agent. Avec `on`, la demande d'un agent d'issue à un membre sans message privé visible va dans une conversation de support masquée. Elle n'apparaît ni dans la liste de chat du membre, ni dans le compteur de non-lus, ni dans le badge, ni dans la liste « Needs you », et le membre ne peut pas y envoyer de message (`409`). La demande ouvre toujours la même carte de décision. Pour ces agents, le serveur ignore `session_id` et `new_dm` et ajoute un indice à la réponse. Un agent qui demande depuis un message privé continue de demander dans ce message privé. Remettez `off` pour revenir en arrière : aucune nouvelle conversation n'est créée et les existantes restent masquées.
+
 ### Écritures gouvernées déléguées
 
 Le paramètre d'espace de travail `delegated_governed_writes` décide quels agents peuvent écrire dans les champs gouvernés, et si chaque écriture exige encore la décision d'une personne. Il se trouve dans les paramètres de l'espace de travail, sous **Écritures gouvernées déléguées**.
