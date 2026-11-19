@@ -1,0 +1,885 @@
+{
+ "cases": [
+  {
+   "name": "control: unanswered direct ask waits",
+   "edge": 0,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "please look [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "control: V wrote a comment (rule 1)",
+   "edge": 0,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "hello",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "member",
+      "id": "$V"
+     },
+     "content": "hi",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "control: nobody relevant (rule 4)",
+   "edge": 0,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "hello",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "agent",
+      "id": "$B"
+     },
+     "content": "hi",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "1 mention only in a deleted comment",
+   "edge": 1,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "work",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ping [@V](mention://member/$V)",
+     "at": "2026-11-10T10:01:00Z",
+     "notify_only": false,
+     "deleted": true
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "2 @all and @squad do not count",
+   "edge": 2,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "[@all](mention://all/all) [@team](mention://squad/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "3 legacy mention (notify_only NULL) is with_me, never waiting",
+   "edge": 3,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "old tag [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "4a FYI mention counts as with_me when setting true",
+   "edge": 4,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "fyi_counts_as_with_me": true,
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "fyi [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": true
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "4b FYI mention does not count when setting false",
+   "edge": 4,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "fyi_counts_as_with_me": false,
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "fyi [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": true
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "5 V mentions V (rule 1)",
+   "edge": 5,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$V"
+     },
+     "content": "note to self [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "6 V replies without a mention: reply clears waiting",
+   "edge": 6,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ask [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    },
+    {
+     "author": {
+      "type": "member",
+      "id": "$V"
+     },
+     "content": "done",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "6b a new ask after V's reply waits again",
+   "edge": 6,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ask [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    },
+    {
+     "author": {
+      "type": "member",
+      "id": "$V"
+     },
+     "content": "done",
+     "at": "2026-11-10T10:01:00Z"
+    },
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "again [@V](mention://member/$V)",
+     "at": "2026-11-10T10:02:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "7 edited-in mention keeps created_at; later V reply clears",
+   "edge": 7,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "edited to add [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    },
+    {
+     "author": {
+      "type": "member",
+      "id": "$V"
+     },
+     "content": "seen",
+     "at": "2026-11-10T10:05:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "8a answered decision: with_me, not waiting",
+   "edge": 8,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "card [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false,
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "target_type": "member",
+     "target_id": "$V",
+     "status": "answered"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "8b cancelled decision: with_me, not waiting",
+   "edge": 8,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "card",
+     "at": "2026-11-10T10:00:00Z",
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "target_type": "member",
+     "target_id": "$V",
+     "status": "cancelled"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "8c disclaimed decision: with_me, not waiting",
+   "edge": 8,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "card",
+     "at": "2026-11-10T10:00:00Z",
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "target_type": "member",
+     "target_id": "$V",
+     "status": "disclaimed"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "8d open decision targeting V waits (a)",
+   "edge": 8,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "card",
+     "at": "2026-11-10T10:00:00Z",
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "target_type": "member",
+     "target_id": "$V",
+     "status": "open"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "9 no snooze input: an open request waits",
+   "edge": 9,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "card",
+     "at": "2026-11-10T10:00:00Z",
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "target_type": "member",
+     "target_id": "$V",
+     "status": "open"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "10a resolved after the mention: not waiting",
+   "edge": 10,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "resolved_at": "2026-11-10T10:02:00Z",
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ask [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    },
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "done",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "10b resolution cleared (resolved_at NULL): waiting again",
+   "edge": 10,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ask [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    },
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "done",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "10c resolved before the mention: waiting",
+   "edge": 10,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "resolved_at": "2026-11-10T10:01:00Z",
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ask [@V](mention://member/$V)",
+     "at": "2026-11-10T10:05:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "11a agent viewer: direct agent mention waits",
+   "edge": 11,
+   "viewer": {
+    "type": "agent",
+    "id": "$A"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "ask [@A](mention://agent/$A)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "11b agent viewer: a member-targeted decision never applies",
+   "edge": 11,
+   "viewer": {
+    "type": "agent",
+    "id": "$A"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$B"
+     },
+     "content": "card",
+     "at": "2026-11-10T10:00:00Z",
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "target_type": "member",
+     "target_id": "$A",
+     "status": "open"
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "11c agent viewer: a member mention with the same id does not match",
+   "edge": 11,
+   "viewer": {
+    "type": "agent",
+    "id": "$A"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$B"
+     },
+     "content": "ping [@A](mention://member/$A)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "12a moved ask thread: mention lives here, waiting",
+   "edge": 12,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "ask moved here [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
+   }
+  },
+  {
+   "name": "12b source thread with a system stub stays without_me",
+   "edge": 12,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "long work",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "agent",
+      "id": "$B"
+     },
+     "content": "more",
+     "at": "2026-11-10T10:01:00Z"
+    },
+    {
+     "author": {
+      "type": "system",
+      "id": "00000000-0000-0000-0000-000000000000"
+     },
+     "content": "Ask moved to a new thread",
+     "at": "2026-11-10T10:02:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "13a loop-back system line does not make the source with_me",
+   "edge": 13,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "work",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "system",
+      "id": "00000000-0000-0000-0000-000000000000"
+     },
+     "content": "V answered in the ask thread",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "13b a system comment that mentions V does not count",
+   "edge": 13,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "work",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "system",
+      "id": "00000000-0000-0000-0000-000000000000"
+     },
+     "content": "quoted [@V](mention://member/$V)",
+     "at": "2026-11-10T10:01:00Z",
+     "notify_only": false
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "14 another member and agents, not V",
+   "edge": 14,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "work",
+     "at": "2026-11-10T10:00:00Z"
+    },
+    {
+     "author": {
+      "type": "member",
+      "id": "$O"
+     },
+     "content": "comment",
+     "at": "2026-11-10T10:01:00Z"
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "15a mention in the resolving comment is FYI: with_me, not waiting",
+   "edge": 15,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "fyi_counts_as_with_me": true,
+   "resolved_at": "2026-11-10T10:00:00Z",
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "settled [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false,
+     "resolves_thread": true
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": false
+   }
+  },
+  {
+   "name": "15b mention in the resolving comment, FYI setting false",
+   "edge": 15,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "fyi_counts_as_with_me": false,
+   "resolved_at": "2026-11-10T10:00:00Z",
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "settled [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false,
+     "resolves_thread": true
+    }
+   ],
+   "expect": {
+    "with_me": false,
+    "agents_only": true,
+    "waiting_on_me": false
+   }
+  }
+ ]
+}
