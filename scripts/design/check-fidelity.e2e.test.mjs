@@ -31,7 +31,8 @@ test("decision card s1: the 5 known gaps each fail with their named reason", () 
 
 test("result JSON lists one instance per rule x block x case; rule 6 carries the code text hash", () => {
   const { result } = run("--case", "s1");
-  const keys = result.violations.map((v) => `${v.rule}|${v.block}|${v.state}|${v.profile}`);
+  // Rules 1 and 2 are per item and form a multiset, so equal items repeat; every other rule is unique per block.
+  const keys = result.violations.filter((v) => v.block).map((v) => `${v.rule}|${v.block}|${v.state}|${v.profile}`);
   assert.equal(new Set(keys).size, keys.length, "no duplicate instance");
   for (const v of result.violations.filter((x) => x.rule === "text")) assert.match(v.code_text_sha256, /^[0-9a-f]{64}$/);
 });
