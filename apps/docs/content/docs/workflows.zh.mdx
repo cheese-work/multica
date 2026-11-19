@@ -70,6 +70,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 工作区所有者或管理员可在工作区设置中配置 `workflow_by_type`，例如 `{"design": "<工作流 ID>", "plan": "<工作流 ID>"}`。标题以已映射类型开头的新问题（如 `design(x): …`）会使用该工作流，而不是所在项目的工作流。`--workflow`（CLI）或显式选择始终优先。没有对应条目的类型，或对应工作流已不存在时，沿用项目的工作流。`multica issue create` 会打印所选工作流。标题带有已映射类型时，新建窗口会显示将选用的工作流的状态和交接。该映射属于工作区策略：对包括智能体在内的所有创建者生效，不会经过非交互调用方使用显式 `--workflow` 时的运行预算检查。若两个键仅大小写不同，按字母顺序靠前的生效。之后修改标题不会改变工作流；更新响应带有一行 `workflow_hint`（`multica issue update` 会打印），给出移动它的命令。
 
+工作区所有者或管理员可在工作区设置中配置 `quick_first`，让一部分新问题试用 Quick 工作流：`{"workflow_id": "<Quick 工作流 ID>", "types": ["feat", "fix"], "starts_at": "<RFC 3339>", "ends_at": "<RFC 3339>"}`。从 `starts_at`（含）到 `ends_at`（不含），标题类型在 `types` 中、且已遵循完整工作流（所在项目的工作流，或 `workflow_by_type` 指定的工作流）的新根问题按编号分组：偶数编号从 `todo` 起进入 Quick 工作流，奇数编号沿用原工作流。子问题沿用父问题的 Quick 工作流。调用方用 `--workflow` 指定了工作流、状态不是 `todo` 或 `backlog`、已分配给成员或小队，或所在项目的 A/B 分流正处于其时间窗口内，则不参与。被指定为经办人的智能体会保留为问题的作者。设置之前该功能关闭；未设置时，创建行为不变。
+
 ## 按能力路由工作
 
 工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，目前没有任何功能读取它，因此行为不变。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
