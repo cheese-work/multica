@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 
@@ -11,15 +13,17 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/designguard"
+	"github.com/multica-ai/multica/server/internal/mergequeue"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // errCannotDoOwnerOnly is saveWorkspace's refusal of an owner-only setting
 // change by a caller who is not a workspace owner (CHE-5902 F2, CHE-7358).
-var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do, decision_server_actions or standing_answers")
+var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do, decision_server_actions, standing_answers or the merge_queue_* settings")
 
 // ownerOnlySettings are the keys the route admits admins to save but only an owner may change.
-var ownerOnlySettings = []string{decisiontx.SettingCannotDo, decisiontx.SettingServerActions, decisiontx.SettingStandingAnswers}
+var ownerOnlySettings = append([]string{decisiontx.SettingCannotDo, decisiontx.SettingServerActions, decisiontx.SettingStandingAnswers}, mergequeue.Keys...)
 
 // requireOwnerForCannotDo refuses an incoming settings blob that adds, drops or
 // changes an owner-only setting unless the caller owns the workspace. The
@@ -44,13 +48,14 @@ func requireOwnerForCannotDo(ctx context.Context, q *db.Queries, workspaceID pgt
 // checkAgentCannotDo runs the CHE-5902 check on a decision card with the
 // workspace settings. It writes the response and returns false when the card
 // is refused (400 with the one-line AskError) or the stored setting is unreadable.
-func checkAgentCannotDo(writer http.ResponseWriter, ask decisiontx.Ask, settings []byte) (hints []string, ok bool) {
+func checkAgentCannotDo(writer http.ResponseWriter, ask decisiontx.Ask, settings []byte, asker string) (hints []string, ok bool) {
 	mode, catalog, err := decisiontx.CannotDoFromSettings(settings)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		slog.Error("workspace settings unreadable for decision card check", "error", err)
+		writeError(writer, http.StatusInternalServerError, "workspace settings are unreadable")
 		return nil, false
 	}
-	hints, err = ask.CheckCannotDo(mode, catalog)
+	hints, err = ask.CheckCannotDo(mode, catalog, asker)
 	var askErr *decisiontx.AskError
 	if errors.As(err, &askErr) {
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -65,7 +70,8 @@ func checkAgentCannotDo(writer http.ResponseWriter, ask decisiontx.Ask, settings
 func checkCardLint(writer http.ResponseWriter, ask decisiontx.Ask, class string, settings []byte) (hints []string, ok bool) {
 	mode, err := decisiontx.CardLintModeFromSettings(settings)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "workspace settings: "+err.Error())
+		slog.Error("workspace settings unreadable for decision card check", "error", err)
+		writeError(writer, http.StatusInternalServerError, "workspace settings are unreadable")
 		return nil, false
 	}
 	hints, err = ask.CheckCard(mode, class)
@@ -137,6 +143,40 @@ func validateAgentCannotDoSetting(value any) error {
 	}
 	_, _, err = decisiontx.CannotDoFromSettings(raw)
 	return err
+}
+
+// validateCannotDoAgents refuses an agent_cannot_do allowed_agents id that is
+// not an agent of the workspace. It runs after validateAgentCannotDoSetting
+// has checked the shape.
+func (h *Handler) validateCannotDoAgents(ctx context.Context, workspaceID pgtype.UUID, value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, present := config[decisiontx.SettingCannotDo]
+	if !present {
+		return nil
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	catalog, err := decisiontx.ParseCannotDo(body)
+	if err != nil {
+		return nil // validateAgentCannotDoSetting reports it
+	}
+	for _, entry := range catalog {
+		for _, id := range entry.AllowedAgents {
+			agentID, err := util.ParseUUID(id)
+			if err != nil {
+				return fmt.Errorf("%s: allowed_agents %q is not a workspace agent", entry.Key, id)
+			}
+			if _, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: workspaceID}); err != nil {
+				return fmt.Errorf("%s: allowed_agents %q is not a workspace agent", entry.Key, id)
+			}
+		}
+	}
+	return nil
 }
 
 // validateServerActionSetting checks decision_server_actions and

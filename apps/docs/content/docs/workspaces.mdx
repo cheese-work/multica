@@ -89,6 +89,16 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 | `warn` | The guard records an event and a metric. The operation goes ahead. |
 | `block` | The guard records the event first, then refuses the operation with `422`. Only `block` events become recovery work. |
 
+### Merge queue settings
+
+Three workspace settings configure the merge queue. Only the owner can write them, and every write path (the `multica workspace update` flags, the settings save and a `config propose` action) runs the same validator.
+
+| Setting | Value |
+| --- | --- |
+| `merge_queue_dequeue_routing` | `off` (default) or `warn`. `block` is refused with `routing-not-available` until the enforcement ships. |
+| `merge_queue_actor_bindings` | `{"agents": [...], "people": [...]}`. A GitHub login in both lists is refused. |
+| `merge_queue_watch_issue` | The issue that receives merge queue events, or empty. |
+
 ### Autopilot assignment guard
 
 The workspace setting `autopilot_assign_gate` controls what happens when an issue that names an autopilot (its id next to the word "autopilot") is assigned to an agent or squad and the person the run acts for cannot write that autopilot: not its creator, a workspace admin or a granted collaborator.

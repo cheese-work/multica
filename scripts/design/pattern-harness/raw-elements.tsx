@@ -48,6 +48,12 @@ import { SkillAttach } from "../../../packages/views/agents/components/inspector
 import { VisibilityPicker } from "../../../packages/views/agents/components/inspector/visibility-picker";
 import { InstructionsEditor } from "../../../packages/views/agents/components/instructions-editor";
 import { runtimeModelsKeys } from "../../../packages/core/runtimes/models";
+import { AddTriggerDialog } from "../../../packages/views/autopilots/components/add-trigger-dialog";
+import { ExpandableDescription } from "../../../packages/views/common/expandable-description";
+import { HtmlViewer } from "../../../packages/views/editor/html-viewer";
+import { PlanRevisionViewer } from "../../../packages/views/editor/plan-revision-viewer";
+import { ResourceLabelPicker } from "../../../packages/views/labels/resource-label-picker";
+import { labelKeys } from "@multica/core/labels";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
 const WS = "ws-harness";
@@ -110,6 +116,10 @@ export function seedRawElements(qc: QueryClient) {
     // Only the polled lists (lark, dingtalk groups) can refetch before the capture; the rest stay seeded.
     listLarkInstallations: async () => LARK_LIST,
     listDingTalkGroups: async () => DT_GROUPS,
+    // SS6 (CHE-5539): the schedule preview in add-trigger-dialog; the plan revision viewer reads the rest from the seeded cache.
+    cronPreview: async () => ({ next_runs: ["2026-11-20T02:00:00Z", "2026-11-21T02:00:00Z", "2026-11-22T02:00:00Z"] }),
+    listAttachments: async () => PLAN_ATTACHMENTS,
+    getAttachmentTextContent: async (id: string) => ({ text: PLAN_TEXT[id] ?? "", originalContentType: "text/markdown" }),
   } as never);
   // Components read the signed-in user (assignee pickers, decision card); no real auth runs here.
   registerAuthStore(create(() => ({ user: { id: "u1", name: "Cheese", email: "c@example.com" }, isLoading: false })) as never);
@@ -146,6 +156,7 @@ export function seedRawElements(qc: QueryClient) {
   seedSS2(set);
   seedSS3(set);
   seedSS5(set);
+  seedSS6(set);
   for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
 }
 
@@ -156,7 +167,15 @@ function After({ pick, delay = 0, children }: { pick: (root: HTMLElement) => HTM
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // Popover triggers (SS5) only open once their handlers are attached, so those pages pass a delay.
-    const t = setTimeout(() => pick(ref.current!)?.click(), delay);
+    // A pick that finds nothing yet (a control still disabled while data loads) retries every 100 ms.
+    let t: ReturnType<typeof setTimeout>;
+    let tries = 0;
+    const run = () => {
+      const el = pick(ref.current!);
+      if (el) el.click();
+      else if (++tries < 30) t = setTimeout(run, 100);
+    };
+    t = setTimeout(run, delay);
     return () => clearTimeout(t);
   }, [pick, delay]);
   return <div ref={ref}>{children}</div>;
@@ -660,6 +679,100 @@ export function InstructionsEditorPage() {
       <InstructionsEditor value={"You are the design capture agent.\nCapture each raw-element file at 1440 and 390.\nNever replace earlier captures."} onChange={noop} />
       <Label>expanded: markdown editor and Collapse button</Label>
       <After pick={expand}><InstructionsEditor value="Capture each file at 1440 and 390." onChange={noop} /></After>
+    </div>
+  );
+}
+
+// ---- SS6 (CHE-5539): add-trigger-dialog, expandable-description, html-viewer, plan-revision-viewer, resource-label-picker ----
+const LABELS_SS6 = [
+  { id: "lb1", name: "design-system", color: "#3b82f6" }, { id: "lb2", name: "needs-review", color: "#f59e0b" },
+  { id: "lb3", name: "x99-only", color: "#10b981" }, { id: "lb4", name: "blocked-on-doop", color: "#ef4444" },
+];
+const planAtt = (id: string, filename: string, created_at: string) => ({
+  id, workspace_id: WS, issue_id: "iss-5420", comment_id: null, chat_session_id: null, chat_message_id: null,
+  uploader_type: "agent", uploader_id: AGENT, filename, url: `/uploads/${id}.md`, download_url: `/uploads/${id}.md`,
+  content_type: "text/markdown", size_bytes: 900, created_at,
+});
+const PLAN_ATTACHMENTS = [
+  planAtt("pa1", "plan-rev-1.md", "2026-11-13T03:00:00Z"), planAtt("pa2", "plan-rev-2.md", "2026-11-13T05:30:00Z"), planAtt("pa3", "plan-rev-3.md", "2026-11-13T08:00:00Z"),
+];
+const PLAN_TEXT: Record<string, string> = {
+  pa1: "## Goal\n\nCapture the Patterns frames.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n\n## Done when\n\n- No pending entries.",
+  pa2: "## Goal\n\nCapture the Patterns frames and the S0b raw-element files.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n3. Capture raw files onto one doop frame.\n\n## Done when\n\n- No pending entries.",
+  pa3: "## Goal\n\nCapture the Patterns frames and the S0b raw-element files.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n3. Capture raw files onto one doop frame.\n4. Flip the validator.\n\n## Done when\n\n- No pending entries.\n- Validator fails pending.",
+};
+function seedSS6(set: (key: readonly unknown[], data: unknown) => void) {
+  set(labelListOptions(WS, "agent").queryKey, { labels: LABELS_SS6 });
+  set(labelKeys.byResource(WS, "agent", "res-chips"), { labels: LABELS_SS6.slice(0, 2) });
+  set(labelKeys.byResource(WS, "agent", "res-empty"), { labels: [] });
+  set(["plan-revisions", WS, "iss-5420"], PLAN_ATTACHMENTS);
+  set(["plan-revision-issue", WS, "iss-5420"], { id: "iss-5420", identifier: "CHE-5420" });
+  for (const [id, text] of Object.entries(PLAN_TEXT)) set(["attachment-content", id], { text, originalContentType: "text/markdown" });
+}
+
+export function AddTriggerDialogPage() {
+  // The dialog fades in; a still taken mid-fade is washed out, so the animation is switched off for the capture.
+  return <div className="p-6"><style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style><AddTriggerDialog open onOpenChange={noop} autopilotId="ap-harness" /></div>;
+}
+
+const LONG = "Captures every raw-element file the S4b audit lists onto one doop reference frame, 1440 and 390, labelled with the file path. Each batch edits the same frame, so batches run in sequence; earlier captures are never replaced. The draft PR records the minutes per capture and marks each file captured in ui-drift.md.";
+export function ExpandableDescriptionPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
+  return (
+    <div className="max-w-[640px] p-6">
+      <Label>short text: no toggle</Label>
+      <ExpandableDescription>Captures the raw-element files.</ExpandableDescription>
+      <Label>long text, clamped to two lines with the Show more toggle</Label>
+      <ExpandableDescription>{LONG}</ExpandableDescription>
+      <Label>long text, expanded with the Show less toggle</Label>
+      <After pick={expand} delay={300}><ExpandableDescription>{LONG}</ExpandableDescription></After>
+    </div>
+  );
+}
+
+const DOC = `<!doctype html><html><body style="font:14px system-ui;padding:16px"><h2>Capture report</h2><p>25 of 35 files captured.</p><table border="1" cellpadding="6"><tr><th>Batch</th><th>Files</th></tr><tr><td>SS5</td><td>5</td></tr><tr><td>SS6</td><td>5</td></tr></table></body></html>`;
+export function HtmlViewerPage() {
+  const viewSource = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-pressed]");
+  return (
+    <div className="grid max-w-[900px] gap-2 p-6">
+      <Label>preview: sandboxed iframe</Label>
+      <div className="h-[320px] rounded-md border"><HtmlViewer html={DOC} document={DOC} title="capture-report.html" onReload={noop} /></div>
+      <Label>source view toggled on</Label>
+      <div className="h-[320px] rounded-md border"><After pick={viewSource} delay={300}><HtmlViewer html={DOC} document={DOC} title="capture-report.html" onReload={noop} /></After></div>
+      <Label>document still loading</Label>
+      <div className="h-[140px] rounded-md border"><HtmlViewer html={DOC} document={null} title="capture-report.html" onReload={noop} /></div>
+    </div>
+  );
+}
+
+export function PlanRevisionViewerPage() {
+  const diffOn = (root: HTMLElement) => root.querySelector<HTMLElement>("[role=switch]:not([data-disabled])");
+  const cur = PLAN_ATTACHMENTS[2]!;
+  const view = <PlanRevisionViewer attachment={cur as never} onDownload={noop} onClose={noop} />;
+  return (
+    <div className="grid gap-2 p-4">
+      <Label>read-only document, diff off (plan-rev-3.md, two earlier revisions)</Label>
+      <div className="h-[360px] rounded-md border">{view}</div>
+      <Label>diff on against plan-rev-2.md</Label>
+      <div className="h-[360px] rounded-md border"><After pick={diffOn} delay={500}>{view}</After></div>
+    </div>
+  );
+}
+
+export function ResourceLabelPickerPage() {
+  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
+  return (
+    <div className="max-w-[420px] p-6">
+      <Label>read-only, with labels</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit={false} />
+      <Label>read-only, no labels</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-empty" canEdit={false} />
+      <Label>editable, 2 labels attached</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit />
+      <Label>editable, empty (Add label)</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-empty" canEdit />
+      <Label>popover open: search, catalog, check on attached</Label>
+      <div className="min-h-[300px]"><After pick={open} delay={400}><ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit /></After></div>
     </div>
   );
 }

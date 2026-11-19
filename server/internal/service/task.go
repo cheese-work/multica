@@ -3214,7 +3214,7 @@ func (s *TaskService) SendDirectChatMessageTx(
 		}
 		out.Queued = queued
 
-		task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
+		taskParams := db.CreateChatTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              session.AgentID,
 			RuntimeID:            carrier.RuntimeID,
@@ -3229,7 +3229,20 @@ func (s *TaskService) SendDirectChatMessageTx(
 			OriginatorSource:     attrSource,
 			TriggerEvidenceKind:  attrEvidenceKind,
 			TriggerEvidenceRefID: attrEvidenceRef,
-		})
+		}
+		// A manual /compact goes to the compaction agent when one is set and
+		// available (CHE-2913); otherwise it stays on this DM agent.
+		isCompact := IsCompactCommand(content)
+		if isCompact {
+			route, err := routeCompaction(ctx, qtx, session)
+			if err != nil {
+				return err
+			}
+			if err := route.applyTo(&taskParams, session); err != nil {
+				return fmt.Errorf("route compaction task: %w", err)
+			}
+		}
+		task, err := qtx.CreateChatTask(ctx, taskParams)
 		if err != nil {
 			return fmt.Errorf("create direct chat task: %w", err)
 		}
@@ -3241,7 +3254,7 @@ func (s *TaskService) SendDirectChatMessageTx(
 		}
 		// A manual /compact is a compaction run from the moment it is queued, so
 		// sends are refused while it runs. It carries no reason (CHE-1807).
-		if IsCompactCommand(content) {
+		if isCompact {
 			task, err = qtx.MarkChatTaskCompact(ctx, db.MarkChatTaskCompactParams{ID: task.ID})
 			if err != nil {
 				return fmt.Errorf("mark compact chat task: %w", err)
@@ -5725,7 +5738,7 @@ func sanitizeWaitReason(reason string) string {
 // IsCompactionTask reports whether t is a compaction task (SEC-2). It is a side
 // job on the DM and never reads or writes the DM's resume pointer.
 func IsCompactionTask(t db.AgentTaskQueue) bool {
-	return t.Purpose.Valid && t.Purpose.String == "compaction"
+	return t.Purpose.Valid && t.Purpose.String == taskPurposeCompaction
 }
 
 // startsWithAbsolutePath reports whether s opens with an absolute path on any
@@ -6062,6 +6075,11 @@ const chatNoResponseFallback = "The agent finished this turn without a text repl
 // owner id so an auto-retry clone (which inherits chat_input_task_id) reaches
 // the same verdict as its parent — while a NULL owner marks a legacy task.
 func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, result []byte) (*db.ChatMessage, error) {
+	// A dedicated compaction agent writes the divider summary itself; its
+	// output is not a reply in the DM (CHE-2913).
+	if IsCompactionTask(task) {
+		return nil, nil
+	}
 	// result is the daemon request re-marshalled by the handler, so it is always
 	// valid JSON; an empty Output is the only case this branch cares about.
 	var payload protocol.TaskCompletedPayload
@@ -6603,7 +6621,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			// SEC-1 rule 4: the retry guard below locks the workspace, which
 			// must come before the session lock taken next.
-			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == taskPurposeCompaction && parent.ChatSessionID.Valid {
 				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
 					return err
 				}
@@ -7230,7 +7248,7 @@ func retryRoutable(t db.AgentTaskQueue) bool {
 // (workspace, then sessions); the other order deadlocks with CreateRetryTask,
 // which also locks the workspace. It fails closed: an error means no retry.
 func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
-	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != taskPurposeCompaction {
 		return false, nil
 	}
 	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)

@@ -100,7 +100,7 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 	if refuseTypedOptionsOn(w, parsed, "a CI card") {
 		return
 	}
-	hints, ok := checkAgentCannotDo(w, parsed, workspace.Settings)
+	hints, ok := checkAgentCannotDo(w, parsed, workspace.Settings, "")
 	if !ok {
 		return
 	}

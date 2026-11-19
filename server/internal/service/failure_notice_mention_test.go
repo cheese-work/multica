@@ -95,12 +95,16 @@ func TestFailureNoticeDeepNestingStaysBounded(t *testing.T) {
 	task := o.recoveryTask(t, nil)
 	o.Exec(t, "UPDATE agent SET archived_at = now() WHERE id = $1", o.agentID)
 
+	// Time only the text transform: a linear pass takes ~10ms here, a quadratic
+	// one minutes. FailTask also does database round trips whose cost swings
+	// with runner load (3 to 5s on a busy CI host), so it carries no bound.
 	start := time.Now()
+	o.svc.TaskSvc.failureNoticeText(ctx, parseTestUUID(t, o.agentID), raw)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("failureNoticeText on %d nested links took %s, want well under 2s", depth, took)
+	}
 	if _, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, task), raw, "", "", "", "timeout", false, "", ""); err != nil {
 		t.Fatal(err)
-	}
-	if took := time.Since(start); took > 2*time.Second {
-		t.Fatalf("FailTask on %d nested links took %s, want well under 2s", depth, took)
 	}
 	var got string
 	if err := o.Pool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id=$1 AND type='system'`, o.issueID).Scan(&got); err != nil {
