@@ -90,11 +90,10 @@ func newScenario(t *testing.T) *scenario {
 		return testutil.Cols{"creator_type": "agent", "creator_id": agent, "origin_type": "agent_create", "origin_id": taskID}
 	}
 	memberComment := func() string {
-		host := f.Issue(t, "host "+uuid.NewString()[:6])
-		return f.Comment(t, host, "please do it")
+		return f.Comment(t, add("host "+uuid.NewString()[:6], "form", "", nil), "please do it")
 	}
 	agentComment := func() string {
-		host := f.Issue(t, "host "+uuid.NewString()[:6])
+		host := add("host "+uuid.NewString()[:6], "form", "", nil)
 		return f.Comment(t, host, "done", testutil.Cols{"author_type": "agent", "author_id": agent})
 	}
 
@@ -109,11 +108,12 @@ func newScenario(t *testing.T) *scenario {
 	dmTask := task(testutil.Cols{"chat_session_id": chat})
 	add("3 dm", "dm", "agent", agentMade(dmTask))
 	sameRunTask := task(testutil.Cols{"chat_session_id": chat})
-	parent := add("4 same-run parent", "agent", "agent", agentMade(sameRunTask))
+	// The parent itself has no same-run parent, so it is a DM issue too.
+	parent := add("4 same-run parent", "dm", "agent", agentMade(sameRunTask))
 	child := agentMade(sameRunTask)
 	child["parent_issue_id"] = parent
 	add("4 dm child of same-run parent", "agent", "agent", child)
-	older := f.Issue(t, "older parent")
+	older := add("older parent", "form", "", nil)
 	olderChild := agentMade(dmTask)
 	olderChild["parent_issue_id"] = older
 	add("3 dm child of older parent", "dm", "agent", olderChild)
@@ -206,8 +206,8 @@ func testDryRunReportsEveryRuleAndWritesNothing(t *testing.T) {
 	if len(rep.UnresolvedIssueIDs) != 2 {
 		t.Errorf("unresolved ids = %v, want 2", rep.UnresolvedIssueIDs)
 	}
-	if rep.Legacy["comment"] != 1 || rep.Legacy["agent"] != 1 {
-		t.Errorf("legacy = %v, want comment=1 agent=1", rep.Legacy)
+	if rep.Legacy["comment"] != 1 || rep.Legacy["agent"] != 2 {
+		t.Errorf("legacy = %v, want comment=1 agent=2", rep.Legacy)
 	}
 	if len(rep.LegacyCommentSamples) != 1 || rep.LegacyCommentSamples[0].IssueID != s.ids["5b legacy comment"] ||
 		rep.LegacyCommentSamples[0].TriggerCommentID == "" {
@@ -221,12 +221,6 @@ func testDryRunReportsEveryRuleAndWritesNothing(t *testing.T) {
 			t.Errorf("dry run wrote %s: %q -> %q", name, before[name], got)
 		}
 	}
-}
-
-type receiptLine struct {
-	IssueID string  `json:"issue_id"`
-	Old     *string `json:"old"`
-	New     string  `json:"new"`
 }
 
 func readReceipt(t *testing.T, path string) []receiptLine {

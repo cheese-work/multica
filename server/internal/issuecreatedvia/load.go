@@ -34,6 +34,12 @@ const maxRepeatHops = 3
 // ForCreate loads the origin rows and classifies. It never fails: a failed task
 // or comment lookup gives Agent for an agent creator and is logged.
 func ForCreate(ctx context.Context, q Querier, r Request) string {
+	return Classify(BuildInput(ctx, q, r))
+}
+
+// BuildInput loads what Classify reads. The create path and the backfill both
+// call it, so they cannot drift apart.
+func BuildInput(ctx context.Context, q Querier, r Request) Input {
 	in := Input{OriginType: r.OriginType, CreatorAgent: r.CreatorAgent, Channel: r.Channel}
 	if r.CreatorAgent && r.OriginType != OriginQuickCreate && r.OriginType != OriginAutopilot && r.TaskID.Valid {
 		in.Task = loadTask(ctx, q, r)
@@ -41,7 +47,7 @@ func ForCreate(ctx context.Context, q Querier, r Request) string {
 			in.ParentMadeBySameTask = parentMadeBy(ctx, q, r)
 		}
 	}
-	return Classify(in)
+	return in
 }
 
 func loadTask(ctx context.Context, q Querier, r Request) *TaskFacts {
@@ -74,6 +80,7 @@ func loadTask(ctx context.Context, q Querier, r Request) *TaskFacts {
 		HasChatSession:   task.ChatSessionID.Valid,
 		EvidenceKind:     task.TriggerEvidenceKind.String,
 		EvidenceKindNull: !task.TriggerEvidenceKind.Valid,
+		TriggerCommentID: task.TriggerCommentID,
 	}
 	f.Autopilot = task.AutopilotRunID.Valid || f.EvidenceKind == "autopilot_run" || f.EvidenceKind == "rule_version"
 	if task.TriggerCommentID.Valid && !f.HasChatSession && !f.Autopilot &&
