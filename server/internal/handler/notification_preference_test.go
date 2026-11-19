@@ -176,3 +176,39 @@ func TestPatchNotificationPreferencesRejectsUnknownGroups(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+// TestPatchNotificationPreferencesAcceptsAssigneeChanges: the whitelist rejects
+// unknown keys, so the server must deploy before any client sends this one.
+func TestPatchNotificationPreferencesAcceptsAssigneeChanges(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `
+			DELETE FROM notification_preference
+			WHERE workspace_id = $1 AND user_id = $2
+		`, testWorkspaceID, testUserID)
+	})
+
+	recorder := httptest.NewRecorder()
+	testHandler.PatchNotificationPreferences(
+		recorder,
+		notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
+			"assignee_changes": "muted",
+		}),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		Preferences map[string]string `json:"preferences"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Preferences["assignee_changes"] != "muted" {
+		t.Fatalf("assignee_changes not persisted: %#v", response.Preferences)
+	}
+}

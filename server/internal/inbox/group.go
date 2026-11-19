@@ -5,8 +5,8 @@ package inbox
 // (TestEveryInboxTypeIsClassified).
 var typeGroup = map[string]string{
 	"issue_assigned":     "assignments",
-	"unassigned":         "assignments",
-	"assignee_changed":   "assignments",
+	"unassigned":         "assignee_changes",
+	"assignee_changed":   "assignee_changes",
 	"status_changed":     "status_changes",
 	"new_comment":        "comments",
 	"mentioned":          "mentions",
