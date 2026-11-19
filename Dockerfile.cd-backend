@@ -10,7 +10,7 @@
 # --- Verify stage: nothing reaches the image unless it matches SHA256SUMS.
 # Modes are then set to 755 (binaries) and 644 (manifest.json), so the runner
 # umask cannot change the image. ---
-FROM alpine:3.21 AS verify
+FROM alpine:3.24 AS verify
 
 ARG CD_BINARIES_SHA256
 ARG COMMIT
@@ -28,7 +28,7 @@ RUN test -n "$CD_BINARIES_SHA256" && test -n "$COMMIT" \
     && find . -type f ! -name manifest.json ! -name SHA256SUMS -exec chmod 755 {} +
 
 # --- Runtime stage ---
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata
 
