@@ -1070,6 +1070,8 @@ type Comment struct {
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
 	ExternalRead        bool               `json:"external_read"`
+	NotifyOnly          pgtype.Bool        `json:"notify_only"`
+	AskSourceRootID     pgtype.UUID        `json:"ask_source_root_id"`
 }
 
 type CommentContentEdit struct {
@@ -1431,6 +1433,7 @@ type DecisionRequest struct {
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 	ReadAt                   pgtype.Timestamptz `json:"read_at"`
+	ReaskOfRequestID         pgtype.UUID        `json:"reask_of_request_id"`
 }
 
 type DecisionWait struct {

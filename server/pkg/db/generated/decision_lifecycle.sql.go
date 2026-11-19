@@ -57,7 +57,7 @@ func (q *Queries) AcknowledgeDecisionRetraction(ctx context.Context, arg Acknowl
 const cancelDecisionLifecycleRequest = `-- name: CancelDecisionLifecycleRequest :one
 UPDATE decision_request SET status = 'cancelled', cancel_reason = $1, cancel_notice_posted_at = clock_timestamp()
 WHERE authority = 'human' AND workspace_id = $2 AND id = $3 AND status IN ('open', 'answered')
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, reask_of_request_id
 `
 
 type CancelDecisionLifecycleRequestParams struct {
@@ -111,6 +111,7 @@ func (q *Queries) CancelDecisionLifecycleRequest(ctx context.Context, arg Cancel
 		&i.CoversRequestIds,
 		&i.AnsweredByBatchRequestID,
 		&i.ReadAt,
+		&i.ReaskOfRequestID,
 	)
 	return i, err
 }
@@ -184,7 +185,7 @@ func (q *Queries) DecisionLifecycleReason(ctx context.Context, arg DecisionLifec
 }
 
 const getDecisionCancelComment = `-- name: GetDecisionCancelComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read FROM comment
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id FROM comment
 WHERE workspace_id = $1 AND decision_request_id = $2 AND decision_comment_kind = 'cancel'
 `
 
@@ -224,6 +225,8 @@ func (q *Queries) GetDecisionCancelComment(ctx context.Context, arg GetDecisionC
 		&i.GithubNotifyOnly,
 		&i.TaintIds,
 		&i.ExternalRead,
+		&i.NotifyOnly,
+		&i.AskSourceRootID,
 	)
 	return i, err
 }
@@ -260,7 +263,7 @@ func (q *Queries) HasDecisionCancelNoticeSinceClose(ctx context.Context, arg Has
 }
 
 const listDecisionCancelSiblings = `-- name: ListDecisionCancelSiblings :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, reask_of_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2 AND chat_session_id = $3
   AND status IN ('open', 'answered')
 ORDER BY created_at, id
@@ -323,6 +326,7 @@ func (q *Queries) ListDecisionCancelSiblings(ctx context.Context, arg ListDecisi
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 			&i.ReadAt,
+			&i.ReaskOfRequestID,
 		); err != nil {
 			return nil, err
 		}
@@ -335,7 +339,7 @@ func (q *Queries) ListDecisionCancelSiblings(ctx context.Context, arg ListDecisi
 }
 
 const listDecisionLifecycleCancellations = `-- name: ListDecisionLifecycleCancellations :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.ping_outcome, request.covers_request_ids, request.answered_by_batch_request_id, request.read_at FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.ping_outcome, request.covers_request_ids, request.answered_by_batch_request_id, request.read_at, request.reask_of_request_id FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
 LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
@@ -411,6 +415,7 @@ func (q *Queries) ListDecisionLifecycleCancellations(ctx context.Context, batchS
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 			&i.ReadAt,
+			&i.ReaskOfRequestID,
 		); err != nil {
 			return nil, err
 		}
@@ -423,7 +428,7 @@ func (q *Queries) ListDecisionLifecycleCancellations(ctx context.Context, batchS
 }
 
 const listDecisionReaskCandidates = `-- name: ListDecisionReaskCandidates :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.ping_outcome, request.covers_request_ids, request.answered_by_batch_request_id, request.read_at FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.ping_outcome, request.covers_request_ids, request.answered_by_batch_request_id, request.read_at, request.reask_of_request_id FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 WHERE request.authority = 'human' AND request.status = 'cancelled' AND request.cancel_reason IN ('human_removed', 'lane_archived')
   AND request.cancel_notice_posted_at IS NOT NULL AND request.reask_delivered_at IS NULL
@@ -483,6 +488,7 @@ func (q *Queries) ListDecisionReaskCandidates(ctx context.Context, batchSize int
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 			&i.ReadAt,
+			&i.ReaskOfRequestID,
 		); err != nil {
 			return nil, err
 		}
