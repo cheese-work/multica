@@ -134,6 +134,8 @@ PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.m
 
 工作区设置 `owner_script_guard`（`off`、`warn`、`block`；未设置时为 `warn`）适用于智能体的决策请求、操作请求和 `multica decision ask` 卡片：所有者不读 shell，所以卡片要求人运行命令就是请求本身的缺陷。八条规则（R1 至 R8，规则集版本 1）读取卡片文字及其步骤：shell 代码围栏、围栏或行内代码中的命令、`human_steps` 命令、脚本附件，以及紧邻命令或紧跟在已被标记的消息之后的运行提示词（如 “run”“paste”）。`warn` 照常送达并记录命中。`block` 以 `422` 拒绝，指出命中的规则和字段，并建议改用 `multica config propose`、`multica decision propose <type>` 或申请机器人权限。`off` 不做检查。每次检查写入一条事件，即一行 `owner_script_guard` 活动记录：卡片送达时与卡片在同一事务中，被拒绝时单独提交。事件包含 ID、结果、`delivered`、`rule_hits`、命令的带密钥哈希（`cmd_hmacs`）和 `retry_of`，不含消息文本。议题时间线不显示这些行。改回 `warn` 或 `off` 即可还原，不涉及数据变更。
 
+工作区设置 `ask_guard_decided_mode`（`off`、`warn`、`block`；未设置时为 `off`）适用于决策请求、`multica decision ask` 卡片和两步请求：同一个人已在同一议题或父议题上回答过的问题，新请求再次提出时会被识别。匹配只看有类型的字段：决策、主题、话题、升级等级、选项，以及存在时的动作；代理的说明和检查不计入。以最新的回答为准，已撤销、已撤回、自由文本或含义不明的回答不会匹配。`warn` 会发送卡片并记录一条 `decided_ask` 事件。`block` 记录事件后以 `409 decision_already_answered` 拒绝该卡片，并给出先前的请求、所选选项、回答人和时间（ICT），以及记录链接。它与 `ask_guard_mode` 相互独立。设回 `off` 即可还原，数据不会改变。
+
 工作区设置 `waiting_audience_guard`（默认 `off`，可选 `warn`、`block`）针对智能体在 `in_review`、`blocked` 或 `need_decision` 状态的事项上发表的评论。这类评论必须指明受众：成员提及、`notify_only`、决策评论、`ask`（下一个行动的成员）或 `no_ask`。提及智能体或小队，或回复智能体的评论，也算有受众。只读取这些类型化字段和链接，不读取评论文本。`warn` 记录一次命中并正常发布评论；`block` 记录命中并以 `422` 拒绝评论。聊天通道的运行只会警告。改回 `off` 即可还原，不涉及数据变更。
 
 工作区设置 `waiting_on_guard`（默认 `off`，可选 `warn`、`block`）针对智能体把事项移到 `in_review`、`blocked` 或 `need_decision` 的操作。移动时必须用 `waiting_on`（`member:<id>` 或 `none`）说明下一个行动的人。如果该任务已在此事项上发布过决策请求，或带成员提及的评论，则无需 `waiting_on`。只读取类型化字段和结构化链接，不读取之前评论的文本。`warn` 记录一次命中并正常移动事项；`block` 记录命中并以 `422` 拒绝移动。聊天通道的运行只会警告。改回 `off` 即可还原，不涉及数据变更。

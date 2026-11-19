@@ -4,6 +4,7 @@
 package askguard
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -38,6 +39,11 @@ const WaitingAudienceSettingKey = "waiting_audience_guard"
 // reverts without touching SettingKey or WaitingAudienceSettingKey.
 const WaitingOnSettingKey = "waiting_on_guard"
 
+// DecidedSettingKey holds the mode of the decided-ask guard (CHE-5682): a new
+// ask that repeats a question a person already answered. Its own key, so it
+// reverts without touching SettingKey.
+const DecidedSettingKey = "ask_guard_decided_mode"
+
 type Mode string
 
 const (
@@ -68,6 +74,11 @@ func ReversibleModeFromSettings(raw []byte) (Mode, error) {
 // WaitingAudienceModeFromSettings reads WaitingAudienceSettingKey the same way.
 func WaitingAudienceModeFromSettings(raw []byte) (Mode, error) {
 	return modeFromSettings(raw, WaitingAudienceSettingKey)
+}
+
+// DecidedModeFromSettings reads DecidedSettingKey the same way.
+func DecidedModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, DecidedSettingKey)
 }
 
 // WaitingOnModeFromSettings reads WaitingOnSettingKey the same way.
@@ -110,6 +121,9 @@ type Op struct {
 	Kind                      string
 	Payload                   []byte
 	WarnOnly                  bool
+	// ModeKey is the workspace.settings key whose mode governs this operation.
+	// Empty means SettingKey.
+	ModeKey string
 	// Source is the text a recovery notice quotes verbatim. Empty when the
 	// operation has no ask text (a wakeup), which sends the event to repair.
 	Source string
@@ -139,7 +153,7 @@ func (g Guard) Hit(ctx context.Context, workspaceID pgtype.UUID, op Op) (Verdict
 	if err != nil {
 		return Verdict{}, fmt.Errorf("read workspace: %w", err)
 	}
-	mode, err := ModeFromSettings(ws.Settings)
+	mode, err := modeFromSettings(ws.Settings, cmp.Or(op.ModeKey, SettingKey))
 	if err != nil {
 		return Verdict{}, err
 	}
