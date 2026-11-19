@@ -2830,6 +2830,14 @@ type IssueWorkflowLintOverride struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueWorkflowSwitchPending struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
