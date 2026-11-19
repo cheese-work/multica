@@ -54,3 +54,11 @@ func (handler *Handler) checkTypedOptions(writer http.ResponseWriter, request *h
 	}
 	return true
 }
+
+// typedSendHook is a test seam: it runs at named points of the typed send's
+// locking sequence so a test can pause the send between two locks. It does
+// nothing in production.
+var typedSendHook = func(stage string) {}
+
+// settingsWriteHook is the same seam for the owner's direct settings write.
+var settingsWriteHook = func(stage string) {}
