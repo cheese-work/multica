@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -164,6 +165,23 @@ func TestIntakeSimpleGateMemberOverride(t *testing.T) {
 	}
 }
 
+// setPostCloseWork sets the post_close_work metadata through the metadata
+// endpoint, as the exiting agent in a run (byAgent) or as a member.
+func setPostCloseWork(t *testing.T, issueID string, value any, byAgent bool) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"value": value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := withURLParams(newRequest("PUT", "/api/issues/"+issueID+"/metadata/post_close_work", json.RawMessage(raw)), "id", issueID, "key", "post_close_work")
+	if byAgent {
+		req = asAgentTask(t, req)
+	} else {
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+	}
+	testutil.Call(t, testHandler.SetIssueMetadataKey, req).Want(http.StatusOK)
+}
+
 func qaWrite(t *testing.T, c edgeCase, actor ...func(*http.Request) *http.Request) *testutil.Response {
 	t.Helper()
 	req := withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_review"}), "id", c.issueID)
@@ -183,29 +201,47 @@ func TestQAProofGate(t *testing.T) {
 	}{
 		{"url proof and post_close_work", func(t *testing.T, id string) {
 			addGateComment(t, id, "agent", agent, "Done.\nQA: https://example.com/run/1", "2026-01-02T01:00:00Z")
-			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work','none') WHERE id=$1`, id)
+			setPostCloseWork(t, id, "none", true)
 		}, http.StatusOK},
 		{"fenced proof", func(t *testing.T, id string) {
 			addGateComment(t, id, "agent", agent, "QA:\n```\nok  github.com/x/y 0.4s\n```", "2026-01-02T01:00:00Z")
-			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work','docs follow-up')WHERE id=$1`, id)
+			setPostCloseWork(t, id, "docs follow-up", true)
 		}, http.StatusOK},
 		{"missing post_close_work", func(t *testing.T, id string) {
 			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
 		}, http.StatusConflict},
 		{"non-string post_close_work", func(t *testing.T, id string) {
 			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
-			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work',7) WHERE id=$1`, id)
+			setPostCloseWork(t, id, 7, true)
 		}, http.StatusConflict},
+		{"post_close_work set by another actor", func(t *testing.T, id string) {
+			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
+			setPostCloseWork(t, id, "none", false)
+		}, http.StatusConflict},
+		{"post_close_work changed by another actor after the agent set it", func(t *testing.T, id string) {
+			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
+			setPostCloseWork(t, id, "none", true)
+			setPostCloseWork(t, id, "deploy to C00", false)
+		}, http.StatusConflict},
+		{"post_close_work written without a recorded setter", func(t *testing.T, id string) {
+			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
+			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work','none') WHERE id=$1`, id)
+		}, http.StatusConflict},
+		{"post_close_work set by the agent over another actor's value", func(t *testing.T, id string) {
+			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
+			setPostCloseWork(t, id, "none", false)
+			setPostCloseWork(t, id, "docs follow-up", true)
+		}, http.StatusOK},
 		{"QA before the step was entered", func(t *testing.T, id string) {
 			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-01T01:00:00Z")
-			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work','none') WHERE id=$1`, id)
+			setPostCloseWork(t, id, "none", true)
 		}, http.StatusConflict},
 		{"QA by another author", func(t *testing.T, id string) {
 			addGateComment(t, id, "member", testUserID, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
-			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work','none') WHERE id=$1`, id)
+			setPostCloseWork(t, id, "none", true)
 		}, http.StatusConflict},
 		{"no QA at all", func(t *testing.T, id string) {
-			dbfx.Exec(t, `UPDATE issue SET metadata=jsonb_build_object('post_close_work','none') WHERE id=$1`, id)
+			setPostCloseWork(t, id, "none", true)
 		}, http.StatusConflict},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
