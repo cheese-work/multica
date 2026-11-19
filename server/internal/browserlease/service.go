@@ -257,7 +257,7 @@ func (s *Service) statusOf(ctx context.Context, id, ws, task, user pgtype.UUID, 
 
 // Status reads a lease back without signing: no token, whatever the state.
 func (s *Service) Status(ctx context.Context, ws, task, lease pgtype.UUID) (Result, error) {
-	return s.statusOf(ctx, lease, ws, task, false)
+	return s.statusOf(ctx, lease, ws, task, pgtype.UUID{}, false)
 }
 
 // issueToken signs with the lease row it is given, so the caller must pass the persisted
