@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/askguard"
@@ -36,9 +37,8 @@ func (refusal decidedAskRefusal) Error() string { return fmt.Sprint(refusal.body
 
 // decidedCandidate is one same-subject request with its newest answer.
 type decidedCandidate struct {
-	row   db.ListDecidedAskCandidatesRow
-	key   string
-	issue db.Issue
+	row db.ListDecidedAskCandidatesRow
+	key string
 }
 
 // decidedAskAction is the new ask's action as key input; nil for none.
@@ -178,7 +178,7 @@ func (handler *Handler) refuseDecidedAsk(ctx context.Context, queries *db.Querie
 	if err != nil || mode == askguard.ModeOff {
 		return err
 	}
-	outcome, hit, chain, checkErr := handler.checkDecidedAsk(ctx, queries, issue, humanID, input)
+	outcome, hit, chain, checkErr := handler.checkDecidedAskIsolated(ctx, queries, issue, humanID, input)
 	if checkErr != nil {
 		slog.Warn("decided ask check failed", "error", checkErr, "issue_id", uuidToString(issue.ID))
 	}
@@ -200,6 +200,35 @@ func (handler *Handler) refuseDecidedAsk(ctx context.Context, queries *db.Querie
 	}
 	return handler.decidedAskBlocked(ctx, queries, workspace, hit, chain)
 }
+
+// checkDecidedAskIsolated runs the lookup in a savepoint: a statement error
+// aborts a PostgreSQL transaction, so without it the caller could not write
+// the card after a failed check. The savepoint is rolled back on any error.
+func (handler *Handler) checkDecidedAskIsolated(ctx context.Context, queries *db.Queries, issue db.Issue, humanID pgtype.UUID, input decisionRequestInput) (string, db.ListDecidedAskCandidatesRow, []db.Issue, error) {
+	var none db.ListDecidedAskCandidatesRow
+	starter, ok := queries.Conn().(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return handler.checkDecidedAsk(ctx, queries, issue, humanID, input)
+	}
+	savepoint, err := starter.Begin(ctx)
+	if err != nil {
+		return "error", none, nil, err
+	}
+	defer savepoint.Rollback(ctx)
+	outcome, hit, chain, err := handler.checkDecidedAsk(ctx, queries.WithTx(savepoint), issue, humanID, input)
+	if err != nil {
+		return "error", none, nil, err
+	}
+	if err := savepoint.Commit(ctx); err != nil {
+		return "error", none, nil, err
+	}
+	return outcome, hit, chain, nil
+}
+
+// decidedAskFault lets a test fail the lookup with a real statement error.
+var decidedAskFault func(ctx context.Context, queries *db.Queries) error
 
 // checkDecidedAsk returns the outcome label, the repeated request on a match
 // and the issue chain. A non-nil error is logged and counts as "error".
@@ -227,6 +256,11 @@ func (handler *Handler) checkDecidedAsk(ctx context.Context, queries *db.Queries
 	match, err := decisiontx.MatchKey(kind, input.EscalationClass, ask, decidedAskAction(input.Action))
 	if err != nil {
 		return "incomparable", none, nil, nil
+	}
+	if decidedAskFault != nil {
+		if err := decidedAskFault(ctx, queries); err != nil {
+			return "error", none, nil, err
+		}
 	}
 	chain, err := decidedIssueChain(ctx, queries, issue)
 	if err != nil {
