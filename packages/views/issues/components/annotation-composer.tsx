@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ArrowUp, Loader2, Trash2 } from "@multica/ui/icons";
 import { createShortcutChord } from "@multica/core/shortcuts";
 import { Button } from "@multica/ui/components/ui/button";
@@ -47,7 +47,7 @@ const SEND = createShortcutChord("Enter", { primary: true });
 
 export function AnnotationComposer({
   issueId, owner, annotation, existing, number, editorRef, controls,
-  sourceMissing, sourceChanged, canSave, onChange, onSave, onRemove, onBusyChange,
+  sourceMissing, sourceChanged, canSave, onChange, onSave, onRemove, onBusyChange, onReady,
 }: {
   issueId?: string;
   owner: string;
@@ -63,8 +63,11 @@ export function AnnotationComposer({
   onSave: (note: string, close: boolean) => boolean;
   onRemove?: () => void;
   onBusyChange: (busy: boolean) => void;
+  /** Fires once the editor is mounted, so a host can deliver a pending focus request. */
+  onReady?: () => void;
 }) {
   const { t } = useT("issues");
+  useEffect(() => { onReady?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount only
   const [initialNote] = useState(annotation.note);
   const [sending, setSending] = useState(false);
   const inFlight = useRef(false);

@@ -120,6 +120,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   markerZIndex?: number;
 }) {
   const { t } = useT("issues");
+  const { t: tCommon } = useT("common");
   const chat = surface === "chat";
   const L: AnnotationLabels = labels ?? {
     selectionFailed: t(($) => $.reply.annotations.selection_failed),
@@ -315,11 +316,18 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     };
   }, [selection, draftKey, editable, editorOpenEvent, highlightName, noteDraftKey]);
 
+  // The focus request outlives the positioned bubble: the lazy composer may mount after it.
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
+    const target = noteRef.current ?? inputRef.current;
+    if (!target) return;
     pendingFocusId.current = null;
-    if (window.matchMedia("(pointer: fine)").matches) (noteRef.current ?? inputRef.current)?.focus();
+    if (window.matchMedia("(pointer: fine)").matches) target.focus();
   }, [editingId]);
+  const positionedId = useRef<string | undefined>(undefined);
+  const onPositioned = useCallback(() => { positionedId.current = editingId; focusNote(); }, [editingId, focusNote]);
+  // Hidden until positioned, so a composer that mounts first leaves the request to onPositioned.
+  const onComposerReady = useCallback(() => { if (positionedId.current === editingId) focusNote(); }, [editingId, focusNote]);
 
   useEffect(() => {
     if ((!anchorKey && !editingId) || !enabled) {
@@ -397,7 +405,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     }
     claimEditor();
     onOpenRef.current?.();
-    pendingFocusId.current = id;
+    pendingFocusId.current = id; positionedId.current = undefined;
     setSelection({ ...annotation, range, root }); setEditor({ annotation, existing: true }); setError(false);
     return true;
   };
@@ -427,7 +435,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       id: crypto.randomUUID(), sourceCommentId, sourceActorName: source.name,
       sourceRevision: source.revision, quote, start, prefix, suffix, note: "",
     };
-    pendingFocusId.current = next.id;
+    pendingFocusId.current = next.id; positionedId.current = undefined;
     setEditor({ annotation: next, existing: !!duplicate });
     setError(false);
     window.getSelection()?.removeAllRanges();
@@ -470,7 +478,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   }, [enabled, anchors, activeId, editingId, highlightName]);
   const confirmLabel = editor?.existing ? L.save : L.confirmAdd;
 
-  const renderBubble = (children: ReactNode) => enabled && selection ? <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
+  const renderBubble = (children: ReactNode) => enabled && selection ? <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={onPositioned} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
       <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
         {children}
       </div>
@@ -502,7 +510,8 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   // Composer slot: the editor a host (reply input, description comment input) draws
   // next to its own send controls.
   const renderComposer = (controls?: AnnotationSendControls) => editing ? renderBubble(
-    <Suspense fallback={null}><AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey}
+    <Suspense fallback={<p role="status" className="w-96 max-w-[calc(100vw-26px)] px-2 py-1.5 text-caption text-muted-foreground">{tCommon(($) => $.loading)}</p>}>
+      <AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey} onReady={onComposerReady}
       annotation={withDraft(editing)} existing={editingExisting}
       number={editingNumber}
       editorRef={inputRef} controls={controls}
