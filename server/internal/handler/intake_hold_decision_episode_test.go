@@ -39,7 +39,9 @@ func enterFromBacklog(test *testing.T, f episodeFixture) {
 	}
 }
 
-// Row 3, case (d): an open wait episode on an issue that is back in backlog.
+// Row 3, restore clause: an agent enters the step from backlog (a person moved
+// the issue there first), so the episode records backlog as the restore target.
+// This is not case (d) in the order of criterion 11(d); the test below is.
 // Mode block: the episode closes, the answer is acknowledged skipped_ineligible,
 // no resume task is queued and no refusal clock starts.
 func TestHeldIssueEpisodeDeliversNothing(test *testing.T) {
@@ -75,6 +77,60 @@ func TestHeldIssueEpisodeDeliversNothing(test *testing.T) {
 	logs.wantSite(test, "intake_hold_delivery_skipped", "decision_episode", 1)
 	settled := dbfx.Count(test, `SELECT count(*) FROM decision_wait WHERE issue_id = $1 AND closed_at IS NOT NULL`, f.issueID)
 	decisionPass(test, runner)
+	if again := f.closedEpisodes(test); len(again) != settled || f.continuations(test) != 0 {
+		test.Fatalf("a second pass changed state: %+v, %d runs", again, f.continuations(test))
+	}
+}
+
+// Row 3, case (d), in the order of plan criterion 11(d): with the entry in mode
+// off an agent moves the issue into the human_in_charge step, the issue is then
+// moved back to backlog, and only then the entry is set to block. The issue is
+// held before the answer. The test writes no issue or decision_wait row.
+func TestHeldIssueEpisodeEnteredThenBackloggedThenBlocked(test *testing.T) {
+	runner := newDeliveryRunner(test)
+	f := newEpisodeFixture(test, false)
+	hold := holdEpisodeProject(test, f, "off")
+	f.enter(test)
+	f.memberMove(test, "backlog").Want(http.StatusOK)
+	// The person's move suspends the open episode and clears the restore flag.
+	if s := f.suspension(test); s.phase != "suspended" || s.reason != "status_moved" || s.flag {
+		test.Fatalf("after the move to backlog = %+v, want suspended status_moved with the flag clear", s)
+	}
+	newHoldFixtureWith(test, hold, func(entry map[string]any) { entry["mode"] = "block" })
+	// Held before the answer.
+	if status, _, _ := issueStatusAndAssignee(test, f.issueID); status != "backlog" {
+		test.Fatalf("status before the answer = %q, want backlog", status)
+	}
+	wantHold(test, f.issueID, true, true, intakehold.ReasonHeld)
+	answerID, _ := f.answerRequest(test, f.requestID, -time.Minute, false)
+	tasks := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, f.issueID)
+	logs := recordHoldLogs(test)
+
+	decisionPass(test, runner)
+
+	if status, _, _ := issueStatusAndAssignee(test, f.issueID); status != "backlog" {
+		test.Fatalf("status after pass one = %q, want backlog", status)
+	}
+	wantHold(test, f.issueID, true, true, intakehold.ReasonHeld)
+	closed := f.closedEpisodes(test)
+	if len(closed) != 1 || closed[0].reason != "answered" || closed[0].outcome != "skipped_ineligible" || closed[0].resumeTaskID != "" {
+		test.Fatalf("closed episodes = %+v, want one closed answered with skipped_ineligible and no resume task", closed)
+	}
+	if woken, outcome := f.answerState(test, answerID); !woken || outcome != "skipped_ineligible" {
+		test.Fatalf("answer woken=%v outcome=%q, want acknowledged skipped_ineligible", woken, outcome)
+	}
+	if after := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, f.issueID); after != tasks {
+		test.Fatalf("tasks %d -> %d, want none queued", tasks, after)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_wait WHERE issue_id = $1 AND dispatch_refused_since IS NOT NULL`, f.issueID) != 0 {
+		test.Fatal("dispatch_refused_since is set")
+	}
+	logs.wantSite(test, "intake_hold_delivery_skipped", "decision_episode", 1)
+	settled := dbfx.Count(test, `SELECT count(*) FROM decision_wait WHERE issue_id = $1 AND closed_at IS NOT NULL`, f.issueID)
+	decisionPass(test, runner)
+	if status, _, _ := issueStatusAndAssignee(test, f.issueID); status != "backlog" {
+		test.Fatalf("status after pass two = %q, want backlog", status)
+	}
 	if again := f.closedEpisodes(test); len(again) != settled || f.continuations(test) != 0 {
 		test.Fatalf("a second pass changed state: %+v, %d runs", again, f.continuations(test))
 	}
