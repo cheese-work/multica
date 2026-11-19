@@ -467,7 +467,22 @@ func (h *Handler) noticeStep(ctx context.Context, id pgtype.UUID, generation int
 	if err == nil && moved {
 		h.recordBudgetBlock(ctx, issue, e, refused)
 	}
+	if err == nil {
+		h.openBudgetIncident(ctx, issue, e, refused)
+	}
 	return err
+}
+
+// openBudgetIncident is dev-stop signal 1 (CHE-5738): a run refused on budget
+// opens or extends the issue's incident. Its failure never fails the hook.
+func (h *Handler) openBudgetIncident(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string) {
+	used := fmt.Sprintf("used %d of %d runs", e.Runs, e.Max)
+	if err := h.RecordIncident(ctx, issue, IncidentRow{
+		Kind: "run_budget", Area: "run-budget", Impact: "run refused: " + used,
+		Row: refused + " was refused: " + used + ".", EventKey: e.Since.UTC().Format(time.RFC3339Nano), At: time.Now(),
+	}); err != nil {
+		slog.Warn("run budget: incident not written", "err", err, "issue_id", uuidToString(issue.ID))
+	}
 }
 
 // sweepRunBudgetHooks finishes the hooks a crashed callback left behind, from
