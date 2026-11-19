@@ -41,6 +41,7 @@ COPY --from=verify /cdbin/migrate .
 COPY --from=verify /cdbin/maintenance .
 COPY --from=verify /cdbin/backfill_task_usage_hourly .
 COPY --from=verify /cdbin/backfill_codex_usage_cache .
+COPY --from=verify /cdbin/backfill_issue_created_via .
 COPY server/migrations/ ./migrations/
 COPY LICENSE NOTICE ./
 COPY docker/entrypoint.sh docker/entrypoint.cd.sh .

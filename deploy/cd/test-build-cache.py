@@ -196,7 +196,8 @@ class BuildCacheTests(unittest.TestCase):
     def test_compiler_caches_precede_version_invalidation(self):
         backend = (ROOT / 'Dockerfile').read_text()
         self.assertIn('--mount=type=cache,target=/root/.cache/go-build', backend)
-        for command in ['migrate', 'maintenance', 'backfill_task_usage_hourly', 'backfill_codex_usage_cache']:
+        for command in ['migrate', 'maintenance', 'backfill_task_usage_hourly', 'backfill_codex_usage_cache',
+                   'backfill_issue_created_via']:
             self.assertLess(backend.index(f'./cmd/{command}'), backend.index('ARG VERSION'))
         build_steps = [line for line in backend.splitlines() if line.startswith('RUN ') and ('go build' in line or 'sh scripts/build-daemon-binaries.sh' in line)]
         self.assertTrue(all('--mount=type=cache,target=/root/.cache/go-build' in line for line in build_steps))
@@ -325,7 +326,7 @@ echo bin > "$2"
         backend = (ROOT / 'Dockerfile').read_text()
         consumers = [line for line in backend.splitlines() if line.startswith('RUN ') and
                      any(command in line for command in ['go mod download', 'go build', 'sh scripts/build-daemon-binaries.sh'])]
-        self.assertEqual(len(consumers), 7)
+        self.assertEqual(len(consumers), 8)
         for command in consumers:
             with self.subTest(command=command):
                 self.assertIn('--mount=type=cache,target=/go/pkg/mod', command)
@@ -379,7 +380,8 @@ import shutil
 import textwrap
 
 SERVER_BINARIES = ['server', 'multica', 'migrate', 'maintenance',
-                   'backfill_task_usage_hourly', 'backfill_codex_usage_cache']
+                   'backfill_task_usage_hourly', 'backfill_codex_usage_cache',
+                   'backfill_issue_created_via']
 DAEMON_KEYS = ['linux-amd64', 'linux-arm64', 'darwin-arm64', 'darwin-amd64']
 SHA = 'a' * 40
 VERSION = '1.2.3'
@@ -507,7 +509,7 @@ class CdBackendBinariesTests(unittest.TestCase):
             return sorted(m.groups() for m in re.finditer(pattern, path.read_text()))
         original = builds(ROOT / 'Dockerfile', r'go build -ldflags "([^"]*)" -o bin/(\w+) \./(cmd/\w+)')
         script = builds(COMPILE_SCRIPT, r'go build -ldflags "([^"]*)" -o "\$out/(\w+)" \./(cmd/\w+)')
-        self.assertEqual(len(original), 5)
+        self.assertEqual(len(original), 6)
         self.assertEqual(script, original)
         text = COMPILE_SCRIPT.read_text()
         self.assertIn('scripts/build-daemon-binaries.sh', text)
