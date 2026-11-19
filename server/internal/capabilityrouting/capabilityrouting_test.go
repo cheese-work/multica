@@ -57,6 +57,28 @@ func TestValidateRefusesBadTables(t *testing.T) {
 	}
 }
 
+func TestParseCanonicalizesUUIDForms(t *testing.T) {
+	undashed := strings.ReplaceAll(strings.ToUpper(authorID), "-", "")
+	for name, raw := range map[string]string{
+		"undashed author as reviewer":  `{"feat":{"author":"` + authorID + `","reviewers":["` + undashed + `"]}}`,
+		"uppercase author as reviewer": `{"feat":{"author":"` + authorID + `","reviewers":["` + strings.ToUpper(authorID) + `"]}}`,
+		"dashed and undashed twice":    `{"feat":{"author":"` + authorID + `","reviewers":["` + reviewerID + `","` + strings.ReplaceAll(reviewerID, "-", "") + `"]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(raw)); err == nil {
+				t.Fatalf("%s accepted", raw)
+			}
+		})
+	}
+	cfg, err := Parse([]byte(`{"feat":{"author":"` + undashed + `","reviewers":["` + strings.ReplaceAll(reviewerID, "-", "") + `"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg["feat"]; got.Author != authorID || got.Reviewers[0] != reviewerID {
+		t.Fatalf("ids not canonical: %+v", got)
+	}
+}
+
 func TestFromSettingsReadsLeniently(t *testing.T) {
 	settings := map[string]any{SettingsKey: map[string]any{
 		"feat": map[string]any{"author": authorID, "reviewers": []any{reviewerID}},
