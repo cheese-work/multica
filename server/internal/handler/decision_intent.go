@@ -29,7 +29,10 @@ func writeDecisionIntentError(writer http.ResponseWriter, err error) {
 func writeDecisionError(writer http.ResponseWriter, err error, operation string) {
 	var refusal decisionIntentRefusal
 	var proofRefusal passkey.Refusal
-	if errors.As(err, &refusal) {
+	var decidedRefusal decidedAskRefusal
+	if errors.As(err, &decidedRefusal) {
+		writeDecidedAskRefusal(writer, decidedRefusal)
+	} else if errors.As(err, &refusal) {
 		writeError(writer, refusal.status, refusal.message)
 	} else if errors.As(err, &proofRefusal) {
 		writeError(writer, proofRefusal.Status, proofRefusal.Message)
