@@ -4,7 +4,8 @@
 Two rules for the current main head:
 1. Newest `CD qualification build` run failed on its first attempt -> `gh run rerun --failed`, once per
    run ID (run_attempt > 1 means it was already rerun).
-2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it whose `deploy` job succeeded
+2. The oldest main commit newer than what C00 runs (CHE-7522: not the newest commit, a merge must not restart the
+   window) merged >= 90 min ago and no successful `CD deploy to C00` run named for it whose `deploy` job succeeded
    (manual dispatches named by ref, not SHA, do not count; a run with the deploy job skipped does not count) -> ::error:: with the run
    URL and the first error line.
 3. A `cd-deploy.yml` slot (17 past 01/05/09/13/17/21 UTC) passed >= 30 min ago and no `schedule` run was created since
@@ -57,16 +58,30 @@ def parse(ts):
     return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-def decide(sha, head_time, now, qual_runs, deploy_runs, ran_deploy):
+def undeployed_since(commits, deployed):
+    """Merge time of the oldest commit newer than the newest deployed one. commits: [(sha, time)] newest first.
+    Head deployed -> head's time; none deployed in the list -> the oldest listed commit."""
+    since = commits[0][1]
+    for sha, t in commits:
+        if deployed(sha):
+            break
+        since = t
+    return since
+
+
+def deployed_by(sha, deploy_runs, ran_deploy):
+    return any(r["conclusion"] == "success" and r.get("display_title", "").endswith(f" {sha}") and ran_deploy(r) for r in deploy_runs)
+
+
+def decide(sha, since, now, qual_runs, deploy_runs, ran_deploy):
     newest = max(qual_runs, key=lambda r: r["created_at"], default=None)
     rerun = newest["id"] if newest and newest["conclusion"] == "failure" and newest["run_attempt"] == 1 else None
     # A workflow_run deploy's head_sha is main's tip at trigger time, not the SHA it deployed. The qualified
     # SHA is only in the run name: "CD deploy to C00 · <sha>". Match that and a success conclusion. A run also
     # succeeds when candidate-preflight finds the commit ineligible and every later job is skipped, so ran_deploy(run)
     # must confirm that the `deploy` job itself succeeded (a baseline "skip" there means C00 already has the commit).
-    deployed = any(r["conclusion"] == "success" and r.get("display_title", "").endswith(f" {sha}") and ran_deploy(r)
-                   for r in deploy_runs)
-    return {"rerun": rerun, "alert": not deployed and now - head_time >= DEPLOY_DEADLINE,
+    deployed = deployed_by(sha, deploy_runs, ran_deploy)
+    return {"rerun": rerun, "alert": not deployed and now - since >= DEPLOY_DEADLINE,
             "deployed": deployed, "run": newest}
 
 
@@ -106,11 +121,11 @@ def live_commit(base_url):
         return None
 
 
-def decide_live(sha, head_time, now, live):
+def decide_live(sha, since, now, live):
     # Run history cannot see a rollback done on C00 (cutover.sh rollback leaves the old successful deploy run in
     # the API), so what runs now is the only proof. server_commit is the 7-char short SHA.
     deployed = live == sha[:7]
-    return {"alert": not deployed and now - head_time >= DEPLOY_DEADLINE, "deployed": deployed}
+    return {"alert": not deployed and now - since >= DEPLOY_DEADLINE, "deployed": deployed}
 
 
 def deploy_job_succeeded(repo, run):
@@ -118,11 +133,13 @@ def deploy_job_succeeded(repo, run):
     return any(j["name"] == "deploy" and j["conclusion"] == "success" for j in jobs)
 
 
-def main_live(sha, head_time, now):
+def main_live(sha, commits, now):
     live = live_commit(os.environ["C00_API_URL"])
-    d = decide_live(sha, head_time, now, live)
+    # unreadable live revision: nothing proves which commits are undeployed, so keep the head's window
+    since = undeployed_since(commits, lambda c: live == c[:7]) if live else commits[0][1]
+    d = decide_live(sha, since, now, live)
     if d["alert"]:
-        age = int((now - head_time).total_seconds() // 60)
+        age = int((now - since).total_seconds() // 60)
         print(f"::error::main {sha[:9]} is not what C00 runs {age} min after merge (limit 90): live revision {live or 'unreadable'}")
         return 1
     print(f"main {sha[:9]} runs on C00 (live revision {live})." if d["deployed"] else f"C00 runs {live or 'an unreadable revision'}, inside the 90 min window.")
@@ -143,13 +160,16 @@ def backup_dispatch(repo, slot, deploy_runs):
 
 def main(argv=()):
     repo = os.environ["GITHUB_REPOSITORY"]
-    commit = json.loads(gh_api("api", f"repos/{repo}/commits/main"))
-    sha, head_time, now = commit["sha"], parse(commit["commit"]["committer"]["date"]), utcnow()
+    # ponytail: newest 100 main commits; an older undeployed commit counts as the 100th (alarm fires either way).
+    commits = [(c["sha"], parse(c["commit"]["committer"]["date"]))
+               for c in json.loads(gh_api("api", f"repos/{repo}/commits?sha=main&per_page=100"))]
+    sha, now = commits[0][0], utcnow()
     if "--live" in argv:
-        return main_live(sha, head_time, now)
+        return main_live(sha, commits, now)
     runs = lambda wf, query: json.loads(gh_api("api", f"repos/{repo}/actions/workflows/{wf}/runs?{query}&per_page=100"))["workflow_runs"]
-    d = decide(sha, head_time, now, runs("cd-qualification.yml", f"head_sha={sha}"), runs("cd-deploy.yml", "status=success"),
-               lambda run: deploy_job_succeeded(repo, run))
+    deploy_runs, ran_deploy = runs("cd-deploy.yml", "status=success"), lambda run: deploy_job_succeeded(repo, run)
+    since = undeployed_since(commits, lambda c: deployed_by(c, deploy_runs, ran_deploy))
+    d = decide(sha, since, now, runs("cd-qualification.yml", f"head_sha={sha}"), deploy_runs, ran_deploy)
     # ponytail: one page (100) of schedule runs; slots are 6/day so the newest page always holds the latest slot.
     slot = missed_slot(now, runs("cd-deploy.yml", "event=schedule"))
     if slot:
@@ -160,7 +180,7 @@ def main(argv=()):
         gh_api("run", "rerun", str(d["rerun"]), "--failed", "-R", repo)
         print(f"Reran failed jobs of qualification run {d['rerun']} (once per run ID).")
     if d["alert"]:
-        age = int((now - head_time).total_seconds() // 60)
+        age = int((now - since).total_seconds() // 60)
         run = d["run"]
         where = f"qualification run {run['html_url']} ({run['conclusion'] or run['status']}), {first_error(repo, run)}" if run else "no qualification run found"
         print(f"::error::main {sha[:9]} is not on C00 {age} min after merge (limit 90): {where}")
