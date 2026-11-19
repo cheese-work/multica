@@ -159,8 +159,19 @@ func TestParseIntakeLines(t *testing.T) {
 	}
 }
 
+func TestParseIntakeLinesNewestEmptyValueGoverns(t *testing.T) {
+	got := ParseIntakeLines("Estimate: 1h\nEstimate:\n")
+	if v, ok := got["Estimate"]; !ok || v != "" {
+		t.Fatalf("a newer empty Estimate must replace the older answer, got %q (present=%v)", v, ok)
+	}
+	facts := &IntakeFacts{Lines: got}
+	if r := facts.Refusal(1); !strings.Contains(r, "Estimate: line is missing") {
+		t.Fatalf("an empty newest Estimate reads as missing, refusal %q", r)
+	}
+}
+
 func qaFacts(post string, bodies ...string) *QAFacts {
-	return &QAFacts{Bodies: bodies, PostCloseWork: post}
+	return &QAFacts{Bodies: bodies, PostCloseWork: post, PostCloseWorkByAgent: true}
 }
 
 func qaGate(mode string) []EntryGate { return []EntryGate{{Guard: GuardQAProof, Mode: mode}} }
@@ -193,6 +204,7 @@ func TestQAProofEachFailureTimesMode(t *testing.T) {
 		{"QA url not http", qaFacts("none", "QA: ftp://example.com/x"), "QA"},
 		{"post_close_work missing", qaFacts("", good), "post_close_work"},
 		{"post_close_work blank", qaFacts("   ", good), "post_close_work"},
+		{"post_close_work set by another actor", &QAFacts{Bodies: []string{good}, PostCloseWork: "none"}, "not set by the exiting agent"},
 		{"facts not loaded", nil, "not loaded"},
 		{"read failed", &QAFacts{Err: "comments unreadable"}, "unreadable"},
 	}

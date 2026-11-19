@@ -44,13 +44,14 @@ type IntakeFacts struct {
 }
 
 // ParseIntakeLines returns the intake lines found in text, keyed by canonical
-// name. A later line replaces an earlier one. Markdown bullets, quotes and
-// bold around the name are ignored; an empty value does not count as a line.
+// name. A later line replaces an earlier one, an empty one too: the newest
+// answer governs and an empty answer reads as missing. Markdown bullets, quotes
+// and bold around the name are ignored.
 func ParseIntakeLines(text string) map[string]string {
 	out := map[string]string{}
 	for _, line := range strings.Split(text, "\n") {
 		m := intakeLineRe.FindStringSubmatch(strings.TrimRight(line, "\r"))
-		if len(m) < 3 || m[2] == "" {
+		if len(m) < 3 {
 			continue
 		}
 		for _, name := range IntakeLines {
@@ -197,6 +198,9 @@ type QAFacts struct {
 	// PostCloseWork is the issue's post_close_work metadata ("" when unset or
 	// not a string).
 	PostCloseWork string
+	// PostCloseWorkByAgent is true when the exiting agent made the newest write
+	// of post_close_work and it left the value the issue holds.
+	PostCloseWorkByAgent bool
 }
 
 // HasQALine reports whether a comment carries a "QA:" line with proof: an
@@ -261,12 +265,14 @@ func (f *QAFacts) Refusal() string {
 	}
 	if strings.TrimSpace(f.PostCloseWork) == "" {
 		facts = append(facts, "post_close_work is not set")
+	} else if !f.PostCloseWorkByAgent {
+		facts = append(facts, "post_close_work was not set by the exiting agent")
 	}
 	return strings.Join(facts, "; ")
 }
 
 func qaFix() string {
-	return "comment a QA: line with a URL or a fenced block of test output, then set the post_close_work metadata (none, or the work left)"
+	return "comment a QA: line with a URL or a fenced block of test output, then set the post_close_work metadata yourself (none, or the work left)"
 }
 
 // validateGateParam: only intake_simple takes a Param, and it needs one.
