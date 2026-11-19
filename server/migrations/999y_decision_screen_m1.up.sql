@@ -2,7 +2,7 @@ SET LOCAL lock_timeout = '2s';
 
 -- Decision screen M1 (CHE-5480 plan r4, CHE-5995). Additive: nullable columns, new
 -- tables, widened CHECKs. Indexes on the new tables come as single-statement
--- concurrent-build files (999t here, later slices for the rest). No foreign keys.
+-- concurrent-build files (999z here, later slices for the rest). No foreign keys.
 
 -- default_apply: the server's own answer for an auto-applied ask. No human, task or source.
 -- Widens the 873 definition. NOT VALID then VALIDATE keeps the table lock short.
@@ -33,7 +33,7 @@ ALTER TABLE decision_request
     ADD COLUMN IF NOT EXISTS would_auto_apply boolean,
     ADD COLUMN IF NOT EXISTS auto_apply_rule_id uuid;
 
--- A member's hidden chat session for issue-agent asks (plan 3.7). The unique index is 999t.
+-- A member's hidden chat session for issue-agent asks (plan 3.7). The unique index is 999z.
 CREATE TABLE IF NOT EXISTS decision_backing_lane (
     session_id uuid NOT NULL,
     workspace_id uuid NOT NULL,

@@ -16,7 +16,7 @@ import (
 // M1 of the decision screen plan r4 (CHE-5480, CHE-5995): additive migration for
 // default_apply, undo, the backing lane, picks, snoozes and the request route.
 
-var decisionScreenM1Versions = []string{"999s_decision_screen_m1", "999t_decision_backing_lane_uidx"}
+var decisionScreenM1Versions = []string{"999y_decision_screen_m1", "999z_decision_backing_lane_uidx"}
 
 func runDecisionScreenM1(test *testing.T, ctx context.Context, pool *pgxpool.Pool, schema, direction string) {
 	test.Helper()
