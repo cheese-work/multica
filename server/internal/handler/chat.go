@@ -962,7 +962,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // Chat Messages
 
 type SendChatMessageRequest struct {
-<<<<<<< ours
+	Steer             bool     `json:"steer"`
 	Content           string   `json:"content"`
 	AttachmentIDs     []string `json:"attachment_ids"`
 	DecisionRequestID string   `json:"decision_request_id"`
@@ -974,16 +974,6 @@ type SendChatMessageRequest struct {
 	// SubmissionID makes the send idempotent per payload: a retry with the same
 	// id and payload replays the original acceptance, a different payload is a 409.
 	SubmissionID *string `json:"submission_id"`
-||||||| base
-	SubmissionID  *string  `json:"submission_id"`
-	Content       string   `json:"content"`
-	AttachmentIDs []string `json:"attachment_ids"`
-=======
-	Steer         bool     `json:"steer"`
-	SubmissionID  *string  `json:"submission_id"`
-	Content       string   `json:"content"`
-	AttachmentIDs []string `json:"attachment_ids"`
->>>>>>> theirs
 }
 
 type SendChatMessageResponse = service.ChatSubmissionResponse
@@ -1061,13 +1051,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 			return
 		}
-<<<<<<< ours
-		accepted, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, submitterType, parseUUID(submitterID), submissionID)
-||||||| base
-		response, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID)
-=======
-		response, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID, req.Steer)
->>>>>>> theirs
+		accepted, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, submitterType, parseUUID(submitterID), submissionID, req.Steer)
 		if err != nil {
 			h.writeChatSubmissionError(w, err)
 			return
@@ -1152,30 +1136,16 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
 	var sent *service.DirectChatSendResult
-<<<<<<< ours
 	var err error
 	if decisionRequestID.Valid {
 		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs, req.ClientMessageID)
-||||||| base
-	if submissionID.Valid {
-		sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID)
-=======
-	if submissionID.Valid {
-		sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID, req.Steer)
->>>>>>> theirs
 	} else {
-<<<<<<< ours
 		opts := service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs}
 		if submissionID.Valid {
-			sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, submissionID)
+			sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, submissionID, req.Steer)
 		} else {
-			sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts)
+			sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, req.Steer)
 		}
-||||||| base
-		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
-=======
-		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), req.Steer)
->>>>>>> theirs
 	}
 	if err != nil {
 		var refusal decisionIntentRefusal
@@ -1212,17 +1182,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := sent.Message
 	task := sent.Task
-<<<<<<< ours
 	if sent.Replayed { // the first attempt already did the side effects below
 		writeReplayedSend(w, sent)
 		return
 	}
-||||||| base
-=======
 	if sent.Steered {
 		h.notifyTaskSupplementAvailable(task)
 	}
->>>>>>> theirs
 	currentTitle := session.Title
 	if sent.InitialTitle != "" {
 		currentTitle = sent.InitialTitle
@@ -1282,21 +1248,6 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, SendChatMessageResponse{
-<<<<<<< ours
-		MessageID:     uuidToString(msg.ID),
-		TaskID:        uuidToString(task.ID),
-		SupportsQueue: true,
-		Queued:        sent.Queued,
-		CreatedAt:     timestampToString(msg.CreatedAt),
-		AttachmentIDs: boundAttachmentIDs,
-||||||| base
-		MessageID:     uuidToString(msg.ID),
-		TaskID:        uuidToString(task.ID),
-		SupportsQueue: true,
-		Queued:        sent.Queued,
-		CreatedAt:     timestampToString(task.CreatedAt),
-		AttachmentIDs: boundAttachmentIDs,
-=======
 		MessageID:        uuidToString(msg.ID),
 		TaskID:           uuidToString(task.ID),
 		SupportsQueue:    true,
@@ -1304,9 +1255,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		Steered:          sent.Steered,
 		MessageTaskID:    uuidToString(msg.TaskID),
 		MessageCreatedAt: timestampToString(msg.CreatedAt),
-		CreatedAt:        timestampToString(task.CreatedAt),
+		CreatedAt:        timestampToString(msg.CreatedAt),
 		AttachmentIDs:    boundAttachmentIDs,
->>>>>>> theirs
 	})
 }
 
@@ -1611,13 +1561,11 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
 	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
-	supplements := h.chatSupplementsForMessages(ctx, workspaceID, messages)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
 		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
-		resp[i].Supplement = supplements[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1759,10 +1707,6 @@ type PendingChatTaskResponse struct {
 	SupportsQueue bool                     `json:"supports_queue"`
 	CanSupplement bool                     `json:"can_supplement"`
 	QueuedTasks   []QueuedChatTaskResponse `json:"queued_tasks,omitempty"`
-	// HeadSupplement says whether a queued follow-up can be steered into the
-	// head task now: capable, starting (negotiation unknown yet) or
-	// unsupported. Absent when there is no head task.
-	HeadSupplement string `json:"head_supplement,omitempty"`
 }
 
 // waitReasonForStatus gates the stored hold text on the status it describes.
@@ -2176,30 +2120,13 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, PendingChatTaskResponse{
-<<<<<<< ours
 		TaskID:         uuidToString(head.ID),
 		Status:         head.Status,
 		CreatedAt:      timestampToString(head.CreatedAt),
 		WaitReason:     waitReasonForStatus(head.Status, head.WaitReason),
 		SupportsQueue:  true,
+		CanSupplement:  h.canSupplementChatTask(r, session, head.ID, head.Status),
 		QueuedTasks:    queued,
-		HeadSupplement: h.headSupplementState(r.Context(), head.ID, head.Status),
-||||||| base
-		TaskID:        uuidToString(head.ID),
-		Status:        head.Status,
-		CreatedAt:     timestampToString(head.CreatedAt),
-		WaitReason:    waitReasonForStatus(head.Status, head.WaitReason),
-		SupportsQueue: true,
-		QueuedTasks:   queued,
-=======
-		TaskID:        uuidToString(head.ID),
-		Status:        head.Status,
-		CreatedAt:     timestampToString(head.CreatedAt),
-		WaitReason:    waitReasonForStatus(head.Status, head.WaitReason),
-		SupportsQueue: true,
-		CanSupplement: h.canSupplementChatTask(r, session, head.ID, head.Status),
-		QueuedTasks:   queued,
->>>>>>> theirs
 	})
 }
 
@@ -2692,9 +2619,6 @@ type ChatMessageResponse struct {
 	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
 	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
 	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
-	// Supplement is the delivery receipt of a user message steered into a
-	// running task. Absent for messages that were never steered.
-	Supplement *ChatSupplementResponse `json:"supplement,omitempty"`
 }
 
 type ScheduledWakeupResponse struct {

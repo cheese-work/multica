@@ -476,16 +476,6 @@ type ackTaskSupplementRequest struct {
 
 func (h *Handler) ClaimTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
-<<<<<<< ours
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
-	if !ok {
-		return
-	}
-	if task.ChatSessionID.Valid {
-		h.claimChatTaskSupplement(w, r, task)
-||||||| base
-	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
-=======
 	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
 	if !ok {
 		return
@@ -500,7 +490,6 @@ func (h *Handler) ClaimTaskSupplement(w http.ResponseWriter, r *http.Request) {
 			// Keep the daemon wire contract: this opaque id names a chat message.
 			writeJSON(w, http.StatusOK, map[string]any{"comment_id": uuidToString(row.MessageID), "author_type": "member", "author_name": row.AuthorName, "content": row.Content})
 		}
->>>>>>> theirs
 		return
 	}
 	var req struct {
@@ -543,18 +532,10 @@ func (h *Handler) AckTaskSupplement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-<<<<<<< ours
-	if task.ChatSessionID.Valid {
-		h.ackChatTaskSupplement(w, r, task, commentID, req)
-		return
-	}
-||||||| base
-=======
 	if task.ChatSessionID.Valid && !task.IssueID.Valid {
 		h.ackChatTaskSupplement(w, r, task, commentID, req.Delivered)
 		return
 	}
->>>>>>> theirs
 	var row db.TaskSupplement
 	var err error
 	if req.Delivered {

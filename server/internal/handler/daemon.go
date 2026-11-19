@@ -4118,21 +4118,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				attsByMessage[mid] = append(attsByMessage[mid], a)
 			}
 		}
-		resentUncertain, resentErr := h.resentUncertainChatMessages(r.Context(), task.ID, unanswered)
-		if resentErr != nil {
-			slog.Error("chat claim: load resent chat supplements failed; preserving task for redelivery",
-				"task_id", uuidToString(task.ID),
-				"chat_session_id", uuidToString(cs.ID),
-				"error", resentErr)
-			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
-				outcome: "error_chat_supplement_load",
-				status:  http.StatusInternalServerError,
-				message: "failed to load chat supplements",
-			}
-		}
 		for _, m := range unanswered {
-			if text := withResentUncertainNotice(m.Content, resentUncertain[uuidToString(m.ID)]); strings.TrimSpace(text) != "" {
-				parts = append(parts, text)
+			if strings.TrimSpace(m.Content) != "" {
+				parts = append(parts, m.Content)
 			}
 			for _, a := range attsByMessage[uuidToString(m.ID)] {
 				resp.ChatMessageAttachments = append(resp.ChatMessageAttachments, ChatAttachmentMeta{

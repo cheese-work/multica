@@ -9855,16 +9855,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	execOpts := agent.ExecOptions{
-<<<<<<< ours
-		StableCwd: stableCwd,
+		StableCwd:       stableCwd,
+		SkillInvocation: skillInvocation,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
-||||||| base
-		EnableTaskSupplement:       taskSupplementNegotiated,
-=======
-		SkillInvocation:            skillInvocation,
-		EnableTaskSupplement:       taskSupplementNegotiated,
->>>>>>> theirs
 		CursorHookCommand:          cursorHookCommand,
 		Cwd:                        env.WorkDir,
 		PiSkillPaths:               env.PiSkillPaths,

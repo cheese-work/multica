@@ -2939,8 +2939,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/pending-task", h.GetPendingChatTask)
 					r.With(denyRunToken).Delete("/queued-tasks", h.ClearQueuedChatTasks)
 					r.With(denyRunToken).Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
-					r.With(denyRunToken).Post("/tasks/{taskId}/steer", h.SteerChatTask)
-					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
 					r.Post("/unread", h.MarkChatSessionUnread)
 					// DM attention (CHE-4147): human-only Xong / Để sau on the displayed keys.

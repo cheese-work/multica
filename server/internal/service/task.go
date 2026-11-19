@@ -8730,9 +8730,6 @@ func settleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 			queued = append(queued, next...)
 		}
 	}
-	if _, err := q.SettleTerminalChatTaskSupplements(ctx, taskIDs); err != nil {
-		return nil, fmt.Errorf("settle terminal chat task supplements: %w", err)
-	}
 	if _, err := q.SettleTerminalTaskPREventDeliveries(ctx, taskIDs); err != nil {
 		return nil, fmt.Errorf("settle terminal task PR events: %w", err)
 	}
