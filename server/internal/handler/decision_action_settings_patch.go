@@ -136,7 +136,7 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateDesignGuardSetting(map[string]any{key: value})
 	case key == decisionAskParkKey:
 		err = validateDecisionAskParkSetting(map[string]any{key: value})
-	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey || key == askguard.OwnerScriptSettingKey:
+	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey || key == askguard.OwnerScriptSettingKey || key == askguard.DecidedSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
 	case slices.Contains(mergequeue.Keys, key):

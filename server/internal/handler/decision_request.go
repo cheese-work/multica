@@ -474,6 +474,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.askIdentity()); err != nil {
 		return empty, err
 	}
+	if err := handler.refuseDecidedAsk(ctx, queries, issue, located.TaskID, session.CreatorID, false, input); err != nil {
+		return empty, err
+	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: located.TaskID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
 	}
@@ -822,6 +825,9 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	if input.Proposal != nil {
 		authorityStatus = http.StatusForbidden // D3's guard owns the re-ask rule
 	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.askIdentity()); err != nil {
+		return empty, err
+	}
+	if err := handler.refuseDecidedAsk(ctx, queries, issue, task.ID, input.HumanUserID, dmSession.Valid, input); err != nil {
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
