@@ -32,6 +32,7 @@ type dispatchEnv struct {
 func newDispatchEnv(t *testing.T) *dispatchEnv {
 	t.Helper()
 	e := &dispatchEnv{capWorld: newCapWorld(t), base: time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)}
+	e.backdateWatermarks(t, e.issue)
 	bus := events.New()
 	var mu sync.Mutex
 	bus.Subscribe(protocol.EventChatMessage, func(ev events.Event) {
@@ -46,6 +47,13 @@ func newDispatchEnv(t *testing.T) *dispatchEnv {
 	e.d = &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: bus}
 	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM dm_progress_delivery WHERE lineage_id = $1`, e.lane) })
 	return e
+}
+
+// backdateWatermarks puts the event watermark of issue's follows before the
+// virtual clock, so rows stamped on it count as events, not as snapshot.
+func (e *dispatchEnv) backdateWatermarks(t *testing.T, issue string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE dm_progress_follow SET event_watermark = $2 WHERE issue_id = $1`, issue, e.base.Add(-time.Hour))
 }
 
 func (e *dispatchEnv) at(min float64) time.Time {
@@ -85,6 +93,7 @@ func (e *dispatchEnv) child(t *testing.T) string {
 		t.Fatal(err)
 	}
 	dbfx.Exec(t, `DELETE FROM dm_progress_pending WHERE issue_id = $1`, child)
+	e.backdateWatermarks(t, child)
 	return child
 }
 
@@ -285,6 +294,7 @@ func TestDMProgressDispatch_RevokedMemberRowsAreDeletedAndLoggedWithoutContent(t
 	member := dbfx.Member(t, testWorkspaceID, user, "member")
 	lane := e.dm.dm(t, user)
 	issue := e.dm.agentIssue(t, e.dm.task(t, lane, user), map[string]any{"title": "revoked secret title"})
+	e.backdateWatermarks(t, issue)
 	e.status(t, issue, "in_progress", 0)
 	if n := dbfx.Count(t, `SELECT count(*) FROM dm_progress_pending WHERE issue_id = $1`, issue); n == 0 {
 		t.Fatal("no pending row captured before the member is revoked")
