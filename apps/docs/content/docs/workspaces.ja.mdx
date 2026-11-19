@@ -58,7 +58,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 - ワークフローにそのステップから `done` への `agent_done` または `pr.merged` エッジがあること。
 - `merged` のみ: リンクされたすべての PR が、PASS の示す head でリポジトリのデフォルトブランチにマージ済みであること。別のブランチ（スタックの層）にマージされた PR や、ベースまたはデフォルトブランチが配信に含まれていなかった PR がある場合は、実行が残ります。
 
-PASS の示す head の PR がまだオープンでも、ステップに `done` への `pr.merged` エッジとタスク自身の監視がある場合は、実行は残りません。サーバーは実行を開始せず、`auto_close_pending_merge` アクティビティ行を 1 件記録します。その後マージでタスクが実行なしで閉じます。
+PASS の示す head の PR がまだオープンでも、ステップに `done` への `pr.merged` エッジとタスク自身の監視がある場合は、実行は残りません。サーバーは実行を開始せず、`auto_close_pending_merge` アクティビティ行を 1 件記録します。その後マージでタスクが実行なしで閉じます。 マージ時にサーバーはすべての条件を再確認します。満たさない条件（PASS のない新しい head、新たな有効なウェイクアップなど）があれば、閉じずにステップの実行を開始し、監視を外します。
 
 モードは `multica workspace update --auto-close-mode off|warn|block` で設定します。読み取れない値は `off` として扱われます。
 

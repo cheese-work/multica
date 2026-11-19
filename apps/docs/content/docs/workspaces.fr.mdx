@@ -58,7 +58,7 @@ Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut p
 - Le workflow a une arête `agent_done` ou `pr.merged` de l'étape vers `done`.
 - Sur `merged` seulement : chaque PR liée est fusionnée dans la branche par défaut de son dépôt, au head que nomme le PASS. Une PR fusionnée dans une autre branche (couche d'une pile), ou dont la livraison n'indiquait pas sa base ou la branche par défaut, conserve l'exécution.
 
-Une PR encore ouverte au head que nomme le PASS ne conserve pas l'exécution quand l'étape a une arête `pr.merged` vers `done` et l'observateur propre de la tâche : le serveur ne lance aucune exécution et enregistre une ligne d'activité `auto_close_pending_merge`. La fusion ferme ensuite la tâche, sans exécution.
+Une PR encore ouverte au head que nomme le PASS ne conserve pas l'exécution quand l'étape a une arête `pr.merged` vers `done` et l'observateur propre de la tâche : le serveur ne lance aucune exécution et enregistre une ligne d'activité `auto_close_pending_merge`. La fusion ferme ensuite la tâche, sans exécution. À l'arrivée de la fusion, le serveur relit tous les prédicats. Si l'un ne tient plus (nouveau head sans PASS, nouveau réveil actif), il lance l'exécution de l'étape au lieu de fermer et retire l'observateur.
 
 Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
 

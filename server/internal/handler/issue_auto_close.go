@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -26,6 +27,7 @@ const (
 	activityAutoClosed       = "auto_closed"
 	activityAutoCloseWould   = "auto_close_would_close"
 	activityAutoClosePending = "auto_close_pending_merge"
+	activityAutoCloseEnded   = "auto_close_pending_ended"
 )
 
 var errAutoCloseShape = errors.New(`auto_close must be an object {"mode": "off"|"warn"|"block"}`)
@@ -146,6 +148,52 @@ func (h *Handler) autoCloseOnEntry(ctx context.Context, issue db.Issue, intentID
 		}
 	}
 	return false, nil
+}
+
+// pendingMergeLive reports whether the issue entered its step without a run to
+// wait for the merge: the newest of its pending, pending-ended and status rows
+// is the pending one.
+func (h *Handler) pendingMergeLive(ctx context.Context, issueID pgtype.UUID) bool {
+	rows, err := h.Queries.ListActivitiesForIssue(ctx, db.ListActivitiesForIssueParams{IssueID: issueID, Limit: 200})
+	if err != nil {
+		return false
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		switch rows[i].Action {
+		case activityAutoClosePending:
+			return true
+		case activityAutoCloseEnded, "status_changed":
+			return false
+		}
+	}
+	return false
+}
+
+// settlePendingMerge runs when a pr.merged edge to done fires for an issue that
+// is waiting for its merge without a run (CHE-7671). The predicates are read
+// again: a new head without a PASS, a new live wakeup or any other broken
+// predicate dispatches the step's handler instead of closing, and the watcher
+// is dropped because that handler now owns the step. It reports whether it
+// handled the edge; false leaves the edge to its old path.
+func (h *Handler) settlePendingMerge(ctx context.Context, issue db.Issue, watcherID pgtype.UUID) (bool, error) {
+	if !entersAutoCloseStep(issue.Status) || !h.pendingMergeLive(ctx, issue.ID) {
+		return false, nil
+	}
+	d := h.closeOrDispatch(ctx, issue)
+	switch {
+	case d.Outcome == closeOutcomePendingMerge:
+		return true, nil
+	case d.Outcome == closeOutcomeClosed && h.closeIssue(ctx, issue, d.Predicates):
+		return true, nil
+	}
+	started := h.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
+		IssueID: issue.ID, AgentID: issue.AssigneeID, AssigneeType: issue.AssigneeType.String,
+	}, "system", "", "")
+	if !started {
+		return true, nil // the pending state stays: the next look tries again
+	}
+	h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoCloseEnded, map[string]string{"predicates": d.Predicates, "outcome": "dispatch"})
+	return true, h.Queries.DeleteWorkflowEdges(ctx, watcherID)
 }
 
 // closeIssue takes the issue's done edge in its own transaction and records it.

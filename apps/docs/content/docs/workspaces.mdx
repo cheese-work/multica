@@ -58,7 +58,7 @@ A close needs every check below. If one fails or cannot be read, the step's agen
 - The workflow has an `agent_done` or `pr.merged` edge from the step to `done`.
 - On `merged` only: every linked PR is merged into its repository's default branch, at the head the PASS names. A PR merged into another branch (a stacked layer), or one whose delivery did not state its base or default branch, keeps the run.
 
-A PR that is still open at the head the PASS names does not keep the run when the step has a `pr.merged` edge to `done` and the issue's own watcher: the server starts no run and records one `auto_close_pending_merge` activity row. The merge then closes the issue, with no run.
+A PR that is still open at the head the PASS names does not keep the run when the step has a `pr.merged` edge to `done` and the issue's own watcher: the server starts no run and records one `auto_close_pending_merge` activity row. The merge then closes the issue, with no run. When the merge arrives, the server reads every predicate again. If one no longer holds (a new head without a PASS, a new live wakeup), it starts the step's run instead of closing and drops the watcher.
 
 Set the mode with `multica workspace update --auto-close-mode off|warn|block`. An unreadable value counts as `off`.
 

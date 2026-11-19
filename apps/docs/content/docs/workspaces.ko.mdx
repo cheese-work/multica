@@ -58,7 +58,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 - 워크플로에 해당 단계에서 `done`으로 가는 `agent_done` 또는 `pr.merged` 엣지가 있습니다.
 - `merged`에서만: 연결된 모든 PR이 PASS가 가리키는 head로 저장소의 기본 브랜치에 병합되어 있습니다. 다른 브랜치(스택의 한 층)에 병합된 PR이나 전달에 base 또는 기본 브랜치가 없던 PR이 있으면 실행이 유지됩니다.
 
-PASS가 가리키는 head의 PR이 아직 열려 있어도, 단계에 `done`으로 가는 `pr.merged` 엣지와 태스크 자체의 감시가 있으면 실행은 유지되지 않습니다. 서버는 실행을 시작하지 않고 `auto_close_pending_merge` 활동 행을 하나 기록합니다. 이후 병합이 실행 없이 태스크를 닫습니다.
+PASS가 가리키는 head의 PR이 아직 열려 있어도, 단계에 `done`으로 가는 `pr.merged` 엣지와 태스크 자체의 감시가 있으면 실행은 유지되지 않습니다. 서버는 실행을 시작하지 않고 `auto_close_pending_merge` 활동 행을 하나 기록합니다. 이후 병합이 실행 없이 태스크를 닫습니다. 병합 시 서버는 모든 조건을 다시 확인합니다. 조건이 하나라도 충족되지 않으면(PASS 없는 새 head, 새 활성 웨이크업 등) 닫지 않고 단계의 실행을 시작하며 감시를 제거합니다.
 
 모드는 `multica workspace update --auto-close-mode off|warn|block`으로 설정합니다. 읽을 수 없는 값은 `off`로 취급합니다.
 

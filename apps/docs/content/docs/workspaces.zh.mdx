@@ -58,7 +58,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 - 工作流中有从该步骤到 `done` 的 `agent_done` 或 `pr.merged` 边。
 - 仅 `merged`：每个关联的 PR 都已在 PASS 所指的 head 上合并到其仓库的默认分支。合并到其他分支（堆叠的一层）的 PR，或其推送未带 base 或默认分支的 PR，会保留这次运行。
 
-PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.merged` 边以及任务自己的监视，则不会保留运行：服务器不启动运行，并记录一条 `auto_close_pending_merge` 活动记录。之后合并会不经运行直接关闭任务。
+PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.merged` 边以及任务自己的监视，则不会保留运行：服务器不启动运行，并记录一条 `auto_close_pending_merge` 活动记录。之后合并会不经运行直接关闭任务。合并时服务器会重新检查所有条件。若有条件不再成立（新的 head 没有 PASS、出现新的有效唤醒等），则不关闭任务，而是启动该步骤的运行并移除监视。
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
