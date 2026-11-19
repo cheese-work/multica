@@ -520,7 +520,7 @@ describe("AutopilotDialog draft persistence", () => {
     });
   });
 
-  it("does not apply a restored draft's filters over a row the editor saved with its filters unchanged", async () => {
+  it("still applies a restored draft's filters after the editor saved only a rename", async () => {
     const user = userEvent.setup();
     mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
     mockUpdateTrigger.mockResolvedValue({ id: "tr-w" });
@@ -534,10 +534,34 @@ describe("AutopilotDialog draft persistence", () => {
     } as never);
     const view = renderEditDialog(vi.fn(), [{ ...webhookTrigger(), label: null, enabled: true }]);
     expect(await screen.findByText(/issues/)).toBeInTheDocument();
-    // The editor saved a rename only; the filters it showed (the server's) stand.
+    // The editor sends only the changed field: no filters, so the draft stands.
     view.rerender(
-      editDialogElement(vi.fn(), [{ ...webhookTrigger(), label: "Renamed", enabled: true }]),
+      editDialogElement(vi.fn(), [{ ...webhookTrigger(), label: "Renamed", enabled: false }]),
     );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockUpdateTrigger).toHaveBeenCalled());
+    expect(mockUpdateTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerId: "tr-w", event_filters: FILTERS }),
+    );
+    expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]).toBeUndefined();
+  });
+
+  it("does not bring a restored draft back after the editor changed the filters and changed them back", async () => {
+    const user = userEvent.setup();
+    const NEWER = [{ event: "pull_request", actions: ["closed"] }];
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    const view = renderEditDialog(vi.fn(), [webhookTrigger()]);
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    view.rerender(editDialogElement(vi.fn(), [webhookTrigger(NEWER)]));
+    view.rerender(editDialogElement(vi.fn(), [webhookTrigger()]));
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mockUpdateAutopilot).toHaveBeenCalled());
     await waitFor(() =>

@@ -283,17 +283,21 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const serverFilterKey = liveFilterTarget
     ? JSON.stringify(liveFilterTarget.event_filters ?? [])
     : null;
-  // The row's editable fields when the draft was restored. The per-webhook
-  // editor saves on its own, and only with something changed (filters, label or
-  // enabled); the row then refetches. A change from here is a newer explicit
-  // choice, and the draft snapshot must not be written over it.
-  const rowKey = (trig: AutopilotTrigger) =>
-    JSON.stringify([trig.event_filters ?? [], trig.label ?? null, trig.enabled]);
-  const mountedRowKeyRef = useRef(filterTarget ? rowKey(filterTarget) : null);
-  const draftFiltersSuperseded =
-    liveFilterTarget !== null &&
-    mountedRowKeyRef.current !== null &&
-    rowKey(liveFilterTarget) !== mountedRowKeyRef.current;
+  // The target's filters when the draft was restored. The per-webhook editor
+  // saves on its own; a save that changes the filters is a newer explicit
+  // choice, and the draft snapshot must not be written over it. A rename or an
+  // enabled toggle sends no filters, so it leaves the draft pending. Latched:
+  // filters changed and later changed back are still a newer choice.
+  const mountedFilterKeyRef = useRef(serverFilterKey);
+  const filtersReplacedRef = useRef(false);
+  if (
+    serverFilterKey !== null &&
+    mountedFilterKeyRef.current !== null &&
+    serverFilterKey !== mountedFilterKeyRef.current
+  ) {
+    filtersReplacedRef.current = true;
+  }
+  const draftFiltersSuperseded = liveFilterTarget !== null && filtersReplacedRef.current;
   const draftFiltersPending =
     draftEventFilters !== null &&
     triggerKind === "webhook" &&
