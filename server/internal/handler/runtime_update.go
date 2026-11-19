@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ const (
 	UpdateCompleted UpdateStatus = "completed"
 	UpdateFailed    UpdateStatus = "failed"
 	UpdateTimeout   UpdateStatus = "timeout"
+	UpdateCancelled UpdateStatus = "cancelled"
 )
 
 // UpdateProgress is the daemon's latest self-reported download state for a
@@ -44,9 +46,12 @@ type UpdateRequest struct {
 	Output          string          `json:"output,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	Progress        *UpdateProgress `json:"progress,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	RunStartedAt    *time.Time      `json:"-"`
+	// CycleID is set for a scheduled-update cycle's request; empty for a
+	// manual update.
+	CycleID      string     `json:"cycle_id,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	RunStartedAt *time.Time `json:"-"`
 }
 
 const (
@@ -57,6 +62,12 @@ const (
 
 type UpdateStore interface {
 	Create(ctx context.Context, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error)
+	// CreateWithID is Create with a caller-given request id (a cycle uses
+	// "<cycle_id>-<attempt>"). A duplicate id is errUpdateDuplicateID.
+	CreateWithID(ctx context.Context, id, cycleID, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error)
+	// Cancel moves a pending request to cancelled atomically. False when the
+	// request is running, terminal or unknown.
+	Cancel(ctx context.Context, id string) (bool, error)
 	Get(ctx context.Context, id string) (*UpdateRequest, error)
 	HasPending(ctx context.Context, runtimeID string) (bool, error)
 	PopPending(ctx context.Context, runtimeID string) (*UpdateRequest, error)
@@ -68,7 +79,7 @@ type UpdateStore interface {
 }
 
 func updateRequestTerminal(status UpdateStatus) bool {
-	return status == UpdateCompleted || status == UpdateFailed || status == UpdateTimeout
+	return status == UpdateCompleted || status == UpdateFailed || status == UpdateTimeout || status == UpdateCancelled
 }
 
 func applyUpdateTimeout(req *UpdateRequest, now time.Time) bool {
@@ -105,7 +116,11 @@ func NewInMemoryUpdateStore() *InMemoryUpdateStore {
 	}
 }
 
-func (s *InMemoryUpdateStore) Create(_ context.Context, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error) {
+func (s *InMemoryUpdateStore) Create(ctx context.Context, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error) {
+	return s.CreateWithID(ctx, randomID(), "", runtimeID, targetVersion, initiatorUserID)
+}
+
+func (s *InMemoryUpdateStore) CreateWithID(_ context.Context, id, cycleID, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -116,6 +131,9 @@ func (s *InMemoryUpdateStore) Create(_ context.Context, runtimeID, targetVersion
 		}
 	}
 
+	if _, dup := s.requests[id]; dup {
+		return nil, errUpdateDuplicateID
+	}
 	// Reject if there is already a pending or running update for this runtime.
 	for _, req := range s.requests {
 		if req.RuntimeID == runtimeID && (req.Status == UpdatePending || req.Status == UpdateRunning) {
@@ -124,7 +142,8 @@ func (s *InMemoryUpdateStore) Create(_ context.Context, runtimeID, targetVersion
 	}
 
 	req := &UpdateRequest{
-		ID:              randomID(),
+		ID:              id,
+		CycleID:         cycleID,
 		RuntimeID:       runtimeID,
 		InitiatorUserID: initiatorUserID,
 		Status:          UpdatePending,
@@ -138,9 +157,29 @@ func (s *InMemoryUpdateStore) Create(_ context.Context, runtimeID, targetVersion
 
 var errUpdateInProgress = &updateError{msg: "an update is already in progress for this runtime"}
 
+var errUpdateDuplicateID = &updateError{msg: "update request id already exists"}
+
 type updateError struct{ msg string }
 
 func (e *updateError) Error() string { return e.msg }
+
+func (s *InMemoryUpdateStore) Cancel(_ context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	req, ok := s.requests[id]
+	if !ok {
+		return false, nil
+	}
+	now := time.Now()
+	applyUpdateTimeout(req, now)
+	if req.Status != UpdatePending {
+		return false, nil
+	}
+	req.Status = UpdateCancelled
+	req.UpdatedAt = now
+	return true, nil
+}
 
 func (s *InMemoryUpdateStore) Get(_ context.Context, id string) (*UpdateRequest, error) {
 	s.mu.Lock()
@@ -319,12 +358,28 @@ func (h *Handler) GetUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, update)
 }
 
+// cycleRequestID reports whether id has the form "<cycle_id>-<attempt>" a
+// scheduled cycle gives its requests. Manual ids are dash-free hex.
+func cycleRequestID(id string) bool {
+	i := strings.LastIndexByte(id, '-')
+	if i <= 0 || i == len(id)-1 {
+		return false
+	}
+	for _, c := range id[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // ReportUpdateResult receives the update result from the daemon.
 func (h *Handler) ReportUpdateResult(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
 
 	// Verify the caller owns this runtime's workspace.
-	if _, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID); !ok {
+	rt, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
+	if !ok {
 		return
 	}
 
@@ -336,27 +391,77 @@ func (h *Handler) ReportUpdateResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load update")
 		return
 	}
-	if existing == nil || existing.RuntimeID != runtimeID {
+	if existing != nil && existing.RuntimeID != runtimeID {
 		writeError(w, http.StatusNotFound, "update not found")
 		return
 	}
-	if updateRequestTerminal(existing.Status) {
-		slog.Debug("ignoring stale update report", "runtime_id", runtimeID, "update_id", updateID, "status", existing.Status)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// A request of a scheduled cycle reports to the result sink, also when the
+	// store already settled it or lost it (restart). Runtime and machine come
+	// from the authenticated runtime, never from the body.
+	cycle := h.UpdateResultSink != nil && (existing != nil && existing.CycleID != "" || existing == nil && cycleRequestID(updateID))
+	if existing == nil && !cycle {
+		writeError(w, http.StatusNotFound, "update not found")
 		return
 	}
 
 	var req struct {
 		Status   string          `json:"status"` // "running", "completed", or "failed"
+		Reason   string          `json:"reason"`
 		Output   string          `json:"output"`
 		Error    string          `json:"error"`
 		Progress *UpdateProgress `json:"progress"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	decode := func() bool {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return false
+		}
+		return true
 	}
 
+	if cycle {
+		if !decode() {
+			return
+		}
+		if req.Status == "completed" || req.Status == "failed" {
+			outcome, err := h.UpdateResultSink.Record(r.Context(), ResultReport{
+				RequestID: updateID, RuntimeID: runtimeID,
+				OwnerID: uuidToString(rt.OwnerID), DaemonID: rt.DaemonID.String,
+				Status: UpdateStatus(req.Status), Reason: req.Reason, Output: req.Output, Error: req.Error,
+			})
+			if err != nil {
+				slog.Error("UpdateResultSink Record failed", "error", err, "update_id", updateID)
+				writeError(w, http.StatusInternalServerError, "failed to record result")
+				return
+			}
+			switch outcome {
+			case RecordRecorded, RecordDuplicate:
+			case RecordConflict:
+				writeError(w, http.StatusConflict, "update result conflicts with the recorded result")
+				return
+			default: // RecordNotFound and any unknown outcome
+				writeError(w, http.StatusNotFound, "update not found")
+				return
+			}
+		}
+		if existing == nil {
+			if req.Status == "completed" || req.Status == "failed" {
+				writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+			} else {
+				writeError(w, http.StatusNotFound, "update not found")
+			}
+			return
+		}
+	}
+
+	if updateRequestTerminal(existing.Status) {
+		slog.Debug("ignoring stale update report", "runtime_id", runtimeID, "update_id", updateID, "status", existing.Status)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	if !cycle && !decode() {
+		return
+	}
 	switch req.Status {
 	case "completed":
 		if err := h.UpdateStore.Complete(r.Context(), updateID, req.Output); err != nil {
@@ -386,4 +491,44 @@ func (h *Handler) ReportUpdateResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// UpdateAdmission is the fence's verdict for one cycle request at delivery.
+type UpdateAdmission struct {
+	Allowed bool
+	Reason  string
+	// StartCutoff and DeadlineAt bound the daemon's start and finish; set when Allowed.
+	StartCutoff time.Time
+	DeadlineAt  time.Time
+}
+
+// UpdateFence decides, at heartbeat delivery, whether a cycle's request may start.
+type UpdateFence interface {
+	Admit(ctx context.Context, cycleID string) (UpdateAdmission, error)
+}
+
+// ResultReport is one terminal daemon result for a cycle request. Runtime and
+// machine come from the authenticated URL runtime, never from the body.
+type ResultReport struct {
+	RequestID string
+	RuntimeID string
+	OwnerID   string
+	DaemonID  string
+	Status    UpdateStatus // completed or failed
+	Reason    string
+	Output    string
+	Error     string
+}
+
+type RecordOutcome string
+
+const (
+	RecordRecorded  RecordOutcome = "recorded"
+	RecordDuplicate RecordOutcome = "duplicate"
+	RecordConflict  RecordOutcome = "conflict"
+	RecordNotFound  RecordOutcome = "not_found"
+)
+
+type UpdateResultSink interface {
+	Record(ctx context.Context, r ResultReport) (RecordOutcome, error)
 }

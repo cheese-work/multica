@@ -1319,7 +1319,8 @@ export type RuntimeUpdateStatus =
   | "running"
   | "completed"
   | "failed"
-  | "timeout";
+  | "timeout"
+  | "cancelled";
 
 export interface RuntimeUpdateProgress {
   phase: string;

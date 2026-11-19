@@ -1775,6 +1775,38 @@ type heartbeatMetrics struct {
 	ProbeModelTimedOut, ProbeSkillsTimedOut, ProbeImportTimedOut                     bool
 }
 
+// admitPendingUpdate builds the heartbeat's update action. A cycle request
+// passes the fence first; a refused, failed or missing fence marks the request
+// failed ("fenced: ...") and delivers nothing, so no update starts after its
+// cycle was cancelled or its window closed. A manual request skips the fence
+// and carries no budget.
+func (h *Handler) admitPendingUpdate(ctx context.Context, pending *UpdateRequest) *protocol.DaemonHeartbeatPendingUpdate {
+	out := &protocol.DaemonHeartbeatPendingUpdate{ID: pending.ID, TargetVersion: pending.TargetVersion}
+	if pending.CycleID == "" {
+		return out
+	}
+	reason := "no fence configured"
+	if h.UpdateFence != nil {
+		adm, err := h.UpdateFence.Admit(ctx, pending.CycleID)
+		switch {
+		case err != nil:
+			slog.Warn("update fence failed", "error", err, "update_id", pending.ID)
+			reason = "fence unavailable"
+		case !adm.Allowed:
+			reason = adm.Reason
+		default:
+			now := time.Now()
+			start, finish := max(adm.StartCutoff.Sub(now).Milliseconds(), 0), max(adm.DeadlineAt.Sub(now).Milliseconds(), 0)
+			out.StartWithinMs, out.FinishWithinMs = &start, &finish
+			return out
+		}
+	}
+	if err := h.UpdateStore.Fail(ctx, pending.ID, "fenced: "+reason); err != nil {
+		slog.Warn("update Fail after fence refusal failed", "error", err, "update_id", pending.ID)
+	}
+	return nil
+}
+
 // processHeartbeat pulls pending actions for both HTTP and WebSocket
 // heartbeats using only the runtime ID. Each transport records liveness first:
 // HTTP uses its stateless runtime row, while WebSocket uses the connection
@@ -1800,10 +1832,7 @@ func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, suppor
 		if popUpdateErr != nil {
 			slog.Warn("update PopPending failed", "error", popUpdateErr, "runtime_id", runtimeID)
 		} else if pending != nil {
-			ack.PendingUpdate = &protocol.DaemonHeartbeatPendingUpdate{
-				ID:            pending.ID,
-				TargetVersion: pending.TargetVersion,
-			}
+			ack.PendingUpdate = h.admitPendingUpdate(ctx, pending)
 		}
 	case probeUpdateErr != nil:
 		if errors.Is(probeUpdateErr, context.DeadlineExceeded) || errors.Is(probeUpdateErr, context.Canceled) {

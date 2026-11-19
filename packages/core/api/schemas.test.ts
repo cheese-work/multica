@@ -2787,6 +2787,10 @@ describe("RuntimeUpdateSchema", () => {
     expect(parsed.progress).toBeUndefined();
   });
 
+  it("keeps a cancelled status", () => {
+    expect(parse({ ...running, status: "cancelled" }).status).toBe("cancelled");
+  });
+
   it("falls back to failed when the body is not an update", () => {
     expect(parse(null)).toEqual(MALFORMED_RUNTIME_UPDATE);
   });

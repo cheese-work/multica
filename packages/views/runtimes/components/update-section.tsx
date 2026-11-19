@@ -30,6 +30,7 @@ const statusConfig: Record<
   completed: { icon: CheckCircle2, color: "text-success" },
   failed: { icon: XCircle, color: "text-destructive" },
   timeout: { icon: XCircle, color: "text-warning" },
+  cancelled: { icon: XCircle, color: "text-muted-foreground" },
 };
 
 type ProgressPhase = "download" | "verify" | "install";
@@ -137,7 +138,8 @@ export function UpdateSection({
             );
           } else if (
             result.status === "failed" ||
-            result.status === "timeout"
+            result.status === "timeout" ||
+            result.status === "cancelled"
           ) {
             setError(result.error ?? t(($) => $.update.unknown_error));
             setUpdating(false);
@@ -284,7 +286,7 @@ export function UpdateSection({
         </div>
       )}
 
-      {(status === "failed" || status === "timeout") && error && (
+      {(status === "failed" || status === "timeout" || status === "cancelled") && error && (
         <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2">
           <p className="text-caption text-destructive">{error}</p>
           {status === "failed" && (
