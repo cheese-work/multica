@@ -8575,7 +8575,7 @@ func (q *Queries) ListNonOwnerAgentsByRuntimeForUpdate(ctx context.Context, arg 
 }
 
 const listPendingDelegatedFailureRecoveries = `-- name: ListPendingDelegatedFailureRecoveries :many
-SELECT recovery.id, recovery.issue_id, recovery.author_type, recovery.author_id, recovery.content, recovery.type, recovery.created_at, recovery.updated_at, recovery.parent_id, recovery.workspace_id, recovery.resolved_at, recovery.resolved_by_type, recovery.resolved_by_id, recovery.source_task_id, recovery.quick_action_id, recovery.via_plugin_id, recovery.revision, recovery.recovery_settled_at, recovery.deleted_at, recovery.suppressed_agent_ids, recovery.decision_request_id, recovery.decision_answer_id, recovery.decision_intent_id, recovery.decision_comment_kind, recovery.github_notify_only, recovery.taint_ids, recovery.external_read
+SELECT recovery.id, recovery.issue_id, recovery.author_type, recovery.author_id, recovery.content, recovery.type, recovery.created_at, recovery.updated_at, recovery.parent_id, recovery.workspace_id, recovery.resolved_at, recovery.resolved_by_type, recovery.resolved_by_id, recovery.source_task_id, recovery.quick_action_id, recovery.via_plugin_id, recovery.revision, recovery.recovery_settled_at, recovery.deleted_at, recovery.suppressed_agent_ids, recovery.decision_request_id, recovery.decision_answer_id, recovery.decision_intent_id, recovery.decision_comment_kind, recovery.github_notify_only, recovery.taint_ids, recovery.external_read, recovery.notify_only, recovery.ask_source_root_id
 FROM comment recovery
 JOIN agent_task_queue failed ON failed.id = recovery.source_task_id
 JOIN agent_task_queue source ON source.id = failed.delegated_from_task_id
@@ -8701,6 +8701,8 @@ func (q *Queries) ListPendingDelegatedFailureRecoveries(ctx context.Context, max
 			&i.GithubNotifyOnly,
 			&i.TaintIds,
 			&i.ExternalRead,
+			&i.NotifyOnly,
+			&i.AskSourceRootID,
 		); err != nil {
 			return nil, err
 		}

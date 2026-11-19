@@ -1070,6 +1070,8 @@ type Comment struct {
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
 	ExternalRead        bool               `json:"external_read"`
+	NotifyOnly          pgtype.Bool        `json:"notify_only"`
+	AskSourceRootID     pgtype.UUID        `json:"ask_source_root_id"`
 }
 
 type CommentContentEdit struct {
@@ -1455,6 +1457,7 @@ type DecisionRequest struct {
 	Route                    pgtype.Text        `json:"route"`
 	WouldAutoApply           pgtype.Bool        `json:"would_auto_apply"`
 	AutoApplyRuleID          pgtype.UUID        `json:"auto_apply_rule_id"`
+	ReaskOfRequestID         pgtype.UUID        `json:"reask_of_request_id"`
 }
 
 type DecisionSnooze struct {
