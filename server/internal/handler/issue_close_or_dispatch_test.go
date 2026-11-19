@@ -94,6 +94,52 @@ func TestCloseOrDispatch_DelayedMergeAfterHeadBoundPassClosesWithZeroExtraRuns(t
 	}
 }
 
+// What changes after the pending entry decides the merge: the close predicates
+// are read again when the merge arrives, on the edge evaluator and the bridge.
+func TestCloseOrDispatch_MergeAfterPendingReadsThePredicatesAgain(t *testing.T) {
+	changes := map[string]func(t *testing.T, c autoClose, prID string){
+		"a new head merges without a PASS": func(t *testing.T, c autoClose, prID string) {
+			dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2 WHERE id = $1`, prID, autoCloseHead2)
+		},
+		"a live wakeup appears": func(t *testing.T, c autoClose, prID string) {
+			dbfx.Exec(t, `INSERT INTO issue_wakeup (id, workspace_id, issue_id, agent_id, instruction, kind, mode, enabled)
+				SELECT gen_random_uuid(), workspace_id, id, $2, 'look again', 'event', 'continuous', true FROM issue WHERE id = $1`, c.issueID, c.agentID)
+			dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
+		},
+	}
+	for change, apply := range changes {
+		for path, prMergeStatus := range map[string]string{"edge evaluator": "none", "bridge": "done"} {
+			t.Run(change+"/"+path, func(t *testing.T) {
+				c := newCloseOrDispatch(t, "block", prMergeStatus)
+				c.seedVerdict(t, "review_passed", "[]", autoCloseHead, "1 hour")
+				prID := c.newPR(t, autoCloseHead)
+				c.enter(t)
+				c.wantPending(t)
+				apply(t, c, prID)
+				c.setPRState(t, prID, "merged")
+				dbfx.Exec(t, `UPDATE github_pull_request SET base_ref = 'main', default_branch = 'main' WHERE id = $1`, prID)
+				dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() WHERE issue_id = $1 AND system_rule = 'workflow_edges'`, c.issueID)
+				tickEdges(t)
+				if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != "agent_accepted" {
+					t.Fatalf("status = %q, want agent_accepted: the merge must not close it", status)
+				}
+				if n := c.acceptorRuns(t); n != 1 {
+					t.Fatalf("acceptor runs = %d, want 1", n)
+				}
+				// A second tick does not close it or start a second run.
+				dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() WHERE issue_id = $1 AND system_rule = 'workflow_edges'`, c.issueID)
+				tickEdges(t)
+				if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != "agent_accepted" {
+					t.Fatalf("status after the second tick = %q, want agent_accepted", status)
+				}
+				if n := c.acceptorRuns(t); n != 1 {
+					t.Fatalf("acceptor runs after the second tick = %d, want 1", n)
+				}
+			})
+		}
+	}
+}
+
 func TestCloseOrDispatch_MergeAlreadyStoredAtEntryClosesWithTheWatcherPresent(t *testing.T) {
 	c := newCloseOrDispatch(t, "block", "none")
 	c.seedVerdict(t, "review_passed", "[]", autoCloseHead, "1 hour")
