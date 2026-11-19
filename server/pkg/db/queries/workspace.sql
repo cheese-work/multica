@@ -99,6 +99,7 @@ UPDATE workspace SET
     -- CHE-3706: harness_profile sets or (reset) removes one settings key.
     -- CHE-6969: auto_close replaces its one settings key.
     -- CHE-6973: blocked_run_skip replaces its one settings key.
+    -- CHE-6460: decision_ask_park replaces its one settings key.
     -- CHE-7408: merge_queue is an object holding only the merge-queue keys the
     -- handler validated; it replaces those keys and leaves every other key.
     settings = (
@@ -112,7 +113,11 @@ UPDATE workspace SET
             ELSE h.v
         END
         FROM (SELECT CASE
-            WHEN sqlc.narg('ask_guard_mode')::jsonb IS NOT NULL THEN jsonb_set(k.v, '{ask_guard_mode}', sqlc.narg('ask_guard_mode')::jsonb)
+            WHEN sqlc.narg('ask_guard_mode')::jsonb IS NOT NULL THEN jsonb_set(d.v, '{ask_guard_mode}', sqlc.narg('ask_guard_mode')::jsonb)
+            ELSE d.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN sqlc.narg('decision_ask_park')::jsonb IS NOT NULL THEN jsonb_set(k.v, '{decision_ask_park}', sqlc.narg('decision_ask_park')::jsonb)
             ELSE k.v
         END AS v
         FROM (SELECT CASE
@@ -147,7 +152,7 @@ UPDATE workspace SET
             WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
             WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
             ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS h) AS w
+        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS d) AS h) AS w
     ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
