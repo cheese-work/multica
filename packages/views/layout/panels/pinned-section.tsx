@@ -346,6 +346,22 @@ function PinRow({
     }
   }, [isIssue, issueQuery.error, onUnpin, projectQuery.error]);
 
+  // The shared detail options fail at once so the issue page never waits on
+  // another observer's retry. A pin has no Retry button, so it re-reads once
+  // itself: one transient error must not hide a valid pin.
+  const retriedRef = useRef(false);
+  const { refetch: refetchIssue } = issueQuery;
+  const issueFailed = isIssue && issueQuery.isError;
+  const issueNotFound = issueQuery.error instanceof ApiError && issueQuery.error.status === 404;
+  useEffect(() => {
+    if (!issueFailed || issueNotFound || retriedRef.current) return;
+    const timer = setTimeout(() => {
+      retriedRef.current = true;
+      void refetchIssue();
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [issueFailed, issueNotFound, refetchIssue]);
+
   if (isIssue) {
     if (issueQuery.isPending) return <PinSkeleton />;
     if (issueQuery.isError || !issueQuery.data) return null;
