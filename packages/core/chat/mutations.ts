@@ -611,27 +611,6 @@ export function useRegenerateChatQuickActions() {
   });
 }
 
-/**
- * Cancel a pending DM wakeup. Waits for the server, then drops the row from the
- * cached list. A wakeup that already fired or was cancelled elsewhere answers
- * 404; the refetch on settle reconciles that.
- */
-export function useCancelChatSessionWakeup() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ sessionId, wakeupId }: { sessionId: string; wakeupId: string }) =>
-      api.cancelChatSessionWakeup(sessionId, wakeupId),
-    onSuccess: (_data, { sessionId, wakeupId }) => {
-      qc.setQueryData<ChatWakeup[]>(chatKeys.wakeups(sessionId), (old) =>
-        old?.filter((w) => w.id !== wakeupId),
-      );
-    },
-    onSettled: (_data, _err, { sessionId }) => {
-      qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
-    },
-  });
-}
-
 export type ChatBulkAction = "seen" | "unseen" | "pin" | "unpin" | "archive" | "unarchive";
 
 const BULK_CALL: Record<ChatBulkAction, (id: string) => Promise<unknown>> = {

@@ -1180,17 +1180,6 @@ const ChatQuickActionSchema = z.lazy(() => z.object({
   primary: z.boolean().optional(),
 }).loose());
 
-// Every field is required: a half-formed wakeup degrades to a normal bubble
-// (via .catch on the message field) rather than a row with holes.
-const ChatScheduledWakeupSchema = z.lazy(() => z.object({
-  id: z.string(),
-  agent_id: z.string(),
-  title: z.string().default(""),
-  instruction: z.string(),
-  fire_at: z.string(),
-  created_at: z.string(),
-}).loose());
-
 const DecisionStateSchema = z.lazy(() => z.enum(["pending", "effective", "disclaimed"]));
 
 // Display-only fields of a decision-stamped comment. Each degrades on its own so
@@ -1426,7 +1415,6 @@ export const ChatMessageSchema = z.lazy(() => z.object({
   decision_ref: DecisionCardSchema.optional().catch(undefined),
   decision_request: DecisionRequestCardSchema.optional().catch(undefined),
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
-  scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
   carried_from_session_id: z.string().nullable().optional().catch(undefined),
   supplement: ChatSupplementSchema.optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
@@ -3266,24 +3254,20 @@ export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
 // A malformed wakeup row is dropped rather than failing the list: the strip
 // and panel are status surfaces next to the conversation, not its content.
-// One schema reads both wire shapes: upstream v0.11.0 rows (kind/status/title/
-// expires_at ...) and the fork's scheduled follow-up rows (fire_at, issue_id,
-// event, until_status, on_timeout; status "pending"). Fork-only fields stay
-// optional and a missing kind/status degrades instead of dropping the row.
 const ChatWakeupSchema = z.lazy((): z.ZodType<ChatWakeup> => z.object({
   id: z.string().min(1),
-  chat_session_id: z.string().default(""),
+  chat_session_id: z.string().min(1),
   chat_session_title: z.string().optional().catch(undefined),
   agent_id: z.string().default(""),
   title: z.string().default(""),
   instruction: z.string().default(""),
-  kind: z.enum(["condition", "at", "check"]).catch("at"),
+  kind: z.enum(["condition", "at", "check"]),
   condition: z.record(z.string(), z.unknown()).nullish().catch(undefined),
   interval_seconds: z.number().nullable().default(null),
   fire_at: z.string().nullable().default(null),
   next_eval_at: z.string().default(""),
   expires_at: z.string().default(""),
-  status: z.enum(["active", "fired", "expired", "cancelled", "failed"]).catch("active"),
+  status: z.enum(["active", "fired", "expired", "cancelled", "failed"]),
   end_reason: z.string().nullable().default(null),
   ended_at: z.string().nullable().default(null),
   check_count: z.number().default(0),
@@ -3297,10 +3281,6 @@ const ChatWakeupSchema = z.lazy((): z.ZodType<ChatWakeup> => z.object({
   source_task_id: z.string().nullable().default(null),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-  issue_id: z.string().optional().catch(undefined),
-  event: z.string().optional().catch(undefined),
-  until_status: z.string().optional().catch(undefined),
-  on_timeout: z.string().optional().catch(undefined),
 }).loose());
 
 export const ChatWakeupListSchema = z.lazy(() => z.array(z.unknown()).transform((rows) =>
@@ -3310,9 +3290,6 @@ export const ChatWakeupListSchema = z.lazy(() => z.array(z.unknown()).transform(
   }),
 ));
 export const EMPTY_CHAT_WAKEUP_LIST: ChatWakeup[] = [];
-// Fork names for the same list, kept so existing call sites keep working.
-export const ChatWakeupsSchema = ChatWakeupListSchema;
-export const EMPTY_CHAT_WAKEUPS = EMPTY_CHAT_WAKEUP_LIST;
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.lazy(() => z.object({
   steered: z.boolean().optional().catch(undefined),

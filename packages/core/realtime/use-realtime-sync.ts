@@ -92,7 +92,6 @@ import { parseWithFallback } from "../api/schema";
 import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import { connectedAppsKeys } from "../connected-apps/queries";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
-import { isWakeupHeaderContent } from "../chat/wakeup";
 import {
   promotePendingChatTask,
   removePendingChatTask,
@@ -280,14 +279,7 @@ export function applyChatMessageToCache(
   payload: ChatMessageEventPayload,
 ) {
   const sessionId = payload.chat_session_id;
-  // A fired wakeup renders as an event row, which needs `scheduled_wakeup` that
-  // this payload lacks; writing it here would flash a user bubble. Leave it to
-  // the invalidate below, which refetches the row with its wakeup data.
-  if (
-    payload.role === "user" &&
-    payload.message_id &&
-    !isWakeupHeaderContent(payload.content ?? "")
-  ) {
+  if (payload.role === "user" && payload.message_id) {
     upsertChatMessageToCaches(qc, sessionId, {
       id: payload.message_id,
       chat_session_id: sessionId,
@@ -299,8 +291,6 @@ export function applyChatMessageToCache(
   }
   invalidateChatMessageQueries(qc, sessionId);
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
-  // A scheduled wakeup fires as a system user message; it leaves the DM's list.
-  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
 }
 
 export function applyChatDoneToCache(
@@ -332,9 +322,6 @@ export function applyChatDoneToCache(
     // landed this row.
     upsertChatMessageToCaches(qc, sessionId, assistant);
   }
-  // The turn may have scheduled or cancelled a wakeup: creating one emits no
-  // event of its own, so the end of the turn is when the chip learns of it.
-  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
   // Replacement is in the messages list now; remove only this task. If a
   // follow-up is queued, it becomes the next head in the same render tick.
   qc.setQueryData<ChatPendingTask>(

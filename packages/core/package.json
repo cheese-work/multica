@@ -124,7 +124,6 @@
     "./chat/message-cache": "./chat/message-cache.ts",
     "./chat/use-quick-actions-pending-timeout": "./chat/use-quick-actions-pending-timeout.ts",
     "./chat/unread": "./chat/unread.ts",
-    "./chat/wakeup": "./chat/wakeup.ts",
     "./chat/recent-agents": "./chat/recent-agents.ts",
     "./chat/recent-agents-settings-store": "./chat/recent-agents-settings-store.ts",
     "./runtimes": "./runtimes/index.ts",

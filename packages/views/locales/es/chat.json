@@ -715,14 +715,6 @@
     "batch_choose_other": "Choose {{count}} more items"
   },
   "wakeup": {
-    "node_label": "Scheduled wakeup fired",
-    "scheduled_at": "Scheduled {{time}}",
-    "set_by": "{{agent}} set this at {{time}}",
-    "show_instruction": "Show instruction",
-    "hide_instruction": "Hide instruction",
-    "instruction_region": "Instruction for the agent",
-    "instruction_note": "Instruction for the agent, verbatim. The agent receives all of this.",
-    "issue_fallback": "issue",
     "panel_title": "Recordatorios",
     "panel_empty": "No hay recordatorios en esta conversación",
     "panel_ended": "Terminados recientemente",

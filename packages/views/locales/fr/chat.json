@@ -692,14 +692,6 @@
     }
   },
   "wakeup": {
-    "node_label": "Réveil programmé déclenché",
-    "scheduled_at": "Programmé {{time}}",
-    "set_by": "{{agent}} l'a défini à {{time}}",
-    "show_instruction": "Voir la consigne",
-    "hide_instruction": "Masquer la consigne",
-    "instruction_region": "Consigne pour l'agent",
-    "instruction_note": "Consigne pour l'agent, telle quelle. L'agent la reçoit en entier.",
-    "issue_fallback": "ticket",
     "panel_title": "Réveils",
     "panel_empty": "Aucun réveil dans cette conversation",
     "panel_ended": "Terminés récemment",

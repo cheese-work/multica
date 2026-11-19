@@ -672,14 +672,6 @@
     }
   },
   "wakeup": {
-    "node_label": "예약된 깨우기가 실행되었습니다",
-    "scheduled_at": "예약 {{time}}",
-    "set_by": "{{agent}}이(가) {{time}}에 설정",
-    "show_instruction": "지시 보기",
-    "hide_instruction": "지시 숨기기",
-    "instruction_region": "에이전트에게 보낸 지시",
-    "instruction_note": "에이전트에게 보낸 지시(원문). 에이전트는 이 내용을 모두 받습니다.",
-    "issue_fallback": "이슈",
     "panel_title": "웨이크업",
     "panel_empty": "이 대화에는 웨이크업이 없습니다",
     "panel_ended": "최근 종료됨",

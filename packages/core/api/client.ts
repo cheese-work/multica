@@ -4593,13 +4593,6 @@ export class ApiClient {
     });
   }
 
-  // The fork's `listChatSessionWakeups` (pending one-shot turns agents scheduled
-  // in this DM) is merged into the upstream v0.11.0 method of the same name
-  // further down; ChatWakeupListSchema reads both row shapes.
-  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
-    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
-  }
-
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
       method: "POST",

@@ -683,14 +683,6 @@
     "open_newer": "開啟較新的私訊"
   },
   "wakeup": {
-    "node_label": "定時喚醒已觸發",
-    "scheduled_at": "定時 {{time}}",
-    "set_by": "{{agent}} 於 {{time}} 設定",
-    "show_instruction": "查看指令",
-    "hide_instruction": "收合指令",
-    "instruction_region": "給智慧體的指令",
-    "instruction_note": "給智慧體的指令（原文）。智慧體會收到全部內容。",
-    "issue_fallback": "事項",
     "panel_title": "喚醒",
     "panel_empty": "這個對話沒有喚醒",
     "panel_ended": "最近結束",

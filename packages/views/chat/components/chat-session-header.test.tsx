@@ -35,7 +35,6 @@ vi.mock("../../navigation", () => ({
 }));
 
 vi.mock("./open-decisions-badge", () => ({ OpenDecisionsBadge: () => null }));
-vi.mock("./scheduled-wakeups-chip", () => ({ ScheduledWakeupsChip: () => null }));
 
 import { ChatSessionHeader } from "./chat-session-header";
 

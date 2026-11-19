@@ -58,10 +58,7 @@ export const chatKeys = {
   /** Durable deferred-cancellation draft restores for a session (#5219). */
   draftRestores: (sessionId: string) => [...chatKeys.draftRestoresAll(), sessionId] as const,
   wakeupsAll: () => ["chat", "wakeups"] as const,
-  /**
-   * A conversation's wakeups: active ones plus those that ended recently. Also
-   * feeds the fork's "Scheduled" chip (pending agent-scheduled follow-ups).
-   */
+  /** A conversation's wakeups: active ones plus those that ended recently. */
   wakeups: (sessionId: string) => [...chatKeys.wakeupsAll(), sessionId] as const,
   /** The caller's wakeups across their conversations in this workspace. */
   myWakeups: (wsId: string) => [...chatKeys.all(wsId), "my-wakeups"] as const,
@@ -301,12 +298,7 @@ export function chatDraftRestoresOptions(sessionId: string) {
   });
 }
 
-/**
- * Kept fresh by chat:wakeup_changed; the countdowns tick client-side. A turn
- * that schedules or cancels a wakeup ends in chat:done and a fire arrives as
- * chat:message; both invalidate this key (fork), as does a reconnect. A cancel
- * updates it directly.
- */
+/** Kept fresh by chat:wakeup_changed; the countdowns tick client-side. */
 export function chatWakeupsOptions(sessionId: string) {
   return queryOptions({
     queryKey: chatKeys.wakeups(sessionId),
