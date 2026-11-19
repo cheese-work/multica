@@ -66,7 +66,7 @@ func parseEntry(key string, body json.RawMessage) (Entry, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&in); err != nil {
-		return Entry{}, fmt.Errorf("%s.%s must be {author, reviewers}: %v", SettingsKey, key, err)
+		return Entry{}, fmt.Errorf("%s.%s must be {author, reviewers}: %w", SettingsKey, key, err)
 	}
 	author, ok := agentID(in.Author)
 	if !ok {
