@@ -139,6 +139,10 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	if assigneeTouched || prev.TriageState.Valid {
 		return nil, nil
 	}
+	// A manual park keeps the assignee: no handoff (CHE-6460 D1c).
+	if park, err := manualParkMove(ctx, q, prev, params, statusExplicit, assigneeTouched, caller); err != nil || park {
+		return nil, err
+	}
 	entering := ""
 	switch {
 	case projectMoving && enterOnMove:

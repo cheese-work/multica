@@ -359,9 +359,13 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	wf.markManualPark(ctx)
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if issue, err = wf.recordManualPark(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
 	}
 	if err := wf.recordVerdict(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
@@ -4689,9 +4693,13 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, err
 	}
 
+	wf.markManualPark(ctx)
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
+	}
+	if issue, err = wf.recordManualPark(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record manual park: %w", err)
 	}
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
