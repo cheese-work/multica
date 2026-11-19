@@ -69,6 +69,14 @@ func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspac
 	if located.HumanUserID != userID {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can disclaim"}
 	}
+	return handler.withdrawAnswerTx(request, workspaceID, located, answerID, userID, "human", nil)
+}
+
+// withdrawAnswerTx withdraws the answer under the request's locks. check runs on the locked,
+// still-live answer and may refuse the withdrawal.
+func (handler *Handler) withdrawAnswerTx(request *http.Request, workspaceID pgtype.UUID, located db.DecisionRequest, answerID, userID pgtype.UUID, reason string, check func(db.DecisionAnswer) error) (decisiontx.Withdrawal, error) {
+	ctx := request.Context()
+	empty := decisiontx.Withdrawal{}
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
 		return empty, err
@@ -99,18 +107,23 @@ func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspac
 	if current.ChatSessionID != located.ChatSessionID || current.HumanUserID != userID || current.IssueID != located.IssueID || current.IssueCommentID != located.IssueCommentID {
 		return empty, decisionIntentRefusal{http.StatusConflict, "decision context changed; retry"}
 	}
-	answer, err = queries.LockDecisionAnswer(ctx, db.LockDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
+	answer, err := queries.LockDecisionAnswer(ctx, db.LockDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
 	if err != nil {
 		return empty, err
 	}
 	if answer.DisclaimedAt.Valid {
 		return empty, decisionIntentRefusal{http.StatusConflict, "decision answer is already withdrawn"}
 	}
+	if check != nil {
+		if err := check(answer); err != nil {
+			return empty, err
+		}
+	}
 	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: workspaceID, ID: current.ChatSessionID})
 	if err != nil {
 		return empty, err
 	}
-	result, err := decisiontx.Withdraw(ctx, queries, current, answer, session.Status, "human", userID)
+	result, err := decisiontx.Withdraw(ctx, queries, current, answer, session.Status, reason, userID)
 	if err != nil {
 		return empty, err
 	}

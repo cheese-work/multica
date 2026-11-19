@@ -230,8 +230,8 @@ func (q *Queries) CountDecisionPingGroupAsks(ctx context.Context, arg CountDecis
 }
 
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
-VALUES ($1, $2, $3, COALESCE($4::text, 'agent_record'), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::boolean, $16)
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, undo_until)
+VALUES ($1, $2, $3, COALESCE($4::text, 'agent_record'), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::boolean, $16, $17)
 RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version, undo_until
 `
 
@@ -252,6 +252,7 @@ type CreateDecisionAnswerParams struct {
 	ContextMessageID    pgtype.UUID        `json:"context_message_id"`
 	Excerpted           bool               `json:"excerpted"`
 	AnsweredLabel       pgtype.Text        `json:"answered_label"`
+	UndoUntil           pgtype.Timestamptz `json:"undo_until"`
 }
 
 func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAnswerParams) (DecisionAnswer, error) {
@@ -272,6 +273,7 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 		arg.ContextMessageID,
 		arg.Excerpted,
 		arg.AnsweredLabel,
+		arg.UndoUntil,
 	)
 	var i DecisionAnswer
 	err := row.Scan(
@@ -1355,6 +1357,60 @@ func (q *Queries) GetLatestPlainDM(ctx context.Context, arg GetLatestPlainDMPara
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const getLiveDecisionAnswer = `-- name: GetLiveDecisionAnswer :one
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version, answer.undo_until FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND request.id = $2 AND answer.disclaimed_at IS NULL
+ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
+`
+
+type GetLiveDecisionAnswerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetLiveDecisionAnswer(ctx context.Context, arg GetLiveDecisionAnswerParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, getLiveDecisionAnswer, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.AnsweredByUserID,
+		&i.AnswerSource,
+		&i.ChosenOptionIndex,
+		&i.ReplyText,
+		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
+		&i.UndoUntil,
+	)
+	return i, err
 }
 
 const hasOpenDecisionRequestForIssue = `-- name: HasOpenDecisionRequestForIssue :one
