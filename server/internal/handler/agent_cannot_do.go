@@ -13,16 +13,17 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/designguard"
+	"github.com/multica-ai/multica/server/internal/mergequeue"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // errCannotDoOwnerOnly is saveWorkspace's refusal of an owner-only setting
 // change by a caller who is not a workspace owner (CHE-5902 F2, CHE-7358).
-var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do, decision_server_actions or standing_answers")
+var errCannotDoOwnerOnly = errors.New("only a workspace owner may change agent_cannot_do, decision_server_actions, standing_answers or the merge_queue_* settings")
 
 // ownerOnlySettings are the keys the route admits admins to save but only an owner may change.
-var ownerOnlySettings = []string{decisiontx.SettingCannotDo, decisiontx.SettingServerActions, decisiontx.SettingStandingAnswers}
+var ownerOnlySettings = append([]string{decisiontx.SettingCannotDo, decisiontx.SettingServerActions, decisiontx.SettingStandingAnswers}, mergequeue.Keys...)
 
 // requireOwnerForCannotDo refuses an incoming settings blob that adds, drops or
 // changes an owner-only setting unless the caller owns the workspace. The

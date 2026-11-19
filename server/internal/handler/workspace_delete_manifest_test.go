@@ -60,6 +60,14 @@ const (
 // handler deletion graph must then implement that decision before CI passes.
 var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"cloud_agent_connection":             workspaceDelete,
+	"merge_queue_intake":                 workspaceDelete,
+	"merge_queue_epoch":                  workspaceDelete,
+	"merge_queue_association":            workspaceDelete,
+	"merge_queue_wait":                   workspaceDelete,
+	"merge_queue_pr_close":               workspaceDelete,
+	"merge_queue_enqueue_event":          workspaceDelete,
+	"merge_queue_state":                  workspaceDelete,
+	"merge_queue_evidence":               workspaceDelete,
 	"daemon_pause":                       workspaceDelete,
 	"activity_log":                       workspaceDelete,
 	"workspace_audit_event":              workspaceDelete,

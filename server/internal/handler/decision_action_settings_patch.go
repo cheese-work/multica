@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/mergequeue"
 	"net/http"
 	"slices"
 	"time"
@@ -136,6 +137,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey || key == askguard.OwnerScriptSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
+	case slices.Contains(mergequeue.Keys, key):
+		err = mergequeue.ValidateSetting(map[string]any{key: value})
 	case key == decisiontx.SettingHeldMode:
 		err = validateHeldSettingModeSetting(map[string]any{key: value})
 	case key == "compact_prompt":
