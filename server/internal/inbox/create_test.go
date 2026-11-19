@@ -127,3 +127,58 @@ func TestCreateIfEligibleDeliveryScopeErrors(test *testing.T) {
 		}
 	}
 }
+
+// Every producer reaches AllowsDelivery through CreateIfEligible, so one group
+// mute must hold for types that no listener ever pre-checked.
+func TestCreateIfEligibleGroupMute(test *testing.T) {
+	recipientID := dbid.NewV7()
+	for _, scenario := range []struct {
+		name        string
+		itemType    string
+		preferences string
+		details     string
+		allowed     bool
+	}{
+		{name: "reaction with reactions muted", itemType: "reaction_added", preferences: `{"reactions":"muted"}`},
+		{name: "reaction with comments muted", itemType: "reaction_added", preferences: `{"comments":"muted"}`, allowed: true},
+		{name: "issue_subscribed with autopilot muted", itemType: "issue_subscribed", preferences: `{"autopilot":"muted"}`},
+		{name: "autopilot_paused with autopilot muted", itemType: "autopilot_paused", preferences: `{"autopilot":"muted"}`},
+		{name: "autopilot_quota_exceeded with autopilot muted", itemType: "autopilot_quota_exceeded", preferences: `{"autopilot":"muted"}`},
+		{name: "children_done with status_changes muted", itemType: "children_done", preferences: `{"status_changes":"muted"}`},
+		{name: "review_requested with assignments muted", itemType: "review_requested", preferences: `{"assignments":"muted"}`},
+		{name: "agent_blocked with agent_activity muted", itemType: "agent_blocked", preferences: `{"agent_activity":"muted"}`},
+		{name: "task_failed with agent_activity muted", itemType: "task_failed", preferences: `{"agent_activity":"muted"}`},
+		{name: "delegated exhaustion bypasses agent_activity mute", itemType: "task_failed", preferences: `{"agent_activity":"muted"}`, details: `{"kind":"delegated_failure_exhausted"}`, allowed: true},
+		{name: "run_budget bypasses agent_activity mute", itemType: "task_failed", preferences: `{"agent_activity":"muted"}`, details: `{"kind":"run_budget"}`, allowed: true},
+		{name: "quick_create_done is always on", itemType: "quick_create_done", preferences: `{"comments":"muted","assignments":"muted","agent_activity":"muted"}`, allowed: true},
+		{name: "machine_drained is always on", itemType: "machine_drained", preferences: `{"agent_activity":"muted","autopilot":"muted"}`, allowed: true},
+	} {
+		test.Run(scenario.name, func(test *testing.T) {
+			database := &deliveryDB{preferences: []byte(scenario.preferences)}
+			params := db.CreateInboxItemParams{
+				WorkspaceID: dbid.NewV7(), RecipientType: "member", RecipientID: recipientID,
+				Type: scenario.itemType, Details: []byte(scenario.details),
+			}
+			_, inserted, err := CreateIfEligible(context.Background(), db.New(database), params)
+			if err != nil {
+				test.Fatal(err)
+			}
+			if inserted != scenario.allowed {
+				test.Fatalf("inserted=%v, want %v", inserted, scenario.allowed)
+			}
+		})
+	}
+}
+
+// The scope switch runs before the group check: an assigned issue still obeys
+// its group mute.
+func TestCreateIfEligibleScopeThenGroup(test *testing.T) {
+	recipientID := dbid.NewV7()
+	database := &deliveryDB{preferences: []byte(`{"unassigned_activity":"muted","status_changes":"muted"}`), assigneeType: "member", assigneeID: recipientID}
+	_, inserted, err := CreateIfEligible(context.Background(), db.New(database), db.CreateInboxItemParams{
+		WorkspaceID: dbid.NewV7(), RecipientType: "member", RecipientID: recipientID, IssueID: dbid.NewV7(), Type: "status_changed",
+	})
+	if err != nil || inserted {
+		test.Fatalf("inserted=%v err=%v; want muted status change on my own issue dropped", inserted, err)
+	}
+}

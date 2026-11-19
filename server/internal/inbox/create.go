@@ -16,7 +16,7 @@ import (
 // Workspace membership is checked by the insert's snapshot, without additional locks.
 func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams) (item db.InboxItem, inserted bool, err error) {
 	if params.RecipientType == "member" {
-		allowed, err := AllowsDelivery(ctx, queries, params.WorkspaceID, params.RecipientID, params.IssueID, isDecision(params.Details))
+		allowed, err := AllowsDelivery(ctx, queries, params.WorkspaceID, params.RecipientID, params.IssueID, params.Type, isDecision(params.Details))
 		if err != nil || !allowed {
 			return db.InboxItem{}, false, err
 		}
@@ -31,7 +31,10 @@ func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.Create
 	return item, true, nil
 }
 
-func AllowsDelivery(ctx context.Context, queries *db.Queries, workspaceID, recipientID, issueID pgtype.UUID, decision bool) (bool, error) {
+// AllowsDelivery is the one preference check for every member-bound inbox item.
+// Order: decision/stop-signal bypass, then the scope switch, then the group
+// mute of itemType (types with no group are always delivered).
+func AllowsDelivery(ctx context.Context, queries *db.Queries, workspaceID, recipientID, issueID pgtype.UUID, itemType string, decision bool) (bool, error) {
 	if decision {
 		return true, nil
 	}
@@ -46,9 +49,16 @@ func AllowsDelivery(ctx context.Context, queries *db.Queries, workspaceID, recip
 	if err := json.Unmarshal(preference.Preferences, &preferences); err != nil {
 		return false, err
 	}
-	if preferences["unassigned_activity"] != "muted" {
-		return true, nil
+	if preferences["unassigned_activity"] == "muted" {
+		assigned, err := assignedToMember(ctx, queries, workspaceID, recipientID, issueID)
+		if err != nil || !assigned {
+			return false, err
+		}
 	}
+	return !isNotifMuted(preferences, itemType), nil
+}
+
+func assignedToMember(ctx context.Context, queries *db.Queries, workspaceID, recipientID, issueID pgtype.UUID) (bool, error) {
 	if !issueID.Valid {
 		return false, nil
 	}
@@ -68,7 +78,8 @@ func isDecision(details []byte) bool {
 		Kind       string        `json:"kind"`
 		RequestIDs []pgtype.UUID `json:"decision_request_ids"`
 	}
-	// A run_budget item is the one signal that work stopped (CHE-2297 L1a), so
-	// it ignores notification preferences like a decision does.
-	return json.Unmarshal(details, &decision) == nil && (decision.RequestID.Valid || decision.Kind == "run_budget" || (decision.Kind == "decision_expiry_digest" && len(decision.RequestIDs) > 0))
+	// run_budget and delegated_failure_exhausted are the signals that work
+	// stopped (CHE-2297 L1a), so they ignore notification preferences like a
+	// decision does.
+	return json.Unmarshal(details, &decision) == nil && (decision.RequestID.Valid || decision.Kind == "run_budget" || decision.Kind == "delegated_failure_exhausted" || (decision.Kind == "decision_expiry_digest" && len(decision.RequestIDs) > 0))
 }

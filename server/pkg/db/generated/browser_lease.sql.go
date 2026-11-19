@@ -704,6 +704,44 @@ func (q *Queries) GetBrowserLeaseForTask(ctx context.Context, arg GetBrowserLeas
 	return i, err
 }
 
+const getBrowserLoginLeaseForUser = `-- name: GetBrowserLoginLeaseForUser :one
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE id = $1 AND workspace_id = $2 AND user_id = $3 AND class = 'H'
+`
+
+type GetBrowserLoginLeaseForUserParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetBrowserLoginLeaseForUser(ctx context.Context, arg GetBrowserLoginLeaseForUserParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, getBrowserLoginLeaseForUser, arg.ID, arg.WorkspaceID, arg.UserID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getBrowserProfile = `-- name: GetBrowserProfile :one
 SELECT id, workspace_id, name, class, created_at, hosts FROM browser_profile
 WHERE id = $1 AND workspace_id = $2
@@ -742,6 +780,47 @@ type GetOpenBrowserLeaseForTaskParams struct {
 
 func (q *Queries) GetOpenBrowserLeaseForTask(ctx context.Context, arg GetOpenBrowserLeaseForTaskParams) (BrowserLease, error) {
 	row := q.db.QueryRow(ctx, getOpenBrowserLeaseForTask, arg.WorkspaceID, arg.TaskID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getOpenBrowserLoginLeaseForUser = `-- name: GetOpenBrowserLoginLeaseForUser :one
+
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE workspace_id = $1 AND user_id = $2 AND class = 'H' AND state <> 'ended'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetOpenBrowserLoginLeaseForUserParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+// Class H login lease held by a member (CHE-5989, W3-3b).
+func (q *Queries) GetOpenBrowserLoginLeaseForUser(ctx context.Context, arg GetOpenBrowserLoginLeaseForUserParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, getOpenBrowserLoginLeaseForUser, arg.WorkspaceID, arg.UserID)
 	var i BrowserLease
 	err := row.Scan(
 		&i.ID,
@@ -983,6 +1062,23 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 func (q *Queries) LockBrowserLeaseQueue(ctx context.Context, dollar_1 string) error {
 	_, err := q.db.Exec(ctx, lockBrowserLeaseQueue, dollar_1)
 	return err
+}
+
+const nextDecisionBrowserLeaseDeadline = `-- name: NextDecisionBrowserLeaseDeadline :one
+SELECT CASE WHEN MIN(request.expires_at) IS NULL THEN -1
+            ELSE GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0) END::float8 AS wait_seconds
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active') AND request.expires_at IS NOT NULL
+`
+
+// Seconds until the earliest expires_at among decisions that still have a queued or active
+// lease (CHE-4742). -1 when none; 0 when one is already due.
+func (q *Queries) NextDecisionBrowserLeaseDeadline(ctx context.Context) (float64, error) {
+	row := q.db.QueryRow(ctx, nextDecisionBrowserLeaseDeadline)
+	var wait_seconds float64
+	err := row.Scan(&wait_seconds)
+	return wait_seconds, err
 }
 
 const registerBrowserInstance = `-- name: RegisterBrowserInstance :one

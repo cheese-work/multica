@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,6 +34,7 @@ type browserLeaseResponse struct {
 	InstanceID    string     `json:"instance_id,omitempty"`
 	Epoch         int64      `json:"epoch,omitempty"`
 	Aud           string     `json:"aud,omitempty"`
+	GatewayURL    string     `json:"gateway_url,omitempty"`
 	QueuePosition int64      `json:"queue_position,omitempty"`
 	Token         string     `json:"token,omitempty"`
 	TokenExpires  *time.Time `json:"token_expires_at,omitempty"`
@@ -51,10 +53,22 @@ func browserLeaseResponseOf(res browserlease.Result) browserLeaseResponse {
 	}
 	if res.Token != "" {
 		out.Aud, out.Token = browserlease.Aud(res.Host), res.Token
+		out.GatewayURL = browserGatewayURL(res.Host)
 		exp := res.TokenExpires
 		out.TokenExpires = &exp
 	}
 	return out
+}
+
+// browserGatewayURL is the operator's endpoint for a host's gateway, from
+// MULTICA_BROWSER_GATEWAY_URLS (JSON object, host -> URL). Empty when unset or the host is
+// missing; the token audience is a label and never becomes a URL.
+func browserGatewayURL(host string) string {
+	var urls map[string]string
+	if json.Unmarshal([]byte(os.Getenv("MULTICA_BROWSER_GATEWAY_URLS")), &urls) != nil {
+		return ""
+	}
+	return urls[host]
 }
 
 func writeBrowserLeaseError(w http.ResponseWriter, err error) {
@@ -62,7 +76,12 @@ func writeBrowserLeaseError(w http.ResponseWriter, err error) {
 	case errors.Is(err, browserlease.ErrGateDenied):
 		writeErrorCode(w, http.StatusForbidden, "browser_permission_denied", err.Error())
 	case errors.Is(err, browserlease.ErrDecisionRequired):
-		writeErrorCode(w, http.StatusConflict, "decision_required", err.Error())
+		body := map[string]string{"error": err.Error(), "code": "decision_required"}
+		var required browserlease.DecisionRequiredError
+		if errors.As(err, &required) && required.RequestID.Valid {
+			body["decision_request_id"] = uuidToString(required.RequestID)
+		}
+		writeJSON(w, http.StatusConflict, body)
 	case errors.Is(err, browserlease.ErrDecisionInvalid):
 		writeErrorCode(w, http.StatusForbidden, "decision_invalid", err.Error())
 	case errors.Is(err, browserlease.ErrClass3Denied), errors.Is(err, browserlease.ErrClass3Unchecked):
@@ -78,6 +97,7 @@ func writeBrowserLeaseError(w http.ResponseWriter, err error) {
 	case errors.Is(err, browserlease.ErrNoInstance), errors.Is(err, browserlease.ErrSignerMissing):
 		writeErrorCode(w, http.StatusServiceUnavailable, "browser_unavailable", err.Error())
 	default:
+		slog.Warn("browser lease failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "browser lease failed")
 	}
 }
@@ -133,7 +153,7 @@ func (h *Handler) MintBrowserLease(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusForbidden, "no_accountable_user", "the task has no accountable user")
 		return
 	}
-	res, err := h.BrowserLeases.Mint(r.Context(), browserlease.MintRequest{
+	res, err := h.BrowserLeases.Mint(daemonLeaseCtx(r, task), browserlease.MintRequest{
 		WorkspaceID: ws, TaskID: task.ID, AgentID: task.AgentID, IssueID: task.IssueID,
 		UserID: task.AccountableUserID, ProfileID: profileID, DecisionID: decisionID,
 	})
@@ -141,6 +161,7 @@ func (h *Handler) MintBrowserLease(w http.ResponseWriter, r *http.Request) {
 		writeBrowserLeaseError(w, err)
 		return
 	}
+	h.DecisionWorker.WakeLeaseExpiry()
 	status := http.StatusCreated
 	if res.Lease.State == "queued" {
 		status = http.StatusAccepted
@@ -157,7 +178,31 @@ func (h *Handler) RenewBrowserLease(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, err := h.BrowserLeases.Renew(r.Context(), ws, task.ID, leaseID)
+	res, err := h.BrowserLeases.Renew(daemonLeaseCtx(r, task), ws, task.ID, leaseID)
+	if err != nil {
+		writeBrowserLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, browserLeaseResponseOf(res))
+}
+
+// StatusBrowserLease — GET /api/daemon/tasks/{id}/browser-leases/{leaseId}
+//
+// Reads the state of the task's own lease. It never signs, so it never returns a token and it
+// runs after the task ends.
+func (h *Handler) StatusBrowserLease(w http.ResponseWriter, r *http.Request) {
+	task, ws, ok := h.browserLeaseTask(w, r, false)
+	if !ok {
+		return
+	}
+	leaseID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "leaseId"), "lease_id")
+	if !ok {
+		return
+	}
+	res, err := h.BrowserLeases.Status(r.Context(), ws, task.ID, leaseID)
+	if errors.Is(err, browserlease.ErrGateDenied) {
+		err = browserlease.ErrNotFound // a missing row reads as a dropped lease
+	}
 	if err != nil {
 		writeBrowserLeaseError(w, err)
 		return
@@ -169,9 +214,15 @@ func (h *Handler) RenewBrowserLease(w http.ResponseWriter, r *http.Request) {
 // (plugins/steel-browser, CHE-4730). Disabling or uninstalling it revokes every lease.
 const SteelBrowserPluginKey = "work.cheese.steel-browser"
 
-// browserLeaseRevoker is cheap: two pointers, no state.
+// browserLeaseRevoker is cheap: a few pointers, no state. It audits each revoke inside the
+// transaction that ends the leases (CHE-4744).
 func (h *Handler) browserLeaseRevoker() *browserlease.Revoker {
-	return &browserlease.Revoker{Queries: h.Queries, Bus: h.Bus}
+	return &browserlease.Revoker{Queries: h.Queries, Bus: h.Bus, Pool: h.TxStarter, Audit: BrowserLeaseAudit}
+}
+
+// daemonLeaseCtx attributes a lease transition to the agent whose task asked for it.
+func daemonLeaseCtx(r *http.Request, task db.AgentTaskQueue) context.Context {
+	return withAuditActor(r.Context(), auditActor{Type: "agent", ID: task.AgentID, TaskID: task.ID, Source: "daemon"})
 }
 
 // revokeLeasesOfDecision ends every lease bound to a decision that was withdrawn or has expired
@@ -194,8 +245,8 @@ func (h *Handler) revokeLeasesOfDecision(workspaceID string, requestID pgtype.UU
 }
 
 // revokeLeasesOfExpiredDecisions revokes the leases of every decision past its expires_at,
-// including an answered (approved) one, which no request-cancel path ends (CHE-4742). The
-// decision worker calls it on each pass.
+// including an answered (approved) one, which no request-cancel path ends (CHE-4742).
+// RunLeaseExpiry calls it at each deadline.
 func (h *Handler) revokeLeasesOfExpiredDecisions(ctx context.Context) error {
 	expired, err := h.Queries.ListExpiredDecisionBrowserLeases(ctx, decisionBatchSize)
 	if err != nil {
@@ -241,7 +292,7 @@ func (h *Handler) ReleaseBrowserLease(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	revoked, err := h.browserLeaseRevoker().Revoke(r.Context(), browserlease.Filter{
+	revoked, err := h.browserLeaseRevoker().Revoke(daemonLeaseCtx(r, task), browserlease.Filter{
 		WorkspaceID: workspaceUUID,
 		LeaseID:     leaseUUID,
 		TaskID:      task.ID,
@@ -275,7 +326,7 @@ func (h *Handler) RevokeAllBrowserLeases(w http.ResponseWriter, r *http.Request)
 	if _, ok := h.requireWorkspaceRole(w, r, wsID, "workspace not found", "owner", "admin"); !ok {
 		return
 	}
-	revoked, err := h.browserLeaseRevoker().Revoke(r.Context(), browserlease.Filter{WorkspaceID: wsUUID}, browserlease.ReasonRevokeAll)
+	revoked, err := h.browserLeaseRevoker().Revoke(withAuditActor(r.Context(), h.auditActorFromRequest(r, wsUUID)), browserlease.Filter{WorkspaceID: wsUUID}, browserlease.ReasonRevokeAll)
 	if err != nil {
 		slog.Warn("revoke all browser leases failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", wsID)...)
 		writeError(w, http.StatusInternalServerError, "failed to revoke the browser leases")
@@ -293,7 +344,7 @@ func (h *Handler) revokeLeasesOfDisabledPlugin(r *http.Request, installation db.
 		return
 	}
 	filter := browserlease.Filter{WorkspaceID: installation.WorkspaceID}
-	if _, err := h.browserLeaseRevoker().Revoke(r.Context(), filter, browserlease.ReasonPluginDisabled); err != nil {
+	if _, err := h.browserLeaseRevoker().Revoke(withAuditActor(r.Context(), h.auditActorFromRequest(r, installation.WorkspaceID)), filter, browserlease.ReasonPluginDisabled); err != nil {
 		slog.Error("revoke browser leases of a disabled plugin failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", uuidToString(installation.WorkspaceID))...)
 	}
 }

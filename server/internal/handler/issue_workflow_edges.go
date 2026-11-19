@@ -244,6 +244,13 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 			facts.ChildrenDone = cat == issuestatus.CategoryDone || cat == issuestatus.CategoryClosed
 		}
 	}
+	// OpenChildren looks at every direct child, whatever the sub-workflow stage.
+	for _, c := range children {
+		if cat := issuestatus.Category(ctx, q, c.WorkspaceID, c.Status); cat != issuestatus.CategoryDone && cat != issuestatus.CategoryClosed {
+			facts.OpenChildren = true
+			break
+		}
+	}
 	facts.ChildrenDone = facts.ChildrenDone && joined > 0
 	prs, err := q.ListEdgePullRequests(ctx, ids)
 	if err != nil {

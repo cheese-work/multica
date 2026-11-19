@@ -1,4 +1,4 @@
-// CHE-5538 (S4b-SS5): every raw-element file that ui-drift.md marks captured must have a `cap` call in
+// CHE-5538 (S4b-SS5), CHE-5539 (S4b-SS6), CHE-5540 (S4b-SS7): every raw-element file that ui-drift.md marks captured must have a `cap` call in
 // pattern-harness/run.sh and a harness page, so the mark never outruns the capture.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -19,5 +19,19 @@ test("ui-drift.md marks at least the SS5 files captured", () => {
 test("each captured file that still exists on main has a cap call with --component", () => {
   for (const f of marked.filter((p) => existsSync(new URL(`../../${p}`, import.meta.url)))) {
     assert.ok(runSh.includes(`--component ${f}`), `${f} is marked captured but run.sh has no cap for it`);
+  }
+});
+
+test("ui-drift.md marks the SS6 files captured", () => {
+  for (const f of ["autopilots/components/add-trigger-dialog.tsx", "common/expandable-description.tsx",
+    "editor/html-viewer.tsx", "editor/plan-revision-viewer.tsx", "labels/resource-label-picker.tsx"]) {
+    assert.ok(marked.includes(`packages/views/${f}`), `${f} not marked captured`);
+  }
+});
+
+test("ui-drift.md marks the SS7 files captured", () => {
+  for (const f of ["media/media-context.tsx", "media/media-page.tsx", "projects/components/local-directory-mode-dialog.tsx",
+    "rich-content/next-self-mention.tsx", "workflows/project-workflow-menu.tsx"]) {
+    assert.ok(marked.includes(`packages/views/${f}`), `${f} not marked captured`);
   }
 });

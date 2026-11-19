@@ -20,6 +20,10 @@ func (d Definition) EffectiveMaxRuns() int {
 // clears it when the issue leaves blocked.
 const BlockedReasonRunBudget = "run-budget"
 
+// BlockedReasonWeeklyRunGuard is the blocked_reason the step watchdog sets when
+// the weekly run guard refuses the handler's run (CHE-6116).
+const BlockedReasonWeeklyRunGuard = "weekly-run-guard"
+
 // BlockedReasonDecisionDispatchRefused is the blocked_reason a decision episode sets
 // when a persistent dispatch refusal suspends it. Leaving blocked clears it.
 const BlockedReasonDecisionDispatchRefused = "decision-dispatch-refused"

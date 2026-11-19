@@ -55,19 +55,22 @@ WHERE i.workspace_id = sqlc.arg('workspace_id')
 ORDER BY clock.idle_since, i.id;
 
 -- name: IdleStartedGuardHumanWait :one
--- Human-wait evidence: an enabled member-filtered event wakeup, or a newest
--- non-system comment that an agent wrote to a member by mention.
-SELECT (
-  EXISTS (
-    SELECT 1 FROM issue_wakeup w
+-- Human-wait evidence, named: an enabled member-filtered event wakeup, or a
+-- newest non-system comment that an agent wrote to a member by mention. Empty
+-- when neither is there.
+SELECT COALESCE(
+  (SELECT 'member-filtered wakeup ' || w.id::text
+    FROM issue_wakeup w
     WHERE w.issue_id = sqlc.arg('issue_id') AND w.enabled AND w.paused_reason IS NULL
-      AND w.system_rule IS NULL AND w.kind = 'event' AND w.filter_actor_type = 'member')
-  OR COALESCE((
-    SELECT c.author_type = 'agent' AND c.content LIKE '%mention://member/%'
-    FROM comment c
-    WHERE c.issue_id = sqlc.arg('issue_id') AND c.deleted_at IS NULL AND c.author_type <> 'system'
-    ORDER BY c.created_at DESC, c.id DESC LIMIT 1), false)
-)::bool AS waiting;
+      AND w.system_rule IS NULL AND w.kind = 'event' AND w.filter_actor_type = 'member'
+    ORDER BY w.id LIMIT 1),
+  (SELECT 'member mention in the newest comment'
+    FROM (
+      SELECT c.author_type, c.content FROM comment c
+      WHERE c.issue_id = sqlc.arg('issue_id') AND c.deleted_at IS NULL AND c.author_type <> 'system'
+      ORDER BY c.created_at DESC, c.id DESC LIMIT 1) newest
+    WHERE newest.author_type = 'agent' AND newest.content LIKE '%mention://member/%'),
+  '')::text AS wait;
 
 -- name: ListIdleStartedGuardEpisodes :many
 -- Issues with an issue_idle_guard receipt that need another look: a notice owed, a

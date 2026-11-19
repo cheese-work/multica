@@ -46,6 +46,13 @@ var (
 	ErrNotImplemented   = errors.New("not implemented")
 )
 
+// DecisionRequiredError is ErrDecisionRequired plus the request that asks for the decision
+// (W3-10). errors.Is(err, ErrDecisionRequired) holds.
+type DecisionRequiredError struct{ RequestID pgtype.UUID }
+
+func (DecisionRequiredError) Error() string        { return ErrDecisionRequired.Error() }
+func (DecisionRequiredError) Is(target error) bool { return target == ErrDecisionRequired }
+
 // Claims is the token payload (plan "Token model"). Signing and the JWKS route are W3-4.
 type Claims struct {
 	Aud        string `json:"aud"`

@@ -35,6 +35,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Footer          string              `json:"footer"`
 		ParentID        string              `json:"parent_id"`
 		EscalationClass string              `json:"escalation_class"`
+		Wait            bool                `json:"wait"`
 		Action          *decisionActionWire `json:"action"`
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
@@ -99,6 +100,18 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	typedWhy := ""
+	switch {
+	case input.Action != nil:
+		typedWhy = "an action request"
+	case parsed.Topic != "":
+		typedWhy = "a topic ask"
+	case len(input.CoversRequestIDs) > 0:
+		typedWhy = "a batch card"
+	}
+	if !handler.checkTypedOptions(writer, request, &parsed, workspace, issue, typedWhy) {
+		return
+	}
 	heldHints, ok := checkHeldSettingsAsk(writer, parsed, workspace.Settings)
 	if !ok {
 		return
@@ -106,7 +119,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	hints = append(hints, heldHints...)
 	lintMode := "off"
 	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
-		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
+		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings, request.Header.Get("X-Agent-ID"))
 		if !ok {
 			return
 		}
@@ -188,7 +201,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers, Wait: input.Wait})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return

@@ -258,3 +258,17 @@ func TestReleaseIssueT5OtherLabelThenReleaseWakesOnce(t *testing.T) {
 	k.tick(t)
 	k.wantRuns(t, k.rule, 1)
 }
+
+// CHE-6387 P2: a release issue is made by the platform, so it records
+// created_via = autopilot (an automated rule), never NULL.
+func TestCreateReleaseIssueStoresCreatedViaAutopilot(t *testing.T) {
+	k := newReleaseKit(t)
+	id, _ := k.deploy(t, relNew)
+	var via *string
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT created_via FROM issue WHERE id=$1`, id).Scan(&via); err != nil {
+		t.Fatal(err)
+	}
+	if via == nil || *via != "autopilot" {
+		t.Fatalf("created_via = %v, want autopilot", via)
+	}
+}

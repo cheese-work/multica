@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,8 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type allowHooks struct{}
@@ -242,6 +245,54 @@ func TestDisablingTheSteelPluginRevokesLeases(t *testing.T) {
 	}
 }
 
+func TestBrowserLeaseStatusNeverReturnsATokenAndSeesTheEnd(t *testing.T) {
+	f := newBrowserLeaseFixture(t, "running")
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": f.profile})
+	var minted struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || minted.LeaseID == "" {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+
+	w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", minted.LeaseID)
+	var st struct {
+		State string `json:"state"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || w.Code != http.StatusOK || st.State != "active" || st.Token != "" {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+
+	if w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", uuid.NewString()); w.Code != http.StatusNotFound {
+		t.Fatalf("status of an unknown lease: %d %s, want 404", w.Code, w.Body.String())
+	}
+
+	f.call(t, f.h.ReleaseBrowserLease, "/x", nil, "leaseId", minted.LeaseID)
+	if w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", minted.LeaseID); w.Code != http.StatusConflict {
+		t.Fatalf("status after release: %d %s, want 409", w.Code, w.Body.String())
+	}
+}
+
+// The gateway URL comes from the operator's MULTICA_BROWSER_GATEWAY_URLS, keyed by host. The
+// token audience is only a label ("steel-gateway/c00") and is never turned into a URL.
+func TestBrowserLeaseResponseCarriesTheConfiguredGatewayURL(t *testing.T) {
+	t.Setenv("MULTICA_BROWSER_GATEWAY_URLS", `{"c00":"https://c00.example.ts.net:35443","x99":"http://127.0.0.1:4100"}`)
+	for host, want := range map[string]string{"c00": "https://c00.example.ts.net:35443", "x99": "http://127.0.0.1:4100"} {
+		out := browserLeaseResponseOf(browserlease.Result{Host: host, Token: "tok"})
+		if out.GatewayURL != want || out.Aud != "steel-gateway/"+host {
+			t.Errorf("host %s: gateway_url=%q aud=%q, want %q", host, out.GatewayURL, out.Aud, want)
+		}
+	}
+	if out := browserLeaseResponseOf(browserlease.Result{Host: "x99"}); out.GatewayURL != "" {
+		t.Errorf("no token: gateway_url=%q, want none", out.GatewayURL)
+	}
+	t.Setenv("MULTICA_BROWSER_GATEWAY_URLS", "")
+	if out := browserLeaseResponseOf(browserlease.Result{Host: "c00", Token: "tok"}); out.GatewayURL != "" {
+		t.Errorf("unconfigured: gateway_url=%q, want none", out.GatewayURL)
+	}
+}
+
 func seedDecisionBoundBrowserLease(t *testing.T, taskID, decisionID string) string {
 	t.Helper()
 	id := uuid.NewString()
@@ -296,9 +347,10 @@ func TestEndedDecisionRevokesItsBrowserLeases(t *testing.T) {
 	}
 }
 
-// An approved (answered) decision that reaches its expires_at revokes its leases through the
-// decision worker's own pass; another decision's lease stays live (CHE-4742 review P1).
-func TestAnsweredDecisionPastExpiryRevokesItsBrowserLeases(t *testing.T) {
+// An approved (answered) decision revokes its leases at its expires_at, at once: the deadline
+// loop runs alone (no decision worker pass), the lease stays live until the deadline, and the
+// revoke event is published. Another decision's lease stays live (CHE-4742 review P1).
+func TestAnsweredDecisionRevokesItsBrowserLeasesAtExpiry(t *testing.T) {
 	fixture := newAskedRecordFixture(t)
 	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
 	if err != nil {
@@ -315,28 +367,85 @@ func TestAnsweredDecisionPastExpiryRevokesItsBrowserLeases(t *testing.T) {
 	bound := seedDecisionBoundBrowserLease(t, task, decision)
 	elsewhere := seedDecisionBoundBrowserLease(t, task, uuid.NewString())
 
-	dbfx.Exec(t, `DELETE FROM decision_worker_lease`)
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_worker_lease`) })
-	// One worker for both passes: its consequences lease is held for 30 s after the first.
-	worker := NewDecisionWorker(testHandler)
-	pass := func() {
-		t.Helper()
-		if ran, err := worker.ProcessPass(context.Background()); err != nil || !ran {
-			t.Fatalf("decision worker pass ran=%v err=%v", ran, err)
+	revoked := make(chan string, 4)
+	testHandler.Bus.Subscribe(protocol.EventBrowserLeaseRevoked, func(e events.Event) {
+		if p, ok := e.Payload.(map[string]any); ok && p["lease_id"] == bound {
+			revoked <- fmt.Sprint(p["reason"])
 		}
+	})
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '2 seconds' WHERE id = $1`, decision)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); NewDecisionWorker(testHandler).RunLeaseExpiry(ctx) }()
+	t.Cleanup(func() { stop(); <-done })
+
+	select {
+	case reason := <-revoked:
+		t.Fatalf("lease revoked before its decision expired (reason %s)", reason)
+	case <-time.After(1 * time.Second):
 	}
-	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, decision)
-	pass()
 	if state, _ := browserLeaseState(t, bound); state != "active" {
 		t.Fatalf("lease revoked before its decision expired: state = %q", state)
 	}
-
-	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, decision)
-	pass()
+	select {
+	case reason := <-revoked:
+		if reason != browserlease.ReasonDecisionExpired {
+			t.Fatalf("revoke reason = %q, want %s", reason, browserlease.ReasonDecisionExpired)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no revoke event within 2 s after the decision deadline")
+	}
 	if state, reason := browserLeaseState(t, bound); state != "ended" || reason != browserlease.ReasonDecisionExpired {
 		t.Fatalf("bound lease state=%q reason=%q, want ended %s", state, reason, browserlease.ReasonDecisionExpired)
 	}
 	if state, _ := browserLeaseState(t, elsewhere); state != "active" {
 		t.Fatalf("a lease of another decision was revoked: state = %q", state)
+	}
+}
+
+// With no live lease bound to an expiring decision there is no deadline: the query reports -1,
+// and the loop sleeps its recheck interval instead of polling every few milliseconds
+// (CHE-4742 review round 3). A due deadline reports 0 and a future one its distance.
+func TestLeaseExpiryDeadlineIdleDueAndFuture(t *testing.T) {
+	dbfx.Exec(t, `UPDATE browser_lease SET state = 'ended', epoch = COALESCE(epoch, 1), ended_at = now(), end_reason = 'test_cleanup' WHERE state IN ('queued', 'active')`)
+	ctx := context.Background()
+	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait != -1 {
+		t.Fatalf("idle deadline = %v, err %v, want -1", wait, err)
+	}
+
+	fixture := newAskedRecordFixture(t)
+	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := uuidToString(record.Request.ID)
+	runtimeID := dbfx.Runtime(t, "CHE-4742 deadline runtime")
+	agentID := dbfx.Agent(t, "CHE-4742 deadline agent "+uuid.NewString(), runtimeID)
+	issueID := dbfx.Issue(t, "CHE-4742 deadline issue")
+	task := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "started_at": testutil.Raw("now()")})
+	seedDecisionBoundBrowserLease(t, task, decision)
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() + interval '100 seconds' WHERE id = $1`, decision)
+	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait < 90 || wait > 100 {
+		t.Fatalf("future deadline = %v, err %v, want about 100", wait, err)
+	}
+	dbfx.Exec(t, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, decision)
+	if wait, err := testHandler.Queries.NextDecisionBrowserLeaseDeadline(ctx); err != nil || wait != 0 {
+		t.Fatalf("due deadline = %v, err %v, want 0", wait, err)
+	}
+}
+
+func TestLeaseExpiryWait(t *testing.T) {
+	for _, tc := range []struct {
+		seconds float64
+		want    time.Duration
+	}{
+		{-1, leaseExpiryRecheck},
+		{0, 10 * time.Millisecond},
+		{2, 2*time.Second + 10*time.Millisecond},
+		{100, leaseExpiryRecheck},
+	} {
+		if got := leaseExpiryWait(tc.seconds); got != tc.want {
+			t.Errorf("leaseExpiryWait(%v) = %v, want %v", tc.seconds, got, tc.want)
+		}
 	}
 }

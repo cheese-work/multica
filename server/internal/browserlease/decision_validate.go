@@ -43,6 +43,40 @@ type Scope struct {
 // reads the scope back from these lines, so the request that W3-10 creates must use it.
 func ScopeDecision(s Scope) string { return renderScope(scopeHeading, s) }
 
+// ScopeNames are the readable labels of a linked scope decision. Slug is the workspace slug the
+// link paths start with.
+type ScopeNames struct{ Slug, Agent, Issue, Profile string }
+
+// LinkedScopeDecision is ScopeDecision with each ID as the destination of a Markdown link, since
+// an ask refuses a bare ID in its decision text. parseScope reads the ID back from the link.
+func LinkedScopeDecision(s Scope, n ScopeNames) string {
+	link := func(label, kind string, id pgtype.UUID) string {
+		return fmt.Sprintf("[%s](/%s/%s/%s)", linkLabel(label), n.Slug, kind, uuid.UUID(id.Bytes))
+	}
+	return fmt.Sprintf("%s\n%s: %s\n%s: %s\n%s: %s\n%s: %s\n%s: %d",
+		scopeHeading, keyAgent, link(n.Agent, "agents", s.AgentID), keyIssue, link(n.Issue, "issues", s.IssueID),
+		keyProfile, link(n.Profile, "browser-profiles", s.ProfileID), keyClass, s.Class, keyDurationS, int64(s.Duration/time.Second))
+}
+
+// linkLabel keeps a label on one line and free of link syntax.
+func linkLabel(label string) string {
+	return strings.Join(strings.Fields(strings.NewReplacer("[", "", "]", "", "(", "", ")", "").Replace(label)), " ")
+}
+
+// scopeValue is the value of a scope line: a bare ID, or the last path segment of the
+// destination of a link written by LinkedScopeDecision.
+func scopeValue(v string) string {
+	if !strings.HasPrefix(v, "[") || !strings.HasSuffix(v, ")") {
+		return v
+	}
+	i := strings.LastIndex(v, "](")
+	if i < 0 {
+		return v
+	}
+	dest := v[i+2 : len(v)-1]
+	return dest[strings.LastIndex(dest, "/")+1:]
+}
+
 func renderScope(heading string, s Scope) string {
 	return fmt.Sprintf("%s\n%s: %s\n%s: %s\n%s: %s\n%s: %s\n%s: %d",
 		heading, keyAgent, uuid.UUID(s.AgentID.Bytes), keyIssue, uuid.UUID(s.IssueID.Bytes),
@@ -68,7 +102,7 @@ func parseScopeUnder(heading, decision string) (Scope, bool) {
 	}
 	var s Scope
 	for key, dst := range map[string]*pgtype.UUID{keyAgent: &s.AgentID, keyIssue: &s.IssueID, keyProfile: &s.ProfileID} {
-		id, err := uuid.Parse(got[key])
+		id, err := uuid.Parse(scopeValue(got[key]))
 		if err != nil {
 			return Scope{}, false
 		}

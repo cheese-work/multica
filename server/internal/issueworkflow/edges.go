@@ -213,8 +213,12 @@ type PRFact struct {
 // and its children. IssueStatuses is keyed by the issue identifier a guard
 // names.
 type Facts struct {
-	PRs           []PRFact
-	ChildrenDone  bool
+	PRs          []PRFact
+	ChildrenDone bool
+	// OpenChildren is true while any direct child is outside the done and
+	// closed categories. pr.checks_green waits on it (CHE-6466): a parent
+	// with an open sub-issue stays on its step.
+	OpenChildren  bool
 	IssueStatuses map[string]string
 	// Webhooks holds the names of this step's webhook endpoints that received
 	// a success call at or after the issue entered the step.
@@ -239,7 +243,7 @@ func FirstMatch(edges []Edge, f Facts) (Edge, bool) {
 func (f Facts) holds(g Guard) bool {
 	switch g.Kind {
 	case GuardPRChecksGreen:
-		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" })
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" }) && !f.OpenChildren
 	case GuardPRChecksRed:
 		return f.anyPR(func(p PRFact) bool { return p.red() && (p.RedCause == "" || p.RedCause == "pr") })
 	case GuardPRChecksInfraRed:

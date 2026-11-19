@@ -11,9 +11,9 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// ClaimTaskPREvent hands the daemon the next typed PR event for a live run.
-// The body carries structured fields only: no PR title, body or comment text,
-// and no member author. Without the negotiated capability no row exists, so a
+// ClaimTaskPREvent hands the daemon the next typed item for a live run: a PR
+// event, or (v2 tasks) a wakeup item. A PR body carries structured fields only:
+// no PR title, body or comment text, and no member author. Without the negotiated capability no row exists, so a
 // legacy daemon always gets an empty claim.
 func (h *Handler) ClaimTaskPREvent(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
@@ -27,6 +27,15 @@ func (h *Handler) ClaimTaskPREvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to claim PR event")
+		return
+	}
+	if row.ItemKind == "wakeup" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"event_id":  uuidToString(row.EventID),
+			"kind":      "wakeup",
+			"wakeup_id": uuidToString(row.WakeupID),
+			"text":      row.Note,
+		})
 		return
 	}
 	body := map[string]any{
