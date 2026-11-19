@@ -369,6 +369,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --auto-close-mode off|warn|block` 设置自动关闭模式（`settings.auto_close.mode`）。它只修改这一个键，不改其他设置，也不能与其他更新标志同时使用。只有所有者可以修改。关闭所需的检查见[工作区](/docs/workspaces)。评审后无事可做时，任务的作者记录 `multica issue metadata set <issue> --key post_close_work --value none --type string`。
 - `multica workspace update --blocked-run-skip-mode off|warn|block` 设置阻塞进入时跳过运行的模式（`settings.blocked_run_skip.mode`）。它只修改该键，不改变其他设置，且不能与其他更新标志同时使用。只有所有者可以更改。何时跳过进入时的运行见[工作区](/docs/workspaces)。
 - `multica workspace update --ask-guard-mode off|warn|block` 设置提问守卫模式（`settings.ask_guard_mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改。命令会输出保存后的工作区，`multica workspace get` 也会在 `settings` 下显示该模式。`off` 关闭守卫；`warn` 只统计遗漏并放行；`block` 拒绝。
+- `multica workspace update --merge-queue-routing off|warn`、`--merge-queue-bindings '<json>'` 和 `--merge-queue-watch-issue <issue-id|none>` 设置合并队列设置（`settings.merge_queue_dequeue_routing`、`settings.merge_queue_actor_bindings`、`settings.merge_queue_watch_issue`）。它们可以相互组合，但不能与其他更新标志组合。只有所有者可以修改。`--merge-queue-routing block` 以及同时出现在两个列表中的登录名会被以 `routing-not-available` 等拒绝。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 - `--mode script --script <name> [--arg <value>]...` 在智能体的任务令牌下运行一个白名单脚本，不启动模型会话。`--script` 和 `--arg` 需要 `--mode script`，`--mode script` 需要 `--script`。`--description` 从不被执行。守护进程没有白名单时，所有脚本任务都会安全失败。`--output json` 以 `script_config` 显示脚本名和参数。`autopilot update --mode <其他>` 会清除脚本。 任务结束时，服务器会尽力删除任务令牌。如果删除失败，令牌在过期前仍然有效，没有更早的撤销机制。运行结果的 `script` 下记录脚本名、参数列表的 SHA-256、退出码和耗时；删除失败时还会设置 `token_revoke_failed`。
 
@@ -414,6 +415,21 @@ multica me background-agents set dm_title --agent none   # 恢复为工作区默
 ```
 
 `--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
+
+## 浏览器租约
+
+在守护进程任务内租用共享的远程浏览器。命令经由本地守护进程转发，任务的守护进程凭据只保存在守护进程中，智能体从不持有。获批的租约只在 stdout 输出网关 URL 和短期令牌，不写入日志。排队中的租约只输出队列位置，不输出令牌。
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` 从不输出令牌；`renew` 输出新令牌。登录配置文件需要 `--decision`，即该 Issue 上已回答的决策请求 ID。
+
+网关 URL 由服务器从 `MULTICA_BROWSER_GATEWAY_URLS` 返回，它是一个 JSON 对象，把每个主机映射到其网关 URL（例如 `{"c00":"https://c00.example.ts.net:35443"}`）。租约所在主机没有条目时，CLI 会输出警告且不输出 URL。
 
 ## 命令概览
 

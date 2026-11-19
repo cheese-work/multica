@@ -176,7 +176,7 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 	}
 	if input.SourceCommentID.Valid {
 		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && !runsDecisionRequest(task, agentID, issue, input.dmSession()) {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !runsDecisionRequest(task, agentID, issue, input.dmSession(), input.EscalationClass) {
 			return empty, deny
 		}
 		if err != nil {
@@ -228,13 +228,23 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 }
 
 // runsDecisionRequest reports whether task is the agent's running task for this
-// request: the issue's own task, or the chat task of dmSession when the request
-// is made from a DM (a chat task has no issue of its own).
-func runsDecisionRequest(task db.AgentTaskQueue, agentID pgtype.UUID, issue db.Issue, dmSession pgtype.UUID) bool {
+// request: the issue's own task, the chat task of dmSession when the request is
+// made from a DM (a chat task has no issue of its own), or the task that created
+// the issue when the class is an escalation (createdIssueCard).
+func runsDecisionRequest(task db.AgentTaskQueue, agentID pgtype.UUID, issue db.Issue, dmSession pgtype.UUID, class string) bool {
 	if task.AgentID != agentID || task.Status != "running" || task.ChatSessionID != dmSession {
 		return false
 	}
-	return dmSession.Valid || task.IssueID == issue.ID
+	return dmSession.Valid || task.IssueID == issue.ID || createdIssueCard(task, issue, class)
+}
+
+// createdIssueCard lets the running task that created a new root issue open an
+// escalation card on it (CHE-6911). A held new issue gets no run, so without
+// this the five escalation classes could not start at once. Narrow by design:
+// a class other than reversible, and an issue whose server-stamped origin is
+// this very task. The caller still proves the task is running and the agent's.
+func createdIssueCard(task db.AgentTaskQueue, issue db.Issue, class string) bool {
+	return class != "" && class != "reversible" && issue.OriginType.String == "agent_create" && issue.OriginID == task.ID
 }
 
 // resolveDecisionRecipient maps the named id to the active member's user id.
@@ -775,7 +785,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	if err != nil {
 		return empty, err
 	}
-	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession, input.Proposal != nil && input.Action != nil && input.Action.Type == runBudgetRaiseType)
+	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession, input.Proposal != nil && input.Action != nil && input.Action.Type == runBudgetRaiseType, input.EscalationClass)
 	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
 		// A stopped task, a removed recipient or a lane that is gone cannot ask
 		// again, but an open proposal of this identity is reported as

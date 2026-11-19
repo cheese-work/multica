@@ -245,6 +245,54 @@ func TestDisablingTheSteelPluginRevokesLeases(t *testing.T) {
 	}
 }
 
+func TestBrowserLeaseStatusNeverReturnsATokenAndSeesTheEnd(t *testing.T) {
+	f := newBrowserLeaseFixture(t, "running")
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": f.profile})
+	var minted struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || minted.LeaseID == "" {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+
+	w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", minted.LeaseID)
+	var st struct {
+		State string `json:"state"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || w.Code != http.StatusOK || st.State != "active" || st.Token != "" {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+
+	if w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", uuid.NewString()); w.Code != http.StatusNotFound {
+		t.Fatalf("status of an unknown lease: %d %s, want 404", w.Code, w.Body.String())
+	}
+
+	f.call(t, f.h.ReleaseBrowserLease, "/x", nil, "leaseId", minted.LeaseID)
+	if w = f.call(t, f.h.StatusBrowserLease, "/x", nil, "leaseId", minted.LeaseID); w.Code != http.StatusConflict {
+		t.Fatalf("status after release: %d %s, want 409", w.Code, w.Body.String())
+	}
+}
+
+// The gateway URL comes from the operator's MULTICA_BROWSER_GATEWAY_URLS, keyed by host. The
+// token audience is only a label ("steel-gateway/c00") and is never turned into a URL.
+func TestBrowserLeaseResponseCarriesTheConfiguredGatewayURL(t *testing.T) {
+	t.Setenv("MULTICA_BROWSER_GATEWAY_URLS", `{"c00":"https://c00.example.ts.net:35443","x99":"http://127.0.0.1:4100"}`)
+	for host, want := range map[string]string{"c00": "https://c00.example.ts.net:35443", "x99": "http://127.0.0.1:4100"} {
+		out := browserLeaseResponseOf(browserlease.Result{Host: host, Token: "tok"})
+		if out.GatewayURL != want || out.Aud != "steel-gateway/"+host {
+			t.Errorf("host %s: gateway_url=%q aud=%q, want %q", host, out.GatewayURL, out.Aud, want)
+		}
+	}
+	if out := browserLeaseResponseOf(browserlease.Result{Host: "x99"}); out.GatewayURL != "" {
+		t.Errorf("no token: gateway_url=%q, want none", out.GatewayURL)
+	}
+	t.Setenv("MULTICA_BROWSER_GATEWAY_URLS", "")
+	if out := browserLeaseResponseOf(browserlease.Result{Host: "c00", Token: "tok"}); out.GatewayURL != "" {
+		t.Errorf("unconfigured: gateway_url=%q, want none", out.GatewayURL)
+	}
+}
+
 func seedDecisionBoundBrowserLease(t *testing.T, taskID, decisionID string) string {
 	t.Helper()
 	id := uuid.NewString()

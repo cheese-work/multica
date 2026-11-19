@@ -59,7 +59,7 @@ func (f watchdogFixture) stalledIssue(t *testing.T, age time.Duration, ended int
 
 func candidateFor(t *testing.T, issueID string) (stepCandidate, bool) {
 	t.Helper()
-	cands, err := testHandler.stepWatchdogCandidates(context.Background(), 1000)
+	cands, err := testHandler.stepWatchdogCandidates(context.Background(), 1000, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestStepWatchdogCandidateBehindANonHandlerBatch(t *testing.T) {
 		f.stalledIssue(t, age, 0, testutil.Cols{"status": "in_progress"}) // no handler in this workflow
 	}
 	want := f.stalledIssue(t, 25*time.Hour, 0)
-	cands, err := testHandler.stepWatchdogCandidates(context.Background(), 2)
+	cands, err := testHandler.stepWatchdogCandidates(context.Background(), 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
