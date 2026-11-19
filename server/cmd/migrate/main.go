@@ -180,6 +180,7 @@ var concurrentIndexCleanups = map[string]string{
 	"999l_agent_task_queue_task_key_idx":            "idx_agent_task_queue_task_key",
 	"999r_issue_step_watchdog_action_uidx":          "issue_step_watchdog_action_occurrence_uidx",
 	"975_chat_session_chain_root_idx":               "idx_chat_session_chain_root",
+	"999z_decision_backing_lane_uidx":                           "decision_backing_lane_member_topic_uidx",
 	// v0.10.0 merge (CHE-7023): migrations that build an index concurrently on up
 	// but were never registered. Without a hook an interrupted build leaves an
 	// INVALID index that `IF NOT EXISTS` skips on retry.

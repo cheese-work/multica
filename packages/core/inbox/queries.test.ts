@@ -206,6 +206,24 @@ describe("deduplicateInboxItems mentions", () => {
     expect(matches(rows).map((row) => row.id)).toEqual(["squad"]);
   });
 
+  it("shows the mention, not the later run_budget notice, in the mentions view (CHE-7473)", () => {
+    const budget = (id: string, issue_id: string, created_at: string) =>
+      item({ id, type: "run_budget" as InboxItem["type"], issue_id, created_at });
+    const rows = [
+      mention("direct", "2026-06-15T08:00:00Z", "direct"),
+      budget("budget-after-mention", "issue-1", "2026-06-15T08:05:00Z"),
+      budget("budget-alone", "issue-2", "2026-06-15T08:06:00Z"),
+      { ...mention("all", "2026-06-15T08:07:00Z", "all"), issue_id: "issue-3" },
+    ];
+
+    // v0.10's filter takes every notification and renders each issue as its
+    // newest matching one, so the mention wins without a client-only `mention_row`.
+    const filtered = filterInboxItems(rows, { ...EMPTY_INBOX_FILTERS, mentionsOnly: true });
+    expect(filtered.map((row) => row.id)).toEqual(["all", "direct"]);
+    // The unfiltered list still shows the newest row, the budget notice.
+    expect(deduplicateInboxItems(rows).map((row) => row.id)).toContain("budget-after-mention");
+  });
+
   it("does not match an older mention without provenance", () => {
     expect(matches([mention("legacy", "2026-06-15T08:00:00Z"), comment("later", "2026-06-15T08:05:00Z")])).toEqual([]);
   });

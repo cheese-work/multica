@@ -748,7 +748,7 @@ func main() {
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
 	// A task's Steel browser leases end with the task (CHE-4734).
-	(&browserlease.Revoker{Queries: queries, Bus: bus}).Register()
+	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read

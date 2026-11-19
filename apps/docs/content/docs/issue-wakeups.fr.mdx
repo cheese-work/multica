@@ -171,9 +171,9 @@ Les propriétaires et les administrateurs peuvent définir des réveils par déf
 |---|---|---|
 | Espace de travail | **Paramètres → Réveils → Règles de l'espace de travail** | Propriétaires et administrateurs |
 | Projet | La page du projet, **Règles du projet** | Propriétaires et administrateurs |
-| Ticket | La liste **Réveils par défaut** du ticket : **Remplacer**, **Modifier le remplacement**, **Réinitialiser** | Membres |
+| Ticket | Le bouton **Par défaut · N actifs** de l'en-tête Réveils ouvre les règles par défaut du ticket en place ; le menu de chaque règle propose **Remplacer**, **Modifier le remplacement**, **Rétablir la valeur par défaut** et **Ouvrir le projet** | Membres |
 
-Chaque réglage par défaut indique d'où vient sa valeur (**hérité de l'espace de travail**, du projet, ou **remplacé sur ce ticket**) et son état : **Activé**, **Désactivé**, ou **En pause** avec la raison. **Réinitialiser** supprime le remplacement ; le ticket suit de nouveau le niveau au-dessus.
+Chaque réglage par défaut tient sur une ligne avec son état : **Activé**, **Désactivé**, ou **En pause** avec la raison. Une étiquette indique ce qui diffère de la valeur par défaut intégrée : **Espace de travail**, **Projet**, ou **Modifié** quand ce ticket le remplace. Le bouton affiche **Par défaut · N en pause** quand une règle est en pause et ajoute **N modifiés** s'il existe des remplacements. **Rétablir la valeur par défaut** supprime le remplacement ; le ticket suit de nouveau le niveau au-dessus.
 
 **API.** Les trois portées sont disponibles via l'API. Envoyez `revision` sous forme de chaîne : `"0"` pour créer, la révision de votre dernière lecture pour modifier. Une révision périmée renvoie `409` ; relisez puis réessayez.
 

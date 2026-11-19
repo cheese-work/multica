@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -50,6 +51,12 @@ func (h *Handler) browserLoginMember(w http.ResponseWriter, r *http.Request) (ws
 	return ws, user, ok
 }
 
+// memberLeaseCtx attributes a lease transition to the member who made the call (CHE-4744);
+// without it the audit row would name the system.
+func (h *Handler) memberLeaseCtx(r *http.Request, ws pgtype.UUID) context.Context {
+	return withAuditActor(r.Context(), h.auditActorFromRequest(r, ws))
+}
+
 // ownLoginLease loads the lease and refuses one that is not a class H lease of this member.
 func (h *Handler) ownLoginLease(w http.ResponseWriter, r *http.Request, ws, user pgtype.UUID) (db.BrowserLease, bool) {
 	leaseID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "leaseId"), "lease_id")
@@ -94,7 +101,7 @@ func (h *Handler) MintBrowserLoginLease(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	res, err := h.BrowserLeases.MintMember(r.Context(), browserlease.MemberMintRequest{
+	res, err := h.BrowserLeases.MintMember(h.memberLeaseCtx(r, ws), browserlease.MemberMintRequest{
 		WorkspaceID: ws, UserID: user, ProfileID: profileID, DecisionID: decisionID,
 	})
 	if err != nil {
@@ -118,7 +125,7 @@ func (h *Handler) RenewBrowserLoginLease(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	res, err := h.BrowserLeases.RenewMember(r.Context(), ws, user, l.ID)
+	res, err := h.BrowserLeases.RenewMember(h.memberLeaseCtx(r, ws), ws, user, l.ID)
 	if err != nil {
 		writeBrowserLeaseError(w, err)
 		return
@@ -136,7 +143,7 @@ func (h *Handler) ReleaseBrowserLoginLease(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	revoked, err := h.browserLeaseRevoker().Revoke(r.Context(), browserlease.Filter{
+	revoked, err := h.browserLeaseRevoker().Revoke(h.memberLeaseCtx(r, ws), browserlease.Filter{
 		WorkspaceID: ws, LeaseID: l.ID, UserID: user,
 	}, browserlease.ReasonRelease)
 	if err != nil {

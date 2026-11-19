@@ -39,7 +39,7 @@ import { WakeupControl } from "./wakeup-control";
 import { WakeupsPausedBanner } from "./wakeups-paused-banner";
 import { WakeupCreate } from "./wakeup-create";
 import { SystemWakeupRow } from "./system-wakeup-row";
-import { IssueWakeupDefaults } from "./issue-wakeup-defaults";
+import { useWakeupDefaults } from "./issue-wakeup-defaults";
 import { TranscriptButton } from "../../common/task-transcript";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
@@ -390,6 +390,8 @@ export function WakeupsSection({
   const text = useWakeupText();
   const disable = useDisableIssueWakeup(workspaceId, issueId);
   const enable = useEnableIssueWakeup(workspaceId, issueId);
+  const defaults = useWakeupDefaults({ workspaceId, issueId, projectId });
+  const showDefaults = !closed && defaults.available;
   // Open issues always show the section so people can add a wakeup.
   if (closed && !hasContent) return null;
   const current = data.filter((w) => isCurrentWakeup(w, wakeupRun(w, tasks)));
@@ -437,7 +439,7 @@ export function WakeupsSection({
     />
   );
   return (
-    <section>
+    <section onKeyDown={defaults.onKeyDown}>
       <div className="mb-1 flex items-center gap-1">
         {hasContent ? (
           <button
@@ -461,10 +463,12 @@ export function WakeupsSection({
             {t(($) => $.wakeups.title)}
           </div>
         )}
+        {showDefaults && defaults.button}
         {!closed && (
           <WakeupCreate workspaceId={workspaceId} issueId={issueId} defaultAgentId={defaultAgentId} />
         )}
       </div>
+      {showDefaults && defaults.panel}
       {open && (
         <div>
           <WakeupsPausedBanner className="mb-1" />
@@ -483,6 +487,9 @@ export function WakeupsSection({
             </p>
           )}
           {currentSystemRules.map(systemRow)}
+          {showDefaults && current.length === 0 && currentSystemRules.length === 0 && (
+            <p className="px-2 text-label text-muted-foreground">{t(($) => $.wakeups.defaults.empty_live)}</p>
+          )}
           {current.map(row)}
           {historyCount > 0 && (
             <>
@@ -506,7 +513,6 @@ export function WakeupsSection({
               )}
             </>
           )}
-          {!closed && <IssueWakeupDefaults workspaceId={workspaceId} issueId={issueId} projectId={projectId} />}
         </div>
       )}
     </section>
