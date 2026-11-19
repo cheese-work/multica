@@ -62,24 +62,25 @@ export function useWakeupDefaults({ workspaceId, issueId, projectId }: { workspa
   return {
     available,
     button: (
-      <button
+      <Button
         ref={button}
         type="button"
+        variant="ghost"
+        size="sm"
         {...{ [DEFAULTS_MARK]: "" }}
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => setOpen(!open)}
         className={cn(
-          "flex min-h-10 min-w-0 shrink items-center gap-1 rounded-md px-2 text-caption hover:bg-accent/70 focus-visible:outline-2 focus-visible:outline-ring md:min-h-8",
+          "h-auto min-h-10 min-w-0 shrink justify-start gap-1 px-2 text-caption md:min-h-8",
           paused ? "text-warning" : "text-muted-foreground",
-          open && "bg-accent/70",
         )}
       >
         {paused > 0 && <Pause className="size-3.5 shrink-0" aria-hidden="true" />}
         {edited > 0 && <Pencil className="size-3.5 shrink-0" aria-hidden="true" />}
         <span className="truncate">{label}</span>
         <ChevronDown className={cn("size-3 shrink-0", open && "rotate-180")} aria-hidden="true" />
-      </button>
+      </Button>
     ),
     // Closed, not unmounted: an override draft survives a close and reopen.
     panel: (
@@ -99,11 +100,11 @@ export function useWakeupDefaults({ workspaceId, issueId, projectId }: { workspa
         </ul>
       </div>
     ),
-    // A form keeps its own Esc (a draft is not thrown away) and so does an open menu.
+    // An open menu keeps its own Esc. The panel is hidden, not unmounted, so a draft in the form survives the close.
     onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
       if (event.key !== "Escape" || !open) return;
       const target = event.target as HTMLElement;
-      if (target.closest(`[${DEFAULTS_MARK}]`) && !target.closest("form, [role='menu']")) close();
+      if (target.closest(`[${DEFAULTS_MARK}]`) && !target.closest("[role='menu']")) close();
     },
   };
 }

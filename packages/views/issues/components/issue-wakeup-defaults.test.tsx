@@ -161,15 +161,18 @@ it("Esc closes an open menu first and leaves the panel open", async () => {
   expect(screen.getByRole("button", { name: "Defaults · 3 on" })).toHaveAttribute("aria-expanded", "true");
 });
 
-it("Esc inside the override form keeps the panel and the draft", async () => {
+it("Esc inside the override form closes the panel, returns focus and keeps the draft", async () => {
   const user = userEvent.setup();
   const item = await ruleItem("When the linked PR merges");
   await pick(item, "Override");
   const instruction = within(item).getByRole("textbox", { name: "What to do when woken" });
   await user.type(instruction, " today");
   await user.keyboard("{Escape}");
-  expect(screen.getByRole("button", { name: "Defaults · 3 on" })).toHaveAttribute("aria-expanded", "true");
-  expect(within(item).getByRole("textbox", { name: "What to do when woken" })).toHaveValue("Check the merge today");
+  const button = screen.getByRole("button", { name: "Defaults · 3 on" });
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(button).toHaveFocus();
+  await user.click(button);
+  expect(within(await screen.findByRole("listitem", { name: "When the linked PR merges" })).getByRole("textbox", { name: "What to do when woken" })).toHaveValue("Check the merge today");
 });
 
 it("keeps the draft when the panel closes and opens again", async () => {
