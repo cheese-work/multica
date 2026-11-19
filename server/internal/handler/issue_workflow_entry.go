@@ -150,6 +150,8 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	// re-selecting the current status is a no-op: neither hands the issue off.
 	case !projectMoving && statusExplicit && params.Status.Valid && params.Status.String != prev.Status:
 		entering = params.Status.String
+	case !projectMoving && caller.enterCurrent && statusExplicit && params.Status.Valid:
+		entering = params.Status.String
 	default:
 		return nil, nil
 	}
@@ -408,6 +410,10 @@ type workflowCaller struct {
 	handoffAssignee *issueworkflow.StepAssignee
 	// keepForStep also keeps handoffAssignee for the entered step (CHE-5490).
 	keepForStep bool
+	// enterCurrent enters the step the issue already sits on, so a switch to
+	// another workflow hands the issue to the new workflow's handler even when
+	// the status key does not change (CHE-7669).
+	enterCurrent bool
 }
 
 // HandoffAssigneeRequest is the assignee a status move names for its handoff.
