@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -226,9 +227,10 @@ func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtyp
 // transaction: the row is consumed, the issue is blocked, blocked_reason is
 // set and one system comment names the target and the cause. Any failure rolls
 // all of it back, so the row stays and the next terminal event refuses again.
-// A request that cannot be blocked (finished issue, a workflow with no blocked
-// step or no way to blocked) still gets the comment and blocked_reason, so it
-// is recorded once and does not repeat.
+// A request that cannot be blocked (a workflow with no blocked step or no way
+// to blocked) keeps its row, so it recovers once the workflow can block; the
+// comment and blocked_reason are written once per cause, not on every event. A
+// finished issue has nothing to block: its row is consumed with the comment.
 func (h *Handler) refuseDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID, refusal *deferredSwitchRefusal) {
 	err := h.settleDeferredSwitchRefusal(ctx, issueID, refusal)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -243,9 +245,10 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 	}
 	defer lk.close(ctx)
 	qtx, issue := lk.qtx, lk.issue
-	// The apply rolled back with the row; consuming it here keeps a concurrent
-	// settle from commenting twice.
-	if _, err := qtx.DeleteIssueWorkflowSwitchPending(ctx, issueID); err != nil {
+	// The apply rolled back with the row. A concurrent settle may have consumed
+	// it since; settling twice would comment twice.
+	pending, err := qtx.HasIssueWorkflowSwitchPending(ctx, issueID)
+	if err != nil || !pending {
 		return err
 	}
 	reason := refusal.Error()
@@ -274,13 +277,17 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 			}
 		}
 	}
-	if !blocked && !finished {
-		// The failed move left nothing behind; the issue row is as locked.
-		slog.Warn("deferred workflow switch: cannot block issue", "issue_id", uuidToString(issueID))
+	if blocked || finished {
+		if _, err := qtx.DeleteIssueWorkflowSwitchPending(ctx, issueID); err != nil {
+			return err
+		}
+	} else if recordedBlockedReason(issue.Metadata) == reason {
+		// Kept for recovery and already recorded: write nothing again.
+		return nil
 	}
 	outcome := "The issue keeps its current workflow and is blocked. Fix the target, then switch again."
 	if !blocked {
-		outcome = "The issue keeps its current workflow. It could not be blocked: its status or workflow has no way to blocked. Fix the target, then switch again."
+		outcome = "The issue keeps its current workflow. It could not be blocked: its status or workflow has no way to blocked. The request is kept and applies again when the workflow can block or the target is fixed."
 	}
 	created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
@@ -290,8 +297,11 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 	if err != nil {
 		return err
 	}
-	if _, err := setIssueMetadataValue(ctx, qtx, issue.WorkspaceID, issue.ID, "blocked_reason", reason); err != nil {
-		return err
+	// An unchanged value updates no row.
+	if recordedBlockedReason(issue.Metadata) != reason {
+		if _, err := setIssueMetadataValue(ctx, qtx, issue.WorkspaceID, issue.ID, "blocked_reason", reason); err != nil {
+			return err
+		}
 	}
 	if err := lk.tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit workflow switch refusal: %w", err)
@@ -309,4 +319,12 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 		"issue_revision":      created.IssueRevision,
 	})
 	return nil
+}
+
+func recordedBlockedReason(metadata []byte) string {
+	var m struct {
+		BlockedReason string `json:"blocked_reason"`
+	}
+	_ = json.Unmarshal(metadata, &m)
+	return m.BlockedReason
 }
