@@ -140,6 +140,9 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 	if err == nil {
 		err = noteRunInserted(ctx, q, p.IssueID, task.ID)
 	}
+	if err == nil {
+		recordEnqueuedRole(ctx, q, task)
+	}
 	return task, err
 }
 

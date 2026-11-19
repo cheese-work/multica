@@ -541,7 +541,10 @@ func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, pr
 		WorkflowStep: pgtype.Text{String: issue.Status, Valid: true},
 	}); err != nil {
 		slog.Warn("workflow: advance run step failed", "task_id", uuidToString(run.ID), "error", err)
+		return
 	}
+	// The role evidence follows the run into the step it entered (CHE-7676).
+	service.RecordWorkflowRole(ctx, h.Queries, issue, *run, issue.Status)
 }
 
 // stepMovedError explains a refused status change: where the run's step was,

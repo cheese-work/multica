@@ -230,8 +230,11 @@ type SubWorkflow struct {
 
 // Definition is a decoded workflow.
 type Definition struct {
-	ID        pgtype.UUID
-	Name      string
+	ID   pgtype.UUID
+	Name string
+	// Version is the stored row's last update: the workflow as a role record
+	// names it. Zero for a workflow that is not stored (CHE-7676).
+	Version   time.Time
 	IsDefault bool
 	Steps     []Step
 	// MaxRunsPerIssue is the workflow's run budget per issue; 0 means unset
@@ -313,6 +316,9 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
 		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
 		StartStatusKey: row.StartStatusKey.String,
+	}
+	if row.UpdatedAt.Valid {
+		def.Version = row.UpdatedAt.Time
 	}
 	if row.RunBudgetSince.Valid {
 		def.RunBudgetSince = row.RunBudgetSince.Time

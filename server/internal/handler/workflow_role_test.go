@@ -79,7 +79,7 @@ func seedReviewerTask(t *testing.T, issueID, agentID string) string {
 	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
 	taskID := dbfx.Task(t, agentID, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "completed", "workflow_step": "agent_review"})
 	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
-		VALUES ($1, $2, 'agent', $3, 'workflow_role', jsonb_build_object('task_id', $4::text, 'agent_id', $3::text, 'role', 'reviewer', 'status', 'agent_review'))`,
+		VALUES ($1, $2, 'agent', $3::text::uuid, 'workflow_role', jsonb_build_object('task_id', $4::text, 'agent_id', $3::text, 'role', 'reviewer', 'status', 'agent_review'))`,
 		testWorkspaceID, issueID, agentID, taskID)
 	return taskID
 }
@@ -138,7 +138,7 @@ func TestWorkflowRoleSurvivesWorkflowEdit(t *testing.T) {
 
 	// A reviewer's row stays a reviewer's even when the step now hands to an agent.
 	reviewerTask := seedReviewerTask(t, issueID, agentID)
-	setColumnHandoff(t, projectID, "agent_review", handToAgent(agentID, "Review it.")).Want(http.StatusOK)
+	setColumnHandoff(t, projectID, "in_review", handToAgent(agentID, "Review it.")).Want(http.StatusOK)
 	got := authorTaskIDs(issueAuthorsForTest(t, issueID, nil))
 	if !got[taskID] {
 		t.Fatalf("the author task %s is missing from %v", taskID, got)
@@ -195,7 +195,7 @@ func TestWorkflowRoleMixedRowsCountAsAuthor(t *testing.T) {
 	issueID := dbfx.Issue(t, "mixed rows", testutil.Cols{})
 	taskID := seedReviewerTask(t, issueID, agentID)
 	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
-		VALUES ($1, $2, 'agent', $3, 'workflow_role', jsonb_build_object('task_id', $4::text, 'agent_id', $3::text, 'role', 'agent', 'status', 'in_progress'))`,
+		VALUES ($1, $2, 'agent', $3::text::uuid, 'workflow_role', jsonb_build_object('task_id', $4::text, 'agent_id', $3::text, 'role', 'agent', 'status', 'in_progress'))`,
 		testWorkspaceID, issueID, agentID, taskID)
 	if got := authorTaskIDs(issueAuthorsForTest(t, issueID, nil)); !got[taskID] {
 		t.Fatalf("a task with a reviewer row and an agent row must count as an author: %v", got)
@@ -221,5 +221,20 @@ func TestWorkflowRoleUnknownLab(t *testing.T) {
 	}
 	if labs[known] != "openai" || labs[unlisted] != service.LabUnknown || labs[unrecorded] != service.LabUnknown {
 		t.Fatalf("labs = %v, want known=openai, unlisted and unrecorded=%s", labs, service.LabUnknown)
+	}
+}
+
+// The role rows are evidence, not issue history: the timeline does not list them.
+func TestWorkflowRoleRowsAreNotInTheTimeline(t *testing.T) {
+	_, issueID, _, _ := seedRoleIssue(t)
+	if len(workflowRoleRows(t, issueID)) == 0 {
+		t.Fatal("the enqueue wrote no role row")
+	}
+	var timeline []TimelineEntry
+	testutil.Call(t, testHandler.ListTimeline, withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/timeline", nil), "id", issueID)).Want(http.StatusOK).JSON(&timeline)
+	for _, e := range timeline {
+		if e.Action != nil && *e.Action == service.ActivityWorkflowRole {
+			t.Fatalf("the timeline lists a role row: %+v", e)
+		}
 	}
 }
