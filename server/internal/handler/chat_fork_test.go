@@ -293,7 +293,7 @@ func TestForkChatSessionWithMessageStartsFirstTurn(test *testing.T) {
 	var result, replay, otherText ChatForkResponse
 	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "with-message", map[string]any{"message": message})).Want(http.StatusCreated).JSON(&result)
 	cleanupChatFork(test, result.Session.ID)
-	if result.Session.Title != "Src (fork: try the SQLite variant instead of postgr…)" {
+	if result.Session.Title != "Src (fork: try the SQLite variant instead of postgres today)" {
 		test.Fatalf("title = %q", result.Session.Title)
 	}
 	rows := forkRows(test, `chat_session_id = $1`, result.Session.ID)

@@ -82,6 +82,32 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
 func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine bool) (db.Workspace, string, db.ActivityLog, error) {
+	fenced := false
+	if settings != nil {
+		// A plain read before the transaction: a write that changes a key a typed send reads takes
+		// the typed settings fence as its first lock, so it waits holding nothing.
+		current, err := h.Queries.GetWorkspace(r.Context(), params.ID)
+		if err != nil {
+			return db.Workspace{}, "", db.ActivityLog{}, err
+		}
+		fenced = typedWriteChanges(current.Settings, settings)
+	}
+	ws, action, activity, err := h.saveWorkspaceIn(r, params, settings, pause, userID, actorType, actorID, machine, fenced)
+	if errors.Is(err, errTypedFenceNeeded) {
+		// The settings changed between the read and the row lock: run again with the fence held.
+		return h.saveWorkspaceIn(r, params, settings, pause, userID, actorType, actorID, machine, true)
+	}
+	return ws, action, activity, err
+}
+
+// typedWriteChanges reports whether a direct write of settings changes a fenced key.
+// A body that is not an object replaces every key.
+func typedWriteChanges(stored []byte, settings any) bool {
+	incoming, _ := settings.(map[string]any)
+	return typedFenceKeysChange(stored, incoming, true)
+}
+
+func (h *Handler) saveWorkspaceIn(r *http.Request, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine, fenced bool) (db.Workspace, string, db.ActivityLog, error) {
 	ctx := r.Context()
 	var activity db.ActivityLog
 	tx, err := h.TxStarter.Begin(ctx)
@@ -90,11 +116,22 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
+	settingsWriteHook("before_fence")
+	if fenced {
+		if err := q.LockTypedSettingsFence(ctx, params.ID); err != nil {
+			return db.Workspace{}, "", activity, err
+		}
+	}
+	settingsWriteHook("after_fence")
 	// Every update takes the row lock and reads the row it replaces, so the
 	// audit row records the true before-state (CHE-2774).
+	settingsWriteHook("before_settings_lock")
 	storedJSON, err := q.LockWorkspaceSettings(ctx, params.ID)
 	if err != nil {
 		return db.Workspace{}, "", activity, err
+	}
+	if settings != nil && !fenced && typedWriteChanges(storedJSON, settings) {
+		return db.Workspace{}, "", activity, errTypedFenceNeeded
 	}
 	before, err := q.GetWorkspace(ctx, params.ID)
 	if err != nil {

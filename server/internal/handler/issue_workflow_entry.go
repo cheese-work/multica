@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -325,6 +326,18 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"code":          "status_move_not_allowed",
 			"from":          notAllowed.From,
 			"allowed_moves": notAllowed.Allowed,
+		})
+		return true
+	}
+	var held *intakehold.HoldError
+	if errors.As(err, &held) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         held.Error(),
+			"code":          "intake_hold",
+			"source":        held.Source,
+			"ends_at":       held.EndsAt,
+			"fix":           intakehold.Fix,
+			"release_paths": intakehold.ReleasePaths,
 		})
 		return true
 	}

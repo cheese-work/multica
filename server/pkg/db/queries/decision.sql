@@ -694,3 +694,8 @@ SELECT answer.* FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
 ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;
+
+-- name: MarkDecisionRequestsRead :exec
+-- Reading a DM stamps the delivered cards in it once. Read is not answered.
+UPDATE decision_request SET read_at = clock_timestamp()
+WHERE chat_session_id = sqlc.arg('chat_session_id') AND read_at IS NULL AND ping_notified_at IS NOT NULL;

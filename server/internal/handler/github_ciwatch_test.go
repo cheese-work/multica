@@ -54,6 +54,8 @@ func ciWatchFixtureLog(t *testing.T, installationID int64, slug string, flagOn, 
 	ws, _ = workflowFanoutFixture(t, installationID, slug)
 	withFeatureFlag(t, testHandler, featureflags.CIWatcher, flagOn)
 	ctx := context.Background()
+	// Earlier tests in the shard may leave ci_event rows in the shared workspace.
+	testPool.Exec(ctx, `DELETE FROM system1_observation WHERE workspace_id = $1 AND kind = 'ci_event'`, ws)
 	if configured {
 		if _, err := testPool.Exec(ctx, `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode) VALUES ($1, 'cheese-work', 'multica', 'shadow')`, ws); err != nil {
 			t.Fatal(err)
@@ -112,6 +114,14 @@ func TestWorkflowWebhookRecordsACancelledRunAsP0(t *testing.T) {
 	if e, _ := ciCounts(t, ws); e != 0 {
 		t.Fatalf("a cancelled run stored %d evidence rows, want 0", e)
 	}
+}
+
+// The shared test workspace may already hold ci_event rows from tests that ran
+// earlier in the shard; a cancelled run must be judged on its own row only.
+func TestWorkflowWebhookCancelledRunCountIgnoresRowsFromEarlierTests(t *testing.T) {
+	seedCIEvent(t, "stray-a")
+	seedCIEvent(t, "stray-b")
+	TestWorkflowWebhookRecordsACancelledRunAsP0(t)
 }
 
 func TestWorkflowWebhookCIWatchStaysOffWithoutFlagOrConfig(t *testing.T) {
