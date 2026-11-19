@@ -92,41 +92,69 @@ func (h *Handler) ApplyDeferredWorkflowSwitch(ctx context.Context, issueID pgtyp
 	}
 }
 
-func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID) error {
+// lockedDeferredSwitchIssue is the issue row, locked in the order every issue
+// writer takes (budget boundary, catalog, project, issue) inside one
+// transaction. close rolls back what was not committed and releases the lock.
+type lockedDeferredSwitchIssue struct {
+	tx      pgx.Tx
+	qtx     *db.Queries
+	issue   db.Issue
+	release func()
+}
+
+func (l *lockedDeferredSwitchIssue) close(ctx context.Context) {
+	_ = l.tx.Rollback(ctx)
+	l.release()
+}
+
+// lockDeferredSwitchIssue returns pgx.ErrNoRows when the issue is gone.
+func (h *Handler) lockDeferredSwitchIssue(ctx context.Context, issueID pgtype.UUID) (*lockedDeferredSwitchIssue, error) {
 	loaded, err := h.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	release, err := h.lockRunBudgetBoundary(ctx, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("run budget boundary: %w", err)
+	}
+	tx, err := h.beginWakeupWrite(ctx)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	lk := &lockedDeferredSwitchIssue{tx: tx, qtx: h.Queries.WithTx(tx), release: release}
+	fail := func(err error) (*lockedDeferredSwitchIssue, error) {
+		lk.close(ctx)
+		return nil, err
+	}
+	if err := lk.qtx.LockIssueStatusCatalogShared(ctx, loaded.WorkspaceID); err != nil {
+		return fail(err)
+	}
+	if loaded.ProjectID.Valid {
+		if _, err := lk.qtx.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: loaded.ProjectID, WorkspaceID: loaded.WorkspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fail(err)
+		}
+	}
+	lk.issue, err = lk.qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: issueID, WorkspaceID: loaded.WorkspaceID})
+	if err != nil {
+		return fail(err)
+	}
+	if lk.issue.ProjectID != loaded.ProjectID {
+		return fail(errWorkflowChanged)
+	}
+	return lk, nil
+}
+
+func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID) error {
+	lk, err := h.lockDeferredSwitchIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	release, err := h.lockRunBudgetBoundary(ctx, issueID)
-	if err != nil {
-		return fmt.Errorf("run budget boundary: %w", err)
-	}
-	defer release()
-	tx, err := h.beginWakeupWrite(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
-	// The lock order every issue writer takes: catalog, project, issue.
-	if err := qtx.LockIssueStatusCatalogShared(ctx, loaded.WorkspaceID); err != nil {
-		return err
-	}
-	if loaded.ProjectID.Valid {
-		if _, err := qtx.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: loaded.ProjectID, WorkspaceID: loaded.WorkspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-	}
-	issue, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: issueID, WorkspaceID: loaded.WorkspaceID})
-	if err != nil {
-		return err
-	}
-	if issue.ProjectID != loaded.ProjectID {
-		return errWorkflowChanged
-	}
+	defer lk.close(ctx)
+	tx, qtx, issue, release := lk.tx, lk.qtx, lk.issue, lk.release
 	// The live check comes first: while any task can still run, the row stays.
 	live, err := qtx.HasLiveTaskForIssue(ctx, issue.ID)
 	if err != nil || live {
@@ -194,73 +222,91 @@ func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtyp
 	return nil
 }
 
-// refuseDeferredWorkflowSwitch settles a switch the target refused: the row is
-// gone, the issue is blocked with workflow-switch-refused, and one system
-// comment names the target and the cause.
+// refuseDeferredWorkflowSwitch settles a switch the target refused, in one
+// transaction: the row is consumed, the issue is blocked, blocked_reason is
+// set and one system comment names the target and the cause. Any failure rolls
+// all of it back, so the row stays and the next terminal event refuses again.
+// A request that cannot be blocked (finished issue, a workflow with no blocked
+// step or no way to blocked) still gets the comment and blocked_reason, so it
+// is recorded once and does not repeat.
 func (h *Handler) refuseDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID, refusal *deferredSwitchRefusal) {
-	issue, err := h.Queries.GetIssue(ctx, issueID)
+	err := h.settleDeferredSwitchRefusal(ctx, issueID, refusal)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("deferred workflow switch: settle refusal failed, row kept", "err", err, "issue_id", uuidToString(issueID))
+	}
+}
+
+func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtype.UUID, refusal *deferredSwitchRefusal) error {
+	lk, err := h.lockDeferredSwitchIssue(ctx, issueID)
 	if err != nil {
-		slog.Warn("deferred workflow switch: load issue failed", "err", err, "issue_id", uuidToString(issueID))
-		return
+		return err
+	}
+	defer lk.close(ctx)
+	qtx, issue := lk.qtx, lk.issue
+	// The apply rolled back with the row; consuming it here keeps a concurrent
+	// settle from commenting twice.
+	if _, err := qtx.DeleteIssueWorkflowSwitchPending(ctx, issueID); err != nil {
+		return err
 	}
 	reason := refusal.Error()
-	var comment db.Comment
-	var revision int64
-	err = h.withPgxTx(ctx, func(tx pgx.Tx) error {
-		qtx := h.Queries.WithTx(tx)
-		// The apply rolled back with the row; consuming it again keeps a concurrent
-		// settle from commenting twice.
-		if _, err := qtx.DeleteIssueWorkflowSwitchPending(ctx, issueID); err != nil {
+	blocked, finished := issue.Status == issuestatus.Blocked, service.IsFinishedStatus(ctx, qtx, issue.WorkspaceID, issue.Status)
+	var move *edgeMove
+	if !blocked && !finished {
+		def, _, err := issueworkflow.ForIssue(ctx, qtx, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+		if err != nil && !isWorkflowRefusal(err) {
 			return err
 		}
-		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
-			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
-			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
-			Content: "Workflow switch refused (`" + blockedReasonWorkflowSwitchRefused + "`): " + reason +
-				"\n\nThe issue keeps its current workflow and is blocked. Fix the target, then switch again.",
-		})
-		if err != nil {
-			return err
+		if err == nil && def != nil && def.Has(issuestatus.Blocked) {
+			m, err := h.moveIssueOnEdgeTx(ctx, qtx, issue, issuestatus.Blocked, "workflow_switch_refused", map[string]any{"reason": reason}, false, nil)
+			switch {
+			case err == nil:
+				move, blocked = &m, true
+				issue = m.Issue
+			case isWorkflowRefusal(err):
+				slog.Warn("deferred workflow switch: workflow refuses blocking, recording the reason only", "err", err, "issue_id", uuidToString(issueID))
+			default:
+				var notConfirmed *service.StopNotConfirmedError
+				if errors.As(err, &notConfirmed) {
+					_ = lk.tx.Rollback(ctx)
+					h.recordStopNotConfirmed(ctx, issue, "system", "", notConfirmed)
+				}
+				return err
+			}
 		}
-		comment, revision = created.Comment(), created.IssueRevision
-		return nil
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return
 	}
+	if !blocked && !finished {
+		// The failed move left nothing behind; the issue row is as locked.
+		slog.Warn("deferred workflow switch: cannot block issue", "issue_id", uuidToString(issueID))
+	}
+	outcome := "The issue keeps its current workflow and is blocked. Fix the target, then switch again."
+	if !blocked {
+		outcome = "The issue keeps its current workflow. It could not be blocked: its status or workflow has no way to blocked. Fix the target, then switch again."
+	}
+	created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
+		Content: "Workflow switch refused (`" + blockedReasonWorkflowSwitchRefused + "`): " + reason + "\n\n" + outcome,
+	})
 	if err != nil {
-		slog.Warn("deferred workflow switch: settle refusal failed", "err", err, "issue_id", uuidToString(issueID))
-		return
+		return err
+	}
+	if _, err := setIssueMetadataValue(ctx, qtx, issue.WorkspaceID, issue.ID, "blocked_reason", reason); err != nil {
+		return err
+	}
+	if err := lk.tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit workflow switch refusal: %w", err)
+	}
+	lk.release()
+	if move != nil {
+		move.AfterCommit(ctx)
 	}
 	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
-		"comment":             commentToResponse(comment, nil, nil),
+		"comment":             commentToResponse(created.Comment(), nil, nil),
 		"issue_title":         issue.Title,
 		"issue_assignee_type": textToPtr(issue.AssigneeType),
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
-		"issue_revision":      revision,
+		"issue_revision":      created.IssueRevision,
 	})
-	// The comment bumped the issue's revision: the move needs the row as it is now.
-	issue, err = h.Queries.GetIssue(ctx, issueID)
-	if err != nil {
-		slog.Warn("deferred workflow switch: reload issue failed", "err", err, "issue_id", uuidToString(issueID))
-		return
-	}
-	if issue.Status != issuestatus.Blocked && !service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
-		def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-		if err != nil || def == nil || !def.Has(issuestatus.Blocked) {
-			slog.Warn("deferred workflow switch: cannot block issue", "err", err, "issue_id", uuidToString(issueID))
-			return
-		}
-		moved, _, err := h.tryMoveIssueOnEdge(ctx, issue, issuestatus.Blocked, "workflow_switch_refused", map[string]any{"reason": reason}, false)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("deferred workflow switch: block failed", "err", err, "issue_id", uuidToString(issueID))
-		}
-		if !moved {
-			return
-		}
-	}
-	if _, err := setIssueMetadataValue(ctx, h.Queries, issue.WorkspaceID, issue.ID, "blocked_reason", reason); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("deferred workflow switch: set blocked_reason failed", "err", err, "issue_id", uuidToString(issueID))
-	}
+	return nil
 }
