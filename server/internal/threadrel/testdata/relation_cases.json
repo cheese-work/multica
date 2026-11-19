@@ -368,7 +368,8 @@
     {
      "target_type": "member",
      "target_id": "$V",
-     "status": "answered"
+     "status": "answered",
+     "id": "r1"
     }
    ],
    "expect": {
@@ -399,7 +400,8 @@
     {
      "target_type": "member",
      "target_id": "$V",
-     "status": "cancelled"
+     "status": "cancelled",
+     "id": "r1"
     }
    ],
    "expect": {
@@ -430,7 +432,8 @@
     {
      "target_type": "member",
      "target_id": "$V",
-     "status": "disclaimed"
+     "status": "disclaimed",
+     "id": "r1"
     }
    ],
    "expect": {
@@ -461,7 +464,8 @@
     {
      "target_type": "member",
      "target_id": "$V",
-     "status": "open"
+     "status": "open",
+     "id": "r1"
     }
    ],
    "expect": {
@@ -492,7 +496,8 @@
     {
      "target_type": "member",
      "target_id": "$V",
-     "status": "open"
+     "status": "open",
+     "id": "r1"
     }
    ],
    "expect": {
@@ -637,7 +642,8 @@
     {
      "target_type": "member",
      "target_id": "$A",
-     "status": "open"
+     "status": "open",
+     "id": "r1"
     }
    ],
    "expect": {
@@ -879,6 +885,39 @@
     "with_me": false,
     "agents_only": true,
     "waiting_on_me": false
+   }
+  },
+  {
+   "name": "8e mention in an ask card whose request targets another member: V waits (b)",
+   "edge": 8,
+   "viewer": {
+    "type": "member",
+    "id": "$V"
+   },
+   "comments": [
+    {
+     "author": {
+      "type": "agent",
+      "id": "$A"
+     },
+     "content": "card for O, cc [@V](mention://member/$V)",
+     "at": "2026-11-10T10:00:00Z",
+     "notify_only": false,
+     "decision_request_id": "r1"
+    }
+   ],
+   "decisions": [
+    {
+     "id": "r1",
+     "target_type": "member",
+     "target_id": "$O",
+     "status": "open"
+    }
+   ],
+   "expect": {
+    "with_me": true,
+    "agents_only": false,
+    "waiting_on_me": true
    }
   }
  ]

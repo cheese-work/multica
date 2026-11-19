@@ -45,6 +45,7 @@ type fixtureCase struct {
 		Deleted           bool      `json:"deleted"`
 	} `json:"comments"`
 	Decisions []struct {
+		ID         string `json:"id"`
 		TargetType string `json:"target_type"`
 		TargetID   string `json:"target_id"`
 		Status     string `json:"status"`
@@ -92,6 +93,7 @@ func toInput(c fixtureCase) threadrel.Input {
 	}
 	for _, d := range c.Decisions {
 		in.Decisions = append(in.Decisions, threadrel.Decision{
+			ID:     d.ID,
 			Target: threadrel.Actor{Type: d.TargetType, ID: d.TargetID},
 			Status: d.Status,
 		})

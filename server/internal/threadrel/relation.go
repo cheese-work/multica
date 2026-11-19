@@ -38,6 +38,7 @@ type Comment struct {
 
 // Decision is a decision request whose ask comment is in the thread.
 type Decision struct {
+	ID     string // matches Comment.DecisionRequestID of its ask comment
 	Target Actor
 	Status string
 }
@@ -67,8 +68,8 @@ type Result struct {
 //	              mention has no later comment by V and no resolution after it.
 //
 // Deleted comments are ignored. System comments never count as a mention.
-// A mention in a comment that carries a decision request is left to the
-// request's status, not to the "no later reply" test. A mention in a comment
+// A mention in a comment that carries a decision request aimed at the viewer
+// is left to the request's status, not to the "no later reply" test. A mention in a comment
 // that resolves the thread, or with notify_only unset, never makes the thread
 // waiting; the first is treated as FYI, the second as a legacy tag.
 func Classify(in Input) Result {
@@ -105,7 +106,7 @@ func Classify(in Input) Result {
 		if !fyi || legacy || in.FYICountsAsWithMe { // rule 2
 			withMe = true
 		}
-		if !fyi && !legacy && c.DecisionRequestID == "" {
+		if !fyi && !legacy && !leftToRequest(c, in) {
 			askAt = i
 		}
 	}
@@ -134,6 +135,23 @@ func Classify(in Input) Result {
 		AgentsOnly:  !withMe && !memberWrote,
 		WaitingOnMe: waiting,
 	}
+}
+
+// leftToRequest reports whether a mention in c is settled by the decision
+// request c carries (rule (a) and the request's status) instead of rule (b):
+// only when that request targets the viewer. A direct mention of someone else
+// in the ask comment is an ordinary mention. A request missing from the input
+// keeps the exemption, so a partial load never invents a waiting thread.
+func leftToRequest(c Comment, in Input) bool {
+	if c.DecisionRequestID == "" {
+		return false
+	}
+	for _, d := range in.Decisions {
+		if d.ID == c.DecisionRequestID {
+			return d.Target == in.Viewer
+		}
+	}
+	return true
 }
 
 // mentionsDirectly reports whether content mentions the viewer by id and type.
