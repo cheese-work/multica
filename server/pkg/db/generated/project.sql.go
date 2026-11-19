@@ -344,6 +344,10 @@ type ListProjectWakeupsParams struct {
 
 // The workflow_edges watch is the platform's own, not a rule to settle: it
 // stays and waits out an inactive project in its evaluator.
+// A disabled rule cannot fire, so it has nothing to settle. Settling and
+// locking every disabled row one by one timed out a status change on a
+// project with thousands of issues (CHE-7652). The revision bump still
+// covers it.
 func (q *Queries) ListProjectWakeups(ctx context.Context, arg ListProjectWakeupsParams) ([]IssueWakeup, error) {
 	rows, err := q.db.Query(ctx, listProjectWakeups, arg.ProjectID, arg.WorkspaceID)
 	if err != nil {
