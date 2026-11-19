@@ -569,6 +569,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
   "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
+  "author", "reviewer",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
@@ -582,7 +583,8 @@ const IssueWorkflowEntryGateSchema = z.lazy(() => z.object({
   guard: z.string(),
   mode: z.string(),
   member_override: z.boolean().default(true),
-}));
+  // Loose: `param` and `projects` (and later gate fields) must survive a save.
+}).loose());
 
 const IssueWorkflowSubWorkflowSchema = z.lazy(() => z.object({
   workflow_id: z.string(),
