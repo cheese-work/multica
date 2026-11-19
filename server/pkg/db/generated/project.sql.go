@@ -333,6 +333,7 @@ SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task
 WHERE i.project_id=$1 AND i.workspace_id=$2
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
 AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+AND w.enabled
 ORDER BY w.id FOR UPDATE OF w
 `
 
