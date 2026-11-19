@@ -1,6 +1,10 @@
-package main
+package inbox
 
-import "testing"
+import (
+	"os"
+	"regexp"
+	"testing"
+)
 
 // TestIsNotifMutedGroupSplit pins the contract the `mentions` group exists for:
 // muting comment VOLUME must never silence someone asking for you BY NAME.
@@ -33,7 +37,7 @@ func TestIsNotifMutedGroupSplit(t *testing.T) {
 		{"muting comments leaves assignments alone", map[string]string{"comments": "muted"}, "issue_assigned", false},
 
 		// Types outside the map are always delivered.
-		{"unconfigurable type always delivered", map[string]string{"comments": "muted"}, "reaction_added", false},
+		{"unconfigurable type always delivered", map[string]string{"comments": "muted"}, "quick_create_done", false},
 	}
 
 	for _, tc := range cases {
@@ -43,5 +47,39 @@ func TestIsNotifMutedGroupSplit(t *testing.T) {
 					tc.prefs, tc.notifType, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEveryInboxTypeIsClassified fails when an item type has no group, no
+// always-on entry and no decision bypass: such a type would be delivered
+// regardless of the user's settings by accident rather than by decision.
+func TestEveryInboxTypeIsClassified(t *testing.T) {
+	src, err := os.ReadFile("../../../packages/core/types/inbox.ts")
+	if err != nil {
+		t.Fatalf("read InboxItemType union (moved?): %v", err)
+	}
+	src = regexp.MustCompile(`(?m)//.*$`).ReplaceAll(src, nil) // comments may hold ";"
+	union := regexp.MustCompile(`(?s)export type InboxItemType =(.*?);`).FindSubmatch(src)
+	if union == nil {
+		t.Fatal("InboxItemType union not found in packages/core/types/inbox.ts")
+	}
+	types := regexp.MustCompile(`\|\s*"([a-z_]+)"`).FindAllSubmatch(union[1], -1)
+	if len(types) == 0 {
+		t.Fatal("no types parsed from InboxItemType")
+	}
+	// Go-only types: written by the server, absent from the TS union.
+	all := []string{"agent_decision_notice", "dm_reply", "run_budget", "ci_watch"}
+	for _, m := range types {
+		all = append(all, string(m[1]))
+	}
+	var missing []string
+	for _, ty := range all {
+		_, grouped := typeGroup[ty]
+		if !grouped && !alwaysOn[ty] && !decisionTypes[ty] {
+			missing = append(missing, ty)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("%d inbox types have no group, always-on entry or bypass: %v", len(missing), missing)
 	}
 }
