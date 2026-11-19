@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>CHE-6385 · motion</title><style>
+*{margin:0;box-sizing:border-box}:root{--s:#fff;--fg:oklch(.141 .005 285.8);--m:oklch(.505 .016 285.9);--sb:oklch(.92 .004 286.3);--h:oklch(.967 .001 286.4)}
+body{width:1440px;background:var(--s);color:var(--fg);font:14px/22px "Helvetica Neue",Helvetica,Arial,"Liberation Sans",sans-serif;padding:24px 36px}
+h1{font-size:18px;line-height:26px;font-weight:600;margin-bottom:4px}.meta{color:var(--m);font-size:12px;line-height:16px;max-width:110ch;margin-bottom:10px}
+table{border-collapse:collapse;width:100%}th{font-size:11px;line-height:16px;color:var(--m);text-align:left;font-weight:600;padding:8px 10px;border-bottom:1px solid var(--sb);background:var(--h)}td{padding:8px 10px;border-bottom:1px solid var(--sb);vertical-align:top;font-size:13px;line-height:18px}code{font:12px/16px ui-monospace,"Liberation Mono",monospace;background:var(--h);padding:1px 4px;border-radius:4px}
+</style></head><body><h1>CHE-6385 · motion (thread focus, direction B)</h1>
+<p class="meta">One easing for every moving thing: <code>cubic-bezier(.2,0,0,1)</code>. Nothing animates height or width, so no thread jumps while the list updates. Each row below is carried on its trigger as <code>data-doop-motion</code> (name, trigger, property, duration, easing, reducedMotion). All are played in <code>CHE-6385 · motion · played</code>.</p>
+<table><tr><th>Name</th><th>Trigger</th><th>Property</th><th>Duration</th><th>Easing</th><th>Reduced-motion fallback</th><th>Animated frame</th></tr>
+<tr><td>view change dissolve (B-a, B-c to B-d, B-e)</td><td>click Focus, Follow or All</td><td>opacity</td><td>150 ms</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Swap, 0 ms</td><td><code>CHE-6385 · motion · played</code></td></tr>
+<tr><td>view popover open</td><td>click View</td><td>opacity, transform y (8 px to 0)</td><td>150 ms</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Opacity only, 0 ms</td><td>same</td></tr>
+<tr><td>popover close</td><td>click Done or press Esc</td><td>opacity, transform y</td><td>150 ms</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Opacity only, 0 ms</td><td>same</td></tr>
+<tr><td>phone view sheet</td><td>tap View on 390 px</td><td>transform y (100% to 0), scrim opacity</td><td>200 ms</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Swap, 0 ms; scrim at once</td><td>same</td></tr>
+<tr><td>fold row open</td><td>click a folded row</td><td>opacity, chevron rotate 0 to 90 deg</td><td>150 ms</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Swap, 0 ms</td><td>same</td></tr>
+<tr><td>jump to waiting thread</td><td>click Next or Previous waiting, or press <code>]</code> or <code>[</code></td><td>scroll position, then background-color tint</td><td>250 ms scroll, 1200 ms tint</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Jump at once; tint holds 1200 ms, then clears with no fade</td><td>same</td></tr>
+<tr><td>card decided collapse</td><td>click Submit pick</td><td>opacity</td><td>150 ms</td><td><code>cubic-bezier(.2,0,0,1)</code></td><td>Swap, 0 ms</td><td>same</td></tr>
+<tr><td>control hover (state of view-line, view-row, fold-row, waiting-pill)</td><td>pointer hover</td><td>background-color</td><td>100 ms</td><td><code>ease-out</code></td><td>Instant, 0 ms</td><td>same</td></tr>
+<tr><td>switch toggle (state of switch)</td><td>click or Space</td><td>background-color, thumb left</td><td>120 ms</td><td><code>ease-out</code></td><td>Instant, 0 ms</td><td>same</td></tr>
+<tr><td>unread clear (state of unread-dot)</td><td>thread in view for 1 s</td><td>opacity</td><td>120 ms</td><td><code>ease-out</code></td><td>Removed at once, 0 ms</td><td>same</td></tr>
+<tr><td>skeleton shimmer (loading state of view-line, fold-row)</td><td>relations or thread loading</td><td>background-position</td><td>1200 ms, looping</td><td><code>linear</code></td><td>Static placeholder, no shimmer</td><td>same</td></tr>
+</table>
+<p class="meta" style="margin-top:12px">States with no motion carry <code>data-doop-motion-na</code> with a reason on the Components page: focus (ring shows at once), disabled, error (text swap) and states of read-only components.</p></body></html>

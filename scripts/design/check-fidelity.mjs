@@ -4,11 +4,16 @@
  *
  * For each case of a blocks map (tests/fidelity/<topic>.blocks.yml) it renders the lock state and the real
  * component with the same fixture, reads the mapped blocks from both and compares them:
+ *   unmapped-lock-content (rule 1)  a lock item (visible text, control, image) inside the state root is outside every mapped block
+ *   unmapped-code-content (rule 2)  the same for an item in the rendered component root
  *   missing-block  (rule 3)  a mapped block is absent in the lock or in the code render
+ *   duplicate-block (rule 4) a block id without `repeat` matches more than one element on either side
  *   order          (rule 5)  the order of the blocks differs
  *   text           (rule 6)  the text of a block differs (carries the sha256 of the code text)
  *   missing-render (rule 9)  a render fails or times out
- * Size and colour are not compared (D1). Rules 1, 2, 4 and 7 to 12 are later steps.
+ * Size and colour are not compared (D1). Rules 7 to 12 are later steps.
+ * Rules 1 and 2 give one instance per item (rule, case, item kind, normalized text / accessible name / image hash), so two
+ * equal items are two instances.
  *
  * A case may list `steps` (click / type) that bring the real component to the state the lock draws; result.json
  * `renders` records the steps and a hash of the code render per case. Every failure is one instance: rule x block x case. Writes <out>/result.json and, per case,
@@ -44,10 +49,20 @@ export function renderFailure(c, side, err) {
 
 /**
  * Compare what the lock and the code render for one case.
- * A side is { order: [block id in document order], blocks: { id: { text } } }.
+ * A side is { order: [block id in document order], blocks: { id: { text } }, unmapped?: [{ kind, key }], dups?: { id: count } }.
+ * `unmapped` lists the items outside every mapped block, `dups` the non-repeat blocks that matched more than one element.
  */
 export function compareBlocks(c, lock, code, mapped = [...new Set([...Object.keys(lock.blocks), ...Object.keys(code.blocks)])]) {
   const out = [];
+  for (const side of ["lock", "code"]) {
+    const s = side === "lock" ? lock : code;
+    for (const [id, count] of Object.entries(s.dups ?? {})) {
+      out.push(instance(c, "duplicate-block", id, side, `${id} is not a repeat block, but ${count} elements in the ${side} match it`, { count }));
+    }
+    for (const it of s.unmapped ?? []) {
+      out.push(instance(c, `unmapped-${side}-content`, undefined, side, `the ${side} has a ${it.kind} outside every mapped block: "${it.key}"`, { item_kind: it.kind, item: it.key }));
+    }
+  }
   const common = mapped.filter((id) => id in lock.blocks && id in code.blocks);
   // Every mapped id is judged, so a block absent on both sides still fails (rule 3).
   for (const id of mapped) {
@@ -112,8 +127,28 @@ function readSide({ mode, state, blocks }) {
     const els = b.repeat ? b.els : [b.els[0]];
     out[b.id] = { text: els.map(textOf).join("\n"), first: b.els[0] };
   }
+  const dups = Object.fromEntries(found.filter((b) => !b.repeat && b.els.length > 1).map((b) => [b.id, b.els.length]));
+  // Items outside every mapped block (rules 1 and 2): visible text nodes, controls and images, one per node or element.
+  const norm = (t) => String(t).replace(/\s+/g, " ").trim();
+  const ROLES = new Set(["button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "textbox", "searchbox", "combobox", "slider", "spinbutton", "treeitem"]);
+  const isControl = (el) => el.matches("button, a, input:not([type=hidden]), select, textarea") || ROLES.has(el.getAttribute("role") ?? "");
+  const labelledBy = (el) => norm((el.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((i) => document.getElementById(i)?.textContent ?? "").join(" "));
+  const nameOf = (el) => norm(el.getAttribute("aria-label") ?? "") || labelledBy(el) || norm(el.textContent)
+    || norm(el.getAttribute("alt") ?? el.getAttribute("title") ?? el.getAttribute("placeholder") ?? el.value ?? "");
+  const unmapped = [];
+  const walk = (el) => {
+    if (mapped.has(el) || !el.checkVisibility({ visibilityProperty: true })) return;
+    if (el.matches("script, style, noscript, template")) return;
+    if (el.matches("img, svg")) { unmapped.push({ kind: "image", key: el.matches("img") ? `img|${el.getAttribute("src") ?? ""}|${el.getAttribute("alt") ?? ""}` : norm(el.outerHTML) }); return; }
+    if (isControl(el)) { unmapped.push({ kind: "control", key: nameOf(el) }); return; }
+    for (const n of el.childNodes) {
+      if (n.nodeType === Node.ELEMENT_NODE) walk(n);
+      else if (n.nodeType === Node.TEXT_NODE && norm(n.nodeValue) !== "") unmapped.push({ kind: "text", key: norm(n.nodeValue) });
+    }
+  };
+  walk(root);
   const order = found.sort((a, b) => (a.els[0].compareDocumentPosition(b.els[0]) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)).map((b) => b.id);
-  return { order, blocks: Object.fromEntries(Object.entries(out).map(([id, v]) => [id, { text: v.text }])) };
+  return { order, dups, unmapped, blocks: Object.fromEntries(Object.entries(out).map(([id, v]) => [id, { text: v.text }])) };
 }
 
 /** A case's interaction state: steps run on the code render, in order. { click: sel } or { type: sel, text }. */
@@ -189,6 +224,7 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
           }
           const read = await page.evaluate(readSide, { mode: side, state: c.state, blocks });
           if (read.error) throw new Error(read.error);
+          for (const it of read.unmapped) if (it.kind === "image") it.key = sha256(it.key);
           sides[side] = read;
           const rootSel = side === "code" ? "[data-fidelity-root]" : `[data-state="${c.state}"]`;
           const rootEl = (await page.$(rootSel)) ?? (await page.evaluateHandle((n) => [...document.querySelectorAll(".lbl")].find((l) => l.textContent.trim().startsWith(`${n} ·`))?.parentElement, c.state.replace(/^s/, "")));
@@ -216,7 +252,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const opt = (name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
   const out = resolve(opt("--out")[0] ?? ".fidelity-out/run");
   const result = await checkFidelity({ blocksPath: opt("--blocks")[0], out, only: opt("--case"), harness: opt("--harness")[0] && resolve(opt("--harness")[0]) });
-  for (const v of result.violations) console.error(`${v.rule} ${v.state}@${v.profile} ${v.block ?? ""}: ${v.reason}`);
+  for (const v of result.violations) console.error(`${v.rule} ${v.state}@${v.profile} ${v.block ?? v.item_kind ?? ""}: ${v.reason}`);
   console.log(`${result.violations.length} violation instance(s) in ${result.cases.length} case(s); result: ${resolve(out, "result.json")}`);
   process.exit(result.ok ? 0 : 1);
 }
