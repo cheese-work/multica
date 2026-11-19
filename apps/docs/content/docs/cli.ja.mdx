@@ -416,6 +416,21 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 
 `--agent` と `--fallback` にはエージェントの ID または名前を指定し、`none` でフィールドを解除します。`multica me` が扱うのは `dm_title`、`quick_actions`、`compact` で、`routing` はワークスペース専用です。ワークスペースへの書き込みにはオーナーまたは管理者が必要で、どちらのコマンドもタスクトークンを拒否します。エージェントなしの動作と期限は[バックグラウンドエージェント](/background-agents)を参照してください。
 
+## ブラウザリース
+
+デーモンタスク内で共有リモートブラウザをリースします。コマンドはローカルのデーモン経由で送られ、タスクのデーモン資格情報はデーモンだけが保持します。許可されたリースは、ゲートウェイ URL と短命のトークンを stdout にのみ出力し、ログには残しません。待機中のリースはキュー順位だけを表示し、トークンは出しません。
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` はトークンを出力しません。`renew` は新しいトークンを出力します。ログインプロファイルには `--decision`(Issue 上の回答済みの判断リクエストの ID)が必要です。
+
+ゲートウェイ URL はサーバーが `MULTICA_BROWSER_GATEWAY_URLS`(ホストごとのゲートウェイ URL を対応付ける JSON オブジェクト。例: `{"c00":"https://c00.example.ts.net:35443"}`)から返します。リースのホストのエントリがない場合、CLI は警告を表示し、URL は出力しません。
+
 ## コマンド概要
 
 | コマンド | 用途 |

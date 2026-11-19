@@ -295,33 +295,59 @@ function holderKey(pid, activityRows) {
   return `${pid}|${row ? row.backendStart : "<unknown>"}`;
 }
 
+// Backend types the passive preflight tolerates or fences elsewhere; any
+// other backend type is an "unknown/unfenceable consumer" (a transient
+// parallel worker included, until it outlives the re-sample window).
+const KNOWN_BACKEND_TYPES = new Set(["client backend", "background worker", "walsender", "autovacuum worker"]);
+
+function unknownBackendRows(state) {
+  return state.activity.filter((row) => !KNOWN_BACKEND_TYPES.has(row.backendType));
+}
+
 export function advisoryLockHolderKeys(state) {
   return new Set(
     state.locks.filter((l) => l.detail.startsWith("advisory:")).map((l) => holderKey(l.pid, state.activity)),
   );
 }
 
-const ADVISORY_EVIDENCE_QUERY_MAX = 120;
+// One transient-holder rule for both refusal classes: every advisory-lock
+// holder and every unknown-backend-type row, keyed by pid + backend_start.
+export function transientHolderKeys(state) {
+  const keys = advisoryLockHolderKeys(state);
+  for (const row of unknownBackendRows(state)) keys.add(holderKey(row.pid, state.activity));
+  return keys;
+}
+
+const HOLDER_EVIDENCE_QUERY_MAX = 120;
+
+function holderEvidence(activityRow) {
+  return {
+    state: activityRow?.state ?? null, xactStart: activityRow?.xactStart ?? null, backendStart: activityRow?.backendStart ?? null,
+    applicationName: activityRow?.applicationName ?? null, backendType: activityRow?.backendType ?? null,
+    query: activityRow ? activityRow.query.slice(0, HOLDER_EVIDENCE_QUERY_MAX) : null,
+  };
+}
+
+const isPersistent = (persistentKeys, pid, activityRows) => !persistentKeys || persistentKeys.has(holderKey(pid, activityRows));
 
 function describeAdvisoryLockHolders(state, persistentKeys) {
   return state.locks
     .filter((l) => l.detail.startsWith("advisory:"))
-    .filter((l) => !persistentKeys || persistentKeys.has(holderKey(l.pid, state.activity)))
-    .map((l) => {
-      const a = state.activity.find((row) => row.pid === l.pid);
-      return {
-        ...l,
-        state: a?.state ?? null, xactStart: a?.xactStart ?? null, backendStart: a?.backendStart ?? null,
-        applicationName: a?.applicationName ?? null, backendType: a?.backendType ?? null,
-        query: a ? a.query.slice(0, ADVISORY_EVIDENCE_QUERY_MAX) : null,
-      };
-    });
+    .filter((l) => isPersistent(persistentKeys, l.pid, state.activity))
+    .map((l) => ({ ...l, ...holderEvidence(state.activity.find((row) => row.pid === l.pid)) }));
+}
+
+function describeUnknownBackends(state, persistentKeys) {
+  return unknownBackendRows(state)
+    .filter((row) => isPersistent(persistentKeys, row.pid, state.activity))
+    .map((row) => ({ ...row, ...holderEvidence(row) }));
 }
 
 const ADVISORY_RESAMPLE_INTERVAL_MS = 250;
 
-// runPassivePreflight wraps evaluatePassivePreflight: an advisory-lock
-// refusal is re-sampled every 250 ms. Each holder (pid + backend_start) is
+// runPassivePreflight wraps evaluatePassivePreflight: an advisory-lock or
+// unknown-backend-type refusal (a parallel worker, say) is re-sampled every
+// 250 ms. Each holder (pid + backend_start) is
 // tracked from the sample that first saw it. It admits once a sample shows no
 // advisory holder, and denies once any holder has been present for the full
 // threshold, so a persistent holder that replaces a transient one is still
@@ -334,15 +360,15 @@ export function runPassivePreflight({ observe, now = () => Date.now(), sleep, op
   for (;;) {
     const state = observe();
     const nowMs = now();
-    const current = state.ok ? advisoryLockHolderKeys(state) : new Set();
+    const current = state.ok ? transientHolderKeys(state) : new Set();
     for (const key of [...firstSeenMs.keys()]) if (!current.has(key)) firstSeenMs.delete(key);
     for (const key of current) if (!firstSeenMs.has(key)) firstSeenMs.set(key, nowMs);
     const persistent = new Set([...firstSeenMs].filter(([, seenMs]) => nowMs - seenMs >= thresholdMs).map(([key]) => key));
 
-    const result = evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: persistent });
+    const result = evaluatePassivePreflight(state, { ...opts, persistentHolderKeys: persistent });
     if (!result.admit || current.size === 0) return result;
     if (nowMs - startMs >= 2 * thresholdMs) {
-      return evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: current });
+      return evaluatePassivePreflight(state, { ...opts, persistentHolderKeys: current });
     }
     sleep(ADVISORY_RESAMPLE_INTERVAL_MS);
   }
@@ -384,18 +410,16 @@ export function evaluatePassivePreflight(state, opts = {}) {
   }
 
   // Live traffic takes short pg_advisory_xact_lock locks, so one sample can
-  // catch a transient holder. opts.persistentAdvisoryKeys (holders seen in
+  // catch a transient holder. opts.persistentHolderKeys (holders seen in
   // every sample of runPassivePreflight's window) limits the denial to
   // holders that did not go away; without it every holder denies.
-  const advisoryLockHolders = describeAdvisoryLockHolders(state, opts.persistentAdvisoryKeys);
+  const advisoryLockHolders = describeAdvisoryLockHolders(state, opts.persistentHolderKeys);
   if (advisoryLockHolders.length > 0) {
     return { admit: false, decision: "deferred_contention", reason: "a foreign advisory-lock holder is present", evidence: { advisoryLockHolders } };
   }
 
-  const unknownBackendTypes = foreignActivity.filter((row) =>
-    row.backendType !== "client backend" && row.backendType !== "background worker" &&
-    row.backendType !== "walsender" && row.backendType !== "autovacuum worker",
-  );
+  // Same transient-holder rule: a parallel worker of a live query goes away.
+  const unknownBackendTypes = describeUnknownBackends(state, opts.persistentHolderKeys);
   if (unknownBackendTypes.length > 0) {
     return { admit: false, decision: "deferred_contention", reason: "unknown/unfenceable consumer backend type present", evidence: { unknownBackendTypes } };
   }
