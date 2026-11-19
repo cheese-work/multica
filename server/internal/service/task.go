@@ -6795,6 +6795,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	var retried *db.AgentTaskQueue
 	var dmNotified *dmnotify.Notified
 	var failureMsg *db.ChatMessage
+	var queuedChat []db.AgentTaskQueue
 	// retryProviderHoldNotice: set inside the transaction below when a retry
 	// child was minted then immediately cancelled for a provider hold, read
 	// after commit to post the same post-commit issue comment
@@ -6816,7 +6817,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
 					return err
 				}
-	var queuedChat []db.AgentTaskQueue
 			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
