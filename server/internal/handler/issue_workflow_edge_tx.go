@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
@@ -101,6 +102,28 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
 		}, service.IssueTriggerProbe{})
 	}
+	// One close check before the run is enqueued (CHE-7671): a clean issue that
+	// enters an auto-close step takes its done edge in this transaction, and one
+	// that waits for its merge starts no run.
+	var (
+		closed         *edgeMove
+		closedDetails  string
+		pendingMerge   bool
+		pendingDetails string
+	)
+	if willRun && entersAutoCloseStep(updated.Status) {
+		switch d := th.closeOrDispatch(ctx, updated); d.Outcome {
+		case closeOutcomeClosed:
+			inner, err := h.moveIssueOnEdgeTx(ctx, q, updated, "done", "auto_close", map[string]any{"predicates": d.Predicates}, false, nil)
+			if err != nil {
+				slog.Warn("auto close: move failed; the step's run starts", "err", err, "issue_id", uuidToString(updated.ID))
+				break
+			}
+			closed, closedDetails, willRun = &inner, d.Predicates, false
+		case closeOutcomePendingMerge:
+			pendingMerge, pendingDetails, willRun = true, d.Predicates, false
+		}
+	}
 	var handoffDetails map[string]string
 	if handoff != nil {
 		handoffDetails = workflowHandoffPayload(updated, handoff, th.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
@@ -184,6 +207,15 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	}
 
 	afterCommit := func(ctx context.Context) (ranHandler bool) {
+		defer func() {
+			switch {
+			case closed != nil:
+				closed.AfterCommit(ctx)
+				h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoClosed, map[string]string{"predicates": closedDetails})
+			case pendingMerge:
+				h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoClosePending, map[string]string{"predicates": pendingDetails})
+			}
+		}()
 		payload["issue"] = h.issueResponseWithCategory(ctx, updated)
 		h.broadcastCancelledWakeups(ctx, issue.WorkspaceID, cancelledWakeups)
 		h.finishRecordedHandoff(ctx, rec, handoffDetails)
@@ -209,6 +241,9 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	var activityID pgtype.UUID
 	if rec.activity != nil {
 		activityID = rec.activity.ID
+	}
+	if closed != nil {
+		updated = closed.Issue
 	}
 	return edgeMove{Issue: updated, StatusActivityID: activityID, RunRefused: runRefused, TaskID: runTaskID, AfterCommit: afterCommit}, nil
 }

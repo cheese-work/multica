@@ -52,11 +52,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 - タスクに親があること。ルートタスクは閉じません。
 - 最新のレビュー判定が P0 / P1 の指摘を含まない PASS で、現在の候補に対するものであること。PR がある場合は、リンクされたすべての PR が PASS の示す head でマージ済みであること。PR がない場合、候補はタスクのテキストです。PASS の後に添付ファイル、説明の変更、コメント（レビュアー自身のものを除く）、CHANGES 判定、古い・置き換え済みの印、`in_progress` への戻りがないこと。
-- 未完了の子タスク、未解決の決定リクエストがなく、タスクがステップに入った時点で有効だったウェイクアップがないこと。
+- 未完了の子タスク、未解決の決定リクエストがなく、タスクがステップに入った時点で有効だったウェイクアップ（タスク自身のマージ監視、`pr.merged` エッジを除く）がないこと。
 - 説明に `Blockers: Cheese stop` の行がなく、親の `delivery_stop` メタデータが `stopped` でないこと。
 - タスクのメタデータ `post_close_work` が `none` であること。作成者が書きます: `multica issue metadata set <issue> --key post_close_work --value none --type string`。残る作業の短い説明など、それ以外の値の場合は実行が残ります。
-- ワークフローにそのステップから `done` への `agent_done` エッジがあること。
+- ワークフローにそのステップから `done` への `agent_done` または `pr.merged` エッジがあること。
 - `merged` のみ: リンクされたすべての PR が、PASS の示す head でリポジトリのデフォルトブランチにマージ済みであること。別のブランチ（スタックの層）にマージされた PR や、ベースまたはデフォルトブランチが配信に含まれていなかった PR がある場合は、実行が残ります。
+
+PASS の示す head の PR がまだオープンでも、ステップに `done` への `pr.merged` エッジとタスク自身の監視がある場合は、実行は残りません。サーバーは実行を開始せず、`auto_close_pending_merge` アクティビティ行を 1 件記録します。その後マージでタスクが実行なしで閉じます。
 
 モードは `multica workspace update --auto-close-mode off|warn|block` で設定します。読み取れない値は `off` として扱われます。
 

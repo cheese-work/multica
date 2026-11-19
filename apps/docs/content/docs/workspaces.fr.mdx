@@ -52,11 +52,13 @@ Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut p
 
 - La tâche a un parent. Les tâches racines ne sont jamais fermées.
 - Le dernier verdict de revue est un PASS sans constat P0 ni P1, et il porte sur le candidat actuel. Avec une PR, chaque PR liée est fusionnée au head que nomme le PASS. Sans PR, le candidat est le texte de la tâche : aucune pièce jointe, aucun changement de description, aucun commentaire (hors ceux du relecteur) n'est venu après le PASS, ni verdict CHANGES, marque périmée ou remplacée, ni retour à `in_progress`.
-- Aucune tâche enfant ouverte, aucune demande de décision ouverte, et aucun réveil actif quand la tâche est entrée dans l'étape.
+- Aucune tâche enfant ouverte, aucune demande de décision ouverte, et aucun réveil actif quand la tâche est entrée dans l'étape, hors le propre observateur de fusion de la tâche (l'arête `pr.merged`).
 - La description n'a pas de ligne `Blockers: Cheese stop`, et la métadonnée `delivery_stop` du parent n'est pas `stopped`.
 - La métadonnée de la tâche `post_close_work` vaut `none`. L'auteur l'écrit : `multica issue metadata set <issue> --key post_close_work --value none --type string`. Toute autre valeur, par exemple une courte description du travail restant, conserve l'exécution.
-- Le workflow a une arête `agent_done` de l'étape vers `done`.
+- Le workflow a une arête `agent_done` ou `pr.merged` de l'étape vers `done`.
 - Sur `merged` seulement : chaque PR liée est fusionnée dans la branche par défaut de son dépôt, au head que nomme le PASS. Une PR fusionnée dans une autre branche (couche d'une pile), ou dont la livraison n'indiquait pas sa base ou la branche par défaut, conserve l'exécution.
+
+Une PR encore ouverte au head que nomme le PASS ne conserve pas l'exécution quand l'étape a une arête `pr.merged` vers `done` et l'observateur propre de la tâche : le serveur ne lance aucune exécution et enregistre une ligne d'activité `auto_close_pending_merge`. La fusion ferme ensuite la tâche, sans exécution.
 
 Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
 

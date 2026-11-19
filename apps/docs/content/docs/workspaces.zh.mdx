@@ -52,11 +52,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 - 任务有父任务。根任务永远不会被关闭。
 - 最新的评审结论是不含 P0 或 P1 问题的 PASS，并且针对当前候选。有 PR 时，每个关联的 PR 都已在 PASS 所指的 head 上合并。没有 PR 时，候选是任务的文本：PASS 之后没有新附件、描述变更、评论（评审者自己的除外）、CHANGES 结论、过期或被取代标记，也没有回到 `in_progress`。
-- 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
+- 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒（任务自己的合并监视，即 `pr.merged` 边，除外）。
 - 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
 - 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
-- 工作流中有从该步骤到 `done` 的 `agent_done` 边。
+- 工作流中有从该步骤到 `done` 的 `agent_done` 或 `pr.merged` 边。
 - 仅 `merged`：每个关联的 PR 都已在 PASS 所指的 head 上合并到其仓库的默认分支。合并到其他分支（堆叠的一层）的 PR，或其推送未带 base 或默认分支的 PR，会保留这次运行。
+
+PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.merged` 边以及任务自己的监视，则不会保留运行：服务器不启动运行，并记录一条 `auto_close_pending_merge` 活动记录。之后合并会不经运行直接关闭任务。
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 

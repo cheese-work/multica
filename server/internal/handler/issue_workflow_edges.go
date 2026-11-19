@@ -151,6 +151,13 @@ func (h *Handler) bridgePRMergedEdge(ctx context.Context, issue db.Issue) (bool,
 	if prMergeStatusSetting(ws) == prMergeStatusNone {
 		return false, nil
 	}
+	// On an auto-close step the close check comes first: a clean issue takes its
+	// done edge, with this watcher left out of no_live_wakeup (CHE-7671).
+	if entersAutoCloseStep(issue.Status) {
+		if d := h.closeOrDispatch(ctx, issue); d.Outcome == closeOutcomeClosed && h.closeIssue(ctx, issue, d.Predicates) {
+			return true, nil
+		}
+	}
 	return true, h.autoCompleteIssue(ctx, issue.WorkspaceID, issue.ID, nil)
 }
 

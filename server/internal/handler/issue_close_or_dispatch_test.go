@@ -82,6 +82,7 @@ func TestCloseOrDispatch_DelayedMergeAfterHeadBoundPassClosesWithZeroExtraRuns(t
 			c.wantPending(t)
 			c.setPRState(t, prID, "merged")
 			dbfx.Exec(t, `UPDATE github_pull_request SET base_ref = 'main', default_branch = 'main' WHERE id = $1`, prID)
+			dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() WHERE issue_id = $1 AND system_rule = 'workflow_edges'`, c.issueID)
 			tickEdges(t)
 			if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != "done" {
 				t.Fatalf("status after the merge = %q, want done", status)
