@@ -202,13 +202,14 @@ vi.mock("@multica/core/workspace/queries", () => ({
 // Mock @multica/core/paths — after the URL-driven workspace refactor,
 // useCurrentWorkspace / useWorkspacePaths derive from the workspace slug in
 // URL Context. Tests don't mount a real route, so we short-circuit to fixtures.
+const mockWorkspaceSettings: { current: Record<string, unknown> } = vi.hoisted(() => ({ current: {} }));
 vi.mock("@multica/core/paths", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/paths")>(
     "@multica/core/paths",
   );
   return {
     ...actual,
-    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test" }),
+    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test", settings: mockWorkspaceSettings.current }),
     useWorkspacePaths: () => actual.paths.workspace("test"),
   };
 });
@@ -1219,6 +1220,28 @@ describe("IssueDetail (shared)", () => {
     expect(view.container.querySelector(".w-80.border-l")).toBeNull();
     view.unmount();
     queryClient.clear();
+  });
+
+  // CHE-7426 (CHE-4317 slice 1): the locked compact-sidebar design puts the
+  // Pull requests section directly above Wakeups.
+  it("renders the Pull requests section above the Wakeups section in the sidebar", async () => {
+    renderIssueDetail();
+    const pullRequests = await screen.findByText("Pull requests");
+    const wakeups = await screen.findByText("Wakeups");
+    expect(
+      pullRequests.compareDocumentPosition(wakeups) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders no Pull requests section when the workspace disables the PR sidebar", async () => {
+    mockWorkspaceSettings.current = { github_pr_sidebar_enabled: false };
+    try {
+      renderIssueDetail();
+      await screen.findByText("Wakeups");
+      expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
+    } finally {
+      mockWorkspaceSettings.current = {};
+    }
   });
 
   it("shows loading skeleton while data is loading", () => {

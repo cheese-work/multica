@@ -89,6 +89,16 @@ import { Callout } from "fumadocs-ui/components/callout";
 | `warn` | ガードはイベントとメトリクスを記録します。操作はそのまま進みます。 |
 | `block` | ガードは先にイベントを記録し、その後 `422` で操作を拒否します。復旧作業になるのは `block` のイベントだけです。 |
 
+### マージキューの設定
+
+3つのワークスペース設定でマージキューを構成します。書き込めるのはオーナーだけで、すべての書き込み経路（`multica workspace update` のフラグ、設定の保存、`config propose` アクション）が同じバリデーターを通ります。
+
+| 設定 | 値 |
+| --- | --- |
+| `merge_queue_dequeue_routing` | `off`（デフォルト）または `warn`。強制機能が提供されるまで、`block` は `routing-not-available` で拒否されます。 |
+| `merge_queue_actor_bindings` | `{"agents": [...], "people": [...]}`。両方のリストにある GitHub ログインは拒否されます。 |
+| `merge_queue_watch_issue` | マージキューのイベントを受け取る課題。空も可。 |
+
 ### オートパイロット割り当てガード
 
 ワークスペース設定 `autopilot_assign_gate` は、オートパイロットを名指しする issue（その id が "autopilot" という語の近くにある）をエージェントまたはスクワッドに割り当てたとき、run が代理する人がそのオートパイロットに書き込めない（作成者でも、ワークスペース管理者でも、許可されたコラボレーターでもない）場合の動作を決めます。

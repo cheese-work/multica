@@ -1767,6 +1767,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// Browser leases (CHE-4732). Daemon credential only; see browser_lease.go. Release is CHE-4734's, above.
 		r.Post("/tasks/{id}/browser-leases", h.MintBrowserLease)
 		r.Post("/tasks/{id}/browser-leases/{leaseId}/renew", h.RenewBrowserLease)
+		r.Get("/tasks/{id}/browser-leases/{leaseId}", h.StatusBrowserLease)
 
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
 		r.Get("/issues/{issueId}/gc-check", h.GetIssueGCCheck)

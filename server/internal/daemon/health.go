@@ -150,6 +150,8 @@ type activeRepoCheckoutTask struct {
 	IntakeRun       bool
 	PinnedBranch    string
 	PinnedRepo      string
+	// DaemonToken is the task's mdt_ credential. It never leaves the daemon: the agent holds only its mat_ token.
+	DaemonToken string
 	// Elevated tasks check out the synthetic base of their grant's pinned
 	// commit, never a worktree (CHE-2216 plan 3.5).
 	Elevated      bool
@@ -497,6 +499,7 @@ func (d *Daemon) healthMux(startedAt time.Time) *http.ServeMux {
 	mux.HandleFunc("/environments/stop", d.environmentStopHandler())
 	mux.HandleFunc("/environments/list", d.environmentListHandler())
 	mux.HandleFunc("/environments/focus", d.environmentFocusHandler())
+	mux.HandleFunc("/browser/lease", d.browserLeaseHandler())
 	return mux
 }
 

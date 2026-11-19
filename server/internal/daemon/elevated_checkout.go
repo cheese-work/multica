@@ -61,5 +61,6 @@ func newActiveRepoCheckoutTask(task Task, workDir string) activeRepoCheckoutTask
 		Elevated:        task.EffectiveProfile() == "elevated",
 		PinnedBaseSHA:   task.PinnedBaseSHA,
 		PinnedHeadSHA:   task.PinnedHeadSHA,
+		DaemonToken:     task.RemoteMCPDaemonToken,
 	}
 }

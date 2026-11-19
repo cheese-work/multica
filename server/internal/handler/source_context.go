@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"io"
 	"log/slog"
 	"net/http"
@@ -806,6 +807,7 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
 		AllowDuplicate: input.AllowDuplicate, SourceContext: &capture,
 		PRAutoCompleteDisabled: input.PRAutoCompleteDisabled,
+		CreatedVia:             pgtype.Text{String: issuecreatedvia.Classify(issuecreatedvia.Input{Channel: statusTriggerFromRequest(r, "member", util.UUIDToString(userID)).Channel}), Valid: true},
 	}, service.IssueCreateOpts{
 		ActorID: util.UUIDToString(userID),
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, labels []db.IssueLabel) map[string]any {

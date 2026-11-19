@@ -1690,3 +1690,103 @@ func TestNotification_StatusChange_ReopenSurfacesNewTaskFailed(t *testing.T) {
 		t.Fatalf("expected 1 archived task_failed row preserved from prior cycle, got %d", archived)
 	}
 }
+
+// TestNotification_CommentCreated_Muted verifies that comments="muted" keeps a
+// new_comment out of the Inbox now that only inbox.AllowsDelivery checks it.
+func TestNotification_CommentCreated_Muted(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	commenterEmail := "notif-commenter-muted@multica.ai"
+	commenterID := createNotificationMember(t, commenterEmail)
+	t.Cleanup(func() { cleanupTestUser(t, commenterEmail) })
+	mutedEmail := "notif-muted-comment@multica.ai"
+	mutedID := createNotificationMember(t, mutedEmail)
+	t.Cleanup(func() { cleanupTestUser(t, mutedEmail) })
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO notification_preference (workspace_id, user_id, preferences)
+		VALUES ($1, $2, '{"comments":"muted"}'::jsonb)
+	`, testWorkspaceID, mutedID); err != nil {
+		t.Fatalf("seed muted notification preference: %v", err)
+	}
+	addTestSubscriber(t, issueID, "member", mutedID, "assignee")
+	addTestSubscriber(t, issueID, "member", testUserID, "creator")
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventCommentCreated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     commenterID,
+		Payload: map[string]any{
+			"comment": handler.CommentResponse{
+				ID: "00000000-0000-0000-0000-000000000000", IssueID: issueID,
+				AuthorType: "member", AuthorID: commenterID, Content: "muted comment", Type: "comment",
+			},
+			"issue_title":  "muted comment issue",
+			"issue_status": "todo",
+		},
+	})
+
+	if items := inboxItemsForRecipient(t, queries, mutedID); len(items) != 0 {
+		t.Fatalf("expected muted subscriber to receive 0 items, got %d", len(items))
+	}
+	if items := inboxItemsForRecipient(t, queries, testUserID); len(items) != 1 {
+		t.Fatalf("expected unmuted creator to receive 1 item, got %d", len(items))
+	}
+}
+
+// TestNotification_ParentBubble_StatusChanged_Muted verifies that a parent
+// watcher with status_changes="muted" gets nothing from a sub-issue status
+// change: the parent-subscriber pass drops it at inbox.CreateIfEligible.
+func TestNotification_ParentBubble_StatusChanged_Muted(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	email := "notif-parent-sub-status-muted@multica.ai"
+	watcherID := createNotificationMember(t, email)
+	t.Cleanup(func() { cleanupTestUser(t, email) })
+
+	parentID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, parentID)
+		cleanupTestIssue(t, parentID)
+	})
+	subID := createTestSubIssue(t, testWorkspaceID, testUserID, parentID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, subID)
+		cleanupTestIssue(t, subID)
+	})
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO notification_preference (workspace_id, user_id, preferences)
+		VALUES ($1, $2, '{"status_changes":"muted"}'::jsonb)
+	`, testWorkspaceID, watcherID); err != nil {
+		t.Fatalf("seed muted notification preference: %v", err)
+	}
+	addTestSubscriber(t, parentID, "member", watcherID, "manual")
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID: subID, WorkspaceID: testWorkspaceID, Title: "muted sub-issue bubble",
+				Status: "done", Priority: "medium", CreatorType: "member", CreatorID: testUserID,
+			},
+			"assignee_changed": false,
+			"status_changed":   true,
+			"prev_status":      "in_progress",
+		},
+	})
+
+	if items := inboxItemsForRecipient(t, queries, watcherID); len(items) != 0 {
+		t.Fatalf("expected muted parent watcher to receive 0 items, got %d", len(items))
+	}
+}

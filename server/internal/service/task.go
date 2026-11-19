@@ -9018,6 +9018,7 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 				"source_task_id":       util.UUIDToString(target.source.ID),
 				"coordinator_agent_id": util.UUIDToString(target.agent.ID),
 				"max_attempts":         delegatedFailureRecoveryMaxTaskAttempts,
+				"kind":                 "delegated_failure_exhausted",
 			})
 			if err != nil {
 				return fmt.Errorf("encode delegated failure exhaustion details: %w", err)

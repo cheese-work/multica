@@ -73,3 +73,62 @@ test("missing-block: a mapped block absent on both sides is one instance, side b
   assert.deepEqual(ids(v), ["missing-block:a", "missing-block:b"]);
   assert.ok(v.every((x) => x.side === "both"));
 });
+
+// Rules 1, 2 and 4 (CHE-5793 step 3). A side may also carry `unmapped` (items outside every mapped block, each
+// { kind, key }) and `dups` (block id -> element count, for a non-repeat block that matches more than one element).
+const withExtra = (s, extra) => ({ ...s, ...extra });
+const A = side([["a", "Alpha"]]);
+
+test("unmapped-lock-content (rule 1): a lock item outside every mapped block is one instance with kind and text", () => {
+  const v = compareBlocks(CASE, withExtra(A, { unmapped: [{ kind: "text", key: "Stray lock note" }] }), A);
+  assert.equal(v.length, 1);
+  assert.equal(v[0].rule, "unmapped-lock-content");
+  assert.equal(v[0].side, "lock");
+  assert.equal(v[0].item_kind, "text");
+  assert.equal(v[0].item, "Stray lock note");
+  assert.match(v[0].reason, /Stray lock note/);
+});
+
+test("unmapped-code-content (rule 2): a code item outside every mapped block is one instance, side code", () => {
+  const v = compareBlocks(CASE, A, withExtra(A, { unmapped: [{ kind: "control", key: "Delete" }] }));
+  assert.equal(v.length, 1);
+  assert.equal(v[0].rule, "unmapped-code-content");
+  assert.equal(v[0].side, "code");
+  assert.equal(v[0].item_kind, "control");
+  assert.equal(v[0].item, "Delete");
+});
+
+test("rules 1 and 2: two equal unmapped items are two instances (multiset), not one", () => {
+  const two = [{ kind: "text", key: "Same" }, { kind: "text", key: "Same" }];
+  assert.equal(compareBlocks(CASE, withExtra(A, { unmapped: two }), A).length, 2);
+  assert.equal(compareBlocks(CASE, A, withExtra(A, { unmapped: two })).length, 2);
+});
+
+test("rules 1 and 2: the same text as a text node and as a control are different instances (kind is part of the identity)", () => {
+  const v = compareBlocks(CASE, withExtra(A, { unmapped: [{ kind: "text", key: "Go" }, { kind: "control", key: "Go" }] }), A);
+  assert.deepEqual(v.map((x) => x.item_kind).sort(), ["control", "text"]);
+});
+
+test("rule 1 does not fire for an item the code also lacks: each side is judged on its own", () => {
+  const v = compareBlocks(CASE, withExtra(A, { unmapped: [{ kind: "text", key: "x" }] }), withExtra(A, { unmapped: [{ kind: "text", key: "x" }] }));
+  assert.deepEqual(v.map((x) => x.rule).sort(), ["unmapped-code-content", "unmapped-lock-content"]);
+});
+
+test("duplicate-block (rule 4): a block id that matches two lock elements is one instance for that block, side lock", () => {
+  const v = compareBlocks(CASE, withExtra(A, { dups: { a: 2 } }), A);
+  assert.equal(v.length, 1);
+  assert.equal(v[0].rule, "duplicate-block");
+  assert.equal(v[0].block, "a");
+  assert.equal(v[0].side, "lock");
+  assert.equal(v[0].count, 2);
+});
+
+test("duplicate-block (rule 4): a duplicate on the code side, and on both sides, is one instance per side", () => {
+  assert.deepEqual(compareBlocks(CASE, A, withExtra(A, { dups: { a: 3 } })).map((x) => `${x.rule}:${x.block}:${x.side}`), ["duplicate-block:a:code"]);
+  const both = compareBlocks(CASE, withExtra(A, { dups: { a: 2 } }), withExtra(A, { dups: { a: 2 } }));
+  assert.deepEqual(both.map((x) => x.side).sort(), ["code", "lock"]);
+});
+
+test("sides without unmapped or dups give no rule 1, 2 or 4 instance", () => {
+  assert.deepEqual(compareBlocks(CASE, A, A), []);
+});

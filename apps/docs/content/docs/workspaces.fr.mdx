@@ -89,6 +89,16 @@ Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quan
 | `warn` | La garde enregistre un événement et une métrique. L'opération se poursuit. |
 | `block` | La garde enregistre d'abord l'événement, puis refuse l'opération avec `422`. Seuls les événements `block` deviennent du travail de reprise. |
 
+### Paramètres de la file de fusion
+
+Trois paramètres d'espace de travail configurent la file de fusion. Seul le propriétaire peut les modifier, et chaque chemin d'écriture (les options de `multica workspace update`, l'enregistrement des paramètres et une action `config propose`) passe par le même validateur.
+
+| Paramètre | Valeur |
+| --- | --- |
+| `merge_queue_dequeue_routing` | `off` (par défaut) ou `warn`. `block` est refusé avec `routing-not-available` tant que l'application n'est pas livrée. |
+| `merge_queue_actor_bindings` | `{"agents": [...], "people": [...]}`. Un identifiant GitHub présent dans les deux listes est refusé. |
+| `merge_queue_watch_issue` | La tâche qui reçoit les événements de la file de fusion, ou vide. |
+
 ### Garde d'assignation d'autopilote
 
 Le paramètre d'espace de travail `autopilot_assign_gate` définit ce qui se passe quand une issue qui nomme un autopilote (son id près du mot « autopilot ») est assignée à un agent ou une équipe alors que la personne pour qui le run agit ne peut pas écrire cet autopilote : ni son créateur, ni un admin de l'espace, ni un collaborateur autorisé.

@@ -1137,6 +1137,31 @@ deleted_browser_profile_members AS (
 ),
 deleted_browser_profile_agents AS (
     DELETE FROM browser_profile_agent WHERE workspace_id = $1
+),
+-- CHE-7408 merge-queue storage: workspace-owned leaves, no FK (migration 999q).
+deleted_merge_queue_intake AS (
+    DELETE FROM merge_queue_intake WHERE workspace_id = $1
+),
+deleted_merge_queue_epoch AS (
+    DELETE FROM merge_queue_epoch WHERE workspace_id = $1
+),
+deleted_merge_queue_association AS (
+    DELETE FROM merge_queue_association WHERE workspace_id = $1
+),
+deleted_merge_queue_wait AS (
+    DELETE FROM merge_queue_wait WHERE workspace_id = $1
+),
+deleted_merge_queue_pr_close AS (
+    DELETE FROM merge_queue_pr_close WHERE workspace_id = $1
+),
+deleted_merge_queue_enqueue_event AS (
+    DELETE FROM merge_queue_enqueue_event WHERE workspace_id = $1
+),
+deleted_merge_queue_state AS (
+    DELETE FROM merge_queue_state WHERE workspace_id = $1
+),
+deleted_merge_queue_evidence AS (
+    DELETE FROM merge_queue_evidence WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;

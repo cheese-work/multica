@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS merge_queue_association_active_uidx;

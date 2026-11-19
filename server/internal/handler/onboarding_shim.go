@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"log/slog"
 	"net/http"
@@ -276,6 +277,7 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 			Position:      0,
 			Number:        issueNumber,
 			ProjectID:     emptyUUID,
+			CreatedVia:    pgtype.Text{String: issuecreatedvia.Form, Valid: true},
 		})
 		if err != nil {
 			slog.Warn("bootstrap onboarding (shim): create issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", req.WorkspaceID)...)
@@ -440,6 +442,7 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 			Position:      0,
 			Number:        issueNumber,
 			ProjectID:     emptyUUID,
+			CreatedVia:    pgtype.Text{String: issuecreatedvia.Form, Valid: true},
 		})
 		if err != nil {
 			slog.Warn("bootstrap no-runtime onboarding (shim): create issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", req.WorkspaceID)...)

@@ -65,6 +65,8 @@ import {
   WakeupFieldsPage, WakeupPickersPage, WorkspaceWakeupRulesPage, ConfigChangeViewerPage,
   DecisionArtifactsPage, DecisionRequestCardPage, NeedsYouListPage, QuickAgentBarPage, DelegatedWritesPage,
   WecomTabPage,
+  AddTriggerDialogPage, HtmlViewerPage, PlanRevisionViewerPage,
+  MediaContextPage, MediaPagePage, NextSelfMentionPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -1144,6 +1146,12 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "quick-agent-bar": QuickAgentBarPage,
   "delegated-writes-section": DelegatedWritesPage,
   "wecom-tab": WecomTabPage,
+  "add-trigger-dialog": AddTriggerDialogPage,
+  "html-viewer": HtmlViewerPage,
+  "plan-revision-viewer": PlanRevisionViewerPage,
+  "media-context": MediaContextPage,
+  "media-page": MediaPagePage,
+  "next-self-mention": NextSelfMentionPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,

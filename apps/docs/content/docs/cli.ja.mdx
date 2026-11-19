@@ -423,6 +423,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --auto-close-mode off|warn|block` は自動クローズのモード（`settings.auto_close.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーだけです。クローズに必要なチェックは [ワークスペース](/docs/workspaces) を参照してください。レビュー後にやることが残っていないとき、タスクの作成者は `multica issue metadata set <issue> --key post_close_work --value none --type string` を記録します。
 - `multica workspace update --blocked-run-skip-mode off|warn|block` はブロック時の実行スキップのモード（`settings.blocked_run_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。入り方の実行がスキップされる条件は[ワークスペース](/docs/workspaces)を参照してください。
 - `multica workspace update --ask-guard-mode off|warn|block` は、質問ガードのモード（`settings.ask_guard_mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。コマンドは保存後のワークスペースを表示し、`multica workspace get` でも `settings` にモードが表示されます。`off` でガードをオフにし、`warn` は違反を数えるだけで通し、`block` は拒否します。
+- `multica workspace update --merge-queue-routing off|warn`、`--merge-queue-bindings '<json>'`、`--merge-queue-watch-issue <issue-id|none>` はマージキューの設定（`settings.merge_queue_dequeue_routing`、`settings.merge_queue_actor_bindings`、`settings.merge_queue_watch_issue`）を設定します。これらどうしは併用できますが、他の更新フラグとは併用できません。変更できるのはオーナーだけです。`--merge-queue-routing block` と、両方のリストにあるログインは `routing-not-available` などで拒否されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 - `--mode script --script <name> [--arg <value>]...` は、モデルセッションなしでエージェントのタスクトークンの下、許可リストにあるスクリプトを 1 つ実行します。`--script` と `--arg` には `--mode script` が必要で、`--mode script` には `--script` が必要です。`--description` は実行されません。デーモンに許可リストがない場合、すべてのスクリプトタスクは安全側で失敗します。`--output json` はスクリプト名と引数を `script_config` として表示します。`autopilot update --mode <他のモード>` はスクリプトを消去します。 タスク終了時、サーバーはタスクトークンの削除をベストエフォートで行います。削除に失敗した場合、トークンは有効期限まで有効なままで、それより早く失効させる仕組みはありません。実行結果の `script` にスクリプト名、引数リストの SHA-256、終了コード、所要時間が記録され、削除に失敗した場合は `token_revoke_failed` が設定されます。
 
@@ -498,6 +499,21 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 ```
 
 `--agent` と `--fallback` にはエージェントの ID または名前を指定し、`none` でフィールドを解除します。`multica me` が扱うのは `dm_title`、`quick_actions`、`compact` で、`routing` はワークスペース専用です。ワークスペースへの書き込みにはオーナーまたは管理者が必要で、どちらのコマンドもタスクトークンを拒否します。エージェントなしの動作と期限は[バックグラウンドエージェント](/background-agents)を参照してください。
+
+## ブラウザリース
+
+デーモンタスク内で共有リモートブラウザをリースします。コマンドはローカルのデーモン経由で送られ、タスクのデーモン資格情報はデーモンだけが保持します。許可されたリースは、ゲートウェイ URL と短命のトークンを stdout にのみ出力し、ログには残しません。待機中のリースはキュー順位だけを表示し、トークンは出しません。
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` はトークンを出力しません。`renew` は新しいトークンを出力します。ログインプロファイルには `--decision`(Issue 上の回答済みの判断リクエストの ID)が必要です。
+
+ゲートウェイ URL はサーバーが `MULTICA_BROWSER_GATEWAY_URLS`(ホストごとのゲートウェイ URL を対応付ける JSON オブジェクト。例: `{"c00":"https://c00.example.ts.net:35443"}`)から返します。リースのホストのエントリがない場合、CLI は警告を表示し、URL は出力しません。
 
 ## コマンド概要
 

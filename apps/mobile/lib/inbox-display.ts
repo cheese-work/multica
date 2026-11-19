@@ -200,8 +200,9 @@ export function deduplicateInboxItems(items: InboxItem[]): InboxItem[] {
   ).map((row) => {
     // A later comment must not hide a mention from the "Mentions me" filter.
     const mention = isViewerMention(row) ? undefined : mentions.get(row.issue_id ?? row.id);
-    return mention
-      ? { ...row, details: { ...(row.details ?? {}), mention_source: mention.details?.mention_source } }
-      : row;
+    const source = mention?.details?.mention_source;
+    return source === undefined
+      ? row
+      : { ...row, details: { ...(row.details ?? {}), mention_source: source } };
   });
 }

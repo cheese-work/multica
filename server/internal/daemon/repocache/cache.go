@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -727,6 +729,10 @@ func gitCloneBareContext(ctx context.Context, url, dest string) error {
 		os.RemoveAll(dest)
 		return err
 	}
+	if err := installShallowGuard(dest); err != nil {
+		os.RemoveAll(dest)
+		return err
+	}
 	// `git clone --bare` populates refs/heads/* as a snapshot and defaults to
 	// a mirror-style fetch refspec. Convert the bare repo to the standard
 	// remote-tracking layout immediately so subsequent fetches write to
@@ -775,8 +781,47 @@ func runGitFetch(barePath string) error {
 }
 
 func runGitFetchContext(ctx context.Context, barePath string) error {
+	// Linked worktrees share the cache's `shallow` file, so a `git fetch
+	// --depth` run from any of them (or a stray command in the cache) turns the
+	// shared cache shallow and later checkouts fail on missing history
+	// objects (CHE-7286). Heal it before the normal fetch.
+	if out, err := runGitOutputContext(ctx, "-C", barePath, "rev-parse", "--is-shallow-repository"); err == nil && strings.TrimSpace(string(out)) == "true" {
+		if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "--unshallow", "origin"); err != nil {
+			return fmt.Errorf("git fetch --unshallow: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
+	if err := installShallowGuard(barePath); err != nil {
+		return err
+	}
 	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "origin"); err != nil {
 		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// installShallowGuard makes the cache refuse shallow fetches from any Git
+// process, shimmed or not, linked worktree or the bare directory itself
+// (CHE-7318). Git turns a complete repository shallow by renaming a new
+// `shallow` file into place, and dies with "shallow file has changed since we
+// read it" when that path already exists. An empty directory there keeps
+// `rev-parse --is-shallow-repository` false and leaves fetch, gc, worktree add
+// working. The guard is never lifted: `git clone --local|--shared` treat a source
+// with a `shallow` entry as shallow and drop hardlinks and alternates, so
+// seedIsolatedCheckoutContext seeds isolated checkouts without `git clone`.
+func installShallowGuard(barePath string) error {
+	p := filepath.Join(barePath, "shallow")
+	if fi, err := os.Lstat(p); err == nil {
+		if fi.IsDir() {
+			return nil
+		}
+		// A leftover file here is not a shallow marker: runGitFetchContext
+		// already unshallowed a cache that was.
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("install shallow guard: %w", err)
+		}
+	}
+	if err := os.Mkdir(p, 0o755); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("install shallow guard: %w", err)
 	}
 	return nil
 }
@@ -1190,14 +1235,13 @@ func (c *Cache) logCheckoutReady(msg, repoURL, baseRef string, result *WorktreeR
 const (
 	isolatedCheckoutConfigKey   = "multica.checkout-mode"
 	isolatedCheckoutConfigValue = "isolated"
-	isolatedCacheRemoteName     = "multica-cache"
 )
 
 // createOrUpdateIsolatedCheckout keeps Git metadata inside the task workdir.
-// The fresh path uses a local clone, so immutable Git objects are hard-linked
-// (copied on Windows, see localCloneArgs) from the daemon's cache while refs,
+// The fresh path seeds a local repository, so immutable Git objects are hard-linked
+// (copied on Windows, see seedIsolatedCheckoutContext) from the daemon's cache while refs,
 // index, logs, config, and new objects remain private to the task checkout.
-// The temporary cache remote is then replaced with the real repository URL so
+// Its origin is the real repository URL so
 // an agent's normal fetch / push commands still target GitHub rather than the
 // daemon-owned bare cache.
 func (c *Cache) createOrUpdateIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef string, fresh bool) (*WorktreeResult, error) {
@@ -1429,28 +1473,81 @@ func sameResolvedPath(a, b string) bool {
 	return clean(a) == clean(b)
 }
 
-// localCloneArgs builds the `git clone --local` invocation that seeds a fresh
-// isolated checkout from the shared bare cache.
+// seedIsolatedCheckoutContext creates an empty repository at checkoutPath that
+// holds the cache's objects, without `git clone`: a clone refuses to treat a
+// source with a `shallow` entry (the cache's shallow guard) as local, and
+// lifting the guard would let an unlocked external fetch shallow the cache
+// meanwhile (CHE-7318). Refs are imported afterwards by
+// syncIsolatedCheckoutRefsContext.
 //
-// On Windows the clone also passes --no-hardlinks. A local clone hardlinks
-// .git/objects whenever it can, but an NTFS hard link only exists within a
-// single volume and every link shares one underlying file *and* one security
-// descriptor. Copying the objects instead keeps a cache and workdir that live
-// on different drives working, and stops a task checkout — whose tree the
-// sandbox makes writable — from re-permissioning the daemon-owned cache's
-// object files. The cost is extra disk and a slower first checkout on Windows.
-func localCloneArgs(goos, barePath, checkoutPath string) []string {
-	args := []string{"clone", "--local", "--no-checkout", "--no-tags"}
-	if goos == "windows" {
-		args = append(args, "--no-hardlinks")
+// shared borrows the cache's objects through objects/info/alternates. Otherwise
+// the objects are hard-linked, or copied when linking fails or goos is
+// "windows": an NTFS hard link only exists within a single volume and every
+// link shares one underlying file *and* one security descriptor, so copying
+// keeps a cache and workdir on different drives working and stops a task
+// checkout — whose tree the sandbox makes writable — from re-permissioning the
+// daemon-owned cache's object files. The cost is extra disk and a slower first
+// checkout on Windows.
+func seedIsolatedCheckoutContext(ctx context.Context, goos, barePath, checkoutPath string, shared bool) error {
+	// Mkdir is the atomic claim on the path: never initialise a repository
+	// another process won the path race for. An existing empty directory is fine.
+	if err := os.Mkdir(checkoutPath, 0o755); err != nil {
+		if entries, rerr := os.ReadDir(checkoutPath); !os.IsExist(err) || rerr != nil || len(entries) > 0 {
+			return fmt.Errorf("create checkout dir: %w", err)
+		}
 	}
-	return append(args, "--origin", isolatedCacheRemoteName, barePath, checkoutPath)
+	// Do not remove checkoutPath on failure, for the same reason.
+	if out, err := runGitCombinedOutputContext(ctx, "init", "--quiet", checkoutPath); err != nil {
+		return fmt.Errorf("git init: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	cacheObjects, err := filepath.EvalSymlinks(ObjectsDir(barePath))
+	if err != nil {
+		return err
+	}
+	objects := filepath.Join(checkoutPath, ".git", "objects")
+	if shared {
+		if err := os.MkdirAll(filepath.Join(objects, "info"), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(objects, "info", "alternates"), []byte(cacheObjects+"\n"), 0o644)
+	}
+	return filepath.WalkDir(cacheObjects, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(cacheObjects, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(objects, rel)
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(dst, 0o755)
+		case !d.Type().IsRegular() || strings.HasPrefix(d.Name(), "tmp_"):
+			return nil // in-flight temporary files of a concurrent writer
+		}
+		if goos != "windows" && os.Link(path, dst) == nil {
+			return nil
+		}
+		return copyObjectFile(path, dst)
+	})
 }
 
-// sharedCloneArgs seeds a checkout that borrows the cache's objects through
-// objects/info/alternates instead of copying or hard-linking them.
-func sharedCloneArgs(barePath, checkoutPath string) []string {
-	return []string{"clone", "--shared", "--no-checkout", "--no-tags", "--origin", isolatedCacheRemoteName, barePath, checkoutPath}
+func copyObjectFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o444)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // createIsolatedCheckout seeds a new isolated checkout from the cache. A
@@ -1461,15 +1558,8 @@ func createIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef
 }
 
 func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string, shared, exact bool) (_ string, retErr error) {
-	cloneArgs := localCloneArgs(runtime.GOOS, barePath, checkoutPath)
-	if shared {
-		cloneArgs = sharedCloneArgs(barePath, checkoutPath)
-	}
-	if out, err := runGitCombinedOutputContext(ctx, cloneArgs...); err != nil {
-		// Do not remove checkoutPath here. A different repository with the
-		// same basename could have won the path race after our pre-check; Git
-		// then fails safely, and deleting the path would destroy its checkout.
-		return "", fmt.Errorf("git clone --local: %s: %w", strings.TrimSpace(string(out)), err)
+	if err := seedIsolatedCheckoutContext(ctx, runtime.GOOS, barePath, checkoutPath, shared); err != nil {
+		return "", fmt.Errorf("seed isolated checkout: %w", err)
 	}
 	cleanup := true
 	defer func() {
@@ -1478,16 +1568,13 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 		}
 	}()
 
-	// The origin swap has to happen before the first checkout when the cache
-	// is a partial clone. `git clone --local` hardlinks the objects it can see
-	// and does NOT inherit the promisor configuration, so a blobless cache
-	// yields a checkout whose blobs are unreachable — and git reports that as
-	// success with every file "deleted" rather than as an error. Pointing
-	// origin at the real remote and restoring the promisor config first lets
-	// the checkout below lazily fetch what it needs.
-	if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "remote", "remove", isolatedCacheRemoteName); err != nil {
-		return "", fmt.Errorf("remove cache remote: %s: %w", strings.TrimSpace(string(out)), err)
-	}
+	// Origin and the promisor configuration have to be in place before the
+	// first checkout when the cache is a partial clone. The seeded objects do
+	// not carry the promisor configuration, so a blobless cache yields a
+	// checkout whose blobs are unreachable — and git reports that as success
+	// with every file "deleted" rather than as an error. Pointing origin at
+	// the real remote and restoring the promisor config first lets the
+	// checkout below lazily fetch what it needs.
 	if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "remote", "add", "origin", repoURL); err != nil {
 		return "", fmt.Errorf("add origin remote: %s: %w", strings.TrimSpace(string(out)), err)
 	}

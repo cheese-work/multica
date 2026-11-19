@@ -418,7 +418,6 @@ It attests the claim only. It does not show which upstream model or provider
 served the run; that stays unverified. Task prompts, provider environment and
 tokens are not part of this field.
 
-
 ## Daemon and runtimes
 
 ```bash
@@ -489,6 +488,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 - `multica workspace update --auto-close-mode off|warn|block` sets the auto-close mode (`settings.auto_close.mode`). It patches that key alone, changes no other setting, and cannot be combined with other update flags. Only the owner can change it. See [Workspaces](/docs/workspaces) for the checks a close needs. An issue's author records `multica issue metadata set <issue> --key post_close_work --value none --type string` when nothing is left to do after review.
 - `multica workspace update --blocked-run-skip-mode off|warn|block` sets the blocked-run skip mode (`settings.blocked_run_skip.mode`). It patches that key alone, changes no other setting, and cannot be combined with other update flags. Only the owner can change it. See [Workspaces](/docs/workspaces) for when an entry run is skipped.
 - `multica workspace update --ask-guard-mode off|warn|block` sets the ask guard mode (`settings.ask_guard_mode`). It patches that key alone, changes no other setting, and cannot be combined with other update flags. Only the owner can change it. The command prints the saved workspace, and `multica workspace get` shows the mode under `settings`. `off` turns the guard off; `warn` counts misses and lets them through; `block` refuses them.
+- `multica workspace update --merge-queue-routing off|warn`, `--merge-queue-bindings '<json>'` and `--merge-queue-watch-issue <issue-id|none>` set the merge queue settings (`settings.merge_queue_dequeue_routing`, `settings.merge_queue_actor_bindings`, `settings.merge_queue_watch_issue`). They can be combined with each other but not with other update flags. Only the owner can change them. `--merge-queue-routing block` is refused with `routing-not-available`, and so is a login in both binding lists.
 - `--issue-title-template` interpolates only `{{date}}` (UTC, `YYYY-MM-DD`) and rejects any other `{{...}}` token. A schedule trigger's `--timezone` defaults to UTC.
 - `--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` need `--mode script`, and `--mode script` needs `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script. The server deletes the task token when the task ends, on a best-effort basis. If the deletion fails, the token stays valid until it expires; nothing revokes it sooner. The run result records the script name, a SHA-256 of the argument list, the exit code and the duration under `script`, and sets `token_revoke_failed` when a deletion failed.
 
@@ -533,6 +533,21 @@ multica me background-agents set dm_title --agent none   # back to the workspace
 ```
 
 `--agent` and `--fallback` take an agent id or name; `none` clears the field. `multica me` covers `dm_title`, `quick_actions` and `compact`; `routing` is workspace-only. Workspace writes need an owner or admin, and both commands refuse task tokens. See [Background Agents](/background-agents) for the no-agent behaviour and deadlines.
+
+## Browser leases
+
+Inside a daemon task, lease the shared remote browser. The command goes through the local daemon, which holds the task's daemon credential; the agent never does. A granted lease prints the gateway URL and a short-lived token on stdout only; nothing is logged. A queued lease prints its queue position and no token.
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` never prints a token. `renew` prints a fresh one. A login profile needs `--decision`, the id of an answered decision request on the issue.
+
+The server returns the gateway URL from `MULTICA_BROWSER_GATEWAY_URLS`, a JSON object that maps each host to its gateway URL (for example `{"c00":"https://c00.example.ts.net:35443"}`). Without an entry for the lease's host, the CLI prints a warning and no URL.
 
 ## Command overview
 
@@ -860,7 +875,6 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | `guard` | `plugin list\|get\|set` | Read the stored guard policy (`list`, `get <name>`) or write the decision action file that replaces it (`set --file <policy.json> --out <action.json>`, or `--dry-run`). The policy holds workspace plugins and review rules plus org, repo and path layers; a deeper layer overrides a shallower one key by key, and a layer or the workspace with `locked` freezes its keys against deeper layers. `set` sends nothing: a person approves the `workspace.settings.patch` with a passkey. The daemon hands the approved policy to each run as `MULTICA_GUARD_POLICY` (a file outside the working tree) with `MULTICA_GUARD_POLICY_SHA256` | Output: JSON rows (`--output table` for a table); `set` prints `before_sha256` and `after_sha256` |
 
 `repository_allowlist` maps each restricted owner to exact allowed repository names, case-insensitively. A listed owner defaults to deny; an omitted owner is unrestricted. Before plugins or deeper layers, it refuses unapproved `gh pr create`, `gh pr comment`, `git push` and authenticated `repo checkout` calls. Git checks effective push URLs, including pushurl and rewrites; unresolved destinations fail closed. Upgrade the daemon before approving this new policy field. `config/tevo-prod1-guard.json` is Cheese Work’s canonical source.
-
 
 ## Driving Multica from another coding agent
 
