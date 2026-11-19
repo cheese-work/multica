@@ -39,6 +39,8 @@ const (
 	GuardUpstreamChecked  = "upstream_checked"
 )
 
+// GuardIntakeSimple and GuardQAProof are in intake.go.
+
 // Edge is one exit of a step. Timeout and OnTimeout are required for guards
 // on PR facts: a PR that never changes must not park an issue forever.
 type Edge struct {
@@ -58,6 +60,7 @@ var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
+	GuardIntakeSimple: 0, GuardQAProof: 0,
 }
 
 // webhookNameRe is the endpoint name a webhook guard may reference.
@@ -161,7 +164,7 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked {
+		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardIntakeSimple || g.Kind == GuardQAProof {
 			return invalid("%s is an entry gate, not an edge guard", g.Kind)
 		}
 		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
@@ -226,6 +229,10 @@ type Facts struct {
 	// Adoption is what the adoption_linked entry gate reads; nil when no
 	// such gate asked for it.
 	Adoption *AdoptionFacts
+	// Intake and QA are what the intake_simple and qa_proof entry gates read;
+	// nil when no such gate asked for them.
+	Intake *IntakeFacts
+	QA     *QAFacts
 }
 
 // FirstMatch returns the first edge, in list order, whose guard holds for the

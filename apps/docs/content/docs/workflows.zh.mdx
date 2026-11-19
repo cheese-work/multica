@@ -122,6 +122,15 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。
 
+## 按 intake 或 QA 证据限制步骤 [#intake-qa-gates]
+
+步骤可以设置进入关卡：状态移入该步骤时必须满足的条件。有两个关卡会读取智能体写在事项上的内容。把它们加入步骤的 `entry` 列表，例如 `{"guard": "intake_simple", "mode": "warn", "param": "1"}`。模式为 `off`、`warn` 或 `block`；未列出的关卡视为关闭，全部关闭时事项的移动与以前一致。`warn` 模式下移动照常通过，事项上记录一条警告；`block` 模式下移动会被拒绝，并给出未通过的事实和修复方法，除非关卡把 `member_override` 设为 `false`，否则成员可以填写理由后放行。
+
+- `intake_simple`：事项的描述或评论里有 `Estimate:`、`Repos:`、`Schema change:`、`Security change:`、`Human decision:` 这几行，且答案表明这是个简单事项时通过。每类行以最新的一条为准。缺少某行或无法读取、估时（如 `1h`、`45m`）超过关卡的 `param`（单位为小时，大于 0 且不超过 24）、`Repos:` 列出多个仓库、是/否行为 `yes`，或事项存在未关闭的决策请求时，都会失败。`param` 必填。
+- `qa_proof`：执行移动的智能体在事项进入当前步骤之后写过一条评论，其中有一行 `QA:`，值为链接（`https://…`）或其后紧跟代码块，并且事项的 `post_close_work` 元数据已设置时通过。它不接受 `param`。其他人写的评论不算。
+
+两个关卡都按失败处理读不出的值。两者都不能用作流转守卫。每次评估 `intake_simple`，事项的活动记录里都会新增一条 `intake_call`，包含 `call`（`simple` 或 `rejected`）、原始的 `estimate` 和 `step`。
+
 ## 相关指引
 
 - [项目](/projects) — 组织使用同一套流程的任务。

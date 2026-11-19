@@ -24,6 +24,9 @@ type EntryGate struct {
 	MemberOverride *bool  `json:"member_override,omitempty"`
 	// Projects scopes upstream_checked to these project ids (CHE-5583).
 	Projects []string `json:"projects,omitempty"`
+	// Param is the gate's argument: the estimate cap in hours of intake_simple
+	// (CHE-7668). Other gates take none.
+	Param string `json:"param,omitempty"`
 }
 
 // Overridable reports whether a person may override the gate.
@@ -49,7 +52,7 @@ func normalizeEntry(gates []EntryGate) []EntryGate {
 	out := make([]EntryGate, len(gates))
 	for i, g := range gates {
 		override := g.Overridable()
-		out[i] = EntryGate{Guard: strings.TrimSpace(g.Guard), Mode: strings.TrimSpace(g.Mode), MemberOverride: &override, Projects: trimAll(g.Projects)}
+		out[i] = EntryGate{Guard: strings.TrimSpace(g.Guard), Mode: strings.TrimSpace(g.Mode), MemberOverride: &override, Projects: trimAll(g.Projects), Param: strings.TrimSpace(g.Param)}
 	}
 	return out
 }
@@ -86,6 +89,9 @@ func validateEntry(s Step) error {
 			return invalid("entry gate %q needs mode off, warn or block, not %q", e.Guard, e.Mode)
 		}
 		if err := validateGateProjects(g, e); err != nil {
+			return err
+		}
+		if err := validateGateParam(g, e); err != nil {
 			return err
 		}
 	}
@@ -149,8 +155,18 @@ func EvaluateEntry(gates []EntryGate, f Facts) []EntryFailure {
 			continue
 		}
 		var fact string
-		switch familyOf(g.Kind) {
-		case familyOpenPR:
+		switch {
+		case g.Kind == GuardIntakeSimple:
+			// A Param that cannot be read fails closed rather than skipping the cap.
+			hours, _ := ParamHours(e.Param)
+			if hours == 0 {
+				fact = "the gate has no usable param (estimate cap in hours)"
+			} else {
+				fact = f.Intake.Refusal(hours)
+			}
+		case g.Kind == GuardQAProof:
+			fact = f.QA.Refusal()
+		case familyOf(g.Kind) == familyOpenPR:
 			fact = openPRFact(g.Kind, open)
 		default:
 			if !f.holds(g) {
@@ -241,6 +257,10 @@ func fixFor(g Guard) string {
 		return adoptionFix()
 	case GuardIssueStatus:
 		return fmt.Sprintf("move %s to %s", g.Args[0], g.Args[1])
+	case GuardIntakeSimple:
+		return intakeFix()
+	case GuardQAProof:
+		return qaFix()
 	}
 	return "make the condition hold"
 }

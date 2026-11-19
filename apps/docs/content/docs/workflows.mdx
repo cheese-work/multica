@@ -122,6 +122,15 @@ When an agent needs a person's decision on spend, deploy, publish, an irreversib
 
 A person releases an issue in one of two ways. Either they move it out of Backlog in the web app, the desktop app or the CLI signed in as themselves, or they move it out of a status the issue was parked in from Backlog, and the server records the release. A token that belongs to an agent or a cloud runtime never releases an issue.
 
+## Gate a step on intake or QA proof [#intake-qa-gates]
+
+A step can carry entry gates: conditions a status move into the step must meet. Two gates read what an agent wrote on the issue. Add them to the step's `entry` list as `{"guard": "intake_simple", "mode": "warn", "param": "1"}`. The mode is `off`, `warn` or `block`; a gate that is not listed is off, and with every gate off an issue moves as before. In `warn` the move goes through and the issue gets one warning; in `block` the move is refused with the failed fact and a fix, and a person can pass it with a reason unless the gate sets `member_override` to `false`.
+
+- `intake_simple` holds when the issue's description or comments carry the lines `Estimate:`, `Repos:`, `Schema change:`, `Security change:` and `Human decision:`, and the answers read as simple. The newest line of each kind counts. It fails when a line is missing or cannot be read, when the estimate (for example `1h` or `45m`) is over the gate's `param` (hours, above 0 and at most 24), when `Repos:` names more than one repository, when a yes/no line says `yes`, or while the issue has an open decision request. `param` is required.
+- `qa_proof` holds when the agent making the move wrote a comment since the issue entered the current step with a `QA:` line that holds a link (`https://…`) or is followed by a fenced block, and the issue's `post_close_work` metadata is set. It takes no `param`. A comment by anyone else does not count.
+
+Both gates fail closed: a value they cannot read counts as a failure. Neither is accepted as a transition guard. Each time `intake_simple` is checked, the issue's activity gets an `intake_call` row with `call` (`simple` or `rejected`), the raw `estimate` and the `step`.
+
 ## Related guides
 
 - [Projects](/projects) — organize the issues that follow a workflow.

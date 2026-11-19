@@ -75,6 +75,7 @@ func validEntryOverrideReason(reason string) (string, bool) {
 // into. It runs under the issue lock, in the write transaction.
 func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Queries, locked db.Issue, params db.UpdateIssueParams) error {
 	w.entry.warnComment = ""
+	w.refusedIntake = nil
 	if w.system || !params.Status.Valid || params.Status.String == locked.Status {
 		return nil
 	}
@@ -94,7 +95,18 @@ func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Querie
 	if err != nil {
 		return err
 	}
-	return w.applyEntry(ctx, q, locked, params.Status.String, issueworkflow.EvaluateEntry(step.Entry, facts), facts)
+	w.loadGateFacts(ctx, q, locked, step, &facts)
+	failed := issueworkflow.EvaluateEntry(step.Entry, facts)
+	err = w.applyEntry(ctx, q, locked, params.Status.String, failed, facts)
+	if !entryGateOn(step, issueworkflow.GuardIntakeSimple) {
+		return err
+	}
+	call := w.newIntakeCall(locked, params.Status.String, failed, facts.Intake)
+	if err != nil {
+		w.refusedIntake = &call
+		return err
+	}
+	return w.writeIntakeCall(ctx, q, call)
 }
 
 // applyEntry turns failed gates into a refusal, an override or a warning.

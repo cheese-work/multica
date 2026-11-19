@@ -15,7 +15,6 @@ func intakeSteps(mode string) []map[string]any {
 	return []map[string]any{
 		{"status_key": "backlog"},
 		{"status_key": "todo"},
-		{"status_key": "investigating"},
 		{"status_key": "in_progress", "entry": []map[string]any{g}},
 		{"status_key": "blocked"},
 	}
@@ -26,7 +25,7 @@ func qaSteps(mode string) []map[string]any {
 		{"status_key": "backlog"},
 		{"status_key": "todo"},
 		{"status_key": "in_progress"},
-		{"status_key": "agent_review", "entry": []map[string]any{gate("qa_proof", mode)}},
+		{"status_key": "in_review", "entry": []map[string]any{gate("qa_proof", mode)}},
 		{"status_key": "blocked"},
 	}
 }
@@ -59,7 +58,7 @@ func TestIntakeSimpleGateBlocksAndLogsRejected(t *testing.T) {
 		t.Skip("database not available")
 	}
 	c := newEdgeCase(t, 7668001, intakeSteps("block"))
-	c.enter(t, "investigating")
+	c.enter(t, "todo")
 	addGateComment(t, c.issueID, "member", testUserID, "Intake\nEstimate: 3h\nRepos: 1\nSchema change: no\nSecurity change: no\nHuman decision: no", "2026-01-01T00:00:00Z")
 
 	res := testutil.Call(t, testHandler.UpdateIssue, asAgentTask(t, withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_progress"}), "id", c.issueID)))
@@ -67,7 +66,7 @@ func TestIntakeSimpleGateBlocksAndLogsRejected(t *testing.T) {
 	if got := failedGuards(t, res); len(got) != 1 || got[0] != "intake_simple" {
 		t.Fatalf("failed guards = %v; body %s", got, res.Text())
 	}
-	wantIssueStatus(t, c.issueID, "investigating")
+	wantIssueStatus(t, c.issueID, "todo")
 	if n, call, est := intakeCalls(t, c.issueID); n != 1 || call != "rejected" || est != "3h" {
 		t.Fatalf("intake_call rows=%d call=%q estimate=%q, want one rejected 3h even though the write was refused", n, call, est)
 	}
@@ -78,7 +77,7 @@ func TestIntakeSimpleGatePassesASimpleIssue(t *testing.T) {
 		t.Skip("database not available")
 	}
 	c := newEdgeCase(t, 7668002, intakeSteps("block"))
-	c.enter(t, "investigating")
+	c.enter(t, "todo")
 	addGateComment(t, c.issueID, "agent", handlerTestAgentID(t), simpleIntakeComment, "2026-01-01T00:00:00Z")
 
 	testutil.Call(t, testHandler.UpdateIssue, asAgentTask(t, withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_progress"}), "id", c.issueID))).Want(http.StatusOK)
@@ -93,7 +92,7 @@ func TestIntakeSimpleGateReadsTheIssueDescriptionAndNewestComment(t *testing.T) 
 		t.Skip("database not available")
 	}
 	c := newEdgeCase(t, 7668003, intakeSteps("block"))
-	c.enter(t, "investigating")
+	c.enter(t, "todo")
 	dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, c.issueID, "Estimate: 5h\nRepos: 1\nSchema change: no\nSecurity change: no\nHuman decision: no")
 	addGateComment(t, c.issueID, "agent", handlerTestAgentID(t), "Estimate: 1h", "2026-01-01T00:00:00Z")
 
@@ -105,9 +104,10 @@ func TestIntakeSimpleGateOpenDecisionRequestFails(t *testing.T) {
 		t.Skip("database not available")
 	}
 	c := newEdgeCase(t, 7668004, intakeSteps("block"))
-	c.enter(t, "investigating")
+	c.enter(t, "todo")
 	addGateComment(t, c.issueID, "agent", handlerTestAgentID(t), simpleIntakeComment, "2026-01-01T00:00:00Z")
-	id := dbfx.Insert(t, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": c.issueID, "asking_agent_id": handlerTestAgentID(t), "human_user_id": testUserID, "ask": "Pick?", "escalation_class": "reversible", "origin": "asked", "status": "open"})
+	session := dbfx.ChatSession(t, handlerTestAgentID(t), testutil.Cols{"creator_id": testUserID})
+	id := dbfx.Insert(t, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": c.issueID, "asking_agent_id": handlerTestAgentID(t), "human_user_id": testUserID, "chat_session_id": session, "ask": "Pick?", "escalation_class": "reversible", "origin": "asked", "status": "open"})
 	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_request WHERE id=$1`, id) })
 
 	res := testutil.Call(t, testHandler.UpdateIssue, asAgentTask(t, withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_progress"}), "id", c.issueID)))
@@ -133,7 +133,7 @@ func TestIntakeSimpleGateModes(t *testing.T) {
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			c := newEdgeCase(t, int64(7668010+i), intakeSteps(tc.mode))
-			c.enter(t, "investigating")
+			c.enter(t, "todo")
 			addGateComment(t, c.issueID, "agent", handlerTestAgentID(t), "Estimate: 1h\nRepos: 2\nSchema change: no\nSecurity change: no\nHuman decision: no", "2026-01-01T00:00:00Z")
 			testutil.Call(t, testHandler.UpdateIssue, asAgentTask(t, withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_progress"}), "id", c.issueID))).Want(tc.want)
 			if n, _, _ := intakeCalls(t, c.issueID); n != tc.wantCalls {
@@ -151,7 +151,7 @@ func TestIntakeSimpleGateMemberOverride(t *testing.T) {
 		t.Skip("database not available")
 	}
 	c := newEdgeCase(t, 7668020, intakeSteps("block"))
-	c.enter(t, "investigating")
+	c.enter(t, "todo")
 	addGateComment(t, c.issueID, "member", testUserID, "Estimate: 1h\nRepos: 2\nSchema change: no\nSecurity change: no\nHuman decision: no", "2026-01-01T00:00:00Z")
 
 	putIssue(t, c.issueID, map[string]any{"status": "in_progress"}).Want(http.StatusConflict)
@@ -166,7 +166,7 @@ func TestIntakeSimpleGateMemberOverride(t *testing.T) {
 
 func qaWrite(t *testing.T, c edgeCase, actor ...func(*http.Request) *http.Request) *testutil.Response {
 	t.Helper()
-	req := withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "agent_review"}), "id", c.issueID)
+	req := withURLParam(newRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_review"}), "id", c.issueID)
 	return testutil.Call(t, testHandler.UpdateIssue, asAgentTask(t, req))
 }
 
@@ -241,5 +241,5 @@ func TestQAProofGateWarnAndOffAndOverride(t *testing.T) {
 	}
 	c := newEdgeCase(t, 7668045, qaSteps("block"))
 	c.enter(t, "in_progress")
-	putIssue(t, c.issueID, map[string]any{"status": "agent_review", "entry_gate_override_reason": "proof is in the PR"}).Want(http.StatusOK)
+	putIssue(t, c.issueID, map[string]any{"status": "in_review", "entry_gate_override_reason": "proof is in the PR"}).Want(http.StatusOK)
 }
