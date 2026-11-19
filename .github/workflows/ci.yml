@@ -317,9 +317,11 @@ jobs:
       actions: read
     outputs:
       frontend: ${{ steps.decide.outputs.frontend }}
+      docs: ${{ steps.decide.outputs.docs }}
       backend: ${{ steps.decide.outputs.backend }}
       sqlc: ${{ steps.decide.outputs.sqlc }}
       runtime: ${{ steps.decide.outputs.runtime }}
+      processtree: ${{ steps.decide.outputs.processtree }}
       quality_only: ${{ steps.decide.outputs.quality_only }}
       scripts: ${{ steps.decide.outputs.scripts }}
       installer: ${{ steps.decide.outputs.installer }}
@@ -377,7 +379,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -553,6 +555,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Report runner CPU
+        run: |
+          nproc
+          lscpu
+
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
 
@@ -632,9 +639,37 @@ jobs:
       - name: Locale parity against the newest main
         run: pnpm --filter @multica/views exec vitest run locales/parity.test.ts
 
+  # The jobs above exclude docs because a per-PR `next build` of the docs site
+  # was too heavy (#1279). Its Vitest suite is not: it guards content such as
+  # unrendered CJK bold and finishes in seconds. It gets its own scope so a
+  # content-only PR runs it and an unrelated PR pays nothing, and installs only
+  # the docs package so the job stays far off the frontend critical path.
+  docs-test:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    runs-on: ${{ vars.RUNNER_DOCS_TEST || 'ubuntu-24.04' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install docs dependencies
+        run: pnpm install --frozen-lockfile --filter @multica/docs
+
+      - name: Test docs
+        run: pnpm --filter @multica/docs test
+
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
-    needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
+    needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality, docs-test]
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_FRONTEND || 'ubuntu-24.04' }}
     steps:
@@ -642,7 +677,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"push_frontend","frontend-test":"push_frontend","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"push_frontend","frontend-test":"push_frontend","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only","docs-test":"docs"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -784,7 +819,7 @@ jobs:
         with:
           # Keep the security floor even when the setup-go manifest lags;
           # continue accepting newer patches within Go 1.27.
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache: false
 
@@ -1107,7 +1142,7 @@ jobs:
         id: go
         uses: actions/setup-go@v7
         with:
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache: false
 
@@ -1175,7 +1210,7 @@ jobs:
         with:
           # Keep the security floor even when the setup-go manifest lags;
           # continue accepting newer patches within Go 1.27.
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -1266,11 +1301,47 @@ jobs:
           fail-on-severity: high
           fail-on-scopes: runtime, development
           comment-summary-in-pr: never
+  # Every other backend job builds for Linux, so a `_darwin.go` file or a
+  # `//go:build darwin` test that falls out of step with a shared signature
+  # stayed green until the release build compiled it. Cross-vetting from
+  # ubuntu type-checks the whole module, tests included, the way macOS builds
+  # it, without paying for a macOS runner. arm64 because that is what Apple
+  # silicon users run; cgo is off when cross-compiling, as in the release.
+  # Its own runner rather than a backend-tests step: a cold darwin vet adds
+  # ~1 GB to the build cache that job publishes (see MUL-7547), and here it
+  # runs in parallel with the long pole instead of extending it.
+  backend-darwin-vet:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ${{ vars.RUNNER_BACKEND_DARWIN_VET || 'ubuntu-24.04' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      - name: Vet darwin build
+        working-directory: server
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go vet ./...
 
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, decision-card-e2e, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
+    needs: [changes, backend-tests, decision-card-e2e, backend-agent-tests, backend-darwin-vet, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
@@ -1278,13 +1349,33 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_backend","decision-card-e2e":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
+          JOB_SCOPES: '{"backend-tests":"push_backend","decision-card-e2e":"push_backend","backend-agent-tests":"backend","backend-darwin-vet":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
   # the former macos-runtime job (Blacksmith) is removed and no macOS daemon
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
+
+      # The ubuntu backend job passes these same tests through the Linux
+      # implementations; only a macOS host reaches pi_cleanup_darwin.go,
+      # localenv's lsof/ps/AppKit detection, and the LaunchAgent writer.
+      # localenv's focusApp needs a GUI login session and stays uncovered.
+      # Runs even when a Cursor step above failed, since it shares nothing with
+      # them. -race reuses the objects those steps already built.
+      # -v so a silent skip or a -run pattern that stops matching is visible.
+      - name: Test macOS Pi cleanup, local environments, and autostart
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: server
+        run: |
+          go test -race ./pkg/agent -v -run '^TestPiCleanup' -count=1 -timeout=10m
+          go test -race ./internal/daemon -v -run '^TestPiCleanup' -count=1 -timeout=10m
+          go test -race ./internal/daemon/localenv -v -count=1 -timeout=10m
+          go test -race ./cmd/multica -v -run 'Autostart|LaunchAgent' -count=1 -timeout=10m
+
+  # Upstream v0.10.0 runs a macos-processtree job (MUL-9162) on macos-latest. This fork runs no macOS
+  # runner in CI (CHE-748, scripts/ci-runners.test.mjs); the Darwin EPERM drain test stays unrun in CI until a macOS runner is allowed (CHE-7023).
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -1399,6 +1490,9 @@ jobs:
 
       - name: Test development environment registry
         run: bash scripts/dev-env.test.sh
+
+      - name: Test agent environment lifecycle
+        run: bash scripts/agent-environment.test.sh
 
       - name: Test UI performance comparison runner
         run: bash scripts/perf-compare.test.sh

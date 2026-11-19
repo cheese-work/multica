@@ -38,7 +38,7 @@ func (h *Handler) buildTriggerThreadContext(ctx context.Context, trigger db.Comm
 	names := map[pgtype.UUID]string{}
 	lines := make([]string, 0, len(earlier))
 	for _, row := range earlier {
-		lines = append(lines, fmt.Sprintf("%s: %s", h.commentAuthorLabel(ctx, row, names), truncateRunes(row.Content, triggerThreadContextMessageRunes)))
+		lines = append(lines, fmt.Sprintf("%s: %s", h.commentAuthorLabel(ctx, row, names), truncateTriggerThreadRunes(row.Content, triggerThreadContextMessageRunes)))
 	}
 	return strings.Join(lines, "\n\n")
 }
@@ -65,7 +65,7 @@ func (h *Handler) commentAuthorLabel(ctx context.Context, c db.Comment, cache ma
 }
 
 // truncateRunes truncates a string to maxRunes, avoiding splitting UTF-8 characters.
-func truncateRunes(s string, maxRunes int) string {
+func truncateTriggerThreadRunes(s string, maxRunes int) string {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
 		return s

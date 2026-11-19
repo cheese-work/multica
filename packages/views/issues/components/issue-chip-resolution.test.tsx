@@ -155,7 +155,8 @@ describe("IssueChip resolution", () => {
         queryClient.getQueryState(issueKeys.detail(issue.workspace_id, issue.id))?.status,
       ).toBe("error");
     });
-    expect(api.getIssue).toHaveBeenCalledTimes(2);
+    // Detail reads fail at once (CHE-7026), so there is no automatic retry.
+    expect(api.getIssue).toHaveBeenCalledTimes(1);
     vi.mocked(api.getIssue).mockResolvedValue(issue);
 
     act(() => focusManager.setFocused(false));
@@ -163,7 +164,7 @@ describe("IssueChip resolution", () => {
 
     await screen.findByText(issue.title);
     expect(screen.getByTestId("status-icon")).toBeInTheDocument();
-    expect(api.getIssue).toHaveBeenCalledTimes(3);
+    expect(api.getIssue).toHaveBeenCalledTimes(2);
   });
 
   it("does not refetch a missing issue on repeated focus", async () => {
@@ -176,7 +177,7 @@ describe("IssueChip resolution", () => {
         queryClient.getQueryState(issueKeys.detail(issue.workspace_id, issue.id))?.status,
       ).toBe("error");
     });
-    expect(api.getIssue).toHaveBeenCalledTimes(2);
+    expect(api.getIssue).toHaveBeenCalledTimes(1);
 
     for (let i = 0; i < 2; i++) {
       act(() => focusManager.setFocused(false));
@@ -184,7 +185,7 @@ describe("IssueChip resolution", () => {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
-      expect(api.getIssue).toHaveBeenCalledTimes(2);
+      expect(api.getIssue).toHaveBeenCalledTimes(1);
     }
 
     expect(screen.getByText(issue.identifier)).toBeInTheDocument();

@@ -1,6 +1,6 @@
 import type React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Issue, Squad, SquadMember, SquadMemberStatus } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -28,7 +28,7 @@ vi.mock("@tanstack/react-query", () => ({
     refetch: vi.fn(),
     ...mocks.queries[(options.queryKey ?? []).join("/")],
   }),
-  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
   useMutation: ({ mutationFn }: { mutationFn: (input?: unknown) => Promise<unknown> }) => ({
     mutate: (input?: unknown) => void mutationFn(input),
     mutateAsync: (input?: unknown) => mutationFn(input),
@@ -78,6 +78,23 @@ vi.mock("../../editor/content-editor", () => ({
       aria-label="Instructions editor"
       value={value}
       onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => onUpdate(event.target.value)}
+    />
+  ),
+}));
+vi.mock("../../editor/title-editor", () => ({
+  TitleEditor: ({
+    defaultValue,
+    placeholder,
+    onBlur,
+  }: {
+    defaultValue?: string;
+    placeholder?: string;
+    onBlur?: (value: string) => void;
+  }) => (
+    <input
+      aria-label={placeholder}
+      defaultValue={defaultValue}
+      onBlur={(event) => onBlur?.(event.target.value)}
     />
   ),
 }));
@@ -284,6 +301,80 @@ describe("SquadDetailPage", () => {
     expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", { instructions: "Ship small." });
   });
 
+  // Fork wins (CHE-7026): the fork edits the name in a rename popover and the
+  // description in an edit dialog; upstream v0.10.0's in-place fields were not kept.
+  it("renames the squad from the popover and refuses an empty name", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "Strike Team" }));
+    const name = screen.getByPlaceholderText("Squad name");
+    await user.clear(name);
+    await user.type(name, "Night Shift{Enter}");
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", { name: "Night Shift" }));
+
+    mocks.api.updateSquad.mockClear();
+    await user.click(screen.getByRole("button", { name: "Strike Team" }));
+    await user.clear(screen.getByPlaceholderText("Squad name"));
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Name is required")).toBeInTheDocument();
+    expect(mocks.api.updateSquad).not.toHaveBeenCalled();
+  });
+
+  it("discards a name edit on Escape", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "Strike Team" }));
+    await user.type(screen.getByPlaceholderText("Squad name"), " typo");
+    await user.keyboard("{Escape}");
+    expect(mocks.api.updateSquad).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText("Squad name")).toBeNull();
+  });
+
+  it("edits the description in the dialog: Save writes, Escape discards", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "Ships the risky stuff" }));
+    const field = screen.getByPlaceholderText("What is this squad responsible for?");
+    await user.type(field, " carefully");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledWith("sq-1", {
+      description: "Ships the risky stuff carefully",
+    }));
+
+    mocks.api.updateSquad.mockClear();
+    await user.click(screen.getByRole("button", { name: /Ships the risky stuff/ }));
+    await user.type(screen.getByPlaceholderText("What is this squad responsible for?"), " never");
+    await user.keyboard("{Escape}");
+    expect(mocks.api.updateSquad).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText("What is this squad responsible for?")).toBeNull();
+  });
+
+  it("keeps a description draft whose save failed so it can be retried", async () => {
+    const user = userEvent.setup();
+    mocks.api.updateSquad.mockRejectedValueOnce(new Error("offline"));
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Ships the risky stuff/ }));
+    // Escape keeps the keyed draft by design, so start from the saved text.
+    const field = screen.getByPlaceholderText("What is this squad responsible for?");
+    await user.clear(field);
+    await user.type(field, "Ships the risky stuff carefully");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledTimes(1));
+    // The dialog stays open with the draft intact; a second Save retries it.
+    expect(screen.getByPlaceholderText("What is this squad responsible for?")).toHaveValue(
+      "Ships the risky stuff carefully",
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.api.updateSquad).toHaveBeenCalledTimes(2));
+    expect(mocks.api.updateSquad).toHaveBeenLastCalledWith("sq-1", {
+      description: "Ships the risky stuff carefully",
+    });
+  });
+
   it("lists the squad's properties in the panel", () => {
     renderPage();
 
@@ -301,6 +392,9 @@ describe("SquadDetailPage", () => {
     renderPage();
 
     expect(screen.getByRole("button", { name: "Assign work" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Strike Team" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Squad name" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ships the risky stuff" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add member" })).toBeNull();
     expect(within(section("Instructions")).queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByTestId("avatar-upload")).toBeNull();

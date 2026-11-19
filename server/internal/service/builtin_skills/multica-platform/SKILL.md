@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
+description: "Multica platform actions the brief does not cover: issue and PR contracts, batch changes, saved views, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, local environments, wakeups, labels, workspace admin, skill import, themes. Not for product code."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -19,7 +19,8 @@ Read the invariants below, then open the reference(s) your task actually needs
 
 | Open | When the task is about |
 |---|---|
-| `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, relations graph, status side effects, sub-issues and stages, who else is running, wakeups, comments |
+| `references/issues.md` | Issues: PR linking and handoff, ETA, saved views (reading, creating, changing), custom properties, relations graph, status side effects, sub-issues and stages, who else is running, wakeups, comments |
+| `references/batch-changes.md` | Changing many issues at once (`issue batch update`, `issue delete <id>... --dry-run`): label and property operations, per-issue results, dry runs |
 | `references/issue-turn.md` | The runtime brief's issue Workflow steps: waiver reports, comment catch-up, `--no-start`, how a child closes itself |
 | `references/charts.md` | Rendering a chart or attaching a file in a comment: fenced `html`/`mermaid` blocks, `--attachment`, theme variables |
 | `references/pull-requests.md` | Linked PR state and current GitHub checks |
@@ -35,7 +36,9 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
 | `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
+| `references/environments.md` | Local environments in the issue sidebar: writing `.multica/environments.toml`, `multica env start` / `stop` / `list`, detected servers |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
+| `references/themes.md` | Building or changing a Multica app theme: the format, the checker, delivering to Desktop's themes folder or as a `.zip` |
 
 Open what the task needs. A single-domain task usually needs one; a task that
 crosses domains needs each domain it touches — creating a squad, assigning it an

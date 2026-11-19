@@ -47,6 +47,7 @@ import {
   restoreIndex,
 } from "@/lib/reading-anchor";
 import { useReadingAnchorRecorder } from "@/lib/use-reading-anchor";
+import { resolveTimelineHighlight } from "@/lib/inbox-display";
 
 interface Props {
   issue: Issue;
@@ -141,7 +142,8 @@ export function TimelineList({
   // Gates single-shot per (commentId, nonce) tuple. Re-tap from inbox
   // bumps the nonce → ref no longer matches → effect re-fires.
   const lastStampRef = useRef<string | null>(null);
-  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<{ id: string; stamp: string } | null>(null);
+  const highlightedId = highlight?.id ?? null;
 
   // ── "New since last view" divider ─────────────────────────────────────
   // Snapshot the last-viewed timestamp ONCE on mount. Subsequent WS
@@ -161,6 +163,16 @@ export function TimelineList({
   }, [data, lastViewedSnapshot]);
   const dividerScrolledPastRef = useRef(false);
 
+  // A cached timeline can open without the target and gain it on refresh,
+  // possibly as a reply that leaves the row count unchanged, so the
+  // highlight is consumed only once its row exists.
+  const highlightTarget = useMemo(
+    () =>
+      highlightCommentId && entries
+        ? resolveTimelineHighlight(entries, highlightCommentId)
+        : null,
+    [entries, highlightCommentId],
+  );
   // ── New-comment-while-reading chip ────────────────────────────────────
   // After landing, if WS appends new entries while the user is NOT at the
   // bottom, surface a floating "↓ N new" chip instead of silently shifting
@@ -258,24 +270,24 @@ export function TimelineList({
   );
 
   useEffect(() => {
-    if (!highlightCommentId || data.length === 0) return;
+    if (!highlightCommentId || !highlightTarget) return;
     const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
     if (lastStampRef.current === stamp) return;
     lastStampRef.current = stamp;
 
-    setHighlightedId(highlightCommentId);
+    setHighlight({ id: highlightTarget, stamp });
     // The list remounts on every deep link and starts at the bottom, so an
     // old target is off-screen. Jump once the fresh list has laid out. An
-    // append (data.length) re-runs this effect, but the stamp gate keeps a
+    // append (highlightTarget) re-runs this effect, but the stamp gate keeps a
     // running jump from restarting; only a newer tap, drag or unmount ends it.
-    jumpToComment(highlightCommentId, {
+    jumpToComment(highlightTarget, {
       delayMs: JUMP_DELAY_MS,
       onSettled: () => {
         // A newer tap owns the highlight now; leave it alone.
-        if (lastStampRef.current === stamp) setHighlightedId(null);
+        if (lastStampRef.current === stamp) setHighlight(null);
       },
     });
-  }, [highlightCommentId, highlightNonce, data.length, jumpToComment]);
+  }, [highlightCommentId, highlightNonce, highlightTarget, jumpToComment]);
   useEffect(() => () => jumpController.cancel(), [jumpController]);
 
   // Mark "scrolled past" once the divider row leaves the viewport — used

@@ -335,7 +335,7 @@ multica daemon start --foreground
 
 공급자 차단기가 새 작업을 보류하면 이슈 작업은 영구적인 `provider_hold` 표시와 함께 연기됩니다. 타이머나 미디어 준비 완료로 시작되지 않습니다. 명시적으로 해제할 때는 표시를 제거하기 전에 차단기 상태를 다시 확인해야 합니다. 채팅과 빠른 생성 요청은 `provider_breaker`로 거부됩니다.
 
-워크스페이스 설정 `provider_breaker_max_hold_seconds`의 기본값은 **21600초(6시간)**입니다. 새 보류에 적용되며, 설정을 변경해도 기존 기한은 연장되지 않습니다. CLI로 설정 제안을 만든 다음 일반 설정 승인 절차를 따르세요.
+워크스페이스 설정 `provider_breaker_max_hold_seconds`의 기본값은 <strong>21600초(6시간)</strong>입니다. 새 보류에 적용되며, 설정을 변경해도 기존 기한은 연장되지 않습니다. CLI로 설정 제안을 만든 다음 일반 설정 승인 절차를 따르세요.
 
 ```bash
 multica config propose workspace.settings --set provider_breaker_max_hold_seconds:=21600 --out provider-hold.json

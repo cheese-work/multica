@@ -105,7 +105,10 @@ func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows 
 		env.Agents[uuidToString(a.ID)] = la
 	}
 
-	byWorkflow, err := h.projectIDsByWorkflow(ctx, wsUUID, rows)
+	// Lint reads only how many projects use each workflow (Usage.Projects), never
+	// their ids, so private projects count: a workflow used by a private project
+	// must not look unused.
+	byWorkflow, err := h.projectIDsByWorkflow(ctx, wsUUID, rows, func(db.Project) bool { return true })
 	if err != nil {
 		return env, nil, err
 	}

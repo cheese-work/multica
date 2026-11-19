@@ -226,6 +226,33 @@ func (h *Handler) ListSquads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ListInvolvedSquadIDs returns the ids of the squads whose issues count as the
+// caller's agents' work, so clients can evaluate the "my agents" relation on
+// rows they filter themselves.
+func (h *Handler) ListInvolvedSquadIDs(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "workspaceId"), "workspace_id")
+	if !ok {
+		return
+	}
+	ids, err := h.Queries.ListInvolvedSquadIDs(r.Context(), db.ListInvolvedSquadIDsParams{
+		WorkspaceID: wsUUID,
+		UserID:      parseUUID(userID),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list involved squads")
+		return
+	}
+	squadIDs := make([]string, len(ids))
+	for i, id := range ids {
+		squadIDs[i] = uuidToString(id)
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"squad_ids": squadIDs})
+}
+
 func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
 	// Any workspace member can create a squad and becomes its creator
@@ -834,6 +861,24 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Issues in private projects the caller cannot see (MUL-8472) are left
+	// out of active_issues; the member's working status stays.
+	hidden, ok := h.requestHiddenProjects(w, r, uuidToString(squad.WorkspaceID))
+	if !ok {
+		return
+	}
+	var taskIssueIDs []pgtype.UUID
+	for _, row := range rows {
+		if row.TaskIssueID.Valid {
+			taskIssueIDs = append(taskIssueIDs, row.TaskIssueID)
+		}
+	}
+	hiddenIssues, err := h.hiddenIssueIDs(r, hidden, taskIssueIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project access")
+		return
+	}
+
 	prefix := h.getIssuePrefix(r.Context(), squad.WorkspaceID)
 	now := time.Now()
 
@@ -883,7 +928,7 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 				entry.hasWorkingTask = true
 			}
 
-			if row.TaskIssueID.Valid {
+			if _, hide := hiddenIssues[row.TaskIssueID]; row.TaskIssueID.Valid && !hide {
 				brief := SquadActiveIssueBrief{
 					IssueID:    uuidToString(row.TaskIssueID),
 					Identifier: prefix + "-" + strconv.Itoa(int(row.IssueNumber.Int32)),
@@ -1426,7 +1471,7 @@ func commentMentionsAnyone(content string) bool {
 // same trigger set.
 // It returns true only when a leader task was actually enqueued.
 func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string) bool {
-	return h.enqueueSquadLeaderTaskOutcome(ctx, issue, triggerCommentID, authorType, authorID, handoffNote) != squadEnqueueNone
+	return h.enqueueSquadLeaderTaskOutcome(ctx, issue, triggerCommentID, authorType, authorID, handoffNote, false) != squadEnqueueNone
 }
 
 // squadEnqueueOutcome says whose run an enqueue for a squad assignment started.
@@ -1440,7 +1485,7 @@ const (
 )
 
 // enqueueSquadLeaderTaskOutcome is enqueueSquadLeaderTask reporting who got the run.
-func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string) squadEnqueueOutcome {
+func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string, workflowHandoff bool) squadEnqueueOutcome {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,
@@ -1473,23 +1518,27 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		return squadEnqueueNone
 	}
 
-	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
-		IssueID: issue.ID,
-		AgentID: squad.LeaderID,
-		// Key dedup on the reviewed head (TEN-356).
-		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
-	})
-	if err != nil || hasPending {
-		return squadEnqueueNone
+	if !workflowHandoff {
+		hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+			IssueID: issue.ID,
+			AgentID: squad.LeaderID,
+			// Key dedup on the reviewed head (TEN-356).
+			HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+		})
+		if err != nil || hasPending {
+			return squadEnqueueNone
+		}
 	}
 
-	// triggerCommentID is always empty on the assign/promote path; legacy
-	// handoff text rides its dedicated task column instead.
-	_ = triggerCommentID
 	// The member who performed the assign/promote is the accountable human for the
 	// leader run (MUL-4302 §4) — the same principal the gate above judged. An agent
 	// author is not a human, so only a member actor is threaded.
-	if _, err := h.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID)); err != nil {
+	if workflowHandoff {
+		_, err = h.TaskService.EnqueueTaskForWorkflowSquadLeader(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID))
+	} else {
+		_, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID))
+	}
+	if err != nil {
 		slog.Warn("enqueue squad leader task failed",
 			"issue_id", uuidToString(issue.ID),
 			"squad_id", uuidToString(squad.ID),

@@ -246,14 +246,14 @@ func runBenchSearch(ctx context.Context, wsUUID pgtype.UUID, q string) ([]string
 			return rows.Err()
 		})
 	}
-	sql, args := buildSearchQuery(q, terms, queryNum, hasNum, false, terminal)
+	sql, args := buildSearchQuery(q, terms, queryNum, hasNum, false, terminal, pgtype.UUID{})
 	args[3] = wsUUID
 	args[len(args)-2], args[len(args)-1] = 20, 0
 	if err := run(nil, sql, args); err != nil {
 		return nil, err
 	}
 	if shouldRunFuzzyFallback(q, hasNum, 0, len(ids)) {
-		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(q), false, terminal)
+		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(q), false, terminal, pgtype.UUID{})
 		fargs[1] = wsUUID
 		fargs[len(fargs)-2], fargs[len(fargs)-1] = 20, 0
 		if err := run(fuzzySearchSetup, fsql, fargs); err != nil {
@@ -374,7 +374,7 @@ func TestSearchBenchExplain(t *testing.T) {
 		t.Fatalf("benchmark workspace missing; run TestSearchBench first: %v", err)
 	}
 	for _, bq := range benchQueries {
-		sql, args := buildSearchQuery(bq.query, splitSearchTerms(bq.query), 0, false, false, []string{"done", "cancelled"})
+		sql, args := buildSearchQuery(bq.query, splitSearchTerms(bq.query), 0, false, false, []string{"done", "cancelled"}, pgtype.UUID{})
 		args[3] = util.MustParseUUID(wsID)
 		args[len(args)-2], args[len(args)-1] = 20, 0
 		var plan []string
@@ -395,7 +395,7 @@ func TestSearchBenchExplain(t *testing.T) {
 		if bq.class != "fallback typo" && bq.class != "zzzznomatch" {
 			continue
 		}
-		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(bq.query), false, []string{"done", "cancelled"})
+		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(bq.query), false, []string{"done", "cancelled"}, pgtype.UUID{})
 		fargs[1] = util.MustParseUUID(wsID)
 		fargs[len(fargs)-2], fargs[len(fargs)-1] = 20, 0
 		plan = nil

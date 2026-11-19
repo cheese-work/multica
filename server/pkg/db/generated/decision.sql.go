@@ -1112,7 +1112,7 @@ func (q *Queries) GetDecisionIntentForTask(ctx context.Context, arg GetDecisionI
 }
 
 const getDecisionPingHeadItem = `-- name: GetDecisionPingHeadItem :one
-SELECT item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.chat_session_id, item.chat_message_id, item.dedupe_key, item.updated_at, item.section FROM decision_request head
+SELECT item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.chat_session_id, item.chat_message_id, item.dedupe_key, item.updated_at, item.section, item.snoozed_until, item.snoozed_at FROM decision_request head
 JOIN inbox_item item ON item.workspace_id = head.workspace_id
   AND item.details->>'decision_request_id' = head.id::text
   AND item.type = 'mentioned' AND item.read = false AND item.archived = false
@@ -1165,6 +1165,8 @@ func (q *Queries) GetDecisionPingHeadItem(ctx context.Context, arg GetDecisionPi
 		&i.DedupeKey,
 		&i.UpdatedAt,
 		&i.Section,
+		&i.SnoozedUntil,
+		&i.SnoozedAt,
 	)
 	return i, err
 }
