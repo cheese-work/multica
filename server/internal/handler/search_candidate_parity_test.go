@@ -600,3 +600,48 @@ func buildLegacySearchQueryForParity(phrase string, terms []string, queryNum int
 
 	return query, args
 }
+
+// CHE-7336: candidates are chosen by the longest term of 3 or more characters.
+// A short term that sits in another comment than the driving term still counts,
+// and the rows equal the legacy query's. A query with no such term selects
+// title matches only.
+func TestBuildSearchQuery_ShortTermCandidateParity(t *testing.T) {
+	token := fmt.Sprintf("mulshort%d", time.Now().UnixNano())
+	baseTime := time.Now().Add(-time.Hour).UTC()
+
+	splitCommentsID := dbfx.Issue(t, "split comments "+token[:12], testutil.Cols{"updated_at": baseTime.Add(time.Minute)})
+	dbfx.Comment(t, splitCommentsID, token, testutil.Cols{"created_at": baseTime.Add(time.Minute)})
+	dbfx.Comment(t, splitCommentsID, "zq", testutil.Cols{"created_at": baseTime.Add(2 * time.Minute)})
+	dbfx.Issue(t, token+" title zq", testutil.Cols{"updated_at": baseTime.Add(3 * time.Minute)})
+	dbfx.Issue(t, "description holds "+token, testutil.Cols{"description": "zq lives here", "updated_at": baseTime.Add(4 * time.Minute)})
+	dbfx.Issue(t, token+" without the short term", testutil.Cols{"updated_at": baseTime.Add(5 * time.Minute)})
+
+	run := func(phrase string) (legacy, candidate []searchParityRow) {
+		terms := splitSearchTerms(phrase)
+		lq, la := buildLegacySearchQueryForParity(phrase, append([]string(nil), terms...), 0, false, true, nil)
+		cq, ca := buildSearchQuery(phrase, append([]string(nil), terms...), 0, false, true, nil, pgtype.UUID{})
+		for _, args := range [][]any{la, ca} {
+			args[3] = testWorkspaceID
+			args[len(args)-2], args[len(args)-1] = 50, 0
+		}
+		return runLegacySearchForParity(t, lq, la), runCandidateSearchForParity(t, cq, ca)
+	}
+
+	for _, phrase := range []string{token + " zq", "zq " + token, token + " z"} {
+		legacy, candidate := run(phrase)
+		if len(candidate) < 3 {
+			t.Errorf("%q: got %d rows, want the three issues that hold both terms: %#v", phrase, len(candidate), candidate)
+		}
+		if !reflect.DeepEqual(candidate, legacy) {
+			t.Errorf("%q: rows differ from the legacy query\ncandidate: %#v\nlegacy:    %#v", phrase, candidate, legacy)
+		}
+	}
+
+	// No term of 3 or more characters: only title matches are candidates.
+	_, candidate := run("zq z")
+	for _, row := range candidate {
+		if row.matchSource != "title" {
+			t.Errorf("short-only query returned a %s match: %#v", row.matchSource, row)
+		}
+	}
+}

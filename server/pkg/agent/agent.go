@@ -404,6 +404,10 @@ type Config struct {
 	RuntimeID                  string
 	DaemonVersion              string
 	CodexVersion               string
+	// Launch, when set, sees every process this Config starts, just before
+	// Start. Nil keeps the plain launch. Refused together with
+	// CredentialBoundary (ErrLaunchHookCredentialBoundary).
+	Launch LaunchHook
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the
@@ -530,6 +534,9 @@ func ResumeRejectionUndetectable(agentType string) bool {
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
+	if cfg.Launch != nil && (cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil) {
+		return nil, ErrLaunchHookCredentialBoundary
+	}
 	if cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil {
 		if !cfg.RequireCredentialIsolation || !cfg.BuiltinRuntime || len(cfg.LaunchPrefix) != 0 || agentType != "claude" && agentType != "codex" {
 			return nil, fmt.Errorf("%w: unsupported credential-exclusive runtime", credentialexec.ErrUnavailable)

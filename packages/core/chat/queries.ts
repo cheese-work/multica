@@ -104,6 +104,21 @@ export function chatSessionsOptions(wsId: string) {
   });
 }
 
+export const decisionActionKeys = {
+  /** One decided action's outcome, scoped by its issue so a run or status event can refresh it. */
+  outcome: (wsId: string, issueId: string, actionId: string) => ["decision-action", wsId, "outcome", issueId, actionId] as const,
+  outcomesForIssue: (wsId: string, issueId: string) => ["decision-action", wsId, "outcome", issueId] as const,
+};
+
+export function decisionActionOutcomeOptions(wsId: string, issueId: string, actionId: string) {
+  return queryOptions({
+    queryKey: decisionActionKeys.outcome(wsId, issueId, actionId),
+    queryFn: () => api.getDecisionActionOutcome(actionId),
+    staleTime: Infinity,
+    enabled: !!wsId && !!issueId && !!actionId,
+  });
+}
+
 export function openDecisionRequestsOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.openDecisions(wsId),

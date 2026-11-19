@@ -35,17 +35,33 @@ INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id)
 VALUES ($1, $2, $3)
 ON CONFLICT (lineage_id) DO NOTHING;
 
--- name: LockDMProgressLane :one
-SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
+-- name: GetDMProgressLane :one
+-- Plain read: the follow path never locks the lane row (lock order issue ->
+-- follow -> lane; only the dispatcher locks it).
+SELECT * FROM dm_progress_lane WHERE lineage_id = $1;
+
+-- name: LockIssueForFollow :one
+-- Follow writes take the issue row first. FOR UPDATE waits for a status change
+-- that is in flight and holds later ones back until the follow commits, so the
+-- snapshot read here and the capture triggers split the events with no gap and
+-- no duplicate. It also conflicts with LockIssueAsParent, so a follow and a
+-- child create on the same parent never interleave.
+SELECT status FROM issue WHERE id = $1 AND workspace_id = $2 FOR UPDATE;
+
+-- name: LockIssueAsParent :exec
+-- A child create takes its parent FOR KEY SHARE before it lists the parent's
+-- follows: it does not block status or other updates of the parent, only a
+-- follow write (LockIssueForFollow) on it.
+SELECT id FROM issue WHERE id = $1 FOR KEY SHARE;
 
 -- name: InsertDMProgressFollow :one
 -- Adds reasons to the follow of (issue, lineage). An active follow gains the
 -- reasons and keeps its mute. An unfollowed row is a negative override: only an
 -- explicit follow (origin or manual) reactivates it, with exactly the new
--- reasons, mute and baseline status; an inherited one returns no row. The
+-- reasons, mute, baseline status and event watermark; an inherited one returns no row. The
 -- reporting root is set at creation and never changes (a trigger enforces it).
-INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status, reporting_root_id)
-VALUES ($1, $2, $3, $4, sqlc.arg('reasons')::text[], sqlc.narg('muted_at'), $5, sqlc.arg('reporting_root_id'))
+INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status, reporting_root_id, event_watermark)
+VALUES ($1, $2, $3, $4, sqlc.arg('reasons')::text[], sqlc.narg('muted_at'), $5, sqlc.arg('reporting_root_id'), clock_timestamp())
 ON CONFLICT (issue_id, lineage_id) DO UPDATE
 SET reasons = CASE
         WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.reasons
@@ -53,6 +69,7 @@ SET reasons = CASE
     END,
     muted_at = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.muted_at ELSE dm_progress_follow.muted_at END,
     last_rendered_status = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.last_rendered_status ELSE dm_progress_follow.last_rendered_status END,
+    event_watermark = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.event_watermark ELSE dm_progress_follow.event_watermark END,
     state = 'active'
 WHERE dm_progress_follow.state = 'active' OR sqlc.arg('explicit')::boolean
 RETURNING *;
@@ -92,7 +109,7 @@ ORDER BY issue_id
 LIMIT $3;
 
 -- name: ListActiveDMProgressFollowsForIssue :many
--- Lineage order, so a caller locking each lane in turn always locks in one order.
+-- Lineage order, so callers walk a parent's follows in one order.
 SELECT * FROM dm_progress_follow
 WHERE issue_id = $1 AND state = 'active'
 ORDER BY lineage_id;
@@ -152,6 +169,8 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.issue_id = $1 AND p.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.root_issue_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2;
 
@@ -166,11 +185,13 @@ WITH gone AS (
     DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
 ), gone_deliveries AS (
     DELETE FROM dm_progress_delivery AS d WHERE d.lineage_id = $1 AND d.workspace_id = $2
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.lineage_id = $1 AND x.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps all six tables here.
+-- No FKs (repo rule): workspace delete sweeps all seven tables here.
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
 ), gone_events AS (
@@ -181,6 +202,8 @@ WITH gone_follows AS (
     DELETE FROM dm_progress_delivery AS d WHERE d.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
+), gone_episodes AS (
+    DELETE FROM dm_progress_epic_episode AS x WHERE x.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;
 
@@ -194,8 +217,13 @@ WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
   AND EXISTS (SELECT 1 FROM dm_progress_pending p WHERE p.lineage_id = l.lineage_id)
 ORDER BY random() LIMIT 200;
 
+-- name: LockDMProgressLane :one
+-- Dispatcher-side only (epic-done runs on the dispatcher's lane transaction): the
+-- follow path never calls it (lock order issue -> follow -> lane, CHE-3549).
+SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
+
 -- name: LockDMProgressLaneSkipLocked :one
--- Dispatcher entry: a lane another dispatcher (or a follow write) holds is
+-- Dispatcher entry: a lane another dispatcher holds is
 -- skipped, not waited for (CHE-3369 I1.3).
 SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED;
 
@@ -227,7 +255,9 @@ SELECT g.issue_id,
                      WHEN i.id IS NULL THEN 'issue_gone'
                      WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
        COALESCE(i.status, '')::text AS status,
-       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status
+       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status,
+       (CASE WHEN i.status = 'cancelled' THEN i.duplicate_of_issue_id END)::uuid AS duplicate_of_issue_id,
+       f.reporting_root_id::uuid AS reporting_root_id
 FROM (
     SELECT p.issue_id,
            min(p.created_at) AS first_at,
@@ -243,6 +273,15 @@ LEFT JOIN dm_progress_follow f ON f.issue_id = g.issue_id AND f.lineage_id = $1 
 LEFT JOIN issue i ON i.id = g.issue_id
 LEFT JOIN member m ON m.user_id = l.owner_user_id AND m.workspace_id = i.workspace_id
 ORDER BY g.first_at, g.issue_id;
+
+-- name: DeleteDMProgressPendingBeforeWatermark :exec
+-- Rows at or before an active follow's watermark are in its snapshot already
+-- (a re-follow after unfollow leaves them behind). Dispatcher only: it holds
+-- the lane, then reads follows.
+DELETE FROM dm_progress_pending p
+USING dm_progress_follow f
+WHERE p.lineage_id = $1 AND f.issue_id = p.issue_id AND f.lineage_id = p.lineage_id
+  AND f.state = 'active' AND p.created_at <= f.event_watermark;
 
 -- name: DeleteDMProgressPendingEvents :exec
 DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY(sqlc.arg('event_ids')::uuid[]);
@@ -268,3 +307,29 @@ UPDATE dm_progress_follow
 SET last_rendered_status = $3,
     last_immediate_at = CASE WHEN sqlc.arg('immediate')::boolean THEN sqlc.arg('at')::timestamptz ELSE last_immediate_at END
 WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active';
+
+-- name: CountDMProgressDescendantsByStatus :many
+-- Tracked descendants of a reporting root in one lane, grouped by status, so the
+-- epic-done predicate classifies each distinct status once however many issues
+-- the tree holds.
+SELECT i.status, count(*) AS total
+FROM dm_progress_follow f
+JOIN issue i ON i.id = f.issue_id
+WHERE f.lineage_id = $1 AND f.reporting_root_id = $2 AND f.state = 'active' AND f.issue_id <> $2
+GROUP BY i.status;
+
+-- name: EnsureDMProgressEpicEpisode :one
+-- The episode row of (lane, root), created at revision 1 on first use. The lane
+-- lock held by the caller serializes the read-then-fire that follows.
+INSERT INTO dm_progress_epic_episode (lineage_id, root_issue_id, workspace_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (lineage_id, root_issue_id) DO UPDATE SET workspace_id = dm_progress_epic_episode.workspace_id
+RETURNING *;
+
+-- name: FireDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET fired_at = now()
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NULL;
+
+-- name: InvalidateDMProgressEpicEpisode :execrows
+UPDATE dm_progress_epic_episode SET revision = revision + 1, fired_at = NULL
+WHERE lineage_id = $1 AND root_issue_id = $2 AND fired_at IS NOT NULL;

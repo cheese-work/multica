@@ -6,7 +6,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
-import { chatKeys, chatWakeupsOptions } from "../chat/queries";
+import { chatKeys, chatWakeupsOptions, decisionActionKeys } from "../chat/queries";
 import { inboxKeys } from "../inbox/queries";
 import { issueKeys } from "../issues/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -29,6 +29,7 @@ import {
   applyChatQuickActionsToCache,
   applyChatSessionUpdatedToCache,
   applyDecisionAnswerUpdated,
+  applyBudgetReceiptChanged,
   applyIssueRunStarted,
   applyWorkspaceUpdatedToCache,
   handleInboxNew,
@@ -1430,6 +1431,27 @@ describe("applyIssueRunStarted", () => {
     applyIssueRunStarted(qc, new Set(["X"]));
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toEqual([chatKeys.messages("dm-1"), chatKeys.messagesPage("dm-1")]);
+  });
+});
+
+describe("applyBudgetReceiptChanged", () => {
+  it("invalidates only the DM pages that hold a card of the issue, its card list and its outcome queries", () => {
+    const qc = createQueryClient();
+    const msg = (issue_id?: string) =>
+      ({ id: "m", decision_quotes: issue_id ? [{ issue_id }] : [] }) as unknown as ChatMessage;
+    qc.setQueryData(chatKeys.messages("dm-1"), [msg("X")]);
+    qc.setQueryData(chatKeys.messages("dm-2"), [msg("Z")]);
+    qc.setQueryData(chatKeys.messagesPage("dm-1"), { pages: [{ messages: [msg("X")] }], pageParams: [null] });
+    qc.setQueryData(chatKeys.messagesPage("dm-3"), { pages: [{ messages: [msg()] }], pageParams: [null] });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyBudgetReceiptChanged(qc, "ws-1", ["X"]);
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toEqual([
+      chatKeys.messages("dm-1"),
+      chatKeys.messagesPage("dm-1"),
+      chatKeys.issueDecisionCards("ws-1", "X"),
+      decisionActionKeys.outcomesForIssue("ws-1", "X"),
+    ]);
   });
 });
 

@@ -1661,6 +1661,7 @@ WHERE chat_session_id = sqlc.arg('chat_session_id')
     OR COALESCE(channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
   )
   AND COALESCE(chat_compaction_epoch, 0) = sqlc.arg('compaction_epoch')::bigint
+  AND purpose IS DISTINCT FROM 'compaction'
   AND status IN ('completed', 'failed')
   AND started_at IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC

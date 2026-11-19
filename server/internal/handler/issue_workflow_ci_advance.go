@@ -237,6 +237,8 @@ func edgeMoveCause(source string) string {
 		return "run_budget"
 	case "idle_started_guard":
 		return "watchdog"
+	case "step_watchdog_budget":
+		return "step_watchdog_budget"
 	case "pr_automation":
 		return service.StatusCausePRMerged
 	}

@@ -254,10 +254,16 @@ func handoffRunRefused(err error) bool {
 // intentRunAgent is the agent whose run the intent asks for: the agent target,
 // or the leader of a squad target.
 func (h *Handler) intentRunAgent(ctx context.Context, q *db.Queries, intent db.IssueHandoffDispatch) pgtype.UUID {
-	if intent.TargetType != "squad" {
-		return intent.TargetID
+	return squadLeaderOrAgent(ctx, q, intent.WorkspaceID, intent.TargetType, intent.TargetID)
+}
+
+// squadLeaderOrAgent is the agent a run for the target goes to: the agent
+// itself, or the leader of a squad. Zero when the squad is gone.
+func squadLeaderOrAgent(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, targetType string, targetID pgtype.UUID) pgtype.UUID {
+	if targetType != "squad" {
+		return targetID
 	}
-	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: intent.TargetID, WorkspaceID: intent.WorkspaceID})
+	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: targetID, WorkspaceID: workspaceID})
 	if err != nil {
 		return pgtype.UUID{}
 	}

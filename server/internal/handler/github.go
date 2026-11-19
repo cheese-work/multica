@@ -2105,6 +2105,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		}
 	}
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	h.enqueueStackLink(&p)
 	if p.Action == "closed" && p.PullRequest.Merged {
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	}
@@ -2389,6 +2390,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
 		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable, MergeCommitSha: p.PullRequest.MergeCommitSHA,
+		BaseRef: p.PullRequest.Base.Ref, DefaultBranch: p.Repository.DefaultBranch,
 		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
@@ -2568,6 +2570,8 @@ func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayl
 	}
 	for _, r := range rows {
 		h.PRRefresh.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+		// CHE-4143: the layers above the merge are re-evaluated for stack linking.
+		h.enqueueStackLinkNumber(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
 	return nil
 }

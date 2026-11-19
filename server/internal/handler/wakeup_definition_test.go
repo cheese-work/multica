@@ -1039,8 +1039,10 @@ func TestWakeupDefinitionAuthorizesTheResolvedTarget(t *testing.T) {
 
 // ---- round 3: workspace settings that are not an object --------------------
 
-// The owner/admin workspace update stores `settings` unchecked, so an array, a
-// scalar or JSON null is reachable. An alias write merges an object into the
+// The workspace update now refuses non-object `settings` (see
+// TestUpdateWorkspaceRefusesNonObjectSettings in this file), but rows written
+// before that check or by direct SQL can still hold an array, a
+// scalar or JSON null. An alias write merges an object into the
 // settings, which cannot be simulated (or applied) on those shapes: they are
 // refused before anything persists, and preview, save and effective agree.
 func TestWakeupDefinitionRefusesAliasWritesOnNonObjectSettings(t *testing.T) {
@@ -1050,25 +1052,16 @@ func TestWakeupDefinitionRefusesAliasWritesOnNonObjectSettings(t *testing.T) {
 		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, original, testWorkspaceID)
 	})
 
-	storeViaWorkspaceUpdate := func(t *testing.T) {
-		w := httptest.NewRecorder()
-		req := withURLParam(newRequest("PUT", "/api/workspaces/"+testWorkspaceID, map[string]any{"settings": []any{}}), "id", testWorkspaceID)
-		testHandler.UpdateWorkspace(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("workspace update: %d %s", w.Code, w.Body.String())
-		}
-	}
 	storeRaw := func(literal string) func(*testing.T) {
 		return func(t *testing.T) {
 			dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, literal, testWorkspaceID)
 		}
 	}
 	for name, store := range map[string]func(*testing.T){
-		"array via the workspace update": storeViaWorkspaceUpdate,
-		"array":                          storeRaw(`[]`),
-		"scalar number":                  storeRaw(`5`),
-		"scalar string":                  storeRaw(`"text"`),
-		"json null":                      storeRaw(`null`),
+		"array":         storeRaw(`[]`),
+		"scalar number": storeRaw(`5`),
+		"scalar string": storeRaw(`"text"`),
+		"json null":     storeRaw(`null`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			k := newWakeupDefinitionKit(t)
@@ -1093,6 +1086,22 @@ func TestWakeupDefinitionRefusesAliasWritesOnNonObjectSettings(t *testing.T) {
 			}
 			k.workspace().put("child_done", "0", cfg(map[string]any{"name": "label only"})).Want(http.StatusOK)
 		})
+	}
+}
+
+func TestUpdateWorkspaceRefusesNonObjectSettings(t *testing.T) {
+	var original string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&original)
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("PUT", "/api/workspaces/"+testWorkspaceID, map[string]any{"settings": []any{}}), "id", testWorkspaceID)
+	testHandler.UpdateWorkspace(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("workspace update with array settings: %d %s", w.Code, w.Body.String())
+	}
+	var after string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&after)
+	if after != original {
+		t.Fatalf("a refused update changed settings: %s -> %s", original, after)
 	}
 }
 

@@ -1950,12 +1950,13 @@ func (s *TaskService) EnqueueDecisionWaitLeaderTaskInTx(ctx context.Context, que
 
 // EnqueueGuardLeaderTaskInTx is the shared admission for a guard alert to an
 // issue's leader: trigger names the run-budget trigger, summary the task's
-// trigger summary.
+// trigger summary. A zero squadID is the CHE-6101 fallback: the task goes to the
+// issue's agent assignee as an ordinary task, not a leader task.
 func (s *TaskService) EnqueueGuardLeaderTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, leaderID, squadID pgtype.UUID, handoff, trigger, summary string) (db.AgentTaskQueue, error) {
 	if err := guardIssueRunAllowed(ctx, queries, issue.ID, OriginDerived, RunTarget{AgentID: leaderID, Trigger: trigger}); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, leaderID, pgtype.UUID{}, nil, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -3277,7 +3278,7 @@ func (s *TaskService) SendDirectChatMessageTx(
 		}
 		out.Queued = queued
 
-		task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
+		taskParams := db.CreateChatTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              session.AgentID,
 			RuntimeID:            carrier.RuntimeID,
@@ -3292,7 +3293,20 @@ func (s *TaskService) SendDirectChatMessageTx(
 			OriginatorSource:     attrSource,
 			TriggerEvidenceKind:  attrEvidenceKind,
 			TriggerEvidenceRefID: attrEvidenceRef,
-		})
+		}
+		// A manual /compact goes to the compaction agent when one is set and
+		// available (CHE-2913); otherwise it stays on this DM agent.
+		isCompact := IsCompactCommand(content)
+		if isCompact {
+			route, err := routeCompaction(ctx, qtx, session)
+			if err != nil {
+				return err
+			}
+			if err := route.applyTo(&taskParams, session); err != nil {
+				return fmt.Errorf("route compaction task: %w", err)
+			}
+		}
+		task, err := qtx.CreateChatTask(ctx, taskParams)
 		if err != nil {
 			return fmt.Errorf("create direct chat task: %w", err)
 		}
@@ -3304,7 +3318,7 @@ func (s *TaskService) SendDirectChatMessageTx(
 		}
 		// A manual /compact is a compaction run from the moment it is queued, so
 		// sends are refused while it runs. It carries no reason (CHE-1807).
-		if IsCompactCommand(content) {
+		if isCompact {
 			task, err = qtx.MarkChatTaskCompact(ctx, db.MarkChatTaskCompactParams{ID: task.ID})
 			if err != nil {
 				return fmt.Errorf("mark compact chat task: %w", err)
@@ -3979,7 +3993,7 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 			if err := SettleTerminalTaskState(ctx, qtx, cancelled); err != nil {
 				return err
 			}
-			if !cancelled.ChatSessionID.Valid {
+			if !cancelled.ChatSessionID.Valid || IsCompactionTask(cancelled) {
 				return nil
 			}
 			return qtx.AdvanceCancelledChatSessionPointer(ctx, cancelled.ID)
@@ -4432,7 +4446,7 @@ func (s *TaskService) RetireCancelledTaskSession(ctx context.Context, taskID pgt
 		if err != nil {
 			return fmt.Errorf("load cancelled task: %w", err)
 		}
-		if !t.ChatSessionID.Valid {
+		if !t.ChatSessionID.Valid || IsCompactionTask(t) {
 			return nil
 		}
 		if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
@@ -5857,6 +5871,12 @@ func sanitizeWaitReason(reason string) string {
 	return reason
 }
 
+// IsCompactionTask reports whether t is a compaction task (SEC-2). It is a side
+// job on the DM and never reads or writes the DM's resume pointer.
+func IsCompactionTask(t db.AgentTaskQueue) bool {
+	return t.Purpose.Valid && t.Purpose.String == taskPurposeCompaction
+}
+
 // startsWithAbsolutePath reports whether s opens with an absolute path on any
 // platform the daemon runs on: POSIX (/…), Windows drive (C:\… or C:/…), or a
 // UNC share (\\host\share). Checked against the daemon's own output, so the
@@ -5965,38 +5985,40 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		}
 
 		if t.ChatSessionID.Valid {
-			// Pin the chat_session's runtime_id alongside the session_id so the
-			// next claim can apply the runtime-guard. Both fields move together:
-			// when there's no session_id to record, leave runtime_id untouched
-			// (NULL → COALESCE keeps the existing value).
-			var sessionRuntimeID pgtype.UUID
-			if sessionID != "" {
-				sessionRuntimeID = t.RuntimeID
-			}
-			// COALESCE in SQL guarantees empty inputs don't wipe the
-			// existing resume pointer; we still surface DB errors.
-			if err := qtx.UpdateChatSessionSession(ctx, db.UpdateChatSessionSessionParams{
-				ID:        t.ChatSessionID,
-				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
-				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
-				RuntimeID: sessionRuntimeID,
-				TaskEpoch: t.ChatCompactionEpoch,
-			}); err != nil {
-				return fmt.Errorf("update chat session resume pointer: %w", err)
-			}
-			// A turn that recovered by abandoning its session still has to
-			// retire it here. The COALESCE above cannot: a fresh retry that
-			// succeeds without emitting a new id passes sessionID == "", which
-			// preserves the pointer — and the pointer is the poisoned session
-			// (GH #6066). Runs after the update so a real new id wins first and
-			// the match guard then finds nothing to clear.
-			if retiredSessionID != "" {
-				if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
+			if !IsCompactionTask(t) {
+				// Pin the chat_session's runtime_id alongside the session_id so the
+				// next claim can apply the runtime-guard. Both fields move together:
+				// when there's no session_id to record, leave runtime_id untouched
+				// (NULL → COALESCE keeps the existing value).
+				var sessionRuntimeID pgtype.UUID
+				if sessionID != "" {
+					sessionRuntimeID = t.RuntimeID
+				}
+				// COALESCE in SQL guarantees empty inputs don't wipe the
+				// existing resume pointer; we still surface DB errors.
+				if err := qtx.UpdateChatSessionSession(ctx, db.UpdateChatSessionSessionParams{
 					ID:        t.ChatSessionID,
-					SessionID: pgtype.Text{String: retiredSessionID, Valid: true},
-					RuntimeID: t.RuntimeID,
+					SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
+					WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
+					RuntimeID: sessionRuntimeID,
+					TaskEpoch: t.ChatCompactionEpoch,
 				}); err != nil {
-					return fmt.Errorf("clear retired chat session resume pointer: %w", err)
+					return fmt.Errorf("update chat session resume pointer: %w", err)
+				}
+				// A turn that recovered by abandoning its session still has to
+				// retire it here. The COALESCE above cannot: a fresh retry that
+				// succeeds without emitting a new id passes sessionID == "", which
+				// preserves the pointer — and the pointer is the poisoned session
+				// (GH #6066). Runs after the update so a real new id wins first and
+				// the match guard then finds nothing to clear.
+				if retiredSessionID != "" {
+					if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
+						ID:        t.ChatSessionID,
+						SessionID: pgtype.Text{String: retiredSessionID, Valid: true},
+						RuntimeID: t.RuntimeID,
+					}); err != nil {
+						return fmt.Errorf("clear retired chat session resume pointer: %w", err)
+					}
 				}
 			}
 
@@ -6189,6 +6211,11 @@ const chatNoResponseFallback = "The agent finished this turn without a text repl
 // owner id so an auto-retry clone (which inherits chat_input_task_id) reaches
 // the same verdict as its parent — while a NULL owner marks a legacy task.
 func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, result []byte) (*db.ChatMessage, error) {
+	// A dedicated compaction agent writes the divider summary itself; its
+	// output is not a reply in the DM (CHE-2913).
+	if IsCompactionTask(task) {
+		return nil, nil
+	}
 	// result is the daemon request re-marshalled by the handler, so it is always
 	// valid JSON; an empty Output is the only case this branch cares about.
 	var payload protocol.TaskCompletedPayload
@@ -6730,7 +6757,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			// SEC-1 rule 4: the retry guard below locks the workspace, which
 			// must come before the session lock taken next.
-			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == taskPurposeCompaction && parent.ChatSessionID.Valid {
 				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
 					return err
 				}
@@ -6788,7 +6815,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// is left alone. ResumeUnsafeFailure (not the reason alone) so an
 		// un-upgraded daemon's agent_error.unknown row is caught by the error
 		// text too.
-		if t.ChatSessionID.Valid && ResumeUnsafeFailure(failureReason, errMsg) {
+		if t.ChatSessionID.Valid && !IsCompactionTask(t) && ResumeUnsafeFailure(failureReason, errMsg) {
 			deadSession := sessionID
 			if deadSession == "" {
 				deadSession = t.SessionID.String
@@ -6807,7 +6834,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// terminal status: the fresh-session retry that replaced it may well
 		// have succeeded, and the pointer would otherwise still name the
 		// transcript it retried away from.
-		if t.ChatSessionID.Valid && retiredSessionID != "" {
+		if t.ChatSessionID.Valid && !IsCompactionTask(t) && retiredSessionID != "" {
 			if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
 				ID:        t.ChatSessionID,
 				SessionID: pgtype.Text{String: retiredSessionID, Valid: true},
@@ -6820,7 +6847,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// ResumeUnsafeFailure, not resumeUnsafeFailureReason: the reason-only
 		// check passes an un-upgraded daemon's agent_error.unknown row, which
 		// would re-pin the very session the clear above just removed.
-		if t.ChatSessionID.Valid && !ResumeUnsafeFailure(failureReason, errMsg) {
+		if t.ChatSessionID.Valid && !IsCompactionTask(t) && !ResumeUnsafeFailure(failureReason, errMsg) {
 			// Pin the chat_session's runtime_id alongside the session_id so the
 			// next claim can apply the runtime-guard. Both fields move together:
 			// when there's no session_id to record, leave runtime_id untouched
@@ -7358,7 +7385,7 @@ func retryRoutable(t db.AgentTaskQueue) bool {
 // (workspace, then sessions); the other order deadlocks with CreateRetryTask,
 // which also locks the workspace. It fails closed: an error means no retry.
 func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
-	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != taskPurposeCompaction {
 		return false, nil
 	}
 	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
@@ -10434,6 +10461,8 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"revision":         issue.Revision,
 		"metadata":         util.JSONObjectOrEmpty(issue.Metadata),
 		"properties":       util.JSONObjectOrEmpty(issue.Properties),
+		// Mirrors handler.IssueResponse.CreatedVia (a plain string there).
+		"created_via": issue.CreatedVia.String,
 	}
 }
 

@@ -1476,3 +1476,33 @@ func TestRoutingAliasBodyWritesTheRoutingJob(t *testing.T) {
 		t.Fatalf("routing off left body = %v", body)
 	}
 }
+
+// CHE-6973: --blocked-run-skip-mode sends only blocked_run_skip.mode and refuses any other flag.
+func TestBuildWorkspaceUpdateBodyBlockedRunSkipMode(t *testing.T) {
+	for _, mode := range []string{"off", "warn", "block"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "blocked-run-skip-mode", mode)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if want := map[string]any{"blocked_run_skip": map[string]any{"mode": mode}}; !reflect.DeepEqual(body, want) {
+			t.Errorf("%s: body = %#v, want %#v", mode, body, want)
+		}
+	}
+	for _, mode := range []string{"on", "", "BLOCK"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "blocked-run-skip-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+	for _, other := range []string{"auto-close-mode", "time-wakeup-skip-mode", "name"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "blocked-run-skip-mode", "warn")
+		setStringFlag(t, other, "warn")
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--blocked-run-skip-mode") {
+			t.Errorf("with --%s: err = %v, want a conflict naming --blocked-run-skip-mode", other, err)
+		}
+	}
+}

@@ -95,15 +95,22 @@ type runBudgetLane struct {
 // still a member. It returns an empty plan when the workspace has no agent to
 // ask as; the notice's comment and inbox item still reach the recipients.
 func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, recipients []pgtype.UUID) (runBudgetDecisionPlan, error) {
-	plan := runBudgetDecisionPlan{}
 	asker, ok, err := runBudgetAsker(ctx, q, issue)
 	if err != nil {
-		return plan, err
+		return runBudgetDecisionPlan{}, err
 	}
 	if !ok {
 		slog.Warn("run budget: no agent to ask the decision as", "issue_id", uuidToString(issue.ID))
-		return plan, nil
+		return runBudgetDecisionPlan{}, nil
 	}
+	return h.planRunBudgetDecisionsAs(ctx, q, issue, asker, recipients)
+}
+
+// planRunBudgetDecisionsAs is planRunBudgetDecisions with the asking agent named. A decision
+// that a later check ties to one agent (the browser lease, CHE-4739) is asked as that agent.
+func (h *Handler) planRunBudgetDecisionsAs(ctx context.Context, q *db.Queries, issue db.Issue, asker db.Agent, recipients []pgtype.UUID) (runBudgetDecisionPlan, error) {
+	plan := runBudgetDecisionPlan{}
+	var err error
 	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		return plan, err
 	}

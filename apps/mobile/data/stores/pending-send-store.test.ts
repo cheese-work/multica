@@ -129,4 +129,40 @@ describe("pending send keeps one client_message_id (A22)", () => {
       askIds: ["k1"],
     });
   });
+
+  it("a retry sent while the disk is still loading reuses the restored id (B4)", async () => {
+    const run1 = await coldStart();
+    await run1.usePendingSendStore.getState().hydrate("ws1");
+    apiMock.sendChatMessage.mockRejectedValueOnce(new Error("offline"));
+    await expect(run1.sendWithPendingId("s1", "hello")).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const run2 = await coldStart();
+    apiMock.sendChatMessage.mockResolvedValueOnce(OK);
+    void run2.usePendingSendStore.getState().hydrate("ws1");
+    await run2.sendWithPendingId("s1", "hello");
+
+    const ids = apiMock.sendChatMessage.mock.calls.map((c) => c[2].clientMessageId);
+    expect(ids[1]).toBe(ids[0]);
+  });
+
+  it("the restored id stays bound to its original session (B4)", async () => {
+    const run1 = await coldStart();
+    await run1.usePendingSendStore.getState().hydrate("ws1");
+    apiMock.sendChatMessage.mockRejectedValueOnce(new Error("offline"));
+    await expect(run1.sendWithPendingId("s1", "hello")).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const run2 = await coldStart();
+    await run2.usePendingSendStore.getState().hydrate("ws1");
+    apiMock.sendChatMessage.mockResolvedValue(OK);
+    await run2.sendWithPendingId("s2", "hello");
+    await run2.sendWithPendingId("s1", "hello");
+
+    const calls = apiMock.sendChatMessage.mock.calls;
+    expect(calls[1][0]).toBe("s2");
+    expect(calls[1][2].clientMessageId).not.toBe(calls[0][2].clientMessageId);
+    expect(calls[2][0]).toBe("s1");
+    expect(calls[2][2].clientMessageId).toBe(calls[0][2].clientMessageId);
+  });
 });

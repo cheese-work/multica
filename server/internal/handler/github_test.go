@@ -1457,11 +1457,13 @@ func postPRWebhook(t *testing.T, h *Handler, secret string, installationID int64
 			"created_at":       "2026-04-28T00:00:00Z",
 			"updated_at":       "2026-04-29T00:00:00Z",
 			"head":             map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
+			"base":             map[string]any{"ref": "main"},
 			"user":             map[string]any{"login": "octocat"},
 		},
 		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	}
+	payload["repository"].(map[string]any)["default_branch"] = "main"
 	raw, _ := json.Marshal(payload)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(raw)

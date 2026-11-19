@@ -175,6 +175,9 @@ var concurrentIndexCleanups = map[string]string{
 	"99973_system1_epoch_open_idx":                  "system1_epoch_open",
 	"99964_browser_lease_epoch_idx":                 "browser_lease_instance_epoch_uidx",
 	"99964b_browser_gateway_credential_hash_idx":    "browser_gateway_credential_hash_uidx",
+	"99964d_browser_profile_member_idx":             "browser_profile_member_uidx",
+	"99964e_browser_profile_agent_idx":              "browser_profile_agent_uidx",
+	"999l_agent_task_queue_task_key_idx":            "idx_agent_task_queue_task_key",
 	"975_chat_session_chain_root_idx":               "idx_chat_session_chain_root",
 	// v0.10.0 merge (CHE-7023): migrations that build an index concurrently on up
 	// but were never registered. Without a hook an interrupted build leaves an

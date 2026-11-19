@@ -51,6 +51,7 @@ FROM agent_task_queue t
 WHERE t.id = $1
   AND t.chat_session_id = cs.id
   AND t.status = 'cancelled'
+  AND t.purpose IS DISTINCT FROM 'compaction'
   AND t.session_id IS NOT NULL
   AND t.runtime_id IS NOT NULL
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
@@ -58,6 +59,7 @@ WHERE t.id = $1
       SELECT 1 FROM agent_task_queue newer
       WHERE newer.chat_session_id = t.chat_session_id
         AND newer.id <> t.id
+        AND newer.purpose IS DISTINCT FROM 'compaction'
         AND newer.session_id IS NOT NULL
         AND newer.created_at > t.created_at
   )
@@ -88,7 +90,9 @@ WHERE t.id = $1
 // backwards onto the turn the user interrupted.
 //
 // A task dispatched before an in-place /compact (older compaction epoch) never
-// moves the pointer: its session predates the boundary.
+// moves the pointer: its session predates the boundary. A compaction task
+// (purpose = 'compaction') never moves it either, and its session never counts
+// as a newer owner of it (SEC-2).
 //
 // The newer-task lookup depends on
 // idx_agent_task_queue_chat_session (migration 472). Neither chat_pending_v3
@@ -354,6 +358,7 @@ SELECT EXISTS (
   JOIN chat_session cs ON cs.id = t.chat_session_id
   WHERE cs.id = $1
     AND t.session_id = cs.session_id
+    AND t.purpose IS DISTINCT FROM 'compaction'
     AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ) AS current
 `
@@ -896,7 +901,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    fire_at, channel_context_revision, id
+    fire_at, channel_context_revision, purpose, source_chat_session_id, context, id
 )
 SELECT
     $1, $2, NULL,
@@ -912,7 +917,10 @@ SELECT
     $14,
     $6::timestamptz,
     $15::bigint,
-    COALESCE($16::uuid, gen_random_uuid())
+    $16::text,
+    $17::uuid,
+    $18::jsonb,
+    COALESCE($19::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id
 `
@@ -933,6 +941,9 @@ type CreateChatTaskParams struct {
 	TriggerEvidenceKind    pgtype.Text        `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID   pgtype.UUID        `json:"trigger_evidence_ref_id"`
 	ChannelContextRevision pgtype.Int8        `json:"channel_context_revision"`
+	Purpose                pgtype.Text        `json:"purpose"`
+	SourceChatSessionID    pgtype.UUID        `json:"source_chat_session_id"`
+	Context                []byte             `json:"context"`
 	ID                     pgtype.UUID        `json:"id"`
 }
 
@@ -960,6 +971,9 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
 		arg.ChannelContextRevision,
+		arg.Purpose,
+		arg.SourceChatSessionID,
+		arg.Context,
 		arg.ID,
 	)
 	var i AgentTaskQueue
@@ -1953,6 +1967,7 @@ WITH retired_sessions AS (
         OR COALESCE(r.channel_context_revision, 1) = $2::bigint
       )
       AND r.retired_session_id IS NOT NULL
+      AND r.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(r.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
 ), resume_overflow_at AS (
     -- completed_at alone, where the issue-side twin coalesces four columns:
@@ -1967,6 +1982,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.status = 'failed'
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
@@ -1986,6 +2002,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.session_id IS NOT NULL
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND t.status IN ('completed', 'failed', 'cancelled')
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
     ORDER BY t.session_id, t.completed_at DESC
@@ -2075,6 +2092,10 @@ type GetLastChatTaskSessionRow struct {
 // empty message baked into the conversation history: both must match, and
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
+//
+// Every CTE skips compaction tasks (purpose = 'compaction'): their sessions
+// belong to the background job, not to the DM, and a failed one stays in the
+// current epoch (SEC-2).
 //
 // Every CTE reads the DM's current compaction epoch only: a session recorded
 // before an in-place compact is the history the compact summarised away and

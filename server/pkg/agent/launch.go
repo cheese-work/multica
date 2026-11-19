@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,6 +47,15 @@ func newAgentCommandLogArgs(invocationArgs []string, trustedPositionals ...trust
 		trustedPositionals: append([]trustedAgentCommandPositional(nil), trustedPositionals...),
 	}
 }
+
+// LaunchHook rewrites a process just before it starts (sandbox wrapping).
+type LaunchHook interface {
+	Wrap(*exec.Cmd) error
+}
+
+// ErrLaunchHookCredentialBoundary: a launch hook and a credential boundary both
+// own the final command, so the combination is refused.
+var ErrLaunchHookCredentialBoundary = errors.New("agent: launch hook cannot be combined with a credential boundary")
 
 // Command is the identity of a runtime CLI: the executable Multica spawns plus
 // the argv prefix that belongs to the command itself rather than to any single
@@ -91,6 +101,59 @@ type Command struct {
 	// whose plain `--version` is not a cheap local read. Empty means
 	// `--version`. Set only through ForVersionProbe.
 	versionArgs []string
+	// hook is the owning Config's launch hook (nil: plain launch).
+	hook LaunchHook
+}
+
+// launchHooks maps a built, not yet started *exec.Cmd to its entry. The entry
+// leaves on start (applyLaunchHook), or when the command's context ends, so a
+// command that is built and never started cannot leak.
+var launchHooks sync.Map // *exec.Cmd -> *launchEntry
+
+type launchEntry struct {
+	hook LaunchHook
+	stop func() bool // detaches the ctx AfterFunc; set before the cmd is returned
+}
+
+func registerLaunchHook(ctx context.Context, cmd *exec.Cmd, hook LaunchHook) *exec.Cmd {
+	if hook == nil {
+		return cmd
+	}
+	// Store first: on an already-done ctx AfterFunc runs the delete at once,
+	// and it must not be able to run before the store. Nobody can apply the
+	// hook before this returns the cmd, so setting stop afterwards is safe.
+	e := &launchEntry{hook: hook}
+	launchHooks.Store(cmd, e)
+	e.stop = context.AfterFunc(ctx, func() { launchHooks.Delete(cmd) })
+	return cmd
+}
+
+// applyLaunchHook runs the registered hook, if any, on cmd just before Start.
+// The entry is removed, and its ctx callback released so the command is not
+// retained until ctx ends, whether or not the hook succeeds.
+func applyLaunchHook(cmd *exec.Cmd) error {
+	v, ok := launchHooks.LoadAndDelete(cmd)
+	if !ok {
+		return nil
+	}
+	e, ok := v.(*launchEntry)
+	if !ok {
+		return nil
+	}
+	e.stop()
+	return e.hook.Wrap(cmd)
+}
+
+// launchHookEntries lists commands still waiting for their hook (tests).
+func launchHookEntries() []*exec.Cmd {
+	var out []*exec.Cmd
+	launchHooks.Range(func(k, _ any) bool {
+		if cmd, ok := k.(*exec.Cmd); ok {
+			out = append(out, cmd)
+		}
+		return true
+	})
+	return out
 }
 
 // ForVersionProbe returns c set up to probe provider's version the way that
@@ -147,7 +210,7 @@ func (c Command) exec(ctx context.Context, args ...string) *exec.Cmd {
 	warnLaunchPrefixOverlap(c.Prefix, args, c.logger)
 	cmd := exec.CommandContext(ctx, c.Path, c.Argv(args...)...)
 	cmd.Dir = c.probeDir
-	return newRuntimeCmd(cmd)
+	return registerLaunchHook(ctx, newRuntimeCmd(cmd), c.hook)
 }
 
 // withProbeDirectory resolves the executable before moving into an empty
@@ -329,7 +392,7 @@ func (c Command) execVia(ctx context.Context, choose invocationChooser, lookedUp
 	argv0, cmdArgs := choose(c.Path, lookedUp, c.Argv(args...), logger)
 	cmd := exec.CommandContext(ctx, argv0, cmdArgs...)
 	cmd.Dir = c.probeDir
-	return newRuntimeCmd(cmd), argv0, cmdArgs
+	return registerLaunchHook(ctx, newRuntimeCmd(cmd), c.hook), argv0, cmdArgs
 }
 
 // withFilteredPrefix returns a copy of the command whose prefix has been
@@ -372,7 +435,7 @@ func (c Command) String() string {
 // fallback, which is why the path is a parameter rather than read from
 // Config.ExecutablePath.
 func (c Config) commandAt(path string) Command {
-	return Command{Path: path, Prefix: c.LaunchPrefix, logger: c.Logger}
+	return Command{Path: path, Prefix: c.LaunchPrefix, logger: c.Logger, hook: c.Launch}
 }
 
 func (config Config) validateCredentialOptions(opts ExecOptions) error {

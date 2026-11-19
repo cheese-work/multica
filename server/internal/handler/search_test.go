@@ -673,3 +673,94 @@ func TestBuildSearchQuery_ProjectFilter(t *testing.T) {
 		})
 	}
 }
+
+// CHE-7336: a 1 or 2 character term matches almost every row and cannot use the
+// trigram index, so candidates are chosen by the longest term of 3 or more
+// characters. Every eligible issue holds that term somewhere.
+func TestBuildSearchQuery_CandidatesUseOneDrivingPattern(t *testing.T) {
+	terminal := []string{"done", "cancelled"}
+	// candidateSQL is the driving-issue CTE plus the issue candidate subquery.
+	candidateSQL := func(query string) (candidates, commentSource string) {
+		drivingEnd := strings.Index(query, "comment_matches AS MATERIALIZED")
+		commentStart := strings.Index(query, "comment AS (")
+		commentEnd := strings.Index(query, "SELECT *")
+		issueEnd := strings.Index(query, ") candidate")
+		issueStart := strings.LastIndex(query[:max(issueEnd, 0)], "FROM (\n\t\t\t")
+		if drivingEnd < 0 || commentStart < drivingEnd || commentEnd < commentStart || issueStart < 0 || issueEnd < issueStart {
+			t.Fatalf("candidate SQL not found:\n%s", query)
+		}
+		return query[:drivingEnd] + query[issueStart:issueEnd], query[commentStart:commentEnd]
+	}
+
+	for _, q := range []string{"fuzzy s", "fuzzy se", "s fuzzy", "local db"} {
+		query, args := buildSearchQuery(q, splitSearchTerms(q), 0, false, false, terminal, pgtype.UUID{})
+		candidates, commentSource := candidateSQL(query)
+		for i, a := range args {
+			pattern, ok := a.(string)
+			if !ok || len(pattern) < 2 || pattern[0] != '%' || pattern[len(pattern)-1] != '%' {
+				continue
+			}
+			if len([]rune(strings.Trim(pattern, "%"))) >= 3 {
+				continue
+			}
+			param := fmt.Sprintf("LIKE $%d", i+1)
+			if strings.Contains(candidates+" ", param+" ") || strings.Contains(candidates, param+")") {
+				t.Errorf("%q: candidate selection reads the short pattern $%d=%q:\n%s", q, i+1, pattern, candidates)
+			}
+		}
+		if !strings.Contains(commentSource, "issue_id IN (SELECT issue_id FROM driving_issues)") {
+			t.Errorf("%q: comments are not limited to the driving issues:\n%s", q, commentSource)
+		}
+	}
+
+	// A multi-term query with no term of 3 or more characters selects title
+	// matches only and reads no comment.
+	query, _ := buildSearchQuery("a b", []string{"a", "b"}, 0, false, false, terminal, pgtype.UUID{})
+	candidates, commentSource := candidateSQL(query)
+	if strings.Contains(candidates, "description_folded LIKE") || strings.Contains(candidates, "content_folded LIKE") {
+		t.Errorf("short-only query reads description or comment text for candidates:\n%s", candidates)
+	}
+	if !strings.Contains(commentSource, "AND FALSE") {
+		t.Errorf("short-only query reads comments:\n%s", commentSource)
+	}
+}
+
+// CHE-7336: a short term of a multi-term query matches nearly every comment, so
+// the comment aggregate must not read comments for it (a sort and an aggregate
+// over the whole workspace when the driving term is widespread). It is asked once
+// per query, as a hashed lookup in the eligibility rule.
+func TestBuildSearchQuery_ShortTermDoesNotDriveCommentAggregate(t *testing.T) {
+	for _, q := range []string{"fuzzy s", "fuzzy se", "s fuzzy", "local db"} {
+		query, args := buildSearchQuery(q, splitSearchTerms(q), 0, false, false, []string{"done", "cancelled"}, pgtype.UUID{})
+		start := strings.Index(query, "comment_matches AS MATERIALIZED")
+		end := strings.Index(query, "issue_matches AS (")
+		if start < 0 || end < start {
+			t.Fatalf("%q: comment_matches CTE not found:\n%s", q, query)
+		}
+		aggregate := query[start:end]
+		eligibility := query[end:]
+		shortParams := 0
+		for i, a := range args {
+			pattern, ok := a.(string)
+			if !ok || len(pattern) < 2 || pattern[0] != '%' || pattern[len(pattern)-1] != '%' {
+				continue
+			}
+			if len([]rune(strings.Trim(pattern, "%"))) >= 3 {
+				continue
+			}
+			shortParams++
+			param := fmt.Sprintf("$%d", i+1)
+			for _, flag := range []string{"BOOL_OR(lowered_comment.lowered LIKE " + param + ")", "content_folded LIKE " + param + " OR", "OR content_folded LIKE " + param} {
+				if strings.Contains(aggregate, flag) {
+					t.Errorf("%q: the comment aggregate reads the short pattern %s (%q):\n%s", q, param, pattern, aggregate)
+				}
+			}
+			if !strings.Contains(eligibility, "SELECT issue_id FROM comment_search_text WHERE workspace_id = $4 AND content_folded LIKE "+param+")") {
+				t.Errorf("%q: eligibility has no hashed lookup for the short pattern %s:\n%s", q, param, eligibility)
+			}
+		}
+		if shortParams == 0 {
+			t.Fatalf("%q: no short pattern found in the arguments", q)
+		}
+	}
+}

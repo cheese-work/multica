@@ -289,6 +289,7 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		a, ok := byCanonical[sessions[i].ID]
 		if !ok {
 			sessions[i].StaleLevel = service.AttentionNone
+			sessions[i].AttentionKeys, sessions[i].AttentionAskIDs = []string{}, []string{} // wire: [] not null
 			continue
 		}
 		sessions[i].StaleLevel = a.StaleLevel
@@ -1718,6 +1719,9 @@ func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSessio
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	if err := qtx.MarkDecisionRequestsRead(ctx, session.ID); err != nil {
 		return nil, err
 	}
 	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})

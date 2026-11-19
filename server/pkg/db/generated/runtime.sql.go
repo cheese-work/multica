@@ -1028,6 +1028,39 @@ func (q *Queries) ListDaemonCustomNames(ctx context.Context, arg ListDaemonCusto
 	return items, nil
 }
 
+const listMachineRuntimeIDsInWorkspace = `-- name: ListMachineRuntimeIDsInWorkspace :many
+SELECT id FROM agent_runtime
+WHERE workspace_id = $1
+  AND COALESCE(owner_id, workspace_id) = $2
+  AND daemon_id = $3
+`
+
+type ListMachineRuntimeIDsInWorkspaceParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	MachineOwnerID pgtype.UUID `json:"machine_owner_id"`
+	DaemonID       pgtype.Text `json:"daemon_id"`
+}
+
+func (q *Queries) ListMachineRuntimeIDsInWorkspace(ctx context.Context, arg ListMachineRuntimeIDsInWorkspaceParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listMachineRuntimeIDsInWorkspace, arg.WorkspaceID, arg.MachineOwnerID, arg.DaemonID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNonOwnerActiveTasksByRuntime = `-- name: ListNonOwnerActiveTasksByRuntime :many
 SELECT task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model, task.chat_compaction_epoch, task.preset_name, task.preset_source, task.preset_skips, task.claimed_thinking_level, task.claimed_service_tier, task.claimed_context_args, task.cancel_acked_at, task.stop_unconfirmed_at, task.pull_request_id, task.replacement_released_at, task.stop_hold_issue_wide, task.taint_ids, task.applied_model, task.applied_thinking_level, task.applied_service_tier, task.applied_context_args, task.applied_reported_at, task.external_read, task.purpose, task.cancel_ack_reason, task.source_chat_session_id, task.trigger_kind, task.handoff_dispatch_id
 FROM agent_task_queue AS task

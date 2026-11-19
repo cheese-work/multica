@@ -147,6 +147,8 @@ multica issue comment add MUL-123 --content-file note.md --steer-active
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+智能体在处于 `in_review`、`blocked` 或 `need_decision` 的任务上发出的评论，必须写明下一步由谁行动：有人行动用 `--ask <member-id>`，无人行动用 `--no-ask`。成员提及、`--notify-only` 或决策请求也算。这两个参数不能互相组合，也不能与 `--notify-only` 或决策参数组合。同样的状态变更需要在 `multica issue status` 上加 `--waiting-on member:<member-id>` 或 `--waiting-on none`，且只能与 `in_review`、`blocked`、`need_decision` 一起使用。工作区设置 `waiting_audience_guard` 和 `waiting_on_guard` 决定缺少对象时是放行、计数还是拒绝。
+
 `multica decision request` 的 `--recovers <event-id>` 表示该请求是对某个 ask 守卫事件的答复，例如被拒绝的操作或恢复通知中指明的事件。只有当事件属于该请求所在的任务、且是为请求所询问的那个人产生时，服务器才会在请求的同一事务中清除该事件。针对某人的请求不会清除另一个人的事件；不带 `--recovers` 的请求不会清除任何事件。其他任务或其他人的事件会以 `400` 拒绝。一个请求只恢复一个事件：同一请求的重试若指向第二个事件，会以 `400` 拒绝。
 
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
@@ -419,6 +421,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。该设置存储为 `background_agents` 的 `routing` 任务。这些标志是 `multica workspace background-agents set routing` 的别名，旧的 `/routing-agent` API 路由也会作为别名保留一个版本。
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` 设置工作区的定时唤醒跳过模式（`settings.time_wakeup_skip.mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改，每次修改都会记入活动日志。`off` 关闭检查并运行所有被推迟的定时唤醒；`warn` 只记录 `block` 会怎么做，触发照常运行；`block` 会推迟未变化的已声明触发，并要求智能体在定时唤醒上传入 `--watch <inputs>` 或 `--watch always`。
 - `multica workspace update --auto-close-mode off|warn|block` 设置自动关闭模式（`settings.auto_close.mode`）。它只修改这一个键，不改其他设置，也不能与其他更新标志同时使用。只有所有者可以修改。关闭所需的检查见[工作区](/docs/workspaces)。评审后无事可做时，任务的作者记录 `multica issue metadata set <issue> --key post_close_work --value none --type string`。
+- `multica workspace update --blocked-run-skip-mode off|warn|block` 设置阻塞进入时跳过运行的模式（`settings.blocked_run_skip.mode`）。它只修改该键，不改变其他设置，且不能与其他更新标志同时使用。只有所有者可以更改。何时跳过进入时的运行见[工作区](/docs/workspaces)。
 - `multica workspace update --ask-guard-mode off|warn|block` 设置提问守卫模式（`settings.ask_guard_mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改。命令会输出保存后的工作区，`multica workspace get` 也会在 `settings` 下显示该模式。`off` 关闭守卫；`warn` 只统计遗漏并放行；`block` 拒绝。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 - `--mode script --script <name> [--arg <value>]...` 在智能体的任务令牌下运行一个白名单脚本，不启动模型会话。`--script` 和 `--arg` 需要 `--mode script`，`--mode script` 需要 `--script`。`--description` 从不被执行。守护进程没有白名单时，所有脚本任务都会安全失败。`--output json` 以 `script_config` 显示脚本名和参数。`autopilot update --mode <其他>` 会清除脚本。 任务结束时，服务器会尽力删除任务令牌。如果删除失败，令牌在过期前仍然有效，没有更早的撤销机制。运行结果的 `script` 下记录脚本名、参数列表的 SHA-256、退出码和耗时；删除失败时还会设置 `token_revoke_failed`。
@@ -445,6 +448,10 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 ```
 
 `decision` 卡片的每个选项都可以说明被选中后由谁行动。把 `after_choice` 设为 `agent_run`、`human_steps` 或 `record_only`。`agent_run` 选项要列出 `agent_commands`：一个或多个 argv 数组，例如 `["$MULTICA_CLI_PATH", "daemon", "restart"]`。以单个字符串给出的命令会被拒绝并指出字段名，因为服务器不解析 shell 文本。使用仅限控制台界面的选项改为把 `agent_surface` 设为目录中的键。该检查只读取这些带类型的字段，绝不读取 `what_happens`。它把每条命令化简为工具和前导词（去掉路径、`.exe` 以及全局标志 `--profile`、`--server-url`、`--workspace-id`、`--debug`），再与工作区设置 `agent_cannot_do` 比较，该设置是智能体运行无法完成之事的 `{key, tool, subcommand, human_step}` 列表。未设置时，条目为 `multica` 的 `daemon restart` 和 `daemon stop`。`env`、`sudo`、`nohup`、`timeout`、`xargs`、`bash`、`sh`、`zsh` 等包装器会隐藏真实命令，所以请直接以 argv 给出命令本身。工作区设置 `agent_cannot_do_mode`（`off`、`warn`、`block`；默认 `off`）决定结果。`warn` 时创建卡片，并在响应中附带一条提示。`block` 时服务器返回 `400`，给出选项标签、目录键以及应写入 `human_steps` 的人工步骤，且不创建卡片。在 `warn` 和 `block` 下，没有 `after_choice` 的选项会增加一条提示，或带字段名被拒绝。操作卡片和豁免主题卡片不受检查。
+
+在 `warn` 和 `block` 下，还有两种拒绝会读取同样的类型字段。`agent_commands` 只运行 `multica issue status` 或 `multica issue assign` 的选项会被拒绝，并给出类型化的修正：发送 `after_choice` `server_action` 和 `options[].action` 为 `issue.status.set` 或 `issue.assign`，而不是重复这一步移动的运行。运行 `multica decision propose` 或 `multica issue budget raise|top-up` 的选项会被拒绝，提示为“attach the action with --action-file; the passkey goes on this card”，因为第二张卡片需要第二次 passkey。`multica issue get` 等读取命令会被接受。目录条目还可以设置 `allowed_agents`（工作区智能体 ID 列表）：与条目匹配的 `agent_run` 命令，除非提问的智能体在列表中，否则会被拒绝，拒绝信息会给出条目的 `human_step`，或指派（`issue.assign`）给列表中的智能体。内置的 `c00_restart`（`docker container restart`）和 `c00_compose_restart`（`docker compose restart`）条目列出了 C00 智能体。CI 卡片没有提问的智能体，因此带 `allowed_agents` 的条目会拒绝它。设置写入中 `allowed_agents` 指向工作区之外的智能体时，会以 `400` 拒绝。
+
+第四个值 `server_action` 让服务器以选择该选项的人的身份执行操作。给选项加上 `action {type, params}`：`issue.status.set` 带 `params.status`（如 `in_review` 这样的状态键），`issue.assign` 带 `params.assignee_type`（`member` 或 `agent`）和 `params.assignee_id`（UUID）。服务器会把这些值转为小写并去掉首尾空白后保存，并在 `what_happens` 中追加一行，例如 "On pick: the server moves CHE-123 to in_review as you."。`after_choice` 为 `human_steps` 的选项可以加上 `after_wait`，只指定智能体等待的一个事件：`until_pr {url, state}`（`checks`、`merged`、`conflicts` 或 `dequeued`）、`until_status {status}`，或 `until_issue {issue, state}`（`done`、`ended`、`in_review` 或 `blocked`）。工作区设置 `decision_server_actions`（`off` 或 `on`，默认 `off`）允许卡片携带 `server_action`。设置为 `off` 或其他值时，服务器返回 `400`、代码 `server_actions_off` 和字段路径。主题询问、`--action-file` 请求、`--kind action` 卡片、`--covers` 批量卡片和 CI 卡片都会拒绝带类型的选项，并指出其字段路径。设置 `standing_answers`（默认 `{"review_cap":"off"}`，`review_cap` 为 `off` 或 `split`）格式错误时按 `off` 读取。只有工作区所有者可以修改 `decision_server_actions` 和 `standing_answers`。
 
 工作区设置 `decision_card_lint_mode`（`off`、`warn`、`block`；默认 `off`）检查选项卡片的措辞。`warn` 时创建卡片，并为每条发现在响应中附带一条提示。`block` 时服务器返回 `400`，附带原因代码和字段路径，且不创建卡片。代码如下：`weak_cons`，某个选项的每条缺点都只是你的时间（"takes 1 minute of your time"）或多一次检查或评审；`option_markdown`，`label`、`what_happens`、`pros` 或 `cons` 中含表格、标题、图片、HTML、代码块或 Mermaid 块（允许粗体、斜体、行内代码、列表和链接）；`option_leak`，选项文字暗示推荐项（"recommended"、"(rec)"，或只有一个标签加粗）；`default_leak`，在类别 `spend`、`deploy`、`publish`、`irreversible` 或 `product_direction` 下，`default_if_no_reply` 点名了某个选项（请写 "No action until you pick."）。英语和越南语措辞都会匹配。操作卡片和豁免主题卡片不受检查。 如果卡片的 issue 评论没有提及被询问的人，服务器会补上提及并记录 `mention_missing`，不会拒绝。
 
@@ -477,6 +484,20 @@ multica autopilot trigger-update <autopilot-id> <trigger-id> --clear-event-filte
 ```
 
 `--clear-event-filters` 与 `--event-filters-file` 不能同时使用。顶层为 `null` 或空数组、包含未知字段、无效 JSON 或空白事件/action 名称的文件会被拒绝。这些参数只适用于 Webhook 触发器；创建时不传过滤文件则接收所有事件。事件匹配方式见[自动化](/autopilots#事件过滤)。
+
+工作区设置 `design_card_guard` 是一个对象，含 `mode`、`doop_origin`、`design_url_property_id` 和 `design_workflow_id`。`mode` 为 `off`、`warn` 或 `block`；键不存在或缺少 `mode` 时为 `off`。`warn` 或 `block` 时，`doop_origin`（不带路径的 `https` 源）和 `design_url_property_id`（UUID）必填；`design_workflow_id`（UUID）可选。服务器对其他字段、`null` 值或类型错误返回 `400`。通过决策动作修改设置时可以指定该键。目前只读取并校验该设置，尚不会对任何卡片发出警告或拒绝。
+
+## 后台智能体
+
+每个后台作业（`dm_title`、`quick_actions`、`compact`、`routing`）都作为主智能体的任务运行，必要时再由备用智能体运行。查看或设置工作区默认值，或你自己的链：
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # 恢复为工作区默认值
+```
+
+`--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
 
 ## 命令概览
 
@@ -593,7 +614,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `batch update <id>...` | 对多条任务应用相同修改 | `--ids-stdin`, `--status`, `--priority`, `--assignee` / `--assignee-id` / `--unassign`, `--project`, `--start-date`, `--due-date`, `--parent`, `--stage`, `--add-label`, `--remove-label`, `--clear-labels`, `--property`, `--unset-property`, `--no-start`, `--dry-run` |
 | | `delete <id>...` | 永久删除一条或多条任务 | `--yes` 跳过确认；接受任务编号或完整 UUID; `--dry-run` |
 | | `assign <id>` | 指派或取消指派 | `--to`（名称模糊匹配成员、智能体或小队）、`--to-id`、`--unassign`、`--no-start` |
-| | `status <id> <status>` | 修改状态 | `--no-start`、`--duplicate-of`、`--blocked-on` |
+| | `status <id> <status>` | 修改状态 | `--no-start`、`--duplicate-of`、`--blocked-on`、`--waiting-on` |
 | | `reorder <id>` | 在列内移动 | |
 | | `search <query>` | 搜索任务 | `--limit`、`--include-closed`、`--project` |
 | | `children <id>` | 按阶段分组列出子任务 | |

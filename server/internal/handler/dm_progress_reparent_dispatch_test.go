@@ -26,11 +26,14 @@ func newReparentDispatch(t *testing.T) *reparentDispatch {
 	t.Cleanup(func() {
 		dbfx.Exec(t, `DELETE FROM dm_progress_delivery WHERE lineage_id IN ($1, $2)`, w.laneA, w.laneB)
 	})
-	return &reparentDispatch{
+	r := &reparentDispatch{
 		reparentWorld: w,
 		d:             &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: events.New()},
 		base:          time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second),
 	}
+	// Rows are stamped on the virtual clock: the follows' watermark goes before it.
+	dbfx.Exec(t, `UPDATE dm_progress_follow SET event_watermark = $3 WHERE lineage_id IN ($1, $2)`, w.laneA, w.laneB, r.base.Add(-time.Hour))
+	return r
 }
 
 // stamp moves the pending rows captured in the last minute onto the virtual clock.
@@ -102,6 +105,7 @@ func TestDMProgressReparentDispatch_DetachKeepsTheOriginDMReceiving(t *testing.T
 		base:          time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second),
 	}
 	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM dm_progress_delivery WHERE lineage_id = $1`, dm) })
+	dbfx.Exec(t, `UPDATE dm_progress_follow SET event_watermark = $2 WHERE lineage_id = $1`, dm, r.base.Add(-time.Hour))
 
 	updateIssueField(t, child, map[string]any{"parent_issue_id": nil})
 	dbfx.Exec(t, `DELETE FROM dm_progress_pending WHERE lineage_id = $1`, dm)

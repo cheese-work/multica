@@ -1130,6 +1130,13 @@ deleted_browser_instances AS (
 ),
 deleted_browser_profiles AS (
     DELETE FROM browser_profile WHERE workspace_id = $1
+),
+-- CHE-4737 browser permission grants: workspace-owned leaves, no FK (migration 99964c).
+deleted_browser_profile_members AS (
+    DELETE FROM browser_profile_member WHERE workspace_id = $1
+),
+deleted_browser_profile_agents AS (
+    DELETE FROM browser_profile_agent WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;

@@ -239,6 +239,17 @@ API key 与 base URL 都为空时，这一层关闭，不会发出任何上游�
 这只覆盖辅助生成这一层。智能体执行是另一条数据路径：智能体回复对话时，由你的守护进程调用该智能体的 AI 编程工具，用的是那个工具自己的凭据，守护进程不会把上面的 `MULTICA_LLM_*` 配置传给它。（智能体自身需要的运行级 Multica 连接变量由守护进程单独注入。）把上面的变量留空不影响这条路径——它由智能体的运行时配置决定。
 </Callout>
 
+## 设计守卫（doop）
+
+本组变量配置 Multica 如何从 doop 读取设计证明（attestation），用于工作区设置 `design_card_guard`。一次带共享 Bearer 令牌的 HTTPS GET 读取一份证明。
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | 空 | doop 的源（origin），例如 `https://doop.example.com`。必须是 `https`，且不带路径 |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | 空 | 至少 32 个字符的共享令牌，必须与 doop 上的 `DOOP_ATTESTATION_READ_TOKEN` 相同 |
+
+任一变量未设置或不可用时，读取器视为未配置，每次读取都以“未配置”失败。每次读取超时 3 秒，不跟随重定向，响应体最多 256 KiB。
+
 ## 守护进程配置
 
 下面的变量在运行智能体的电脑上读取，不是在 API 容器中读取。

@@ -1494,7 +1494,11 @@ type CreateCommentRequest struct {
 	DecisionVeto   bool     `json:"decision_veto"`
 	// NotifyOnly declares an FYI: an agent-task comment may mention a member
 	// without a decision request. It never binds a wait.
-	NotifyOnly       bool     `json:"notify_only"`
+	NotifyOnly bool `json:"notify_only"`
+	// Ask and NoAsk are the typed audience of a comment on a waiting issue
+	// (S4, CHE-7289): the member who acts next, or none. They never combine.
+	Ask              string   `json:"ask"`
+	NoAsk            bool     `json:"no_ask"`
 	MessageIDs       []string `json:"message_ids"`
 	ContextMessageID string   `json:"context_message_id"`
 	Excerpts         []string `json:"excerpts"`
@@ -1960,6 +1964,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !req.DecisionIntent && !req.NotifyOnly && !h.askGuardAllowsComment(w, r, issue, authorType, actorTask, parentComment, req.Content) {
+		return
+	}
+	if !h.askGuardAllowsWaitingComment(w, r, issue, authorType, actorTask, parentComment, req) {
 		return
 	}
 
