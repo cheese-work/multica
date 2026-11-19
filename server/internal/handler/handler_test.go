@@ -52,25 +52,16 @@ func isHandlerTestDatabase(databaseName string) bool {
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
-	dbConfigured := dbURL != ""
-	if !dbConfigured {
+	if dbURL == "" {
 		dbURL = "postgres://multica:multica@localhost:5432/multica_test?sslmode=disable"
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		if dbConfigured {
-			fmt.Fprintln(os.Stderr, "Failed to configure handler test database from DATABASE_URL")
-			os.Exit(1)
-		}
 		testutil.ExitWithoutDatabase(err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		if dbConfigured {
-			fmt.Fprintln(os.Stderr, "Failed to connect to handler test database configured by DATABASE_URL")
-			os.Exit(1)
-		}
 		testutil.ExitWithoutDatabase(err)
 	}
 	queries := db.New(pool)
