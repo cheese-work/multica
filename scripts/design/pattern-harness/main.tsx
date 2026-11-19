@@ -66,6 +66,7 @@ import {
   DecisionArtifactsPage, DecisionRequestCardPage, NeedsYouListPage, QuickAgentBarPage, DelegatedWritesPage,
   CreateAgentDialogPage, ConcurrencyPickerPage, SkillAttachPage, VisibilityPickerPage, InstructionsEditorPage,
   DingTalkTabPage, LarkTabPage, SlackTabPage, TelegramTabPage, WecomTabPage,
+  AddTriggerDialogPage, ExpandableDescriptionPage, HtmlViewerPage, PlanRevisionViewerPage, ResourceLabelPickerPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -1154,6 +1155,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "slack-tab": SlackTabPage,
   "telegram-tab": TelegramTabPage,
   "wecom-tab": WecomTabPage,
+  "add-trigger-dialog": AddTriggerDialogPage,
+  "expandable-description": ExpandableDescriptionPage,
+  "html-viewer": HtmlViewerPage,
+  "plan-revision-viewer": PlanRevisionViewerPage,
+  "resource-label-picker": ResourceLabelPickerPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,
