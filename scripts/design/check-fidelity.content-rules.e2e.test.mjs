@@ -93,3 +93,15 @@ test("rule 4: a repeat block may match several elements", () => {
   const { result } = run({ lock: rows, code: rows.replaceAll('class="a"', 'data-testid="a"').replaceAll('class="b"', 'data-testid="b"'), blocks: { a: { selector: ".a", repeat: true }, b: { selector: ".b" } } });
   assert.equal(of(result, "duplicate-block").length, 0);
 });
+
+test("rule 1: an unmapped lock control that wraps a mapped block is still one control item", () => {
+  const { r, result } = run({ lock: `<button><span class="a">Alpha</span></button><p class="b">Beta</p>`, code: CODE });
+  assert.equal(r.status, 1);
+  assert.deepEqual(of(result, "unmapped-lock-content").map((x) => `${x.item_kind}:${x.item}`), ["control:Alpha"]);
+});
+
+test("rule 2: an unmapped code control that wraps a mapped block is still one control item", () => {
+  const { r, result } = run({ lock: CLEAN, code: `<button><span data-testid="a">Alpha</span></button><p data-testid="b">Beta</p>` });
+  assert.equal(r.status, 1);
+  assert.deepEqual(of(result, "unmapped-code-content").map((x) => `${x.item_kind}:${x.item}`), ["control:Alpha"]);
+});

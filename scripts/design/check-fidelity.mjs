@@ -140,7 +140,7 @@ function readSide({ mode, state, blocks }) {
     if (mapped.has(el) || !el.checkVisibility({ visibilityProperty: true })) return;
     if (el.matches("script, style, noscript, template")) return;
     if (el.matches("img, svg")) { unmapped.push({ kind: "image", key: el.matches("img") ? `img|${el.getAttribute("src") ?? ""}|${el.getAttribute("alt") ?? ""}` : norm(el.outerHTML) }); return; }
-    if (isControl(el) && ![...mapped].some((m) => el.contains(m))) { unmapped.push({ kind: "control", key: nameOf(el) }); return; }
+    if (isControl(el)) { unmapped.push({ kind: "control", key: nameOf(el) }); return; }
     for (const n of el.childNodes) {
       if (n.nodeType === Node.ELEMENT_NODE) walk(n);
       else if (n.nodeType === Node.TEXT_NODE && norm(n.nodeValue) !== "") unmapped.push({ kind: "text", key: norm(n.nodeValue) });
