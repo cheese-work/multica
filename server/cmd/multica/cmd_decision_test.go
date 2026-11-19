@@ -149,7 +149,7 @@ func decisionRequestFlags(test *testing.T, askJSON string, flags map[string]stri
 	return command
 }
 
-var cliActionAsk = `{"context_eli10":"A property is missing. Only the workspace owner can create it.","agent_did":"Checked that the property is missing.","why_human":"Owner-only: property create needs the workspace owner.","steps":["Run the create command."],"done_when":"The property is listed.","default_if_no_reply":"Continue without it.","source_issue_id":"11111111-1111-4111-8111-111111111111","source_comment_id":"22222222-2222-4222-8222-222222222222","state_claims":[{"claim":"The property is missing.","readback_command":"multica property list","observed_at":"` + time.Now().Format(time.RFC3339) + `"}]}`
+var cliActionAsk = `{"context_eli10":"A property is missing. Only the workspace owner can create it.","agent_did":"Checked that the property is missing.","why_human":"Owner-only: property create needs the workspace owner.","steps":["Run the create command."],"done_when":"The property is listed.","default_if_no_reply":"Continue without it.","source_issue_id":"11111111-1111-4111-8111-111111111111","source_comment_id":"22222222-2222-4222-8222-222222222222","dry_run":{"host":"x99 linux bash","result":"exit 0"},"state_claims":[{"claim":"The property is missing.","readback_command":"multica property list","observed_at":"` + time.Now().Format(time.RFC3339) + `"}]}`
 
 func TestDecisionRequestCommandSendsActionKind(test *testing.T) {
 	var body map[string]any

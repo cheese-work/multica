@@ -12,3 +12,18 @@ func init() {
 		delete(auditPendingL5b, route)
 	}
 }
+
+// CHE-4737 (W3-8): the browser permission routes. Like revoke-all above, their audit kinds belong
+// to W3-15 (CHE-4744), which removes these entries. Each grant row keeps granted_by and
+// created_at until then.
+func init() {
+	for _, route := range []string{
+		"PUT /api/workspaces/{id}/browser-profiles/{profileId}/members/{userId}",
+		"DELETE /api/workspaces/{id}/browser-profiles/{profileId}/members/{userId}",
+		"PUT /api/workspaces/{id}/browser-profiles/{profileId}/agents/{agentId}",
+		"DELETE /api/workspaces/{id}/browser-profiles/{profileId}/agents/{agentId}",
+	} {
+		auditExemptRoutes[route] = "grants or removes one browser permission row (granted_by, created_at); audit kinds arrive in W3-15 (CHE-4744)"
+		delete(auditPendingL5b, route)
+	}
+}

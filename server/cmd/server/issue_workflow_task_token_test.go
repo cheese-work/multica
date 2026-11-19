@@ -98,9 +98,9 @@ func TestIssueWorkflowWritesRejectTaskToken(t *testing.T) {
 	})
 }
 
-// A task token that names a decision gets past the router guard and is judged
-// by the handler: a stale before hash is a 409, not the guard's 403. A cloud
-// PAT never passes, and a task token without a decision id stays 403.
+// A task token never writes workflow steps, with or without a decision id: the
+// handler answers 403 passkey_action_required for workflow.steps.set (CHE-3482),
+// so the decision-bound requests are refused ahead of the before-hash check.
 func TestIssueWorkflowWritesLetDecisionBoundTaskTokenReachHandler(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no database connection")
@@ -130,8 +130,8 @@ func TestIssueWorkflowWritesLetDecisionBoundTaskTokenReachHandler(t *testing.T) 
 		body               any
 		want               int
 	}{
-		{"patch with decision", http.MethodPatch, base, matToken, bound, http.StatusConflict},
-		{"handoff with decision", http.MethodPut, base + "/handoffs/backlog", matToken, handoff, http.StatusBadRequest},
+		{"patch with decision", http.MethodPatch, base, matToken, bound, http.StatusForbidden},
+		{"handoff with decision", http.MethodPut, base + "/handoffs/backlog", matToken, handoff, http.StatusForbidden},
 		{"patch without decision", http.MethodPatch, base, matToken, map[string]any{"steps": []any{}}, http.StatusForbidden},
 		{"delete stays human only", http.MethodDelete, base, matToken, nil, http.StatusForbidden},
 	} {
@@ -149,9 +149,12 @@ func TestIssueWorkflowWritesLetDecisionBoundTaskTokenReachHandler(t *testing.T) 
 				t.Fatal(err)
 			}
 			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
 			if resp.StatusCode != tc.want {
-				b, _ := io.ReadAll(resp.Body)
 				t.Fatalf("status = %d, want %d: %s", resp.StatusCode, tc.want, b)
+			}
+			if tc.method != http.MethodDelete && !strings.Contains(string(b), `"code":"passkey_action_required"`) {
+				t.Fatalf("body = %s, want code passkey_action_required", b)
 			}
 		})
 	}

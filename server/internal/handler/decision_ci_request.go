@@ -97,7 +97,10 @@ func (h *Handler) CreateCIDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
-	hints, ok := checkAgentCannotDo(w, parsed, workspace.Settings)
+	if refuseTypedOptionsOn(w, parsed, "a CI card") {
+		return
+	}
+	hints, ok := checkAgentCannotDo(w, parsed, workspace.Settings, "")
 	if !ok {
 		return
 	}

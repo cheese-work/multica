@@ -98,8 +98,15 @@ UPDATE workspace SET
     -- the statuses list and any unnamed field keep their value.
     -- CHE-3706: harness_profile sets or (reset) removes one settings key.
     -- CHE-6969: auto_close replaces its one settings key.
+    -- CHE-6973: blocked_run_skip replaces its one settings key.
+    -- CHE-7408: merge_queue is an object holding only the merge-queue keys the
+    -- handler validated; it replaces those keys and leaves every other key.
     settings = (
         SELECT CASE
+            WHEN sqlc.narg('merge_queue')::jsonb IS NOT NULL THEN w.v || sqlc.narg('merge_queue')::jsonb
+            ELSE w.v
+        END
+        FROM (SELECT CASE
             WHEN sqlc.narg('harness_profile_reset')::bool THEN h.v - 'harness_profile'
             WHEN sqlc.narg('harness_profile')::text IS NOT NULL THEN jsonb_set(h.v, '{harness_profile}', to_jsonb(sqlc.narg('harness_profile')::text))
             ELSE h.v
@@ -107,6 +114,10 @@ UPDATE workspace SET
         FROM (SELECT CASE
             WHEN sqlc.narg('ask_guard_mode')::jsonb IS NOT NULL THEN jsonb_set(k.v, '{ask_guard_mode}', sqlc.narg('ask_guard_mode')::jsonb)
             ELSE k.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN sqlc.narg('blocked_run_skip')::jsonb IS NOT NULL THEN jsonb_set(b.v, '{blocked_run_skip}', sqlc.narg('blocked_run_skip')::jsonb)
+            ELSE b.v
         END AS v
         FROM (SELECT CASE
             WHEN sqlc.narg('auto_close')::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', sqlc.narg('auto_close')::jsonb)
@@ -136,7 +147,7 @@ UPDATE workspace SET
             WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
             WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
             ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS k) AS h
+        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS h) AS w
     ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),

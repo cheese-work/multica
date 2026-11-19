@@ -137,3 +137,15 @@ DM's divider id is not found.
 - `multica chat segment <divider-id> [--limit N] [--before <next_before>]`
   reads one segment, newest page first. When `has_more` is true the reply
   carries `next_before`; pass it as `--before` to read the next older page.
+
+## DM progress follows
+
+A follow makes a DM show an issue's progress cards. Members pass
+`--chat <chat-session-id>` for a DM they created. Agents pass no `--chat`: the
+lane comes from the DM that started the task, and a task with no DM is refused.
+
+- `multica issue follow <issue-id>` starts following.
+- `multica issue unfollow <issue-id>` stops following.
+- `multica issue mute-follow <issue-id>` mutes the cards, keeping the follow.
+- `multica issue unmute-follow <issue-id>` turns the cards back on.
+- `multica issue follows --chat <chat-session-id>` lists the follows in a DM.

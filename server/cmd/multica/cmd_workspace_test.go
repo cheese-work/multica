@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "merge-queue-routing", "merge-queue-bindings", "merge-queue-watch-issue", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1474,5 +1474,104 @@ func TestRoutingAliasBodyWritesTheRoutingJob(t *testing.T) {
 	}
 	if _, ok := body["routing"]; ok || body["dm_title"] == nil {
 		t.Fatalf("routing off left body = %v", body)
+	}
+}
+
+// CHE-6973: --blocked-run-skip-mode sends only blocked_run_skip.mode and refuses any other flag.
+func TestBuildWorkspaceUpdateBodyBlockedRunSkipMode(t *testing.T) {
+	for _, mode := range []string{"off", "warn", "block"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "blocked-run-skip-mode", mode)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if want := map[string]any{"blocked_run_skip": map[string]any{"mode": mode}}; !reflect.DeepEqual(body, want) {
+			t.Errorf("%s: body = %#v, want %#v", mode, body, want)
+		}
+	}
+	for _, mode := range []string{"on", "", "BLOCK"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "blocked-run-skip-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+	for _, other := range []string{"auto-close-mode", "time-wakeup-skip-mode", "name"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "blocked-run-skip-mode", "warn")
+		setStringFlag(t, other, "warn")
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--blocked-run-skip-mode") {
+			t.Errorf("with --%s: err = %v, want a conflict naming --blocked-run-skip-mode", other, err)
+		}
+	}
+}
+
+// CHE-7408: the --merge-queue-* flags send only their own settings keys, may be
+// combined with each other, and are refused with any other update flag. The
+// server validates the values (routing block included), so the CLI passes them on.
+func TestBuildWorkspaceUpdateBodyMergeQueueFlags(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "merge-queue-routing", "warn")
+	body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+	if err != nil || !reflect.DeepEqual(body, map[string]any{"merge_queue_dequeue_routing": "warn"}) {
+		t.Fatalf("routing: body = %#v, err %v", body, err)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "merge-queue-routing", "off")
+	setStringFlag(t, "merge-queue-bindings", `{"agents":["bot"],"people":["me"]}`)
+	setStringFlag(t, "merge-queue-watch-issue", "01a1f14c-4bf5-7a02-9021-decf51944c61")
+	body, err = buildWorkspaceUpdateBody(workspaceUpdateCmd)
+	want := map[string]any{
+		"merge_queue_dequeue_routing": "off",
+		"merge_queue_actor_bindings":  map[string]any{"agents": []any{"bot"}, "people": []any{"me"}},
+		"merge_queue_watch_issue":     "01a1f14c-4bf5-7a02-9021-decf51944c61",
+	}
+	if err != nil || !reflect.DeepEqual(body, want) {
+		t.Fatalf("combined: body = %#v, err %v, want %#v", body, err, want)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "merge-queue-watch-issue", "none")
+	body, err = buildWorkspaceUpdateBody(workspaceUpdateCmd)
+	if err != nil || !reflect.DeepEqual(body, map[string]any{"merge_queue_watch_issue": ""}) {
+		t.Fatalf("clear: body = %#v, err %v", body, err)
+	}
+
+	// The server is the one place that refuses block; the CLI sends it on.
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "merge-queue-routing", "block")
+	if body, err = buildWorkspaceUpdateBody(workspaceUpdateCmd); err != nil || body["merge_queue_dequeue_routing"] != "block" {
+		t.Fatalf("block: body = %#v, err %v", body, err)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "merge-queue-bindings", "not json")
+	if _, err = buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--merge-queue-bindings") {
+		t.Errorf("bad bindings JSON: err = %v, want one naming --merge-queue-bindings", err)
+	}
+
+	for _, other := range []string{"name", "ask-guard-mode", "time-wakeup-skip-mode", "issue-prefix"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "merge-queue-routing", "warn")
+		setStringFlag(t, other, "x")
+		if _, err = buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--merge-queue-routing") || !strings.Contains(err.Error(), "--"+other) {
+			t.Errorf("with --%s: err = %v, want a conflict naming both flags", other, err)
+		}
+	}
+	// And the existing single-key flags refuse a merge-queue flag.
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "ask-guard-mode", "warn")
+	setStringFlag(t, "merge-queue-routing", "warn")
+	if _, err = buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--ask-guard-mode") {
+		t.Errorf("ask-guard-mode with a merge-queue flag: err = %v", err)
+	}
+	// Digest mode forbids them too.
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "expected-before-digest", strings.Repeat("a", 64))
+	setStringFlag(t, "merge-queue-routing", "warn")
+	if _, err = buildWorkspaceUpdateDigestBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--merge-queue-routing") {
+		t.Errorf("digest mode with a merge-queue flag: err = %v", err)
 	}
 }

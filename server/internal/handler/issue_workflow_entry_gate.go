@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -246,4 +247,18 @@ func (h *Handler) createEntryGate(workspaceID pgtype.UUID, actorType, actorID st
 			return err
 		}, nil
 	}
+}
+
+// checkIntakeHold refuses a status write that is not a person's and that moves
+// a held issue to a status other than cancelled (CHE-6911 E1). The platform's
+// own moves (system) and a person's write pass. It runs under the issue lock.
+func (w *workflowWrite) checkIntakeHold(ctx context.Context, q *db.Queries, locked db.Issue, params db.UpdateIssueParams) error {
+	if w.system || w.entry.human || !params.Status.Valid || params.Status.String == locked.Status || params.Status.String == "cancelled" {
+		return nil
+	}
+	loaded, err := intakehold.Load(ctx, q.Conn(), uuidToString(locked.ID))
+	if err != nil {
+		return err
+	}
+	return intakehold.Enforce(loaded, "status", w.entry.actorType, w.entry.actorID)
 }

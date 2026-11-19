@@ -389,3 +389,33 @@ func TestCheckPRDoesNotSayARequestFailed(t *testing.T) {
 		t.Errorf("read-only mode made no request: %q", errb.String())
 	}
 }
+
+// CHE-7135: Dependabot cannot append [merge]/[squash]; the check must not fail its PRs for the missing tag, and must
+// stay strict for every other author.
+func TestCheckPRDependabotNeedsNoTag(t *testing.T) {
+	for _, tc := range []struct {
+		author   string
+		wantCode int
+	}{
+		{"app/dependabot", 0},
+		{"dependabot[bot]", 0},
+		{"dependabot", 0},
+		{"alice", 1},
+		{"app/dependabot-lookalike", 1},
+		{"", 1},
+	} {
+		f := newFake()
+		f.setRules(repo, "main", tipV1, noRule)
+		f.prs = append(f.prs, &fakePR{Number: 1, Repo: repo, HeadOwner: "cheese-work", HeadRef: "dependabot/docker/x", Base: "main",
+			Title: "build(deps): bump the docker-version-updates group with 2 updates", Draft: false, Author: tc.author})
+		var out, errb bytes.Buffer
+		e := &Engine{Policy: DefaultPolicy(), Runner: f, Out: &out, Err: &errb}
+		code, err := e.CheckPR(context.Background(), []string{"1"})
+		if err != nil || code != tc.wantCode {
+			t.Errorf("author %q: exit %d err %v %q, want %d", tc.author, code, err, errb.String(), tc.wantCode)
+		}
+		if tc.wantCode == 1 && !strings.Contains(errb.String(), "[merge] or [squash]") {
+			t.Errorf("author %q: want the tag problem, got %q", tc.author, errb.String())
+		}
+	}
+}

@@ -113,6 +113,7 @@ func init() {
 	rootCmd.AddCommand(githubCmd)
 	rootCmd.AddCommand(gitCmd)
 	rootCmd.AddCommand(guardCmd)
+	rootCmd.AddCommand(browserCmd)
 
 	initHelp(rootCmd)
 }

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS merge_queue_enqueue_event_node_uidx;

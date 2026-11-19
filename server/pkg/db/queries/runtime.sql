@@ -724,3 +724,9 @@ SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('runtime_id')::uuid::text
 -- idx_agent_task_queue_runtime_active (migration 606).
 SELECT count(*) FROM agent_task_queue
 WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory');
+
+-- name: ListMachineRuntimeIDsInWorkspace :many
+SELECT id FROM agent_runtime
+WHERE workspace_id = @workspace_id
+  AND COALESCE(owner_id, workspace_id) = @machine_owner_id
+  AND daemon_id = @daemon_id;

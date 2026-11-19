@@ -14,7 +14,7 @@ var (
 	remoteRe = regexp.MustCompile(`[:/]([^/:]+)/[^/]+$`)
 )
 
-const prFields = "url,title,body,isDraft,headRefName,baseRefName,headRepositoryOwner,reviewRequests"
+const prFields = "url,title,body,isDraft,headRefName,baseRefName,headRepositoryOwner,reviewRequests,author"
 
 type prInfo struct {
 	URL                 string `json:"url"`
@@ -26,11 +26,25 @@ type prInfo struct {
 	HeadRepositoryOwner struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
 	ReviewRequests []struct {
 		Login string `json:"login"`
 		Slug  string `json:"slug"`
 		Name  string `json:"name"`
 	} `json:"reviewRequests"`
+}
+
+// byDependabot: Dependabot cannot append [merge] or [squash] to its titles (CHE-7135), so its PRs need no tag and the
+// merge queue's default method applies. The login is set by GitHub, not by the PR, so it cannot be claimed by another
+// author. gh prints "app/dependabot" (newer) or "dependabot" (older); the REST name is "dependabot[bot]".
+func (p *prInfo) byDependabot() bool {
+	switch p.Author.Login {
+	case "app/dependabot", "dependabot", "dependabot[bot]":
+		return true
+	}
+	return false
 }
 
 func (p *prInfo) requested() []string {
@@ -336,7 +350,7 @@ func (e *Engine) ensure(ctx context.Context, pl *Plugin, url string, wantDraft b
 		return fail("cannot be checked: %s; it stays as it is, retry once the rules can be read", rerr)
 	}
 	wantRev := pol.githubReviewers(repo)
-	needTag := func(p *prInfo) bool { return !hasTag(p.Title) && allowed(pl, "--title") }
+	needTag := func(p *prInfo) bool { return !hasTag(p.Title) && allowed(pl, "--title") && !p.byDependabot() }
 	needRev := func(p *prInfo) []string {
 		if !allowed(pl, "--add-reviewer") {
 			return nil
