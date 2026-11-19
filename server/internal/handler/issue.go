@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/intakehold"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -4187,15 +4188,19 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// created_via is server-set and has no request field. A quick_create origin
 	// is the "create with agents" dialog: IssueService.Create rejects it unless
 	// the origin task is a quick-create task of the creating agent.
-	var createdVia pgtype.Text
-	switch {
-	case originType.String == "quick_create":
-		createdVia = pgtype.Text{String: "dialog", Valid: true}
-	case creatorType == "agent":
-		createdVia = pgtype.Text{String: "agent", Valid: true}
-	case statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel == "cli":
-		createdVia = pgtype.Text{String: "cli", Valid: true}
-	}
+	// The classifier reads only the server-validated task, its trigger comment
+	// and the parent (CHE-6387); a failed lookup falls back to agent and never
+	// fails the create.
+	taskForVia, _ := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	createdVia := pgtype.Text{String: issuecreatedvia.ForCreate(r.Context(), h.Queries, issuecreatedvia.Request{
+		WorkspaceID:  wsUUID,
+		OriginType:   originType.String,
+		CreatorAgent: creatorType == "agent",
+		AgentID:      parseUUID(actualCreatorID),
+		TaskID:       taskForVia,
+		Channel:      statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel,
+		ParentID:     parentIssueID,
+	}), Valid: true}
 
 	// Prefix is workspace-level; pre-compute once so both the broadcast
 	// payload builder and the HTTP response share the same value.

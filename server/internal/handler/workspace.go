@@ -407,6 +407,9 @@ type UpdateWorkspaceRequest struct {
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
+	// DecisionAskPark sets settings.decision_ask_park alone (CHE-6460): the
+	// string always|on_wait. Owner only.
+	DecisionAskPark json.RawMessage `json:"decision_ask_park"`
 	// The merge-queue settings (CHE-7408, plan 4.6) each set one settings key
 	// alone. Owner only; mergequeue.ValidateSetting checks the values.
 	MergeQueueRouting  json.RawMessage `json:"merge_queue_dequeue_routing"`
@@ -587,7 +590,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), validateCommentWakeSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), validateCommentWakeSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -700,6 +703,18 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.AskGuardMode = req.AskGuardMode
+	}
+	if req.DecisionAskPark != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		var mode any
+		_ = json.Unmarshal(req.DecisionAskPark, &mode)
+		if err := validateDecisionAskParkSetting(map[string]any{decisionAskParkKey: mode}); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.DecisionAskPark = req.DecisionAskPark
 	}
 	if patch := mergeQueueFieldPatch(req.MergeQueueRouting, req.MergeQueueBindings, req.MergeQueueWatch); len(patch) > 0 {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
