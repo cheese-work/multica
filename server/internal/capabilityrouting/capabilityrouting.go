@@ -100,7 +100,7 @@ func agentID(raw *string) (string, bool) {
 	if id.Scan(*raw) != nil || !id.Valid {
 		return "", false
 	}
-	return strings.ToLower(*raw), true
+	return id.String(), true
 }
 
 // AgentIDs lists every distinct agent the table names, sorted.
