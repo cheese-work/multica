@@ -88,6 +88,7 @@ type BusinessMetrics struct {
 	// See labels.go for the closed enum.
 	agentRuntimeLookup            *prometheus.CounterVec
 	askGuardEvent                 *prometheus.CounterVec
+	decidedAskCheck               *prometheus.CounterVec
 	issueMetadataMutation         *prometheus.CounterVec
 	issueMetadataMutationDuration *prometheus.HistogramVec
 
@@ -307,6 +308,10 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Namespace: "multica", Subsystem: "ask_guard", Name: "event_total",
 			Help: "Total ask guard hits by workspace mode and result (created, retry or error).",
 		}, metricLabels("multica_ask_guard_event_total")),
+		decidedAskCheck: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "ask_guard", Name: "decided_ask_check_total",
+			Help: "Total decided-ask checks by outcome (match, no_candidate, open, key_differs, incomparable or error).",
+		}, metricLabels("multica_ask_guard_decided_ask_check_total")),
 		issueMetadataMutation: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "multica", Subsystem: "issue_metadata", Name: "mutation_total",
 			Help: "Total issue metadata mutation attempts by operation and bounded result.",
@@ -373,6 +378,7 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.autopilotQuotaDecision,
 		m.agentRuntimeLookup,
 		m.askGuardEvent,
+		m.decidedAskCheck,
 		m.issueMetadataMutation,
 		m.issueMetadataMutationDuration,
 	}, m.events.collectors()...)
@@ -464,6 +470,15 @@ func (m *BusinessMetrics) RecordAskGuardEvent(mode, result string) {
 		return
 	}
 	m.askGuardEvent.WithLabelValues(oneOf(mode, "warn", "block"), oneOf(result, "created", "retry", "error")).Inc()
+}
+
+// RecordDecidedAskCheck counts one decided-ask check by outcome. Any value
+// outside the list lands on "other" so a call site cannot mint a series.
+func (m *BusinessMetrics) RecordDecidedAskCheck(outcome string) {
+	if m == nil {
+		return
+	}
+	m.decidedAskCheck.WithLabelValues(oneOf(outcome, "match", "no_candidate", "open", "key_differs", "incomparable", "error")).Inc()
 }
 
 func oneOf(v string, allowed ...string) string {
