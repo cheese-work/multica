@@ -173,10 +173,9 @@ function renderCreateDialog() {
   );
 }
 
-function renderEditDialog(onOpenChange = vi.fn(), triggers: any[] = []) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return renderWithI18n(
-    <QueryClientProvider client={qc}>
+function editDialogElement(onOpenChange = vi.fn(), triggers: any[] = []) {
+  return (
+    <QueryClientProvider client={testQueryClient}>
       <AutopilotDialog
         mode="edit"
         open
@@ -195,8 +194,14 @@ function renderEditDialog(onOpenChange = vi.fn(), triggers: any[] = []) {
         collaborators={[]}
         canManageAccess={false}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+}
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function renderEditDialog(onOpenChange = vi.fn(), triggers: any[] = []) {
+  return renderWithI18n(editDialogElement(onOpenChange, triggers));
 }
 
 const createButton = () => screen.getByRole("button", { name: "Create autopilot" });
@@ -205,6 +210,7 @@ const assigneeTrigger = () => screen.getByRole("button", { name: /Select agent o
 describe("AutopilotDialog draft persistence", () => {
   beforeEach(() => {
     useAutopilotDialogDraftStore.setState({ drafts: {} });
+    testQueryClient.clear();
     mockCreateAutopilot.mockReset();
     mockCreateTrigger.mockReset();
     mockUpdateAutopilot.mockReset();
@@ -463,5 +469,54 @@ describe("AutopilotDialog draft persistence", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mockUpdateTrigger).toHaveBeenCalledTimes(1));
     expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]?.data.eventFilters).toEqual(FILTERS);
+  });
+
+  it("does not apply a restored draft's event filters over ones the editor saved since", async () => {
+    const user = userEvent.setup();
+    const NEWER = [{ event: "pull_request", actions: ["closed"] }];
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockUpdateTrigger.mockResolvedValue({ id: "tr-w" });
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    const view = renderEditDialog(vi.fn(), [webhookTrigger()]);
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    // The per-webhook editor saved newer choices; the detail query refetches
+    // and hands the dialog the row as it now stands.
+    view.rerender(editDialogElement(vi.fn(), [webhookTrigger(NEWER)]));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockUpdateAutopilot).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]).toBeUndefined(),
+    );
+    expect(mockUpdateTrigger).not.toHaveBeenCalled();
+  });
+
+  it("keeps a restored draft's event filters when the autopilot no longer has a webhook to apply them to", async () => {
+    const user = userEvent.setup();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    const onOpenChange = vi.fn();
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { title: "Renamed", triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    renderEditDialog(onOpenChange, [
+      { id: "tr-s", kind: "schedule", cron_expression: "0 9 * * *", timezone: "UTC", event_filters: null },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(mockUpdateTrigger).not.toHaveBeenCalled();
+    expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]?.data).toEqual({
+      eventFilters: FILTERS,
+    });
   });
 });

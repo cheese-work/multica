@@ -264,8 +264,9 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     : props.triggers.find((trig) => trig.kind === "webhook") ?? null;
   // Event filters picked before the editor moved to the per-webhook dialog may
   // still sit in a persisted draft. They are the user's unsent input: show them,
-  // apply them to the webhook on save, and drop them only after that succeeds.
-  // The webhook they were meant for is the autopilot's first trigger, as before.
+  // apply them to the webhook on save, and drop them only once they were applied
+  // or a newer explicit choice replaced them. The webhook they were meant for is
+  // the autopilot's first trigger, as before.
   const draftEventFilters = seed.eventFilters ?? null;
   const filterTarget = isCreate
     ? null
@@ -273,13 +274,32 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
       ? props.triggers[0]
       : null;
   const filterTargetIdRef = useRef(filterTarget?.id ?? null);
+  const serverFilterKey = filterTarget
+    ? JSON.stringify(filterTarget.event_filters ?? [])
+    : null;
+  // The target's filters as they stood when the draft was restored. The editor
+  // saves on its own and the row then refetches: a change from here is a newer
+  // explicit choice, and the draft snapshot must not be written over it.
+  const mountedServerFilterKeyRef = useRef(serverFilterKey);
+  const draftFiltersSuperseded =
+    mountedServerFilterKeyRef.current !== null &&
+    serverFilterKey !== mountedServerFilterKeyRef.current;
   const draftFiltersPending =
     draftEventFilters !== null &&
     triggerKind === "webhook" &&
     (isCreate ||
       (filterTarget !== null &&
-        JSON.stringify(draftEventFilters) !==
-          JSON.stringify(filterTarget.event_filters ?? [])));
+        !draftFiltersSuperseded &&
+        JSON.stringify(draftEventFilters) !== serverFilterKey));
+  // A draft with nowhere to land (the autopilot has no webhook first trigger
+  // any more) or not applied this save stays the only copy of the choices, so
+  // saving the rest of the form must not clear it.
+  const draftFiltersOrphaned =
+    !isCreate &&
+    draftEventFilters !== null &&
+    !draftFiltersPending &&
+    !draftFiltersSuperseded &&
+    JSON.stringify(draftEventFilters) !== serverFilterKey;
   const webhookTriggerCount = isCreate
     ? 0
     : props.triggers.filter((trig) => trig.kind === "webhook").length;
@@ -538,6 +558,9 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
         }
         savedRef.current = true;
         clearDraft();
+        if (draftFiltersOrphaned && draftEventFilters) {
+          patchDraft({ eventFilters: draftEventFilters });
+        }
         onOpenChange(false);
         toast.success(t(($) => $.dialog.toast_updated));
       }
