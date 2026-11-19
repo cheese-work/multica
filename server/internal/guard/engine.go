@@ -138,6 +138,14 @@ func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, err
 		e.log(&Plugin{Name: "repository-allowlist"}, tool, args, d)
 		return 2, nil
 	}
+	if tool == "git" {
+		if line, hit := e.shallowFetch(ctx, args); hit {
+			d := refuse(2, "%s", line)
+			fmt.Fprintln(e.Err, "guard: "+d.line)
+			e.log(&Plugin{Name: "shallow-fetch"}, tool, args, d)
+			return 2, nil
+		}
+	}
 	t := Target{}
 	// Layer targeting uses gh selectors and the current clone. Git's workspace
 	// allowlist was already checked against its effective push destinations;
