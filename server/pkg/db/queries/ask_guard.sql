@@ -60,3 +60,23 @@ WHERE event.id = $1 AND event.workspace_id = $2 AND event.issue_id = $3
 -- name: ClearAskGuardEvent :exec
 UPDATE ask_guard_event SET cleared_at = clock_timestamp(), cleared_by_request_id = $2
 WHERE id = $1 AND cleared_at IS NULL;
+
+-- name: ListNotifyOnlyClearableAskGuardEvents :many
+-- Open block events with no member that a --notify-only comment from this task
+-- may clear (CHE-7438): the task's own events on the issue, and the root event of
+-- the repair run this task is. The source text lets the caller skip a source that
+-- names members. Only the comment guards open such events.
+SELECT event.id, COALESCE(event.source_text, '')::text AS source
+FROM ask_guard_event event
+WHERE event.workspace_id = $1 AND event.issue_id = $2 AND event.mode = 'block'
+  AND event.cleared_at IS NULL AND event.member_id IS NULL
+  AND event.operation_kind IN ('comment', 'comment_ask', 'comment_edit')
+  AND (event.task_id = sqlc.arg('task_id') OR EXISTS (
+        SELECT 1 FROM ask_repair_root root
+        WHERE root.id = event.id AND root.workspace_id = event.workspace_id
+          AND root.state = 'admitted' AND root.repair_task_id = sqlc.arg('task_id')))
+FOR UPDATE OF event;
+
+-- name: ClearAskGuardEventByComment :exec
+UPDATE ask_guard_event SET cleared_at = clock_timestamp(), cleared_by_comment_id = $2
+WHERE id = $1 AND cleared_at IS NULL;

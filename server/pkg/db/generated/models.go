@@ -276,6 +276,7 @@ type AskGuardEvent struct {
 	RepairReason       pgtype.Text        `json:"repair_reason"`
 	RootID             pgtype.UUID        `json:"root_id"`
 	RepairHandledAt    pgtype.Timestamptz `json:"repair_handled_at"`
+	ClearedByCommentID pgtype.UUID        `json:"cleared_by_comment_id"`
 }
 
 type AskRecoveryNotice struct {
