@@ -99,10 +99,21 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 }
 
 // approvedBoundWriteCard answers an approval card, as a workspace owner, for
-// the change field from beforeSHA to afterSHA.
+// the change field from beforeSHA to afterSHA. A budget field's card is of
+// class spend, as its write requires (CHE-6197).
 func approvedBoundWriteCard(t *testing.T, field, beforeSHA, afterSHA string) askedRecordFixture {
 	t.Helper()
+	class := "reversible"
+	if isBudgetField(field) {
+		class = "spend"
+	}
+	return approvedBoundWriteCardOfClass(t, field, class, beforeSHA, afterSHA)
+}
+
+func approvedBoundWriteCardOfClass(t *testing.T, field, class, beforeSHA, afterSHA string) askedRecordFixture {
+	t.Helper()
 	fixture := newCardFixture(t)
+	dbfx.Exec(t, `UPDATE decision_request SET escalation_class = $2 WHERE id = $1`, fixture.decision.ID, class)
 	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
 	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
 	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, beforeSHA, afterSHA))
@@ -110,6 +121,8 @@ func approvedBoundWriteCard(t *testing.T, field, beforeSHA, afterSHA string) ask
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
 		t.Fatal(err)
 	}
+	// A non-reversible answer takes effect after a delay; this one is past it.
+	dbfx.Exec(t, `UPDATE decision_answer SET effective_at = created_at WHERE decision_request_id = $1`, fixture.decision.ID)
 	return fixture
 }
 

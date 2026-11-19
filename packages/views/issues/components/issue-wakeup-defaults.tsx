@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api";
 import {
   effectiveWakeupRuleOptions,
@@ -10,9 +10,12 @@ import {
   wakeupDefinitionsOptions,
 } from "@multica/core/workspace/wakeup-definitions";
 import type { WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionScope, WakeupEffectiveRule } from "@multica/core/types";
+import { ChevronDown, MoreHorizontal, Pause, Pencil } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { cn } from "@multica/ui/lib/utils";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -21,39 +24,89 @@ import { useWakeupText } from "./wakeup-presentation";
 const MAX_INSTRUCTION_BYTES = 4000;
 /** The platform rules an issue with a linked PR runs; `child_done` has its own row above. */
 const PLATFORM_RULES = ["pr_merged", "pr_checks_failed", "pr_needs_attention"] as const;
+/** Marks the button and the panel: Esc closes the panel from either, and from nowhere else. */
+const DEFAULTS_MARK = "data-wakeup-defaults";
 
 /**
  * The scoped wakeup rules an issue inherits from its project and workspace, and
- * what this issue overrides. It renders only when the server accepts definition
+ * what this issue overrides, as a header button and an inline panel the section
+ * places itself. `available` is false until the server accepts definition
  * writes, so an older server shows nothing new.
  */
-export function IssueWakeupDefaults({ workspaceId, issueId, projectId }: { workspaceId: string; issueId: string; projectId?: string }) {
+export function useWakeupDefaults({ workspaceId, issueId, projectId }: { workspaceId: string; issueId: string; projectId?: string }) {
   const { t } = useT("issues");
   const scope: WakeupDefinitionScope = { kind: "issue", id: issueId };
   const { data } = useQuery(wakeupDefinitionsOptions(workspaceId, scope));
-  if (!data?.capabilities.definition_writes) return null;
-  const overrides = data.definitions;
-  const keys = [
-    ...PLATFORM_RULES.map(String),
-    ...overrides.map((d) => d.rule_key).filter((key) => !(PLATFORM_RULES as readonly string[]).includes(key)),
-  ];
-  return (
-    <div className="border-t border-border pt-2">
-      <p className="px-2 pb-1 text-caption font-medium text-muted-foreground">{t(($) => $.wakeups.defaults.title)}</p>
-      <ul aria-label={t(($) => $.wakeups.defaults.title)} className="space-y-0.5">
-        {keys.map((key) => (
-          <DefaultRule
-            key={key}
-            workspaceId={workspaceId}
-            scope={scope}
-            ruleKey={key}
-            projectId={projectId}
-            override={overrides.find((d) => d.rule_key === key) ?? null}
-          />
-        ))}
-      </ul>
-    </div>
-  );
+  const available = !!data?.capabilities.definition_writes;
+  const overrides = data?.definitions ?? [];
+  const keys = available
+    ? [...PLATFORM_RULES.map(String), ...overrides.map((d) => d.rule_key).filter((key) => !(PLATFORM_RULES as readonly string[]).includes(key))]
+    : [];
+  const rules = useQueries({ queries: keys.map((key) => effectiveWakeupRuleOptions(workspaceId, scope, key)) });
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const button = useRef<HTMLButtonElement>(null);
+  if (!available) return { available, button: null, panel: null, onKeyDown: undefined };
+
+  const applicable = rules.flatMap((query, i) => (query.data?.applicable ? [{ key: keys[i]!, rule: query.data }] : []));
+  const paused = applicable.filter(({ rule }) => rule.execution?.paused_reason).length;
+  const on = applicable.filter(({ rule }) => rule.enabled && !rule.execution?.paused_reason).length;
+  const edited = applicable.filter(({ key }) => overrides.some((d) => d.rule_key === key)).length;
+  const label = paused
+    ? t(($) => (edited ? $.wakeups.defaults.button_paused_edited : $.wakeups.defaults.button_paused), { n: paused, edited })
+    : t(($) => (edited ? $.wakeups.defaults.button_on_edited : $.wakeups.defaults.button_on), { n: on, edited });
+  const close = () => {
+    setOpen(false);
+    button.current?.focus();
+  };
+  return {
+    available,
+    button: (
+      <Button
+        ref={button}
+        type="button"
+        variant="ghost"
+        size="sm"
+        {...{ [DEFAULTS_MARK]: "" }}
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen(!open)}
+        className={cn(
+          "h-auto min-h-10 min-w-0 shrink justify-start gap-1 px-2 text-caption md:min-h-8",
+          paused ? "text-warning" : "text-muted-foreground",
+        )}
+      >
+        {paused > 0 && <Pause className="size-3.5 shrink-0" aria-hidden="true" />}
+        {edited > 0 && <Pencil className="size-3.5 shrink-0" aria-hidden="true" />}
+        <span className="truncate">{label}</span>
+        <ChevronDown className={cn("size-3 shrink-0", open && "rotate-180")} aria-hidden="true" />
+      </Button>
+    ),
+    // Closed, not unmounted: an override draft survives a close and reopen.
+    panel: (
+      <div id={panelId} hidden={!open} {...{ [DEFAULTS_MARK]: "" }} className="mb-1">
+        <p className="px-2 pb-1 text-caption text-muted-foreground">{t(($) => $.wakeups.defaults.caption)}</p>
+        <ul aria-label={t(($) => $.wakeups.defaults.title)}>
+          {keys.map((key) => (
+            <DefaultRule
+              key={key}
+              workspaceId={workspaceId}
+              scope={scope}
+              ruleKey={key}
+              projectId={projectId}
+              override={overrides.find((d) => d.rule_key === key) ?? null}
+            />
+          ))}
+        </ul>
+      </div>
+    ),
+    // An open menu keeps its own Esc. The panel is hidden, not unmounted, so a draft in the form survives the close.
+    onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Escape" || !open) return;
+      const target = event.target as HTMLElement;
+      if (target.closest(`[${DEFAULTS_MARK}]`) && !target.closest("[role='menu']")) close();
+    },
+  };
 }
 
 function DefaultRule({
@@ -77,6 +130,13 @@ function DefaultRule({
   // revision under a draft that was read at an older one.
   const [editing, setEditing] = useState<{ revision: string; base: WakeupDefinitionConfig } | null>(null);
   const { data: rule } = useQuery(effectiveWakeupRuleOptions(workspaceId, scope, ruleKey));
+  const more = useRef<HTMLButtonElement>(null);
+  const wasEditing = useRef(false);
+  // The menu button was gone while the form was open; keep the keyboard where the person was.
+  useEffect(() => {
+    if (wasEditing.current && !editing) more.current?.focus();
+    wasEditing.current = !!editing;
+  }, [editing]);
   if (!rule?.applicable) return null;
   const title = ruleTitle(t, ruleKey, rule);
   const pausedReason = rule.execution?.paused_reason;
@@ -88,28 +148,63 @@ function DefaultRule({
       reason: text.pausedReason({ paused_reason: pausedReason as never, max_fires: null, fire_count: 0 }) ?? pausedReason ?? "",
     }),
   }[state];
-  const origin = override
-    ? t(($) => $.wakeups.defaults.overridden)
-    : t(($) => $.wakeups.defaults.inherited, { source: sourceName(t, rule) });
+  const source = inheritedFrom(rule);
+  const tag = override
+    ? t(($) => $.wakeups.defaults.tag_edited)
+    : source === "workspace"
+      ? t(($) => $.wakeups.defaults.tag_workspace)
+      : source === "project"
+        ? t(($) => $.wakeups.defaults.tag_project)
+        : null;
   const open = () => setEditing({ revision: override?.revision ?? "0", base: override?.config ?? { v: 1 } });
   return (
-    <li aria-label={title} className="rounded-md px-2 py-1.5 text-label">
-      <div className="flex min-w-0 items-center gap-2">
+    <li aria-label={title} className="rounded-md px-2 text-label">
+      <div className="flex min-h-10 min-w-0 items-center gap-2 md:min-h-8">
         <span className="min-w-0 flex-1 break-words">{title}</span>
-        <span className={`shrink-0 text-caption ${state === "on" ? "text-muted-foreground" : "text-warning"}`}>{stateText}</span>
-      </div>
-      <p className="text-caption text-muted-foreground">
-        {origin}
-        {!override && projectId && inheritedFrom(rule) === "project" && (
-          <>
-            {" · "}
-            <AppLink href={paths.projectWakeups(projectId)} className="underline underline-offset-2 hover:text-foreground">
-              {t(($) => $.wakeups.defaults.open_project)}
-            </AppLink>
-          </>
+        {tag && (
+          <span className="flex shrink-0 items-center gap-0.5 text-caption text-muted-foreground">
+            {override && <Pencil className="size-3" aria-hidden="true" />}
+            {tag}
+          </span>
         )}
-      </p>
-      {editing ? (
+        <span className={`flex shrink-0 items-center gap-0.5 text-caption ${state === "on" ? "text-muted-foreground" : "text-warning"}`}>
+          {state === "paused" && <Pause className="size-3" aria-hidden="true" />}
+          {stateText}
+        </span>
+        {!rule.redacted && !editing && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  ref={more}
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-10 md:size-7"
+                  aria-label={t(($) => $.wakeups.defaults.more_label, { rule: title })}
+                />
+              }
+            >
+              <MoreHorizontal aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={open}>{t(($) => (override ? $.wakeups.defaults.edit : $.wakeups.defaults.override))}</DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!override || remove.isPending}
+                onClick={() => override && remove.mutate({ ruleKey, revision: override.revision })}
+              >
+                {t(($) => $.wakeups.defaults.reset)}
+              </DropdownMenuItem>
+              {!override && projectId && source === "project" && (
+                <DropdownMenuItem render={<AppLink href={paths.projectWakeups(projectId)} />}>
+                  {t(($) => $.wakeups.defaults.open_project)}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+      {editing && (
         <OverrideForm
           workspaceId={workspaceId}
           scope={scope}
@@ -118,42 +213,11 @@ function DefaultRule({
           editing={editing}
           onClose={() => setEditing(null)}
         />
-      ) : (
-        <>
-          {rule.config.instruction && (
-            <p className="mt-0.5 line-clamp-2 break-words text-caption text-muted-foreground">{rule.config.instruction}</p>
-          )}
-          {!rule.redacted && (
-            <div className="mt-1 flex gap-1">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                aria-label={t(($) => (override ? $.wakeups.defaults.edit_label : $.wakeups.defaults.override_label), { rule: title })}
-                onClick={open}
-              >
-                {t(($) => (override ? $.wakeups.defaults.edit : $.wakeups.defaults.override))}
-              </Button>
-              {override && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-label={t(($) => $.wakeups.defaults.reset_label, { rule: title })}
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate({ ruleKey, revision: override.revision })}
-                >
-                  {t(($) => $.wakeups.defaults.reset)}
-                </Button>
-              )}
-            </div>
-          )}
-          {remove.isError && (
-            <p role="alert" className="mt-1 text-caption text-destructive">
-              {t(($) => $.wakeups.defaults.reset_error)}
-            </p>
-          )}
-        </>
+      )}
+      {remove.isError && (
+        <p role="alert" className="pb-1 text-caption text-destructive">
+          {t(($) => $.wakeups.defaults.reset_error)}
+        </p>
       )}
     </li>
   );
@@ -261,13 +325,4 @@ function ruleTitle(t: Translate, ruleKey: string, rule: WakeupEffectiveRule) {
 /** The scope a rule's on/off, or failing that its instruction, is inherited from. */
 function inheritedFrom(rule: WakeupEffectiveRule) {
   return rule.sources.enabled ?? rule.sources.instruction;
-}
-
-function sourceName(t: Translate, rule: WakeupEffectiveRule) {
-  const source = inheritedFrom(rule);
-  return source === "workspace"
-    ? t(($) => $.wakeups.defaults.source_workspace)
-    : source === "project"
-      ? t(($) => $.wakeups.defaults.source_project)
-      : t(($) => $.wakeups.defaults.source_default);
 }

@@ -24,3 +24,21 @@ USING decision_request request
 WHERE request.id = bound.decision_id AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
   AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id));
+
+-- name: DecisionAnswerHasPasskeyProof :one
+-- True when the live answer was settled with a verified passkey assertion. The
+-- answer transaction consumes that person's decision_answer challenge for this
+-- request, so the proof is a consumed challenge no later than the answer and
+-- later than every earlier answer on the request (a disclaimed answer's own
+-- proof does not carry over). An answer recorded any other way has no such row.
+SELECT EXISTS (
+    SELECT 1 FROM decision_answer answer
+    JOIN passkey_assertion_challenge challenge
+      ON challenge.purpose = 'decision_answer' AND challenge.subject_id = answer.decision_request_id
+     AND challenge.user_id = answer.answered_by_user_id AND challenge.consumed_at <= answer.created_at
+    WHERE answer.decision_request_id = sqlc.arg('decision_id') AND answer.disclaimed_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM decision_answer earlier
+        WHERE earlier.decision_request_id = answer.decision_request_id AND earlier.id <> answer.id
+          AND earlier.created_at >= challenge.consumed_at)
+)::boolean AS proven;
