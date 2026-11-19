@@ -513,14 +513,15 @@ func TestSearchTitleTierTypingSequence(t *testing.T) {
 		sql, args := buildTitleSearchQuery(terms, true, nil)
 		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
 		n, err := exec(sql, args)
-		if _, indexable := titleTrigramPatterns(terms); err != nil || n >= 8 || !indexable {
+		if err != nil || n >= 8 {
 			return n, err
 		}
 		sql, args = buildTitleTailQuery(terms, true, nil)
 		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
 		return exec(sql, args)
 	}
-	for _, q := range typingSequence {
+	// The short rare terms (no title holds them) must stay flat as the corpus grows.
+	for _, q := range append(append([]string{}, typingSequence...), "zq", "q", "qz xq") {
 		n, err := run(q) // warm-up
 		if err != nil {
 			t.Errorf("%q: %v", q, err)

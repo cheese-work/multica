@@ -105,3 +105,37 @@ func TestSearchIssues_TitleOnlyHonoursIncludeClosed(t *testing.T) {
 		t.Fatalf("include_closed: got %v, want %q and %q", got, open, closed)
 	}
 }
+
+// A term under 3 characters has no trigram, yet the tier still returns the newest
+// matches of the whole workspace: a sole match older than the window is found.
+func TestSearchIssues_TitleOnlyFindsOlderMatchForShortTerms(t *testing.T) {
+	prev := titleTierScanWindow
+	titleTierScanWindow = 3
+	t.Cleanup(func() { titleTierScanWindow = prev })
+
+	for _, term := range []string{"ʘ", "ʘʙ"} {
+		solo := seedTitleTierIssue(t, fmt.Sprintf("solo %s %d", term, time.Now().UnixNano()), "", 3*time.Hour)
+		for i := 1; i <= 3; i++ {
+			seedTitleTierIssue(t, fmt.Sprintf("short filler %d %d", i, time.Now().UnixNano()), "", time.Duration(i)*time.Second)
+		}
+		assertOrder(t, "sole older match for "+term, searchTitleTier(t, term, 8), []string{solo})
+		if got := searchTitleTier(t, term+"zz", 8); len(got) != 0 {
+			t.Fatalf("no-match %q: got %v", term+"zz", got)
+		}
+	}
+}
+
+// Every term short: terms still fold diacritics and must all match.
+func TestSearchIssues_TitleOnlyShortTermsFoldAndRequireEveryTerm(t *testing.T) {
+	prev := titleTierScanWindow
+	titleTierScanWindow = 3
+	t.Cleanup(func() { titleTierScanWindow = prev })
+
+	stamp := time.Now().UnixNano()
+	both := seedTitleTierIssue(t, fmt.Sprintf("Đăʘ ʙx %d", stamp), "", 3*time.Hour)
+	seedTitleTierIssue(t, fmt.Sprintf("only ʘ %d", stamp), "", 4*time.Hour)
+	for i := 1; i <= 3; i++ {
+		seedTitleTierIssue(t, fmt.Sprintf("fold filler %d %d", i, stamp), "", time.Duration(i)*time.Second)
+	}
+	assertOrder(t, "folded short terms", searchTitleTier(t, "da ʙx", 8), []string{both})
+}

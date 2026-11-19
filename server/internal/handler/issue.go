@@ -1620,19 +1620,29 @@ func titleTrigramPatterns(terms []string) ([]string, bool) {
 
 // buildTitleTailQuery answers the instant tier for the whole workspace when the
 // newest-window query came back short (CHE-7337): the same rows and order, found
-// through idx_issue_search_text_title_trgm. Its work follows the number of titles
-// that match, which stays small because the window already held fewer than limit
-// of them. The caller runs it only when a term is long enough for the index
-// (titleTrigramPatterns). Args: $1 workspace_id (filled by the caller), one pattern
-// per term, then the terminal statuses when closed issues are excluded, limit and
-// offset.
+// through idx_issue_search_text_title_trgm, or, when every term is under 3
+// characters, through idx_issue_search_text_title_grams (CHE-7422). Its work
+// follows the number of titles that match, which stays small because the window
+// already held fewer than limit of them. Args: $1 workspace_id (filled by the
+// caller), one pattern per term (or one gram array when every term is short), then
+// the terminal statuses when closed issues are excluded, limit and offset.
 func buildTitleTailQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
-	patterns, _ := titleTrigramPatterns(terms)
+	patterns, indexable := titleTrigramPatterns(terms)
 	args := []any{nil}
 	likes := ""
-	for _, pattern := range patterns {
-		args = append(args, pattern)
-		likes += fmt.Sprintf(" AND title_folded LIKE $%d", len(args))
+	if indexable {
+		for _, pattern := range patterns {
+			args = append(args, pattern)
+			likes += fmt.Sprintf(" AND title_folded LIKE $%d", len(args))
+		}
+	} else {
+		// Every term is a 1-2 character gram of the title, so containment is exact.
+		grams := make([]string, len(terms))
+		for i, term := range terms {
+			grams[i] = foldDiacritics(term)
+		}
+		args = append(args, grams)
+		likes = fmt.Sprintf(" AND title_grams(title_folded) @> $%d::text[]", len(args))
 	}
 	status := ""
 	if !includeClosed {
@@ -1764,8 +1774,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A short window is not the answer: look for the newest matches of the whole
-	// workspace, when the terms can use the trigram index.
-	if _, indexable := titleTrigramPatterns(terms); titleOnly && indexable && len(results) < limit {
+	// workspace through the trigram index, or the 1-2 character index.
+	if titleOnly && len(results) < limit {
 		tailQuery, tailArgs := buildTitleTailQuery(terms, includeClosed, terminalStatusKeys)
 		tailArgs[0] = wsUUID
 		tailArgs[len(tailArgs)-2] = limit
