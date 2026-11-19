@@ -250,9 +250,10 @@ func TestDeferredSwitchFailedBlockKeepsTheRowUntilTheBlockIsDurable(t *testing.T
 	}
 }
 
-// A workflow with no blocked step cannot block the issue: the refusal is still
-// recorded once, in a comment and in blocked_reason, so nothing repeats.
-func TestDeferredSwitchRefusalOnAWorkflowWithoutBlockedStillRecordsTheReason(t *testing.T) {
+// A workflow with no blocked step cannot block the issue. The request is not
+// lost: the row stays, the reason is recorded once (a repeat writes nothing
+// new), and once the workflow can block, the next event settles it.
+func TestDeferredSwitchRefusalOnAWorkflowWithoutBlockedKeepsTheRequestUntilItCanBlock(t *testing.T) {
 	f := newDeferredSwitchFixture(t)
 	noBlocked := createTestWorkflowSteps(t, "No blocked "+workflowTestSuffix(), statusSteps("backlog", "in_progress"))
 	setIssueOverride(t, f.issueID, noBlocked.ID)
@@ -263,14 +264,35 @@ func TestDeferredSwitchRefusalOnAWorkflowWithoutBlockedStillRecordsTheReason(t *
 
 	wantIssueStatus(t, f.issueID, "in_progress")
 	f.wantFollows(t, noBlocked.ID)
-	if f.pendingRows(t) != 0 {
-		t.Fatal("a refusal that cannot block left its row to refuse again")
+	if f.pendingRows(t) != 1 {
+		t.Fatal("a refusal that cannot block dropped the row: the request is lost")
 	}
 	if n := f.refusalComments(t); n != 1 {
 		t.Fatalf("refusal comments = %d, want 1", n)
 	}
 	if reason := f.blockedReason(t); !strings.HasPrefix(reason, "workflow-switch-refused") || !strings.Contains(reason, missing) {
 		t.Fatalf("blocked_reason = %q, want workflow-switch-refused naming %s", reason, missing)
+	}
+	revision := f.revision(t)
+
+	f.apply(t)
+
+	if f.pendingRows(t) != 1 || f.refusalComments(t) != 1 || f.revision(t) != revision {
+		t.Fatalf("a repeated refusal must write nothing: rows=%d comments=%d revision %d -> %d", f.pendingRows(t), f.refusalComments(t), revision, f.revision(t))
+	}
+
+	// The workflow is repaired: it now has a blocked step.
+	repaired := createTestWorkflow(t, "Repaired "+workflowTestSuffix(), "in_progress")
+	setIssueOverride(t, f.issueID, repaired.ID)
+
+	f.apply(t)
+
+	wantIssueStatus(t, f.issueID, "blocked")
+	if f.pendingRows(t) != 0 {
+		t.Fatal("a refusal that blocked the issue left its row")
+	}
+	if reason := f.blockedReason(t); !strings.Contains(reason, missing) {
+		t.Fatalf("blocked_reason = %q, want it to name %s", reason, missing)
 	}
 }
 
