@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const threadFocusUp = "999s_thread_focus_columns.up.sql"
-const threadFocusDown = "999s_thread_focus_columns.down.sql"
+const threadFocusUp = "99a_thread_focus_columns.up.sql"
+const threadFocusDown = "99a_thread_focus_columns.down.sql"
 
 // CHE-6426 (S1 of CHE-6385): runs the real up and down files against TEMP copies
 // of the three tables (a temp table shadows the real one), inside a transaction

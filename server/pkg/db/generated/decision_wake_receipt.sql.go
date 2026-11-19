@@ -49,7 +49,7 @@ func (q *Queries) GetDecisionAnswerWakeState(ctx context.Context, id pgtype.UUID
 }
 
 const getDecisionRequestForWake = `-- name: GetDecisionRequestForWake :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, reask_of_request_id FROM decision_request WHERE authority = 'human' AND id = $1
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, route, would_auto_apply, auto_apply_rule_id, reask_of_request_id FROM decision_request WHERE authority = 'human' AND id = $1
 `
 
 func (q *Queries) GetDecisionRequestForWake(ctx context.Context, id pgtype.UUID) (DecisionRequest, error) {
@@ -97,6 +97,9 @@ func (q *Queries) GetDecisionRequestForWake(ctx context.Context, id pgtype.UUID)
 		&i.CoversRequestIds,
 		&i.AnsweredByBatchRequestID,
 		&i.ReadAt,
+		&i.Route,
+		&i.WouldAutoApply,
+		&i.AutoApplyRuleID,
 		&i.ReaskOfRequestID,
 	)
 	return i, err

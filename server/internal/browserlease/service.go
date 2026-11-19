@@ -33,6 +33,8 @@ type Service struct {
 	Signer    Signer
 	Class3    *Class3Deny
 	Now       func() time.Time
+	// Audit records start and end events inside the transition's transaction (CHE-4744).
+	Audit AuditFunc
 }
 
 // MintRequest is a running task's ask for a lease. The caller resolves task, agent, issue and
@@ -45,6 +47,14 @@ type MintRequest struct {
 	UserID      pgtype.UUID
 	ProfileID   pgtype.UUID
 	DecisionID  pgtype.UUID
+}
+
+// audit records a lease event through q, the transition's transaction.
+func (s *Service) audit(ctx context.Context, q *db.Queries, kind string, l db.BrowserLease) error {
+	if s.Audit == nil {
+		return nil
+	}
+	return s.Audit(ctx, q, kind, l)
 }
 
 func (s *Service) now() time.Time {
@@ -255,6 +265,11 @@ func (s *Service) statusOf(ctx context.Context, id, ws, task, user pgtype.UUID, 
 	return s.issueTokenEnding(ctx, res)
 }
 
+// Status reads a lease back without signing: no token, whatever the state.
+func (s *Service) Status(ctx context.Context, ws, task, lease pgtype.UUID) (Result, error) {
+	return s.statusOf(ctx, lease, ws, task, pgtype.UUID{}, false)
+}
+
 // issueToken signs with the lease row it is given, so the caller must pass the persisted
 // deadline. A signer failure comes back as signFailure; the caller ends the lease outside any
 // transaction that already holds the lease row.
@@ -333,6 +348,9 @@ func (s *Service) endActive(ctx context.Context, l db.BrowserLease, reason strin
 			return nil // already ended
 		}
 		if err != nil {
+			return err
+		}
+		if err := s.audit(ctx, q, AuditEnd, ended); err != nil {
 			return err
 		}
 		return q.SetBrowserInstancePhase(ctx, db.SetBrowserInstancePhaseParams{
@@ -492,12 +510,18 @@ func (s *Service) advanceOne(ctx context.Context, ws pgtype.UUID, class string) 
 			if err != nil {
 				return err
 			}
-			_, err = q.ActivateBrowserLease(ctx, db.ActivateBrowserLeaseParams{
+			granted, err := q.ActivateBrowserLease(ctx, db.ActivateBrowserLeaseParams{
 				ID: head.ID, WorkspaceID: ws, InstanceID: claimed.ID, Epoch: pgtype.Int8{Int64: claimed.Epoch, Valid: true},
 				GrantedAt: ts(s.now()), ExpiresAt: ts(limit),
 			})
-			more = err == nil
-			return err
+			if err != nil {
+				return err
+			}
+			if err := s.audit(ctx, q, AuditStart, granted); err != nil {
+				return err
+			}
+			more = true
+			return nil
 		}
 		return nil
 	})

@@ -479,13 +479,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Fail closed until W3-4 (signer) and W3-8/9 (user gate) fill the seams. Decisions are live: an
-	// answered decision (per lease or once per issue) is validated at every mint, renew and queued
-	// grant, and a mint with no decision opens the decision request (W3-10).
+	// Fail closed until W3-4 (signer) fills the seam. The user gate (W3-8/9) reads the permission tables.
+	// Decisions are live: an answered decision (per lease or once per issue) is validated at every
+	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).
 	h.BrowserLeases = &browserlease.Service{
-		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
-		Registry: browserlease.NameRegistry{Queries: queries},
-		Class3:   loadBrowserClass3Deny(),
+		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
+		Registry: browserlease.NameRegistry{Queries: queries}, Audit: handler.BrowserLeaseAudit,
+		Class3: loadBrowserClass3Deny(),
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -1735,6 +1735,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// Browser leases (CHE-4732). Daemon credential only; see browser_lease.go. Release is CHE-4734's, above.
 		r.Post("/tasks/{id}/browser-leases", h.MintBrowserLease)
 		r.Post("/tasks/{id}/browser-leases/{leaseId}/renew", h.RenewBrowserLease)
+		r.Get("/tasks/{id}/browser-leases/{leaseId}", h.StatusBrowserLease)
 
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
 		r.Get("/issues/{issueId}/gc-check", h.GetIssueGCCheck)

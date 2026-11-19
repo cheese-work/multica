@@ -89,6 +89,16 @@ import { Callout } from "fumadocs-ui/components/callout";
 | `warn` | 守卫记录事件和指标，操作继续执行。 |
 | `block` | 守卫先记录事件，再以 `422` 拒绝该操作。只有 `block` 事件会成为恢复工作。 |
 
+### 合并队列设置
+
+三项工作区设置用于配置合并队列。只有所有者可以写入，所有写入路径（`multica workspace update` 标志、设置保存和 `config propose` 操作）都使用同一个校验器。
+
+| 设置 | 值 |
+| --- | --- |
+| `merge_queue_dequeue_routing` | `off`（默认）或 `warn`。在强制执行功能上线前，`block` 会被以 `routing-not-available` 拒绝。 |
+| `merge_queue_actor_bindings` | `{"agents": [...], "people": [...]}`。同时出现在两个列表中的 GitHub 登录名会被拒绝。 |
+| `merge_queue_watch_issue` | 接收合并队列事件的任务，可为空。 |
+
 ### 自动驾驶分配守卫
 
 工作区设置 `autopilot_assign_gate` 决定当一个点名某个自动驾驶（autopilot）的 issue（其 id 紧挨着 “autopilot” 一词）被分配给智能体或小队，而运行所代表的人无法写入该自动驾驶（不是创建者、工作区管理员或被授权的协作者）时的行为。
