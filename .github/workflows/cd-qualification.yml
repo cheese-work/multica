@@ -174,6 +174,40 @@ jobs:
           rm -f apps/web/.fork-changelog/entries.json
           echo 'Fork entries unavailable for this build.' >> "$GITHUB_STEP_SUMMARY"
 
+      # CHE-7209: the backend binaries compile here, on the runner, with job-scoped
+      # empty Go caches, instead of cold inside the 4 GiB dind. Dockerfile.cd-backend
+      # only packages and verifies them.
+      - name: Compile backend binaries on the runner
+        if: matrix.image == 'backend'
+        timeout-minutes: 25
+        env:
+          GOCACHE: ${{ runner.temp }}/cd-go/build
+          GOMODCACHE: ${{ runner.temp }}/cd-go/mod
+          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
+          build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
+          VERSION="$upstream_version" BUILD="$build_stamp" bash scripts/build-cd-backend-binaries.sh
+
+      - name: Check backend payloads against the source commit
+        if: matrix.image == 'backend'
+        env:
+          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/cd-go/stamp.env"
+          PATH="$RUNNER_TEMP/cd-go/toolchain/go/bin:$PATH" GO=go GOFLAGS=-buildvcs=true GOTOOLCHAIN=local \
+            python3 deploy/cd/check-backend-payloads.py --dir "$CD_BACKEND_OUT" --commit "$GITHUB_SHA" --version "$VERSION" --build "$BUILD"
+
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
       # Keep those release requirements and use a named BuildKit container that
       # survives the job: a fresh container per run emptied the Go, pnpm and
@@ -231,9 +265,13 @@ jobs:
         if: matrix.image == 'backend'
         env:
           BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
+          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
         shell: bash
         run: |
           set -euo pipefail
+          # A builder that fails to boot must fail the build, never fall back to
+          # the docker driver, which cannot emit provenance or SBOM.
+          test -n "$BUILDX_BUILDER"
           upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
           if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
@@ -241,21 +279,29 @@ jobs:
           fi
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
+          # The compile step stamped the binaries with the same values.
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/cd-go/stamp.env"
+          test "$VERSION" = "$upstream_version"
+          test "$BUILD" = "$build_stamp"
+          cd_binaries_sha256="$(sha256sum "$CD_BACKEND_OUT/SHA256SUMS" | cut -d' ' -f1)"
+          echo "CD_BINARIES_SHA256=${cd_binaries_sha256}"
           docker buildx build \
+            --builder "$BUILDX_BUILDER" \
             --platform linux/amd64 \
-            --cache-from type=gha,scope=cd-${{ matrix.image }},version=2 \
-            --cache-to type=gha,mode=max,scope=cd-${{ matrix.image }},version=2 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-context cdbin="${CD_BACKEND_OUT}" \
+            --build-arg "CD_BINARIES_SHA256=${cd_binaries_sha256}" \
             --build-arg "VERSION=${upstream_version}" \
             --build-arg "BUILD=${build_stamp}" \
             --build-arg "COMMIT=${GITHUB_SHA}" \
             --metadata-file backend-metadata.json \
             --push \
             --tag "${BACKEND_IMAGE}:sha-${GITHUB_SHA}" \
-            --file Dockerfile .
+            --file Dockerfile.cd-backend .
           node -e 'const m=require("./backend-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > backend.digest
 
       - name: Build and publish immutable amd64 web
@@ -318,6 +364,15 @@ jobs:
             web-fork-changelog.json
           if-no-files-found: error
           retention-days: 7
+
+      # Job-scoped Go toolchain, caches and binaries (CHE-7209, CHE-2557). Runs on
+      # failure too, so a cancelled or red job leaves nothing on X99.
+      - name: Remove the job-scoped Go caches
+        if: ${{ always() && matrix.image == 'backend' }}
+        shell: bash
+        run: |
+          chmod -R u+w "$RUNNER_TEMP/cd-go" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/cd-go"
 
   cd-qualification:
     needs: [build-images, d1-fixtures]

@@ -62,7 +62,12 @@ func writeBrowserLeaseError(w http.ResponseWriter, err error) {
 	case errors.Is(err, browserlease.ErrGateDenied):
 		writeErrorCode(w, http.StatusForbidden, "browser_permission_denied", err.Error())
 	case errors.Is(err, browserlease.ErrDecisionRequired):
-		writeErrorCode(w, http.StatusConflict, "decision_required", err.Error())
+		body := map[string]string{"error": err.Error(), "code": "decision_required"}
+		var required browserlease.DecisionRequiredError
+		if errors.As(err, &required) && required.RequestID.Valid {
+			body["decision_request_id"] = uuidToString(required.RequestID)
+		}
+		writeJSON(w, http.StatusConflict, body)
 	case errors.Is(err, browserlease.ErrDecisionInvalid):
 		writeErrorCode(w, http.StatusForbidden, "decision_invalid", err.Error())
 	case errors.Is(err, browserlease.ErrClass3Denied), errors.Is(err, browserlease.ErrClass3Unchecked):
@@ -78,6 +83,7 @@ func writeBrowserLeaseError(w http.ResponseWriter, err error) {
 	case errors.Is(err, browserlease.ErrNoInstance), errors.Is(err, browserlease.ErrSignerMissing):
 		writeErrorCode(w, http.StatusServiceUnavailable, "browser_unavailable", err.Error())
 	default:
+		slog.Warn("browser lease failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "browser lease failed")
 	}
 }
