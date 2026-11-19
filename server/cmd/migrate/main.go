@@ -178,6 +178,7 @@ var concurrentIndexCleanups = map[string]string{
 	"99964d_browser_profile_member_idx":             "browser_profile_member_uidx",
 	"99964e_browser_profile_agent_idx":              "browser_profile_agent_uidx",
 	"999l_agent_task_queue_task_key_idx":            "idx_agent_task_queue_task_key",
+	"999r_issue_step_watchdog_action_uidx":          "issue_step_watchdog_action_occurrence_uidx",
 	"975_chat_session_chain_root_idx":               "idx_chat_session_chain_root",
 	// v0.10.0 merge (CHE-7023): migrations that build an index concurrently on up
 	// but were never registered. Without a hook an interrupted build leaves an
