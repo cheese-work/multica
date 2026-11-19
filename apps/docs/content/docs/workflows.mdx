@@ -122,6 +122,12 @@ When an agent needs a person's decision on spend, deploy, publish, an irreversib
 
 A person releases an issue in one of two ways. Either they move it out of Backlog in the web app, the desktop app or the CLI signed in as themselves, or they move it out of a status the issue was parked in from Backlog, and the server records the release. A token that belongs to an agent or a cloud runtime never releases an issue.
 
+## Check a workflow [#checks]
+
+Open a saved workflow and select **Checks** to see what the server's lint found in it. The button shows the count of errors, warnings and notes. Each step card that has a finding carries the same marks, so you can see which step to open. The sheet lists the findings grouped by step. Filter them with the tabs **All**, **Errors**, **Warnings** and **Notes**. Each finding shows its message, a **Fix:** hint and its rule ID. **Go to step** selects that step in the editor. **Re-run** checks the saved workflow again. A waived finding stays in the list, muted, with its reason, and is not counted.
+
+Checks judge the saved workflow, not your unsaved edits. The server judges the edits when you save. If the save has errors that are not waived, the server refuses it and the editor opens **Save refused: unresolved errors**. Fix the errors and save again, or type a reason and select **Save anyway**. The reason is sent as `lint_override`, up to 500 characters, and a save without one is refused. The editor keeps the text you typed until the save goes through. If the checks fail to run, saving stays allowed.
+
 ## Related guides
 
 - [Projects](/projects) — organize the issues that follow a workflow.

@@ -122,6 +122,12 @@ Quand un agent a besoin de la décision d’une personne sur une dépense, un d�
 
 Une personne libère une tâche de deux façons. Soit elle la déplace hors de Backlog dans l’application web, l’application de bureau ou la CLI, connectée en son nom ; soit elle la déplace hors d’un statut où la tâche avait été mise en attente depuis Backlog, et le serveur enregistre la libération. Un jeton qui appartient à un agent ou à un runtime cloud ne libère jamais une tâche.
 
+## Vérifier un workflow [#checks]
+
+Ouvrez un workflow enregistré et sélectionnez **Contrôles** pour voir ce que l'analyse du serveur y a trouvé. Le bouton affiche le nombre d'erreurs, d'avertissements et de notes. Chaque carte d'étape qui a un constat porte les mêmes marques, pour que vous voyiez quelle étape ouvrir. Le panneau liste les constats groupés par étape. Filtrez-les avec les onglets **Tout**, **Erreurs**, **Avertissements** et **Notes**. Chaque constat montre son message, une piste **Correction :** et l'identifiant de sa règle. **Aller à l’étape** sélectionne cette étape dans l'éditeur. **Relancer** revérifie le workflow enregistré. Un constat levé reste dans la liste, atténué, avec sa raison, et n'est pas compté.
+
+Les vérifications jugent le workflow enregistré, pas vos modifications non enregistrées. Le serveur juge les modifications à l'enregistrement. Si l'enregistrement contient des erreurs non levées, le serveur le refuse et l'éditeur ouvre **Enregistrement refusé : erreurs non résolues**. Corrigez les erreurs puis enregistrez de nouveau, ou saisissez une raison et sélectionnez **Enregistrer quand même**. La raison est envoyée comme `lint_override`, 500 caractères au plus, et un enregistrement sans raison est refusé. L'éditeur garde le texte saisi jusqu'à ce que l'enregistrement aboutisse. Si les vérifications échouent, l'enregistrement reste possible.
+
 ## Guides associés
 
 - [Projets](/projects) — regrouper les tâches qui suivent un workflow.
