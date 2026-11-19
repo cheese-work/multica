@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/capabilityrouting"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/designguard"
@@ -165,6 +166,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		}
 	case key == issueworkflow.SettingsKeyWorkflowByType:
 		err = issueworkflow.ValidateWorkflowByType(raw)
+	case key == capabilityrouting.SettingsKey:
+		err = capabilityrouting.Validate(raw)
 	case key == intakehold.SettingKey:
 		err = intakehold.Validate(raw)
 	case key == "pr_event_capture":
@@ -286,6 +289,9 @@ func readSettingsPatch(ctx context.Context, queries *db.Queries, workspaceID pgt
 	}
 	after, err := settingsPatchAfter(stored, params.Settings)
 	if err != nil {
+		return read, err
+	}
+	if err := checkCapabilityRoutingAgents(ctx, queries, workspaceID, params.Settings); err != nil {
 		return read, err
 	}
 	before := namedSettings(stored, keys)
