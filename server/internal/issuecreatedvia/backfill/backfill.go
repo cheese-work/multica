@@ -39,7 +39,10 @@ var integrationOrigins = map[string]bool{
 // Options narrows a run. A zero WorkspaceID scans every workspace.
 type Options struct {
 	WorkspaceID pgtype.UUID
-	BatchSize   int
+	// IssueIDs, when set, limits the run to these issues. The binary does not
+	// expose it; tests use it to leave other rows of a shared workspace alone.
+	IssueIDs  []pgtype.UUID
+	BatchSize int
 }
 
 func (o Options) batch() int {
@@ -175,6 +178,7 @@ SELECT i.id, i.workspace_id, i.created_via, i.creator_type, i.creator_id, i.orig
  WHERE (i.created_via IS NULL OR i.created_via = 'agent')
    AND ($1::uuid IS NULL OR i.workspace_id = $1)
    AND ($2::uuid IS NULL OR i.id > $2)
+   AND (COALESCE(cardinality($4::uuid[]), 0) = 0 OR i.id = ANY($4))
  ORDER BY i.id
  LIMIT $3`
 
@@ -185,7 +189,7 @@ func scan(ctx context.Context, pool *pgxpool.Pool, opts Options, fn func([]decis
 	q := db.New(pool)
 	var after pgtype.UUID
 	for {
-		rows, err := pool.Query(ctx, domainSQL, opts.WorkspaceID, after, opts.batch())
+		rows, err := pool.Query(ctx, domainSQL, opts.WorkspaceID, after, opts.batch(), opts.IssueIDs)
 		if err != nil {
 			return fmt.Errorf("read domain: %w", err)
 		}
@@ -389,8 +393,9 @@ func Revert(ctx context.Context, pool *pgxpool.Pool, opts Options, receiptPath s
 			n := 0
 			for _, l := range batch {
 				tag, err := tx.Exec(ctx, `UPDATE issue SET created_via = $2::text
-					 WHERE id = $1::uuid AND created_via = $3 AND ($4::uuid IS NULL OR workspace_id = $4)`,
-					l.IssueID, l.Old, l.New, opts.WorkspaceID)
+					 WHERE id = $1::uuid AND created_via = $3 AND ($4::uuid IS NULL OR workspace_id = $4)
+					 AND (COALESCE(cardinality($5::uuid[]), 0) = 0 OR id = ANY($5))`,
+					l.IssueID, l.Old, l.New, opts.WorkspaceID, opts.IssueIDs)
 				if err != nil {
 					return fmt.Errorf("revert issue %s: %w", l.IssueID, err)
 				}
