@@ -194,3 +194,96 @@ func TestStoreGateReadsTheW3_8Tables(t *testing.T) {
 		t.Fatalf("lease = %s/%s, want ended/%s", l.State, l.EndReason.String, endRevalidation)
 	}
 }
+
+// A member's class H login lease has no agent: the profile member grant alone decides it, at
+// mint, renew and the queued grant. An agent lease still needs the allowlist.
+func TestUserGateClassHNeedsNoAgent(t *testing.T) {
+	u := newUUID()
+	perms := &fakePerms{users: map[pgtype.UUID]bool{u: true}, agents: map[pgtype.UUID]bool{}}
+	h := Subject{WorkspaceID: newUUID(), UserID: u, Profile: db.BrowserProfile{Class: ClassH}}
+	if err := (UserGate{Permissions: perms}).Check(context.Background(), h); err != nil {
+		t.Fatalf("permitted member on H: err = %v, want allowed", err)
+	}
+	h.UserID = newUUID()
+	if err := (UserGate{Permissions: perms}).Check(context.Background(), h); !errors.Is(err, ErrUserNotPermitted) {
+		t.Fatalf("unpermitted member on H: err = %v, want ErrUserNotPermitted", err)
+	}
+	// No agent on a non-H subject is still denied: the exemption is the class, not a missing id.
+	s0 := Subject{WorkspaceID: newUUID(), UserID: u, Profile: db.BrowserProfile{Class: ClassS0}}
+	if err := (UserGate{Permissions: perms}).Check(context.Background(), s0); !errors.Is(err, ErrAgentNotAllowed) {
+		t.Fatalf("S0 without agent: err = %v, want ErrAgentNotAllowed", err)
+	}
+}
+
+func TestStoreGateMemberLoginClassH(t *testing.T) {
+	e := newEnv(t, "c00-1")
+	q := db.New(testPool)
+	e.svc.Gate = StoreGate(q)
+	prof := e.profile(ClassH)
+	user := newUUID()
+	ctx := context.Background()
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM browser_profile_member WHERE workspace_id = $1`, e.ws) })
+	mr := MemberMintRequest{WorkspaceID: e.ws, UserID: user, ProfileID: prof.ID}
+
+	if _, err := e.svc.MintMember(ctx, mr); !errors.Is(err, ErrUserNotPermitted) {
+		t.Fatalf("no grant: err = %v, want ErrUserNotPermitted", err)
+	}
+	if err := q.GrantBrowserProfileMember(ctx, db.GrantBrowserProfileMemberParams{WorkspaceID: e.ws, ProfileID: prof.ID, UserID: user}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.svc.MintMember(ctx, mr)
+	if err != nil || res.Token == "" {
+		t.Fatalf("permitted member mint: err = %v token=%q", err, res.Token)
+	}
+	if _, err := e.svc.RenewMember(ctx, e.ws, user, res.Lease.ID); err != nil {
+		t.Fatalf("permitted renew: %v", err)
+	}
+	if err := q.RevokeBrowserProfileMember(ctx, db.RevokeBrowserProfileMemberParams{WorkspaceID: e.ws, ProfileID: prof.ID, UserID: user}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.RenewMember(ctx, e.ws, user, res.Lease.ID); !errors.Is(err, ErrUserNotPermitted) {
+		t.Fatalf("renew after revoke: err = %v, want ErrUserNotPermitted", err)
+	}
+	if l := e.lease(res.Lease.ID); l.State != "ended" || l.EndReason.String != endRevalidation {
+		t.Fatalf("lease = %s/%s, want ended/%s", l.State, l.EndReason.String, endRevalidation)
+	}
+}
+
+// A queued member lease is re-checked at grant: a permitted one is granted, a revoked one dropped.
+func TestStoreGateMemberQueuedGrantClassH(t *testing.T) {
+	e := newEnv(t, "c00-1")
+	q := db.New(testPool)
+	e.svc.Gate = StoreGate(q)
+	prof := e.profile(ClassH)
+	first, second := newUUID(), newUUID()
+	ctx := context.Background()
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM browser_profile_member WHERE workspace_id = $1`, e.ws) })
+	for _, u := range []pgtype.UUID{first, second} {
+		if err := q.GrantBrowserProfileMember(ctx, db.GrantBrowserProfileMemberParams{WorkspaceID: e.ws, ProfileID: prof.ID, UserID: u}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := e.svc.MintMember(ctx, MemberMintRequest{WorkspaceID: e.ws, UserID: first, ProfileID: prof.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := e.svc.MintMember(ctx, MemberMintRequest{WorkspaceID: e.ws, UserID: second, ProfileID: prof.ID})
+	if err != nil || queued.Lease.State != "queued" {
+		t.Fatalf("second mint: %v state=%s, want queued", err, queued.Lease.State)
+	}
+	if err := q.RevokeBrowserProfileMember(ctx, db.RevokeBrowserProfileMemberParams{WorkspaceID: e.ws, ProfileID: prof.ID, UserID: second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.endActive(ctx, e.lease(held.Lease.ID), "released"); err != nil {
+		t.Fatal(err)
+	}
+	e.ack(held.Lease.ID)
+	if err := e.svc.AdvanceQueue(ctx, e.ws, ClassH); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	testPool.QueryRow(ctx, `SELECT count(*) FROM browser_lease WHERE id = $1`, queued.Lease.ID).Scan(&n)
+	if n != 0 {
+		t.Fatal("the queued member lease of a revoked user was kept or granted")
+	}
+}

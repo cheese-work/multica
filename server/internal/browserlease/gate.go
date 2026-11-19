@@ -21,7 +21,8 @@ type Permissions interface {
 }
 
 // UserGate enforces the user gate (plan F3): the task's accountable user holds browser
-// permission for the profile and the agent is on its allowlist. Default deny: a missing store,
+// permission for the profile and, for an agent lease, the agent is on its allowlist (a class H
+// member login has no agent). Default deny: a missing store,
 // a task without a user or an unlisted agent is denied; a store error is returned as is, so the
 // mint or renew fails closed without ending a lease on a transient fault.
 type UserGate struct{ Permissions Permissions }
@@ -39,6 +40,10 @@ func (g UserGate) Check(ctx context.Context, s Subject) error {
 	}
 	if !ok {
 		return ErrUserNotPermitted
+	}
+	// A member's class H login lease has no agent: the profile member grant alone decides it.
+	if s.Profile.Class == ClassH {
+		return nil
 	}
 	ok, err = g.Permissions.AgentAllowed(ctx, s.WorkspaceID, s.Profile.ID, s.AgentID)
 	if err != nil {
