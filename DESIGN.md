@@ -103,6 +103,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | background-agents | doop `9L657IkfjZ` @ 2026-11-13T06:10:19.495Z (A2), `XyqcwrCaU8` @ 2026-11-13T06:10:21.146Z (B2), `IZ5zGPF9ZM` @ 2026-11-13T06:10:30.086Z (C2), `fLyQE0xYpu` @ 2026-11-13T06:10:50.374Z (D2), `ijhJ5xbn0u` @ 2026-11-13T06:25:14.888Z (E) | v2 | 1465 | n/a (`design/background-agents/approved/`) |
 | guard-settings | doop `-CvWcUKPBL` @ 2026-11-14T14:14:19.025Z (main 1440), `wiM6JcN7p-` @ 2026-11-14T14:15:46.895Z (states 1440), `dh42ccKjU3` @ 2026-11-14T14:20:08.628Z (narrow list 390), `58qKMeIbQ5` @ 2026-11-14T14:18:57.500Z (narrow detail 390) | B | 1622 | n/a (`design/guard-settings/approved/`) |
 | decision-screen | doop `mRAnnjvGod` snapshot `pvdFzm9p3Q` @ 2026-11-14T19:42Z (15 Nov 2026 02:42 ICT) (24 frames: D1 a–f, round 2 g–v, g2, header; ids and `updatedAt` in `LOCK.json`) | D1 | 1663 | n/a (`design/decision-screen/approved/`) |
+| thread-focus | doop `mRAnnjvGod` page `che-6385`, 25 frames (ids and `updatedAt` in `LOCK.json`; prototype start `kpQ01u8mPy` @ 2026-11-18T15:32:42.728Z) | B | PR_NUM | n/a (`design/thread-focus/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`, PR 307 for `dm-notifications-web`. The merge commit is read from GitHub and is not written here.
 
