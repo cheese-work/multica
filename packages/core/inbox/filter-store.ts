@@ -274,7 +274,7 @@ export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
  *
  * `mentionsOnly` asks about the issue's group, not just the newest row: a later
  * comment must not hide a mention, so deduplication copies the mention's source
- * onto the row it keeps (`groupInboxItemsByIssue`). A `@squad`-only mention
+ * onto the row it keeps when that row is a comment (`groupInboxItemsByIssue`); any other newest row, such as `run_budget`, does not match. A `@squad`-only mention
  * does not match.
  *
  * `pinnedUnreadKey` / `pinnedIdleKey` name the notification whose detail is

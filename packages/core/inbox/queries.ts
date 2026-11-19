@@ -229,7 +229,12 @@ function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
       newest.details?.comment_id ??
       group.find((item) => item.details?.comment_id)?.details?.comment_id;
     // A later comment must not hide a mention from the "Mentions me" filter.
-    const mention = isViewerMention(newest) ? undefined : group.find(isViewerMention);
+    // Only a comment or a (squad) mention row carries it: any other newest row
+    // (run_budget, status change, ...) must not pass the filter (CHE-7473).
+    const mention =
+      (newest.type === "new_comment" || newest.type === "mentioned") && !isViewerMention(newest)
+        ? group.find(isViewerMention)
+        : undefined;
 
     if ((commentId && newest.details?.comment_id !== commentId) || mention) {
       merged.push({
