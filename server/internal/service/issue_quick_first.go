@@ -48,7 +48,7 @@ type quickChoice struct {
 
 // chooseQuickFirst decides one create. Off or outside the window it leaves the
 // issue alone and logs nothing. Then, in order: the type must be listed; the
-// workflow must not be the caller's; the status todo or backlog (or omitted);
+// workflow must not be the caller's (a child of a Quick parent skips the type check); the status todo or backlog (or omitted);
 // no member or squad assignee; an open project split wins; a child follows its
 // parent's Quick and never draws; a root needs a bound route and draws by
 // number (even = arm Q).
@@ -56,8 +56,9 @@ func chooseQuickFirst(qf *issueworkflow.QuickFirst, now time.Time, f quickFirstF
 	if qf == nil || !qf.Open(now) {
 		return quickChoice{}
 	}
-	typ, ok := issueworkflow.TitleType(f.Title)
-	if !ok || !qf.Lists(typ) {
+	// The types list gates the root draw. A child of a Quick parent follows it
+	// whatever its own title says.
+	if typ, ok := issueworkflow.TitleType(f.Title); !(f.HasParent && f.ParentFlow == qf.WorkflowID) && (!ok || !qf.Lists(typ)) {
 		return quickChoice{Reason: quickReasonTypeNotListed}
 	}
 	switch {
