@@ -82,6 +82,12 @@ export interface InboxItem {
    */
   chat_session_id?: string | null;
   details: Record<string, string> | null;
+  /**
+   * Client-only, set by `deduplicateInboxItems`: the viewer's direct or `@all`
+   * mention row when a later non-comment row (e.g. `run_budget`) is the newest
+   * row of the issue. The "Mentions me" filter shows this row instead.
+   */
+  mention_row?: InboxItem;
 }
 
 

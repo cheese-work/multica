@@ -122,7 +122,7 @@ describe("deduplicateInboxItems mentions", () => {
     expect(matches(rows).map((row) => row.id)).toEqual(["squad"]);
   });
 
-  it("does not carry a mention onto a later run_budget notice (CHE-7473)", () => {
+  it("shows the mention, not the later run_budget notice, in the mentions view (CHE-7473)", () => {
     const budget = (id: string, issue_id: string, created_at: string) =>
       item({ id, type: "run_budget" as InboxItem["type"], issue_id, created_at });
     const rows = [
@@ -132,7 +132,9 @@ describe("deduplicateInboxItems mentions", () => {
       { ...mention("all", "2026-06-15T08:07:00Z", "all"), issue_id: "issue-3" },
     ];
 
-    expect(matches(rows).map((row) => row.id)).toEqual(["all"]);
+    expect(matches(rows).map((row) => row.id)).toEqual(["all", "direct"]);
+    // The unfiltered list still shows the newest row, the budget notice.
+    expect(deduplicateInboxItems(rows).map((row) => row.id)).toContain("budget-after-mention");
   });
 
   it("does not match an older mention without provenance", () => {
