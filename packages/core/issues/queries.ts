@@ -525,6 +525,9 @@ export function sidebarIssuesOptions(
   });
 }
 
+/** The issue page's own reads fail at once; the app default retry would delay the Retry button. */
+export const primaryIssueRead = { retry: false } as const;
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
@@ -552,6 +555,7 @@ export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+    ...primaryIssueRead,
     refetchOnMount: authoritative ? false : "always",
     initialData: () => (listRow?.description != null ? listRow : undefined),
   });

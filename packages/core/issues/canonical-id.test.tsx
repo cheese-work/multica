@@ -296,3 +296,37 @@ describe("isNotFoundError", () => {
     expect(isNotFoundError(null)).toBe(false);
   });
 });
+
+// The issue page shows its load error, with Retry, after the first failed
+// request. The app's query defaults retry once, so each primary read opts out.
+describe("primary issue reads under the app query defaults", () => {
+  let qc: QueryClient;
+  let getIssue: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    qc = createQueryClient();
+    getIssue = vi.fn(async () => { throw new ApiError("unavailable", 503, "Service Unavailable"); });
+    setApiInstance({ getIssue } as unknown as ApiClient);
+  });
+  afterEach(() => { qc.clear(); vi.restoreAllMocks(); });
+
+  const settled = { timeout: 500 };
+
+  it("fails the identifier resolution after one request", async () => {
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the UUID detail read after one request", async () => {
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the detail view read after one request", async () => {
+    const { result } = renderHook(() => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID)), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.isError).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+});
