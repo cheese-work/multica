@@ -28,6 +28,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
+	"github.com/multica-ai/multica/server/internal/mergequeue"
+	"github.com/multica-ai/multica/server/internal/mergequeue/mqgithub"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -935,10 +937,20 @@ func main() {
 	// the GitHub App the reader stays nil, the job is a no-op and the pause
 	// state stays unknown, which holds every merge_eligibility dispatch.
 	pauseVars := &service.IssueWakeupService{Tasks: taskSvc}
+	var mqClient *ghsnapshot.Client
 	if ghClient, err := ghsnapshot.NewClientFromEnv(); err != nil {
 		slog.Warn("github: merge pause refresh disabled (invalid App private key)", "err", err)
 	} else if ghClient != nil {
+		mqClient = ghClient
 		pauseVars.PauseVars = ghClient // ponytail: own token cache, share the handler's client if App-JWT budget matters
+	}
+	// CHE-7409: bind dequeued merge-queue deliveries to their queue builds. Needs
+	// the GitHub App; without it the intake rows stay pending.
+	if mq := mqgithub.New(pool, mqClient); mq != nil {
+		worker := &mergequeue.Worker{Pool: pool, Src: mq, Ev: mq, Now: time.Now}
+		if err := schedulerMgr.Register(scheduler.MergeQueueSweepJob(worker)); err != nil {
+			slog.Error("scheduler: register merge queue sweep", "error", err)
+		}
 	}
 	if err := schedulerMgr.Register(scheduler.MergePauseRefreshJob(pauseVars)); err != nil {
 		slog.Error("scheduler: register merge pause refresh", "error", err)
