@@ -91,13 +91,32 @@ jobs:
       contents: read
       actions: read
       checks: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           package-manager-cache: false
+      # CHE-7342: the script's own unit tests run only when a PR changes the script, its tests or fixtures,
+      # so a bad script change on main cannot turn this check red on unrelated PRs. Other events run them.
+      - name: Decide whether the unit tests apply
+        id: wb_scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Fetch first: an API error must fail the step, not read as "no match" and skip the tests.
+          files=
+          [ -z "$PR" ] || files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+          if [ -z "$PR" ] || grep -Eq '^scripts/(warning-budget|fixtures/warnings/)' <<< "$files"; then
+            echo unit=true >> "$GITHUB_OUTPUT"
+          else
+            echo unit=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Test warning regression fixtures
+        if: ${{ steps.wb_scope.outputs.unit == 'true' }}
         run: node --test scripts/warning-budget.test.mjs
       - name: Compare CI logs and annotations with successful main
         env:
@@ -1448,6 +1467,7 @@ jobs:
           python3 .github/scripts/test_ci_wait_policy.py
           python3 .github/scripts/ci-wait-policy.py
           python3 deploy/cd/test-rollback-failed-readback.py
+          python3 deploy/cd/test-c00-image-gc.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh

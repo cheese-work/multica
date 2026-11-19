@@ -214,6 +214,17 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	if err != nil || held {
 		return false, err
 	}
+	if verdict == "" {
+		// A held issue gets no dispatch (CHE-6911 E3, row 2): the receipt settles
+		// skipped_ineligible, with no error, so it is not retried.
+		skip, err := intakeHoldSkips(ctx, transaction, uuidToString(state.issue.ID), "decision_receipt")
+		if err != nil {
+			return false, err
+		}
+		if skip {
+			verdict = "skipped_ineligible"
+		}
+	}
 	status, outcome := "skipped_ineligible", pgtype.Text{}
 	if verdict != "" {
 		status = verdict
