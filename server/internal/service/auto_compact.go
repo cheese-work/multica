@@ -160,13 +160,19 @@ func (s *TaskService) syncChatCompacting(workspaceID string, task db.AgentTaskQu
 	}
 	switch task.Status {
 	case "queued", "dispatched", "running", "waiting_local_directory", "deferred":
-		s.publishChatCompacting(workspaceID, session, true)
+		// The status row names who compacts and, on a fallback, why the
+		// configured compaction agent was skipped (CHE-2913).
+		var agentName string
+		if agent, err := s.Queries.GetAgent(context.Background(), task.AgentID); err == nil {
+			agentName = agent.Name
+		}
+		s.publishChatCompacting(workspaceID, session, true, agentName, compactFallbackReason(task))
 	default:
-		s.publishChatCompacting(workspaceID, session, false)
+		s.publishChatCompacting(workspaceID, session, false, "", "")
 	}
 }
 
-func (s *TaskService) publishChatCompacting(workspaceID string, session db.ChatSession, compacting bool) {
+func (s *TaskService) publishChatCompacting(workspaceID string, session db.ChatSession, compacting bool, agentName, fallbackReason string) {
 	s.Bus.Publish(events.Event{
 		Type:               protocol.EventChatSessionUpdated,
 		WorkspaceID:        workspaceID,
@@ -174,10 +180,12 @@ func (s *TaskService) publishChatCompacting(workspaceID string, session db.ChatS
 		ChatSessionID:      util.UUIDToString(session.ID),
 		ChatSessionOwnerID: util.UUIDToString(session.CreatorID),
 		Payload: protocol.ChatSessionUpdatedPayload{
-			ChatSessionID: util.UUIDToString(session.ID),
-			Title:         session.Title,
-			UpdatedAt:     util.TimestampToString(session.UpdatedAt),
-			Compacting:    &compacting,
+			ChatSessionID:         util.UUIDToString(session.ID),
+			Title:                 session.Title,
+			UpdatedAt:             util.TimestampToString(session.UpdatedAt),
+			Compacting:            &compacting,
+			CompactAgentName:      agentName,
+			CompactFallbackReason: fallbackReason,
 		},
 	})
 }
@@ -239,7 +247,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 			return err
 		}
 		attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-		created, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
+		taskParams := db.CreateChatTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              session.AgentID,
 			RuntimeID:            agent.RuntimeID,
@@ -252,7 +260,15 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 			OriginatorSource:     attrSource,
 			TriggerEvidenceKind:  attrEvidenceKind,
 			TriggerEvidenceRefID: attrEvidenceRef,
-		})
+		}
+		route, err := routeCompaction(ctx, qtx, session)
+		if err != nil {
+			return err
+		}
+		if err := route.applyTo(&taskParams, session); err != nil {
+			return err
+		}
+		created, err := qtx.CreateChatTask(ctx, taskParams)
 		if err != nil {
 			return err
 		}
