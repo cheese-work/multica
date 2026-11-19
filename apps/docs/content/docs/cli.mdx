@@ -171,6 +171,24 @@ A task fork does not send a message. `--summary-file` is not accepted with `--fo
 
 The session-human API is `POST /api/chat/sessions/{sessionId}/fork` with a required `idempotency_key` and an optional `message` in the JSON body. With a message, the server sends it as the person's first message in the child and starts the agent's first turn in the same transaction; without one, the child is idle. A retry with the same key returns the same child (HTTP 200) and sends nothing twice. The task-scoped API is `POST /api/chat/fork`. Session responses expose `forked_from_session_id`, `fork_last_message_id` and `fork_message_count` on children. Only web DMs with at least one message can be forked. Without `--fork`, `chat continue` still archives the source and requires `--summary-file`; `/compact` is unchanged.
 
+### Compacting a web DM
+
+`multica chat compact --summary-file ./summary.md` keeps the DM, its id, history and URL, and starts the next turn from the summary. It never archives the DM. A server without in-place compaction stops the command and leaves the DM unchanged.
+
+The `/compact` task runs with the workspace's compact agent, set by an owner or admin. It falls back to the DM's own agent when none is set:
+
+```bash
+multica workspace update <workspace> --compact-agent <agent-id-or-name>
+multica workspace update <workspace> --compact-agent null    # reset: the DM's own agent compacts
+```
+
+- The name is looked up in the workspace you name, not your default one. A name that matches more than one agent is refused with the matches listed; use the id.
+- `--compact-agent` is an alias for `multica workspace background-agents set compact --agent <agent>`. It cannot be combined with any other `workspace update` flag. After the write the CLI reads the setting back; if the server kept something else, it fails with `compact agent was not saved` and the value the server holds.
+- The agent summarises the whole DM transcript, so choose one you trust with it. A human owner or admin must make the change; task tokens are refused.
+- A compaction task cannot fork or archive the DM, and only the workspace's current compact agent may finish it. Otherwise `multica chat compact` and `multica chat continue` print the server's stable code and message to stderr and exit with code 3 (auth):
+  - `compaction_agent_not_current`: this agent is no longer the workspace's compact agent.
+  - `compaction_continue_refused`: a compaction task finishes in place with `multica chat compact`; it cannot use `multica chat continue` to fork or archive.
+
 ### `/fork` in the web app
 
 Type `/fork [message]` as the first word of a web DM message. The web app forks the DM directly, with no agent turn: the new DM is a full copy of the visible messages and attachments, and the source stays active with a "Forked into" link. You land in the new DM. With a message, the agent answers it at once; without one, the new DM is idle until you send a first message. The agent in the new DM starts a fresh session and gets the transcript in a context block capped at 64 KiB (newest messages first); it reads earlier ones with `multica chat history`. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked, and there is no fork prompt setting.
@@ -448,7 +466,7 @@ multica workspace background-agents set dm_title --agent haiku --fallback luna
 multica me background-agents set dm_title --agent none   # back to the workspace default
 ```
 
-`--agent` and `--fallback` take an agent id or name; `none` clears the field. `multica me` covers `dm_title`, `quick_actions` and `compact`; `routing` is workspace-only. Workspace writes need an owner or admin, and both commands refuse task tokens. See [Background Agents](/background-agents) for the no-agent behaviour and deadlines.
+`multica workspace update --compact-agent <id-or-name|null>` is an alias for `set compact` (see Compacting a web DM). `--agent` and `--fallback` take an agent id or name; `none` clears the field. `multica me` covers `dm_title`, `quick_actions` and `compact`; `routing` is workspace-only. Workspace writes need an owner or admin, and both commands refuse task tokens. See [Background Agents](/background-agents) for the no-agent behaviour and deadlines.
 
 ## Browser leases
 
