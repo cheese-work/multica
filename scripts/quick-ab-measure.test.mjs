@@ -71,7 +71,7 @@ test('first 10 per arm in creation order are scored; the rest are listed, not sc
   assert.equal(r.verdict, 'scored');
   assert.equal(r.issues.filter((x) => x.arm === 'Q').length, 10);
   assert.deepEqual(r.unscored.map((x) => x.id), ['Q-11', 'Q-12']);
-  assert.deepEqual(r.counts, { Q: 12, D: 10 });
+  assert.deepEqual(r.counts, { Q: 10, D: 10 });
 });
 
 test('only root issues with a quick_entry arm row after the start are eligible', () => {
@@ -147,6 +147,58 @@ test('no gateway file at all -> null USD', () => {
   assert.equal(run([issue('D', 1, { day: 0 })], 30).issues[0].usd, null);
 });
 
+test('the cohort is frozen at the cutoff: a tenth issue created after day 21 never turns inconclusive into scored (P1-1)', () => {
+  const items = [...cohort('Q', 9), ...cohort('D', 9), issue('Q', 10, { day: 22 }), issue('D', 10, { day: 22 })];
+  for (const days of [21, 30, 60]) {
+    const r = run(items, days);
+    assert.equal(r.verdict, 'inconclusive', `day ${days}`);
+    assert.deepEqual(r.counts, { Q: 9, D: 9 });
+    assert.equal(r.cutoffDay, 21);
+    // issues created after the cutoff are listed, never scored
+    assert.deepEqual(r.unscored.map((x) => x.id).sort(), days === 21 ? [] : ['D-10', 'Q-10']);
+  }
+});
+
+test('a historical --as-of reads only what existed then; a late read gives the same frozen numbers (P1-1)', () => {
+  const items = [...cohort('Q', 10), ...cohort('D', 10)];
+  items[2].issue.status = 'in_progress'; // reopened later, after it was done on day 2
+  items[2].tasks.push({ ...items[2].tasks[0], id: 'reopen', created_at: at(2, 8) }); // after done_at
+  items.push(issue('Q', 11, { day: 30 }));
+  const early = run(items, 12);
+  assert.equal(early.verdict, 'scored');
+  const late = run(items, 60);
+  assert.equal(late.verdict, 'scored');
+  assert.equal(late.cutoffDay, early.cutoffDay);
+  assert.ok(early.cutoffDay <= 10);
+  assert.deepEqual(late.issues, early.issues);
+  assert.deepEqual(late.arms, early.arms);
+  assert.equal(early.issues.find((i) => i.id === 'Q-3').status, 'done'); // done at the cutoff, though reopened since
+  assert.deepEqual(late.unscored.map((x) => x.id), ['Q-11']);
+  // before the cohorts exist the earlier read is pending and shows only issues created by then
+  const first = run(items, 3);
+  assert.equal(first.verdict, 'pending');
+  assert.deepEqual(first.counts, { Q: 4, D: 4 });
+});
+
+test('an issue done only after the cutoff is not done at the cutoff', () => {
+  const items = [...cohort('Q', 9), ...cohort('D', 10), issue('Q', 10, { day: 16, doneAfterH: 24 * 9 })]; // done on day 25
+  for (const days of [21, 30]) {
+    const r = run(items, days);
+    assert.equal(r.verdict, 'inconclusive', `day ${days}`);
+    assert.deepEqual(r.immature.map((x) => x.id), ['Q-10']);
+    assert.equal(r.issues.find((i) => i.id === 'Q-10').status, 'not_done');
+  }
+});
+
+test('runs and hours after the cutoff are not read', () => {
+  const x = issue('Q', 10, { day: 16, status: 'in_progress', runs: 1 });
+  x.tasks.push({ ...x.tasks[0], id: 'late', created_at: at(22), started_at: at(22), completed_at: at(22, 2) });
+  const items = [...cohort('Q', 9), ...cohort('D', 10), x];
+  const [q10] = run(items, 40).issues.filter((i) => i.id === 'Q-10');
+  assert.equal(q10.runs, 1);
+  assert.equal(q10.runHours, 1);
+});
+
 test('same-lab review count: a review task whose lab equals an author lab; unknown labs are counted apart', () => {
   const x = issue('Q', 1, { day: 0, runs: 1 }); // author: claude/sonnet
   x.tasks.push({ ...x.tasks[0], id: 'r1', workflow_step: 'agent_review', provider: 'codex', model: 'gpt-6' }); // cross-lab
@@ -156,8 +208,69 @@ test('same-lab review count: a review task whose lab equals an author lab; unkno
   const labs = { 'claude/sonnet': 'anthropic', 'claude/opus': 'anthropic', 'codex/gpt-6': 'openai' };
   const [i] = run([x], 30, { labs }).issues;
   assert.equal(i.reviews, 4);
-  assert.equal(i.sameLabReviews, 2);
+  assert.equal(i.sameLabMatched, 2);
   assert.equal(i.unknownLabReviews, 1);
+  assert.equal(i.sameLabReviews, null); // one review is unclassified, so the total is unknown, not 2 or 3
+});
+
+test('unknown labs never read as zero same-lab reviews (P1-2)', () => {
+  const base = () => {
+    const x = issue('Q', 1, { day: 0, runs: 1 }); // author claude/sonnet
+    x.tasks.push({ ...x.tasks[0], id: 'r', workflow_step: 'agent_review' }); // same provider/model
+    return x;
+  };
+  const first = (x, labs) => run([x], 30, labs ? { labs } : {}).issues[0];
+  // no lab map at all: same model, but no evidence
+  let i = first(base());
+  assert.equal(i.sameLabReviews, null);
+  assert.equal(i.unknownLabReviews, 1);
+  // reviewer mapped, author mapping missing
+  const a = base();
+  a.tasks[1] = { ...a.tasks[1], provider: 'codex', model: 'gpt-6' };
+  i = first(a, { 'codex/gpt-6': 'openai' });
+  assert.equal(i.sameLabReviews, null);
+  assert.equal(i.unknownLabReviews, 1);
+  // author mapped, reviewer mapping missing
+  const r = base();
+  r.tasks[1].model = 'mystery';
+  i = first(r, { 'claude/sonnet': 'anthropic' });
+  assert.equal(i.sameLabReviews, null);
+  // one author mapped, another author unmapped: a different-lab review cannot be shown cross-lab
+  const m = base();
+  m.tasks.push({ ...m.tasks[0], id: 'a2', model: 'mystery' });
+  m.tasks[1] = { ...m.tasks[1], provider: 'codex', model: 'gpt-6' };
+  i = first(m, { 'claude/sonnet': 'anthropic', 'codex/gpt-6': 'openai' });
+  assert.equal(i.sameLabReviews, null);
+  // a review with no author task cannot be compared
+  const w = base();
+  w.tasks = w.tasks.slice(1);
+  i = first(w, { 'claude/sonnet': 'anthropic' });
+  assert.equal(i.sameLabReviews, null);
+  // complete evidence: a real zero, and a real count
+  const z = base();
+  z.tasks[1] = { ...z.tasks[1], provider: 'codex', model: 'gpt-6' };
+  assert.equal(first(z, { 'claude/sonnet': 'anthropic', 'codex/gpt-6': 'openai' }).sameLabReviews, 0);
+  assert.equal(first(base(), { 'claude/sonnet': 'anthropic' }).sameLabReviews, 1);
+  // no review at all is a real zero
+  assert.equal(first(issue('Q', 1, { day: 0, runs: 1 })).sameLabReviews, 0);
+});
+
+test('a scored arm with unknown labs does not establish zero same-lab reviews; the report says so (P1-2)', () => {
+  const items = [...cohort('Q', 10), ...cohort('D', 10)];
+  items[0].tasks.push({ ...items[0].tasks[0], id: 'rv', workflow_step: 'agent_review' });
+  const r = run(items, 21); // no lab map
+  assert.equal(r.verdict, 'scored');
+  assert.equal(r.arms.Q.sameLabUnknownIssues, 1);
+  assert.equal(r.arms.Q.sameLabZeroEstablished, false);
+  assert.equal(r.arms.D.sameLabZeroEstablished, true);
+  const text = renderReport(r);
+  assert.match(text, /same-lab reviews unknown on 1 issue/);
+  assert.doesNotMatch(text, /arm Q:.*same-lab reviews 0\b/);
+  assert.match(text, /arm D:.*same-lab reviews 0\b/);
+  const ok = run(items, 21, { labs: { 'claude/sonnet': 'anthropic' } });
+  assert.equal(ok.arms.Q.sameLabReviews, 1);
+  assert.equal(ok.arms.Q.sameLabUnknownIssues, 0);
+  assert.equal(ok.arms.Q.sameLabZeroEstablished, false);
 });
 
 test('escalation flag and intake_call vs actual runs and hours', () => {

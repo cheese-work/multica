@@ -9,16 +9,19 @@
 // (Q/quick or D/default); an override row has no `details.arm` and is not a trial entry.
 // Cohort: the first 10 eligible root issues per arm created at or after --start (card 4
 // `starts_at`), in creation order; later ones are listed, not scored.
-// Verdict: `scored` when both cohorts hold 10 and every scored issue is `done` or 7 days old;
-// otherwise `inconclusive` from day 21 after --start, else `pending`. Inconclusive recommends nothing.
+// Verdict: the readout is frozen at the first cutoff, no later than day 21 after --start, where both cohorts
+// hold 10 and every scored issue is `done` or 7 days old: `scored`. Otherwise the cutoff is day 21 and the
+// verdict `inconclusive` (recommends nothing); before that `pending`. Issues, tasks, runs and status after
+// the cutoff are not read, so a late or historical --as-of reproduces the same numbers.
 // Runs: every agent task row on the issue (any state) created from issue create to `done`
 // or day 7. Hours: sum of run durations (started to completed) and create-to-end span.
 // USD (CHE-7648): Sub2API gateway USD per ICT day (--gateway-usd, {"YYYY-MM-DD": usd}) split by the
 // issue's share of that day's Multica tokens (input+output+cache read+cache write). A day with no
 // gateway figure makes the issue's USD null, never a smaller number.
 // Same-lab review: a review task (role `reviewer`, else workflow step `agent_review`) whose lab equals
-// the lab of an author task. Lab = labs["provider/model"] (MULTICA_VOTE_GATE_LABS format); unknown labs
-// are counted apart, never as same-lab.
+// the lab of an author task. Lab = labs["provider/model"] (MULTICA_VOTE_GATE_LABS format). A review is
+// classified only when its lab and every author lab are known; otherwise it counts as unknown and the
+// issue's same-lab figure is null (shown `?`), never zero.
 // The connection reaches psql through PG* variables (see background-agent-usage.mjs).
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -50,21 +53,34 @@ function median(values) {
 function score(issue, tasks, usageByTask, totals, ctx) {
   const created = ms(issue.created_at);
   const day7 = created + 7 * DAY;
-  const done = issue.status === 'done' && issue.done_at ? ms(issue.done_at) : null;
+  // Everything is read as of ctx.asOf (the frozen cutoff): later status, tasks and runs do not exist yet.
+  const done = issue.done_at && ms(issue.done_at) <= ctx.asOf ? ms(issue.done_at) : null;
   const counted = tasks.filter((t) => {
     const c = ms(t.created_at);
-    return c >= created && c < day7 && (done === null || c <= done);
+    return c >= created && c < day7 && c <= ctx.asOf && (done === null || c <= done);
   });
   const end = Math.min(done ?? Infinity, day7, ctx.asOf);
-  const runHours = counted.reduce((s, t) => (t.started_at && t.completed_at ? s + (ms(t.completed_at) - ms(t.started_at)) / HOUR : s), 0);
+  const runHours = counted.reduce((s, t) => (t.started_at && t.completed_at && ms(t.completed_at) <= ctx.asOf
+    ? s + (ms(t.completed_at) - ms(t.started_at)) / HOUR : s), 0);
 
   const lab = (t) => ctx.labs[`${t.provider}/${t.model}`] ?? null;
   const isReview = (t) => t.role === 'reviewer' || (!t.role && t.workflow_step === 'agent_review');
   const reviews = counted.filter(isReview);
-  const authorLabs = new Set(counted.filter((t) => !isReview(t)).map(lab).filter(Boolean));
+  const authors = counted.filter((t) => !isReview(t));
+  const authorLabs = new Set(authors.map(lab).filter(Boolean));
+  // A review is only classified when the evidence is complete: its own lab and every author lab known.
+  // Anything else is unknown; unknown is never reported as zero same-lab.
+  const authorsKnown = authors.length > 0 && authors.every(lab);
+  let sameLab = 0;
+  let unknownLab = 0;
+  for (const t of reviews) {
+    if (lab(t) && authorLabs.has(lab(t))) sameLab += 1;
+    else if (!lab(t) || !authorsKnown) unknownLab += 1;
+  }
 
   const tokensByDay = new Map();
-  for (const t of counted) for (const u of usageByTask.get(t.id) ?? []) tokensByDay.set(u.day, (tokensByDay.get(u.day) ?? 0) + Number(u.tokens));
+  const lastDay = ictDay(ctx.asOf);
+  for (const t of counted) for (const u of (usageByTask.get(t.id) ?? []).filter((x) => x.day <= lastDay)) tokensByDay.set(u.day, (tokensByDay.get(u.day) ?? 0) + Number(u.tokens));
   const missing = [];
   let usd = 0;
   for (const [d, tok] of [...tokensByDay].sort(([a], [b]) => a.localeCompare(b))) {
@@ -82,7 +98,7 @@ function score(issue, tasks, usageByTask, totals, ctx) {
     number: issue.number,
     identifier: issue.identifier ?? `#${issue.number}`,
     arm: issue.arm,
-    status: issue.status,
+    status: done !== null ? 'done' : issue.status === 'done' ? 'not_done' : issue.status,
     createdAt: issue.created_at,
     runs: counted.length,
     runHours: round(runHours),
@@ -91,8 +107,9 @@ function score(issue, tasks, usageByTask, totals, ctx) {
     usd: hasUsd ? round(usd) : null,
     usdMissingDays: ctx.gatewayUsd ? missing : [...tokensByDay.keys()].sort(),
     reviews: reviews.length,
-    sameLabReviews: reviews.filter((t) => lab(t) && authorLabs.has(lab(t))).length,
-    unknownLabReviews: reviews.filter((t) => !lab(t)).length,
+    sameLabReviews: unknownLab ? null : sameLab,
+    sameLabMatched: sameLab,
+    unknownLabReviews: unknownLab,
     escalated: Boolean(issue.escalated),
     intakeCall: intake?.result ?? 'none',
     estimateHours: Number.isNaN(est) ? null : est,
@@ -113,26 +130,42 @@ export function measure(data, opts) {
 
   if (issuesOnly) {
     const issues = [...data.issues].sort(byCreation).map((i) => scoreOf({ ...i, arm: normArm(i.arm) ?? '-' }));
+    ctx.asOf = ms(asOf);
     return { verdict: 'listed', reasons: [], counts: null, daily: [], issues, unscored: [], immature: [], arms: null };
   }
 
-  const eligible = data.issues
-    .filter((i) => !i.parent_issue_id && i.entry_source === 'arm' && ms(i.created_at) >= ms(start))
+  const deadline = ms(start) + 21 * DAY;
+  const seenAt = ms(asOf);
+  const eligibleAll = data.issues
+    .filter((i) => !i.parent_issue_id && i.entry_source === 'arm' && ms(i.created_at) >= ms(start) && ms(i.created_at) <= seenAt)
     .map((i) => ({ ...i, arm: normArm(i.arm) }))
     .filter((i) => i.arm)
     .sort(byCreation);
-  const counts = { Q: 0, D: 0 };
-  const scoredSrc = [];
-  const unscoredSrc = [];
-  for (const i of eligible) {
-    counts[i.arm] += 1;
-    (counts[i.arm] <= cohortSize ? scoredSrc : unscoredSrc).push(i);
-  }
-  const issues = scoredSrc.map(scoreOf);
-  const unscored = unscoredSrc.map(scoreOf);
+  const cohortAt = (t) => {
+    const taken = { Q: [], D: [] };
+    for (const i of eligibleAll) if (ms(i.created_at) <= t && taken[i.arm].length < cohortSize) taken[i.arm].push(i);
+    return taken;
+  };
+  // Freeze the readout at the first qualifying cutoff, never later than day 21: the time both cohorts are
+  // complete and every cohort issue is done or 7 days old. Later issues and later status cannot change it.
+  const matureAt = (i) => Math.min(i.done_at && ms(i.done_at) <= seenAt ? ms(i.done_at) : Infinity, ms(i.created_at) + 7 * DAY);
+  const early = cohortAt(deadline);
+  const qualifying = ARMS.every((a) => early[a].length >= cohortSize)
+    ? Math.max(...ARMS.flatMap((a) => early[a].map((i) => Math.max(ms(i.created_at), matureAt(i))))) : Infinity;
+  let cutoff = null;
+  if (qualifying <= deadline && qualifying <= seenAt) cutoff = qualifying;
+  else if (seenAt >= deadline) cutoff = deadline;
+  const obs = cutoff ?? seenAt;
+  ctx.asOf = obs;
+
+  const taken = cohortAt(obs);
+  const counts = { Q: taken.Q.length, D: taken.D.length };
+  const inCohort = new Set([...taken.Q, ...taken.D].map((i) => i.id));
+  const issues = [...taken.Q, ...taken.D].sort(byCreation).map(scoreOf);
+  const unscored = eligibleAll.filter((i) => !inCohort.has(i.id)).map(scoreOf);
 
   const dailyMap = new Map();
-  for (const i of eligible) {
+  for (const i of eligibleAll) {
     const d = ictDay(i.created_at);
     dailyMap.set(d, { day: d, Q: 0, D: 0, ...dailyMap.get(d) });
     dailyMap.get(d)[i.arm] += 1;
@@ -142,12 +175,13 @@ export function measure(data, opts) {
   const reasons = [];
   for (const arm of ARMS) if (counts[arm] < cohortSize) reasons.push(`cohort_below_${cohortSize}:${arm}`);
   const immature = issues.filter((i) => !i.mature).map(({ id, identifier, arm, status, createdAt }) => ({
-    id, identifier, arm, status, ageDays: round((ctx.asOf - ms(createdAt)) / DAY),
+    id, identifier, arm, status, ageDays: round((obs - ms(createdAt)) / DAY),
   }));
   if (immature.length) reasons.push('immature_scored_issue');
 
   let verdict = 'scored';
-  if (reasons.length) verdict = ctx.asOf >= ms(start) + 21 * DAY ? 'inconclusive' : 'pending';
+  if (reasons.length) verdict = seenAt >= deadline ? 'inconclusive' : 'pending';
+  const cutoffInfo = { cutoff: new Date(obs).toISOString(), cutoffDay: round((obs - ms(start)) / DAY) };
 
   let arms = null;
   if (verdict === 'scored') {
@@ -159,19 +193,22 @@ export function measure(data, opts) {
         medianRuns: median(mine.map((i) => i.runs)),
         medianUsd: median(mine.map((i) => i.usd)),
         usdKnown: mine.filter((i) => i.usd !== null).length,
-        sameLabReviews: mine.reduce((s, i) => s + i.sameLabReviews, 0),
+        sameLabReviews: mine.reduce((s, i) => s + i.sameLabMatched, 0),
+        sameLabUnknownIssues: mine.filter((i) => i.unknownLabReviews > 0).length,
+        sameLabZeroEstablished: mine.every((i) => i.unknownLabReviews === 0) && mine.every((i) => i.sameLabMatched === 0),
         escalations: mine.filter((i) => i.escalated).length,
       };
     }
   }
-  return { verdict, reasons, counts, daily, issues, unscored, immature, arms };
+  return { verdict, reasons, ...cutoffInfo, counts, daily, issues, unscored, immature, arms };
 }
 
 const pad = (v, n) => String(v ?? '-').padEnd(n);
 
 export function renderReport(r) {
   const out = [`Quick A/B measure: ${r.verdict}`];
-  if (r.counts) out.push(`cohort counts: Q ${r.counts.Q}  D ${r.counts.D}`);
+  if (r.counts) out.push(`cohort counts at the cutoff: Q ${r.counts.Q}  D ${r.counts.D}`);
+  if (r.cutoff) out.push(`cutoff: day ${r.cutoffDay} after start (${r.cutoff})`);
   if (r.reasons.length) out.push(`reasons: ${r.reasons.join(', ')}`);
   if (r.verdict === 'inconclusive') out.push('no recommendation');
   if (r.immature.length) {
@@ -183,17 +220,17 @@ export function renderReport(r) {
     for (const d of r.daily) out.push(`${pad(d.day, 12)} ${pad(d.Q, 4)} ${pad(d.D, 4)}`);
   }
   const row = (i) => [pad(i.identifier, 10), pad(i.arm, 4), pad(i.status, 12), pad(i.runs, 5), pad(i.runHours, 7), pad(i.spanHours, 7),
-    pad(i.usd === null ? 'n/a' : i.usd, 8), pad(i.reviews, 4), pad(i.sameLabReviews, 5), pad(i.escalated ? 'yes' : 'no', 5),
+    pad(i.usd === null ? 'n/a' : i.usd, 8), pad(i.reviews, 4), pad(i.sameLabReviews ?? '?', 5), pad(i.unknownLabReviews, 4), pad(i.escalated ? 'yes' : 'no', 5),
     pad(i.intakeCall, 10), pad(i.estimateHours, 6), i.unfinishedAtDay7 ? 'unfinished@d7' : ''].join(' ').trimEnd();
   const head = [pad('issue', 10), pad('arm', 4), pad('status', 12), pad('runs', 5), pad('run h', 7), pad('span h', 7), pad('USD', 8),
-    pad('rev', 4), pad('same', 5), pad('esc', 5), pad('intake', 10), pad('est h', 6)].join(' ');
+    pad('rev', 4), pad('same', 5), pad('unk', 4), pad('esc', 5), pad('intake', 10), pad('est h', 6)].join(' ');
   if (r.issues.length) out.push('', head, ...r.issues.map(row));
   if (r.unscored.length) out.push('', 'listed, not scored (past the first 10 per arm):', ...r.unscored.map(row));
   if (r.arms) {
     out.push('');
     for (const a of ARMS) {
       const s = r.arms[a];
-      out.push(`arm ${a}: median runs ${s.medianRuns}, median USD ${s.medianUsd ?? 'n/a'} (${s.usdKnown}/${s.issues} priced), same-lab reviews ${s.sameLabReviews}, escalations ${s.escalations}/${s.issues}`);
+      out.push(`arm ${a}: median runs ${s.medianRuns}, median USD ${s.medianUsd ?? 'n/a'} (${s.usdKnown}/${s.issues} priced), ${s.sameLabUnknownIssues ? `same-lab reviews unknown on ${s.sameLabUnknownIssues} issue${s.sameLabUnknownIssues === 1 ? '' : 's'} (${s.sameLabReviews} matched)` : `same-lab reviews ${s.sameLabReviews}`}, escalations ${s.escalations}/${s.issues}`);
     }
   }
   return `${out.join('\n')}\n`;
@@ -230,9 +267,9 @@ WITH picked AS (
          p.issue_prefix || '-' || p.number AS identifier,
          CASE WHEN p.entry ? 'arm' THEN 'arm' ELSE 'override' END AS entry_source,
          p.entry->>'arm' AS arm,
-         CASE WHEN p.status = 'done' THEN COALESCE((
-           SELECT min(a.created_at) FROM activity_log a
-           WHERE a.issue_id = p.id AND a.action = 'status_changed' AND a.details->>'to' = 'done'), p.updated_at) END AS done_at,
+         COALESCE((SELECT min(a.created_at) FROM activity_log a
+                    WHERE a.issue_id = p.id AND a.action = 'status_changed' AND a.details->>'to' = 'done'),
+                  CASE WHEN p.status = 'done' THEN p.updated_at END) AS done_at,
          (SELECT jsonb_build_object('result', a.details->>'result', 'estimate', a.details->>'estimate')
             FROM activity_log a WHERE a.issue_id = p.id AND a.action = 'intake_call'
             ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS intake,
