@@ -8,7 +8,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-5682 layer 2: the decided-ask guard. Each case sends one ask with the
@@ -323,5 +325,35 @@ func TestDecidedAskSettingIsValidated(t *testing.T) {
 	}
 	if err := validateAskGuardSetting(map[string]any{decidedModeKey: "block"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A lookup statement error must not abort the caller's transaction: the card
+// is still sent and the check counts as "error" (spec section 5).
+func TestDecidedAskLookupSQLErrorStillSendsTheCard(t *testing.T) {
+	f := newSingleCallFixture(t)
+	f.seed(t, f.details, time.Now().Add(-time.Hour))
+	setDecidedMode(t, "block")
+	previousMetrics := testHandler.Metrics
+	testHandler.Metrics = obsmetrics.NewBusinessMetrics()
+	decidedAskFault = func(ctx context.Context, queries *db.Queries) error {
+		_, err := queries.Conn().Exec(ctx, `SELECT 1/0`)
+		return err
+	}
+	t.Cleanup(func() {
+		decidedAskFault = nil
+		testHandler.Metrics = previousMetrics
+	})
+	f.otherAgent(t).send(t, f.details, http.StatusCreated, nil)
+	var errors float64
+	for _, metric := range obsmetrics.GatherForTest(t, testHandler.Metrics)["multica_ask_guard_decided_ask_check_total"].GetMetric() {
+		for _, label := range metric.GetLabel() {
+			if label.GetName() == "outcome" && label.GetValue() == "error" {
+				errors += metric.GetCounter().GetValue()
+			}
+		}
+	}
+	if errors != 1 {
+		t.Fatalf("error outcomes = %v, want 1", errors)
 	}
 }
