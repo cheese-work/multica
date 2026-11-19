@@ -953,7 +953,7 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus})); err != nil {
+	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus, DeliverCards: dmProgressDeliveryEnabled()})); err != nil {
 		slog.Error("scheduler: register dm progress dispatch", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
@@ -1168,4 +1168,16 @@ func main() {
 		},
 	}.run()
 	slog.Info("server stopped")
+}
+
+// dmProgressDeliveryEnabled is the server switch for posting progress cards to
+// DMs (CHE-7568). It is off unless MULTICA_DM_PROGRESS_DELIVERY is "true" or
+// "1"; turn it on in the release that ships the web card and its mute controls
+// (CHE-3408).
+func dmProgressDeliveryEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_DM_PROGRESS_DELIVERY"))) {
+	case "true", "1":
+		return true
+	}
+	return false
 }
