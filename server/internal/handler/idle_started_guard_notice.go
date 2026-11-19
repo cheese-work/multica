@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -166,6 +167,14 @@ func idleGuardLeaderNote(issue db.Issue, receipt idleGuardReceipt) string {
 // for its leader.
 func (handler *Handler) admitIdleGuardLeaderTask(ctx context.Context, q *db.Queries, issue db.Issue, note string) (db.AgentTaskQueue, error) {
 	squad, err := q.GetDecisionWaitGuardSquad(ctx, db.GetDecisionWaitGuardSquadParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No owning squad: alert the agent assignee instead (CHE-6101).
+		assignee, err := guardAssigneeAgent(ctx, q, issue)
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("idle guard: owning squad: %w", err)
+		}
+		return handler.TaskService.EnqueueGuardLeaderTaskInTx(ctx, q, issue, assignee.ID, pgtype.UUID{}, note, "idle started guard", "Idle started issue moved")
+	}
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("idle guard: owning squad: %w", err)
 	}
@@ -177,6 +186,19 @@ func (handler *Handler) admitIdleGuardLeaderTask(ctx context.Context, q *db.Quer
 		return db.AgentTaskQueue{}, errors.New("idle guard: squad leader is archived")
 	}
 	return handler.TaskService.EnqueueGuardLeaderTaskInTx(ctx, q, issue, leader.ID, squad.ID, note, "idle started guard", "Idle started issue moved")
+}
+
+// guardAssigneeAgent is the guards' fallback alert target when no squad owns
+// the issue: the assignee, only when it is an active agent.
+func guardAssigneeAgent(ctx context.Context, q *db.Queries, issue db.Issue) (db.Agent, error) {
+	if issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return db.Agent{}, pgx.ErrNoRows
+	}
+	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: issue.AssigneeID})
+	if err == nil && agent.ArchivedAt.Valid {
+		return db.Agent{}, pgx.ErrNoRows
+	}
+	return agent, err
 }
 
 func (handler *Handler) publishIdleGuardComment(ctx context.Context, workspaceID, issueID pgtype.UUID, comment db.Comment) {

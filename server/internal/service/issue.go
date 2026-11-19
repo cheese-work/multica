@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/issueproperty"
@@ -129,6 +130,9 @@ type IssueCreateParams struct {
 	// resolved workflow before the issue row exists (a mandatory property a
 	// workflow gate needs). Platform spawns leave it nil and are not gated.
 	PropertyGate CreatePropertyGate
+	// FromMachine marks a create whose creator is a member that signed in
+	// with a machine credential; it is held like an agent's. Server-set.
+	FromMachine bool
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
@@ -460,6 +464,26 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 		p.Status = def.Start()
 	}
+	// The intake hold (CHE-6911 E1): an agent's or a machine credential's create
+	// in a held project lands in backlog or is refused, before the handler and
+	// the entry gate read the step.
+	var holdMarker string
+	if p.CreatorType == "agent" || p.FromMachine {
+		labelIDs := make([]string, len(p.LabelIDs))
+		for i, id := range p.LabelIDs {
+			labelIDs[i] = util.UUIDToString(id)
+		}
+		loaded, err := intakehold.LoadCreate(ctx, tx, intakehold.CreateFacts{
+			WorkspaceID: util.UUIDToString(p.WorkspaceID), ProjectID: util.UUIDToString(projectID), Title: p.Title,
+			HasParent: p.ParentIssueID.Valid, LabelIDs: labelIDs, OriginType: p.OriginType.String, OriginID: util.UUIDToString(p.OriginID),
+		})
+		if err != nil {
+			return IssueCreateResult{}, fmt.Errorf("intake hold: %w", err)
+		}
+		if p.Status, holdMarker, err = intakehold.ForCreate(loaded, p.Status, p.StatusOmitted, p.CreatorType, util.UUIDToString(p.CreatorID)); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
 	// The handler of the step the issue lands on comes from the workflow as it
 	// stands under the locks. An earlier unlocked read can name the former
 	// workflow's handler, or none, after a switch.
@@ -613,6 +637,16 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			return IssueCreateResult{}, fmt.Errorf("record entry gate: %w", err)
 		}
 		// The recorded comment bumped the revision the result must carry.
+		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
+		}
+	}
+
+	if holdMarker != "" {
+		value, _ := json.Marshal(holdMarker)
+		if _, err := qtx.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: p.WorkspaceID, Key: intakehold.SettingKey, Value: value}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("mark intake hold: %w", err)
+		}
 		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
 		}

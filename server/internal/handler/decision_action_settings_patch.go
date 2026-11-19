@@ -48,8 +48,22 @@ func init() {
 	registerConfigChange(settingsPatchAction, configChange{
 		Fields: []string{decisionaction.SettingsField},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
-			_, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
-			return err
+			workspace, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
+			if err != nil {
+				return err
+			}
+			var patch settingsPatchParams
+			if err := json.Unmarshal(params, &patch); err != nil || !typedFenceKeysChangeRaw(workspace.Settings, patch.Settings) {
+				return nil
+			}
+			// A patch that changes a key a typed send reads must not commit while a send is open. This only
+			// tries, so the approval never waits for a send; a refusal retries with the row locks released.
+			if held, err := queries.TryLockTypedSettingsFence(ctx, workspaceID); err != nil {
+				return err
+			} else if !held {
+				return atStep("settings_fence", errBusyRetry)
+			}
+			return nil
 		},
 		Read:    readSettingsPatch,
 		Apply:   applySettingsPatch,
@@ -115,6 +129,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
 		err = validateCardLintSetting(map[string]any{key: value})
+	case key == decisiontx.SettingServerActions || key == decisiontx.SettingStandingAnswers:
+		err = validateServerActionSetting(map[string]any{key: value})
 	case key == designguard.SettingKey:
 		err = validateDesignGuardSetting(map[string]any{key: value})
 	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey || key == askguard.OwnerScriptSettingKey:

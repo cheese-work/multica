@@ -1571,6 +1571,7 @@ type DmProgressFollow struct {
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	Reasons            []string           `json:"reasons"`
 	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
+	EventWatermark     pgtype.Timestamptz `json:"event_watermark"`
 }
 
 type DmProgressLane struct {
@@ -2573,6 +2574,17 @@ type IssueStepAssignee struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type IssueStepWatchdogAction struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	OccurrenceKey string             `json:"occurrence_key"`
+	Action        string             `json:"action"`
+	Outcome       string             `json:"outcome"`
+	Details       []byte             `json:"details"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueSubscriber struct {
 	IssueID        pgtype.UUID        `json:"issue_id"`
 	UserType       string             `json:"user_type"`
@@ -3509,6 +3521,13 @@ type SeatCapacityOutbox struct {
 	DeadLetteredAt pgtype.Timestamptz `json:"dead_lettered_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ServerDeploy struct {
+	ID        int64              `json:"id"`
+	Commit    string             `json:"commit"`
+	Version   string             `json:"version"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
 }
 
 type SilenceAlertReceipt struct {

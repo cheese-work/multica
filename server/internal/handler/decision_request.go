@@ -700,11 +700,33 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	ctx := request.Context()
 	empty := decisionRequestResult{}
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
+	typed := input.Parsed != nil && len(input.Parsed.TypedOptionPaths()) > 0
+	typedSendHook("before_fence")
+	if typed {
+		// First lock of the send: a settings write that turns a fenced key off waits for this
+		// transaction, and a send that waits here holds no other lock.
+		if err := queries.LockTypedSettingsFenceShared(ctx, issue.WorkspaceID); err != nil {
+			return empty, err
+		}
+	}
+	typedSendHook("after_fence")
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		}
 		return empty, err
+	}
+	typedSendHook("after_row_lock")
+	if typed {
+		// The authoritative read of decision_server_actions: inside the transaction, after the locks.
+		workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+		if err != nil {
+			return empty, err
+		}
+		if !decisiontx.ServerActionsOn(workspace.Settings) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, decisiontx.ServerActionsOffCode + ": " + input.Parsed.TypedOptionPaths()[0] + " needs the workspace setting decision_server_actions to be on; it is off"}
+		}
+		typedSendHook("after_setting_read")
 	}
 	topic, err := resolveDecisionTopic(ctx, queries, issue)
 	if err != nil {

@@ -288,6 +288,66 @@ export function observeQuiescenceState({ connInfo, queryTimeoutMs = DEFAULT_WALL
 // migrate-supervised.sh's watchdog already requires for termination),
 // never by a string the excluded session controls.
 
+// Identity of a lock holder: pid alone can be reused by a different session,
+// so it is paired with backend_start.
+function holderKey(pid, activityRows) {
+  const row = activityRows.find((a) => a.pid === pid);
+  return `${pid}|${row ? row.backendStart : "<unknown>"}`;
+}
+
+export function advisoryLockHolderKeys(state) {
+  return new Set(
+    state.locks.filter((l) => l.detail.startsWith("advisory:")).map((l) => holderKey(l.pid, state.activity)),
+  );
+}
+
+const ADVISORY_EVIDENCE_QUERY_MAX = 120;
+
+function describeAdvisoryLockHolders(state, persistentKeys) {
+  return state.locks
+    .filter((l) => l.detail.startsWith("advisory:"))
+    .filter((l) => !persistentKeys || persistentKeys.has(holderKey(l.pid, state.activity)))
+    .map((l) => {
+      const a = state.activity.find((row) => row.pid === l.pid);
+      return {
+        ...l,
+        state: a?.state ?? null, xactStart: a?.xactStart ?? null, backendStart: a?.backendStart ?? null,
+        applicationName: a?.applicationName ?? null, backendType: a?.backendType ?? null,
+        query: a ? a.query.slice(0, ADVISORY_EVIDENCE_QUERY_MAX) : null,
+      };
+    });
+}
+
+const ADVISORY_RESAMPLE_INTERVAL_MS = 250;
+
+// runPassivePreflight wraps evaluatePassivePreflight: an advisory-lock
+// refusal is re-sampled every 250 ms. Each holder (pid + backend_start) is
+// tracked from the sample that first saw it. It admits once a sample shows no
+// advisory holder, and denies once any holder has been present for the full
+// threshold, so a persistent holder that replaces a transient one is still
+// caught. Holders that keep appearing past twice the threshold deny too. The
+// strict final gate does not use this.
+export function runPassivePreflight({ observe, now = () => Date.now(), sleep, opts = {} }) {
+  const thresholdMs = opts.youngTransactionThresholdMs ?? YOUNG_TRANSACTION_THRESHOLD_MS;
+  const startMs = now();
+  const firstSeenMs = new Map();
+  for (;;) {
+    const state = observe();
+    const nowMs = now();
+    const current = state.ok ? advisoryLockHolderKeys(state) : new Set();
+    for (const key of [...firstSeenMs.keys()]) if (!current.has(key)) firstSeenMs.delete(key);
+    for (const key of current) if (!firstSeenMs.has(key)) firstSeenMs.set(key, nowMs);
+    const persistent = new Set([...firstSeenMs].filter(([, seenMs]) => nowMs - seenMs >= thresholdMs).map(([key]) => key));
+
+    const result = evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: persistent });
+    if (!result.admit || current.size === 0) return result;
+    if (nowMs - startMs >= 2 * thresholdMs) {
+      return evaluatePassivePreflight(state, { ...opts, persistentAdvisoryKeys: current });
+    }
+    sleep(ADVISORY_RESAMPLE_INTERVAL_MS);
+  }
+}
+
 // evaluatePassivePreflight implements the design's gate 1: a coarse, cheap
 // check performed while the healthy release still serves. It never denies
 // because of a young transaction (that only means "keep going"); it denies
@@ -323,7 +383,11 @@ export function evaluatePassivePreflight(state, opts = {}) {
     return { admit: false, decision: "deferred_contention", reason: "prepared transaction present", evidence: { prepared: state.prepared } };
   }
 
-  const advisoryLockHolders = state.locks.filter((l) => l.detail.startsWith("advisory:"));
+  // Live traffic takes short pg_advisory_xact_lock locks, so one sample can
+  // catch a transient holder. opts.persistentAdvisoryKeys (holders seen in
+  // every sample of runPassivePreflight's window) limits the denial to
+  // holders that did not go away; without it every holder denies.
+  const advisoryLockHolders = describeAdvisoryLockHolders(state, opts.persistentAdvisoryKeys);
   if (advisoryLockHolders.length > 0) {
     return { admit: false, decision: "deferred_contention", reason: "a foreign advisory-lock holder is present", evidence: { advisoryLockHolders } };
   }
@@ -854,8 +918,11 @@ function connOptsFromArgs(args) {
 
 function cliPreflight(args) {
   const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
-  const state = observeQuiescenceState({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), queryTimeoutMs });
-  const result = evaluatePassivePreflight(state);
+  const connInfo = buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer });
+  const result = runPassivePreflight({
+    observe: () => observeQuiescenceState({ connInfo, queryTimeoutMs }),
+    sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+  });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.admit ? 0 : 1;
 }

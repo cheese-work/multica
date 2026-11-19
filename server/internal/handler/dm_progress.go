@@ -92,6 +92,10 @@ func (h *Handler) FollowIssueProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return
 	}
+	if err := service.SubscribeProgressDescendants(r.Context(), qtx, issue); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to follow")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return
@@ -142,8 +146,9 @@ func (h *Handler) setProgressMuted(w http.ResponseWriter, r *http.Request, muted
 	})
 }
 
-// changeProgressFollow runs a member-only follow change under the lane lock, so
-// it serializes with the dispatcher and with every other follow write.
+// changeProgressFollow runs a member-only follow change. It takes row locks on
+// the follows it changes and never the lane lock (lock order in
+// service.AddProgressFollow), so it never waits for a dispatch.
 func (h *Handler) changeProgressFollow(w http.ResponseWriter, r *http.Request, change func(q *db.Queries, issue, lane pgtype.UUID) (db.DmProgressFollow, error)) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -160,12 +165,7 @@ func (h *Handler) changeProgressFollow(w http.ResponseWriter, r *http.Request, c
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	follow, err := func() (db.DmProgressFollow, error) {
-		if _, err := qtx.LockDMProgressLane(r.Context(), lane.Lineage); err != nil {
-			return db.DmProgressFollow{}, err
-		}
-		return change(qtx, issue.ID, lane.Lineage)
-	}()
+	follow, err := change(qtx, issue.ID, lane.Lineage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "no active follow for this issue in this chat")
 		return

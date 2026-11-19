@@ -481,9 +481,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	// Fail closed until W3-4 (signer) fills the seam. The user gate (W3-8/9) reads the permission tables.
 	// Decisions are live: an answered decision (per lease or once per issue) is validated at every
-	// mint, renew and queued grant.
+	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).
 	h.BrowserLeases = &browserlease.Service{
-		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: browserlease.NewDecisions(queries),
+		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
 		Registry: browserlease.NameRegistry{Queries: queries},
 		Class3:   loadBrowserClass3Deny(),
 	}
@@ -1869,6 +1869,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
 					r.Get("/provider-breakers", h.ListProviderBreakers)
+					// Class H login lease for the calling member (CHE-5989); the handlers refuse
+					// daemon credentials, agents and another member's lease.
+					r.With(handler.RequireHumanActor).Post("/browser-login-leases", h.MintBrowserLoginLease)
+					r.With(handler.RequireHumanActor).Post("/browser-login-leases/{leaseId}/renew", h.RenewBrowserLoginLease)
+					r.With(handler.RequireHumanActor).Post("/browser-login-leases/{leaseId}/release", h.ReleaseBrowserLoginLease)
 					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -2733,6 +2738,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/update-schedule", h.GetUpdateSchedule)
 					r.Put("/update-schedule", h.PutUpdateSchedule)
 					r.Delete("/update-schedule", h.DeleteUpdateSchedule)
+					r.Get("/machine/history", h.GetMachineHistory)
+					r.Get("/machine/audit", h.GetMachineAudit)
+					r.Get("/machine/planned", h.GetMachinePlanned)
 					r.Post("/update", h.InitiateUpdate)
 					r.Get("/update/{updateId}", h.GetUpdate)
 					r.Post("/models", h.InitiateListModels)

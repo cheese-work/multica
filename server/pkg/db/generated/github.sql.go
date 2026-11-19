@@ -788,30 +788,43 @@ func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGi
 }
 
 const listGitHubReviewAuthorCandidates = `-- name: ListGitHubReviewAuthorCandidates :many
-SELECT DISTINCT task.agent_id
-FROM agent_task_queue task
-JOIN agent author ON author.id = task.agent_id
-JOIN github_pull_request pr ON pr.id = $1
-WHERE pr.workspace_id = $2
+SELECT DISTINCT candidate.agent_id
+FROM (
+    SELECT task.agent_id
+    FROM agent_task_queue task
+    WHERE $1::text <> ''
+      AND right(replace(task.id::text, '-', ''), 12) = $1::text
+    UNION
+    SELECT task.agent_id
+    FROM issue_pull_request link
+    JOIN github_pull_request linked_pr ON linked_pr.id = link.pull_request_id
+    JOIN agent_task_queue task ON task.issue_id = link.issue_id
+    WHERE link.pull_request_id = $2
+      AND task.branch_name = linked_pr.branch
+      AND task.created_at <= linked_pr.pr_created_at
+) candidate
+JOIN agent author ON author.id = candidate.agent_id
+JOIN github_pull_request pr ON pr.id = $2
+WHERE pr.workspace_id = $3
   AND author.workspace_id = pr.workspace_id
-  AND (
-    ($3::text <> '' AND right(replace(task.id::text, '-', ''), 12) = $3::text)
-    OR (task.branch_name = pr.branch AND task.created_at <= pr.pr_created_at AND EXISTS (
-        SELECT 1 FROM issue_pull_request link
-        WHERE link.pull_request_id = pr.id AND link.issue_id = task.issue_id
-    ))
-  )
 LIMIT 2
 `
 
 type ListGitHubReviewAuthorCandidatesParams struct {
+	TaskKey       string      `json:"task_key"`
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
 	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	TaskKey       string      `json:"task_key"`
 }
 
+// Agents that authored the PR: the task whose key ends the head branch, or a
+// task on a linked issue that ran on that branch before the PR was opened. The
+// two matches are separate UNION arms so each can use an index (CHE-6888): as
+// one OR, the task-key expression forced a scan of agent_task_queue. The key arm
+// reads idx_agent_task_queue_task_key; the branch arm starts from the PR's links
+// and reads the linked issue's tasks through idx_agent_task_queue_issue_id.
+// The caller needs exactly one candidate, so LIMIT 2 is enough to see a tie.
 func (q *Queries) ListGitHubReviewAuthorCandidates(ctx context.Context, arg ListGitHubReviewAuthorCandidatesParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listGitHubReviewAuthorCandidates, arg.PullRequestID, arg.WorkspaceID, arg.TaskKey)
+	rows, err := q.db.Query(ctx, listGitHubReviewAuthorCandidates, arg.TaskKey, arg.PullRequestID, arg.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}

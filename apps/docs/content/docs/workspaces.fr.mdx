@@ -60,6 +60,25 @@ Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut p
 
 Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
 
+### Saut de l'exécution à l'entrée en blocage
+
+Le paramètre d'espace de travail `blocked_run_skip` définit si une tâche qui entre dans `blocked` lance l'exécution de l'étape bloquée. Le serveur ne saute cette exécution que si la tâche indique ce qu'elle attend et si le propriétaire de l'étape a déjà un réveil qui poursuivra le travail.
+
+| Valeur | Effet |
+| --- | --- |
+| `off` | Rien ne change. L'agent de l'étape bloquée s'exécute à l'entrée. |
+| `warn` (par défaut) | L'exécution démarre comme avant. Chaque entrée qui aurait été sautée enregistre aussi une ligne d'activité `blocked_entry_would_skip` qui nomme l'exécution qui a suivi. |
+| `block` | Le serveur ne lance aucune exécution, enregistre une ligne d'activité `blocked_entry_linked` et garde le réveil actif. |
+
+L'exécution n'est sautée que si tout ce qui suit est vrai. Si une condition échoue ou ne peut pas être lue, l'exécution démarre comme avant.
+
+- La métadonnée `blocked_on` de la tâche est définie (`multica issue status <id> blocked --blocked-on <ref>`).
+- Le propriétaire de l'étape bloquée a sur cette tâche un réveil conditionnel actif pour la même référence : même option, même cible, même état, étape ou type. Un réveil temporel, une autre condition ou le réveil d'un autre agent ne comptent pas.
+- Ce réveil n'a pas de `last_error`, se termine dans les 7 jours et utilise `--on-timeout wake`.
+- L'exécution serait admise : la tâche a encore du budget d'exécutions et l'agent n'est pas en pause.
+
+Si le réveil lié est ensuite désactivé ou supprimé, reçoit un `last_error`, se termine sans exécution (expiré ou refusé par la garde) ou ne correspond plus à `blocked_on`, le serveur lance l'exécution de l'étape bloquée et enregistre une ligne d'activité `blocked_entry_rearmed`. Si le budget d'exécutions est épuisé ou si l'agent est en pause, cette exécution est refusée aussi et la ligne l'indique.
+
 ### Garde des demandes
 
 Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quand l'opération d'un agent demande à une personne d'agir sans ouvrir de demande de décision.
@@ -85,6 +104,10 @@ Chaque événement garde le mode dans lequel il a été créé : passer de `warn
 Le paramètre d'espace de travail `reversible_ask_guard` (`off` par défaut, `warn`, `block`) couvre une demande de décision simple d'un agent dont la classe est `reversible` : l'agent demande à une personne d'approuver un travail que les agents peuvent déjà décider et faire eux-mêmes. `warn` l'enregistre dans les journaux. `block` la refuse avec `422`. Les demandes d'action, de proposition et de lot ne sont pas concernées. Remettez-le à `off` pour revenir en arrière ; aucune donnée ne change. Le même paramètre couvre une réponse simple d'un agent sous le commentaire d'un membre, sur une tâche en `blocked` ou `need_decision`, qui peut interroger cette personne sans demande de décision : `warn` l'enregistre et `block` la refuse avec `422`. Les commentaires de premier niveau, les réponses sous un agent, les commentaires qui mentionnent un agent ou une équipe, ceux avec `--notify-only` et les demandes de décision ne sont pas concernés.
 
 Le paramètre d'espace de travail `owner_script_guard` (`off`, `warn`, `block` ; `warn` s'il n'est pas défini) couvre la demande de décision, la demande d'action et la carte `multica decision ask` d'un agent : le propriétaire ne lit pas de shell, donc une carte qui demande à la personne d'exécuter une commande est un défaut de la demande. Huit règles (R1 à R8, version 1 du jeu de règles) lisent le texte de la carte et ses étapes : un bloc de code shell, une commande dans un bloc ou dans du code en ligne, une commande de `human_steps`, une pièce jointe de script, et un mot d'exécution comme « run » ou « paste » à côté d'une commande ou juste après un message signalé. `warn` livre la carte et enregistre la détection. `block` la refuse avec `422`, nomme les règles et les champs touchés, et renvoie vers `multica config propose`, `multica decision propose <type>` ou une permission du bot. `off` ne vérifie rien. Chaque vérification écrit un événement, une ligne d'activité `owner_script_guard`, dans la même transaction que la carte, ou seule si la carte est refusée. L'événement contient les identifiants, le résultat, `delivered`, `rule_hits`, des empreintes à clé des commandes (`cmd_hmacs`) et `retry_of` ; il ne contient aucun texte de message. La chronologie de la tâche n'affiche pas ces lignes. Remettez `warn` ou `off` pour revenir en arrière ; aucune donnée ne change.
+
+Le paramètre d'espace de travail `waiting_audience_guard` (`off` par défaut, `warn`, `block`) couvre un commentaire d'agent sur un ticket en `in_review`, `blocked` ou `need_decision`. Ce commentaire doit nommer son destinataire : une mention de membre, `notify_only`, un commentaire de décision, `ask` (le membre qui agit ensuite) ou `no_ask`. Une mention d'agent ou d'équipe, ou une réponse sous le commentaire d'un agent, compte aussi. Seuls ces champs typés et ces liens sont lus, jamais le texte du commentaire. `warn` enregistre un événement et publie le commentaire. `block` enregistre l'événement et refuse le commentaire avec `422`. Une exécution en canal de discussion ne fait qu'avertir. Remettez `off` pour revenir en arrière ; aucune donnée ne change.
+
+Le paramètre d'espace de travail `waiting_on_guard` (`off` par défaut, `warn`, `block`) couvre un agent qui déplace un ticket vers `in_review`, `blocked` ou `need_decision`. Le déplacement doit dire qui agit ensuite avec `waiting_on` : `member:<id>` ou `none`. Une tâche qui a déjà publié une demande de décision ou un commentaire avec une mention de membre sur le ticket n'a pas besoin de `waiting_on`. Seuls le champ typé et les liens structurels sont lus, jamais le texte des commentaires précédents. `warn` enregistre un événement et déplace le ticket. `block` enregistre l'événement et refuse le déplacement avec `422`. Une exécution en canal de discussion ne fait qu'avertir. Remettez `off` pour revenir en arrière ; aucune donnée n'est modifiée.
 
 Quand l'exécution qui a produit un événement `block` est terminée, le serveur envoie à la seule personne visée par la demande un avis de reprise automatique : un message de DM, un commentaire sur le ticket et un élément de boîte de réception, écrits dans une seule transaction. L'avis cite la demande enregistrée, renvoie au ticket et n'a ni options, ni recommandation, ni approbation : ce n'est jamais une demande de décision. Il n'est envoyé que si la source enregistrée contient le texte de la demande, désigne exactement un membre et que ce membre est toujours dans l'espace de travail ; sinon l'événement attend une réparation. Répondre dans le fil de commentaires de l'avis le marque `answered`. Un membre qui a quitté l'espace de travail ne peut plus le lire ni y répondre.
 

@@ -114,11 +114,11 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 工作区可以在一段时间内，把新的顶层请求留在 **Backlog**，让人先阅读并放行，再由智能体开始工作。规则是工作区设置 `intake_hold`：一个列表，每个项目一条。每条包含 `project_id`、`mode`、`starts_at`、`ends_at`、`exempt_types`、`exempt_labels`、`exempt_escalation_classes`、`exempt_autopilot_ids`、`exempt_issue_ids` 和 `source`。智能体通过工作区设置补丁修改它，由所有者用通行密钥批准。没有条目的项目不受影响。 `source` 为必填项，所有 ID 须为带连字符的小写 UUID；违反任一规则的值在保存时会被拒绝。
 
-模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。暂缓生效后，智能体或令牌把被暂缓的任务移出 Backlog，会被拒绝，返回 HTTP 409 和代码 `intake_hold`。本次发布只新增设置和读取字段，尚不拒绝任何操作。
+模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。在 `block` 模式下，智能体或令牌对被暂缓任务的状态变更会被拒绝，无论任务在 Backlog 中还是从 Backlog 被挂起，返回 HTTP 409 和代码 `intake_hold`；响应体包含 `ends_at`、`fix` 和 `release_paths`。移到 `cancelled` 不会被拒绝。智能体或令牌在该项目中创建任务并指定 `backlog` 和 `cancelled` 之外的状态，同样会被拒绝；不指定状态的创建会落在 Backlog，新任务的元数据键 `intake_hold` 会被设为条目的 `source`。人自己的移动或创建不会被拒绝。在 `warn` 模式下不拒绝任何操作，服务器写一行 `intake_hold_warn` 日志。在状态行中记录放行键不属于本次发布。
 
 `GET /api/issues/{id}` 返回 `intake_hold` 字段，包含 `source`、`held`、`owned`、`reason`、`ends_at` 和 `exempt_after`。`owned` 在 `ends_at` 之后仍为 true，因此可以区分暂缓覆盖过的任务和从未覆盖的任务。有父任务的任务和没有条目的项目不返回该字段，列表接口也不返回。`reason` 取 `held`、`ended`、`not_started`、`mode_off`、`created_before_start`、`left_backlog`、`released_by_member`、`exempt_type`、`exempt_label`、`exempt_escalation_class`、`exempt_autopilot` 或 `exempt_issue_id`。标题没有类型的任务（例如 `plain words`）会被暂缓。优先级不豁免任何任务。
 
-智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。 事项仍被保留时，请求保持完整流程，但其答复或其他决策事件（撤回、过期、重新提问、收回）的投递不会启动任何运行。该投递以 `skipped_ineligible` 结案，不会重试。在 `warn` 模式下，投递照常执行。
+智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。 事项仍被保留时，请求保持完整流程，但其答复或其他决策事件（撤回、过期、重新提问、收回）的投递不会启动任何运行。该投递以 `skipped_ineligible` 结案，不会重试。在 `warn` 模式下，投递照常执行。创建了该暂缓任务的运行，在它仍在运行期间，也可以在这个任务上发起该请求；没有创建该任务的智能体不能发起，创建它的运行发出的 `reversible` 请求会被拒绝。请求会引用该任务上的一条评论，所以创建它的运行须先在任务上发表评论。
 
 人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。
 
