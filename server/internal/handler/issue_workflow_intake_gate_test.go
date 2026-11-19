@@ -232,6 +232,11 @@ func TestQAProofGate(t *testing.T) {
 			setPostCloseWork(t, id, "none", false)
 			setPostCloseWork(t, id, "docs follow-up", true)
 		}, http.StatusOK},
+		{"post_close_work set by the agent to the value another actor already set", func(t *testing.T, id string) {
+			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-02T01:00:00Z")
+			setPostCloseWork(t, id, "none", false)
+			setPostCloseWork(t, id, "none", true)
+		}, http.StatusOK},
 		{"QA before the step was entered", func(t *testing.T, id string) {
 			addGateComment(t, id, "agent", agent, "QA: https://example.com/run/1", "2026-01-01T01:00:00Z")
 			setPostCloseWork(t, id, "none", true)
