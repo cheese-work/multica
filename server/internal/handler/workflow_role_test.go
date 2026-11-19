@@ -238,3 +238,35 @@ func TestWorkflowRoleRowsAreNotInTheTimeline(t *testing.T) {
 		}
 	}
 }
+
+// A chained advance and its role row are one write. When the row cannot be
+// written, the run does not move into the new step: a reviewer run with a
+// reviewer row must never reach author work with no row saying so (RGS-1,
+// fail closed).
+func TestWorkflowRoleChainAdvanceFailsClosedWhenRowCannotBeWritten(t *testing.T) {
+	_, issueID, agentID, taskID := seedRoleIssue(t)
+	// The run was queued as a reviewer: its only row says so.
+	dbfx.Exec(t, `UPDATE activity_log SET details = jsonb_set(details, '{role}', '"reviewer"') WHERE issue_id = $1 AND action = 'workflow_role'`, issueID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, taskID)
+	dbfx.Exec(t, `CREATE OR REPLACE FUNCTION che7676_fail_role() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'injected workflow_role write failure'; END $$ LANGUAGE plpgsql`)
+	// Only the run's own advance row fails; the next step's enqueue still writes.
+	dbfx.Exec(t, `CREATE TRIGGER che7676_fail_role BEFORE INSERT ON activity_log
+		FOR EACH ROW WHEN (NEW.action = 'workflow_role' AND NEW.details->>'task_id' = '`+taskID+`') EXECUTE FUNCTION che7676_fail_role()`)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DROP TRIGGER IF EXISTS che7676_fail_role ON activity_log`)
+		dbfx.Exec(t, `DROP FUNCTION IF EXISTS che7676_fail_role()`)
+	})
+
+	before := taskWorkflowStep(t, taskID)
+	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+
+	if got := taskWorkflowStep(t, taskID); got != before {
+		t.Fatalf("run step = %q after a failed role write, want it kept at %q", got, before)
+	}
+	for _, r := range workflowRoleRows(t, issueID) {
+		if r.TaskID == taskID && r.Role != "reviewer" {
+			t.Fatalf("a non-reviewer row exists for the task: %+v", r)
+		}
+	}
+}

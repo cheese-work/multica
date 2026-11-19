@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -27,16 +26,19 @@ const LabUnknown = "unknown"
 // RecordWorkflowRole writes one workflow_role row for a task of the issue at
 // the given step. The role is the handler type the issue's workflow gives that
 // step; "none" when the issue follows no workflow or the step is not in it.
-// A write failure is logged, never returned: the task must not fail for its
-// evidence, and a missing row counts as an author (fail closed).
-func RecordWorkflowRole(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, step string) {
+// A write failure is returned: callers run it in the transaction of the write
+// it records, so the task or the advance is not made without its evidence. A
+// swallowed error would also leave that transaction aborted, and a run whose
+// latest row still says reviewer would pass the author query while it works as
+// an author (RGS-1, fail closed).
+func RecordWorkflowRole(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, step string) error {
 	if !issue.ID.Valid || !task.ID.Valid || !task.AgentID.Valid {
-		return
+		return nil
 	}
 	role, workflowID, version := "none", "", ""
 	def, _, err := issueworkflow.ForIssue(ctx, q, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
-		slog.Warn("workflow role: load workflow failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return fmt.Errorf("workflow role: load workflow: %w", err)
 	}
 	if def != nil {
 		if def.ID.Valid {
@@ -58,34 +60,35 @@ func RecordWorkflowRole(ctx context.Context, q *db.Queries, issue db.Issue, task
 		ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: task.AgentID,
 		Action: ActivityWorkflowRole, Details: details,
 	}); err != nil {
-		slog.Warn("workflow role: write failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return fmt.Errorf("workflow role: write: %w", err)
 	}
+	return nil
 }
 
 // recordEnqueuedRole writes the role row of a task just queued for an issue,
 // at the step the task row says it was queued for.
-func recordEnqueuedRole(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) {
+func recordEnqueuedRole(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
 	if !task.IssueID.Valid {
-		return
+		return nil
 	}
 	issue, err := q.GetIssue(ctx, task.IssueID)
 	if err != nil {
-		slog.Warn("workflow role: load issue failed", "task_id", util.UUIDToString(task.ID), "error", err)
-		return
+		return fmt.Errorf("workflow role: load issue: %w", err)
 	}
-	RecordWorkflowRole(ctx, q, issue, task, task.WorkflowStep.String)
+	return RecordWorkflowRole(ctx, q, issue, task, task.WorkflowStep.String)
 }
 
 // CopyWorkflowRoleToRetry gives a retry the role its parent worked in.
-func CopyWorkflowRoleToRetry(ctx context.Context, q *db.Queries, parent, child db.AgentTaskQueue) {
+func CopyWorkflowRoleToRetry(ctx context.Context, q *db.Queries, parent, child db.AgentTaskQueue) error {
 	if !parent.IssueID.Valid {
-		return
+		return nil
 	}
 	if err := q.CopyWorkflowRoleToRetry(ctx, db.CopyWorkflowRoleToRetryParams{
 		IssueID: parent.IssueID, ParentTaskID: util.UUIDToString(parent.ID), ChildTaskID: util.UUIDToString(child.ID),
 	}); err != nil {
-		slog.Warn("workflow role: copy for retry failed", "task_id", util.UUIDToString(child.ID), "error", err)
+		return fmt.Errorf("workflow role: copy for retry: %w", err)
 	}
+	return nil
 }
 
 // IssueAuthor is an agent task on an issue that counts as authorship.

@@ -536,15 +536,30 @@ func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, pr
 	if run == nil || !run.WorkflowStep.Valid || prev.Status == issue.Status {
 		return
 	}
-	if err := h.Queries.SetTaskWorkflowStep(ctx, db.SetTaskWorkflowStepParams{
+	// The step and its role row are one write: a run does not move into a step
+	// whose role evidence is not stored (CHE-7676, RGS-1).
+	if err := h.advanceRunStepWithRole(ctx, run, issue); err != nil {
+		slog.Warn("workflow: advance run step failed", "task_id", uuidToString(run.ID), "error", err)
+	}
+}
+
+func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue) error {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.SetTaskWorkflowStep(ctx, db.SetTaskWorkflowStepParams{
 		ID:           run.ID,
 		WorkflowStep: pgtype.Text{String: issue.Status, Valid: true},
 	}); err != nil {
-		slog.Warn("workflow: advance run step failed", "task_id", uuidToString(run.ID), "error", err)
-		return
+		return err
 	}
-	// The role evidence follows the run into the step it entered (CHE-7676).
-	service.RecordWorkflowRole(ctx, h.Queries, issue, *run, issue.Status)
+	if err := service.RecordWorkflowRole(ctx, qtx, issue, *run, issue.Status); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // stepMovedError explains a refused status change: where the run's step was,
