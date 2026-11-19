@@ -4003,6 +4003,18 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 	return overrideID, def, project, true
 }
 
+// createWorkflowSource says who chose the create's workflow override: the
+// request (caller), the workspace's title map (title_type) or nobody ("").
+func createWorkflowSource(rawWorkflowID *string, overrideID pgtype.UUID) string {
+	switch {
+	case rawWorkflowID != nil && *rawWorkflowID != "":
+		return issueworkflow.WorkflowSourceCaller
+	case overrideID.Valid:
+		return issueworkflow.WorkflowSourceTitleType
+	}
+	return ""
+}
+
 // workflowFromTitleType loads the workflow the workspace's workflow_by_type
 // setting maps the title's type to. ok is false when project workflows are off,
 // no entry matches, or the mapped workflow is gone.
@@ -4449,6 +4461,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		ParentIssueID:   parentIssueID,
 		ProjectID:       projectID,
 		WorkflowID:      overrideID,
+		WorkflowSource:  createWorkflowSource(req.WorkflowID, overrideID),
 		RequestedByID:   requestedByID,
 		StartDate:       startDate,
 		DueDate:         dueDate,

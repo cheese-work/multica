@@ -170,6 +170,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = capabilityrouting.Validate(raw)
 	case key == intakehold.SettingKey:
 		err = intakehold.Validate(raw)
+	case key == issueworkflow.SettingsKeyQuickFirst:
+		err = issueworkflow.ValidateQuickFirst(raw)
 	case key == "pr_event_capture":
 		flags, isObject := value.(map[string]any)
 		if !isObject {

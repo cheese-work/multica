@@ -744,7 +744,7 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID, "member", util.UUIDToString(userID)), PropertyGate: h.createPropertyGate(workspaceID),
 		WorkspaceID: workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
 		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID, RequestedByID: userID,
-		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, WorkflowID: overrideID, StartDate: startDate, DueDate: dueDate,
+		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, WorkflowID: overrideID, WorkflowSource: createWorkflowSource(input.WorkflowID, overrideID), StartDate: startDate, DueDate: dueDate,
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
 		AllowDuplicate: input.AllowDuplicate, SourceContext: &capture,
 		CreatedVia: pgtype.Text{String: issuecreatedvia.Classify(issuecreatedvia.Input{Channel: statusTriggerFromRequest(r, "member", util.UUIDToString(userID)).Channel}), Valid: true},
