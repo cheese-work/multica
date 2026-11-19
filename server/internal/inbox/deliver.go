@@ -54,7 +54,7 @@ func Deliver(ctx context.Context, queries *db.Queries, pub Publisher, n Notifica
 			return db.InboxItem{}, false, nil
 		}
 	}
-	item, inserted, err = createIfEligible(ctx, queries, n.Params)
+	item, inserted, err = createIfEligible(ctx, queries, n.Params, false)
 	if err != nil || !inserted {
 		return item, inserted, err
 	}

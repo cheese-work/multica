@@ -16,7 +16,7 @@ import (
 // Other database errors remain failures.
 // Workspace membership is checked by the insert's snapshot, without additional locks.
 func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams) (item db.InboxItem, inserted bool, err error) {
-	return createIfEligible(ctx, queries, params)
+	return createIfEligible(ctx, queries, params, true)
 }
 
 // createIfEligible returns inserted=false without an error when the recipient
@@ -30,9 +30,16 @@ func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.Create
 //
 // Fork: the unassigned_activity mute (AllowsDelivery) is checked here, so both
 // CreateIfEligible and upstream's Deliver honor it (CHE-6566 A3c review).
-func createIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams) (item db.InboxItem, inserted bool, err error) {
+// groupMute also applies the type's preference group (CHE-6398). Deliver
+// passes false: it checked the group itself, with IgnorePreferences and a
+// fanout's preloaded preferences.
+func createIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams, groupMute bool) (item db.InboxItem, inserted bool, err error) {
 	if params.RecipientType == "member" {
-		allowed, err := AllowsDelivery(ctx, queries, params.WorkspaceID, params.RecipientID, params.IssueID, isDecision(params.Details))
+		itemType := ""
+		if groupMute {
+			itemType = params.Type
+		}
+		allowed, err := AllowsDelivery(ctx, queries, params.WorkspaceID, params.RecipientID, params.IssueID, itemType, isDecision(params.Details))
 		if err != nil || !allowed {
 			return db.InboxItem{}, false, err
 		}
@@ -62,7 +69,11 @@ func createIfEligible(ctx context.Context, queries *db.Queries, params db.Create
 	return item, true, nil
 }
 
-func AllowsDelivery(ctx context.Context, queries *db.Queries, workspaceID, recipientID, issueID pgtype.UUID, decision bool) (bool, error) {
+// AllowsDelivery reports whether a member's preferences let an item reach
+// them. A decision bypasses every preference. Otherwise the
+// unassigned_activity scope switch runs first, then itemType's group mute;
+// an empty itemType skips the group check.
+func AllowsDelivery(ctx context.Context, queries *db.Queries, workspaceID, recipientID, issueID pgtype.UUID, itemType string, decision bool) (bool, error) {
 	if decision {
 		return true, nil
 	}
@@ -76,6 +87,9 @@ func AllowsDelivery(ctx context.Context, queries *db.Queries, workspaceID, recip
 	var preferences map[string]string
 	if err := json.Unmarshal(preference.Preferences, &preferences); err != nil {
 		return false, err
+	}
+	if itemType != "" && Muted(preferences, itemType) {
+		return false, nil
 	}
 	if preferences["unassigned_activity"] != "muted" {
 		return true, nil
@@ -100,6 +114,7 @@ func isDecision(details []byte) bool {
 		RequestIDs []pgtype.UUID `json:"decision_request_ids"`
 	}
 	// A run_budget item is the one signal that work stopped (CHE-2297 L1a), so
-	// it ignores notification preferences like a decision does.
-	return json.Unmarshal(details, &decision) == nil && (decision.RequestID.Valid || decision.Kind == "run_budget" || (decision.Kind == "decision_expiry_digest" && len(decision.RequestIDs) > 0))
+	// it ignores notification preferences like a decision does. So does the
+	// notice that a delegated task ran out of retries (CHE-6398).
+	return json.Unmarshal(details, &decision) == nil && (decision.RequestID.Valid || decision.Kind == "run_budget" || decision.Kind == "delegated_failure_exhausted" || (decision.Kind == "decision_expiry_digest" && len(decision.RequestIDs) > 0))
 }

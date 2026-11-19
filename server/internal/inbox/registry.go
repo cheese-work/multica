@@ -22,6 +22,7 @@ const (
 	GroupUpdates       = "updates"
 	GroupAgentActivity = "agent_activity"
 	GroupNewIssues     = "new_issues"
+	GroupAutopilot     = "autopilot"
 )
 
 // typeGroups is every inbox type the server writes, mapped to the preference
@@ -47,13 +48,17 @@ var typeGroups = map[string]string{
 	"app_action_result":  GroupAgentActivity,
 	"issue_created":      GroupNewIssues,
 
-	"issue_subscribed":         "",
+	// issue_subscribed has no switch of its own: it is the autopilot-created
+	// issue notice, so it follows the autopilot group (CHE-6398).
+	"issue_subscribed":         GroupAutopilot,
+	"autopilot_paused":         GroupAutopilot,
+	"autopilot_quota_exceeded": GroupAutopilot,
+	"children_done":            GroupStatusChanges,
+
+	// Answer an action the recipient started; no other surface reports it.
 	"quick_create_done":        "",
 	"quick_create_failed":      "",
 	"quick_create_unconfirmed": "",
-	"autopilot_paused":         "",
-	"autopilot_quota_exceeded": "",
-	"children_done":            "",
 	"project_owner_joined":     "",
 	// The agent is stopped until the person answers these.
 	"app_action_requested":  "",
@@ -74,6 +79,16 @@ var legacyTypes = []string{
 	"agent_completed",
 }
 
+// legacyGroups gives a retired type the group that still mutes it: a row of
+// that type may still be written by a fork producer through CreateIfEligible
+// (CHE-6398). Deliver still refuses them.
+var legacyGroups = map[string]string{
+	"review_requested": GroupAssignments,
+	"task_completed":   GroupAgentActivity,
+	"agent_blocked":    GroupAgentActivity,
+	"agent_completed":  GroupAgentActivity,
+}
+
 // Types returns every inbox type the server delivers, sorted.
 func Types() []string {
 	types := make([]string, 0, len(typeGroups))
@@ -91,10 +106,20 @@ func Group(notifType string) (group string, ok bool) {
 	return group, ok
 }
 
+// groupOf is Group plus the retired types, which still mute with their old
+// group.
+func groupOf(notifType string) (group string, ok bool) {
+	if group, ok = typeGroups[notifType]; ok {
+		return group, true
+	}
+	group, ok = legacyGroups[notifType]
+	return group, ok
+}
+
 // Muted reports whether a member's parsed preferences mute notifType. A
 // missing key means the default "all": preferences are stored sparse.
 func Muted(prefs map[string]string, notifType string) bool {
-	group := typeGroups[notifType]
+	group, _ := groupOf(notifType)
 	if group == "" {
 		return false
 	}

@@ -45,7 +45,7 @@ func TestMutedGroupSplit(t *testing.T) {
 		{"muted comments still delivers reactions", map[string]string{"comments": "muted"}, "reaction_added", false},
 
 		// Types outside the map are always delivered.
-		{"unconfigurable type always delivered", map[string]string{"comments": "muted"}, "children_done", false},
+		{"unconfigurable type always delivered", map[string]string{"comments": "muted"}, "quick_create_done", false},
 	}
 
 	for _, tc := range cases {
