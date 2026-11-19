@@ -391,6 +391,12 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
 		}
 		fromStatus = prior.Status
+		rec.intakeRelease = ""
+		if params.Status.String != fromStatus {
+			if rec.intakeRelease, err = intakeReleaseKey(ctx, q, rec, params.ID, params.Status.String); err != nil {
+				return db.Issue{}, nil, err
+			}
+		}
 	}
 	var prevParent pgtype.UUID
 	if params.ParentIssueID.Valid {
@@ -417,7 +423,7 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit, rec.blockedOn)
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit, rec.blockedOn, rec.intakeRelease)
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
