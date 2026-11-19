@@ -58,6 +58,8 @@ If you added a new status, save the workflow before setting up that status's han
 
 A step with `keep_other_assignee: true` skips the handoff when the issue's current assignee was chosen on purpose: it is neither this step's handler nor the handler of the step the issue is leaving. That assignee keeps the issue, and an agent assignee starts a run for this step. The flag is off by default and is set through the API or CLI. It is temporary: per-issue workflows (CHE-5024) will replace it.
 
+A step with `chain_same_owner: true` starts no new run when an agent moves the issue into it and that same agent is the step's handler, provided the step the agent's run started in has the same kind of handler (agent, project lead, and so on). The agent keeps working in its run, and the status response carries the step's instructions as `step_brief`; `multica issue status` prints it. A different agent, a changed handler kind, or a person moving the issue starts a run as before. A batch update never chains. The flag is off by default and is set through the API or CLI.
+
 ## Use it in a project
 
 Open a project and choose its **Workflow**. Workspace owners, admins, and the project's lead, when that lead is a member, can change this choice.
