@@ -197,6 +197,83 @@ func TestDeferredSwitchRefusedApplyBlocksWithTheReason(t *testing.T) {
 	}
 }
 
+func (f deferredSwitchFixture) refusalComments(t *testing.T) int {
+	t.Helper()
+	var n int
+	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE '%workflow-switch-refused%'`, f.issueID).Scan(&n)
+	return n
+}
+
+func (f deferredSwitchFixture) blockedReason(t *testing.T) string {
+	t.Helper()
+	var reason string
+	dbfx.QueryRow(t, `SELECT COALESCE(metadata->>'blocked_reason', '') FROM issue WHERE id = $1`, f.issueID).Scan(&reason)
+	return reason
+}
+
+// A refusal whose block cannot be written keeps the request: the row, the
+// issue and its comments stay as they were, and the next event refuses again.
+// Once the block can be written, one event settles all three together.
+func TestDeferredSwitchFailedBlockKeepsTheRowUntilTheBlockIsDurable(t *testing.T) {
+	f := newDeferredSwitchFixture(t)
+	f.pend(t, uuid.NewString())
+	suffix := strings.ReplaceAll(f.issueID, "-", "")
+	dbfx.Exec(t, `CREATE FUNCTION deferred_switch_no_block_`+suffix+`() RETURNS trigger LANGUAGE plpgsql AS
+		$$ BEGIN IF NEW.id = '`+f.issueID+`' AND NEW.status = 'blocked' THEN RAISE EXCEPTION 'injected block failure'; END IF; RETURN NEW; END $$`)
+	dbfx.Exec(t, `CREATE TRIGGER deferred_switch_no_block_`+suffix+` BEFORE UPDATE ON issue
+		FOR EACH ROW EXECUTE FUNCTION deferred_switch_no_block_`+suffix+`()`)
+	dropFailure := func() {
+		testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS deferred_switch_no_block_`+suffix+` ON issue`)
+		testPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS deferred_switch_no_block_`+suffix+`()`)
+	}
+	t.Cleanup(dropFailure)
+
+	f.apply(t)
+
+	wantIssueStatus(t, f.issueID, "in_progress")
+	if f.pendingRows(t) != 1 {
+		t.Fatal("a refusal whose block failed dropped the row: the request is lost")
+	}
+	if n := f.refusalComments(t); n != 0 {
+		t.Fatalf("refusal comments = %d with the block rolled back, want 0", n)
+	}
+	if reason := f.blockedReason(t); reason != "" {
+		t.Fatalf("blocked_reason = %q with the block rolled back", reason)
+	}
+
+	dropFailure()
+	f.apply(t)
+
+	wantIssueStatus(t, f.issueID, "blocked")
+	if f.pendingRows(t) != 0 || f.refusalComments(t) != 1 || f.blockedReason(t) == "" {
+		t.Fatalf("retry must settle together: rows=%d comments=%d reason=%q", f.pendingRows(t), f.refusalComments(t), f.blockedReason(t))
+	}
+}
+
+// A workflow with no blocked step cannot block the issue: the refusal is still
+// recorded once, in a comment and in blocked_reason, so nothing repeats.
+func TestDeferredSwitchRefusalOnAWorkflowWithoutBlockedStillRecordsTheReason(t *testing.T) {
+	f := newDeferredSwitchFixture(t)
+	noBlocked := createTestWorkflowSteps(t, "No blocked "+workflowTestSuffix(), statusSteps("backlog", "in_progress"))
+	setIssueOverride(t, f.issueID, noBlocked.ID)
+	missing := uuid.NewString()
+	f.pend(t, missing)
+
+	f.apply(t)
+
+	wantIssueStatus(t, f.issueID, "in_progress")
+	f.wantFollows(t, noBlocked.ID)
+	if f.pendingRows(t) != 0 {
+		t.Fatal("a refusal that cannot block left its row to refuse again")
+	}
+	if n := f.refusalComments(t); n != 1 {
+		t.Fatalf("refusal comments = %d, want 1", n)
+	}
+	if reason := f.blockedReason(t); !strings.HasPrefix(reason, "workflow-switch-refused") || !strings.Contains(reason, missing) {
+		t.Fatalf("blocked_reason = %q, want workflow-switch-refused naming %s", reason, missing)
+	}
+}
+
 // The listener turns each terminal task event into an apply attempt.
 func TestDeferredSwitchListenerAppliesOnTaskTerminalEvents(t *testing.T) {
 	for _, eventType := range []string{protocol.EventTaskCompleted, protocol.EventTaskFailed, protocol.EventTaskCancelled} {
