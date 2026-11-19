@@ -131,13 +131,8 @@ WITH locked_task AS MATERIALIZED (
         task_id, workspace_id, issue_id, comment_id, author_id,
         client_request_id, status, implicit
     )
-<<<<<<< HEAD
-    SELECT t.id, $4, t.issue_id, $9, $7,
-           $10, 'pending', $11::bool
-=======
     SELECT t.id, $4, t.issue_id, $10, $8,
-           $11, 'pending'
->>>>>>> v0.11.0
+           $11, 'pending', $12::bool
     FROM locked_task t
     RETURNING task_id, workspace_id, issue_id, comment_id, author_id, client_request_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, implicit, replay_attempts, replay_next_at
 )
@@ -147,19 +142,6 @@ JOIN locked_task ON locked_task.id = inserted.task_id
 `
 
 type BindCommentTaskSupplementParams struct {
-<<<<<<< HEAD
-	TaskID              pgtype.UUID `json:"task_id"`
-	IssueID             pgtype.UUID `json:"issue_id"`
-	AgentID             pgtype.UUID `json:"agent_id"`
-	WorkspaceID         pgtype.UUID `json:"workspace_id"`
-	AuthorType          string      `json:"author_type"`
-	MaxAgentBindings    int32       `json:"max_agent_bindings"`
-	AuthorID            pgtype.UUID `json:"author_id"`
-	MaxBindingsPerAgent int32       `json:"max_bindings_per_agent"`
-	CommentID           pgtype.UUID `json:"comment_id"`
-	ClientRequestID     pgtype.UUID `json:"client_request_id"`
-	Implicit            bool        `json:"implicit"`
-=======
 	TaskID                pgtype.UUID `json:"task_id"`
 	IssueID               pgtype.UUID `json:"issue_id"`
 	AgentID               pgtype.UUID `json:"agent_id"`
@@ -171,7 +153,7 @@ type BindCommentTaskSupplementParams struct {
 	MaxBindingsPerAgent   int32       `json:"max_bindings_per_agent"`
 	CommentID             pgtype.UUID `json:"comment_id"`
 	ClientRequestID       pgtype.UUID `json:"client_request_id"`
->>>>>>> v0.11.0
+	Implicit              bool        `json:"implicit"`
 }
 
 type BindCommentTaskSupplementRow struct {
@@ -664,7 +646,7 @@ func (q *Queries) GetTaskSupplementByRequest(ctx context.Context, arg GetTaskSup
 }
 
 const getTaskSupplementCapability = `-- name: GetTaskSupplementCapability :one
-SELECT task_id, workspace_id, issue_id, capability, created_at, chat_session_id FROM task_supplement_capability WHERE task_id = $1
+SELECT task_id, workspace_id, issue_id, capability, created_at FROM task_supplement_capability WHERE task_id = $1
 `
 
 func (q *Queries) GetTaskSupplementCapability(ctx context.Context, taskID pgtype.UUID) (TaskSupplementCapability, error) {
@@ -676,7 +658,6 @@ func (q *Queries) GetTaskSupplementCapability(ctx context.Context, taskID pgtype
 		&i.IssueID,
 		&i.Capability,
 		&i.CreatedAt,
-		&i.ChatSessionID,
 	)
 	return i, err
 }
@@ -1045,11 +1026,7 @@ func (q *Queries) SettleTerminalTaskSupplements(ctx context.Context, taskIds []p
 
 const startAgentTaskWithSupplement = `-- name: StartAgentTaskWithSupplement :one
 WITH candidate AS MATERIALIZED (
-<<<<<<< HEAD
     SELECT t.id, t.issue_id, t.chat_session_id, t.task_kind, r.workspace_id, r.provider
-=======
-    SELECT t.id, t.issue_id, t.chat_session_id, r.workspace_id, r.provider
->>>>>>> v0.11.0
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = $2

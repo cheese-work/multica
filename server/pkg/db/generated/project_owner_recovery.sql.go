@@ -60,11 +60,7 @@ func (q *Queries) ListPrivateProjectMembers(ctx context.Context, workspaceID pgt
 
 const listPrivateProjects = `-- name: ListPrivateProjects :many
 
-<<<<<<< HEAD
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
-=======
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
->>>>>>> v0.11.0
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE workspace_id = $1 AND visibility = 'private'
 ORDER BY created_at DESC, id DESC
 `

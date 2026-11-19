@@ -292,12 +292,8 @@ WITH base AS MATERIALIZED (
     ORDER BY created_at DESC, id DESC
     LIMIT $19::int
 )
-<<<<<<< HEAD
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, i.section, i.snoozed_until, i.snoozed_at, selected.issue_status, selected.issue_priority,
-=======
-SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.section, i.snoozed_until, i.snoozed_at, selected.issue_status, selected.issue_priority,
        iss.number AS issue_number,
->>>>>>> v0.11.0
        iss.project_id AS issue_project_id,
        iss.assignee_type AS issue_assignee_type,
        iss.assignee_id AS issue_assignee_id,

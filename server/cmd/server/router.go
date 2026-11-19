@@ -2922,8 +2922,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/pin", h.SetChatSessionPinned)
 					r.With(denyRunToken).Patch("/archive", h.SetChatSessionArchived)
 					r.Get("/usage", h.GetChatSessionUsage)
-					r.Get("/wakeups", h.ListChatSessionWakeups)
-					r.Delete("/wakeups/{wakeupId}", h.CancelChatSessionWakeup)
 					r.With(denyRunToken).Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
 					r.Post("/continue", h.ContinueChatSession)
@@ -2973,21 +2971,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// thread (?id for a specific one, else the thread the session is in).
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
-<<<<<<< ours
 			// Closed segments of the caller's own DM (CHE-2819 L2b): same handlers as
 			// /api/chat/sessions/{id}/segment(s); the task token names the DM.
 			r.Get("/api/chat/segments", h.ListChatSegments)
 			r.Get("/api/chat/segment", h.GetChatSegment)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
-			// Agent-facing DM wakeups: the task token names the DM.
 			r.Post("/api/chat/outcome", h.PostChatOutcome)
-			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
-			r.Get("/api/chat/wakeups", h.ListChatWakeups)
-			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
 			r.Post("/api/chat/fork", h.ForkChatSession)
-||||||| base
-=======
 			// Agent-facing chat wakeups: like history, scoped to the calling
 			// turn's own conversation through its task token.
 			r.Route("/api/chat/wakeups", func(r chi.Router) {
@@ -2998,7 +2989,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/{wakeupId}/finish", h.FinishChatTurnWakeup)
 				r.Post("/{wakeupId}/checkin", h.CheckInChatTurnWakeup)
 			})
->>>>>>> theirs
 
 			// Connected Apps (MUL-8516)
 			// Connected Apps management and decisions are for people; runs

@@ -1,6 +1,6 @@
 -- name: GetDeliveredChatTaskSupplement :one
 -- A steered message the provider holds for this exact run. Pending, delivering,
--- uncertain and failed receipts do not match: the agent may not have seen them.
+-- requeued and withdrawn receipts do not match: the agent may not have seen them.
 SELECT * FROM chat_task_supplement
 WHERE chat_session_id = @chat_session_id
   AND message_id = @message_id

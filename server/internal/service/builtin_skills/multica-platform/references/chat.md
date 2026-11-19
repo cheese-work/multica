@@ -83,33 +83,38 @@ with an interactive sign-in, a PAT or a CLI sign-in and returns metadata only
 (no message preview). A task token gets a 403. `multica chat sessions` rows
 also carry `unseen` (JSON) and an `UNSEEN` column (table).
 
-## Schedule a wakeup in this DM
+## Come back to this DM later
 
 ```bash
-multica chat wakeup create --after 25m --instruction "check the deploy and report" --output json
-multica chat wakeup create --at 2026-11-01T09:00:00+07:00 --instruction "..." --output json
-multica chat wakeup create --issue CHE-1 --event comment.created --filter-actor-type agent \
-  --filter-actor-id <agent-id> --expires-in 2h --on-timeout wake --instruction "relay the reply" --output json
-multica chat wakeup create --issue CHE-1 --until-status in_review --instruction "..." --output json
-multica chat wakeup list --output json                  # pending wakeups of the current DM
-multica chat wakeup cancel <wakeup-id>
+multica chat wakeup create --title "CI on PR 12" --until-pr cheese-work/multica#12:checks --instruction "report the result" --output json
+multica chat wakeup create --title "review reply" --until-issue CHE-1 --state in_review --instruction "relay it" --output json
+multica chat wakeup create --title "deploy check" --after 25m --instruction "check the deploy and report" --output json
+multica chat wakeup create --title "nightly build" --every 30m --expires-in 48h --instruction "check the build" --output json
+multica chat wakeup list --output json            # this DM's wakeups
+multica chat wakeup get <wakeup-id>
+multica chat wakeup update <wakeup-id> ...        # replaces the configuration; deadlines restart from now
+multica chat wakeup cancel <wakeup-id>            # the user no longer needs it
+multica chat wakeup finish <wakeup-id>            # end a --every check: what it watched for happened
+multica chat wakeup checkin <wakeup-id> --note "CI still running"   # end a check turn quietly
 ```
 
-- Give exactly one of `--after <duration>` (`25m`, `2h`) or `--at <RFC3339>`.
-  `--instruction` is required: it is what the scheduled turn does when it fires.
-- `--issue <id>` replaces `--after`/`--at`: the DM wakes once when the issue gets
-  a `--event comment.created` (narrow it with `--filter-actor-type member|agent`
-  and `--filter-actor-id`) or reaches `--until-status`. Give exactly one of the
-  two. The refresh turn quotes the comment (id, author) or the new status, so
-  you can relay it without the human asking. Matching is checked about every 30s.
-- A watch gives up after `--expires-in` (at most 24h, default 24h). `--on-timeout
-  wake` sends a "timed out" turn; the default `drop` ends it silently. You and
-  the DM's human must be able to read the issue. It counts toward the 3-pending
-  cap and shows in the Scheduled chip, where the human can cancel it.
-- The wakeup starts a new turn in this DM later; finish the current turn
-  instead of waiting for it.
-- These are DM wakeups, including the issue watch above. To start an agent run
-  on an issue, use `multica issue wakeup` (see [wakeups.md](wakeups.md)).
+- Create one when you act toward someone else for the user and they want the
+  outcome back, and whenever you tell the user you will report back.
+- `--title` (what you wait for, in the user's words) and `--instruction` (or
+  `--instruction-file`) are required. Pick exactly one kind:
+  - `--until-issue ISSUE` (`--state done|ended|in_review|blocked`, or `--status`),
+    `--until-children-done ISSUE` (`--stage N`), `--until-pr owner/repo#N[:merged|closed|checks]`,
+    `--until-run TASK_ID`, `--until-reply ISSUE` (`--from <user-id>`): the platform
+    checks the fact and wakes you once it holds.
+  - `--at <RFC3339>` or `--after <duration>`: a single reminder.
+  - `--every <interval>` (at least 10m): a periodic check; quiet check-ins send nothing.
+- Every wakeup ends: it runs until `--expires-in` / `--expires-at` (default 24h,
+  at most 168h), then wakes you once more to say where things stand. A DM holds
+  at most 10 active wakeups.
+- The wakeup starts a new turn in this DM later (and its IM thread, when it came
+  from one); finish the current turn instead of waiting for it.
+- Recurring work (every morning, every Friday) is an Autopilot, not a chat wakeup.
+- To start an agent run on an issue, use `multica issue wakeup` (see [wakeups.md](wakeups.md)).
 
 ## DM lanes for decisions
 

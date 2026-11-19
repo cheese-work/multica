@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/service"
 	"net/http"
 	"strings"
 	"sync"
@@ -111,7 +112,7 @@ func TestDirectChatSendDoesNotDeadlockWithClaimDeliveryGate(t *testing.T) {
 	sendDone := make(chan error, 1)
 	go func() {
 		_, err := testHandler.TaskService.SendDirectChatMessage(context.Background(), sendSession, agent,
-			parseUUID(testUserID), "concurrent turn", nil, "member", parseUUID(testUserID))
+			parseUUID(testUserID), "concurrent turn", nil, "member", parseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{})
 		sendDone <- err
 	}()
 	sendPID := waitForWaiterPIDBlockedBy(t, holderPID, 5*time.Second)
@@ -203,7 +204,7 @@ func TestDirectChatConcurrentSendsAcrossSessionsWhileDaemonClaims(t *testing.T) 
 			<-start
 			for r := 0; r < rounds && sendErrs[i] == nil; r++ {
 				_, sendErrs[i] = testHandler.TaskService.SendDirectChatMessage(context.Background(), chatSessions[i], agent,
-					parseUUID(testUserID), fmt.Sprintf("concurrent %d.%d", i, r), nil, "member", parseUUID(testUserID))
+					parseUUID(testUserID), fmt.Sprintf("concurrent %d.%d", i, r), nil, "member", parseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{})
 			}
 		}(i)
 	}

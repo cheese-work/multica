@@ -230,7 +230,7 @@ func (e *chainEnv) tick(t *testing.T) (*Task, string) {
 	if got := e.Count(t, `SELECT count(*) FROM task_token WHERE task_id = $1`, task.ID); got != 1 {
 		t.Fatalf("task_token rows after claim = %d, want 1", got)
 	}
-	e.d.handleTask(ctx, *task, 0)
+	e.d.handleTask(ctx, *task, newTestTaskSlot(0))
 	return task, util.UUIDToString(run.ID)
 }
 

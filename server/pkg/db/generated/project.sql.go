@@ -18,11 +18,7 @@ UPDATE project SET
     archived_by_id = $4,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
-<<<<<<< HEAD
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
-=======
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
->>>>>>> v0.11.0
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type ArchiveProjectParams struct {
@@ -232,11 +228,7 @@ INSERT INTO project (
     creator_type, creator_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-<<<<<<< HEAD
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
-=======
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
->>>>>>> v0.11.0
+) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type CreateProjectParams struct {
@@ -328,11 +320,7 @@ func (q *Queries) GetIssueProjectStatus(ctx context.Context, id pgtype.UUID) (st
 }
 
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
-<<<<<<< HEAD
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
-=======
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
->>>>>>> v0.11.0
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -509,11 +497,7 @@ func (q *Queries) ListProjectWakeups(ctx context.Context, arg ListProjectWakeups
 }
 
 const listProjects = `-- name: ListProjects :many
-<<<<<<< HEAD
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
-=======
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
->>>>>>> v0.11.0
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
@@ -656,11 +640,7 @@ UPDATE project SET
     archived_by_id = NULL,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NOT NULL
-<<<<<<< HEAD
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
-=======
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
->>>>>>> v0.11.0
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type RestoreProjectParams struct {
@@ -694,6 +674,7 @@ func (q *Queries) RestoreProject(ctx context.Context, arg RestoreProjectParams) 
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -701,7 +682,7 @@ func (q *Queries) RestoreProject(ctx context.Context, arg RestoreProjectParams) 
 const setProjectWorkflowSplit = `-- name: SetProjectWorkflowSplit :one
 UPDATE project SET workflow_split = $3::jsonb, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type SetProjectWorkflowSplitParams struct {
@@ -756,11 +737,7 @@ UPDATE project SET
     decision_delegates = CASE WHEN $17::boolean THEN $18::uuid[] ELSE decision_delegates END,
     updated_at = now()
 WHERE id = $1
-<<<<<<< HEAD
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
-=======
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
->>>>>>> v0.11.0
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type UpdateProjectParams struct {

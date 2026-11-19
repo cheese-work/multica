@@ -71,7 +71,6 @@ var deniedRunTokenRoutes = []string{
 	"DELETE /api/chat/sessions/{sessionId}/queued-tasks",
 	"DELETE /api/projects/{id}/",
 	"POST /api/chat/sessions/{sessionId}/queued-tasks/{taskId}/prioritize",
-	"POST /api/chat/sessions/{sessionId}/tasks/{taskId}/steer",
 	"POST /api/github/intake/revisions/{id}/approve",
 	"DELETE /api/labels/{id}/",
 	"DELETE /api/runtimes/{runtimeId}/",

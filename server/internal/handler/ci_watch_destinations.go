@@ -39,7 +39,7 @@ func (d ciWatchDest) CreateIssue(ctx context.Context, tx pgx.Tx, s ciwatch.Issue
 		return "", &ciwatch.PermanentError{Reason: "no_creator", Err: errors.New("workspace has no member to author the issue")}
 	}
 	qtx := d.h.Queries.WithTx(tx)
-	number, err := service.AllocateIssueNumber(ctx, qtx, ws, service.ResolveIssueCountPolicy(ctx, d.h.Entitlements, ws))
+	number, err := qtx.IncrementIssueCounter(ctx, ws)
 	if err != nil {
 		return "", err
 	}

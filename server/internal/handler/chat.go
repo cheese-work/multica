@@ -744,16 +744,12 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	// refresh, and wakes the runtime so a queued successor is claimed now
 	// rather than at the daemon's next poll.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
-<<<<<<< ours
 	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
-||||||| base
-=======
 	// After commit: a firing wakeup locks its row before the session, so
 	// ending wakeups inside the archive tx could deadlock with it.
 	if req.Archived {
 		h.chatWakeups().EndForArchivedSession(r.Context(), updated.ID)
 	}
->>>>>>> theirs
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
@@ -888,13 +884,6 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := qtx.DeleteChatWakeupsBySession(r.Context(), session.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete chat session wakeups")
-		return
-	}
-
-	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), db.DeleteChatTaskSupplementsBySessionParams{
-		ChatSessionID: session.ID, WorkspaceID: session.WorkspaceID,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete chat supplements")
 		return
 	}
 
@@ -1560,12 +1549,9 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
-	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
-
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
-		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1583,42 +1569,6 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	}
 	markCarriedReplies(resp, h.chatTaskSessions(ctx, messages))
 	return resp
-}
-
-// scheduledWakeupsForMessages maps message id to the fired wakeup that sent it,
-// in one query. A user message matches when its task is the wakeup's fired task
-// in the same session.
-func (h *Handler) scheduledWakeupsForMessages(ctx context.Context, messages []db.ChatMessage) map[string]*ScheduledWakeupResponse {
-	var taskIDs []pgtype.UUID
-	for _, m := range messages {
-		if m.Role == "user" && m.TaskID.Valid {
-			taskIDs = append(taskIDs, m.TaskID)
-		}
-	}
-	if len(taskIDs) == 0 {
-		return nil
-	}
-	rows, err := h.Queries.ListChatWakeupsByFiredTasks(ctx, taskIDs)
-	if err != nil {
-		slog.Warn("list scheduled wakeups for chat messages failed", "error", err)
-		return nil
-	}
-	byTask := make(map[string]db.ChatWakeup, len(rows))
-	for _, w := range rows {
-		byTask[uuidToString(w.FiredTaskID)] = w
-	}
-	out := make(map[string]*ScheduledWakeupResponse)
-	for _, m := range messages {
-		w, ok := byTask[uuidToString(m.TaskID)]
-		if !ok || m.Role != "user" || w.ChatSessionID != m.ChatSessionID {
-			continue
-		}
-		out[uuidToString(m.ID)] = &ScheduledWakeupResponse{
-			ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), Title: w.Title, Instruction: w.Instruction,
-			FireAt: timestampToString(w.FireAt), CreatedAt: timestampToString(w.CreatedAt),
-		}
-	}
-	return out
 }
 
 func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
@@ -2120,13 +2070,13 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, PendingChatTaskResponse{
-		TaskID:         uuidToString(head.ID),
-		Status:         head.Status,
-		CreatedAt:      timestampToString(head.CreatedAt),
-		WaitReason:     waitReasonForStatus(head.Status, head.WaitReason),
-		SupportsQueue:  true,
-		CanSupplement:  h.canSupplementChatTask(r, session, head.ID, head.Status),
-		QueuedTasks:    queued,
+		TaskID:        uuidToString(head.ID),
+		Status:        head.Status,
+		CreatedAt:     timestampToString(head.CreatedAt),
+		WaitReason:    waitReasonForStatus(head.Status, head.WaitReason),
+		SupportsQueue: true,
+		CanSupplement: h.canSupplementChatTask(r, session, head.ID, head.Status),
+		QueuedTasks:   queued,
 	})
 }
 
@@ -2613,21 +2563,9 @@ type ChatMessageResponse struct {
 	DecisionRef      *DecisionCard         `json:"decision_ref,omitempty"`
 	DecisionRequest  *DecisionRequestCard  `json:"decision_request,omitempty"`
 	DecisionRequests []DecisionRequestCard `json:"decision_requests,omitempty"`
-	// ScheduledWakeup is set on the user message a fired DM wakeup sent, so
-	// clients can render it as an event row. content stays the model-facing text.
-	ScheduledWakeup *ScheduledWakeupResponse `json:"scheduled_wakeup,omitempty"`
 	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
 	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
 	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
-}
-
-type ScheduledWakeupResponse struct {
-	ID          string `json:"id"`
-	AgentID     string `json:"agent_id"`
-	Title       string `json:"title"`
-	Instruction string `json:"instruction"`
-	FireAt      string `json:"fire_at"`
-	CreatedAt   string `json:"created_at"`
 }
 
 // chatSessionListRowToResponse maps one interactive list row. Both list
@@ -2685,7 +2623,6 @@ func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) C
 		m.Content = ""
 	}
 	return ChatMessageResponse{
-<<<<<<< ours
 		ID:             uuidToString(m.ID),
 		ChatSessionID:  uuidToString(m.ChatSessionID),
 		Role:           m.Role,
@@ -2698,32 +2635,7 @@ func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) C
 		QuickActions:   decodeChatQuickActions(m.QuickActions),
 		Attachments:    attachments,
 		DecisionQuotes: []DecisionCard{},
-||||||| base
-		ID:            uuidToString(m.ID),
-		ChatSessionID: uuidToString(m.ChatSessionID),
-		Role:          m.Role,
-		Content:       m.Content,
-		TaskID:        uuidToPtr(m.TaskID),
-		CreatedAt:     timestampToString(m.CreatedAt),
-		FailureReason: textToPtr(m.FailureReason),
-		ElapsedMs:     int8ToPtr(m.ElapsedMs),
-		MessageKind:   normalizeMessageKind(m.MessageKind),
-		QuickActions:  decodeChatQuickActions(m.QuickActions),
-		Attachments:   attachments,
-=======
-		ID:            uuidToString(m.ID),
-		ChatSessionID: uuidToString(m.ChatSessionID),
-		Role:          m.Role,
-		Content:       m.Content,
-		TaskID:        uuidToPtr(m.TaskID),
-		CreatedAt:     timestampToString(m.CreatedAt),
-		FailureReason: textToPtr(m.FailureReason),
-		ElapsedMs:     int8ToPtr(m.ElapsedMs),
-		MessageKind:   normalizeMessageKind(m.MessageKind),
-		QuickActions:  decodeChatQuickActions(m.QuickActions),
-		Attachments:   attachments,
-		WakeupID:      uuidToPtr(m.WakeupID),
->>>>>>> theirs
+		WakeupID:       uuidToPtr(m.WakeupID),
 	}
 }
 
@@ -2778,16 +2690,12 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindOnboardingKickoff
 	case protocol.ChatMessageKindOnboardingOpening:
 		return protocol.ChatMessageKindOnboardingOpening
-<<<<<<< ours
+	case protocol.ChatMessageKindWakeup:
+		return protocol.ChatMessageKindWakeup
 	case protocol.ChatMessageKindDecisionReference:
 		return protocol.ChatMessageKindDecisionReference
 	case protocol.ChatMessageKindDecisionRequest, protocol.ChatMessageKindDecisionCancelNotice:
 		return kind
-||||||| base
-=======
-	case protocol.ChatMessageKindWakeup:
-		return protocol.ChatMessageKindWakeup
->>>>>>> theirs
 	default:
 		return protocol.ChatMessageKindMessage
 	}

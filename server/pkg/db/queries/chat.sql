@@ -957,13 +957,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-<<<<<<< ours
-    channel_context_revision, id, sent_via, decision_answer_id, client_message_id, created_at
-||||||| base
-    channel_context_revision, id
-=======
-    channel_context_revision, id, wakeup_id
->>>>>>> theirs
+    channel_context_revision, id, sent_via, decision_answer_id, client_message_id, created_at, wakeup_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -979,19 +973,13 @@ VALUES (
          ELSE now() + make_interval(secs => sqlc.narg(channel_media_pending_secs)::float8) END,
     COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE),
     sqlc.narg(channel_context_revision),
-<<<<<<< ours
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
     sqlc.narg(decision_answer_id),
     sqlc.narg(client_message_id),
-    GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now()))
-||||||| base
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-=======
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
+    GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now())),
     sqlc.narg(wakeup_id)::uuid
->>>>>>> theirs
 )
 RETURNING *;
 

@@ -25,7 +25,7 @@ func (fixture askedRecordFixture) steerMessage(test *testing.T, messageID, taskI
 
 func TestSteeredMessageDecisionRecord(test *testing.T) {
 	test.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
-	for _, status := range []string{"delivered", "pending", "delivering", "uncertain", "failed"} {
+	for _, status := range []string{"delivered", "pending", "delivering", "requeued", "withdrawn"} {
 		test.Run(status, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			fixture.steerMessage(test, fixture.messageID, fixture.chatTaskID, status)
@@ -71,7 +71,7 @@ func TestDecisionContextBlockListsDeliveredSteeredMessages(test *testing.T) {
 	deliveredID := fixture.messageID
 	fixture.steerMessage(test, deliveredID, fixture.chatTaskID, "delivered")
 	uncertainID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": "maybe unseen", "sent_via": "interactive_jwt"})
-	fixture.steerMessage(test, uncertainID, fixture.chatTaskID, "uncertain")
+	fixture.steerMessage(test, uncertainID, fixture.chatTaskID, "requeued")
 	inputID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": "next turn", "sent_via": "interactive_jwt", "created_at": testutil.Raw("clock_timestamp() + interval '1 minute'")})
 
 	ctx := context.Background()

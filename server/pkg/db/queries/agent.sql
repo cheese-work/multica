@@ -1229,7 +1229,7 @@ WHERE id = @task_id
 -- Lock the agent before the task, as the binding transaction does.
 WITH enqueue_agent AS MATERIALIZED (
     SELECT a.id, a.runtime_id FROM agent a
-    WHERE a.id = (SELECT agent_id FROM agent_task_queue WHERE id = @task_id)
+    WHERE a.id = (SELECT agent_id FROM agent_task_queue WHERE agent_task_queue.id = @task_id)
       AND lock_task_owner_rows(a.id, NULL, NULL)
     FOR KEY SHARE OF a
 ),

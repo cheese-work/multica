@@ -695,7 +695,6 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 	return items, nil
 }
 
-<<<<<<< HEAD
 const listGitHubInstallationsMissingAccountID = `-- name: ListGitHubInstallationsMissingAccountID :many
 SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
 WHERE account_id IS NULL
@@ -705,9 +704,37 @@ ORDER BY created_at ASC, id ASC
 // Startup backfill input: rows bound before the trusted account_id existed.
 func (q *Queries) ListGitHubInstallationsMissingAccountID(ctx context.Context) ([]GithubInstallation, error) {
 	rows, err := q.db.Query(ctx, listGitHubInstallationsMissingAccountID)
-=======
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubInstallation{}
+	for rows.Next() {
+		var i GithubInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.AccountLogin,
+			&i.AccountType,
+			&i.AccountAvatarUrl,
+			&i.ConnectedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccountID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubInstallationsWithConnectedBy = `-- name: ListGitHubInstallationsWithConnectedBy :many
-SELECT gi.id, gi.workspace_id, gi.installation_id, gi.account_login, gi.account_type, gi.account_avatar_url, gi.connected_by_id, gi.created_at, gi.updated_at, COALESCE(u.name, '')::text AS connected_by
+SELECT gi.id, gi.workspace_id, gi.installation_id, gi.account_login, gi.account_type, gi.account_avatar_url, gi.connected_by_id, gi.created_at, gi.updated_at, gi.account_id, COALESCE(u.name, '')::text AS connected_by
 FROM github_installation gi
 LEFT JOIN member m ON m.user_id = gi.connected_by_id AND m.workspace_id = gi.workspace_id
 LEFT JOIN "user" u ON u.id = m.user_id
@@ -723,27 +750,10 @@ type ListGitHubInstallationsWithConnectedByRow struct {
 // Only disclose the connector's display name while they belong to this workspace.
 func (q *Queries) ListGitHubInstallationsWithConnectedBy(ctx context.Context, workspaceID pgtype.UUID) ([]ListGitHubInstallationsWithConnectedByRow, error) {
 	rows, err := q.db.Query(ctx, listGitHubInstallationsWithConnectedBy, workspaceID)
->>>>>>> v0.11.0
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-<<<<<<< HEAD
-	items := []GithubInstallation{}
-	for rows.Next() {
-		var i GithubInstallation
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.InstallationID,
-			&i.AccountLogin,
-			&i.AccountType,
-			&i.AccountAvatarUrl,
-			&i.ConnectedByID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.AccountID,
-=======
 	items := []ListGitHubInstallationsWithConnectedByRow{}
 	for rows.Next() {
 		var i ListGitHubInstallationsWithConnectedByRow
@@ -757,8 +767,8 @@ func (q *Queries) ListGitHubInstallationsWithConnectedBy(ctx context.Context, wo
 			&i.GithubInstallation.ConnectedByID,
 			&i.GithubInstallation.CreatedAt,
 			&i.GithubInstallation.UpdatedAt,
+			&i.GithubInstallation.AccountID,
 			&i.ConnectedBy,
->>>>>>> v0.11.0
 		); err != nil {
 			return nil, err
 		}
@@ -770,7 +780,6 @@ func (q *Queries) ListGitHubInstallationsWithConnectedBy(ctx context.Context, wo
 	return items, nil
 }
 
-<<<<<<< HEAD
 const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
 SELECT installation_id, repo_owner, repo_name, pr_number
 FROM github_pull_request
@@ -862,8 +871,6 @@ func (q *Queries) ListGitHubReviewAuthorCandidates(ctx context.Context, arg List
 	return items, nil
 }
 
-=======
->>>>>>> v0.11.0
 const listIssueIDsForPullRequest = `-- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1
