@@ -274,25 +274,35 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
       ? props.triggers[0]
       : null;
   const filterTargetIdRef = useRef(filterTarget?.id ?? null);
-  const serverFilterKey = filterTarget
-    ? JSON.stringify(filterTarget.event_filters ?? [])
+  // The row the draft was meant for, as it stands now; null once it is gone or
+  // another webhook took the first slot.
+  const liveFilterTarget =
+    filterTarget !== null && filterTarget.id === filterTargetIdRef.current
+      ? filterTarget
+      : null;
+  const serverFilterKey = liveFilterTarget
+    ? JSON.stringify(liveFilterTarget.event_filters ?? [])
     : null;
-  // The target's filters as they stood when the draft was restored. The editor
-  // saves on its own and the row then refetches: a change from here is a newer
-  // explicit choice, and the draft snapshot must not be written over it.
-  const mountedServerFilterKeyRef = useRef(serverFilterKey);
+  // The row's editable fields when the draft was restored. The per-webhook
+  // editor saves on its own, and only with something changed (filters, label or
+  // enabled); the row then refetches. A change from here is a newer explicit
+  // choice, and the draft snapshot must not be written over it.
+  const rowKey = (trig: AutopilotTrigger) =>
+    JSON.stringify([trig.event_filters ?? [], trig.label ?? null, trig.enabled]);
+  const mountedRowKeyRef = useRef(filterTarget ? rowKey(filterTarget) : null);
   const draftFiltersSuperseded =
-    mountedServerFilterKeyRef.current !== null &&
-    serverFilterKey !== mountedServerFilterKeyRef.current;
+    liveFilterTarget !== null &&
+    mountedRowKeyRef.current !== null &&
+    rowKey(liveFilterTarget) !== mountedRowKeyRef.current;
   const draftFiltersPending =
     draftEventFilters !== null &&
     triggerKind === "webhook" &&
     (isCreate ||
-      (filterTarget !== null &&
+      (liveFilterTarget !== null &&
         !draftFiltersSuperseded &&
         JSON.stringify(draftEventFilters) !== serverFilterKey));
-  // A draft with nowhere to land (the autopilot has no webhook first trigger
-  // any more) or not applied this save stays the only copy of the choices, so
+  // A draft with nowhere to land (the row is gone, or no longer the first
+  // trigger) or not applied this save stays the only copy of the choices, so
   // saving the rest of the form must not clear it.
   const draftFiltersOrphaned =
     !isCreate &&

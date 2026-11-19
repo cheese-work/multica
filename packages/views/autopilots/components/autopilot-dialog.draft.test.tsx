@@ -519,4 +519,56 @@ describe("AutopilotDialog draft persistence", () => {
       eventFilters: FILTERS,
     });
   });
+
+  it("does not apply a restored draft's filters over a row the editor saved with its filters unchanged", async () => {
+    const user = userEvent.setup();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockUpdateTrigger.mockResolvedValue({ id: "tr-w" });
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    const view = renderEditDialog(vi.fn(), [{ ...webhookTrigger(), label: null, enabled: true }]);
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    // The editor saved a rename only; the filters it showed (the server's) stand.
+    view.rerender(
+      editDialogElement(vi.fn(), [{ ...webhookTrigger(), label: "Renamed", enabled: true }]),
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockUpdateAutopilot).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]).toBeUndefined(),
+    );
+    expect(mockUpdateTrigger).not.toHaveBeenCalled();
+  });
+
+  it("keeps a restored draft's event filters when the webhook is replaced by a schedule before Save", async () => {
+    const user = userEvent.setup();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockUpdateTrigger.mockResolvedValue({ id: "tr-w" });
+    const onOpenChange = vi.fn();
+    useAutopilotDialogDraftStore.setState({
+      drafts: {
+        "edit:ap-1": {
+          data: { triggerKind: "webhook", eventFilters: FILTERS },
+          updatedAt: Date.now(),
+        },
+      },
+    } as never);
+    const view = renderEditDialog(onOpenChange, [webhookTrigger()]);
+    expect(await screen.findByText(/issues/)).toBeInTheDocument();
+    view.rerender(
+      editDialogElement(onOpenChange, [
+        { id: "tr-s", kind: "schedule", cron_expression: "0 9 * * *", timezone: "UTC", event_filters: null },
+      ]),
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(mockUpdateTrigger).not.toHaveBeenCalled();
+    expect(useAutopilotDialogDraftStore.getState().drafts["edit:ap-1"]?.data.eventFilters).toEqual(FILTERS);
+  });
 });
