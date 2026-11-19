@@ -55,3 +55,18 @@ RETURNING id;
 SELECT EXISTS (
   SELECT 1 FROM issue_step_watchdog_action
   WHERE issue_id = @issue_id AND occurrence_key = @occurrence_key AND action = @action) AS claimed;
+
+-- name: ListOwedStepWatchdogNotices :many
+-- CHE-6116 S3. Ledger rows of an action that owes a notice to requested_by and
+-- have no notify row for the same status occurrence, oldest first. It never
+-- looks at the issue's current status: a status change cannot cancel a notice.
+-- A workspace whose step_watchdog.mode is off, or that is gone, is left alone.
+SELECT a.* FROM issue_step_watchdog_action a
+JOIN workspace w ON w.id = a.workspace_id
+WHERE a.action IN ('block_budget', 'redispatch', 'notify_only')
+  AND w.settings #>> '{step_watchdog,mode}' IS DISTINCT FROM 'off'
+  AND NOT EXISTS (
+    SELECT 1 FROM issue_step_watchdog_action n
+    WHERE n.issue_id = a.issue_id AND n.occurrence_key = a.occurrence_key AND n.action = 'notify')
+ORDER BY a.created_at, a.id
+LIMIT @row_limit::int;

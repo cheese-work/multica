@@ -19,7 +19,7 @@ import (
 
 // The step watchdog (CHE-6116) finds an issue that waited in a handler step
 // with no run, and says why no run came. The block and shadow actions are here;
-// re-dispatch and the notice to requested_by are later slices.
+// re-dispatch is a later slice; the notice to requested_by is in step_watchdog_notice.go.
 
 // stepWatchdogMinAge is how long an issue may sit in its status occurrence
 // before the watchdog looks at it.
@@ -225,7 +225,8 @@ func (h *Handler) sweepStepWatchdog(ctx context.Context, limit int32) error {
 			fail(c, err)
 		}
 	}
-	return failures
+	// Owed notices come from the ledger, so they follow the actions above and any an earlier tick left.
+	return errors.Join(failures, h.deliverOwedStepNotices(ctx, limit))
 }
 
 // actOnStep acts once per (issue, status occurrence, action). Only the budget
