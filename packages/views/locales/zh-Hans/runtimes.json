@@ -339,7 +339,8 @@
       "running": "更新中...",
       "completed": "更新完成。守护进程正在重启...",
       "failed": "更新失败",
-      "timeout": "超时"
+      "timeout": "超时",
+      "cancelled": "已取消"
     },
     "phase": {
       "download": "下载中",
