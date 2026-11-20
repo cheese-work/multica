@@ -32,6 +32,7 @@ func newDecisionAskCmd() *cobra.Command {
 	ask.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	ask.Flags().String("ask-file", "", "UTF-8 JSON ask, same shape as decision request --ask-file")
 	ask.Flags().String("topic", "", "Closed ask topic: test_first_waiver; must equal ask.topic in the ask file. The ask file needs option_key on each of exactly two options (waive, refuse) and a waiver{repo, head_sha, red_impossible_category, weaker_evidence_kind, cross_lab_pass_on_head, tests_retrospective, change_kind} block")
+	ask.Flags().Bool("wait", false, waitFlagHelp)
 	ask.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	ask.Flags().String("parent", "", "Comment UUID to reply under (default: top-level)")
 	ask.Flags().String("output", "json", "Output format: table or json")
@@ -74,6 +75,9 @@ func runDecisionAsk(command *cobra.Command, _ []string) error {
 	defer cancel()
 	var result map[string]any
 	body := map[string]any{"ask": ask, "footer": footer, "parent_id": parentID, "escalation_class": class}
+	if wait, _ := command.Flags().GetBool("wait"); wait {
+		body["wait"] = true
+	}
 	if err := client.PostJSON(ctx, "/api/decisions/ask", body, &result); err != nil {
 		return fmt.Errorf("ask decision: %w", err)
 	}
