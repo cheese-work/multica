@@ -16,18 +16,15 @@ func TrialArm(rootKey string) int {
 
 // RootIssueKey is the identifier of the root of this run's issue tree.
 // Children, grandchildren and reruns of one issue share the root's key, so
-// they share its arm. ok is false when the root cannot be known: a task
-// without an issue, or a sub-issue claimed from a server too old to send
-// RootIssueIdentifier. The parent is not a safe substitute, since a
-// grandchild would land in the wrong arm.
+// they share its arm. The server sends it for every issue-bound claim, a root
+// issue included. ok is false when the root cannot be known: a task without
+// an issue, a claim where the server could not read the parent chain, or a
+// server too old to send RootIssueIdentifier. An absent ParentIssue is not
+// proof of a root, since the server drops it when the parent read fails, and
+// the parent is not a safe substitute, since a grandchild would land in the
+// wrong arm.
 func (t Task) RootIssueKey() (string, bool) {
-	if t.RootIssueIdentifier != "" {
-		return t.RootIssueIdentifier, true
-	}
-	if t.ParentIssue == nil && t.IssueIdentifier != "" {
-		return t.IssueIdentifier, true
-	}
-	return "", false
+	return t.RootIssueIdentifier, t.RootIssueIdentifier != ""
 }
 
 // logTrialArm writes one line per issue-bound run with the issue key, the root
