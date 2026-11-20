@@ -25,6 +25,13 @@ func IsProjectInactive(err error) bool {
 }
 
 func RequireActiveProject(ctx context.Context, queries *db.Queries, workspaceID, projectID pgtype.UUID) error {
+	return RequireProjectWrite(ctx, queries, workspaceID, projectID, pgtype.UUID{})
+}
+
+// RequireProjectWrite is RequireActiveProject for a write on an issue of the project made by the
+// run taskID. A pause drains: a run that is still running on an issue of the paused project may
+// keep writing. A zero taskID, any other project or any other status is refused as inactive.
+func RequireProjectWrite(ctx context.Context, queries *db.Queries, workspaceID, projectID, taskID pgtype.UUID) error {
 	if !projectID.Valid {
 		return nil
 	}
@@ -35,10 +42,25 @@ func RequireActiveProject(ctx context.Context, queries *db.Queries, workspaceID,
 	if err != nil {
 		return err
 	}
-	if ProjectInactive(status) {
-		return ErrProjectInactive
+	if !ProjectInactive(status) {
+		return nil
 	}
-	return nil
+	if status == "paused" && taskID.Valid {
+		task, err := queries.GetAgentTask(ctx, taskID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil && task.Status == "running" && task.IssueID.Valid {
+			issue, err := queries.GetIssue(ctx, task.IssueID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil && issue.WorkspaceID == workspaceID && issue.ProjectID == projectID {
+				return nil
+			}
+		}
+	}
+	return ErrProjectInactive
 }
 
 func lockTaskProjectForStart(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) error {
@@ -162,7 +184,7 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 		}
 	}
 	if ProjectInactive(project.Status) {
-		cancelled, err = queries.CancelProjectAgentTasks(ctx, db.CancelProjectAgentTasksParams{ProjectID: project.ID, WorkspaceID: workspaceID})
+		cancelled, err = queries.CancelProjectAgentTasks(ctx, db.CancelProjectAgentTasksParams{ProjectID: project.ID, WorkspaceID: workspaceID, KeepRunning: project.Status == "paused"})
 		if err != nil {
 			return db.Project{}, err
 		}

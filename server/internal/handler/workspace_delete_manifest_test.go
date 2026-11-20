@@ -195,6 +195,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dm_progress_pending":                workspaceDelete, // CHE-3404 unsent progress events; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
+	"issue_workflow_switch_pending":      workspaceDelete, // CHE-7669 deferred workflow switch; no FK, swept by DeleteWorkspaceIssueRoots and the issue delete.
 	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
 	"issue_decision_park":                workspaceDelete, // CHE-3946 decision park; issue_id FK ON DELETE CASCADE removes its rows with the workspace.
 	"issue_wakeup_receipt":               workspaceDelete,

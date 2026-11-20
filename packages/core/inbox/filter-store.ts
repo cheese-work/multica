@@ -274,8 +274,10 @@ export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
  *
  * `mentionsOnly` asks about the issue's group, not just the newest row: a later
  * comment must not hide a mention, so deduplication copies the mention's source
- * onto the row it keeps (`groupInboxItemsByIssue`). A `@squad`-only mention
- * does not match.
+ * onto the row it keeps when that row is a comment (`groupInboxItemsByIssue`).
+ * Any other newest row, such as `run_budget`, does not match itself: the filter
+ * shows the older mention row in its place (`mention_row`). A `@squad`-only
+ * mention does not match.
  *
  * `pinnedUnreadKey` / `pinnedIdleKey` name the notification whose detail is
  * open. Opening an unread
@@ -298,6 +300,11 @@ export function filterInboxItems(
   }: InboxFilterContext = {},
 ): InboxItem[] {
   if (isEmptyInboxFilters(filters)) return items;
+  // A newest row that is not a mention stands in for its issue with the
+  // mention row that groups under it (CHE-7473).
+  if (filters.mentionsOnly) {
+    items = items.map((item) => (isViewerMention(item) ? item : (item.mention_row ?? item)));
+  }
 
   const statuses = new Set(filters.statuses);
   const priorities = new Set(filters.priorities);

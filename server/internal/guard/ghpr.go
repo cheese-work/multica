@@ -448,7 +448,8 @@ func (e *Engine) prReady(ctx context.Context, pl *Plugin, args []string) (decisi
 }
 
 // ghAPI refuses writes to pull requests, issues and git data through `gh api`,
-// because they skip the checks on gh pr and gh issue.
+// because they skip the checks on gh pr and gh issue. The one git-data exception
+// is the red-main claim ref (redMainClaimRef).
 func ghAPI(args []string) decision {
 	flags, pos := apiSpec.scan(args)
 	method := "GET"
@@ -473,7 +474,64 @@ func ghAPI(args []string) decision {
 	}
 	parts := strings.Split(strings.SplitN(strings.TrimPrefix(pos[1], "/"), "?", 2)[0], "/")
 	if len(parts) >= 4 && parts[0] == "repos" && (parts[3] == "pulls" || parts[3] == "issues" || parts[3] == "git") {
+		if !strings.Contains(pos[1], "?") && redMainClaimRef(method, parts, flags) {
+			return pass(args)
+		}
 		return refuse(2, "gh api %s on repos/*/%s is not allowed; use gh pr create, edit or ready, or gh issue", method, parts[3])
 	}
 	return pass(args)
+}
+
+// redMainClaimRef allows the one git-data write that scripts/main-health/red_main_claim.py
+// needs (CHE-7519): create or delete refs/heads/red-main/<key> and
+// refs/heads/red-main-owner/<key>/<claimant>. Exact prefixes, plain segments only, no
+// request body file and no other field than ref and sha, so it is no general git-data opening.
+func redMainClaimRef(method string, parts []string, flags []flagTok) bool {
+	if len(parts) < 5 || parts[3] != "git" || parts[4] != "refs" {
+		return false
+	}
+	switch method {
+	case "POST":
+		if len(parts) != 5 {
+			return false
+		}
+		if _, ok := find(flags, "input"); ok {
+			return false
+		}
+		var ref string
+		for _, f := range flags {
+			if f.name != "raw-field" && f.name != "field" {
+				continue
+			}
+			k, v, _ := strings.Cut(f.value, "=")
+			switch k {
+			case "ref":
+				if ref != "" {
+					return false
+				}
+				ref = v
+			case "sha":
+			default:
+				return false
+			}
+		}
+		return redMainRefOK(ref)
+	case "DELETE":
+		if len(parts) < 6 {
+			return false
+		}
+		for _, n := range []string{"field", "raw-field", "input"} {
+			if _, ok := find(flags, n); ok {
+				return false
+			}
+		}
+		return redMainRefOK("refs/" + strings.Join(parts[5:], "/"))
+	}
+	return false
+}
+
+var redMainRefRe = regexp.MustCompile(`^refs/heads/(red-main/[a-z0-9][a-z0-9._-]*|red-main-owner/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*)$`)
+
+func redMainRefOK(ref string) bool {
+	return redMainRefRe.MatchString(ref) && !strings.Contains(ref, "..")
 }

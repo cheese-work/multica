@@ -416,6 +416,8 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 
 `--agent` と `--fallback` にはエージェントの ID または名前を指定し、`none` でフィールドを解除します。`multica me` が扱うのは `dm_title`、`quick_actions`、`compact` で、`routing` はワークスペース専用です。ワークスペースへの書き込みにはオーナーまたは管理者が必要で、どちらのコマンドもタスクトークンを拒否します。エージェントなしの動作と期限は[バックグラウンドエージェント](/background-agents)を参照してください。
 
+`multica workspace capability-routing [workspace]` は、`capability_routing` 設定(課題タイプから作成者・レビュアーのエージェントへの対応)を JSON で表示します。未設定なら `{}` です。読み取り専用で、変更は `multica config propose workspace.settings --set 'capability_routing:=<json>'` で行います。[Workflows](/docs/workflows) を参照してください。
+
 ## ブラウザリース
 
 デーモンタスク内で共有リモートブラウザをリースします。コマンドはローカルのデーモン経由で送られ、タスクのデーモン資格情報はデーモンだけが保持します。許可されたリースは、ゲートウェイ URL と短命のトークンを stdout にのみ出力し、ログには残しません。待機中のリースはキュー順位だけを表示し、トークンは出しません。

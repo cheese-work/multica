@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -42,6 +44,11 @@ type boundRebind struct {
 // the project (create, issue id empty) moving onto the wide workflow.
 func newBoundRebind(t *testing.T, installationID int64, create, delegate bool) boundRebind {
 	t.Helper()
+	return newBoundRebindOfClass(t, installationID, create, delegate, "spend")
+}
+
+func newBoundRebindOfClass(t *testing.T, installationID int64, create, delegate bool, class string) boundRebind {
+	t.Helper()
 	resetDecisionLease(t)
 	f := newRebindFixture(t, installationID)
 	issueID := f.c.issueID
@@ -50,7 +57,7 @@ func newBoundRebind(t *testing.T, installationID int64, create, delegate bool) b
 	}
 	before := issueWorkflowDigest(issueID, f.narrowProj, "")
 	after := issueWorkflowDigest(issueID, f.narrowProj, f.wide)
-	fixture := approvedBoundWriteCard(t, "issue.workflow", before, after)
+	fixture := approvedBoundWriteCardOfClass(t, "issue.workflow", class, before, after)
 	// The card fixture inserts an issue with its own number; move the counter
 	// past it so a create does not collide.
 	dbfx.Exec(t, `UPDATE workspace SET issue_counter = GREATEST(issue_counter, (SELECT COALESCE(MAX(number), 0) FROM issue WHERE workspace_id = $1)) WHERE id = $1`, testWorkspaceID)
@@ -202,6 +209,28 @@ func TestBoundIssueCreateRefusals(t *testing.T) {
 			}
 			if rows := dbfx.Count(t, `SELECT count(*) FROM decision_bound_write WHERE decision_id = $1`, b.decision.ID); rows != 0 {
 				t.Fatalf("refused create recorded %d audit rows", rows)
+			}
+		})
+	}
+}
+
+// A reversible owner answer does not widen a run budget through a rebinding
+// (CHE-6197), on an issue update and on a create.
+func TestBoundRebindingRefusesAReversibleDecision(t *testing.T) {
+	for _, create := range []bool{false, true} {
+		t.Run(fmt.Sprintf("create=%v", create), func(t *testing.T) {
+			b := newBoundRebindOfClass(t, 6197110, create, true, "reversible")
+			var res *testutil.Response
+			if create {
+				res = b.create(t, b.binding(nil))
+			} else {
+				res = b.set(t, b.binding(map[string]any{"workflow_id": b.wide}))
+			}
+			if res.Code != http.StatusForbidden || !strings.Contains(res.Text(), "spend-class") {
+				t.Fatalf("status = %d: %s", res.Code, res.Text())
+			}
+			if rows := dbfx.Count(t, `SELECT count(*) FROM decision_bound_write WHERE decision_id = $1`, b.decision.ID); rows != 0 {
+				t.Fatalf("refused write recorded %d audit rows", rows)
 			}
 		})
 	}

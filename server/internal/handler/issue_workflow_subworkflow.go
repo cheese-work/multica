@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -178,6 +179,8 @@ func (h *Handler) spawnSubWorkflowChild(ctx context.Context, parent db.Issue, su
 		WorkflowID:     targetID,
 		Stage:          pgtype.Int4{Int32: int32(sub.Stage), Valid: true},
 		AllowDuplicate: true,
+		// The platform spawns this issue when a workflow step asks for it.
+		CreatedVia: pgtype.Text{String: issuecreatedvia.Agent, Valid: true},
 	}, service.IssueCreateOpts{
 		ActorID: uuidToString(parent.CreatorID),
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, _ []db.IssueLabel) map[string]any {

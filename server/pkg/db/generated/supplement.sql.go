@@ -421,7 +421,7 @@ WITH locked_task AS MATERIALIZED (
     SELECT i.id, i.workspace_id, 'member', $4, $5, 'comment', t.trigger_comment_id
     FROM touched_issue i
     JOIN locked_task t ON t.issue_id = i.id
-    RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read
+    RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id
 ), inserted_supplement AS (
     INSERT INTO task_supplement (
         task_id, workspace_id, issue_id, comment_id, author_id,
@@ -435,7 +435,7 @@ WITH locked_task AS MATERIALIZED (
     JOIN inserted_comment c ON c.issue_id = i.id
     RETURNING task_id, workspace_id, issue_id, comment_id, author_id, client_request_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, implicit, replay_attempts, replay_next_at
 )
-SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id, c.via_plugin_id, c.revision, c.recovery_settled_at, c.deleted_at, c.suppressed_agent_ids, c.decision_request_id, c.decision_answer_id, c.decision_intent_id, c.decision_comment_kind, c.github_notify_only, c.taint_ids, c.external_read, i.revision AS issue_revision,
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id, c.via_plugin_id, c.revision, c.recovery_settled_at, c.deleted_at, c.suppressed_agent_ids, c.decision_request_id, c.decision_answer_id, c.decision_intent_id, c.decision_comment_kind, c.github_notify_only, c.taint_ids, c.external_read, c.notify_only, c.ask_source_root_id, i.revision AS issue_revision,
        s.task_id AS supplement_task_id, s.status AS supplement_status,
        s.failure_reason AS supplement_failure_reason,
        s.delivered_at AS supplement_delivered_at
@@ -481,6 +481,8 @@ type CreateTaskSupplementRow struct {
 	GithubNotifyOnly        bool               `json:"github_notify_only"`
 	TaintIds                []string           `json:"taint_ids"`
 	ExternalRead            bool               `json:"external_read"`
+	NotifyOnly              pgtype.Bool        `json:"notify_only"`
+	AskSourceRootID         pgtype.UUID        `json:"ask_source_root_id"`
 	IssueRevision           int64              `json:"issue_revision"`
 	SupplementTaskID        pgtype.UUID        `json:"supplement_task_id"`
 	SupplementStatus        string             `json:"supplement_status"`
@@ -529,6 +531,8 @@ func (q *Queries) CreateTaskSupplement(ctx context.Context, arg CreateTaskSupple
 		&i.GithubNotifyOnly,
 		&i.TaintIds,
 		&i.ExternalRead,
+		&i.NotifyOnly,
+		&i.AskSourceRootID,
 		&i.IssueRevision,
 		&i.SupplementTaskID,
 		&i.SupplementStatus,

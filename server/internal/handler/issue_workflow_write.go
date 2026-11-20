@@ -70,8 +70,11 @@ type workflowWrite struct {
 	// held the issue, so the cancellation after the commit reaches those runs
 	// and no later ones.
 	stopPrevious bool
-	stopRuns     []db.AgentTaskQueue
-	stopFrom     service.TaskAssignee
+	// refusedIntake is the intake_call of a write the entry gate refused. The
+	// refusal rolls the transaction back, so the handler writes it after.
+	refusedIntake *intakeCall
+	stopRuns      []db.AgentTaskQueue
+	stopFrom      service.TaskAssignee
 	// system marks a move the platform makes by itself (edge, CI, run budget).
 	// Step entry gates bind explicit status writes only.
 	system bool

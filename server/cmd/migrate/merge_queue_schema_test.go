@@ -170,6 +170,7 @@ func TestMergeQueueSchemaUpDownUpAndKeys(t *testing.T) {
 	refused("intake status", `INSERT INTO merge_queue_intake (`+pr+`, status) VALUES (`+prv+`, 'bogus')`)
 	refused("epoch state", `INSERT INTO merge_queue_epoch (workspace_id, repo_owner, repo_name, cause_key, epoch_no, kind, state) VALUES ('`+ws+`', 'o', 'r', 'k2', 1, 'shared', 'done')`)
 	refused("epoch kind", `INSERT INTO merge_queue_epoch (workspace_id, repo_owner, repo_name, cause_key, epoch_no, kind) VALUES ('`+ws+`', 'o', 'r', 'k3', 1, 'local')`)
+	refused("epoch no", `INSERT INTO merge_queue_epoch (workspace_id, repo_owner, repo_name, cause_key, epoch_no, kind) VALUES ('`+ws+`', 'o', 'r', 'k4', 0, 'shared')`)
 	refused("association end reason", `INSERT INTO merge_queue_association (`+pr+`, cause_key, started_at, end_reason) VALUES (`+prv+`, 'k9', now(), 'enqueued')`)
 	refused("wait kind", `INSERT INTO merge_queue_wait (`+pr+`, issue_id, kind) VALUES (`+prv+`, gen_random_uuid(), 'hold')`)
 	refused("wait state", `INSERT INTO merge_queue_wait (`+pr+`, issue_id, kind, state) VALUES (`+prv+`, gen_random_uuid(), 'wait', 'open')`)

@@ -72,6 +72,8 @@ for (const [name, files, selected] of [
   ["another workflow runs the wait-policy scan", [".github/workflows/release.yml"], ["deploy_cd"]],
   ["wait policy script", [".github/scripts/ci-wait-policy.py"], ["deploy_cd"]],
   ["wait policy exceptions", [".github/ci-policy.yml"], ["deploy_cd"]],
+  ["Go builder bump needs its pinned tarball checksum", ["Dockerfile"], ["deploy_cd"]],
+  ["backend binary build script", ["scripts/build-cd-backend-binaries.sh"], ["deploy_cd"]],
 ]) {
   test(`PR, main and merge groups select only affected scopes: ${name}`, () => {
     for (const event of ["pull_request", "push", "merge_group"]) {

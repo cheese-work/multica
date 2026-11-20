@@ -129,30 +129,38 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
       }, { token: api.getToken()!, slug: workspace.slug, path });
       surfaces.push(win);
     }
-    const rowOf = (p: Page) => p.getByRole("list", { name: "Default wakeups" }).getByRole("listitem", { name: "When the linked PR merges" });
+    // The rules sit in an inline panel behind the Wakeups header's Defaults button; a reload closes it.
+    const rowOf = async (p: Page) => {
+      const toggle = p.getByRole("button", { name: /^Defaults/ });
+      await expect(toggle).toBeVisible({ timeout: 90_000 });
+      if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+      return p.getByRole("list", { name: "Default wakeups" }).getByRole("listitem", { name: "When the linked PR merges" });
+    };
     // Reload every surface and check the same row text on each.
     const expectState = async (...texts: string[]) => {
       for (const p of surfaces) {
         await p.reload({ waitUntil: "domcontentloaded" });
-        for (const text of texts) await expect(rowOf(p)).toContainText(text, { timeout: 90_000 });
+        for (const text of texts) await expect(await rowOf(p)).toContainText(text, { timeout: 90_000 });
       }
     };
     // Drive an issue override or reset through one surface's UI.
     const override = async (p: Page) => {
-      await rowOf(p).getByRole("button", { name: /^Override/ }).click();
+      await (await rowOf(p)).getByRole("button", { name: /^More options/ }).click();
+      await p.getByRole("menuitem", { name: "Override" }).click();
       await p.getByRole("switch").last().click();
       await p.getByRole("button", { name: "Save override" }).click();
-      await expect(rowOf(p)).toContainText("Overridden on this issue", { timeout: 30_000 });
+      await expect(await rowOf(p)).toContainText("Edited", { timeout: 30_000 });
     };
     const reset = async (p: Page) => {
-      await rowOf(p).getByRole("button", { name: /^Reset/ }).click();
-      await expect(rowOf(p)).toContainText("Inherited from project", { timeout: 30_000 });
+      await (await rowOf(p)).getByRole("button", { name: /^More options/ }).click();
+      await p.getByRole("menuitem", { name: "Reset to default" }).click();
+      await expect(await rowOf(p)).toContainText("Project", { timeout: 30_000 });
     };
     const web = page;
     const last = surfaces[surfaces.length - 1]!;
 
     // Inherited from the built-in default.
-    await expectState("Inherited from the default", "On");
+    await expectState("On");
     if (cli) {
       const fromCli = await cliEffective("issue");
       expect(fromCli.enabled).toBe(true);
@@ -162,7 +170,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
 
     // Workspace default (owner write).
     expect((await put(wsPath, "0", { enabled: true, instruction: "workspace text" })).status).toBe(200);
-    await expectState("Inherited from workspace");
+    await expectState("Workspace");
     let eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.sources.instruction).toBe("workspace");
@@ -174,7 +182,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     // A project override beats the workspace for the fields it sets; the row's
     // source label follows the "enabled" field.
     expect((await put(projectPath, "0", { enabled: true, instruction: "project text" })).status).toBe(200);
-    await expectState("Inherited from project");
+    await expectState("Project");
     eff = await effective();
     expect(eff.sources.instruction).toBe("project");
     expect(eff.sources.enabled).toBe("project");
@@ -187,7 +195,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
 
     // Issue override from the web UI: switch the rule off for this issue only.
     await override(web);
-    await expectState("Overridden on this issue", "Disabled");
+    await expectState("Edited", "Disabled");
     eff = await effective();
     expect(eff.enabled).toBe(false);
     expect(eff.sources.enabled).toBe("issue");
@@ -220,7 +228,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     expect(eff.execution.paused_reason).toBe("loop");
     expect(eff.execution.instance_id).toBeTruthy();
     expect((await effective(projectPath)).execution ?? null).toBeNull();
-    await expectState("Overridden on this issue", "Paused");
+    await expectState("Edited", "Paused");
 
     // Runtime instances come from `issue wakeup list`; the definition's execution block comes from `get`.
     const cliList = async () =>
@@ -239,7 +247,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     // value comes back and the paused instance stays.
     const instanceId = eff.execution.instance_id;
     await reset(last);
-    await expectState("Inherited from project", "Paused");
+    await expectState("Project", "Paused");
     eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.execution.instance_id).toBe(instanceId);
@@ -255,11 +263,11 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     // Override again through the last surface, then reset through the web.
     // The row shows the paused runtime state over the disabled setting.
     await override(last);
-    await expectState("Overridden on this issue", "Paused");
+    await expectState("Edited", "Paused");
     expect((await effective()).sources.enabled).toBe("issue");
     if (cli) expect((await cliEffective("issue")).sources.enabled).toBe("issue");
     await reset(web);
-    await expectState("Inherited from project");
+    await expectState("Project");
     expect((await effective()).enabled).toBe(true);
     if (cli) expect((await cliEffective("issue")).sources.enabled).toBe("project");
   } finally {
