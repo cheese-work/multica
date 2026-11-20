@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -243,4 +243,48 @@ test("a valid empty settings object is a read of no stored policy: the CLI runs"
   const r = run({ ...withToken, GUARD_POLICY_JSON: "", GUARD_POLICY_SHA256: "", FAKE_WS_JSON: '{"settings":{}}' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.calls, /args=guard check-pr /);
+});
+
+// CHE-8780 (CHE-7066 criterion 8): a merge-group run prints one REST read of the live base tip, with a UTC timestamp,
+// next to the CLI's own rules note. The read never changes the result: the CLI exit code is the only decision.
+function runQueue(env, { ghExit = 0, ghOut = "" } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "prgr-q-"));
+  const bindir = join(dir, "bin");
+  mkdirSync(bindir);
+  const ghlog = join(dir, "gh.log");
+  writeFileSync(join(bindir, "gh"), `#!/bin/sh\necho "$*" >> "${ghlog}"\n[ "${ghExit}" = 0 ] || { echo "HTTP 403: rate limit" >&2; exit ${ghExit}; }\necho "${ghOut}"\n`);
+  chmodSync(join(bindir, "gh"), 0o755);
+  const r = run({ ...POLICY, PR_URL: "", MERGE_GROUP_HEAD_REF: QREF, GITHUB_EVENT_NAME: "merge_group", PATH: `${bindir}:${process.env.PATH}`, ...env });
+  let ghcalls = "";
+  try { ghcalls = readFileSync(ghlog, "utf8"); } catch {}
+  return { ...r, ghcalls };
+}
+const QREF = "refs/heads/gh-readonly-queue/release/2026/pr-7-0123456789abcdef0123456789abcdef01234567";
+const TIP = "8223552020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+test("merge-group run: prints the REST tip of the queue's base with a UTC timestamp", () => {
+  const r = runQueue({}, { ghOut: TIP });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`REST tip: ${TIP} \\(release/2026 of o/r, read \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ\\)`));
+  assert.match(r.ghcalls, /api repos\/o\/r\/commits\/heads\/release\/2026 --jq \.sha/);
+});
+
+test("merge-group run: a failing gh prints REST tip unavailable and the CLI exit code still decides", () => {
+  for (const code of ["0", "1", "2"]) {
+    const r = runQueue({ FAKE_EXIT: code }, { ghExit: 1 });
+    assert.equal(r.status, Number(code));
+    assert.match(r.stdout, /REST tip unavailable: .*rate limit/);
+  }
+});
+
+test("merge-group run: the REST tip is printed after a failing check too, and the exit code stays the CLI's", () => {
+  const r = runQueue({ FAKE_EXIT: "1" }, { ghOut: TIP });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, new RegExp(`REST tip: ${TIP}`));
+});
+
+test("a PR event makes no REST tip read", () => {
+  const r = run({ ...POLICY, GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(r.status, 0);
+  assert.doesNotMatch(r.stdout, /REST tip/);
 });
