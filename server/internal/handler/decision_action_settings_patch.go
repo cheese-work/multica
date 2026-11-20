@@ -297,6 +297,9 @@ func readSettingsPatch(ctx context.Context, queries *db.Queries, workspaceID pgt
 	if err != nil {
 		return read, err
 	}
+	if err := refuseNewCannotDoGapRaw(stored, after); err != nil {
+		return read, settingsInvalid("%v", err)
+	}
 	if err := checkCapabilityRoutingAgents(ctx, queries, workspaceID, params.Settings); err != nil {
 		return read, err
 	}
@@ -329,6 +332,9 @@ func applySettingsPatch(ctx context.Context, execution decisionActionExecution, 
 	after, err := settingsPatchAfter(stored, params.Settings)
 	if err != nil {
 		return err
+	}
+	if err := refuseNewCannotDoGapRaw(stored, after); err != nil {
+		return settingsInvalid("%v", err)
 	}
 	for key, value := range after {
 		if value == nil {

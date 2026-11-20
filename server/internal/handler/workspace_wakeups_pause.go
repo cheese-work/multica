@@ -173,6 +173,9 @@ func (h *Handler) saveWorkspaceIn(r *http.Request, params db.UpdateWorkspacePara
 			if err := requireOwnerForCannotDo(ctx, q, params.ID, userID, stored, incoming); err != nil {
 				return db.Workspace{}, "", activity, err
 			}
+			if err := refuseNewCannotDoGap(stored, incoming); err != nil {
+				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
+			}
 		} else if machine && settingsAllowKeyMoved(stored, nil) {
 			// A non-object body drops every key, allow-table keys included.
 			return db.Workspace{}, "", activity, errSettingsPasskeyRequired
