@@ -31,6 +31,11 @@ WHERE i.project_id=$1 AND i.workspace_id=$2
 -- stays and waits out an inactive project in its evaluator.
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
 AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+-- A disabled rule cannot fire, so it has nothing to settle. Settling and
+-- locking every disabled row one by one timed out a status change on a
+-- project with thousands of issues (CHE-7652). The revision bump still
+-- covers it.
+AND w.enabled
 ORDER BY w.id FOR UPDATE OF w;
 
 -- name: BumpProjectWakeupRevisions :exec
