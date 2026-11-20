@@ -210,6 +210,8 @@ type PRFact struct {
 	// marks a green snapshot whose required check was red earlier on this same
 	// head and passed on a rerun.
 	RedCause string
+	// Ref names the PR for a person reading a refusal, such as owner/repo#12.
+	Ref string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
