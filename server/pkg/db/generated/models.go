@@ -4050,6 +4050,8 @@ type TaskUsageHourly struct {
 	UncostedOutputTokens     pgtype.Int8 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  pgtype.Int8 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens pgtype.Int8 `json:"uncosted_cache_write_tokens"`
+	// Of uncosted_cache_write_tokens, the tokens written with the 1-hour TTL. NULL on buckets not recomputed since this column existed; readers COALESCE to 0 (5-minute rate).
+	UncostedCacheWrite1hTokens pgtype.Int8 `json:"uncosted_cache_write_1h_tokens"`
 }
 
 type TaskUsageHourlyDirty struct {

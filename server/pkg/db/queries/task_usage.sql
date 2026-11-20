@@ -49,6 +49,7 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
+    tu.cache_write_1h_tokens,
     tu.cost_usd_ticks,
     tu.credits_micros
 FROM task_usage tu
@@ -69,6 +70,7 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
+    tu.cache_write_1h_tokens,
     tu.cost_usd_ticks,
     tu.credits_micros
 FROM task_usage tu
@@ -148,6 +150,7 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -184,6 +187,7 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
