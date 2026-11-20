@@ -111,6 +111,11 @@ const (
 	// its claim deadline and the server sweep cancelled it (CHE-4103).
 	ReasonBgClaimTimeout Reason = "bg_claim_timeout"
 
+	// ReasonCompactionStartTimeout: a compaction task did not start within the
+	// compact claim deadline, counted from when its DM became free (CHE-2914).
+	// Written by the compaction start-bound sweep. Not retried.
+	ReasonCompactionStartTimeout Reason = "compaction_start_timeout"
+
 	// Process cleanup is a separate, non-retryable failure even when the
 	// provider succeeded or the user cancelled. Blocked successors do not
 	// create a new cleanup obligation of their own.
@@ -353,6 +358,7 @@ var allReasons = []Reason{
 	ReasonTimeout,
 	ReasonBgRunTimeout,
 	ReasonBgClaimTimeout,
+	ReasonCompactionStartTimeout,
 	ReasonProcessCleanupUnconfirmed,
 	ReasonProcessCleanupBlocked,
 	ReasonIterationLimit,

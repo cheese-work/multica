@@ -8166,6 +8166,15 @@ func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireS
 	})
 }
 
+// ExpireUnstartedCompactionTasks fails compaction tasks that did not start
+// within the start bound. The UPDATE and SettleTerminalTaskState share one
+// transaction; the caller runs HandleFailedTasks only after it commits.
+func (s *TaskService) ExpireUnstartedCompactionTasks(ctx context.Context, arg db.ExpireUnstartedCompactionTasksParams) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.ExpireUnstartedCompactionTasks(ctx, arg)
+	})
+}
+
 // RecoverOrphanedTasksForRuntime fails work a restarted daemon reports it lost.
 func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
