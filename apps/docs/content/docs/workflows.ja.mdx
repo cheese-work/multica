@@ -74,6 +74,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 ワークスペースのオーナーまたは管理者は、ワークスペース設定に `quick_first` を設定し、新しい課題の一部で Quick ワークフローを試せます: `{"workflow_id": "<Quick ワークフローID>", "types": ["feat", "fix"], "starts_at": "<RFC 3339>", "ends_at": "<RFC 3339>"}`。`starts_at`（含む）から `ends_at`（含まない）の間、タイトルの種類が `types` にあり、すでに完全なワークフロー（プロジェクトのもの、または `workflow_by_type` が指すもの）に従う新しいルート課題は、番号で振り分けられます。偶数は `todo` から Quick ワークフローで始まり、奇数は元のワークフローのままです。子課題は親の Quick ワークフローに従います。呼び出し側が `--workflow` でワークフローを選んだ場合、ステータスが `todo` または `backlog` 以外の場合、メンバーまたはスクワッドに割り当てられている場合、プロジェクトの A/B 分割が期間中の場合は対象外です。担当者として指名されたエージェントは課題の作成者として保持されます。設定するまでは無効で、未設定なら作成の動作は変わりません。
 
+Quick ワークフローへの紐付けのたびに、課題のアクティビティに `quick_entry` 行が書き込まれます。抽選は両方のアームについて 1 行書き（`source` は `arm`、`arm` は `Q` または `D`）、課題単位の上書きで Quick にする場合は `source` が `override` の行を書きます。Quick は `Quick` という名前のワークフロー、または `quick_first` が指すワークフローです。`full_workflow_id` はサーバーが直前に課題が従っていたワークフローとして設定します。抽選では奇数番号が保つルート、上書きでは課題の以前の上書き、なければタイトルの種類に対する `workflow_by_type` の項目、なければプロジェクトのワークフローです。何もなければ省かれます。呼び出し側は指定できません。
+
 ## 能力でルーティングする
 
 ワークスペース設定 `capability_routing` は、課題タイプを作成者エージェントと順序付きのレビュアーエージェント一覧に対応付けます。例: `{"feat": {"author": "<エージェント ID>", "reviewers": ["<エージェント ID>"]}}`。キーは小文字のタイプ、ID はワークスペースのエージェントで、`reviewers` は空にできず、作成者はレビュアーになれません。既定では未設定で、まだ何も読み取らないため動作は変わりません。変更は `workspace.settings` カード (`multica config propose workspace.settings --set 'capability_routing:=<json>'`) だけで行い、通常の設定保存は保存済みの値を保持します。`multica workspace capability-routing` で読み取れ、未設定なら `{}` を表示します。
