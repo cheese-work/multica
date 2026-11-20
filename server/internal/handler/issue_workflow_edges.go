@@ -113,6 +113,17 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		}
 		return h.Queries.ScheduleWorkflowEdges(ctx, db.ScheduleWorkflowEdgesParams{ID: w.ID, NextFireAt: pgtype.Timestamptz{Time: next, Valid: true}})
 	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
+		handled, err := h.settlePendingMerge(ctx, issue, w.ID)
+		if err != nil {
+			h.watchAgainIn(ctx, w, edgeRetryDelay)
+			return err
+		}
+		if handled {
+			h.watchAgainIn(ctx, w, issueworkflow.EdgePollInterval)
+			return nil
+		}
+	}
 	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge {
 		bridged, err := h.bridgePRMergedEdge(ctx, issue)
 		if err != nil {
@@ -150,6 +161,13 @@ func (h *Handler) bridgePRMergedEdge(ctx context.Context, issue db.Issue) (bool,
 	}
 	if prMergeStatusSetting(ws) == prMergeStatusNone {
 		return false, nil
+	}
+	// On an auto-close step the close check comes first: a clean issue takes its
+	// done edge, with this watcher left out of no_live_wakeup (CHE-7671).
+	if entersAutoCloseStep(issue.Status) {
+		if d := h.closeOrDispatch(ctx, issue); d.Outcome == closeOutcomeClosed && h.closeIssue(ctx, issue, d.Predicates) {
+			return true, nil
+		}
 	}
 	return true, h.autoCompleteIssue(ctx, issue.WorkspaceID, issue.ID, nil)
 }
