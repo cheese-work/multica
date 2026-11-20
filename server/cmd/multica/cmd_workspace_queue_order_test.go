@@ -223,6 +223,25 @@ func TestProjectUpdateSendsPriority(t *testing.T) {
 	}
 }
 
+// A bad --priority must be refused before any request, including the prefix
+// lookup that resolves a project reference.
+func TestProjectUpdateBadPriorityMakesNoRequestEvenForAPrefix(t *testing.T) {
+	var requests int
+	queueOrderTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.NotFound(w, r)
+	})
+	cmd := cmdFrom(projectUpdateCmd)
+	_ = cmd.Flags().Set("priority", "huge")
+	_, err := captureStdout(t, func() error { return runProjectUpdate(cmd, []string{"abcd1234"}) })
+	if err == nil || !strings.Contains(err.Error(), "urgent, high, medium, low, none") {
+		t.Errorf("bad priority error = %v, want the allowed values", err)
+	}
+	if requests != 0 {
+		t.Errorf("made %d request(s), want none", requests)
+	}
+}
+
 // Project ranking is stored only until the claim path reads it; help must not
 // say it is active.
 func TestQueueOrderHelpDoesNotClaimRankingIsActive(t *testing.T) {
