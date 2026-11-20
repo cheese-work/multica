@@ -78,6 +78,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 每次绑定到 Quick 工作流，都会在该议题的活动中写入一行 `quick_entry`：抽签为两个分组各写一行（`source` 为 `arm`，`arm` 为 `Q` 或 `D`），议题级覆盖到 Quick 时写入 `source` 为 `override` 的一行。Quick 是名为 `Quick` 的工作流，或 `quick_first` 指定的工作流。`full_workflow_id` 由服务器设置为议题紧接此前所遵循的工作流：抽签时是奇数编号保留的路线；覆盖时依次是议题此前的覆盖、其标题类型在 `workflow_by_type` 中的条目、其项目的工作流。若议题没有则省略。调用方不能指定它。
 
+`multica issue workflow escalate <id> --reason "..."` 会把遵循 Quick 的议题移到其最新 `quick_entry` 行所指的完整工作流；调用方不能指定目标，请求中的未知字段会被拒绝。没有 `quick_entry` 行、或该行没有工作流的议题，会以 `no_full_workflow` 拒绝；不遵循 Quick 的议题会以 `not_quick` 拒绝。从 `todo` 或 `investigating` 升级时，除非原因是 `rollback`，否则议题的描述或评论中必须有 `Estimate:` 行，否则以 `estimate_required` 拒绝。一个事务会写入 `workflow_escalated` 行（原因和目标）以及 `call` 为 `escalated` 并带估算值的 `intake_call` 行，然后记录切换。没有运行中的任务时，议题立即进入完整工作流的步骤，并为该步骤的处理人产生一次运行；有运行中的任务时，切换处于待定状态，在最后一个任务结束后生效。已完成的议题会遵循完整工作流，但不会交给任何人；重新打开的 Quick 议题会回到之前的工作流，并为其所在步骤执行一次运行。反向移动受到保护：智能体把议题移入 Quick（`issue update --workflow`）会打开所有者审批卡，批准前不会有任何改变；成员则立即切换。智能体把议题移到遵循 Quick 的项目，或把项目切换为 Quick，会被 `budget_rebinding_requires_interactive` 拒绝；成员则立即完成。
+
 ## 按能力路由工作
 
 工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，未设置时行为不变。只有 **Author** 和 **Reviewer** 处理人会读取它。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
