@@ -32,7 +32,22 @@ var beforeRe = regexp.MustCompile(`--before "([^"]+)"`)
 
 type cli struct{ path string }
 
+// run retries a failing read up to 4 times (1s, 2s, 4s apart): the service
+// answers "temporarily unavailable" under the load of a 7-day sweep, and every
+// call here is a read.
 func (c cli) run(args ...string) (stdout, stderr []byte, err error) {
+	delay := time.Second
+	for attempt := 1; ; attempt++ {
+		stdout, stderr, err = c.runOnce(args...)
+		if err == nil || attempt == 4 {
+			return stdout, stderr, err
+		}
+		time.Sleep(delay)
+		delay *= 2
+	}
+}
+
+func (c cli) runOnce(args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.Command(c.path, args...)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
