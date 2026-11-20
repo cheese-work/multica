@@ -118,6 +118,7 @@ type Config struct {
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
+	ReservedChatSlots              int                   // slots only DM (chat) runs may use; issue runs get MaxConcurrentTasks-ReservedChatSlots (default: 0)
 	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
 	Broker                         *BrokerConfig         // MULTICA_BROKER_CONFIG: GitHub App for the per-run push/read broker; nil means none (CHE-2216 A4c)
 	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex task bindings
@@ -202,6 +203,7 @@ type Overrides struct {
 	CodexSemanticInactivityTimeout time.Duration
 	CodexHandshakeTimeout          time.Duration
 	MaxConcurrentTasks             int
+	ReservedChatSlots              int
 	DaemonID                       string
 	DeviceName                     string
 	RuntimeName                    string
@@ -706,6 +708,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoReloadEnabled:               autoReloadEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
+		ReservedChatSlots:               overrides.ReservedChatSlots,
 		PollInterval:                    pollInterval,
 		WSClaimPollInterval:             wsClaimPollInterval,
 		HeartbeatInterval:               heartbeatInterval,
