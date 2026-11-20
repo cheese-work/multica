@@ -149,6 +149,8 @@ A step can carry entry gates: conditions a status move into the step must meet. 
 
 Both gates fail closed: a value they cannot read counts as a failure. Neither is accepted as a transition guard. Each time `intake_simple` is checked, the issue's activity gets an `intake_call` row with `call` (`simple` or `rejected`), the raw `estimate` and the `step`.
 
+`pr.none_open` is a third entry gate that reads PRs, not what an agent wrote. It holds when no open or draft PR is linked to the issue, or to its children when the workflow includes child PRs. Merged and closed PRs do not hold it back, and an issue with no PR passes. Put it on the step an agent closes into (for example `agent_accepted`) and give the step before it an `agent_done` edge to that step, so an agent can close an `in_review` issue that has nothing left to merge. An agent can never use the shortcut while a PR is open: the refusal lists each open PR (for example `acme/widget#12 (draft)`) with the fix, which is to merge or close it. Like the other entry gates it is not accepted as a transition guard, and `multica workflow lint` accepts it in `entry`.
+
 ## Related guides
 
 - [Projects](/projects) — organize the issues that follow a workflow.

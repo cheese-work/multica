@@ -44,7 +44,7 @@ func TestAgentCloseFromInReviewNeedsNoOpenPR(t *testing.T) {
 			c := newEdgeCase(t, installationID, noneOpenSteps())
 			linkGatePRs(t, c, installationID, row.prs...)
 			c.enter(t, "in_review")
-			res := putIssue(t, c.issueID, map[string]any{"status": "agent_accepted"}, asAgentTask)
+			res := putIssue(t, c.issueID, map[string]any{"status": "agent_accepted"}, func(req *http.Request) *http.Request { return asAgentTask(t, req) })
 			if !row.refused {
 				res.Want(http.StatusOK)
 				wantIssueStatus(t, c.issueID, "agent_accepted")

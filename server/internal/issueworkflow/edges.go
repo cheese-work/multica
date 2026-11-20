@@ -32,6 +32,7 @@ const (
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
 	GuardPRReviewChanges  = "pr.review_changes_requested"
 	GuardPRReviewApproved = "pr.review_approved"
+	GuardPRNoneOpen       = "pr.none_open"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
 	GuardWebhook          = "webhook"
@@ -58,7 +59,7 @@ type Guard struct {
 
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
-	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardPRNoneOpen: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
 	GuardIntakeSimple: 0, GuardQAProof: 0,
 }
@@ -164,7 +165,7 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardIntakeSimple || g.Kind == GuardQAProof {
+		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardIntakeSimple || g.Kind == GuardQAProof || g.Kind == GuardPRNoneOpen {
 			return invalid("%s is an entry gate, not an edge guard", g.Kind)
 		}
 		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
@@ -274,6 +275,8 @@ func (f Facts) holds(g Guard) bool {
 		})
 	case GuardPRReady:
 		return f.anyPR(func(p PRFact) bool { return p.State == "open" })
+	case GuardPRNoneOpen:
+		return !f.anyPR(PRFact.open)
 	case GuardPRMerged:
 		return f.anyPR(func(p PRFact) bool { return p.State == "merged" }) && !f.anyPR(PRFact.open)
 	case GuardPRClosedUnmerged:
