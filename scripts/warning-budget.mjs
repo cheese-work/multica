@@ -154,6 +154,11 @@ function isServerError(error) {
   return typeof error?.stderr === "string" && /\bHTTP 5\d\d\b/.test(error.stderr)
 }
 
+// CHE-8843: GitHub can lose a job log blob; its read then returns "gh: Not Found (HTTP 404)".
+function isNotFound(error) {
+  return typeof error?.stderr === "string" && /\bHTTP 404\b/.test(error.stderr)
+}
+
 function isRateLimit(error) {
   return typeof error?.stderr === "string" && /\bHTTP (?:403|429)\b/.test(error.stderr) && /rate limit/i.test(error.stderr)
 }
@@ -178,7 +183,15 @@ export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJ
       const renamed = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
       if (pending.has(renamed)) names.push(renamed)
       if (!names.length) continue
-      const collected = collect(job)
+      // A baseline whose log is gone is skipped; the name stays pending for an older run. The current run's own logs are not read here.
+      let collected
+      try {
+        collected = collect(job)
+      } catch (error) {
+        if (!isNotFound(error)) throw error
+        log(`Skipping baseline run ${run.id}: log for job ${job.name} is missing (HTTP 404)`)
+        continue
+      }
       for (const name of names) {
         baselineJobs.push({ ...collected, name })
         jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
