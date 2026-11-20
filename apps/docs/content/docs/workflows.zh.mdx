@@ -149,6 +149,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 两个关卡都按失败处理读不出的值。两者都不能用作流转守卫。每次评估 `intake_simple`，事项的活动记录里都会新增一条 `intake_call`，包含 `call`（`simple` 或 `rejected`）、原始的 `estimate` 和 `step`。
 
+`pr.none_open` 是第三个进入关卡，它读取的是 PR，而不是智能体写下的内容。当事项没有关联任何打开或草稿状态的 PR（工作流包含子事项 PR 时，子事项也一并检查）时通过。已合并或已关闭的 PR 不会阻止它，没有 PR 的事项可以通过。把它放在智能体用来关闭事项的步骤上（例如 `agent_accepted`），并给前一个步骤添加指向该步骤的 `agent_done` 边，智能体就能关闭没有可合并内容的 `in_review` 事项。只要有 PR 处于打开状态，智能体就不能使用这条捷径：拒绝信息会逐个列出打开的 PR（例如 `acme/widget#12 (draft)`）和修复方法，即合并或关闭它。与其他进入关卡一样，它不能用作流转守卫，`multica workflow lint` 接受它出现在 `entry` 中。
+
 ## 相关指引
 
 - [项目](/projects) — 组织使用同一套流程的任务。

@@ -149,6 +149,8 @@ Une étape peut porter des garde-fous d’entrée : des conditions qu’un chang
 
 Les deux garde-fous échouent par défaut : une valeur illisible compte comme un échec. Aucun n’est accepté comme garde de transition. À chaque contrôle de `intake_simple`, l’activité du ticket reçoit une ligne `intake_call` avec `call` (`simple` ou `rejected`), le `estimate` brut et le `step`.
 
+`pr.none_open` est un troisième garde-fou d’entrée, qui lit les PR et non ce qu’un agent a écrit. Il est satisfait quand aucune PR ouverte ou en brouillon n’est liée au ticket, ni à ses enfants quand le workflow inclut les PR des enfants. Les PR fusionnées ou fermées ne le bloquent pas, et un ticket sans PR passe. Placez-le sur l’étape où un agent clôt (par exemple `agent_accepted`) et donnez à l’étape précédente une arête `agent_done` vers elle : un agent peut alors clore un ticket `in_review` sans rien à fusionner. Un agent ne peut jamais utiliser ce raccourci tant qu’une PR est ouverte : le refus liste chaque PR ouverte (par exemple `acme/widget#12 (draft)`) avec le correctif, qui est de la fusionner ou de la fermer. Comme les autres garde-fous d’entrée, il n’est pas accepté comme garde de transition, et `multica workflow lint` l’accepte dans `entry`.
+
 ## Guides associés
 
 - [Projets](/projects) — regrouper les tâches qui suivent un workflow.
