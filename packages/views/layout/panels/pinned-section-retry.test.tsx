@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { issueDetailOptions, issueKeys } from "@multica/core/issues/queries";
-import { setApiInstance } from "@multica/core/api";
+import { setApiInstance, SchemaValidationError } from "@multica/core/api";
 import { ApiError, type ApiClient } from "@multica/core/api/client";
 import { createQueryClient } from "@multica/core/query-client";
 import { buildIssueStatusCatalog } from "@multica/core/issue-statuses/queries";
@@ -175,6 +175,36 @@ describe("PinnedSection detail read", () => {
 
   it("does not re-read after a terminal 403", async () => {
     const getIssue = vi.fn().mockRejectedValue(new ApiError("forbidden", 403, "Forbidden"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    await vi.waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+    expect(state.deletePin).not.toHaveBeenCalled();
+  });
+
+  it("unpins when the delayed recovery read returns 404", async () => {
+    const getIssue = vi
+      .fn()
+      .mockRejectedValueOnce(unavailable())
+      .mockRejectedValueOnce(new ApiError("not found", 404, "Not Found"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    await vi.waitFor(() => expect(state.deletePin).toHaveBeenCalledTimes(1), { timeout: 4000 });
+    expect(state.deletePin).toHaveBeenCalledWith({ itemType: "issue", itemId: "issue-1" });
+    expect(getIssue).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-read after a schema-invalid response", async () => {
+    const getIssue = vi.fn().mockRejectedValue(new SchemaValidationError("/api/issues/issue-1", ["title"]));
     setApiInstance({ getIssue } as unknown as ApiClient);
     renderWithI18n(
       <QueryClientProvider client={qc}>

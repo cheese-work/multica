@@ -16,7 +16,7 @@ import { Archive, Folder, X } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
-import { api, ApiError } from "@multica/core/api";
+import { api, ApiError, isSchemaValidationError } from "@multica/core/api";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
@@ -50,9 +50,9 @@ import {
 // render while the query is disabled, which re-fires the sync effect below.
 const EMPTY_PINS: PinnedItem[] = [];
 
-/** Network errors and 5xx / 408 / 429 may clear on their own; 4xx like 403 and 404 will not. */
+/** Network errors and 5xx / 408 / 429 may clear on their own; 4xx like 403 and 404, and an unreadable 2xx body, will not. */
 function isTransientFailure(err: unknown): boolean {
-  if (!err) return false;
+  if (!err || isSchemaValidationError(err)) return false;
   if (!(err instanceof ApiError)) return true;
   return err.status >= 500 || err.status === 408 || err.status === 429;
 }
@@ -345,13 +345,17 @@ function PinRow({
   });
 
   const triggeredRef = useRef(false);
+  const onUnpinRef = useRef(onUnpin);
+  onUnpinRef.current = onUnpin;
+  const unpinOnce = useCallback(() => {
+    if (triggeredRef.current) return;
+    triggeredRef.current = true;
+    onUnpinRef.current();
+  }, []);
   useEffect(() => {
     const err = isIssue ? issueQuery.error : projectQuery.error;
-    if (err instanceof ApiError && err.status === 404 && !triggeredRef.current) {
-      triggeredRef.current = true;
-      onUnpin();
-    }
-  }, [isIssue, issueQuery.error, onUnpin, projectQuery.error]);
+    if (err instanceof ApiError && err.status === 404) unpinOnce();
+  }, [isIssue, issueQuery.error, projectQuery.error, unpinOnce]);
 
   // The shared detail options fail at once so the issue page never waits on
   // another observer's retry. A pin has no Retry button, so it re-reads once
@@ -378,13 +382,16 @@ function PinRow({
         .then((issue) => {
           if (!cancelled) queryClient.setQueryData(issueDetailOptions(wsId, pin.item_id).queryKey, issue);
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          // Only a 404 means the issue is gone; any other failure leaves the pin hidden.
+          if (!cancelled && err instanceof ApiError && err.status === 404) unpinOnce();
+        });
     }, 1000);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [issueFailed, issueTransient, pin.item_id, queryClient, wsId]);
+  }, [issueFailed, issueTransient, pin.item_id, queryClient, unpinOnce, wsId]);
 
   if (isIssue) {
     if (issueQuery.isPending) return <PinSkeleton />;
