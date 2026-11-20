@@ -82,6 +82,12 @@ func TestAggregateFixtureTotals(t *testing.T) {
 	if r.UncostedTokens != 400_000 {
 		t.Fatalf("uncosted = %d, want 400000", r.UncostedTokens)
 	}
+	if r.UncostedByModel["mystery-model-1"] != 400_000 || len(r.UncostedByModel) != 1 {
+		t.Fatalf("uncosted by model = %v, want only mystery-model-1: 400000", r.UncostedByModel)
+	}
+	if out := Render(r); !strings.Contains(out, "mystery-model-1") {
+		t.Fatalf("render misses the uncosted model:\n%s", out)
+	}
 	// TTL-capable writes: r1 0.5M (known), r2 1M (known), r3 1M (unknown), r4 0.
 	if r.TTLUnknownTokens != 1_000_000 || r.TTLWriteTokens != 2_500_000 {
 		t.Fatalf("ttl unknown %d of %d; want 1000000 of 2500000", r.TTLUnknownTokens, r.TTLWriteTokens)

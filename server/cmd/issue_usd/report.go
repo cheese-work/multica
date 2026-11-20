@@ -88,6 +88,8 @@ type Report struct {
 	UnknownRootUSD   float64   `json:"unknown_root_usd"`
 	NoIssueUSD       float64   `json:"no_issue_usd"`
 	UncostedTokens   int64     `json:"uncosted_tokens"`
+	// UncostedByModel splits UncostedTokens by the model id that had no price.
+	UncostedByModel map[string]int64 `json:"uncosted_by_model"`
 	// TTLWriteTokens counts cache-write tokens of SKUs that have a 1-hour rate;
 	// TTLUnknownTokens is the part of those with no reported TTL split.
 	TTLWriteTokens   int64    `json:"ttl_write_tokens"`
@@ -105,6 +107,10 @@ func runUSD(r Run, week *weekTTL, rep *Report) (usd float64, priced bool) {
 		price, ok := metrics.PriceForModelAlias(u.Model)
 		if !ok {
 			rep.UncostedTokens += u.totalTokens()
+			if rep.UncostedByModel == nil {
+				rep.UncostedByModel = map[string]int64{}
+			}
+			rep.UncostedByModel[u.Model] += u.totalTokens()
 			continue
 		}
 		priced = true
@@ -177,10 +183,16 @@ func Aggregate(runs []Run, issues map[string]Issue) Report {
 			rep.UnknownRootUSD += usd
 			continue
 		}
-		acc := roots[root.ID]
+		// Key by identifier when present: one issue can be reached by UUID
+		// and by identifier, and must stay one root.
+		rootKey := root.Identifier
+		if rootKey == "" {
+			rootKey = root.ID
+		}
+		acc := roots[rootKey]
 		if acc == nil {
 			acc = &rootAcc{root: root}
-			roots[root.ID] = acc
+			roots[rootKey] = acc
 		}
 		acc.usd += usd
 		acc.runs++
@@ -259,6 +271,24 @@ func Render(r Report) string {
 	fmt.Fprintf(&b, "Not in a done root: open roots $%.2f, unknown root $%.2f, runs without an issue $%.2f\n",
 		r.OpenRootsUSD, r.UnknownRootUSD, r.NoIssueUSD)
 	fmt.Fprintf(&b, "Uncosted tokens (model has no price): %d\n", r.UncostedTokens)
+	models := make([]string, 0, len(r.UncostedByModel))
+	for m := range r.UncostedByModel {
+		models = append(models, m)
+	}
+	sort.Slice(models, func(i, j int) bool {
+		a, b := r.UncostedByModel[models[i]], r.UncostedByModel[models[j]]
+		if a != b {
+			return a > b
+		}
+		return models[i] < models[j]
+	})
+	for i, m := range models {
+		if i == 5 {
+			fmt.Fprintf(&b, "  ... and %d more models\n", len(models)-5)
+			break
+		}
+		fmt.Fprintf(&b, "  %-40q %d\n", m, r.UncostedByModel[m])
+	}
 	share := 0.0
 	if r.TTLWriteTokens > 0 {
 		share = 100 * float64(r.TTLUnknownTokens) / float64(r.TTLWriteTokens)
