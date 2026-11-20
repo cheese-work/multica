@@ -57,8 +57,9 @@ func NotifyPingTx(ctx context.Context, locked *db.Queries, workspaceID, requestI
 // notifyPingTx also coalesces: when the same agent already has an open ask to
 // the same person in the same DM with an unread ping item, this request gets
 // no new item. That item's line becomes "N open asks from <agent>", it moves to
-// the top, and (once per 15 minutes) it opens the newest card and queues a push
-// (CHE-8878). This request's receipt is written as 'coalesced', so the worker
+// the top and opens the newest card (the card itself is a new DM message, so the
+// lane is unread and moves up). Its push is due again 15 minutes after the last
+// one was sent, so asks never go unannounced and never spam (CHE-8878). This request's receipt is written as 'coalesced', so the worker
 // retry skips it.
 // reping re-pings a coalesced request once its pinged sibling is gone.
 func notifyPingTx(ctx context.Context, locked *db.Queries, workspaceID, requestID pgtype.UUID, reping bool) (*db.InboxItem, error) {
@@ -108,8 +109,17 @@ func notifyPingTx(ctx context.Context, locked *db.Queries, workspaceID, requestI
 			if err != nil {
 				return nil, err
 			}
+			timings, err := locked.ListPushDeliveryTimings(ctx, head.ID)
+			if err != nil {
+				return nil, err
+			}
 			if err := locked.UpdateDecisionPingLine(ctx, db.UpdateDecisionPingLineParams{WorkspaceID: workspaceID, ID: head.ID, Body: pgtype.Text{String: fmt.Sprintf("%d open asks from %s", count, agent.Name), Valid: true}, OpenAskCount: count, ChatMessageID: request.PingMessageID}); err != nil {
 				return nil, err
+			}
+			for _, timing := range timings {
+				if err := locked.SpacePushDelivery(ctx, db.SpacePushDeliveryParams{ID: timing.ID, WasSentAt: timing.SentAt, WasNextAttemptAt: timing.NextAttemptAt}); err != nil {
+					return nil, err
+				}
 			}
 			if _, err := locked.MarkDecisionPingNotified(ctx, db.MarkDecisionPingNotifiedParams{WorkspaceID: workspaceID, ID: requestID, Outcome: pgtype.Text{String: "coalesced", Valid: true}}); err != nil {
 				return nil, err

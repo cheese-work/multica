@@ -254,20 +254,30 @@ WHERE authority = 'human' AND origin = 'asked' AND status = 'open'
   AND (ping_notified_at IS NOT NULL OR id = sqlc.arg('id'));
 
 -- name: UpdateDecisionPingLine :exec
--- Rewrites the coalesced line and moves the item to the top of the inbox. At
--- most once per 15 minutes (CHE-8878, rule of CHE-6009) it also re-points the
--- item at the newest ask's card; the chat_message_id change makes the push
--- trigger queue one new push. The window runs from the item's last push
--- (details.push_at, else created_at), so a stream of asks cannot spam.
+-- Rewrites the coalesced line, moves the item to the top of the inbox and
+-- re-points it at the newest ask's card (CHE-8878). The chat_message_id change
+-- makes the push trigger re-arm every delivery row of the item; the caller
+-- snapshots them first and restores the 15 minute spacing afterwards.
 UPDATE inbox_item
 SET body = sqlc.arg('body'),
-    details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int)
-        || CASE WHEN sqlc.narg('chat_message_id')::uuid IS NOT NULL AND COALESCE((details->>'push_at')::timestamptz, created_at) <= clock_timestamp() - interval '15 minutes'
-                THEN jsonb_build_object('push_at', clock_timestamp()) ELSE '{}'::jsonb END,
-    chat_message_id = CASE WHEN sqlc.narg('chat_message_id')::uuid IS NOT NULL AND COALESCE((details->>'push_at')::timestamptz, created_at) <= clock_timestamp() - interval '15 minutes'
-                THEN sqlc.narg('chat_message_id')::uuid ELSE chat_message_id END,
+    details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int),
+    chat_message_id = COALESCE(sqlc.narg('chat_message_id')::uuid, chat_message_id),
     updated_at = now()
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: ListPushDeliveryTimings :many
+-- The push state of one inbox item before a coalesced ask re-arms it.
+SELECT id, sent_at, next_attempt_at FROM push_delivery WHERE record_id = $1;
+
+-- name: SpacePushDelivery :exec
+-- After a coalesced ask re-armed a delivery row (CHE-8878). A push still
+-- waiting keeps its time: it will show the updated line. A push already sent
+-- is due again 15 minutes after it was sent, at the earliest (rule of CHE-6009),
+-- so a stream of asks gives one push per window and never loses the last one.
+UPDATE push_delivery
+SET next_attempt_at = CASE WHEN sqlc.narg('was_sent_at')::timestamptz IS NULL THEN sqlc.arg('was_next_attempt_at')::timestamptz
+        ELSE GREATEST(now() + interval '10 seconds', sqlc.narg('was_sent_at')::timestamptz + interval '15 minutes') END
+WHERE id = sqlc.arg('id') AND sent_at IS NULL;
 
 -- name: ListDecisionPingRepings :many
 -- One coalesced open ask per (agent, person, DM) whose group has no open
