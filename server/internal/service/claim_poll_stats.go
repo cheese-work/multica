@@ -81,6 +81,38 @@ func ClaimPollPercentileMs(buckets []int64, q float64) float64 {
 	return math.Inf(1)
 }
 
+// ClaimPollP95Rose is the rollback check "claim poll p95 rose by deltaMs or
+// more", safe against overflow. A plain subtraction of two +Inf p95 values is
+// NaN, and NaN >= deltaMs is false, so the check would pass silently. Rules:
+//   - current p95 overflows (above the last bound): true. Either it rose, or it
+//     is indeterminate (baseline overflows too); both mean "roll back or look".
+//   - baseline overflows and current is finite: false; current is at most the
+//     last bound, which is below the baseline.
+//   - no polls in either window: false; nothing to compare.
+//   - otherwise: current - baseline >= deltaMs.
+func ClaimPollP95Rose(baseline, current []int64, deltaMs float64) bool {
+	if sumBuckets(baseline) == 0 || sumBuckets(current) == 0 {
+		return false
+	}
+	cur := ClaimPollPercentileMs(current, 0.95)
+	if math.IsInf(cur, 1) {
+		return true
+	}
+	base := ClaimPollPercentileMs(baseline, 0.95)
+	if math.IsInf(base, 1) {
+		return false
+	}
+	return cur-base >= deltaMs
+}
+
+func sumBuckets(b []int64) int64 {
+	var n int64
+	for _, v := range b {
+		n += v
+	}
+	return n
+}
+
 // ClaimPollFlushInterval is how often RunClaimPollStatsFlusher writes.
 const ClaimPollFlushInterval = 60 * time.Second
 
