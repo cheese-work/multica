@@ -1,10 +1,13 @@
 package ghsnapshot
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,6 +161,69 @@ func TestProcessRateLimitedSetsPause(t *testing.T) {
 
 	if got := m.rateUntil[1]; !got.Equal(now.Add(90 * time.Second)) {
 		t.Fatalf("rateUntil = %v, want %v", got, now.Add(90*time.Second))
+	}
+}
+
+// TestRateLimitPauseIsReadableAndLogged (CHE-8795) proves a rate-limited fetch
+// makes the pause readable per installation and logs its start and its end, so
+// a stalled snapshot names its reason without reading the server log.
+func TestRateLimitPauseIsReadableAndLogged(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	m := NewManager(enabledClient(t), nil, nil, nil)
+	now := time.Unix(30000, 0)
+	m.now = func() time.Time { return now }
+	m.jitter = func() time.Duration { return 0 }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.ctx = ctx
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
+	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
+		return nil, &RateLimitError{RetryAfter: 30 * time.Minute}
+	}
+
+	if _, paused := m.RateLimitUntil(1); paused {
+		t.Fatal("installation 1 reads as paused before any rate limit")
+	}
+	m.process(ctx, address{InstallationID: 1, Owner: "o", Repo: "r", Number: 1})
+
+	until, paused := m.RateLimitUntil(1)
+	if !paused || !until.Equal(now.Add(30*time.Minute)) {
+		t.Fatalf("RateLimitUntil(1) = %v, %v; want %v, true", until, paused, now.Add(30*time.Minute))
+	}
+	if _, paused := m.RateLimitUntil(2); paused {
+		t.Fatal("a pause on installation 1 leaks to installation 2")
+	}
+	started := logs.String()
+	for _, want := range []string{"level=WARN", "ghsnapshot: rate limit started", "installation_id=1", "retry_after=30m0s", "until="} {
+		if !strings.Contains(started, want) {
+			t.Fatalf("start log missing %q:\n%s", want, started)
+		}
+	}
+
+	// A second limit inside the same pause is not a new pause: one start line.
+	m.extendRateLimit(1, 10*time.Minute)
+	if n := strings.Count(logs.String(), "ghsnapshot: rate limit started"); n != 1 {
+		t.Fatalf("start lines = %d, want 1 for one pause", n)
+	}
+
+	now = now.Add(31 * time.Minute)
+	if _, paused := m.RateLimitUntil(1); paused {
+		t.Fatal("installation 1 still reads as paused after the deadline")
+	}
+	ended := logs.String()
+	for _, want := range []string{"level=INFO", "ghsnapshot: rate limit ended", "installation_id=1"} {
+		if !strings.Contains(ended, want) {
+			t.Fatalf("end log missing %q:\n%s", want, ended)
+		}
+	}
+	if n := strings.Count(ended, "ghsnapshot: rate limit ended"); n != 1 {
+		t.Fatalf("end lines = %d, want 1", n)
 	}
 }
 

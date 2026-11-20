@@ -444,6 +444,7 @@ export const GitHubPullRequestSchema = z.lazy(() => z.object({
   failed_check_names: z.array(z.string()).optional().default([]),
   snapshot_stale: z.boolean().optional().default(false),
   snapshot_fetched_at: z.string().nullable().optional(),
+  snapshot_paused_until: z.string().nullable().optional().catch(undefined),
   mergeable_state: z.string().nullable().optional(),
   additions: z.number().optional().default(0),
   deletions: z.number().optional().default(0),

@@ -142,6 +142,11 @@ type GitHubPullRequestResponse struct {
 	SnapshotStale bool `json:"snapshot_stale"`
 	// SnapshotFetchedAt is when the snapshot was last fetched (RFC3339), or null.
 	SnapshotFetchedAt *string `json:"snapshot_fetched_at"`
+	// SnapshotPausedUntil is the deadline (RFC3339 UTC) of the installation's
+	// refresh rate-limit pause, or null when none is active (CHE-8795). While it
+	// is set, refreshes for this PR wait, so a missing snapshot has a named
+	// reason. The pause is in memory per server process.
+	SnapshotPausedUntil *string `json:"snapshot_paused_until"`
 	// Diff stats (lines added/removed and file count) sourced from the
 	// `pull_request` webhook payload. Legacy rows that pre-date this
 	// field default to 0; the frontend treats total == 0 as "unknown"
@@ -231,6 +236,17 @@ func githubPullRequestToResponse(p db.GithubPullRequest, snapshotEnabled bool) G
 		Deletions:        p.Deletions,
 		ChangedFiles:     p.ChangedFiles,
 	}
+}
+
+// snapshotPausedUntil formats the installation's refresh rate-limit deadline for
+// the PR read, nil when no pause is active (CHE-8795).
+func snapshotPausedUntil(manager *ghsnapshot.Manager, installationID int64) *string {
+	until, paused := manager.RateLimitUntil(installationID)
+	if !paused {
+		return nil
+	}
+	formatted := until.UTC().Format(time.RFC3339)
+	return &formatted
 }
 
 // prSnapshotStaleThreshold is how old an open PR's last successful fetch may be
@@ -1369,6 +1385,7 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	out := make([]GitHubPullRequestResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
+		resp.SnapshotPausedUntil = snapshotPausedUntil(h.PRRefresh, row.InstallationID)
 		resp.LinkSource = prLinkSource(row.LinkedByType, identifier, row.Title, row.Branch.String)
 		if row.LinkKind == "reference" {
 			resp.LinkSource = "reference"
