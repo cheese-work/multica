@@ -979,6 +979,9 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
+    -- CHE-8749 S7a: set once at the first claim and never cleared, so a requeue
+    -- (dispatched_at back to NULL) or a reclaim still knows the first dispatch.
+    first_dispatched_at = COALESCE(first_dispatched_at, now()),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -1182,6 +1185,8 @@ SELECT * FROM upd;
 WITH upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    -- Rows dispatched before first_dispatched_at existed take their old dispatch time.
+    first_dispatched_at = COALESCE(first_dispatched_at, dispatched_at),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -1296,6 +1301,8 @@ WITH candidates AS MATERIALIZED (
 upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    -- Rows dispatched before first_dispatched_at existed take their old dispatch time.
+    first_dispatched_at = COALESCE(first_dispatched_at, dispatched_at),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,

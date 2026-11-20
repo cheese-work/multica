@@ -104,6 +104,8 @@ const (
 type claimScope struct {
 	claimPath  string
 	candidates int
+	// tally, when set, hears every claimTask outcome of the poll this call belongs to.
+	tally *claimPollTally
 }
 
 // claimDecisionDetail carries the capacity numbers behind a no_capacity or

@@ -780,6 +780,8 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// Claim poll histogram -> claim_poll_stats once a minute (CHE-8749 S7a).
+	go service.RunClaimPollStatsFlusher(sweepCtx, taskSvc.PollStats, queries)
 	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
 	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
