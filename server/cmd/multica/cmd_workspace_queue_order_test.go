@@ -222,3 +222,16 @@ func TestProjectUpdateSendsPriority(t *testing.T) {
 		t.Errorf("bad priority error = %v, want the allowed values", err)
 	}
 }
+
+// Project ranking is stored only until the claim path reads it; help must not
+// say it is active.
+func TestQueueOrderHelpDoesNotClaimRankingIsActive(t *testing.T) {
+	for name, text := range map[string]string{
+		"queue-order long":        workspaceQueueOrderCmd.Long,
+		"project create priority": projectCreateCmd.Flags().Lookup("priority").Usage,
+	} {
+		if !strings.Contains(text, "claim path") {
+			t.Errorf("%s: help must say the claim path reads the setting later: %q", name, text)
+		}
+	}
+}

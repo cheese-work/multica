@@ -366,6 +366,8 @@ multica autopilot create --title "주간 매출 보고" --agent "운영 도우�
 multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/Seoul
 ```
 
+`multica project create --priority <urgent|high|medium|low|none>`와 `multica project update <project> --priority <값>`은 프로젝트 우선순위를 설정합니다. 이 값은 이후 릴리스에서 claim 경로가 읽을 때까지 저장만 되며, `project_rank`는 아직 사용하지 않습니다.
+
 - `--lead`에는 멤버나 에이전트의 이름을 씁니다. `--default-branch-hint`는 저장소의 기본 브랜치를 에이전트에게 알려 줄 뿐 브랜치를 바꾸지는 않습니다.
 - 워크스페이스의 `--context`는 워크스페이스의 모든 에이전트에게 제공됩니다. `--slug`는 만든 뒤 바꿀 수 없습니다. `--issue-prefix`는 대문자로 바뀌며, 변경하면 기존 태스크 번호가 모두 다시 매겨져 외부에서 참조하던 예전 번호는 더 이상 연결되지 않습니다.
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]`는 라우팅만 하는 워크플로 단계(기본값 `todo`, `blocked`, `merged`, `need_decision`; `--routing-statuses`로 변경하고, `--routing-overrides todo=<agent-id>`로 특정 상태를 다른 에이전트에 보냅니다)를 맡을 에이전트를 지정합니다. 이 에이전트가 보관 처리되거나 실행이 공급자 오류로 실패하면 대체 에이전트가 이어받습니다. 재정의 키를 `<workflow-id>:<status>`로 쓰면 해당 재정의는 한 워크플로로 한정됩니다. `none`은 해당 항목을 끕니다. 사람 소유자나 관리자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다. 설정은 `background_agents`의 `routing` 작업으로 저장됩니다. 이 플래그는 `multica workspace background-agents set routing`의 별칭이며, 기존 `/routing-agent` API 경로도 한 릴리스 동안 별칭으로 남습니다.
@@ -421,6 +423,8 @@ multica me background-agents set dm_title --agent none   # 워크스페이스 �
 `--agent`와 `--fallback`은 에이전트 ID 또는 이름을 받고, `none`은 필드를 지웁니다. `multica me`는 `dm_title`, `quick_actions`, `compact`를 다루며 `routing`은 워크스페이스 전용입니다. 워크스페이스에 쓰려면 소유자 또는 관리자 권한이 필요하고, 두 명령 모두 태스크 토큰을 거부합니다. 에이전트 없음 동작과 제한 시간은 [백그라운드 에이전트](/background-agents)를 참고하세요.
 
 `multica workspace capability-routing [workspace]`는 `capability_routing` 설정(이슈 유형에서 작성자·리뷰어 에이전트로의 매핑)을 JSON으로 출력하며, 미설정이면 `{}`를 출력합니다. 읽기 전용이며, 변경은 `multica config propose workspace.settings --set 'capability_routing:=<json>'`로 합니다. [Workflows](/docs/workflows)를 참고하세요.
+
+`multica workspace queue-order show [workspace]`는 `queue_order`(`priority` 또는 `project_rank`)와 `queue_aging_minutes`(5~720)의 유효 값을 JSON으로 출력합니다. `multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>`은 둘 중 하나 또는 모두를 변경합니다(소유자 또는 관리자만 가능하며, 변경마다 실행자·이전 값·새 값·시각이 감사 기록에 남습니다). 기본값 `priority`는 기존 큐 순서를 유지합니다. `project_rank`는 대기 중인 실행을 프로젝트 우선순위, 부모 이슈 우선순위, 자신의 우선순위 순으로 정렬하고, 대기 시간이 에이징 주기만큼 지날 때마다 한 단계씩 올립니다. 클레임 경로가 이 설정을 읽는 것은 이후 릴리스부터이며, 현재는 저장과 감사 기록만 됩니다. 허용되지 않는 값은 허용 값을 알려 주며 거부됩니다. 되돌리려면 `--order priority`를 지정하세요.
 
 ## 브라우저 리스
 

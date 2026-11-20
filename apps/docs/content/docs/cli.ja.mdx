@@ -366,6 +366,8 @@ multica autopilot create --title "週次の売上レポート" --agent "運用�
 multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/Tokyo
 ```
 
+`multica project create --priority <urgent|high|medium|low|none>` と `multica project update <project> --priority <値>` は、プロジェクトの優先度を設定します。この値は保存されるだけで、後のリリースで claim 経路が読み取るまで `project_rank` はまだ使用しません。
+
 - `--lead` にはメンバーまたはエージェントの名前を指定します。`--default-branch-hint` はリポジトリの既定ブランチをエージェントに伝えるだけで、ブランチは切り替えません。
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。設定は `background_agents` の `routing` ジョブとして保存されます。これらのフラグは `multica workspace background-agents set routing` の別名で、従来の `/routing-agent` API ルートも 1 リリースの間は別名として残ります。
@@ -421,6 +423,8 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 `--agent` と `--fallback` にはエージェントの ID または名前を指定し、`none` でフィールドを解除します。`multica me` が扱うのは `dm_title`、`quick_actions`、`compact` で、`routing` はワークスペース専用です。ワークスペースへの書き込みにはオーナーまたは管理者が必要で、どちらのコマンドもタスクトークンを拒否します。エージェントなしの動作と期限は[バックグラウンドエージェント](/background-agents)を参照してください。
 
 `multica workspace capability-routing [workspace]` は、`capability_routing` 設定(課題タイプから作成者・レビュアーのエージェントへの対応)を JSON で表示します。未設定なら `{}` です。読み取り専用で、変更は `multica config propose workspace.settings --set 'capability_routing:=<json>'` で行います。[Workflows](/docs/workflows) を参照してください。
+
+`multica workspace queue-order show [workspace]` は、`queue_order`(`priority` または `project_rank`)と `queue_aging_minutes`(5〜720)の有効な値を JSON で表示します。`multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` は一方または両方を変更します(オーナーまたは管理者のみ。変更ごとに実行者・旧値・新値・時刻が監査記録に残ります)。既定の `priority` は従来のキュー順序のままです。`project_rank` は、プロジェクトの優先度、親課題の優先度、自身の優先度の順に待機中の実行を順位付けし、待機がエイジング期間続くごとに 1 段階上げます。クレーム処理がこの設定を読むのは後続のリリースからで、現時点では保存と監査記録のみです。不正な値は、許可される値を示して拒否されます。元に戻すには `--order priority` を指定します。
 
 ## ブラウザリース
 

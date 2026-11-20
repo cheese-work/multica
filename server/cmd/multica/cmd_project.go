@@ -107,6 +107,17 @@ func validateProjectStatus(status string) error {
 	return fmt.Errorf("invalid status %q; valid values: %s", status, strings.Join(validProjectStatuses, ", "))
 }
 
+var validProjectPriorities = []string{"urgent", "high", "medium", "low", "none"}
+
+func validateProjectPriority(priority string) error {
+	for _, p := range validProjectPriorities {
+		if p == priority {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid priority %q; valid values: %s", priority, strings.Join(validProjectPriorities, ", "))
+}
+
 func init() {
 	projectCmd.AddCommand(projectListCmd)
 	projectCmd.AddCommand(projectGetCmd)
@@ -133,6 +144,7 @@ func init() {
 	projectCreateCmd.Flags().String("title", "", "Project title (required)")
 	projectCreateCmd.Flags().String("description", "", "Project description")
 	projectCreateCmd.Flags().String("status", "", "Project status")
+	projectCreateCmd.Flags().String("priority", "", "Project priority: "+strings.Join(validProjectPriorities, ", ")+" (stored only until the claim path reads it; queue_order project_rank does not use it yet)")
 	projectCreateCmd.Flags().String("icon", "", "Project icon (emoji)")
 	projectCreateCmd.Flags().String("lead", "", "Lead name (member or agent)")
 	projectCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
@@ -180,6 +192,7 @@ func init() {
 	projectUpdateCmd.Flags().String("title", "", "New title")
 	projectUpdateCmd.Flags().String("description", "", "New description")
 	projectUpdateCmd.Flags().String("status", "", "New status")
+	projectUpdateCmd.Flags().String("priority", "", "New priority: "+strings.Join(validProjectPriorities, ", "))
 	projectUpdateCmd.Flags().String("icon", "", "New icon (emoji)")
 	projectUpdateCmd.Flags().String("lead", "", "New lead name (member or agent)")
 	projectUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
@@ -326,6 +339,13 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		}
 		body["status"] = v
 	}
+	if cmd.Flags().Changed("priority") {
+		v, _ := cmd.Flags().GetString("priority")
+		if err := validateProjectPriority(v); err != nil {
+			return err
+		}
+		body["priority"] = v
+	}
 	if v, _ := cmd.Flags().GetString("icon"); v != "" {
 		body["icon"] = v
 	}
@@ -415,6 +435,13 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		}
 		body["status"] = v
 	}
+	if cmd.Flags().Changed("priority") {
+		v, _ := cmd.Flags().GetString("priority")
+		if err := validateProjectPriority(v); err != nil {
+			return err
+		}
+		body["priority"] = v
+	}
 	if cmd.Flags().Changed("icon") {
 		v, _ := cmd.Flags().GetString("icon")
 		body["icon"] = v
@@ -444,7 +471,7 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(body) == 0 && split == nil && !clearSplit {
-		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --start-date, --due-date, --split-arm-b, --clear-split")
+		return fmt.Errorf("no fields to update; use flags like --title, --status, --priority, --description, --icon, --lead, --start-date, --due-date, --split-arm-b, --clear-split")
 	}
 
 	var result map[string]any
