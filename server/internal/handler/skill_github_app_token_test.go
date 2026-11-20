@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -159,5 +160,119 @@ func TestGitHubSkillAuthContext_NonGitHubSourceSkipsLookup(t *testing.T) {
 	release()
 	if fx.mints != 0 {
 		t.Fatalf("mints = %d for a non-GitHub URL, want 0", fx.mints)
+	}
+}
+
+// privateRepoUpstream stands in for api.github.com and raw.githubusercontent.com
+// serving a one-file skill, and records the Authorization header of every
+// request that reached either host.
+func privateRepoUpstream(t *testing.T, skillName string) *[]string {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		auths []string
+	)
+	client, _ := newGitHubFixtureClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/commits/main"):
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/commits/"):
+			http.NotFound(w, r)
+		case strings.Contains(r.URL.Path, "/git/trees/"):
+			writeJSON(w, http.StatusOK, githubTreeResponse{Tree: []githubTreeEntry{{Path: "skills/foo/SKILL.md", Type: "blob"}}})
+		case strings.HasSuffix(r.URL.Path, "/SKILL.md"):
+			_, _ = w.Write([]byte("---\nname: " + skillName + "\ndescription: private\n---\n# Private"))
+		default:
+			t.Errorf("unexpected upstream request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	previous := http.DefaultTransport
+	http.DefaultTransport = client.Transport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	return &auths
+}
+
+// credentialCases are the three credential sources, in precedence order.
+var credentialCases = []struct {
+	name     string
+	seed     bool
+	envToken string
+	want     string
+}{
+	{name: "installation token", seed: true, envToken: "ghp_env", want: "Bearer ghs_install_token"},
+	{name: "env token without installation", envToken: "ghp_env", want: "Bearer ghp_env"},
+	{name: "no credential", want: ""},
+}
+
+func assertEveryUpstreamAuth(t *testing.T, auths *[]string, want string) {
+	t.Helper()
+	if len(*auths) == 0 {
+		t.Fatal("no request reached the GitHub upstream")
+	}
+	for i, got := range *auths {
+		if got != want {
+			t.Fatalf("upstream request %d Authorization = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// The ImportSkill handler must authenticate every GitHub request of a
+// private-repo import with the workspace installation token.
+func TestImportSkill_PrivateGitHubRepoUsesInstallationToken(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test DB not configured")
+	}
+	for i, tc := range credentialCases {
+		t.Run(tc.name, func(t *testing.T) {
+			skillName := fmt.Sprintf("che8787-import-%d", i)
+			t.Cleanup(func() {
+				testPool.Exec(context.Background(), `DELETE FROM skill WHERE workspace_id = $1 AND name = $2`, testWorkspaceID, skillName)
+			})
+			newGitHubAppTokenFixture(t, "87870001", http.StatusCreated)
+			t.Setenv("GITHUB_TOKEN", tc.envToken)
+			if tc.seed {
+				seedSkillInstallation(t, 87870001, "che8787-org")
+			}
+			auths := privateRepoUpstream(t, skillName)
+
+			w := httptest.NewRecorder()
+			testHandler.ImportSkill(w, newRequestAsUser(testUserID, http.MethodPost, "/api/skills/import", map[string]any{
+				"url": "https://github.com/che8787-org/dots/tree/main/skills/foo",
+			}))
+			if w.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201: %s", w.Code, w.Body.String())
+			}
+			assertEveryUpstreamAuth(t, auths, tc.want)
+		})
+	}
+}
+
+// The RefreshSkill handler must do the same for a stored GitHub origin.
+func TestRefreshSkill_PrivateGitHubRepoUsesInstallationToken(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test DB not configured")
+	}
+	for i, tc := range credentialCases {
+		t.Run(tc.name, func(t *testing.T) {
+			skillName := fmt.Sprintf("che8787-refresh-%d", i)
+			skillID := createImportTargetSkillWithConfig(t, skillName, testUserID,
+				`{"origin":{"type":"github","source_url":"https://github.com/che8787-org/dots/tree/main/skills/foo"}}`, nil)
+			newGitHubAppTokenFixture(t, "87870001", http.StatusCreated)
+			t.Setenv("GITHUB_TOKEN", tc.envToken)
+			if tc.seed {
+				seedSkillInstallation(t, 87870001, "che8787-org")
+			}
+			auths := privateRepoUpstream(t, skillName)
+
+			w := doRefreshSkill(t, testUserID, skillID)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			assertEveryUpstreamAuth(t, auths, tc.want)
+		})
 	}
 }
