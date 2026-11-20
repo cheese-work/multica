@@ -28,6 +28,10 @@ func init() {
 	for _, kind := range []string{"project.workflow_split.update", "project.workflow_split.clear"} {
 		auditKinds[kind] = split
 	}
+	auditKinds["project.comment_wake.update"] = auditKindSpec{
+		TargetType: "project",
+		Allow:      []string{"comment_wake"},
+	}
 	// The link code is a bearer secret and is never snapshotted.
 	auditKinds["share_link.revoke"] = auditKindSpec{
 		TargetType: "share_link",

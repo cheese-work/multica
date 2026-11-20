@@ -3392,6 +3392,11 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
+	// comment_wake = mentioned_only: an unmentioned comment starts no run (CHE-5907).
+	if h.commentWakeMentionedOnlyFor(ctx, issue) {
+		return nil, nil
+	}
+
 	// Untagged member input on a blocked issue reaches its assignee as well as
 	// the thread's existing recipients, wherever the comment sits in the tree.
 	// A tagged comment wakes only the tagged targets (handled above).

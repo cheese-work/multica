@@ -647,7 +647,7 @@ func (q *Queries) ListOverrideIssueStatusesForWorkflow(ctx context.Context, arg 
 }
 
 const listProjectsUsingDefaultIssueWorkflow = `-- name: ListProjectsUsingDefaultIssueWorkflow :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, settings FROM project
 WHERE workspace_id = $1::uuid
   AND workflow_id IS NULL
 ORDER BY created_at, id
@@ -679,6 +679,7 @@ func (q *Queries) ListProjectsUsingDefaultIssueWorkflow(ctx context.Context, wor
 			&i.WorkflowID,
 			&i.DecisionDelegates,
 			&i.WorkflowSplit,
+			&i.Settings,
 		); err != nil {
 			return nil, err
 		}
@@ -691,7 +692,7 @@ func (q *Queries) ListProjectsUsingDefaultIssueWorkflow(ctx context.Context, wor
 }
 
 const listProjectsUsingIssueWorkflow = `-- name: ListProjectsUsingIssueWorkflow :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, settings FROM project
 WHERE workspace_id = $1::uuid
   AND workflow_id = $2::uuid
 ORDER BY created_at, id
@@ -728,6 +729,7 @@ func (q *Queries) ListProjectsUsingIssueWorkflow(ctx context.Context, arg ListPr
 			&i.WorkflowID,
 			&i.DecisionDelegates,
 			&i.WorkflowSplit,
+			&i.Settings,
 		); err != nil {
 			return nil, err
 		}
@@ -763,7 +765,7 @@ func (q *Queries) LockProjectForIssueWrite(ctx context.Context, arg LockProjectF
 }
 
 const lockProjectForWorkflowChange = `-- name: LockProjectForWorkflowChange :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, settings FROM project
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 FOR UPDATE
@@ -795,6 +797,7 @@ func (q *Queries) LockProjectForWorkflowChange(ctx context.Context, arg LockProj
 		&i.WorkflowID,
 		&i.DecisionDelegates,
 		&i.WorkflowSplit,
+		&i.Settings,
 	)
 	return i, err
 }
@@ -1022,7 +1025,7 @@ UPDATE project SET
     updated_at = now()
 WHERE id = $2::uuid
   AND workspace_id = $3::uuid
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, settings
 `
 
 type SetProjectWorkflowParams struct {
@@ -1051,6 +1054,7 @@ func (q *Queries) SetProjectWorkflow(ctx context.Context, arg SetProjectWorkflow
 		&i.WorkflowID,
 		&i.DecisionDelegates,
 		&i.WorkflowSplit,
+		&i.Settings,
 	)
 	return i, err
 }
