@@ -264,6 +264,18 @@ func TestWorkflowRoleChainAdvanceFailsClosedWhenRowCannotBeWritten(t *testing.T)
 	if got := taskWorkflowStep(t, taskID); got != before {
 		t.Fatalf("run step = %q after a failed role write, want it kept at %q", got, before)
 	}
+	// The issue change is committed, so the run must not stay alive: it would
+	// work as an author with only its reviewer row.
+	var status, reason string
+	dbfx.QueryRow(t, `SELECT status, COALESCE(failure_reason, '') FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status, &reason)
+	if status != "cancelled" || reason != "workflow_role_unrecorded" {
+		t.Fatalf("run status = %q reason = %q after a failed role write, want cancelled / workflow_role_unrecorded", status, reason)
+	}
+	var issueStatus string
+	dbfx.QueryRow(t, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus)
+	if issueStatus != "in_review" {
+		t.Fatalf("issue status = %q, want in_review (the committed transition)", issueStatus)
+	}
 	for _, r := range workflowRoleRows(t, issueID) {
 		if r.TaskID == taskID && r.Role != "reviewer" {
 			t.Fatalf("a non-reviewer row exists for the task: %+v", r)

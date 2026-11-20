@@ -532,15 +532,25 @@ func (h *Handler) writeWillRun(r *http.Request, actorType, actorID string, prev 
 
 // advanceRunStep moves a run's workflow step along with a status change the
 // run made itself, so its next change is judged from where it put the issue.
-func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue) {
+//
+// The step and its role row are one write: a run does not move into a step
+// whose role evidence is not stored (CHE-7676, RGS-1). The issue change is
+// already committed when this runs, so if the write fails the run is stopped:
+// left alive it would work as an author with only its reviewer row. It returns
+// an error only when the run could not be stopped either.
+func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue) error {
 	if run == nil || !run.WorkflowStep.Valid || prev.Status == issue.Status {
-		return
+		return nil
 	}
-	// The step and its role row are one write: a run does not move into a step
-	// whose role evidence is not stored (CHE-7676, RGS-1).
-	if err := h.advanceRunStepWithRole(ctx, run, issue); err != nil {
-		slog.Warn("workflow: advance run step failed", "task_id", uuidToString(run.ID), "error", err)
+	err := h.advanceRunStepWithRole(ctx, run, issue)
+	if err == nil {
+		return nil
 	}
+	slog.Error("workflow: advance run step failed; stopping the run", "task_id", uuidToString(run.ID), "error", err)
+	if _, cerr := h.TaskService.CancelTaskWithReason(ctx, run.ID, "workflow role evidence not recorded: "+err.Error(), "workflow_role_unrecorded"); cerr != nil {
+		return fmt.Errorf("stop run after failed role write: %w", cerr)
+	}
+	return nil
 }
 
 func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue) error {

@@ -5171,7 +5171,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+	if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue); err != nil {
+		slog.Error("run not stopped after failed workflow role write", append(logger.RequestAttrs(r), "error", err, "issue_id", id)...)
+		writeErrorCode(w, http.StatusInternalServerError, "workflow_role_unrecorded", "the issue changed but the run's role evidence was not recorded and the run could not be stopped")
+		return
+	}
 	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
@@ -6224,7 +6228,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+		if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue); err != nil {
+			slog.Error("batch: run not stopped after failed workflow role write", "issue_id", issueID, "error", err)
+			failed = append(failed, map[string]any{"id": issueID, "code": "workflow_role_unrecorded"})
+			continue
+		}
 		// The warning comment bumps the revision; build the response from the
 		// reloaded issue so the batch result and event carry the stored one.
 		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
