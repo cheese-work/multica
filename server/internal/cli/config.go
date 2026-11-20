@@ -63,6 +63,12 @@ type CLIConfig struct {
 	// MULTICA_DAEMON_MAX_CONCURRENT_TASKS env, this field, default.
 	MaxConcurrentTasks int `json:"max_concurrent_tasks,omitempty"`
 
+	// ReservedChatSlots is how many of the daemon's MaxConcurrentTasks slots
+	// only DM (chat) runs may use; issue runs get the rest. 0 (default) keeps
+	// every slot open to both. Resolution precedence (highest wins):
+	// MULTICA_DAEMON_RESERVED_CHAT_SLOTS env, this field, default.
+	ReservedChatSlots int `json:"reserved_chat_slots,omitempty"`
+
 	// PollInterval is how often the daemon polls the server for new tasks
 	// (Go duration string, e.g. "10s", "500ms"). Same persist-once
 	// motivation as MaxConcurrentTasks. Empty ("") means "not set — use

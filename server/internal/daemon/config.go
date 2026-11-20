@@ -527,6 +527,13 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if overrides.MaxConcurrentTasks > 0 {
 		maxConcurrentTasks = overrides.MaxConcurrentTasks
 	}
+	reservedChatSlots, err := intFromEnv("MULTICA_DAEMON_RESERVED_CHAT_SLOTS", overrides.ReservedChatSlots)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ValidateReservedChatSlots(reservedChatSlots, maxConcurrentTasks); err != nil {
+		return Config{}, err
+	}
 
 	// Profile
 	profile := overrides.Profile
@@ -708,7 +715,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoReloadEnabled:               autoReloadEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
-		ReservedChatSlots:               overrides.ReservedChatSlots,
+		ReservedChatSlots:               reservedChatSlots,
 		PollInterval:                    pollInterval,
 		WSClaimPollInterval:             wsClaimPollInterval,
 		HeartbeatInterval:               heartbeatInterval,
@@ -1593,4 +1600,14 @@ func (c Config) agentTimeoutFor(provider string) time.Duration {
 		return c.CodexAgentTimeout
 	}
 	return c.AgentTimeout
+}
+
+// ValidateReservedChatSlots rejects a reserved_chat_slots value that would
+// leave issue runs no slot (>= max_concurrent_tasks) or is negative. The error
+// names both values.
+func ValidateReservedChatSlots(reserved, maxConcurrentTasks int) error {
+	if reserved < 0 || reserved >= maxConcurrentTasks {
+		return fmt.Errorf("reserved_chat_slots %d must be >= 0 and below max_concurrent_tasks %d", reserved, maxConcurrentTasks)
+	}
+	return nil
 }

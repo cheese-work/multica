@@ -685,6 +685,9 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+	// issueTasks counts the claimed tasks that are not DM (chat) runs. With
+	// reserved_chat_slots it bounds the slots issue work may hold.
+	issueTasks atomic.Int64
 
 	// hostSampler holds the latest host CPU/RAM/disk sample. Built in New so it
 	// exists before Run starts any reader; Run starts its sampling loop.
@@ -5787,7 +5790,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			continue
 		}
 
-		claimResult, err := d.claimTasksWSFirst(pollerCtx, d.cfg.DaemonID, runtimeIDs, len(slots))
+		claimResult, err := d.claimTasksWSFirst(pollerCtx, d.cfg.DaemonID, runtimeIDs, len(slots), d.issueClaimBudget())
 		if err != nil {
 			d.exitClaim()
 			releaseSlots(slots)
@@ -5823,6 +5826,10 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			d.logger.Info("task received", "task", t.ID, "target", taskTarget)
 			taskWG.Add(1)
 			d.activeTasks.Add(1)
+			isIssueTask := t.ChatSessionID == ""
+			if isIssueTask {
+				d.issueTasks.Add(1)
+			}
 			if cache, ok := d.repoCache.(interface{ CancelMaintenance() }); ok {
 				// A task can reuse an existing worktree and never enter the
 				// checkout path that normally preempts repository maintenance.
@@ -5830,9 +5837,14 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				// direct Git operations cannot overlap it.
 				cache.CancelMaintenance()
 			}
-			go func(t Task, slot int, claim *inflightClaim) {
+			go func(t Task, slot int, claim *inflightClaim, isIssueTask bool) {
 				defer taskWG.Done()
 				defer d.taskDone()
+				defer func() {
+					if isIssueTask {
+						d.issueTasks.Add(-1)
+					}
+				}()
 				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
@@ -5844,7 +5856,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					signalPollerWakeup(wakeup)
 				}()
 				d.handleTask(parentCtx, t, slot)
-			}(t, slot, claim)
+			}(t, slot, claim, isIssueTask)
 			dispatched++
 		}
 		d.exitClaim()
@@ -5864,6 +5876,31 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			return
 		}
 	}
+}
+
+// issueClaimBudget is how many more non-chat tasks this daemon may claim:
+// MaxConcurrentTasks-ReservedChatSlots minus the issue tasks already running.
+// nil means no limit (reserved_chat_slots=0), so claim requests stay exactly
+// as they were before the setting existed.
+func (d *Daemon) issueClaimBudget() *int {
+	if d.cfg.ReservedChatSlots <= 0 {
+		return nil
+	}
+	budget := d.cfg.MaxConcurrentTasks - d.cfg.ReservedChatSlots - int(d.issueTasks.Load())
+	if budget < 0 {
+		budget = 0
+	}
+	return &budget
+}
+
+// reservedChatSlotsFree is how many reserved slots are free, for `daemon
+// status`. Issue tasks never take a reserved slot, so only chat runs use them.
+func (d *Daemon) reservedChatSlotsFree() int {
+	if d.cfg.ReservedChatSlots <= 0 {
+		return 0
+	}
+	chatRunning := int(d.activeTasks.Load() - d.issueTasks.Load())
+	return max(0, d.cfg.ReservedChatSlots-chatRunning)
 }
 
 // taskClaimPollInterval returns the next missed-event safety poll. The longer

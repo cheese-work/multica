@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -161,6 +162,22 @@ func TestReservedChatSlotsZeroSendsNoIssueLimit(t *testing.T) {
 	for _, b := range h.bodies {
 		if b.MaxIssueTasks != nil {
 			t.Fatalf("max_issue_tasks sent with reserved_chat_slots=0: %+v", b)
+		}
+	}
+}
+
+func TestValidateReservedChatSlots(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		reserved, max int
+		ok            bool
+	}{{0, 30, true}, {3, 30, true}, {29, 30, true}, {30, 30, false}, {31, 30, false}, {-1, 30, false}} {
+		err := ValidateReservedChatSlots(c.reserved, c.max)
+		if (err == nil) != c.ok {
+			t.Fatalf("ValidateReservedChatSlots(%d, %d) = %v, want ok=%v", c.reserved, c.max, err, c.ok)
+		}
+		if err != nil && (!strings.Contains(err.Error(), fmt.Sprint(c.reserved)) || !strings.Contains(err.Error(), fmt.Sprint(c.max))) {
+			t.Fatalf("error %q must name both values", err)
 		}
 	}
 }

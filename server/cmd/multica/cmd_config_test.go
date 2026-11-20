@@ -70,6 +70,7 @@ func TestRunConfigShowIncludesProfileAndDefaults(t *testing.T) {
 		"runtime_name:",
 		"workspaces_root:",
 		"max_concurrent_tasks:",
+		"reserved_chat_slots:",
 		"poll_interval:",
 		"ws_claim_poll_interval:",
 		"heartbeat_interval:",
@@ -188,6 +189,37 @@ func TestRunConfigSetRejectsUnknownKey(t *testing.T) {
 	err := runConfigSet(cmd, []string{"token", "secret"})
 	if err == nil || !strings.Contains(err.Error(), "unknown config key") {
 		t.Fatalf("runConfigSet error = %v, want unknown key", err)
+	}
+}
+
+// reserved_chat_slots must stay below max_concurrent_tasks (the built-in default
+// when unset); the refusal names both numbers, and 0 or "" clears it.
+func TestApplyConfigSetReservedChatSlots(t *testing.T) {
+	t.Parallel()
+
+	cfg := cli.CLIConfig{MaxConcurrentTasks: 30}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", "3"); err != nil || cfg.ReservedChatSlots != 3 {
+		t.Fatalf("set 3 = %v, got %d", err, cfg.ReservedChatSlots)
+	}
+	for _, bad := range []string{"-1", "30", "31"} {
+		err := applyConfigSet(&cfg, "reserved_chat_slots", bad)
+		if err == nil || !strings.Contains(err.Error(), bad) || !strings.Contains(err.Error(), "30") {
+			t.Fatalf("reserved_chat_slots=%s error = %v; want it to name %s and 30", bad, err, bad)
+		}
+	}
+	if cfg.ReservedChatSlots != 3 {
+		t.Fatalf("a refused value changed the config: %d", cfg.ReservedChatSlots)
+	}
+	if err := applyConfigSet(&cfg, "max_concurrent_tasks", "3"); err == nil {
+		t.Fatal("lowering max_concurrent_tasks to the reserved count must be refused")
+	}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", ""); err != nil || cfg.ReservedChatSlots != 0 {
+		t.Fatalf("clear = %v, got %d", err, cfg.ReservedChatSlots)
+	}
+
+	unset := cli.CLIConfig{}
+	if err := applyConfigSet(&unset, "reserved_chat_slots", "20"); err == nil || !strings.Contains(err.Error(), "20") {
+		t.Fatalf("with max unset the default cap 20 applies; got %v", err)
 	}
 }
 

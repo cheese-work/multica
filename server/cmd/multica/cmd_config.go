@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon"
 )
 
 var configCmd = &cobra.Command{
@@ -36,6 +37,7 @@ var configSetSupportedKeys = []string{
 	"runtime_name",
 	"workspaces_root",
 	"max_concurrent_tasks",
+	"reserved_chat_slots",
 	"poll_interval",
 	"ws_claim_poll_interval",
 	"heartbeat_interval",
@@ -54,11 +56,11 @@ var configSetCmd = &cobra.Command{
 	Short: "Set a CLI configuration value",
 	Long: "Supported keys: " +
 		"server_url, app_url, workspace_id, " +
-		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, poll_interval, ws_claim_poll_interval, " +
+		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, reserved_chat_slots, poll_interval, ws_claim_poll_interval, " +
 		"heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload.\n\n" +
-		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, " +
+		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, reserved_chat_slots, " +
 		"poll_interval, ws_claim_poll_interval, heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload) mirror their " +
@@ -104,6 +106,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "runtime_name:", valueOrDefault(cfg.RuntimeName, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "workspaces_root:", valueOrDefault(cfg.WorkspacesRoot, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "max_concurrent_tasks:", intOrDefault(cfg.MaxConcurrentTasks, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %d\n", "reserved_chat_slots:", cfg.ReservedChatSlots)
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "poll_interval:", valueOrDefault(cfg.PollInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "ws_claim_poll_interval:", valueOrDefault(cfg.WSClaimPollInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "heartbeat_interval:", valueOrDefault(cfg.HeartbeatInterval, "(not set)"))
@@ -191,7 +194,23 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		if n < 0 {
 			return fmt.Errorf("max_concurrent_tasks must be >= 0 (got %d)", n)
 		}
+		if err := daemon.ValidateReservedChatSlots(cfg.ReservedChatSlots, effectiveMaxConcurrentTasks(n)); err != nil {
+			return err
+		}
 		cfg.MaxConcurrentTasks = n
+	case "reserved_chat_slots":
+		if value == "" {
+			cfg.ReservedChatSlots = 0
+			return nil
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("reserved_chat_slots must be an integer: %w", err)
+		}
+		if err := daemon.ValidateReservedChatSlots(n, effectiveMaxConcurrentTasks(cfg.MaxConcurrentTasks)); err != nil {
+			return err
+		}
+		cfg.ReservedChatSlots = n
 	case "poll_interval":
 		if value == "" {
 			cfg.PollInterval = ""
@@ -347,6 +366,15 @@ func valueOrDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// effectiveMaxConcurrentTasks is the cap the daemon will run with: the
+// persisted value, or the built-in default when none is set.
+func effectiveMaxConcurrentTasks(persisted int) int {
+	if persisted > 0 {
+		return persisted
+	}
+	return daemon.DefaultMaxConcurrentTasks
 }
 
 func intOrDefault(v int, fallback string) string {
