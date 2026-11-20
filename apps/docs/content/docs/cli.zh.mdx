@@ -329,7 +329,7 @@ multica runtime activity <runtime-id>
 
 `daemon restart` 会保留现有 Linux systemd 用户服务，包括自定义单元及其启动设置。停止前，命令会通过服务管理器核对目标 daemon 的 PID。命令使用原生停止准入检查（有维护保留时需提供 `--maintenance-token`），然后等待自动重启，或启动已停止的同一服务。成功要求在 90 秒内观察到新的服务 PID，且运行中的健康信息与目标配置一致。所有权不符或无法确认停止结果时，命令会报错，不会强制结束进程或单独启动子进程。受管任务仍不能重启 daemon。
 
-`multica config set reserved_chat_slots <n>` 为聊天（DM）运行保留 `n` 个守护进程槽位：议题运行最多使用 `max_concurrent_tasks - n` 个槽位，聊天运行可使用全部槽位，默认值 `0` 不改变任何行为。小于 `0`，或大于等于 `max_concurrent_tasks` 的值会被拒绝，错误信息同时列出这两个值。`daemon status --output json` 会报告 `reserved_chat_slots` 和 `reserved_chat_slots_free`（当前未被聊天运行占用的保留槽位数）。
+`multica config set reserved_chat_slots <n>` 为聊天（DM）运行保留 `n` 个守护进程槽位：议题运行最多使用 `max_concurrent_tasks - n` 个槽位，聊天运行可使用全部槽位，默认值 `0` 不改变任何行为。群组频道会话与议题运行一起计数，只有私聊使用保留槽位。小于 `0`，或大于等于 `max_concurrent_tasks` 的值会被拒绝，错误信息同时列出这两个值。该值会按守护进程实际使用的上限校验：已设置的 `max_concurrent_tasks`，否则 `MULTICA_DAEMON_MAX_CONCURRENT_TASKS`，否则 20。`daemon status --output json` 会报告 `reserved_chat_slots` 和 `reserved_chat_slots_free`（当前未被聊天运行占用的保留槽位数）。
 
 ```bash
 multica daemon autostart enable

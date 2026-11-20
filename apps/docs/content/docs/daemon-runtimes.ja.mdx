@@ -107,7 +107,7 @@ multica daemon autostart disable
 
 1 つのデーモンはデフォルトで最大 20 件の実行を同時に処理します。各エージェントはデフォルトで最大 6 件です。実効的な同時実行数は両者の小さい方になります。
 
-上限に達すると、新しい実行はキューで待ち続けます。個々のエージェントの同時実行数はエージェント設定で、マシン全体の上限は `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` で調整できます。 `reserved_chat_slots`（`multica config set reserved_chat_slots 3`）を設定すると、チャット（DM）の実行用にスロットを空けておけます。Issue の実行は最大 `max_concurrent_tasks - reserved_chat_slots` 個まで、チャットの実行はすべてのスロットを使え、既定値 `0` では何も変わりません。`multica daemon status --output json` に `reserved_chat_slots` と `reserved_chat_slots_free` が表示されます。並列実行は、マシンの性能、ツールアカウントのクォータ、同じ作業ディレクトリを同時に取り合います。
+上限に達すると、新しい実行はキューで待ち続けます。個々のエージェントの同時実行数はエージェント設定で、マシン全体の上限は `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` で調整できます。 `reserved_chat_slots`（`multica config set reserved_chat_slots 3`）を設定すると、チャット（DM）の実行用にスロットを空けておけます。Issue の実行は最大 `max_concurrent_tasks - reserved_chat_slots` 個まで、チャットの実行はすべてのスロットを使え、既定値 `0` では何も変わりません。グループチャンネルの会話は Issue の実行と同じ枠で数え、予約スロットを使うのは 1 対 1 のチャットだけです。`multica daemon status --output json` に `reserved_chat_slots` と `reserved_chat_slots_free` が表示されます。並列実行は、マシンの性能、ツールアカウントのクォータ、同じ作業ディレクトリを同時に取り合います。
 
 実行で使われたトークン、費用、失敗はワークスペースごとに[分析](/analytics)ページにまとまっています。1 つのランタイムのトークン使用量は `multica runtime usage <runtime-id>` でも確認できます。
 
