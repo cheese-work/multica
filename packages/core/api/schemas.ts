@@ -2259,6 +2259,10 @@ const CostSplitShape = {
   uncosted_output_tokens: z.number().optional(),
   uncosted_cache_read_tokens: z.number().optional(),
   uncosted_cache_write_tokens: z.number().optional(),
+  // The 1-hour-TTL part of uncosted_cache_write_tokens. Absent (older
+  // backend) means "no split": every uncosted written token prices at the
+  // 5-minute rate, exactly as before the field existed.
+  uncosted_cache_write_1h_tokens: z.number().optional(),
 };
 
 const DashboardUsageDailySchema = z.lazy(() => z.object({
@@ -2448,6 +2452,8 @@ const TaskUsageSchema = z.lazy(() => z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  // Absent = no TTL split reported; writes price at the 5-minute rate.
+  cache_write_1h_tokens: z.number().optional().catch(undefined),
   cost_usd_ticks: z.number().optional(),
   credits_micros: z.number().optional().catch(undefined),
 }).loose());
