@@ -94,6 +94,9 @@ func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Querie
 	if err != nil {
 		return err
 	}
+	// root_issue reads the parent the write leaves behind: UpdateIssue sets the
+	// parent from params, so a request that also changes the parent decides it.
+	facts.HasParent = params.ParentIssueID.Valid
 	return w.applyEntry(ctx, q, locked, params.Status.String, issueworkflow.EvaluateEntry(step.Entry, facts), facts)
 }
 
@@ -208,7 +211,7 @@ func (h *Handler) postEntryWarning(ctx context.Context, w *workflowWrite, issue 
 // warn gate is recorded once the issue row exists, in the create transaction:
 // the same activity row and first-warning comment as a move into the step.
 func (h *Handler) createEntryGate(workspaceID pgtype.UUID, actorType, actorID string) service.CreateEntryGate {
-	return func(ctx context.Context, q *db.Queries, step issueworkflow.Step) (service.RecordCreateEntry, error) {
+	return func(ctx context.Context, q *db.Queries, step issueworkflow.Step, hasParent bool) (service.RecordCreateEntry, error) {
 		if len(step.Entry) == 0 {
 			return nil, nil
 		}
@@ -221,7 +224,7 @@ func (h *Handler) createEntryGate(workspaceID pgtype.UUID, actorType, actorID st
 			return nil, err
 		}
 		var blocking, warning []issueworkflow.EntryFailure
-		for _, f := range issueworkflow.EvaluateEntry(step.Entry, issueworkflow.Facts{IssueStatuses: statuses}) {
+		for _, f := range issueworkflow.EvaluateEntry(step.Entry, issueworkflow.Facts{IssueStatuses: statuses, HasParent: hasParent}) {
 			if f.Mode == issueworkflow.EntryModeBlock {
 				blocking = append(blocking, f)
 			} else {

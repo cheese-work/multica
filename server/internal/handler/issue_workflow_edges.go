@@ -252,6 +252,7 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 		}
 	}
 	facts.ChildrenDone = facts.ChildrenDone && joined > 0
+	facts.HasParent = issue.ParentIssueID.Valid
 	prs, err := q.ListEdgePullRequests(ctx, ids)
 	if err != nil {
 		return facts, err

@@ -37,6 +37,7 @@ const (
 	GuardWebhook          = "webhook"
 	GuardAdoptionLinked   = "adoption_linked"
 	GuardUpstreamChecked  = "upstream_checked"
+	GuardRootIssue        = "root_issue"
 )
 
 // Edge is one exit of a step. Timeout and OnTimeout are required for guards
@@ -57,7 +58,7 @@ type Guard struct {
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
-	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
+	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0, GuardRootIssue: 0,
 }
 
 // webhookNameRe is the endpoint name a webhook guard may reference.
@@ -161,7 +162,7 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked {
+		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardRootIssue {
 			return invalid("%s is an entry gate, not an edge guard", g.Kind)
 		}
 		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
@@ -226,6 +227,8 @@ type Facts struct {
 	// Adoption is what the adoption_linked entry gate reads; nil when no
 	// such gate asked for it.
 	Adoption *AdoptionFacts
+	// HasParent is what the root_issue entry gate reads (CHE-6831).
+	HasParent bool
 }
 
 // FirstMatch returns the first edge, in list order, whose guard holds for the
@@ -270,6 +273,8 @@ func (f Facts) holds(g Guard) bool {
 		return f.IssueStatuses[g.Args[0]] == g.Args[1]
 	case GuardWebhook:
 		return f.Webhooks[g.Args[0]]
+	case GuardRootIssue:
+		return !f.HasParent
 	case GuardAdoptionLinked:
 		return f.Adoption != nil && f.Adoption.Refusal() == ""
 	}
