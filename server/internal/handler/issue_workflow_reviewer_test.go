@@ -25,7 +25,7 @@ type reviewerCase struct {
 func reviewerAgent(t *testing.T, provider, model string) string {
 	t.Helper()
 	runtimeID := dbfx.Runtime(t, "reviewer runtime "+workflowTestSuffix(), testutil.Cols{"provider": provider})
-	return dbfx.Agent(t, "reviewer agent "+workflowTestSuffix(), runtimeID, testutil.Cols{"model": model})
+	return dbfx.Agent(t, "reviewer agent "+workflowTestSuffix(), runtimeID, testutil.Cols{"model": model, "visibility": "workspace"})
 }
 
 // newReviewerCase is a project whose workflow hands in_review to the reviewer

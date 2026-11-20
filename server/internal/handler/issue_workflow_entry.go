@@ -163,19 +163,39 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
-	if err != nil {
-		return nil, err
+	var (
+		assigneeType string
+		assigneeID   pgtype.UUID
+		guard        *reviewerGuard
+		pickRefusal  error
+	)
+	if step.Handler.Type == issueworkflow.HandlerReviewer {
+		// The pick needs the issue's authors, so it is not ResolveHandler's.
+		var err error
+		if guard, err = h.loadReviewerGuard(ctx, q, prev.ID); err != nil {
+			return nil, err
+		}
+		var picked pgtype.UUID
+		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
+		if ok {
+			assigneeType, assigneeID = issueworkflow.HandlerAgent, picked
+		}
+	} else {
+		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
+		if err != nil {
+			return nil, err
+		}
+		assigneeType, assigneeID, ok = issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
 	}
-	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
 	sticky, err := issueworkflow.StickyStepAssignee(ctx, q, prev.WorkspaceID, prev.ID, entering)
 	if err != nil {
 		return nil, err
 	}
 	// A step with nobody to resolve to hands off only when the move names one
-	// or the issue keeps one for the step.
+	// or the issue keeps one for the step. A reviewer step whose table lists
+	// no qualified reviewer refuses instead.
 	if !ok && caller.handoffAssignee == nil && sticky == nil {
-		return nil, nil
+		return nil, pickRefusal
 	}
 	if ok && step.KeepOtherAssignee {
 		keep, err := h.keepsOtherAssignee(ctx, q, prev, *def, project, assigneeType, assigneeID)
@@ -191,6 +211,11 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	}
 	stepHandler := issueworkflow.StepAssignee{Type: assigneeType, ID: assigneeID}
 	assignee, overridden, kept := issueworkflow.ResolveStepAssignee(stepHandler, caller.handoffAssignee, sticky)
+	if guard != nil {
+		if err := h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, assignee); err != nil {
+			return nil, err
+		}
+	}
 	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
 	params.AssigneeID = assignee.ID
 	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden, kept: kept}, nil
@@ -332,6 +357,18 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"code":          "status_move_not_allowed",
 			"from":          notAllowed.From,
 			"allowed_moves": notAllowed.Allowed,
+		})
+		return true
+	}
+	var notIndependent *ReviewIndependenceError
+	if errors.As(err, &notIndependent) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        notIndependent.Error(),
+			"code":         reviewIndependenceCode,
+			"reason":       notIndependent.Reason,
+			"author_labs":  notIndependent.AuthorLabs,
+			"reviewer_lab": notIndependent.ReviewerLab,
+			"reviewer_id":  notIndependent.ReviewerID,
 		})
 		return true
 	}
@@ -875,6 +912,8 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 			return "a person (none found)"
 		case issueworkflow.HandlerAuthor:
 			return "the author (none set)"
+		case issueworkflow.HandlerReviewer:
+			return "a reviewer of another lab (from capability routing)"
 		}
 		return ""
 	}

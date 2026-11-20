@@ -80,9 +80,11 @@ Quick ワークフローへの紐付けのたびに、課題のアクティビ�
 
 ## 能力でルーティングする
 
-ワークスペース設定 `capability_routing` は、課題タイプを作成者エージェントと順序付きのレビュアーエージェント一覧に対応付けます。例: `{"feat": {"author": "<エージェント ID>", "reviewers": ["<エージェント ID>"]}}`。キーは小文字のタイプ、ID はワークスペースのエージェントで、`reviewers` は空にできず、作成者はレビュアーになれません。既定では未設定で、未設定なら動作は変わりません。読み取るのは **Author** ハンドラーだけです。変更は `workspace.settings` カード (`multica config propose workspace.settings --set 'capability_routing:=<json>'`) だけで行い、通常の設定保存は保存済みの値を保持します。`multica workspace capability-routing` で読み取れ、未設定なら `{}` を表示します。
+ワークスペース設定 `capability_routing` は、課題タイプを作成者エージェントと順序付きのレビュアーエージェント一覧に対応付けます。例: `{"feat": {"author": "<エージェント ID>", "reviewers": ["<エージェント ID>"]}}`。キーは小文字のタイプ、ID はワークスペースのエージェントで、`reviewers` は空にできず、作成者はレビュアーになれません。既定では未設定で、未設定なら動作は変わりません。読み取るのは **Author** と **Reviewer** ハンドラーだけです。変更は `workspace.settings` カード (`multica config propose workspace.settings --set 'capability_routing:=<json>'`) だけで行い、通常の設定保存は保存済みの値を保持します。`multica workspace capability-routing` で読み取れ、未設定なら `{}` を表示します。
 
 **Author** は「進行中」などのステップに指定できるハンドラーです。ステップに入った課題は作成者に渡ります。作成者は、この課題を最後にこのステップへ移した人またはエージェントで、いなければ `capability_routing` が課題のタイプ (タイトルの Conventional Commit プレフィックス、例: `feat`) に対して指定する `author` です。テーブルを変更しても、課題がすでに持つ作成者は変わりません。人が課題を再割り当てすると、その人が次回の入場時の作成者になります。どちらもなければ、ステップは誰にも引き渡さず、ワークスペースが作成者をルーティングしていない場合はワークフロー lint が警告します (WF015)。`multica workflow handoff set <workflow> <status-key> --handler author` で設定します。
+
+`reviewer` ステップは、課題タイプ（タイトルの Conventional Commit プレフィックス）に登録されたレビュアーのうち、到達可能で、ラボが判明しており、すべての作成者のラボと異なり、作成者自身でもない最初の 1 人に課題を渡します。そのステップでの上書きや固定の担当者にも同じ規則が適用されます。該当者がいない場合、移動はラボ名を示す `409 review_independence` で拒否され、課題は変更されません。
 
 ## 次のステップへ渡す
 
