@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -48,8 +49,20 @@ func newChainRetryFixture(t *testing.T, chained bool) chainRetryFixture {
 	}
 }
 
-// endedRun is a run of the chained step that ended in the given state.
+// endedRun is a run that carried the issue into the step and then ended in the
+// given state: the chained move left its evidence behind, as the real one does.
 func (f chainRetryFixture) endedRun(t *testing.T, state string, extra testutil.Cols) string {
+	t.Helper()
+	id := f.endedDirectRun(t, state, extra)
+	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details)
+		VALUES ($1, $2, 'agent', 'chained_run_entered', jsonb_build_object('task_id', $3::text, 'step', 'in_progress'))`,
+		testWorkspaceID, f.issueID, id)
+	return id
+}
+
+// endedDirectRun is a run dispatched straight into the step (an assignment, a
+// review sent back) that ended in the given state: nothing chained it.
+func (f chainRetryFixture) endedDirectRun(t *testing.T, state string, extra testutil.Cols) string {
 	t.Helper()
 	cols := testutil.Cols{
 		"issue_id": f.issueID, "runtime_id": f.runtimeID, "status": state, "workflow_step": "in_progress",
@@ -278,5 +291,49 @@ func TestChainedRunRetryUnknownTaskIsIgnored(t *testing.T) {
 
 	if got := len(f.queued(t)); got != 0 {
 		t.Fatalf("queued runs = %d for an unknown task, want 0", got)
+	}
+}
+
+// A run dispatched straight into a chain_same_owner step (a fresh assignment,
+// or a review sent the work back) never carried the issue in: its failure is
+// not this feature's, so no retry starts and no block follows.
+func TestChainedRunRetryIgnoresADirectlyDispatchedRun(t *testing.T) {
+	f := newChainRetryFixture(t, true)
+
+	f.apply(t, f.endedDirectRun(t, "failed", nil))
+	f.apply(t, f.endedDirectRun(t, "failed", nil))
+
+	if got := len(f.queued(t)); got != 0 {
+		t.Fatalf("queued runs = %d after a direct run failed, want 0", got)
+	}
+	wantIssueStatus(t, f.issueID, "in_progress")
+	if f.retryRows(t) != 0 || f.blockedReason(t) != "" {
+		t.Fatal("a direct run's failure left a retry record or a block")
+	}
+}
+
+// The real chained move (an agent's run entering a chain_same_owner step)
+// leaves the evidence itself: the run's later failure gets the one retry.
+func TestChainedRunRetryFollowsARealChainedMove(t *testing.T) {
+	c := newChainFixture(t, chainCase{flag: true})
+	c.moveAs(t, c.runHeaders(), map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+	setTaskState(t, c.taskID, "failed")
+
+	testHandler.ApplyChainedRunRetry(context.Background(), util.MustParseUUID(c.taskID))
+
+	if got := c.runsFor(t, c.agentA); got != 1 {
+		t.Fatalf("queued runs = %d after a chained run failed, want 1 retry", got)
+	}
+}
+
+// A run that entered the step by an ordinary handoff (flag off) leaves no
+// chained evidence, so its failure is not retried.
+func TestChainedRunRetryIgnoresAMoveThatDidNotChain(t *testing.T) {
+	c := newChainFixture(t, chainCase{flag: false})
+	c.moveAs(t, c.runHeaders(), map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+	var n int
+	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'chained_run_entered'`, c.issueID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("chained_run_entered rows = %d for a move that did not chain, want 0", n)
 	}
 }
