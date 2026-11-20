@@ -47,6 +47,12 @@ type edgeMove struct {
 // connection is the one it waits on. overlay is the next run's Composio
 // overlay, built before the transaction opened (prepareEdgeRunOverlay).
 func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool, overlay *service.PreparedRuntimeMCPOverlay) (edgeMove, error) {
+	return h.moveIssueOnEdgeTxAs(ctx, q, issue, to, source, extra, startHandler, overlay, workflowCaller{})
+}
+
+// moveIssueOnEdgeTxAs is moveIssueOnEdgeTx for a move that carries a caller's
+// handoff options (the deferred switch re-enters the current step).
+func (h *Handler) moveIssueOnEdgeTxAs(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool, overlay *service.PreparedRuntimeMCPOverlay, caller workflowCaller) (edgeMove, error) {
 	th := h.onQueries(q)
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
@@ -63,7 +69,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	if err := assertIssueStatusStillActive(ctx, q, issue.WorkspaceID, to); err != nil {
 		return edgeMove{}, err
 	}
-	handoff, write, err := h.decideIssueWorkflowWith(ctx, q, issue, &params, true, false, false, workflowCaller{})
+	handoff, write, err := h.decideIssueWorkflowWith(ctx, q, issue, &params, true, false, false, caller)
 	if err != nil {
 		return edgeMove{}, fmt.Errorf("workflow refused the move: %w", err)
 	}
@@ -184,7 +190,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 
 	payload := map[string]any{
 		"assignee_changed": assigneeChanged,
-		"status_changed":   true,
+		"status_changed":   issue.Status != to,
 		"prev_status":      issue.Status,
 		"creator_type":     issue.CreatorType,
 		"creator_id":       uuidToString(issue.CreatorID),
