@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
+import { useQuery } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { issueDetailOptions, issueKeys } from "@multica/core/issues/queries";
 import { setApiInstance } from "@multica/core/api";
 import { ApiError, type ApiClient } from "@multica/core/api/client";
 import { createQueryClient } from "@multica/core/query-client";
@@ -72,6 +74,17 @@ function Harness() {
   );
 }
 
+// Stands in for the issue page: same detail key, with a Retry the sidebar must not hide.
+function PageObserver() {
+  const q = useQuery(issueDetailOptions("ws-1", "issue-1"));
+  if (q.isPending) return <div>page loading</div>;
+  if (q.isError) return <button type="button">page retry</button>;
+  return <div>page ready</div>;
+}
+
+const ISSUE = { id: "issue-1", identifier: "MUL-1", title: "Recovered pin", status: "todo" };
+const unavailable = () => new ApiError("unavailable", 503, "Service Unavailable");
+
 // Real query client and real issueDetailOptions: the retry policy is the thing
 // under test, so nothing between PinRow and the cache may be mocked.
 describe("PinnedSection detail read", () => {
@@ -111,5 +124,66 @@ describe("PinnedSection detail read", () => {
     );
     expect(await screen.findByText("Clean pin")).toBeInTheDocument();
     expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the page's error state while the sidebar's recovery read is in flight", async () => {
+    let release!: (issue: typeof ISSUE) => void;
+    const held = new Promise<typeof ISSUE>((resolve) => {
+      release = resolve;
+    });
+    const getIssue = vi.fn().mockRejectedValueOnce(unavailable()).mockReturnValueOnce(held);
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    // Seed the pin list so the pin row and the page observer mount together and
+    // share one first read; a late pin mount would add its own mount refetch.
+    qc.setQueryData(["pins"], [PIN]);
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <PageObserver />
+        <Harness />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("page retry")).toBeInTheDocument();
+    await vi.waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    // Second request is held: the page must still show Retry, not a loading state.
+    expect(screen.getByText("page retry")).toBeInTheDocument();
+    expect(screen.queryByText("page loading")).not.toBeInTheDocument();
+    await act(async () => release(ISSUE));
+    expect(await screen.findByText("Recovered pin")).toBeInTheDocument();
+    expect(await screen.findByText("page ready")).toBeInTheDocument();
+  });
+
+  it("recovers again from a second transient 503 on the same mounted pin", async () => {
+    const getIssue = vi
+      .fn()
+      .mockRejectedValueOnce(unavailable())
+      .mockResolvedValueOnce(ISSUE)
+      .mockRejectedValueOnce(unavailable())
+      .mockResolvedValue({ ...ISSUE, title: "Recovered twice" });
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Recovered pin", {}, { timeout: 4000 })).toBeInTheDocument();
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: issueKeys.detail("ws-1", "issue-1") });
+    });
+    expect(await screen.findByText("Recovered twice", {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(getIssue).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not re-read after a terminal 403", async () => {
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("forbidden", 403, "Forbidden"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    await vi.waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+    expect(state.deletePin).not.toHaveBeenCalled();
   });
 });

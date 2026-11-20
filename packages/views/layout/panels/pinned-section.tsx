@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
   PointerSensor,
@@ -16,7 +16,7 @@ import { Archive, Folder, X } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
-import { ApiError } from "@multica/core/api";
+import { api, ApiError } from "@multica/core/api";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
@@ -49,6 +49,13 @@ import {
 // Stable empty default: an inline `= []` on useQuery is a new reference every
 // render while the query is disabled, which re-fires the sync effect below.
 const EMPTY_PINS: PinnedItem[] = [];
+
+/** Network errors and 5xx / 408 / 429 may clear on their own; 4xx like 403 and 404 will not. */
+function isTransientFailure(err: unknown): boolean {
+  if (!err) return false;
+  if (!(err instanceof ApiError)) return true;
+  return err.status >= 500 || err.status === 408 || err.status === 429;
+}
 
 function pinHref(p: WorkspacePaths, pin: PinnedItem): string {
   return pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id);
@@ -348,19 +355,36 @@ function PinRow({
 
   // The shared detail options fail at once so the issue page never waits on
   // another observer's retry. A pin has no Retry button, so it re-reads once
-  // itself: one transient error must not hide a valid pin.
+  // itself per independent failure: one transient error must not hide a valid
+  // pin, and a terminal one (403, 404) is not retried.
+  //
+  // The re-read runs outside the shared query: `refetch()` would flip the
+  // entry back to pending and hide the issue page's Retry and reset the hover
+  // card. Only a success is written back, which clears the error for everyone.
+  const queryClient = useQueryClient();
   const retriedRef = useRef(false);
-  const { refetch: refetchIssue } = issueQuery;
   const issueFailed = isIssue && issueQuery.isError;
-  const issueNotFound = issueQuery.error instanceof ApiError && issueQuery.error.status === 404;
+  const issueTransient = isTransientFailure(issueQuery.error);
   useEffect(() => {
-    if (!issueFailed || issueNotFound || retriedRef.current) return;
+    if (issueQuery.isSuccess) retriedRef.current = false;
+  }, [issueQuery.isSuccess]);
+  useEffect(() => {
+    if (!issueFailed || !issueTransient || retriedRef.current) return;
+    let cancelled = false;
     const timer = setTimeout(() => {
       retriedRef.current = true;
-      void refetchIssue();
+      api
+        .getIssue(pin.item_id)
+        .then((issue) => {
+          if (!cancelled) queryClient.setQueryData(issueDetailOptions(wsId, pin.item_id).queryKey, issue);
+        })
+        .catch(() => {});
     }, 1000);
-    return () => clearTimeout(timer);
-  }, [issueFailed, issueNotFound, refetchIssue]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [issueFailed, issueTransient, pin.item_id, queryClient, wsId]);
 
   if (isIssue) {
     if (issueQuery.isPending) return <PinSkeleton />;

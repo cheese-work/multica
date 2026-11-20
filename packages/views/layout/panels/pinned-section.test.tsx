@@ -53,6 +53,7 @@ vi.mock("@multica/core/issue-views/queries", () => ({
 }));
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQueryClient: () => ({ setQueryData: vi.fn() }),
   useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) => {
     if (queryKey[0] === "pins") return { data: state.pins };
     if (queryKey[0] === "issue" || queryKey[0] === "project") return state.detail;
