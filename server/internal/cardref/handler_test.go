@@ -28,24 +28,25 @@ func testHandler(t *testing.T, p *pgxpool.Pool) {
 	ctx := context.Background()
 	seed(t, p, "h-open", Open)
 
-	for name, tc := range map[string]struct {
-		method, path, auth, body string
-		code                     int
-		out                      string
+	// ordered: "abort_ref voids open" changes the row the earlier cases read
+	for _, tc := range []struct {
+		name, method, path, auth, body string
+		code                           int
+		out                            string
 	}{
-		"status of an open card":       {"GET", "/api/service/card-refs/h-open/status", bearer, "", 200, `{"status":"open"}`},
-		"status of a missing card":     {"GET", "/api/service/card-refs/h-none/status", bearer, "", 200, `{"status":"missing"}`},
-		"abort_if_pending leaves open": {"POST", "/api/service/card-refs/h-open/abort-if-pending", bearer, "", 200, `{"status":"open","notAborted":true}`},
-		"abort_if_pending on missing":  {"POST", "/api/service/card-refs/h-ghost/abort-if-pending", bearer, "", 200, `{"status":"void","notAborted":false}`},
-		"abort_ref voids open":         {"POST", "/api/service/card-refs/h-open/abort", bearer, `{"reason":"force_release"}`, 200, `{"status":"void"}`},
-		"no token":                     {"GET", "/api/service/card-refs/h-open/status", "", "", 401, ""},
-		"wrong token":                  {"GET", "/api/service/card-refs/h-open/status", "Bearer nope", "", 401, ""},
-		"bad id":                       {"GET", "/api/service/card-refs/a.b/status", bearer, "", 400, ""},
-		"abort without a reason":       {"POST", "/api/service/card-refs/h-x/abort", bearer, `{}`, 400, ""},
-		"abort with bad json":          {"POST", "/api/service/card-refs/h-x/abort", bearer, `{`, 400, ""},
-		"wrong method":                 {"POST", "/api/service/card-refs/h-open/status", bearer, "", 405, ""},
+		{"status of an open card", "GET", "/api/service/card-refs/h-open/status", bearer, "", 200, `{"status":"open"}`},
+		{"status of a missing card", "GET", "/api/service/card-refs/h-none/status", bearer, "", 200, `{"status":"missing"}`},
+		{"abort_if_pending leaves open", "POST", "/api/service/card-refs/h-open/abort-if-pending", bearer, "", 200, `{"status":"open","notAborted":true}`},
+		{"abort_if_pending on missing", "POST", "/api/service/card-refs/h-ghost/abort-if-pending", bearer, "", 200, `{"status":"void","notAborted":false}`},
+		{"abort_ref voids open", "POST", "/api/service/card-refs/h-open/abort", bearer, `{"reason":"force_release"}`, 200, `{"status":"void"}`},
+		{"no token", "GET", "/api/service/card-refs/h-open/status", "", "", 401, ""},
+		{"wrong token", "GET", "/api/service/card-refs/h-open/status", "Bearer nope", "", 401, ""},
+		{"bad id", "GET", "/api/service/card-refs/a.b/status", bearer, "", 400, ""},
+		{"abort without a reason", "POST", "/api/service/card-refs/h-x/abort", bearer, `{}`, 400, ""},
+		{"abort with bad json", "POST", "/api/service/card-refs/h-x/abort", bearer, `{`, 400, ""},
+		{"wrong method", "POST", "/api/service/card-refs/h-open/status", bearer, "", 405, ""},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			code, out := do(tc.method, tc.path, tc.auth, tc.body)
 			if code != tc.code || (tc.out != "" && out != tc.out) {
 				t.Fatalf("got %d %q, want %d %q", code, out, tc.code, tc.out)
