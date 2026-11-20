@@ -1075,6 +1075,9 @@ WHERE id = (
                 AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
           )
       )
+      -- reserved_chat_slots: when the daemon's issue budget is spent it asks for
+      -- DM (chat) tasks only, so a reserved slot never takes an issue task.
+      AND (NOT @chat_only::boolean OR atq.chat_session_id IS NOT NULL)
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED

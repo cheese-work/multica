@@ -2125,9 +2125,16 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		DaemonID   string   `json:"daemon_id"`
 		RuntimeIDs []string `json:"runtime_ids"`
 		MaxTasks   int      `json:"max_tasks"`
+		// MaxIssueTasks is the daemon's reserved_chat_slots budget: how many of
+		// the returned tasks may be non-chat tasks. Absent means no limit.
+		MaxIssueTasks *int `json:"max_issue_tasks"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.MaxIssueTasks != nil && *req.MaxIssueTasks < 0 {
+		writeError(w, http.StatusBadRequest, "max_issue_tasks must not be negative")
 		return
 	}
 
@@ -2265,7 +2272,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), authorized, maxTasks)
+	claimed, err := h.TaskService.ClaimTasksForRuntimesWithIssueLimit(r.Context(), authorized, maxTasks, req.MaxIssueTasks)
 	if err != nil {
 		slog.Warn("claim tasks failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to claim tasks")

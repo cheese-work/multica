@@ -106,6 +106,9 @@ type claimScope struct {
 	candidates int
 	// tally, when set, hears every claimTask outcome of the poll this call belongs to.
 	tally *claimPollTally
+	// chatOnly restricts the claim to DM (chat) tasks: the daemon's issue
+	// budget under reserved_chat_slots is spent.
+	chatOnly bool
 }
 
 // claimDecisionDetail carries the capacity numbers behind a no_capacity or

@@ -4776,6 +4776,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
 			MinPriority:      minPriority,
+			ChatOnly:         scope.chatOnly,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
@@ -5232,7 +5233,17 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 // The returned slice contains both reclaimed and freshly-claimed tasks, each
 // already carrying its runtime_id so the daemon routes it to the matching
 // runtime locally.
-func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) (polled []db.AgentTaskQueue, pollErr error) {
+func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) ([]db.AgentTaskQueue, error) {
+	return s.ClaimTasksForRuntimesWithIssueLimit(ctx, runtimeIDs, maxTasks, nil)
+}
+
+// ClaimTasksForRuntimesWithIssueLimit is ClaimTasksForRuntimes with the daemon's
+// reserved_chat_slots budget: at most *maxIssueTasks of the claimed tasks may be
+// non-chat tasks, the rest of maxTasks goes to DM (chat) tasks only. nil means
+// no limit and is exactly ClaimTasksForRuntimes. Reclaimed stale tasks were
+// already dispatched, so they are returned regardless but count against the
+// budget.
+func (s *TaskService) ClaimTasksForRuntimesWithIssueLimit(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int, maxIssueTasks *int) (polled []db.AgentTaskQueue, pollErr error) {
 	if len(runtimeIDs) == 0 || maxTasks <= 0 {
 		return nil, nil
 	}
@@ -5414,7 +5425,18 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for i := range candidates {
 		candidatesByAgent[util.UUIDToString(candidates[i].AgentID)]++
 	}
+	issueClaimed := 0
+	for i := range claimed {
+		if !claimed[i].ChatSessionID.Valid {
+			issueClaimed++
+		}
+	}
 	for i := range candidates {
+		issueBudgetSpent := maxIssueTasks != nil && issueClaimed >= *maxIssueTasks
+		if issueBudgetSpent && !candidates[i].ChatSessionID.Valid {
+			// Not marked tried: the same agent's chat task may follow.
+			continue
+		}
 		if len(claimed) >= maxTasks {
 			slog.Debug("batch claim: reached max tasks",
 				"claimed", len(claimed),
@@ -5432,6 +5454,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			claimPath:  claimPathBatch,
 			candidates: candidatesByAgent[agentKey],
 			tally:      tally,
+			chatOnly:   issueBudgetSpent,
 		})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
@@ -5460,6 +5483,9 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			continue
 		}
 		claimed = append(claimed, *task)
+		if !task.ChatSessionID.Valid {
+			issueClaimed++
+		}
 	}
 
 	return claimed, nil
