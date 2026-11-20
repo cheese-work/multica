@@ -1751,6 +1751,14 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 			if writeSearchCancellation(w, r, err) {
 				return false
 			}
+			// The typo fallback is optional (CHE-7519): when it runs out of its own
+			// budget the normal search's empty answer stands.
+			if len(setup) > 0 && isSearchStatementTimeout(err) {
+				slog.Warn("search issues typo fallback timed out; returning the normal result",
+					"workspace_id", workspaceID, "query_length", len([]rune(q)), "timeout", fuzzySearchTimeout)
+				results = nil
+				return true
+			}
 			// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
 			// so the frontend can distinguish a timeout ("try a more
 			// specific query") from a generic 500. This is the fail-fast
