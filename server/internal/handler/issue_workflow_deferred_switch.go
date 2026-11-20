@@ -46,6 +46,14 @@ func (h *Handler) RegisterDeferredWorkflowSwitch(bus *events.Bus) {
 	}
 }
 
+// RequestWorkflowSwitch parks a switch of the issue to the workflow, one row
+// per issue with the newest request winning, then tries to apply it (CHE-7670).
+func (h *Handler) RequestWorkflowSwitch(ctx context.Context, workspaceID, issueID, workflowID pgtype.UUID, reason string) error {
+	return h.Queries.UpsertIssueWorkflowSwitchPending(ctx, db.UpsertIssueWorkflowSwitchPendingParams{
+		IssueID: issueID, WorkspaceID: workspaceID, WorkflowID: workflowID, Reason: reason,
+	})
+}
+
 // deferredSwitchRefusal is a switch the target workflow cannot take: the issue
 // is blocked with the reason, instead of retrying on every later event.
 type deferredSwitchRefusal struct {
