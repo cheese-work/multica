@@ -930,8 +930,13 @@ type TaskUsageData struct {
 	OutputTokens     int64  `json:"output_tokens"`
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
-	CreditsMicros    *int64 `json:"credits_micros,omitempty"`
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with the
+	// 1-hour TTL (billed at the 1-hour write rate). nil means no TTL split was
+	// reported, so every written token bills at the 5-minute rate; 0 is a real
+	// "all 5-minute".
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
+	CostUsdTicks       *int64 `json:"cost_usd_ticks,omitempty"`
+	CreditsMicros      *int64 `json:"credits_micros,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon
