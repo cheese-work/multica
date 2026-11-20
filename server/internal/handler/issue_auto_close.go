@@ -71,6 +71,33 @@ func (h *Handler) autoCloseMode(ctx context.Context, workspaceID pgtype.UUID) st
 	return setting.Mode
 }
 
+// stepAutoClose returns the auto_close setting of the step the issue sits on,
+// or nil when the step sets none or the workflow cannot be read.
+func (h *Handler) stepAutoClose(ctx context.Context, issue db.Issue) *issueworkflow.AutoClose {
+	def, err := h.issueWorkflowDef(ctx, issue)
+	if err != nil || def == nil {
+		return nil
+	}
+	if step, ok := def.Step(issue.Status); ok {
+		return step.AutoClose
+	}
+	return nil
+}
+
+// autoCloseSettings is the mode and top_level that apply to the issue's step
+// (CHE-7672). The workspace mode off is the kill switch; otherwise the step's
+// mode wins, and a step with no auto_close follows the workspace.
+func (h *Handler) autoCloseSettings(ctx context.Context, issue db.Issue) (mode string, topLevel bool) {
+	mode = h.autoCloseMode(ctx, issue.WorkspaceID)
+	if mode == "off" {
+		return mode, false
+	}
+	if step := h.stepAutoClose(ctx, issue); step != nil {
+		return step.Mode, step.TopLevel
+	}
+	return mode, false
+}
+
 // entersAutoCloseStep reports whether entering status can close the issue.
 func entersAutoCloseStep(status string) bool {
 	return status == statusAgentAccepted || status == statusMerged
@@ -102,11 +129,11 @@ type closeDecision struct {
 // enqueue a run on an auto-close step. Only block mode closes or waits: off and
 // warn always dispatch.
 func (h *Handler) closeOrDispatch(ctx context.Context, issue db.Issue) closeDecision {
-	mode := h.autoCloseMode(ctx, issue.WorkspaceID)
+	mode, topLevel := h.autoCloseSettings(ctx, issue)
 	if mode == "off" {
 		return closeDecision{Outcome: closeOutcomeDispatch}
 	}
-	read, state := h.autoCloseCheck(ctx, issue)
+	read, state := h.autoCloseCheck(ctx, issue, topLevel)
 	predicates := strings.Join(read, ",")
 	switch {
 	case state == closeStateHolds && mode == "block":
@@ -224,7 +251,7 @@ const (
 // closeStateAwaitingMerge: a clean PASS names the head of an open PR, every
 // other predicate holds, and the issue's own watcher and a pr.merged done edge
 // will deliver the merge.
-func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []string, state closeState) {
+func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue, topLevel bool) (read []string, state closeState) {
 	q := h.Queries
 	var (
 		mergeEdge     bool
@@ -240,7 +267,7 @@ func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []st
 			mergeEdge = onMerge
 			return agentDone || onMerge, err
 		}},
-		{"has_parent", func() (bool, error) { return issue.ParentIssueID.Valid, nil }},
+		{"has_parent", func() (bool, error) { return issue.ParentIssueID.Valid || topLevel, nil }},
 		{"verdict_pass_current", func() (bool, error) {
 			holds, awaiting, err := h.autoCloseVerdictHolds(ctx, issue)
 			awaitingMerge = awaiting
@@ -259,6 +286,9 @@ func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []st
 		}},
 		{"no_cheese_stop", func() (bool, error) { return !hasCheeseStopLine(issue.Description.String), nil }},
 		{"parent_not_stopped", func() (bool, error) {
+			if topLevel && !issue.ParentIssueID.Valid {
+				return true, nil
+			}
 			parent, err := q.GetIssue(ctx, issue.ParentIssueID)
 			return err == nil && metadataString(parent.Metadata, deliveryStopKey) != "stopped", err
 		}},
