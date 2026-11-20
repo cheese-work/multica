@@ -137,6 +137,13 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
 	}
 	if assigneeTouched || prev.TriageState.Valid {
+		// A move that names the assignee itself still enters the step: a
+		// reviewer step holds that assignee to the independence rule.
+		if assigneeTouched && statusExplicit && statusChanging && !prev.TriageState.Valid {
+			if err := h.checkTouchedReviewer(ctx, q, prev, params, def); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 	// A manual park keeps the assignee: no handoff (CHE-6460 D1c).

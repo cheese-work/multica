@@ -93,13 +93,16 @@ func (g *reviewerGuard) check(ctx context.Context, q *db.Queries, agent db.Agent
 }
 
 // pickReviewer is the first reachable reviewer of the issue type's routing
-// entry that passes the independence check. found is false with a nil refusal
-// when the workspace routes this type nowhere, and false with a refusal when
-// it lists reviewers but none qualifies.
+// entry that passes the independence check. found is false with a refusal when
+// the issue has no routable type, the workspace lists no reviewer for it, or
+// none qualifies.
 func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, issue db.Issue, g *reviewerGuard) (id pgtype.UUID, found bool, refusal error) {
 	typ, ok := issueworkflow.TitleType(issue.Title)
 	if !ok {
-		return pgtype.UUID{}, false, nil
+		return pgtype.UUID{}, false, &ReviewIndependenceError{
+			Reason:     "the issue title has no Conventional Commit type to route a reviewer by",
+			AuthorLabs: g.authorLabs,
+		}
 	}
 	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
@@ -109,7 +112,10 @@ func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, issue db.Issu
 	_ = json.Unmarshal(ws.Settings, &settings)
 	entry, listed := capabilityrouting.FromSettings(settings)[typ]
 	if !listed {
-		return pgtype.UUID{}, false, nil
+		return pgtype.UUID{}, false, &ReviewIndependenceError{
+			Reason:     fmt.Sprintf("the workspace routes no reviewer for type %q", typ),
+			AuthorLabs: g.authorLabs,
+		}
 	}
 	var first *ReviewIndependenceError
 	for _, candidate := range entry.Reviewers {
@@ -162,4 +168,20 @@ func (h *Handler) checkReviewerAssignee(ctx context.Context, q *db.Queries, work
 		return refusal
 	}
 	return nil
+}
+
+// checkTouchedReviewer holds an assignee named in the same write that moves the
+// issue into a reviewer step to the independence rule. The write is a person's
+// or agent's explicit choice, so no handoff is computed, but it must not put an
+// author or a same-lab agent on the review.
+func (h *Handler) checkTouchedReviewer(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition) error {
+	step, ok := def.Step(params.Status.String)
+	if !ok || step.Handler.Type != issueworkflow.HandlerReviewer || !params.AssigneeType.Valid || !params.AssigneeID.Valid {
+		return nil
+	}
+	guard, err := h.loadReviewerGuard(ctx, q, prev.ID)
+	if err != nil {
+		return err
+	}
+	return h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, issueworkflow.StepAssignee{Type: params.AssigneeType.String, ID: params.AssigneeID})
 }

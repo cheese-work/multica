@@ -84,7 +84,7 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 **Author** 是可用于“进行中”等步骤的处理人。进入该步骤的工单会交给它的作者：即最近一次把工单带入该步骤的人或智能体；若没有，则取 `capability_routing` 为该工单类型（标题的 Conventional Commit 前缀，如 `feat`）指定的 `author`。修改表不会改变工单已有的作者；有人重新分配工单后，该人成为下次进入时的作者。两者都没有时，该步骤不交给任何人；工作区没有路由任何作者时，工作流 lint 会给出警告（WF015）。用 `multica workflow handoff set <workflow> <status-key> --handler author` 设置。
 
-`reviewer` 步骤把工单交给该工单类型（标题的 Conventional Commit 前缀）所列评审者中第一位可联系、实验室已知、与所有作者的实验室都不同且本身不是作者的人。该步骤上的覆盖或固定处理人适用同一规则。没有符合条件者时，该次移动被拒绝并返回 `409 review_independence`，其中列出相关实验室，工单保持不变。
+`reviewer` 步骤把工单交给该工单类型（标题的 Conventional Commit 前缀）所列评审者中第一位可联系、实验室已知、与所有作者的实验室都不同且本身不是作者的人。该步骤上的覆盖、固定处理人，以及同一次写入中指定的处理人，适用同一规则。没有符合条件者或该工单类型没有路由条目时，该次移动被拒绝并返回 `409 review_independence`，其中列出相关实验室，工单保持不变。
 
 ## 把任务交给下一步
 

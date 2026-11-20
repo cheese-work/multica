@@ -183,17 +183,72 @@ func TestReviewerHandler_StickyAssigneeIsChecked(t *testing.T) {
 	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "anthropic")
 }
 
-// With no capability_routing entry the step routes nobody: the move is a plain
-// status change, as for any step with nobody to resolve to.
-func TestReviewerHandler_NoRoutingEntryDoesNotHandOff(t *testing.T) {
+// With no capability_routing entry for the issue's type no reviewer can be
+// shown independent, so the move is refused and the issue left unchanged.
+func TestReviewerHandler_NoRoutingEntryRefuses(t *testing.T) {
 	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
 	openai := reviewerAgent(t, "codex", "gpt-5.5")
 	c := newReviewerCase(t, author, openai)
 	setWorkspaceSettings(t, `{}`)
 	issueID := c.issue(t, author)
+	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "no reviewer")
 
-	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
-	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, issueID); n != 0 {
-		t.Fatalf("queued runs = %d, want 0 without a routing entry", n)
+	// A title without a Conventional Commit type has nothing to route by.
+	untyped := dbfx.Issue(t, "reviewer routing without a type "+workflowTestSuffix(), testutil.Cols{"project_id": c.projectID, "status": "in_progress"})
+	wantReviewerRefusal(t, updateIssueForTest(t, untyped, map[string]any{"status": "in_review"}), untyped, "in_progress", "Conventional Commit")
+}
+
+// A status move that names the assignee itself still enters the reviewer step:
+// an author or a same-lab agent is refused, a cross-lab one is accepted.
+func TestReviewerHandler_ExplicitAssigneeWithStatusIsChecked(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	sameLab := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	openai := reviewerAgent(t, "codex", "gpt-5.5")
+	c := newReviewerCase(t, author, openai)
+	issueID := c.issue(t, author)
+	_, beforeType, beforeID := issueStatusAndAssignee(t, issueID)
+
+	for name, who := range map[string]string{"the author": author, "a same-lab agent": sameLab} {
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{
+			"status": "in_review", "assignee_type": "agent", "assignee_id": who,
+		}), issueID, "in_progress", "anthropic")
+		if _, typ, id := issueStatusAndAssignee(t, issueID); typ != beforeType || id != beforeID {
+			t.Fatalf("%s: assignee = (%s, %s) after the refusal, want it unchanged (%s, %s)", name, typ, id, beforeType, beforeID)
+		}
+	}
+
+	updateIssueForTest(t, issueID, map[string]any{
+		"status": "in_review", "assignee_type": "agent", "assignee_id": openai,
+	}).Want(http.StatusOK)
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != openai {
+		t.Fatalf("issue = (%s, %s), want in_review assigned to the cross-lab reviewer %s", status, id, openai)
+	}
+}
+
+// The batch endpoint skips an issue it cannot move: the same explicit-assignee
+// bypass is closed there, and status and assignee stay as they were.
+func TestReviewerHandler_BatchExplicitAssigneeIsChecked(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	sameLab := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	openai := reviewerAgent(t, "codex", "gpt-5.5")
+	c := newReviewerCase(t, author, openai)
+	issueID := c.issue(t, author)
+	_, beforeType, beforeID := issueStatusAndAssignee(t, issueID)
+
+	batch := func(assignee string) {
+		t.Helper()
+		r := newRequest("POST", "/api/issues/batch-update?workspace_id="+testWorkspaceID, map[string]any{
+			"issue_ids": []string{issueID},
+			"updates":   map[string]any{"status": "in_review", "assignee_type": "agent", "assignee_id": assignee},
+		})
+		testutil.Call(t, testHandler.BatchUpdateIssues, r)
+	}
+	batch(sameLab)
+	if status, typ, id := issueStatusAndAssignee(t, issueID); status != "in_progress" || typ != beforeType || id != beforeID {
+		t.Fatalf("issue = (%s, %s, %s) after a same-lab batch, want it unchanged (in_progress, %s, %s)", status, typ, id, beforeType, beforeID)
+	}
+	batch(openai)
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != openai {
+		t.Fatalf("issue = (%s, %s) after a cross-lab batch, want in_review assigned to %s", status, id, openai)
 	}
 }
