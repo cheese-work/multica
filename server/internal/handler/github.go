@@ -1172,55 +1172,61 @@ func parseGitHubPageParam(
 	return value, true
 }
 
-func fetchGitHubInstallationRepositories(
-	ctx context.Context,
-	installationID int64,
-	page, perPage int,
-) (GitHubRepositoriesResponse, error) {
+// mintGitHubInstallationToken exchanges the App JWT for a short-lived
+// installation token carrying exactly the permissions in permissionsJSON. The
+// caller revokes the token with revokeGitHubInstallationToken. Errors never
+// include the JWT, the token or the response body.
+func mintGitHubInstallationToken(ctx context.Context, client *http.Client, installationID int64, permissionsJSON string) (string, error) {
 	appJWT, err := signGitHubAppJWT(time.Now())
 	if err != nil {
-		return GitHubRepositoriesResponse{}, err
+		return "", err
 	}
 	if appJWT == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github App JWT credentials unavailable")
+		return "", errors.New("github App JWT credentials unavailable")
 	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
 	tokenEndpoint := fmt.Sprintf(
 		"%s/app/installations/%d/access_tokens",
 		strings.TrimRight(githubAPIBase, "/"),
 		installationID,
 	)
-	tokenReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(`{"permissions":{"metadata":"read"}}`),
-	)
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(permissionsJSON))
 	if err != nil {
-		return GitHubRepositoriesResponse{}, err
+		return "", err
 	}
 	setGitHubAPIHeaders(tokenReq, appJWT)
 	tokenReq.Header.Set("Content-Type", "application/json")
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: %w", err)
+		return "", fmt.Errorf("create installation token: %w", err)
 	}
 	defer tokenResp.Body.Close()
 	if tokenResp.StatusCode != http.StatusCreated {
 		_, _ = io.Copy(io.Discard, io.LimitReader(tokenResp.Body, githubAPIResponseLimit))
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
+		return "", fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
 	}
 	var tokenBody struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResp.Body, githubAPIResponseLimit)).Decode(&tokenBody); err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("decode installation token: %w", err)
+		return "", fmt.Errorf("decode installation token: %w", err)
 	}
 	if tokenBody.Token == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github returned an empty installation token")
+		return "", errors.New("github returned an empty installation token")
 	}
-	defer revokeGitHubInstallationToken(client, tokenBody.Token)
+	return tokenBody.Token, nil
+}
+
+func fetchGitHubInstallationRepositories(
+	ctx context.Context,
+	installationID int64,
+	page, perPage int,
+) (GitHubRepositoriesResponse, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	token, err := mintGitHubInstallationToken(ctx, client, installationID, `{"permissions":{"metadata":"read"}}`)
+	if err != nil {
+		return GitHubRepositoriesResponse{}, err
+	}
+	defer revokeGitHubInstallationToken(client, token)
 
 	repositoriesEndpoint := fmt.Sprintf(
 		"%s/installation/repositories?page=%d&per_page=%d",
@@ -1232,7 +1238,7 @@ func fetchGitHubInstallationRepositories(
 	if err != nil {
 		return GitHubRepositoriesResponse{}, err
 	}
-	setGitHubAPIHeaders(repositoriesReq, tokenBody.Token)
+	setGitHubAPIHeaders(repositoriesReq, token)
 	repositoriesResp, err := client.Do(repositoriesReq)
 	if err != nil {
 		return GitHubRepositoriesResponse{}, fmt.Errorf("list installation repositories: %w", err)
