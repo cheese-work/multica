@@ -276,7 +276,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: workspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
-	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content)
+	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content, undoUntil)
 	if err != nil {
 		return empty, err
 	}

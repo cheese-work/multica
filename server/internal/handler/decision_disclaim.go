@@ -127,7 +127,7 @@ func (handler *Handler) withdrawAnswerTx(request *http.Request, workspaceID pgty
 	if err != nil {
 		return empty, err
 	}
-	if err := withdrawCoveredAnswers(ctx, queries, current, &result, userID); err != nil {
+	if err := withdrawCoveredAnswersFor(ctx, queries, current, &result, userID, reason); err != nil {
 		return empty, err
 	}
 	if len(result.Comments) > 0 && root != nil {

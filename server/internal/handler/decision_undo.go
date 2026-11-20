@@ -20,7 +20,7 @@ const (
 	defaultDecisionUndoGrace = 5
 	maxDecisionUndoGrace     = 30
 	// undoReason is the disclaim_reason of an answer taken back inside its grace.
-	undoReason = "undo"
+	undoReason = decisiontx.UndoReason
 )
 
 var errUndoExpired = decisionIntentRefusal{http.StatusConflict, "undo_expired: the undo window has passed"}
