@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -158,5 +160,86 @@ func TestFetchRunsPagesUntilCutoff(t *testing.T) {
 	}
 	if strings.Join(calls, "|") != "|c1" {
 		t.Fatalf("page calls = %q, want it to stop after the page that crossed the cutoff", calls)
+	}
+}
+
+type fakeSource struct {
+	pages     map[string]map[string]fakePage // agent -> cursor -> page
+	issues    map[string]Issue
+	failIssue map[string]bool
+}
+
+type fakePage struct {
+	runs []Run
+	next string
+	err  error
+}
+
+func (f fakeSource) runsPage(agent, before string) ([]Run, string, error) {
+	p := f.pages[agent][before]
+	return p.runs, p.next, p.err
+}
+
+func (f fakeSource) issue(id string) (Issue, error) {
+	if f.failIssue[id] {
+		return Issue{}, errors.New("service unavailable")
+	}
+	return f.issues[id], nil
+}
+
+func sonnetRun(id, issue string) Run {
+	return Run{ID: id, IssueID: issue, CreatedAt: wed, Usage: []Usage{{Provider: "claude", Model: "claude-sonnet-5-5", OutputTokens: 100_000}}}
+}
+
+func TestGatherCompleteHasNoFailures(t *testing.T) {
+	src := fakeSource{
+		pages:  map[string]map[string]fakePage{"a1": {"": {runs: []Run{sonnetRun("r1", "I1")}}}},
+		issues: map[string]Issue{"I1": {ID: "I1", Identifier: "CHE-1", StatusCategory: "done"}},
+	}
+	g := gather(src, []string{"a1"}, wed.Add(-time.Hour), 2)
+	if len(g.failures) != 0 || len(g.runs) != 1 || len(g.issues) != 1 {
+		t.Fatalf("gather = %+v, want 1 run, 1 issue, no failures", g)
+	}
+}
+
+// A page that fails after a good page drops that agent's earlier runs, so the
+// totals are incomplete: it must be reported, not swallowed.
+func TestGatherReportsPageFailureAfterGoodPage(t *testing.T) {
+	src := fakeSource{
+		pages: map[string]map[string]fakePage{"a1": {
+			"":   {runs: []Run{sonnetRun("r1", "")}, next: "c1"},
+			"c1": {err: errors.New("boom")},
+		}},
+	}
+	g := gather(src, []string{"a1"}, wed.Add(-time.Hour), 2)
+	if len(g.failures) != 1 {
+		t.Fatalf("failures = %v, want exactly the page failure", g.failures)
+	}
+}
+
+func TestGatherReportsFailedIssueLookup(t *testing.T) {
+	src := fakeSource{
+		pages:     map[string]map[string]fakePage{"a1": {"": {runs: []Run{sonnetRun("r1", "I1")}}}},
+		failIssue: map[string]bool{"I1": true},
+	}
+	g := gather(src, []string{"a1"}, wed.Add(-time.Hour), 2)
+	if len(g.failures) != 1 {
+		t.Fatalf("failures = %v, want exactly the lookup failure", g.failures)
+	}
+	rep := Aggregate(g.runs, g.issues)
+	if !near(rep.UnknownRootUSD, 1.00) {
+		t.Fatalf("run with failed lookup should be unknown-root 1.00, got %v", rep.UnknownRootUSD)
+	}
+}
+
+func TestReportFailedCallsIsExposedInJSONAndRender(t *testing.T) {
+	rep := Aggregate(nil, nil)
+	rep.FailedCalls = 3
+	b, _ := json.Marshal(rep)
+	if !strings.Contains(string(b), `"failed_calls":3`) {
+		t.Fatalf("json misses failed_calls: %s", b)
+	}
+	if out := Render(rep); !strings.Contains(out, "INCOMPLETE: 3 CLI calls failed") {
+		t.Fatalf("render misses the incomplete line:\n%s", out)
 	}
 }

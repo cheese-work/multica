@@ -95,6 +95,9 @@ type Report struct {
 	TTLWriteTokens   int64    `json:"ttl_write_tokens"`
 	TTLUnknownTokens int64    `json:"ttl_unknown_tokens"`
 	Findings         []string `json:"findings"`
+	// FailedCalls counts CLI reads that failed after retries; non-zero means
+	// the totals are incomplete.
+	FailedCalls int `json:"failed_calls"`
 }
 
 type weekTTL struct{ unknown, total int64 }
@@ -294,6 +297,9 @@ func Render(r Report) string {
 		share = 100 * float64(r.TTLUnknownTokens) / float64(r.TTLWriteTokens)
 	}
 	fmt.Fprintf(&b, "TTL unknown tokens: %d of %d cache-write tokens (%.1f%%)\n", r.TTLUnknownTokens, r.TTLWriteTokens, share)
+	if r.FailedCalls > 0 {
+		fmt.Fprintf(&b, "INCOMPLETE: %d CLI calls failed after retries; totals above are missing data\n", r.FailedCalls)
+	}
 	for _, f := range r.Findings {
 		b.WriteString(f + "\n")
 	}

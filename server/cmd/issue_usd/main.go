@@ -151,54 +151,11 @@ func mainErr(days int, asJSON bool, workers int) error {
 	if err != nil {
 		return err
 	}
-	var (
-		mu       sync.Mutex
-		runs     []Run
-		failures []error
-	)
-	parallel(agents, workers, func(id string) {
-		got, err := fetchRuns(func(before string) ([]Run, string, error) { return c.runsPage(id, before) }, cutoff)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			failures = append(failures, err)
-			return
-		}
-		runs = append(runs, got...)
-	})
+	g := gather(c, agents, cutoff, workers)
+	runs := g.runs
 
-	// Walk the parent chain breadth-first; a failed lookup leaves the issue out
-	// of the map, so its runs land in "unknown root" rather than a wrong root.
-	issues := map[string]Issue{}
-	tried := map[string]bool{}
-	var frontier []string
-	for _, r := range runs {
-		if r.IssueID != "" && !tried[r.IssueID] {
-			tried[r.IssueID] = true
-			frontier = append(frontier, r.IssueID)
-		}
-	}
-	for len(frontier) > 0 {
-		var next []string
-		parallel(frontier, workers, func(id string) {
-			is, err := c.issue(id)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				failures = append(failures, err)
-				return
-			}
-			is.ID = id
-			issues[id] = is
-			if is.ParentID != "" && !tried[is.ParentID] {
-				tried[is.ParentID] = true
-				next = append(next, is.ParentID)
-			}
-		})
-		frontier = next
-	}
-
-	rep := Aggregate(runs, issues)
+	rep := Aggregate(runs, g.issues)
+	rep.FailedCalls = len(g.failures)
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -209,8 +166,71 @@ func mainErr(days int, asJSON bool, workers int) error {
 		fmt.Printf("Window: last %d days (since %s), %d agents, %d runs\n", days, cutoff.UTC().Format(time.RFC3339), len(agents), len(runs))
 		fmt.Print(Render(rep))
 	}
-	if len(failures) > 0 {
-		fmt.Fprintf(os.Stderr, "issue_usd: %d CLI calls failed (their runs are in unknown root or missing); first: %v\n", len(failures), failures[0])
+	if len(g.failures) > 0 {
+		// The totals are incomplete: say so in the report above and fail, so
+		// an automated consumer cannot accept them.
+		return fmt.Errorf("%d CLI calls failed, report is incomplete; first: %v", len(g.failures), g.failures[0])
 	}
 	return nil
+}
+
+type gathered struct {
+	runs     []Run
+	issues   map[string]Issue
+	failures []error
+}
+
+type source interface {
+	runsPage(agentID, before string) ([]Run, string, error)
+	issue(id string) (Issue, error)
+}
+
+// gather reads every agent's runs in the window, then walks the parent chain
+// breadth-first. A failed page drops that agent's runs; a failed issue lookup
+// leaves the issue out of the map so its runs land in "unknown root". Both are
+// recorded in failures: the caller must treat the totals as incomplete.
+func gather(src source, agents []string, cutoff time.Time, workers int) gathered {
+	var (
+		mu sync.Mutex
+		g  = gathered{issues: map[string]Issue{}}
+	)
+	parallel(agents, workers, func(id string) {
+		got, err := fetchRuns(func(before string) ([]Run, string, error) { return src.runsPage(id, before) }, cutoff)
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			g.failures = append(g.failures, err)
+			return
+		}
+		g.runs = append(g.runs, got...)
+	})
+
+	tried := map[string]bool{}
+	var frontier []string
+	for _, r := range g.runs {
+		if r.IssueID != "" && !tried[r.IssueID] {
+			tried[r.IssueID] = true
+			frontier = append(frontier, r.IssueID)
+		}
+	}
+	for len(frontier) > 0 {
+		var next []string
+		parallel(frontier, workers, func(id string) {
+			is, err := src.issue(id)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				g.failures = append(g.failures, err)
+				return
+			}
+			is.ID = id
+			g.issues[id] = is
+			if is.ParentID != "" && !tried[is.ParentID] {
+				tried[is.ParentID] = true
+				next = append(next, is.ParentID)
+			}
+		})
+		frontier = next
+	}
+	return g
 }
