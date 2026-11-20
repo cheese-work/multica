@@ -108,8 +108,8 @@ func (h *reservedSlotsHarness) waitBody(match func(claimBody) bool, what string)
 		select {
 		case <-deadline:
 			h.mu.Lock()
-			defer h.mu.Unlock()
-			shown := h.bodies
+			shown := append([]claimBody(nil), h.bodies...)
+			h.mu.Unlock()
 			if len(shown) > 5 {
 				shown = shown[:5]
 			}
