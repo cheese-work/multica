@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/designguard"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -55,8 +58,19 @@ func blocking(findings []ReviewFinding) bool {
 // or skipped on.
 var errVerdictNeedsRun = errors.New("a review verdict must come from the agent's run on this issue (X-Task-ID of a run on this issue); a run of another issue names no reviewed PR or head")
 
+// reviewIndependenceError refuses a PASS verdict whose reviewer is not
+// independent of the issue's authors. code is the designguard A-code.
+type reviewIndependenceError struct{ code string }
+
+func (e *reviewIndependenceError) Error() string {
+	return "the reviewer is not independent of the issue's authors (" + e.code + "); a verdict on a reviewer step needs a reviewer of another lab that did not author this issue"
+}
+
 func writeReviewLoopError(w http.ResponseWriter, err error) bool {
+	var independence *reviewIndependenceError
 	switch {
+	case errors.As(err, &independence):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": independence.code})
 	case errors.Is(err, errFindingsRequired):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_verdict_findings_required"})
 	case errors.Is(err, errVerdictNeedsRun):
@@ -105,6 +119,9 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if caller.run == nil {
 		return errVerdictNeedsRun
 	}
+	if verdict == "PASS" {
+		return h.guardReviewerIndependence(ctx, q, prev, def, caller)
+	}
 	if verdict != "CHANGES" {
 		return nil
 	}
@@ -118,6 +135,54 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	}
 	if earlier+1 >= maxChangesRounds && def.Has(statusNeedDecision) {
 		params.Status = pgtype.Text{String: statusNeedDecision, Valid: true}
+	}
+	return nil
+}
+
+// guardReviewerIndependence refuses a PASS from a step with a reviewer handler
+// unless the reviewer's run passes designguard A1 to A5 against every author
+// of the issue (CHE-7658 step 14). Authors come from the workflow_role
+// evidence of the issue's tasks, never from the current assignee, so a CHANGES
+// round or a reassignment cannot drop the first author. It runs before the
+// verdict row, so a refusal writes none.
+func (h *Handler) guardReviewerIndependence(ctx context.Context, q *db.Queries, prev db.Issue, def *issueworkflow.Definition, caller workflowCaller) error {
+	if step, ok := def.Step(prev.Status); !ok || step.Handler.Type != issueworkflow.HandlerReviewer {
+		return nil
+	}
+	authors, err := service.IssueAuthors(ctx, q, prev.ID, voteLab)
+	if err != nil {
+		return err
+	}
+	tasks := make([]designguard.Task, 0, len(authors)+1)
+	view := designguard.View{ProvenanceComplete: true}
+	for _, a := range authors {
+		view.Authors = append(view.Authors, designguard.Author{Kind: "agent", AgentID: a.AgentID, TaskID: a.TaskID})
+		tasks = append(tasks, designguard.Task{ID: a.TaskID, AgentID: a.AgentID, Provider: a.Provider, Model: a.Model})
+	}
+	if len(authors) == 0 {
+		// No agent task authored the issue: a person did.
+		view.Authors = []designguard.Author{{Kind: "user"}}
+	}
+	run := caller.run
+	reviewer := designguard.Reviewer{AgentID: uuidToString(run.AgentID), TaskID: uuidToString(run.ID)}
+	provider := ""
+	if run.RuntimeID.Valid {
+		rt, err := q.GetAgentRuntime(ctx, run.RuntimeID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		provider = rt.Provider
+	}
+	tasks = append(tasks, designguard.Task{ID: reviewer.TaskID, AgentID: reviewer.AgentID, Provider: provider, Model: run.AppliedModel.String})
+	code, err := designguard.CheckIndependence(ctx, view, reviewer, "", designguard.Deps{
+		Tasks: func(context.Context, []string) ([]designguard.Task, error) { return tasks, nil },
+		Lab:   voteLab,
+	})
+	if err != nil {
+		return err
+	}
+	if code != "" {
+		return &reviewIndependenceError{code: code}
 	}
 	return nil
 }
