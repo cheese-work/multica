@@ -305,56 +305,39 @@ func TestEscalateAFinishedQuickIssueFollowsItsPriorWorkflow(t *testing.T) {
 	}
 }
 
-// An agent has three more ways into a Quick binding than the issue override:
+// An agent has two more ways into a Quick binding than the issue override:
 // moving the issue into a project that follows Quick, and switching a project
-// to Quick. Each waits for the owners like the override does; a member does not.
-func TestAgentCannotBindIntoQuickThroughAProject(t *testing.T) {
-	f := newEscalateFixture(t)
-	// Equal budgets: no move below widens one, so only the Quick gate can refuse.
-	dbfx.Exec(t, `UPDATE issue_workflow SET run_budget_since = now() - interval '1 hour', max_runs_per_issue = 10 WHERE id = ANY($1::uuid[])`, []string{f.full, f.quick})
-	quickProj := createWorkflowTestProject(t, "Quick project "+workflowTestSuffix())
-	setProjectWorkflow(t, quickProj, map[string]any{"workflow_id": f.quick}).Want(http.StatusOK)
-	fullProj := createWorkflowTestProject(t, "Full project "+workflowTestSuffix())
-	setProjectWorkflow(t, fullProj, map[string]any{"workflow_id": f.full}).Want(http.StatusOK)
+// to Quick. A task token asks the owners for a card (CHE-7734, see
+// quick_move_action_test.go); a member does not wait, and a PAT or CLI session
+// is still refused.
+func TestNonAgentCredentialsCannotBindIntoQuickThroughAProject(t *testing.T) {
+	f := newQuickMoveFixture(t)
 
-	issueProject := func(t *testing.T, id string) string {
-		var p *string
-		dbfx.QueryRow(t, `SELECT project_id::text FROM issue WHERE id = $1`, id).Scan(&p)
-		if p == nil {
-			return ""
-		}
-		return *p
-	}
-	move := func(t *testing.T, id, project, source string) *testutil.Response {
-		req := withURLParam(withActorSource(newRequest("PATCH", "/api/issues/"+id, map[string]any{"project_id": project}), source), "id", id)
-		return testutil.Call(t, testHandler.UpdateIssue, req)
-	}
-
-	t.Run("agent issue move into a Quick project is refused", func(t *testing.T) {
-		for _, source := range []string{"task_token", "pat", "cli_jwt"} {
-			id := dbfx.Issue(t, "into quick "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": fullProj})
-			wantRebindRefused(t, move(t, id, quickProj, source), "issue project move", source)
-			if got := issueProject(t, id); got != fullProj {
+	t.Run("issue move into a Quick project is refused", func(t *testing.T) {
+		for _, source := range []string{"pat", "cli_jwt"} {
+			id := dbfx.Issue(t, "into quick "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": f.fullProj})
+			wantRebindRefused(t, agentMoveIssue(t, id, map[string]any{"project_id": f.quickProj}, source), "issue project move", source)
+			if got := issueProjectOf(t, id); got != f.fullProj {
 				t.Fatalf("%s: a refused move changed the project to %s", source, got)
 			}
 		}
 	})
 	t.Run("member issue move into a Quick project applies", func(t *testing.T) {
-		id := dbfx.Issue(t, "member into quick "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": fullProj})
-		move(t, id, quickProj, "interactive_jwt").Want(http.StatusOK)
-		if got := issueProject(t, id); got != quickProj {
-			t.Fatalf("project = %s, want %s", got, quickProj)
+		id := dbfx.Issue(t, "member into quick "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": f.fullProj})
+		agentMoveIssue(t, id, map[string]any{"project_id": f.quickProj}, "interactive_jwt").Want(http.StatusOK)
+		if got := issueProjectOf(t, id); got != f.quickProj {
+			t.Fatalf("project = %s, want %s", got, f.quickProj)
 		}
 	})
 	t.Run("agent move out of a Quick project is allowed", func(t *testing.T) {
-		id := dbfx.Issue(t, "out of quick "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": quickProj})
-		move(t, id, fullProj, "task_token").Want(http.StatusOK)
+		id := dbfx.Issue(t, "out of quick "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": f.quickProj})
+		agentMoveIssue(t, id, map[string]any{"project_id": f.fullProj}, "task_token").Want(http.StatusOK)
 	})
-	t.Run("agent switch of a project to Quick is refused", func(t *testing.T) {
+	t.Run("PAT switch of a project to Quick is refused", func(t *testing.T) {
 		proj := createWorkflowTestProject(t, "Switch project "+workflowTestSuffix())
 		setProjectWorkflow(t, proj, map[string]any{"workflow_id": f.full}).Want(http.StatusOK)
-		req := withURLParam(withActorSource(workflowRequest("POST", "/api/projects/"+proj+"/workflow", map[string]any{"workflow_id": f.quick}), "task_token"), "id", proj)
-		wantRebindRefused(t, testutil.Call(t, testHandler.SetProjectWorkflow, req), "project workflow switch", "task_token")
+		req := withURLParam(withActorSource(workflowRequest("POST", "/api/projects/"+proj+"/workflow", map[string]any{"workflow_id": f.quick}), "pat"), "id", proj)
+		wantRebindRefused(t, testutil.Call(t, testHandler.SetProjectWorkflow, req), "project workflow switch", "pat")
 		var got string
 		dbfx.QueryRow(t, `SELECT COALESCE(workflow_id::text, '-') FROM project WHERE id = $1`, proj).Scan(&got)
 		if got != f.full {
