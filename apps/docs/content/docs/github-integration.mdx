@@ -366,6 +366,8 @@ Subscribe to these events:
 
 PR snapshots use the Pull requests, Checks, and Commit statuses REST APIs. Contents access is not required. With the optional Actions permission, Multica also reads the commit's workflow runs. Without it, a cancelled run still counts as failed even after a newer run of the same workflow passes.
 
+Importing or refreshing a skill from a private repository uses a short-lived installation token for the workspace's installation on the repository owner's account, falling back to the server's `GITHUB_TOKEN`. That token needs the optional **Contents: read** permission; without it, or without an installation for the owner, the fetch uses `GITHUB_TOKEN` or no credential. The token is sent only to GitHub hosts.
+
 Stack auto-linking calls GitHub's stacks API and needs the Pull requests **write** permission. An App that only has read keeps everything else working; stack outcomes show `no_permission` (see [report codes](#stack-report-codes)). If you raise the permission on an installed App, each installation owner must approve it on GitHub before it takes effect.
 
 <Callout type="warning">
