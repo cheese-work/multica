@@ -252,3 +252,36 @@ func TestReviewerHandler_BatchExplicitAssigneeIsChecked(t *testing.T) {
 		t.Fatalf("issue = (%s, %s) after a cross-lab batch, want in_review assigned to %s", status, id, openai)
 	}
 }
+
+// CHE-8929: labs come from the model price table, else the runtime provider
+// (service.LabOf), not from MULTICA_VOTE_GATE_LABS. With the registry unset, an
+// Anthropic author still gets the OpenAI reviewer, a same-lab reviewer is still
+// refused, and an agent that cannot be placed stays unknown and is refused.
+func TestReviewerHandler_LabsNeedNoVoteGateRegistry(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	sameLab := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	terra := reviewerAgent(t, "codex", "gpt-6.1-terra")
+	unplaceable := reviewerAgent(t, "hermes", "model-not-in-the-price-table")
+
+	t.Run("cross-lab reviewer is picked", func(t *testing.T) {
+		c := newReviewerCase(t, author, sameLab, terra)
+		t.Setenv("MULTICA_VOTE_GATE_LABS", "")
+		issueID := c.issue(t, author)
+		updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+		if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != terra {
+			t.Fatalf("issue = (%s, %s), want in_review assigned to the OpenAI reviewer %s", status, id, terra)
+		}
+	})
+	t.Run("same-lab reviewer is refused", func(t *testing.T) {
+		c := newReviewerCase(t, author, sameLab)
+		t.Setenv("MULTICA_VOTE_GATE_LABS", "")
+		issueID := c.issue(t, author)
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "anthropic")
+	})
+	t.Run("unplaceable reviewer is refused as unknown", func(t *testing.T) {
+		c := newReviewerCase(t, author, unplaceable)
+		t.Setenv("MULTICA_VOTE_GATE_LABS", "")
+		issueID := c.issue(t, author)
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "unknown")
+	})
+}
