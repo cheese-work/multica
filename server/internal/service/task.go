@@ -52,6 +52,8 @@ type TaskService struct {
 	TxStarter TxStarter
 	Hub       *realtime.Hub
 	Bus       *events.Bus
+	// PollStats counts every claim poll for claim_poll_stats (CHE-8749 S7a).
+	PollStats *ClaimPollStats
 	Analytics analytics.Client
 	Metrics   *obsmetrics.BusinessMetrics
 	Wakeup    TaskWakeupNotifier
@@ -392,7 +394,7 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	if len(wakeups) > 0 {
 		wakeup = wakeups[0]
 	}
-	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup, PollStats: NewClaimPollStats()}
 	// CHE-5594: without a facts source every merge_eligibility rule stays pending.
 	if tx != nil {
 		svc.MergeFacts = &StoredMergeFacts{Tx: tx, Queries: q}
@@ -4570,7 +4572,15 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 // ClaimTask atomically claims the next queued task for an agent on its current
 // runtime, respecting max_concurrent_tasks.
 func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.AgentTaskQueue, error) {
-	return s.claimTask(ctx, agentID, pgtype.UUID{}, claimScope{claimPath: claimPathAgent})
+	start := time.Now()
+	tally := &claimPollTally{}
+	task, err := s.claimTask(ctx, agentID, pgtype.UUID{}, claimScope{claimPath: claimPathAgent, tally: tally})
+	claimed := 0
+	if task != nil {
+		claimed = 1
+	}
+	s.observePoll(claimPathAgent, start, claimed, err, tally)
+	return task, err
 }
 
 // agentBlockedByProviderHold reports whether agent's model currently resolves
@@ -4620,6 +4630,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	defer func() {
 		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs)
 		s.recordClaimDecision(agentID, runtimeID, outcome, scope, decisionDetail)
+		scope.tally.note(outcome, scope)
 	}()
 
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -4891,8 +4902,16 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 // without touching Postgres. The cache is invalidated synchronously on
 // every enqueue (notifyTaskAvailable), so a queued task becomes
 // claimable on the next call rather than waiting for the TTL.
-func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.UUID) (*db.AgentTaskQueue, error) {
+func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.UUID) (polled *db.AgentTaskQueue, pollErr error) {
 	start := time.Now()
+	tally := &claimPollTally{}
+	defer func() {
+		claimed := 0
+		if polled != nil {
+			claimed = 1
+		}
+		s.observePoll(claimPathRuntime, start, claimed, pollErr, tally)
+	}()
 	var (
 		outcome          = "no_task"
 		listMs, loopMs   int64
@@ -5019,6 +5038,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		task, err := s.claimTask(ctx, candidate.AgentID, runtimeID, claimScope{
 			claimPath:  claimPathRuntime,
 			candidates: candidatesByAgent[agentKey],
+			tally:      tally,
 		})
 		if err != nil {
 			loopMs = time.Since(loopStart).Milliseconds()
@@ -5212,10 +5232,14 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 // The returned slice contains both reclaimed and freshly-claimed tasks, each
 // already carrying its runtime_id so the daemon routes it to the matching
 // runtime locally.
-func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) ([]db.AgentTaskQueue, error) {
+func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) (polled []db.AgentTaskQueue, pollErr error) {
 	if len(runtimeIDs) == 0 || maxTasks <= 0 {
 		return nil, nil
 	}
+	// The whole batch is one poll, however many agents it tries.
+	start := time.Now()
+	tally := &claimPollTally{}
+	defer func() { s.observePoll(claimPathBatch, start, len(polled), pollErr, tally) }()
 
 	// De-dup runtime IDs defensively so MarkEmpty/version bookkeeping stays
 	// unambiguous even if a daemon ever sends a duplicate.
@@ -5407,6 +5431,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID, claimScope{
 			claimPath:  claimPathBatch,
 			candidates: candidatesByAgent[agentKey],
+			tally:      tally,
 		})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier

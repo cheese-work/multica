@@ -1,0 +1,210 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// CHE-8749 S7a: claim poll statistics. Every claim poll on the agent, runtime
+// and batch paths adds one count to an in-process histogram keyed by (path,
+// outcome). Flush adds the counts to claim_poll_stats once a minute. A batch
+// poll is one poll however many agents it tried, so the numbers answer "how
+// long does a daemon wait for a claim answer", not "how many claimTask calls
+// ran". Polls are measured in every queue order mode.
+
+// Poll outcomes. claimed: at least one task returned. empty: nothing to claim.
+// refused: candidates were visible but every attempt was refused (capacity,
+// provider hold, fence). error: the poll failed. rank_walk_exhausted: the
+// project-rank walk tried its row budget without a claim; the ordering slice
+// (S4b) reports it, the base claim path never does.
+const (
+	ClaimPollOutcomeClaimed           = "claimed"
+	ClaimPollOutcomeEmpty             = "empty"
+	ClaimPollOutcomeRefused           = "refused"
+	ClaimPollOutcomeError             = "error"
+	ClaimPollOutcomeRankWalkExhausted = "rank_walk_exhausted"
+)
+
+// ClaimPollBucketBoundsMs are inclusive upper bounds in milliseconds. A poll
+// slower than the last bound lands in a final overflow slot, so a bucket slice
+// has len(ClaimPollBucketBoundsMs)+1 entries.
+var ClaimPollBucketBoundsMs = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000}
+
+// ClaimPollFlushInterval is how often RunClaimPollStatsFlusher writes.
+const ClaimPollFlushInterval = 60 * time.Second
+
+type ClaimPollKey struct {
+	Path    string
+	Outcome string
+}
+
+type ClaimPollEntry struct {
+	Count   int64
+	SumMs   float64
+	Buckets []int64
+}
+
+type ClaimPollStats struct {
+	mu      sync.Mutex
+	entries map[ClaimPollKey]*ClaimPollEntry
+}
+
+func NewClaimPollStats() *ClaimPollStats {
+	return &ClaimPollStats{entries: map[ClaimPollKey]*ClaimPollEntry{}}
+}
+
+func (p *ClaimPollStats) Observe(path, outcome string, d time.Duration) {
+	if p == nil {
+		return
+	}
+	ms := float64(d) / float64(time.Millisecond)
+	slot := len(ClaimPollBucketBoundsMs)
+	for i, bound := range ClaimPollBucketBoundsMs {
+		if ms <= bound {
+			slot = i
+			break
+		}
+	}
+	key := ClaimPollKey{Path: normalizeClaimPath(path), Outcome: outcome}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e := p.entries[key]
+	if e == nil {
+		e = &ClaimPollEntry{Buckets: make([]int64, len(ClaimPollBucketBoundsMs)+1)}
+		p.entries[key] = e
+	}
+	e.Count++
+	e.SumMs += ms
+	e.Buckets[slot]++
+}
+
+// Snapshot returns a copy of the counts held since the last successful flush.
+func (p *ClaimPollStats) Snapshot() map[ClaimPollKey]ClaimPollEntry {
+	out := map[ClaimPollKey]ClaimPollEntry{}
+	if p == nil {
+		return out
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, e := range p.entries {
+		out[k] = ClaimPollEntry{Count: e.Count, SumMs: e.SumMs, Buckets: append([]int64(nil), e.Buckets...)}
+	}
+	return out
+}
+
+// Flush adds the held counts to claim_poll_stats under the given minute and
+// empties the histogram. On a write failure the unwritten counts go back into
+// the histogram, so the next flush carries them.
+func (p *ClaimPollStats) Flush(ctx context.Context, q *db.Queries, at time.Time) error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	taken := p.entries
+	p.entries = map[ClaimPollKey]*ClaimPollEntry{}
+	p.mu.Unlock()
+
+	minute := pgtype.Timestamptz{Time: at.UTC().Truncate(time.Minute), Valid: true}
+	var firstErr error
+	for key, e := range taken {
+		if err := q.UpsertClaimPollStats(ctx, db.UpsertClaimPollStatsParams{
+			Minute:       minute,
+			Path:         key.Path,
+			Outcome:      key.Outcome,
+			Count:        e.Count,
+			SumMs:        e.SumMs,
+			BucketCounts: e.Buckets,
+		}); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("flush claim poll stats %s/%s: %w", key.Path, key.Outcome, err)
+			}
+			p.merge(key, e)
+		}
+	}
+	return firstErr
+}
+
+func (p *ClaimPollStats) merge(key ClaimPollKey, add *ClaimPollEntry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e := p.entries[key]
+	if e == nil {
+		p.entries[key] = add
+		return
+	}
+	e.Count += add.Count
+	e.SumMs += add.SumMs
+	for i, n := range add.Buckets {
+		e.Buckets[i] += n
+	}
+}
+
+// RunClaimPollStatsFlusher flushes every ClaimPollFlushInterval until ctx ends,
+// then once more so a clean shutdown loses nothing.
+func RunClaimPollStatsFlusher(ctx context.Context, stats *ClaimPollStats, q *db.Queries) {
+	ticker := time.NewTicker(ClaimPollFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := stats.Flush(flushCtx, q, time.Now()); err != nil {
+				slog.Warn("claim poll stats: final flush failed", "error", err)
+			}
+			cancel()
+			return
+		case <-ticker.C:
+			if err := stats.Flush(ctx, q, time.Now()); err != nil {
+				slog.Warn("claim poll stats: flush failed", "error", err)
+			}
+		}
+	}
+}
+
+// claimPollTally collects what the claimTask calls inside one poll saw, so the
+// poll can be classified once. Not safe for concurrent use: one poll runs its
+// claimTask calls in sequence.
+type claimPollTally struct {
+	refused int
+}
+
+// note records one finished claimTask call. no_tasks with no visible
+// candidate is an empty answer; a claim, an error (the poll reports it) and
+// nothing else is not a refusal.
+func (t *claimPollTally) note(outcome string, scope claimScope) {
+	if t == nil {
+		return
+	}
+	switch {
+	case outcome == claimOutcomeClaimed:
+	case strings.HasPrefix(outcome, "error_"):
+	case outcome == claimOutcomeNoTasks && scope.candidates == 0:
+	default:
+		t.refused++
+	}
+}
+
+// observePoll classifies and records one finished poll.
+func (s *TaskService) observePoll(path string, start time.Time, claimed int, err error, tally *claimPollTally) {
+	if s.PollStats == nil {
+		return
+	}
+	outcome := ClaimPollOutcomeEmpty
+	switch {
+	case claimed > 0:
+		outcome = ClaimPollOutcomeClaimed
+	case err != nil:
+		outcome = ClaimPollOutcomeError
+	case tally != nil && tally.refused > 0:
+		outcome = ClaimPollOutcomeRefused
+	}
+	s.PollStats.Observe(path, outcome, time.Since(start))
+}

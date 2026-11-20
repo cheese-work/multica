@@ -250,6 +250,7 @@ type AgentTaskQueue struct {
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 	TriggerKind               pgtype.Text        `json:"trigger_kind"`
 	HandoffDispatchID         pgtype.UUID        `json:"handoff_dispatch_id"`
+	FirstDispatchedAt         pgtype.Timestamptz `json:"first_dispatched_at"`
 }
 
 type AgentToLabel struct {
@@ -1005,6 +1006,15 @@ type CiWatchEvent struct {
 	PausedUntil   pgtype.Timestamptz `json:"paused_until"`
 	Detail        string             `json:"detail"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type ClaimPollStat struct {
+	Minute       pgtype.Timestamptz `json:"minute"`
+	Path         string             `json:"path"`
+	Outcome      string             `json:"outcome"`
+	Count        int64              `json:"count"`
+	SumMs        float64            `json:"sum_ms"`
+	BucketCounts []int64            `json:"bucket_counts"`
 }
 
 type ClientUsageDaily struct {

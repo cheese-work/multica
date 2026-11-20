@@ -79,8 +79,8 @@ func TestClaimPollStatsFlushAccumulatesAndResets(t *testing.T) {
 	q := db.New(pool)
 	stats := NewClaimPollStats()
 	minute := time.Now().UTC().Truncate(time.Minute).Add(-24 * time.Hour * 365 * 30) // far past: no clash with other runs
-	path := fmt.Sprintf("flush-test-%d", time.Now().UnixNano())
-	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM claim_poll_stats WHERE path = $1`, path) })
+	path := claimPathBatch
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM claim_poll_stats WHERE minute = $1`, minute) })
 
 	stats.Observe(path, ClaimPollOutcomeEmpty, 5*time.Millisecond)
 	stats.Observe(path, ClaimPollOutcomeEmpty, 30*time.Millisecond)
