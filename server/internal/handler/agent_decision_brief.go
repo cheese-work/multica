@@ -98,6 +98,8 @@ type agentDecisionBriefRecord struct {
 	// Set when Jev decided for Cheese. Still an agent decision.
 	Decider    string   `json:"decider,omitempty"`
 	Confidence *float64 `json:"confidence,omitempty"`
+	// "<agent name> for <human in charge name>", computed per read (S4b).
+	DeciderDisplay string `json:"decider_display,omitempty"`
 }
 
 type agentDecisionNoticeFailure struct {
@@ -218,6 +220,16 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 	if err := rows.Err(); err != nil {
 		fail(err)
 		return
+	}
+	var displayer *deciderDisplayer
+	for i := range records {
+		if records[i].Decider == "" {
+			continue
+		}
+		if displayer == nil {
+			displayer = h.newDeciderDisplayer(ctx, workspaceID)
+		}
+		records[i].DeciderDisplay = displayer.display(records[i].IssueID)
 	}
 
 	failures := []agentDecisionNoticeFailure{}
