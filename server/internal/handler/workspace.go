@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/mergequeue"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/queueorder"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -415,6 +417,11 @@ type UpdateWorkspaceRequest struct {
 	MergeQueueRouting  json.RawMessage `json:"merge_queue_dequeue_routing"`
 	MergeQueueBindings json.RawMessage `json:"merge_queue_actor_bindings"`
 	MergeQueueWatch    json.RawMessage `json:"merge_queue_watch_issue"`
+	// QueueOrder and QueueAgingMinutes each set one settings key alone
+	// (CHE-8761): queue_order priority|project_rank and queue_aging_minutes
+	// 5 to 720. Owner or admin; queueorder.ValidateSetting checks the values.
+	QueueOrder        json.RawMessage `json:"queue_order"`
+	QueueAgingMinutes json.RawMessage `json:"queue_aging_minutes"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -590,7 +597,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -716,6 +723,9 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		params.DecisionAskPark = req.DecisionAskPark
 	}
+	// Both field groups reach the update as one settings object that replaces
+	// only its own keys (params.MergeQueue).
+	fieldPatch := map[string]any{}
 	if patch := mergeQueueFieldPatch(req.MergeQueueRouting, req.MergeQueueBindings, req.MergeQueueWatch); len(patch) > 0 {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
 			return
@@ -724,7 +734,20 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		merged, _ := json.Marshal(patch)
+		maps.Copy(fieldPatch, patch)
+	}
+	if patch := queueOrderFieldPatch(req.QueueOrder, req.QueueAgingMinutes); len(patch) > 0 {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner", "admin"); !ok {
+			return
+		}
+		if err := queueorder.ValidateSetting(patch); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		maps.Copy(fieldPatch, patch)
+	}
+	if len(fieldPatch) > 0 {
+		merged, _ := json.Marshal(fieldPatch)
 		params.MergeQueue = merged
 	}
 	for _, mapping := range []struct {

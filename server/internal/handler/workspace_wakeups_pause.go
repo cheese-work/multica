@@ -208,6 +208,9 @@ func (h *Handler) saveWorkspaceIn(r *http.Request, params db.UpdateWorkspacePara
 			return ws, "", activity, err
 		}
 	}
+	if err := h.auditQueueOrderChange(ctx, q, r, before, ws); err != nil {
+		return ws, "", activity, auditWriteError{err}
+	}
 	if err := h.writeAudit(ctx, q, r, auditInput{
 		Kind: "workspace.update", WorkspaceID: ws.ID, TargetID: ws.ID,
 		Before: workspaceAuditFields(before), After: workspaceAuditFields(ws),
