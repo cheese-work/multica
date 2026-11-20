@@ -82,6 +82,10 @@ type workflowWrite struct {
 	// capped is set when the write moved the issue to need_decision because its
 	// review rounds ran out; the card opens after the commit (CHE-6192).
 	capped *roundsCap
+	// park marks a manual move to the park target that the write applies as a
+	// park (CHE-6460 D1c); parkFrom is the status it replaces, under the lock.
+	park     bool
+	parkFrom string
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like
@@ -101,6 +105,10 @@ func (h *Handler) decideIssueWorkflowWith(ctx context.Context, q *db.Queries, pr
 		return handoff, nil, err
 	}
 	write.got, write.handoff = *params, handoff
+	pre := write.pre
+	if write.park, err = manualParkMove(ctx, q, prev, &pre, statusExplicit, assigneeTouched, caller); err != nil {
+		return handoff, nil, err
+	}
 	return handoff, write, nil
 }
 
@@ -166,6 +174,15 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 		(handoff == nil) != (w.handoff == nil) {
 		return errWorkflowChanged
 	}
+	pre := w.pre
+	park, err := manualParkMove(ctx, q, locked, &pre, w.statusExplicit, w.assigneeTouched, w.caller)
+	if err != nil {
+		return err
+	}
+	if park != w.park {
+		return errWorkflowChanged
+	}
+	w.parkFrom = locked.Status
 	// The confirmation named who the issue was taken from and who it goes to.
 	// Checked against the locked row and the workflow as it stands, so a
 	// reassignment or a handler edit after the preview cannot make the write
