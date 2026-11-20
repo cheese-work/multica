@@ -118,8 +118,12 @@ type decisionRequestResult struct {
 	Message          db.ChatMessage
 	ClearedComments  []db.Comment
 	CreatedSession   *db.ChatSession
-	Replayed         bool
-	Action           *db.DecisionAction
+	// BackingLane is true when the request sits in a hidden decision backing lane: nothing about
+	// the lane is announced to the member. Warnings go back to the caller as hints.
+	BackingLane bool
+	Warnings    []string
+	Replayed    bool
+	Action      *db.DecisionAction
 	// PingItem is set only when the ping was recorded inside the request
 	// transaction (single-call path); PingRecorded distinguishes "recorded,
 	// no item for a departed recipient" from "not yet recorded".
@@ -418,8 +422,40 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	backing, err := handler.issueAskGoesToBackingLane(ctx, queries, issue, input.dmSession().Valid)
+	if err != nil {
+		return empty, err
+	}
 	newDM := input.NewDM
-	if newDM {
+	if backing {
+		// session_id and new_dm only name the person: the ask goes to that person's backing lane.
+		humanID := input.HumanUserID
+		if !humanID.Valid {
+			named, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: input.SessionID, WorkspaceID: issue.WorkspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return empty, deny
+			}
+			if err != nil {
+				return empty, err
+			}
+			humanID = named.CreatorID
+		}
+		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, humanID)
+		if err != nil {
+			return empty, err
+		}
+		var found bool
+		if session, found, err = backingLane(ctx, queries, issue, topic, targetID); err != nil {
+			return empty, err
+		}
+		if newDM = !found; newDM {
+			steward, err := handler.decisionSteward(ctx, queries, topic, agent, targetID)
+			if err != nil {
+				return empty, err
+			}
+			session = db.ChatSession{AgentID: steward.ID, CreatorID: targetID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
+		}
+	} else if newDM {
 		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
 		if err != nil {
 			return empty, err
@@ -530,10 +566,19 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 			return empty, err
 		}
 		createdSession = &session
+		if backing {
+			if err := queries.CreateDecisionBackingLane(ctx, db.CreateDecisionBackingLaneParams{SessionID: session.ID, WorkspaceID: issue.WorkspaceID, CreatorID: session.CreatorID, TopicID: topic.ID}); err != nil {
+				return empty, err
+			}
+		}
 	}
 	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, intent.CommentID, dbid.NewV7(), &tag)
 	if err != nil {
 		return empty, err
+	}
+	if backing {
+		result.BackingLane = true
+		result.Warnings = append(result.Warnings, "decision_screen is on: session_id and new_dm are ignored; the ask goes to the member's decision backing lane")
 	}
 	if result.ParkedIssue, result.ParkedActivity, err = parkForDecisionRequest(ctx, queries, issue, input.Wait); err != nil {
 		return empty, err
@@ -752,7 +797,19 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	reuse := input.SessionID.Valid
 	dmSession := input.dmSession()
 	inDM := dmSession.Valid
-	if inDM {
+	backing, err := handler.issueAskGoesToBackingLane(ctx, queries, issue, inDM)
+	if err != nil {
+		return empty, err
+	}
+	var warnings []string
+	if backing {
+		if input.SessionID.Valid || input.NewDM {
+			warnings = append(warnings, "decision_screen is on: session_id and new_dm are ignored; the ask goes to the member's decision backing lane")
+		}
+		if session, reuse, err = backingLane(ctx, queries, issue, topic, input.HumanUserID); err != nil {
+			return empty, err
+		}
+	} else if inDM {
 		reuse = true
 		if session, err = lockProposalDM(ctx, queries, issue, dmSession, agentID); err != nil {
 			return empty, input.Proposal.laneError(err)
@@ -850,6 +907,11 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 			return empty, err
 		}
 		createdSession = &session
+		if backing {
+			if err := queries.CreateDecisionBackingLane(ctx, db.CreateDecisionBackingLaneParams{SessionID: session.ID, WorkspaceID: issue.WorkspaceID, CreatorID: session.CreatorID, TopicID: topic.ID}); err != nil {
+				return empty, err
+			}
+		}
 	}
 	if input.Proposal != nil {
 		if input.Proposal, err = handler.admitProposal(ctx, queries, issue, agent, session, input); err != nil {
@@ -897,7 +959,43 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 		}
 	}
 	result.CreatedSession = createdSession
+	result.BackingLane = backing
+	result.Warnings = warnings
 	return result, nil
+}
+
+// issueAskGoesToBackingLane is true for an issue task's ask while decision_screen is on. A DM
+// task's ask stays in its DM (plan r4 3.7). The setting is read inside the request transaction.
+func (handler *Handler) issueAskGoesToBackingLane(ctx context.Context, queries *db.Queries, issue db.Issue, inDM bool) (bool, error) {
+	if inDM {
+		return false, nil
+	}
+	workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	return decisiontx.DecisionScreenOn(workspace.Settings), nil
+}
+
+// backingLane finds and locks the member's backing lane for the topic. found is false when there
+// is none yet; the caller creates it and registers it in the same transaction. The topic-lane
+// advisory lock serialises two asks that would both create it.
+func backingLane(ctx context.Context, queries *db.Queries, issue db.Issue, topic decisionTopic, humanID pgtype.UUID) (session db.ChatSession, found bool, err error) {
+	if err := queries.LockDecisionTopicLane(ctx, db.LockDecisionTopicLaneParams{WorkspaceID: issue.WorkspaceID, CreatorID: humanID, TopicID: topic.ID}); err != nil {
+		return db.ChatSession{}, false, err
+	}
+	id, err := queries.GetDecisionBackingLane(ctx, db.GetDecisionBackingLaneParams{WorkspaceID: issue.WorkspaceID, CreatorID: humanID, TopicID: topic.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, false, nil
+	}
+	if err != nil {
+		return db.ChatSession{}, false, err
+	}
+	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: id}); err != nil {
+		return db.ChatSession{}, false, err
+	}
+	session, err = queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: id, WorkspaceID: issue.WorkspaceID})
+	return session, err == nil, err
 }
 
 // latestDM finds the recipient's most recently active plain DM with the agent

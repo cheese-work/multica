@@ -316,6 +316,28 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 	return i, err
 }
 
+const createDecisionBackingLane = `-- name: CreateDecisionBackingLane :exec
+INSERT INTO decision_backing_lane (session_id, workspace_id, creator_id, topic_id)
+VALUES ($1, $2, $3, $4)
+`
+
+type CreateDecisionBackingLaneParams struct {
+	SessionID   pgtype.UUID `json:"session_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+}
+
+func (q *Queries) CreateDecisionBackingLane(ctx context.Context, arg CreateDecisionBackingLaneParams) error {
+	_, err := q.db.Exec(ctx, createDecisionBackingLane,
+		arg.SessionID,
+		arg.WorkspaceID,
+		arg.CreatorID,
+		arg.TopicID,
+	)
+	return err
+}
+
 const createDecisionCardAnswer = `-- name: CreateDecisionCardAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
 VALUES ($1, $2, 'card', '{}', $3, $4, $5, GREATEST($4::timestamptz, clock_timestamp()))
@@ -996,6 +1018,25 @@ func (q *Queries) GetDecisionAnswer(ctx context.Context, arg GetDecisionAnswerPa
 	return i, err
 }
 
+const getDecisionBackingLane = `-- name: GetDecisionBackingLane :one
+SELECT session_id FROM decision_backing_lane
+WHERE workspace_id = $1 AND creator_id = $2 AND topic_id = $3
+`
+
+type GetDecisionBackingLaneParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+}
+
+// The member's hidden lane for a topic, if one is registered (plan r4 3.7). Call under LockDecisionTopicLane.
+func (q *Queries) GetDecisionBackingLane(ctx context.Context, arg GetDecisionBackingLaneParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getDecisionBackingLane, arg.WorkspaceID, arg.CreatorID, arg.TopicID)
+	var session_id pgtype.UUID
+	err := row.Scan(&session_id)
+	return session_id, err
+}
+
 const getDecisionCardAnswer = `-- name: GetDecisionCardAnswer :one
 SELECT id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version, undo_until FROM decision_answer WHERE decision_request_id = $1 AND answer_source = 'card'
 ORDER BY created_at DESC LIMIT 1
@@ -1245,6 +1286,7 @@ WHERE session.workspace_id = $1 AND session.creator_id = $2
   AND session.decision_topic_id = $3 AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
 ORDER BY session.created_at, session.id
 LIMIT 1
 `
@@ -1347,6 +1389,7 @@ WHERE session.workspace_id = $1 AND session.creator_id = $2
   AND session.agent_id = $3 AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
 ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 1
 `
@@ -1440,6 +1483,17 @@ func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisi
 		&i.UndoUntil,
 	)
 	return i, err
+}
+
+const isDecisionBackingLane = `-- name: IsDecisionBackingLane :one
+SELECT EXISTS (SELECT 1 FROM decision_backing_lane WHERE session_id = $1)
+`
+
+func (q *Queries) IsDecisionBackingLane(ctx context.Context, sessionID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, isDecisionBackingLane, sessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const listCIDecisionRequests = `-- name: ListCIDecisionRequests :many
@@ -1957,6 +2011,7 @@ WHERE session.workspace_id = $2
   AND session.creator_id = $5 AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
   AND ($6::uuid IS NULL OR session.id = $6::uuid)
 ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10
