@@ -233,6 +233,17 @@ type Facts struct {
 	// nil when no such gate asked for them.
 	Intake *IntakeFacts
 	QA     *QAFacts
+	// ReadyForReview is the author's ready marker on the issue (CHE-5741). A
+	// draft PR is the author's early push, so pr.checks_green holds for it only
+	// once the author set the marker.
+	ReadyForReview bool
+}
+
+// ChecksGreen reports whether p is an open PR whose newest head has green
+// checks, which is what pr.checks_green asks of a PR. A draft PR also needs the
+// author's ready marker.
+func (f Facts) ChecksGreen(p PRFact) bool {
+	return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" && (p.State != "draft" || f.ReadyForReview)
 }
 
 // FirstMatch returns the first edge, in list order, whose guard holds for the
@@ -250,7 +261,7 @@ func FirstMatch(edges []Edge, f Facts) (Edge, bool) {
 func (f Facts) holds(g Guard) bool {
 	switch g.Kind {
 	case GuardPRChecksGreen:
-		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" }) && !f.OpenChildren
+		return f.anyPR(f.ChecksGreen) && !f.OpenChildren
 	case GuardPRChecksRed:
 		return f.anyPR(func(p PRFact) bool { return p.red() && (p.RedCause == "" || p.RedCause == "pr") })
 	case GuardPRChecksInfraRed:

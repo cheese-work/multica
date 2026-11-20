@@ -214,7 +214,7 @@ func (h *Handler) watchAgainIn(ctx context.Context, w db.IssueWakeup, d time.Dur
 // greenHead is the head of the first PR whose checks pass on its newest head.
 func greenHead(f issueworkflow.Facts) string {
 	for _, p := range f.PRs {
-		if (p.State == "open" || p.State == "draft") && p.HeadFresh && p.ChecksRollup == "SUCCESS" {
+		if f.ChecksGreen(p) {
 			return p.HeadSHA
 		}
 	}
@@ -241,7 +241,7 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 // success event since the issue entered the step.
 func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
 	includeChildren := def.IncludeChildPRs
-	var facts issueworkflow.Facts
+	facts := issueworkflow.Facts{ReadyForReview: issueReadyForReview(issue)}
 	children, err := q.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return facts, err
