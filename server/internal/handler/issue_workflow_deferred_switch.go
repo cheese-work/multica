@@ -46,6 +46,22 @@ func (h *Handler) RegisterDeferredWorkflowSwitch(bus *events.Bus) {
 	}
 }
 
+// RequestWorkflowSwitch parks a switch of the issue to the workflow, one row
+// per issue with the newest request winning, then tries to apply it (CHE-7670).
+// With no live task the same apply a terminal task event runs happens here, at
+// once; with a live task the row waits for the event of the last one. A refused
+// apply is settled by the apply (the issue is blocked with the reason), so only
+// a failure to park the request is returned.
+func (h *Handler) RequestWorkflowSwitch(ctx context.Context, workspaceID, issueID, workflowID pgtype.UUID, reason string) error {
+	if err := h.Queries.UpsertIssueWorkflowSwitchPending(ctx, db.UpsertIssueWorkflowSwitchPendingParams{
+		IssueID: issueID, WorkspaceID: workspaceID, WorkflowID: workflowID, Reason: reason,
+	}); err != nil {
+		return err
+	}
+	h.ApplyDeferredWorkflowSwitch(ctx, issueID)
+	return nil
+}
+
 // deferredSwitchRefusal is a switch the target workflow cannot take: the issue
 // is blocked with the reason, instead of retrying on every later event.
 type deferredSwitchRefusal struct {
@@ -190,7 +206,10 @@ func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtyp
 	if err != nil {
 		return err
 	}
-	if service.IsFinishedStatus(ctx, qtx, issue.WorkspaceID, issue.Status) {
+	if err := resyncWorkflowEdgesWatch(ctx, qtx, rebound, def); err != nil {
+		return err
+	}
+	if h.onQueries(qtx).deferredSwitchFinished(ctx, issue) {
 		// A finished issue follows the new workflow but is not handed to anyone.
 		if err := tx.Commit(ctx); err != nil {
 			return err
@@ -223,6 +242,35 @@ func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtyp
 	return nil
 }
 
+// deferredSwitchFinished reports whether the issue is finished, so a switch
+// rebinds it and hands it to nobody. An issue on an auto-close step that waits
+// for its merge without a run is not finished: it follows the new workflow's
+// dispatch and its own close check (CHE-7670).
+func (h *Handler) deferredSwitchFinished(ctx context.Context, issue db.Issue) bool {
+	if !service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return false
+	}
+	return !(entersAutoCloseStep(issue.Status) && h.pendingMergeLive(ctx, issue.ID))
+}
+
+// resyncWorkflowEdgesWatch replaces the issue's workflow_edges watch with the
+// one the new workflow's step calls for. The status trigger does this on a
+// status change; a switch that keeps the status needs it done here. The Quick
+// workflow's merge watch must not outlive the switch, and a step of the new
+// workflow with fact edges starts its own.
+func resyncWorkflowEdgesWatch(ctx context.Context, q *db.Queries, issue db.Issue, def *issueworkflow.Definition) error {
+	if err := q.DeleteIssueWorkflowEdgesWatch(ctx, issue.ID); err != nil {
+		return err
+	}
+	step, ok := def.Step(issue.Status)
+	if !ok || !issueworkflow.HasFactEdges(step.Edges) {
+		return nil
+	}
+	return q.StartIssueWorkflowEdgesWatch(ctx, db.StartIssueWorkflowEdgesWatchParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Status: issue.Status,
+	})
+}
+
 // refuseDeferredWorkflowSwitch settles a switch the target refused, in one
 // transaction: the row is consumed, the issue is blocked, blocked_reason is
 // set and one system comment names the target and the cause. Any failure rolls
@@ -252,7 +300,7 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 		return err
 	}
 	reason := refusal.Error()
-	blocked, finished := issue.Status == issuestatus.Blocked, service.IsFinishedStatus(ctx, qtx, issue.WorkspaceID, issue.Status)
+	blocked, finished := issue.Status == issuestatus.Blocked, h.onQueries(qtx).deferredSwitchFinished(ctx, issue)
 	var move *edgeMove
 	if !blocked && !finished {
 		def, _, err := issueworkflow.ForIssue(ctx, qtx, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
