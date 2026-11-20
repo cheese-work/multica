@@ -74,6 +74,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 工作区所有者或管理员可在工作区设置中配置 `quick_first`，让一部分新问题试用 Quick 工作流：`{"workflow_id": "<Quick 工作流 ID>", "types": ["feat", "fix"], "starts_at": "<RFC 3339>", "ends_at": "<RFC 3339>"}`。从 `starts_at`（含）到 `ends_at`（不含），标题类型在 `types` 中、且已遵循完整工作流（所在项目的工作流，或 `workflow_by_type` 指定的工作流）的新根问题按编号分组：偶数编号从 `todo` 起进入 Quick 工作流，奇数编号沿用原工作流。子问题沿用父问题的 Quick 工作流。调用方用 `--workflow` 指定了工作流、状态不是 `todo` 或 `backlog`、已分配给成员或小队，或所在项目的 A/B 分流正处于其时间窗口内，则不参与。被指定为经办人的智能体会保留为问题的作者。设置之前该功能关闭；未设置时，创建行为不变。
 
+每次绑定到 Quick 工作流，都会在该议题的活动中写入一行 `quick_entry`：抽签为两个分组各写一行（`source` 为 `arm`，`arm` 为 `Q` 或 `D`），议题级覆盖到 Quick 时写入 `source` 为 `override` 的一行。Quick 是名为 `Quick` 的工作流，或 `quick_first` 指定的工作流。`full_workflow_id` 由服务器设置为议题紧接此前所遵循的工作流：抽签时是奇数编号保留的路线；覆盖时依次是议题此前的覆盖、其标题类型在 `workflow_by_type` 中的条目、其项目的工作流。若议题没有则省略。调用方不能指定它。
+
 ## 按能力路由工作
 
 工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，目前没有任何功能读取它，因此行为不变。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。

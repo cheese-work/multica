@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -204,10 +205,37 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
+	if err := recordQuickEntryOnBind(ctx, qtx, issue, next, "member", member.UserID); err != nil {
+		slog.Warn("set issue workflow: record quick_entry", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to set workflow")
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
 	h.publishIssueSnapshots(ctx, []db.Issue{updated}, "member", uuidToString(member.UserID))
 	writeJSON(w, http.StatusOK, h.issueResponseWithCategory(ctx, updated))
+}
+
+// recordQuickEntryOnBind writes the quick_entry evidence (CHE-7681) when issue
+// has just been bound to next and next is the Quick workflow. issue is the row
+// as it was before the bind, so its override, title and project give the
+// binding the issue had.
+func recordQuickEntryOnBind(ctx context.Context, q issueworkflow.EntryQuerier, issue db.Issue, next *issueworkflow.Definition, actorType string, actorID pgtype.UUID) error {
+	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	if !issueworkflow.IsQuick(next, issueworkflow.DecodeQuickFirst(workspace.Settings)) {
+		return nil
+	}
+	prior, err := issueworkflow.PriorRoute(ctx, q, issue)
+	if err != nil {
+		return err
+	}
+	if prior == next.ID {
+		prior = pgtype.UUID{} // Quick is not a route out of Quick
+	}
+	return issueworkflow.RecordQuickEntry(ctx, q, issue.WorkspaceID, issue.ID, "", prior, actorType, actorID)
 }

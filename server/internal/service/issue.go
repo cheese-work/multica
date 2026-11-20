@@ -459,6 +459,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// The quick_first draw (CHE-7680) runs on what the route and the split
 	// left: an open project split wins, and a caller's override stays out.
 	var quickAuthor *issueworkflow.StepAssignee
+	var quickEntry *quickEntryDraw
 	if !split.WorkflowID.Valid {
 		workspace, err := qtx.GetWorkspace(ctx, p.WorkspaceID)
 		if err != nil {
@@ -477,6 +478,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 				ProjectSplit: projectSplitOpen, Routed: def != nil,
 				HasParent: p.ParentIssueID.Valid, ParentFlow: parent.WorkflowID, Number: issueNumber,
 			})
+			routeID := pgtype.UUID{} // the arm-D route: what the issue follows before the draw
+			if def != nil {
+				routeID = def.ID
+			}
 			if choice.Arm {
 				quickDef, quickProject, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, qf.WorkflowID, projectID)
 				switch {
@@ -491,6 +496,9 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 						quickAuthor = &issueworkflow.StepAssignee{Type: named.String, ID: namedID}
 					}
 				}
+			}
+			if choice.Drawn {
+				quickEntry = &quickEntryDraw{Arm: map[bool]string{true: "Q", false: "D"}[choice.Arm], Route: routeID}
 			}
 			slog.Info("quick_first", "workspace_id", util.UUIDToString(p.WorkspaceID), "number", issueNumber, "arm_q", choice.Arm, "drawn", choice.Drawn, "reason", choice.Reason)
 		}
@@ -675,6 +683,11 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		// The author the creator named, kept for the Quick handler (CHE-7677).
 		if err := issueworkflow.SetStepAssignee(ctx, qtx, p.WorkspaceID, issue.ID, issueworkflow.StepKeyAuthor, *quickAuthor, p.CreatorType, p.CreatorID); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("record quick author: %w", err)
+		}
+	}
+	if quickEntry != nil {
+		if err := issueworkflow.RecordQuickEntry(ctx, qtx, p.WorkspaceID, issue.ID, quickEntry.Arm, quickEntry.Route, "", pgtype.UUID{}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("record quick entry: %w", err)
 		}
 	}
 	if split.Action != "" {

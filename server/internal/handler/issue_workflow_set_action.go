@@ -246,6 +246,9 @@ func executeIssueWorkflowSetAction(ctx context.Context, execution decisionAction
 	if _, err := queries.SetIssueWorkflow(ctx, db.SetIssueWorkflowParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, WorkflowID: target}); err != nil {
 		return nil, err
 	}
+	if err := recordQuickEntryOnBind(ctx, queries, issue, next, "", pgtype.UUID{}); err != nil {
+		return nil, err
+	}
 	return json.Marshal(map[string]any{"issue_id": params.IssueID, "workflow_id": params.WorkflowID})
 }
 

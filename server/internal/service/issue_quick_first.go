@@ -92,3 +92,10 @@ func chooseQuickFirst(qf *issueworkflow.QuickFirst, now time.Time, f quickFirstF
 func (s *WorkflowSplit) active(now time.Time) bool {
 	return s != nil && !now.Before(s.StartsAt) && now.Before(s.EndsAt)
 }
+
+// quickEntryDraw is the evidence a draw leaves (CHE-7681): the arm drawn and
+// the workflow the issue followed before the draw. Arm D keeps that route.
+type quickEntryDraw struct {
+	Arm   string
+	Route pgtype.UUID
+}
