@@ -97,7 +97,7 @@ type IssueAuthor struct {
 	TaskID   string
 	Provider string
 	Model    string
-	// Lab is labOf(Provider, Model), or LabUnknown.
+	// Lab is the caller's labOf(Provider, Model), or LabUnknown.
 	Lab string
 }
 

@@ -248,3 +248,26 @@ test("the committed denylist and baseline parse and have unique pattern ids", ()
     }
   }
 });
+
+// CHE-8818 (plan r9 S2b): the CI wiring. `pull_request_target` runs the base definition, so the job
+// reads the PR head as data (fetched, never checked out) and the denylist and baseline from `workflow_sha`.
+test("the identity-literals job reads the PR head as data with no secret and no write permission", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8").replace(/^\s*#.*$/gm, "");
+  const start = workflow.indexOf("\n  identity-literals:");
+  assert.notEqual(start, -1, "pr-guards.yml has an identity-literals job");
+  const rest = workflow.slice(start + 1);
+  const next = rest.slice(1).search(/^ {2}[\w-]+:$/m);
+  const job = next === -1 ? rest : rest.slice(0, next + 1);
+  assert.match(job, /permissions:\n {6}contents: read\n {4}steps:/);
+  assert.match(job, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(job, /persist-credentials: false/);
+  assert.match(job, /git fetch --no-tags origin "refs\/pull\/\$PR_NUMBER\/head"/);
+  assert.match(job, /test "\$\(git rev-parse FETCH_HEAD\)" = "\$EXPECTED_HEAD"/);
+  assert.match(job, /run: node scripts\/identity-literals\.mjs$/m);
+  assert.doesNotMatch(job, /secrets\.|: write|continue-on-error|--tree|--denylist|--baseline|pull_request\.head\.(ref|repo)/);
+});
+
+test("literalsOf: an apostrophe in prose opens a quote to the end of the line, so it can only add hits (known limit, CHE-8812 P2)", () => {
+  assert.deepEqual(literalsOf("<p>don't use c00 here</p>\n").map((l) => l.text), ["t use c00 here</p>"]);
+  assert.deepEqual(literalsOf("<p>it's fine</p> <b>c00</b>\n").map((l) => l.text), ["s fine</p> <b>c00</b>"]);
+});

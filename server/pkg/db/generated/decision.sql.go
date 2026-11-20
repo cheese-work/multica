@@ -2594,6 +2594,37 @@ func (q *Queries) ListOpenProposals(ctx context.Context, arg ListOpenProposalsPa
 	return items, nil
 }
 
+const listPushDeliveryTimings = `-- name: ListPushDeliveryTimings :many
+SELECT id, sent_at, next_attempt_at FROM push_delivery WHERE record_id = $1
+`
+
+type ListPushDeliveryTimingsRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	SentAt        pgtype.Timestamptz `json:"sent_at"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+}
+
+// The push state of one inbox item before a coalesced ask re-arms it.
+func (q *Queries) ListPushDeliveryTimings(ctx context.Context, recordID pgtype.UUID) ([]ListPushDeliveryTimingsRow, error) {
+	rows, err := q.db.Query(ctx, listPushDeliveryTimings, recordID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPushDeliveryTimingsRow{}
+	for rows.Next() {
+		var i ListPushDeliveryTimingsRow
+		if err := rows.Scan(&i.ID, &i.SentAt, &i.NextAttemptAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBatchAnsweredRequests = `-- name: LockBatchAnsweredRequests :many
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, route, would_auto_apply, auto_apply_rule_id, reask_of_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND answered_by_batch_request_id = $2
@@ -3697,6 +3728,28 @@ func (q *Queries) SetDecisionRequestCovers(ctx context.Context, arg SetDecisionR
 	return i, err
 }
 
+const spacePushDelivery = `-- name: SpacePushDelivery :exec
+UPDATE push_delivery
+SET next_attempt_at = CASE WHEN $1::timestamptz IS NULL THEN $2::timestamptz
+        ELSE GREATEST(now() + interval '10 seconds', $1::timestamptz + interval '15 minutes') END
+WHERE id = $3 AND sent_at IS NULL
+`
+
+type SpacePushDeliveryParams struct {
+	WasSentAt        pgtype.Timestamptz `json:"was_sent_at"`
+	WasNextAttemptAt pgtype.Timestamptz `json:"was_next_attempt_at"`
+	ID               pgtype.UUID        `json:"id"`
+}
+
+// After a coalesced ask re-armed a delivery row (CHE-8878). A push still
+// waiting keeps its time: it will show the updated line. A push already sent
+// is due again 15 minutes after it was sent, at the earliest (rule of CHE-6009),
+// so a stream of asks gives one push per window and never loses the last one.
+func (q *Queries) SpacePushDelivery(ctx context.Context, arg SpacePushDeliveryParams) error {
+	_, err := q.db.Exec(ctx, spacePushDelivery, arg.WasSentAt, arg.WasNextAttemptAt, arg.ID)
+	return err
+}
+
 const stampCommentDecisionIntent = `-- name: StampCommentDecisionIntent :exec
 UPDATE comment SET decision_intent_id = $1
 WHERE workspace_id = $2 AND id = $3
@@ -3715,22 +3768,30 @@ func (q *Queries) StampCommentDecisionIntent(ctx context.Context, arg StampComme
 
 const updateDecisionPingLine = `-- name: UpdateDecisionPingLine :exec
 UPDATE inbox_item
-SET body = $1, details = details || jsonb_build_object('open_ask_count', $2::int), updated_at = now()
-WHERE workspace_id = $3 AND id = $4
+SET body = $1,
+    details = details || jsonb_build_object('open_ask_count', $2::int),
+    chat_message_id = COALESCE($3::uuid, chat_message_id),
+    updated_at = now()
+WHERE workspace_id = $4 AND id = $5
 `
 
 type UpdateDecisionPingLineParams struct {
-	Body         pgtype.Text `json:"body"`
-	OpenAskCount int32       `json:"open_ask_count"`
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-	ID           pgtype.UUID `json:"id"`
+	Body          pgtype.Text `json:"body"`
+	OpenAskCount  int32       `json:"open_ask_count"`
+	ChatMessageID pgtype.UUID `json:"chat_message_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ID            pgtype.UUID `json:"id"`
 }
 
-// Rewrites the coalesced line in place. chat_message_id stays, so no push is queued.
+// Rewrites the coalesced line, moves the item to the top of the inbox and
+// re-points it at the newest ask's card (CHE-8878). The chat_message_id change
+// makes the push trigger re-arm every delivery row of the item; the caller
+// snapshots them first and restores the 15 minute spacing afterwards.
 func (q *Queries) UpdateDecisionPingLine(ctx context.Context, arg UpdateDecisionPingLineParams) error {
 	_, err := q.db.Exec(ctx, updateDecisionPingLine,
 		arg.Body,
 		arg.OpenAskCount,
+		arg.ChatMessageID,
 		arg.WorkspaceID,
 		arg.ID,
 	)

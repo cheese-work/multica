@@ -14,14 +14,12 @@ import (
 // 409 review_independence, and the issue left unchanged, when none qualifies
 // or when the effective assignee (override or sticky) is not independent.
 
-const reviewerTestLabs = `{"claude/claude-sonnet-5-5":"anthropic","codex/gpt-5.5":"openai","gemini/gemini-3":"google"}`
-
 type reviewerCase struct {
 	projectID string
 }
 
 // reviewerAgent is a ready agent on its own runtime of the given provider and
-// model. Its lab comes from MULTICA_VOTE_GATE_LABS through that pair.
+// model. Its lab comes from service.LabOf through that pair.
 func reviewerAgent(t *testing.T, provider, model string) string {
 	t.Helper()
 	runtimeID := dbfx.Runtime(t, "reviewer runtime "+workflowTestSuffix(), testutil.Cols{"provider": provider})
@@ -33,7 +31,6 @@ func reviewerAgent(t *testing.T, provider, model string) string {
 func newReviewerCase(t *testing.T, authorAgentID string, reviewers ...string) reviewerCase {
 	t.Helper()
 	seedTestCatalog(t)
-	t.Setenv("MULTICA_VOTE_GATE_LABS", reviewerTestLabs)
 	setWorkspaceSettings(t, mustJSON(t, map[string]any{
 		"capability_routing": map[string]any{"feat": map[string]any{"author": authorAgentID, "reviewers": reviewers}},
 	}))
@@ -147,7 +144,7 @@ func TestReviewerHandler_SameLabOverrideRefused(t *testing.T) {
 // the table or an override names it.
 func TestReviewerHandler_UnknownLabRefused(t *testing.T) {
 	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
-	unknown := reviewerAgent(t, "codex", "model-not-in-the-lab-map")
+	unknown := reviewerAgent(t, "hermes", "model-not-in-the-lab-map")
 	c := newReviewerCase(t, author, unknown)
 
 	issueID := c.issue(t, author)
@@ -163,7 +160,7 @@ func TestReviewerHandler_UnknownLabRefused(t *testing.T) {
 
 // An author whose lab is unknown cannot be shown different from the reviewer.
 func TestReviewerHandler_UnknownAuthorLabRefused(t *testing.T) {
-	unknownAuthor := reviewerAgent(t, "codex", "model-not-in-the-lab-map")
+	unknownAuthor := reviewerAgent(t, "hermes", "model-not-in-the-lab-map")
 	openai := reviewerAgent(t, "codex", "gpt-5.5")
 	c := newReviewerCase(t, unknownAuthor, openai)
 	issueID := c.issue(t, unknownAuthor)
@@ -251,4 +248,35 @@ func TestReviewerHandler_BatchExplicitAssigneeIsChecked(t *testing.T) {
 	if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != openai {
 		t.Fatalf("issue = (%s, %s) after a cross-lab batch, want in_review assigned to %s", status, id, openai)
 	}
+}
+
+// CHE-8929: labs come from the model price table, else the runtime provider
+// (service.LabOf), not from MULTICA_VOTE_GATE_LABS. An Anthropic author gets the
+// OpenAI reviewer with the registry unset, a same-lab reviewer is still
+// refused, and an agent that cannot be placed stays unknown and is refused.
+func TestReviewerHandler_LabsNeedNoVoteGateRegistry(t *testing.T) {
+	t.Setenv("MULTICA_VOTE_GATE_LABS", "")
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	sameLab := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	terra := reviewerAgent(t, "codex", "gpt-6.1-terra")
+	unplaceable := reviewerAgent(t, "hermes", "model-not-in-the-price-table")
+
+	t.Run("cross-lab reviewer is picked", func(t *testing.T) {
+		c := newReviewerCase(t, author, sameLab, terra)
+		issueID := c.issue(t, author)
+		updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+		if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != terra {
+			t.Fatalf("issue = (%s, %s), want in_review assigned to the OpenAI reviewer %s", status, id, terra)
+		}
+	})
+	t.Run("same-lab reviewer is refused", func(t *testing.T) {
+		c := newReviewerCase(t, author, sameLab)
+		issueID := c.issue(t, author)
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "anthropic")
+	})
+	t.Run("unplaceable reviewer is refused as unknown", func(t *testing.T) {
+		c := newReviewerCase(t, author, unplaceable)
+		issueID := c.issue(t, author)
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "unknown")
+	})
 }

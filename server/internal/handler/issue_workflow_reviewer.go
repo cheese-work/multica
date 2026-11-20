@@ -21,7 +21,8 @@ import (
 // reviewer who is independent of every author of the issue: an agent whose lab
 // is known, differs from every author lab, and who is not itself an author.
 // Authors and their labs come from the workflow_role evidence (CHE-7676); a
-// reviewer's lab is predicted from its agent row (runtime provider and model).
+// reviewer's lab comes from its agent row (model, else runtime provider) through
+// service.LabOf, the merge gate's lab function.
 // This is routing only: the verdict-time check is a separate step.
 
 const reviewIndependenceCode = "review_independence"
@@ -43,6 +44,11 @@ func (e *ReviewIndependenceError) Error() string {
 	return fmt.Sprintf("review independence: %s (author labs: %s)", e.Reason, strings.Join(e.AuthorLabs, ", "))
 }
 
+// reviewerLab is the lab of an agent by its runtime provider and model, from
+// the same function the merge gate uses (service.LabOf), so it needs no
+// operator registry.
+func reviewerLab(provider, model string) string { return service.LabOf(model, provider) }
+
 // reviewerGuard is the author history one move is judged against.
 type reviewerGuard struct {
 	authorIDs  map[string]bool
@@ -50,7 +56,7 @@ type reviewerGuard struct {
 }
 
 func (h *Handler) loadReviewerGuard(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (*reviewerGuard, error) {
-	authors, err := service.IssueAuthors(ctx, q, issueID, voteLab)
+	authors, err := service.IssueAuthors(ctx, q, issueID, reviewerLab)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +80,7 @@ func (g *reviewerGuard) check(ctx context.Context, q *db.Queries, agent db.Agent
 	lab := service.LabUnknown
 	if agent.RuntimeID.Valid {
 		if rt, err := q.GetAgentRuntime(ctx, agent.RuntimeID); err == nil {
-			if l := voteLab(rt.Provider, agent.Model.String); l != "" {
+			if l := reviewerLab(rt.Provider, agent.Model.String); l != "" {
 				lab = l
 			}
 		}
