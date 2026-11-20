@@ -796,6 +796,7 @@ func main() {
 	go h.RunElevationFenceSweeper(sweepCtx)
 	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go h.RunSteerReplaySweeper(sweepCtx)
+	go h.RunHandoffIntentSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
