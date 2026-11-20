@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -151,27 +152,7 @@ func mainErr(days int, asJSON bool, workers int) error {
 	if err != nil {
 		return err
 	}
-	g := gather(c, agents, cutoff, workers)
-	runs := g.runs
-
-	rep := Aggregate(runs, g.issues)
-	rep.FailedCalls = len(g.failures)
-	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			return err
-		}
-	} else {
-		fmt.Printf("Window: last %d days (since %s), %d agents, %d runs\n", days, cutoff.UTC().Format(time.RFC3339), len(agents), len(runs))
-		fmt.Print(Render(rep))
-	}
-	if len(g.failures) > 0 {
-		// The totals are incomplete: say so in the report above and fail, so
-		// an automated consumer cannot accept them.
-		return fmt.Errorf("%d CLI calls failed, report is incomplete; first: %v", len(g.failures), g.failures[0])
-	}
-	return nil
+	return execute(c, agents, cutoff, asJSON, workers, os.Stdout)
 }
 
 type gathered struct {
@@ -233,4 +214,28 @@ func gather(src source, agents []string, cutoff time.Time, workers int) gathered
 		frontier = next
 	}
 	return g
+}
+
+// execute gathers, aggregates and writes the report to out. It returns an
+// error whenever any CLI read failed after retries: the report is written
+// first (with failed_calls / an INCOMPLETE line), then main exits nonzero so an
+// automated consumer cannot accept incomplete totals.
+func execute(src source, agents []string, cutoff time.Time, asJSON bool, workers int, out io.Writer) error {
+	g := gather(src, agents, cutoff, workers)
+	rep := Aggregate(g.runs, g.issues)
+	rep.FailedCalls = len(g.failures)
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rep); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(out, "Window: since %s, %d agents, %d runs\n", cutoff.UTC().Format(time.RFC3339), len(agents), len(g.runs))
+		fmt.Fprint(out, Render(rep))
+	}
+	if len(g.failures) > 0 {
+		return fmt.Errorf("%d CLI calls failed, report is incomplete; first: %v", len(g.failures), g.failures[0])
+	}
+	return nil
 }

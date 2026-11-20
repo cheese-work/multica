@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"math"
@@ -241,5 +242,50 @@ func TestReportFailedCallsIsExposedInJSONAndRender(t *testing.T) {
 	}
 	if out := Render(rep); !strings.Contains(out, "INCOMPLETE: 3 CLI calls failed") {
 		t.Fatalf("render misses the incomplete line:\n%s", out)
+	}
+}
+
+// execute is what main runs after listing agents; main exits 1 on its error.
+func TestExecuteFailsOnFailedPageAfterGoodPage(t *testing.T) {
+	src := fakeSource{pages: map[string]map[string]fakePage{"a1": {
+		"":   {runs: []Run{sonnetRun("r1", "")}, next: "c1"},
+		"c1": {err: errors.New("boom")},
+	}}}
+	var out bytes.Buffer
+	err := execute(src, []string{"a1"}, wed.Add(-time.Hour), true, 2, &out)
+	if err == nil || !strings.Contains(err.Error(), "report is incomplete") {
+		t.Fatalf("err = %v, want an incomplete-report error", err)
+	}
+	if !strings.Contains(out.String(), `"failed_calls": 1`) {
+		t.Fatalf("json output misses failed_calls:\n%s", out.String())
+	}
+}
+
+func TestExecuteFailsOnFailedIssueLookup(t *testing.T) {
+	src := fakeSource{
+		pages:     map[string]map[string]fakePage{"a1": {"": {runs: []Run{sonnetRun("r1", "I1")}}}},
+		failIssue: map[string]bool{"I1": true},
+	}
+	var out bytes.Buffer
+	err := execute(src, []string{"a1"}, wed.Add(-time.Hour), false, 2, &out)
+	if err == nil {
+		t.Fatal("want an error for a failed issue lookup, got nil")
+	}
+	if !strings.Contains(out.String(), "INCOMPLETE: 1 CLI calls failed") {
+		t.Fatalf("text output misses the INCOMPLETE line:\n%s", out.String())
+	}
+}
+
+func TestExecuteSucceedsOnCompleteRead(t *testing.T) {
+	src := fakeSource{
+		pages:  map[string]map[string]fakePage{"a1": {"": {runs: []Run{sonnetRun("r1", "I1")}}}},
+		issues: map[string]Issue{"I1": {ID: "I1", Identifier: "CHE-1", StatusCategory: "done"}},
+	}
+	var out bytes.Buffer
+	if err := execute(src, []string{"a1"}, wed.Add(-time.Hour), false, 2, &out); err != nil {
+		t.Fatalf("complete read returned %v, want nil", err)
+	}
+	if strings.Contains(out.String(), "INCOMPLETE") || !strings.Contains(out.String(), "USD per done root issue (1 roots)") {
+		t.Fatalf("unexpected output:\n%s", out.String())
 	}
 }
