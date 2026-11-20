@@ -59,6 +59,13 @@ func newIdleSwitchCase(t *testing.T, status string) idleSwitchCase {
 	return idleSwitchCase{issueID: issueID, quick: quick.ID, full: full.ID, handler: handler}
 }
 
+// waitsForMerge records what Quick's agent_accepted does on entry: it waits for
+// the merge with no run (CHE-7671).
+func (c idleSwitchCase) waitsForMerge(t *testing.T) {
+	t.Helper()
+	testHandler.recordReviewActivity(context.Background(), util.MustParseUUID(c.issueID), "system", "", activityAutoClosePending, map[string]string{"predicates": "test"})
+}
+
 func (c idleSwitchCase) request(t *testing.T, workflowID string) {
 	t.Helper()
 	if err := testHandler.RequestWorkflowSwitch(context.Background(), util.MustParseUUID(testWorkspaceID), util.MustParseUUID(c.issueID), util.MustParseUUID(workflowID), "idle apply"); err != nil {
@@ -93,6 +100,7 @@ func TestIdleSwitchAppliesAtOnceOnEveryQuickStatus(t *testing.T) {
 			wantWatches := 0
 			if status == "agent_accepted" {
 				wantWatches = 1 // the Quick merge watch
+				c.waitsForMerge(t)
 			}
 			if got := c.watches(t); got != wantWatches {
 				t.Fatalf("before the switch: %d watches on %s, want %d", got, status, wantWatches)
@@ -142,5 +150,28 @@ func TestIdleSwitchWithALiveTaskWaits(t *testing.T) {
 	}
 	if c.pending(t) != 1 || c.queued(t) != 0 {
 		t.Fatalf("the request must wait: pending=%d queued=%d", c.pending(t), c.queued(t))
+	}
+}
+
+// A finished issue follows the new workflow but is handed to nobody: no owner
+// change, no run. agent_accepted without a pending merge is finished too.
+func TestIdleSwitchOfAFinishedIssueStartsNoRun(t *testing.T) {
+	for _, status := range []string{"done", "agent_accepted"} {
+		t.Run(status, func(t *testing.T) {
+			c := newIdleSwitchCase(t, status)
+
+			c.request(t, c.full)
+
+			if got := issueOverride(t, c.issueID); got != c.full {
+				t.Fatalf("issue follows %q, want the full workflow %q", got, c.full)
+			}
+			wantIssueStatus(t, c.issueID, status)
+			if _, at, _ := issueStatusAndAssignee(t, c.issueID); at != "" {
+				t.Fatalf("a finished issue was handed to %s", at)
+			}
+			if got := c.queued(t); got != 0 {
+				t.Fatalf("queued runs = %d, a finished issue starts none", got)
+			}
+		})
 	}
 }
