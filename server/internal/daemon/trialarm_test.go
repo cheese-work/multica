@@ -44,7 +44,7 @@ func TestTrialArmMatchesHandComputation(t *testing.T) {
 }
 
 func TestTaskRootKeyAndArmForRootChildAndRerun(t *testing.T) {
-	root := Task{IssueIdentifier: "CHE-6498"}
+	root := Task{IssueIdentifier: "CHE-6498", RootIssueIdentifier: "CHE-6498"}
 	child := Task{IssueIdentifier: "CHE-6537", ParentIssue: &ParentIssueData{Identifier: "CHE-6498"}, RootIssueIdentifier: "CHE-6498"}
 	rerun := Task{ID: "second-run", IssueIdentifier: "CHE-6537", ParentIssue: &ParentIssueData{Identifier: "CHE-6498"}, RootIssueIdentifier: "CHE-6498"}
 	grandchild := Task{IssueIdentifier: "CHE-9000", ParentIssue: &ParentIssueData{Identifier: "CHE-6537"}, RootIssueIdentifier: "CHE-6498"}
@@ -66,6 +66,23 @@ func TestTaskRootKeyUnknownForChildFromOldServer(t *testing.T) {
 	}
 	if _, ok := (Task{}).RootIssueKey(); ok {
 		t.Fatal("a task with no issue must have no root key")
+	}
+}
+
+// A sub-issue whose parent read failed at claim arrives with no ParentIssue
+// (loadClaimParentIssue drops it) and no RootIssueIdentifier (the chain walk
+// fails too). It must stay unknown, not become its own root.
+func TestTaskRootKeyUnknownWhenParentLookupFailed(t *testing.T) {
+	task := Task{IssueIdentifier: "CHE-6537"}
+	if key, ok := task.RootIssueKey(); ok {
+		t.Fatalf("root key = %q, want unknown", key)
+	}
+	var buf bytes.Buffer
+	logTrialArm(slog.New(slog.NewTextHandler(&buf, nil)), task)
+	for _, want := range []string{"issue=CHE-6537", "root=unknown", "arm=unknown"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log %q missing %q", buf.String(), want)
+		}
 	}
 }
 

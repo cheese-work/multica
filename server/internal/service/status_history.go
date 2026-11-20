@@ -93,14 +93,16 @@ func BackgroundStatusTrigger(kind string, by StatusCauseActor, ref map[string]st
 // is not a comment of the same workspace and issue is dropped and the trigger
 // is marked RefInvalid.
 func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string) (db.ActivityLog, error) {
-	return RecordStatusChangeWithEvent(ctx, qtx, issue, from, to, trigger, handoff, pgtype.UUID{}, false, "")
+	return RecordStatusChangeWithEvent(ctx, qtx, issue, from, to, trigger, handoff, pgtype.UUID{}, false, "", "")
 }
 
 // RecordStatusChangeWithEvent is RecordStatusChange with a pre-assigned row id
 // (a valid eventID; else a fresh UUIDv7) and, when routingExit is set, the
 // details.routing_exit mark of a routing agent leaving its step, and the
-// details.blocked_on ref of a move to blocked (CHE-6972).
-func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string, eventID pgtype.UUID, routingExit bool, blockedOn string) (db.ActivityLog, error) {
+// details.blocked_on ref of a move to blocked (CHE-6972). A non-empty
+// intakeRelease is stored as details.intake_release, the intake-hold entry
+// source a person's move releases (CHE-7072).
+func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string, eventID pgtype.UUID, routingExit bool, blockedOn, intakeRelease string) (db.ActivityLog, error) {
 	trigger, err := ResolveStatusTrigger(ctx, qtx, issue, trigger)
 	if err != nil {
 		return db.ActivityLog{}, err
@@ -114,6 +116,9 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 	}
 	if blockedOn != "" {
 		details["blocked_on"] = blockedOn
+	}
+	if intakeRelease != "" {
+		details["intake_release"] = intakeRelease
 	}
 	// The timeline names the PRs that completed an issue (MUL-7429).
 	if prs := trigger.Cause.Ref["pr"]; trigger.Cause.Kind == StatusCausePRMerged && prs != "" {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -30,20 +31,10 @@ const (
 	activityAutoCloseEnded   = "auto_close_pending_ended"
 )
 
-var errAutoCloseShape = errors.New(`auto_close must be an object {"mode": "off"|"warn"|"block"}`)
-
 // validateAutoClosePatch checks the auto_close request field: an object holding
 // exactly a mode of off, warn or block. The read side is autoCloseMode.
 func validateAutoClosePatch(raw json.RawMessage) error {
-	var patch map[string]any
-	if err := json.Unmarshal(raw, &patch); err != nil || len(patch) != 1 {
-		return errAutoCloseShape
-	}
-	mode, _ := patch["mode"].(string)
-	if mode != "off" && mode != "warn" && mode != "block" {
-		return errAutoCloseShape
-	}
-	return nil
+	return decisionaction.ValidateModeSetting("auto_close", raw)
 }
 
 // autoCloseMode reads workspace settings.auto_close.mode. An unset key is the

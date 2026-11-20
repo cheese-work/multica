@@ -177,6 +177,8 @@ multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start 
 
 不带 `--owner` 时，由项目工作流选择处理人，与 `issue status` 相同。显式的 `--owner`（成员、智能体或小队；`--owner-id` 接受 UUID 而不是名称）会替换工作流的处理人。保持当前状态、只修改负责人的路由是允许的。状态和负责人都相同的路由会被拒绝并返回 HTTP 409，不写入任何内容。`--no-start` 与 `issue update` 一样，不会启动智能体运行。`--expected-revision` 会在任务期间发生变化时拒绝该路由。
 
+`multica issue workflow escalate <id> --reason "..."` 会把遵循 Quick 的议题移回它之前遵循的完整工作流。`--reason` 必填；原因为 `rollback` 时，从 `todo` 或 `investigating` 升级无需 `Estimate:` 行。该命令不接受工作流参数：目标由服务器从议题最新的 `quick_entry` 行读取。议题进入完整工作流时输出 `applied`；因有运行中的任务而在最后一个任务结束前保持在 Quick 时输出 `pending`；`--output json` 输出 `state` 和 `workflow_id`。拒绝代码见 [Workflows](/workflows)。
+
 ### 时间线
 
 `issue get` 给出任务现在的状态；`issue timeline` 按时间顺序列出状态、优先级、负责人、标题、日期的改动和运行结果，并混排评论，用来回答"什么时候进入 in_review""卡在当前状态多久了"：

@@ -213,6 +213,36 @@ func (q *Queries) GetLatestChainedRunRetryDetails(ctx context.Context, issueID p
 	return details, err
 }
 
+const getLatestIssueActivityByAction = `-- name: GetLatestIssueActivityByAction :one
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1 AND action = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestIssueActivityByActionParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Action  string      `json:"action"`
+}
+
+// The newest activity of one action on an issue, however old: a scan window
+// would miss a quick_entry row that a busy issue has long buried.
+func (q *Queries) GetLatestIssueActivityByAction(ctx context.Context, arg GetLatestIssueActivityByActionParams) (ActivityLog, error) {
+	row := q.db.QueryRow(ctx, getLatestIssueActivityByAction, arg.IssueID, arg.Action)
+	var i ActivityLog
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.ActorType,
+		&i.ActorID,
+		&i.Action,
+		&i.Details,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const hasChainedRunEntered = `-- name: HasChainedRunEntered :one
 SELECT EXISTS (
   SELECT 1 FROM activity_log

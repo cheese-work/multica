@@ -131,3 +131,11 @@ SELECT EXISTS (
   WHERE issue_id = @issue_id AND action = 'chained_run_entered'
     AND details->>'task_id' = @task_id::text AND details->>'step' = @step::text
 );
+
+-- name: GetLatestIssueActivityByAction :one
+-- The newest activity of one action on an issue, however old: a scan window
+-- would miss a quick_entry row that a busy issue has long buried.
+SELECT * FROM activity_log
+WHERE issue_id = $1 AND action = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

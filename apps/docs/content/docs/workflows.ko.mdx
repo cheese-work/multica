@@ -78,6 +78,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 Quick 워크플로에 연결될 때마다 이슈의 활동에 `quick_entry` 행이 기록됩니다. 추첨은 두 팔 모두에 대해 한 행을 쓰고(`source`는 `arm`, `arm`은 `Q` 또는 `D`), 이슈 단위 재정의로 Quick에 연결하면 `source`가 `override`인 행을 씁니다. Quick은 이름이 `Quick`인 워크플로이거나 `quick_first`가 가리키는 워크플로입니다. `full_workflow_id`는 서버가 이슈가 바로 직전에 따르던 워크플로로 채웁니다. 추첨에서는 홀수 번호가 유지하는 경로, 재정의에서는 이슈의 이전 재정의, 없으면 제목 유형의 `workflow_by_type` 항목, 없으면 프로젝트의 워크플로입니다. 없으면 생략됩니다. 호출자가 지정할 수 없습니다.
 
+`multica issue workflow escalate <id> --reason "..."`는 Quick을 따르는 이슈를 가장 최근 `quick_entry` 행이 가리키는 전체 워크플로로 옮깁니다. 호출자는 대상을 지정할 수 없으며, 알 수 없는 요청 필드는 거부됩니다. `quick_entry` 행이 없거나 행에 워크플로가 없는 이슈는 `no_full_workflow`로, Quick을 따르지 않는 이슈는 `not_quick`으로 거부됩니다. `todo` 또는 `investigating`에서는 사유가 `rollback`이 아닌 한 설명이나 댓글에 `Estimate:` 줄이 필요하며, 없으면 `estimate_required`로 거부됩니다. 하나의 트랜잭션이 `workflow_escalated` 행(사유와 대상)과 `call`이 `escalated`이고 추정치를 담은 `intake_call` 행을 쓰고 전환을 기록합니다. 실행 중인 작업이 없으면 이슈가 곧바로 전체 워크플로의 단계에 들어가며 그 단계의 담당자에게 실행이 한 번 생깁니다. 실행 중인 작업이 있으면 전환은 보류되었다가 마지막 작업이 끝난 뒤 적용됩니다. 완료된 이슈는 전체 워크플로를 따르되 누구에게도 배정되지 않습니다. 다시 열린 Quick 이슈는 이전 워크플로로 돌아가며, 현재 단계에 대해 실행이 한 번 이루어집니다. 반대 방향 이동은 보호됩니다. 에이전트가 이슈를 Quick으로 옮기면(`issue update --workflow`) 소유자 승인 카드가 열리고 승인될 때까지 아무것도 바뀌지 않으며, 멤버는 즉시 전환합니다. 에이전트가 이슈를 Quick을 따르는 프로젝트로 옮기거나 프로젝트를 Quick으로 전환하면 `budget_rebinding_requires_interactive`로 거부되고, 멤버는 즉시 처리합니다.
+
 ## 역량으로 작업 라우팅
 
 워크스페이스 설정 `capability_routing`은 이슈 유형을 작성자 에이전트와 순서가 있는 리뷰어 에이전트 목록에 매핑합니다. 예: `{"feat": {"author": "<에이전트 ID>", "reviewers": ["<에이전트 ID>"]}}`. 키는 소문자 유형이고, ID는 워크스페이스의 에이전트여야 하며, `reviewers`는 비어 있을 수 없고 작성자는 리뷰어가 될 수 없습니다. 기본값은 미설정이며, 미설정이면 동작은 바뀌지 않습니다. 이 값을 읽는 것은 **Author**와 **Reviewer** 핸들러뿐입니다. 변경은 `workspace.settings` 카드(`multica config propose workspace.settings --set 'capability_routing:=<json>'`)로만 하며, 일반 설정 저장은 저장된 값을 유지합니다. `multica workspace capability-routing`으로 읽을 수 있고, 미설정이면 `{}`를 출력합니다.
@@ -130,13 +132,13 @@ Quick 워크플로에 연결될 때마다 이슈의 활동에 `quick_entry` 행�
 
 워크스페이스는 일정 기간 동안 새 최상위 요청을 **Backlog**에 머무르게 할 수 있습니다. 에이전트가 작업을 시작하기 전에 사람이 읽고 풀어 주기 위해서입니다. 규칙은 워크스페이스 설정 `intake_hold`입니다. 프로젝트마다 항목 하나를 두는 목록이며, 각 항목에는 `project_id`, `mode`, `starts_at`, `ends_at`, `exempt_types`, `exempt_labels`, `exempt_escalation_classes`, `exempt_autopilot_ids`, `exempt_issue_ids`, `source`가 있습니다. 에이전트는 워크스페이스 설정 패치로 이를 바꾸며, 소유자가 패스키로 승인합니다. 항목이 없는 프로젝트는 영향을 받지 않습니다. `source`는 필수이고 모든 ID는 하이픈이 있는 소문자 UUID입니다. 둘 중 하나라도 어기는 값은 저장할 때 거부됩니다.
 
-모드는 `off`(아무것도 보류하지 않음), `warn`, `block`입니다. 다음이 모두 참인 동안 이슈가 보류됩니다. 항목의 기간이 열려 있다(`starts_at` 포함, `ends_at` 미포함). 이슈가 `starts_at` 이후에 만들어졌다. 부모가 없다. Backlog에 있거나 결정 요청 때문에 Backlog에서 보류 상태로 옮겨졌다. 사람이 풀어 주지 않았다. 적용되는 면제가 없다. `block` 모드에서는 에이전트나 토큰이 보류 중인 이슈의 상태를 바꾸는 동작이, 이슈가 Backlog에 있든 Backlog에서 보류 상태로 옮겨졌든 HTTP 409와 코드 `intake_hold`로 거부됩니다. 응답 본문에는 `ends_at`, `fix`, `release_paths`가 들어 있습니다. `cancelled`로 옮기는 동작은 거부되지 않습니다. 프로젝트에서 에이전트나 토큰이 `backlog`와 `cancelled`가 아닌 상태를 지정해 만드는 동작도 같은 방식으로 거부됩니다. 상태를 지정하지 않은 생성은 Backlog에 들어가고, 새 이슈에는 메타데이터 키 `intake_hold`가 항목의 `source` 값으로 설정됩니다. 사람이 직접 하는 이동이나 생성은 거부되지 않습니다. `warn` 모드에서는 아무것도 거부하지 않고, 서버는 `intake_hold_warn` 로그를 한 줄 씁니다. 상태 행에 해제 키를 기록하는 기능은 이번 릴리스에 없습니다.
+모드는 `off`(아무것도 보류하지 않음), `warn`, `block`입니다. 다음이 모두 참인 동안 이슈가 보류됩니다. 항목의 기간이 열려 있다(`starts_at` 포함, `ends_at` 미포함). 이슈가 `starts_at` 이후에 만들어졌다. 부모가 없다. Backlog에 있거나 결정 요청 때문에 Backlog에서 보류 상태로 옮겨졌다. 사람이 풀어 주지 않았다. 적용되는 면제가 없다. `block` 모드에서는 에이전트나 토큰이 보류 중인 이슈의 상태를 바꾸는 동작이, 이슈가 Backlog에 있든 Backlog에서 보류 상태로 옮겨졌든 HTTP 409와 코드 `intake_hold`로 거부됩니다. 응답 본문에는 `ends_at`, `fix`, `release_paths`가 들어 있습니다. `cancelled`로 옮기는 동작은 거부되지 않습니다. 프로젝트에서 에이전트나 토큰이 `backlog`와 `cancelled`가 아닌 상태를 지정해 만드는 동작도 같은 방식으로 거부됩니다. 상태를 지정하지 않은 생성은 Backlog에 들어가고, 새 이슈에는 메타데이터 키 `intake_hold`가 항목의 `source` 값으로 설정됩니다. 사람이 직접 하는 이동이나 생성은 거부되지 않습니다. `warn` 모드에서는 아무것도 거부하지 않고, 서버는 `intake_hold_warn` 로그를 한 줄 씁니다.
 
 `GET /api/issues/{id}`는 `source`, `held`, `owned`, `reason`, `ends_at`, `exempt_after`가 있는 `intake_hold` 필드를 반환합니다. `owned`는 `ends_at` 이후에도 true로 남으므로, 보류가 적용된 이슈와 적용된 적 없는 이슈를 구분할 수 있습니다. 부모가 있는 이슈와 항목이 없는 프로젝트의 이슈에는 이 필드가 없습니다. 목록 엔드포인트는 이 필드를 반환하지 않습니다. `reason`은 `held`, `ended`, `not_started`, `mode_off`, `created_before_start`, `left_backlog`, `released_by_member`, `exempt_type`, `exempt_label`, `exempt_escalation_class`, `exempt_autopilot`, `exempt_issue_id` 중 하나입니다. `plain words`처럼 제목에 유형이 없는 이슈는 보류됩니다. 우선순위는 아무것도 면제하지 않습니다.
 
 에이전트가 지출, 배포, 게시, 되돌릴 수 없는 작업, 제품 방향에 대해 사람의 결정이 필요하면 결정 요청으로 묻습니다. 항목이 `exempt_escalation_classes`에 그 분류를 나열했다면, 사람의 답변은 답변 10분 뒤에 그 이슈 하나의 보류를 풉니다. 그때까지 `held`는 true로 유지되고 `exempt_after`에 면제가 시작되는 시각이 표시됩니다. 철회된 답변은 아무것도 면제하지 않으며, `reversible` 요청도 면제하지 않습니다. 이슈가 보류된 동안에도 요청은 전체 흐름을 그대로 유지하지만, 그 답변이나 다른 결정 이벤트(철회, 만료, 재질문, 취소)의 전달은 실행을 시작하지 않습니다. 전달은 `skipped_ineligible`로 확정되며 다시 시도되지 않습니다. `warn` 모드에서는 전달이 평소처럼 실행됩니다. 담당자 대기 단계의 대기 에피소드(닫히고 `skipped_ineligible`로 확정되며 재개 실행은 없음), 열린 액션 카드에 사람이 남긴 토론 메시지(댓글은 저장되고 웨이크는 `skipped_ineligible`), 사람이 실행된 액션을 되돌리는 취소(취소는 저장되고 실행은 시작되지 않음)도 마찬가지입니다. 보류된 이슈를 만든 실행은 그 실행이 아직 진행 중인 동안 해당 이슈에 이 요청을 열 수도 있습니다. 이슈를 만들지 않은 에이전트는 열 수 없고, 만든 실행의 `reversible` 요청은 거부됩니다. 요청은 그 이슈의 댓글을 인용하므로, 만든 실행은 먼저 이슈에 댓글을 남겨야 합니다.
 
-사람이 이슈를 푸는 방법은 두 가지입니다. 본인 계정으로 로그인한 웹 앱, 데스크톱 앱, CLI에서 Backlog 밖으로 옮기거나, Backlog에서 보류 상태로 옮겨진 상태에서 꺼내면 서버가 해제를 기록합니다. 에이전트나 클라우드 런타임의 토큰은 이슈를 풀지 못합니다.
+사람이 이슈를 푸는 방법은 두 가지입니다. 본인 계정으로 로그인한 웹 앱, 데스크톱 앱, CLI에서 Backlog 밖으로 옮기거나, Backlog에서 보류 상태로 옮겨진 상태에서 꺼내면 서버가 해제를 기록합니다. 에이전트나 클라우드 런타임의 토큰은 이슈를 풀지 못합니다. 서버는 해제를 그 사람의 상태 행 details에 있는 `intake_release` 키에 항목의 `source` 값으로 저장합니다. 이 키는 사람이 한 이동이 상태를 `backlog` 이외로 바꾸고, 열려 있는 항목이 그 이슈를 다루는 동안에만 기록됩니다. 보류, 보류 해제, 시스템 이동, 에이전트나 클라우드 런타임의 이동에는 붙지 않습니다. 보류 상태에서 꺼내는 이동은 이 키로 이슈를 풀며, 이동이 보류 전에 시작되어 보류 뒤에 기록되어도 해제는 유지됩니다.
 
 ## 인테이크 또는 QA 증빙으로 단계 제한하기 [#intake-qa-gates]
 
@@ -146,6 +148,8 @@ Quick 워크플로에 연결될 때마다 이슈의 활동에 `quick_entry` 행�
 - `qa_proof`는 이동을 수행하는 에이전트가 이슈가 현재 단계에 들어온 뒤에 링크(`https://…`)가 있거나 코드 블록이 이어지는 `QA:` 줄이 포함된 댓글을 썼고, 그 에이전트가 직접 이슈의 `post_close_work` 메타데이터를 설정했을 때(가장 최근 쓰기) 충족됩니다. 다른 주체나 이전 실행이 남긴 값은 인정되지 않습니다. `param`은 받지 않습니다. 다른 사람이 쓴 댓글은 인정되지 않습니다.
 
 두 게이트 모두 읽을 수 없는 값을 실패로 처리합니다. 둘 다 전환 가드로는 받아들여지지 않습니다. `intake_simple`을 평가할 때마다 이슈 활동에 `intake_call` 행(`call`은 `simple` 또는 `rejected`, 원본 `estimate`, `step`)이 기록됩니다.
+
+`pr.none_open`은 세 번째 진입 게이트로, 에이전트가 쓴 내용이 아니라 PR을 읽습니다. 이슈에, 그리고 워크플로가 하위 이슈의 PR을 포함하면 하위 이슈에도 열린 PR이나 초안 PR이 연결되어 있지 않을 때 충족됩니다. 병합되었거나 닫힌 PR은 방해하지 않으며, PR이 없는 이슈는 통과합니다. 에이전트가 닫는 단계(예: `agent_accepted`)에 두고 그 앞 단계에서 해당 단계로 가는 `agent_done` 간선을 만들면, 에이전트가 병합할 것이 남지 않은 `in_review` 이슈를 닫을 수 있습니다. PR이 열려 있는 동안에는 이 지름길을 쓸 수 없습니다. 거부 메시지는 열린 PR을 하나씩(예: `acme/widget#12 (draft)`) 해결 방법과 함께 알려 주며, 해결 방법은 그 PR을 병합하거나 닫는 것입니다. 다른 진입 게이트와 마찬가지로 전환 가드로는 받아들여지지 않으며, `multica workflow lint`는 `entry`에서 받아들입니다.
 
 ## 관련 가이드
 

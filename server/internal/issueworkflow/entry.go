@@ -194,6 +194,14 @@ func openPRFact(kind string, open []PRFact) string {
 	return strings.Join(facts, "; ")
 }
 
+// describeOpenPR names a PR for a refusal: its ref, else its state.
+func describeOpenPR(p PRFact) string {
+	if p.Ref == "" {
+		return "a " + p.State + " PR"
+	}
+	return p.Ref + " (" + p.State + ")"
+}
+
 func describePR(p PRFact) string {
 	head := ""
 	if p.HeadSHA != "" {
@@ -212,6 +220,14 @@ func describePR(p PRFact) string {
 
 func factFor(g Guard, f Facts) string {
 	switch g.Kind {
+	case GuardPRNoneOpen:
+		var refs []string
+		for _, p := range f.PRs {
+			if p.open() {
+				refs = append(refs, describeOpenPR(p))
+			}
+		}
+		return "an open or draft PR is still linked: " + strings.Join(refs, ", ")
 	case GuardPRMerged:
 		if f.anyPR(PRFact.open) {
 			return "an open or draft PR is still linked"
@@ -251,6 +267,8 @@ func fixFor(g Guard) string {
 		return "merge the PR and close or merge any other open PR"
 	case GuardPRClosedUnmerged:
 		return "close the PR without merging and leave no other open or merged PR"
+	case GuardPRNoneOpen:
+		return "merge or close every open or draft PR linked to the issue or its children"
 	case GuardChildrenDone:
 		return "finish or close every child issue"
 	case GuardAdoptionLinked:

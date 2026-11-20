@@ -419,3 +419,30 @@ else throw new Error("Unexpected API request " + endpoint)
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// CHE-8843: GitHub can lose a job log (HTTP 404 BlobNotFound). A baseline run with a missing log is skipped like a jobs-API 5xx.
+test("a baseline job whose log returns 404 is skipped for the next older run (CHE-8843)", () => {
+  const pending = new Set(["frontend-build"])
+  const jobBaselines = { "frontend-build": null }
+  const baselineJobs = []
+  const logs = []
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }, { id: 2, html_url: "run-2", head_sha: "b" }]
+  const listJobs = (run) => [{ name: "frontend-build", status: "completed", conclusion: "success", runId: run.id }]
+  const collect = (job) => {
+    if (job.runId === 3) throw httpError(404)
+    return { name: job.name, log: "" }
+  }
+  scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log: (line) => logs.push(line) })
+  assert.equal(jobBaselines["frontend-build"].run, "run-2")
+  assert.equal(pending.size, 0)
+  assert.equal(baselineJobs.length, 1)
+  assert.match(logs.join("\n"), /run 3/)
+})
+
+test("a non-404 baseline log error still fails loudly (CHE-8843)", () => {
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }]
+  const listJobs = () => okJobs
+  const options = { pending: new Set(["frontend-build"]), jobBaselines: {}, baselineJobs: [], listJobs, log: () => {} }
+  assert.throws(() => scanBaselines(runs, { ...options, collect: () => { throw httpError(403) } }), /Command failed/)
+  assert.throws(() => scanBaselines(runs, { ...options, collect: () => { throw new SyntaxError("Unexpected token") } }), /Unexpected token/)
+})
