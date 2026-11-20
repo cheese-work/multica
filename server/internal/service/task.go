@@ -1873,6 +1873,9 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 		if err == nil {
 			err = noteRunInserted(ctx, queries, createParams.IssueID, task.ID)
 		}
+		if err == nil {
+			err = recordEnqueuedRole(ctx, queries, task)
+		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
 	}
@@ -6795,6 +6798,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				if nerr := noteRunInserted(ctx, qtx, t.IssueID, child.ID); nerr != nil {
 					return nerr
 				}
+				if rerr := CopyWorkflowRoleToRetry(ctx, qtx, t, child); rerr != nil {
+					return rerr
+				}
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -7526,6 +7532,9 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := noteRunInserted(ctx, qtx, parent.IssueID, child.ID); err != nil {
+		return nil, err
+	}
+	if err := CopyWorkflowRoleToRetry(ctx, qtx, parent, child); err != nil {
 		return nil, err
 	}
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
