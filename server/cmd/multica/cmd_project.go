@@ -414,6 +414,14 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	// Refuse a bad priority before resolve makes any request.
+	if cmd.Flags().Changed("priority") {
+		v, _ := cmd.Flags().GetString("priority")
+		if err := validateProjectPriority(v); err != nil {
+			return err
+		}
+	}
+
 	projectRef, err := resolveProjectID(ctx, client, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve project: %w", err)
