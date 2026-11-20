@@ -1599,13 +1599,14 @@ func (c Config) agentTimeoutFor(provider string) time.Duration {
 	return c.AgentTimeout
 }
 
-// EffectiveMaxConcurrentTasks is the cap the daemon runs with: the persisted
-// override when positive, else MULTICA_DAEMON_MAX_CONCURRENT_TASKS, else the
-// default. LoadConfig and `multica config set` share it so a value accepted
-// by one is never refused by the other.
-func EffectiveMaxConcurrentTasks(persisted int) (int, error) {
-	if persisted > 0 {
-		return persisted, nil
+// EffectiveMaxConcurrentTasks is the cap the daemon runs with: the resolved
+// start-up override (--max-concurrent-tasks, or the persisted value when the
+// env var is unset) when positive, else MULTICA_DAEMON_MAX_CONCURRENT_TASKS,
+// else the default. LoadConfig uses it directly; `multica config set` feeds it
+// the same override the daemon start command resolves.
+func EffectiveMaxConcurrentTasks(override int) (int, error) {
+	if override > 0 {
+		return override, nil
 	}
 	return intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
 }

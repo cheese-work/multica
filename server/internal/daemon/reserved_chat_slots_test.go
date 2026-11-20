@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -211,5 +212,35 @@ func TestValidateReservedChatSlots(t *testing.T) {
 		if err != nil && (!strings.Contains(err.Error(), fmt.Sprint(c.reserved)) || !strings.Contains(err.Error(), fmt.Sprint(c.max))) {
 			t.Fatalf("error %q must name both values", err)
 		}
+	}
+}
+
+// Start-up resolution: the env cap applies when no override is given, an
+// override (flag, or the persisted value when env is unset) beats it, and a
+// reservation that does not fit the resolved cap stops LoadConfig. Not
+// parallel: it sets env.
+func TestLoadConfigReservedChatSlotsUsesResolvedMax(t *testing.T) {
+	stageFakeAgent(t)
+	redirectTestHome(t, t.TempDir())
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing-shell"))
+	t.Setenv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", "4")
+	t.Setenv("MULTICA_DAEMON_RESERVED_CHAT_SLOTS", "")
+
+	load := func(override, reserved int) (Config, error) {
+		return LoadConfig(Overrides{
+			ServerURL:          "http://localhost:0",
+			WorkspacesRoot:     t.TempDir(),
+			MaxConcurrentTasks: override,
+			ReservedChatSlots:  reserved,
+		})
+	}
+	if _, err := load(0, 8); err == nil {
+		t.Fatal("reserved 8 with env max 4 and no override must stop start-up")
+	}
+	if cfg, err := load(0, 3); err != nil || cfg.MaxConcurrentTasks != 4 || cfg.ReservedChatSlots != 3 {
+		t.Fatalf("reserved 3 with env max 4 = %+v, %v", cfg, err)
+	}
+	if cfg, err := load(10, 8); err != nil || cfg.MaxConcurrentTasks != 10 {
+		t.Fatalf("an explicit max 10 beats the env cap: %+v, %v", cfg, err)
 	}
 }

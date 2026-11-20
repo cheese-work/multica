@@ -372,9 +372,13 @@ func valueOrDefault(v, fallback string) string {
 }
 
 // validateReservedAgainstMax checks a reservation against the cap the daemon
-// will actually run with (persisted override, then env, then default).
+// will run with at start-up. It resolves the persisted max exactly as
+// `multica daemon start` does (the env var, when set, beats the persisted
+// value), so a value accepted here is never refused when the daemon starts.
+// A --max-concurrent-tasks flag given at start is not known here.
 func validateReservedAgainstMax(reserved, persistedMax int) error {
-	max, err := daemon.EffectiveMaxConcurrentTasks(persistedMax)
+	override := resolveDaemonIntOverride(0, "MULTICA_DAEMON_MAX_CONCURRENT_TASKS", persistedMax)
+	max, err := daemon.EffectiveMaxConcurrentTasks(override)
 	if err != nil {
 		return err
 	}

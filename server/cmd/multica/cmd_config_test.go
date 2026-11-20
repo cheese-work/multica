@@ -223,39 +223,47 @@ func TestApplyConfigSetReservedChatSlots(t *testing.T) {
 	}
 }
 
-// The reservation is checked against the cap the daemon will run with, so the
-// env value counts when no override is persisted, and a persisted override
-// beats the env. Not parallel: it sets env.
-func TestApplyConfigSetReservedChatSlotsUsesEffectiveMax(t *testing.T) {
+// The reservation is checked against the cap the daemon starts with: the env
+// var beats the persisted max, as in `multica daemon start`. Not parallel: it
+// sets env.
+func TestApplyConfigSetReservedChatSlotsUsesStartupMax(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", "4")
 
-	cfg := cli.CLIConfig{}
-	if err := applyConfigSet(&cfg, "reserved_chat_slots", "4"); err == nil || !strings.Contains(err.Error(), "4") {
-		t.Fatalf("reserved 4 with env max 4 must be refused; got %v", err)
+	// Persisted max 10 does not help while the env var says 4.
+	cfg := cli.CLIConfig{MaxConcurrentTasks: 10}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", "8"); err == nil || !strings.Contains(err.Error(), "8") || !strings.Contains(err.Error(), "4") {
+		t.Fatalf("reserved 8 with env max 4 and persisted max 10 must be refused naming 8 and 4; got %v", err)
+	}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", "4"); err == nil {
+		t.Fatal("reserved 4 with env max 4 must be refused")
 	}
 	if err := applyConfigSet(&cfg, "reserved_chat_slots", "3"); err != nil || cfg.ReservedChatSlots != 3 {
 		t.Fatalf("reserved 3 with env max 4 = %v, got %d", err, cfg.ReservedChatSlots)
 	}
-	// An env max of 4 would leave no issue slot; the override wins and allows it.
-	if err := applyConfigSet(&cfg, "max_concurrent_tasks", "10"); err != nil {
-		t.Fatalf("override 10: %v", err)
+	// With no persisted max the env value is the cap too.
+	none := cli.CLIConfig{}
+	if err := applyConfigSet(&none, "reserved_chat_slots", "4"); err == nil {
+		t.Fatal("reserved 4 with env max 4 and no persisted max must be refused")
 	}
+	// The env cap (4) holds reserved 3, so a low persisted max is accepted: it
+	// is ignored at start-up while the env var is set.
+	if err := applyConfigSet(&cfg, "max_concurrent_tasks", "2"); err != nil {
+		t.Fatalf("persisted max 2 with env max 4 and reserved 3: %v", err)
+	}
+	cfg.MaxConcurrentTasks = 10
+	t.Setenv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", "")
+	// Without the env var the persisted max applies, and a clear falls to 20.
 	if err := applyConfigSet(&cfg, "reserved_chat_slots", "8"); err != nil || cfg.ReservedChatSlots != 8 {
-		t.Fatalf("reserved 8 with override max 10 = %v, got %d", err, cfg.ReservedChatSlots)
+		t.Fatalf("reserved 8 with persisted max 10 and no env = %v, got %d", err, cfg.ReservedChatSlots)
 	}
-	// Clearing the override falls back to env max 4, which cannot hold 8.
-	if err := applyConfigSet(&cfg, "max_concurrent_tasks", ""); err == nil {
-		t.Fatal("clearing max_concurrent_tasks must be refused while reserved 8 exceeds env max 4")
-	}
-	if cfg.MaxConcurrentTasks != 10 {
-		t.Fatalf("a refused clear changed the config: %d", cfg.MaxConcurrentTasks)
-	}
-	// Lowering the reservation first makes the clear valid.
-	if err := applyConfigSet(&cfg, "reserved_chat_slots", ""); err != nil || cfg.ReservedChatSlots != 0 {
-		t.Fatalf("reset = %v, got %d", err, cfg.ReservedChatSlots)
+	if err := applyConfigSet(&cfg, "max_concurrent_tasks", "5"); err == nil {
+		t.Fatal("lowering the persisted max to 5 below reserved 8 must be refused")
 	}
 	if err := applyConfigSet(&cfg, "max_concurrent_tasks", ""); err != nil || cfg.MaxConcurrentTasks != 0 {
-		t.Fatalf("clear = %v, got %d", err, cfg.MaxConcurrentTasks)
+		t.Fatalf("clear falls back to the default 20, which holds 8: %v, got %d", err, cfg.MaxConcurrentTasks)
+	}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", ""); err != nil || cfg.ReservedChatSlots != 0 {
+		t.Fatalf("reset = %v, got %d", err, cfg.ReservedChatSlots)
 	}
 }
 
