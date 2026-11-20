@@ -321,11 +321,12 @@ func TestAgentMoveIntoQuickOpensTheCard(t *testing.T) {
 	})
 	t.Run("agent move that is not into Quick needs no card", func(t *testing.T) {
 		id := dbfx.Issue(t, "elsewhere "+workflowTestSuffix(), testutil.Cols{"status": "in_progress"})
-		setIssueOverride(t, id, f.full)
-		req := withURLParam(withActorSource(newRequest("PUT", "/api/issues/"+id+"/workflow", map[string]any{"workflow_id": f.other}), "task_token"), "id", id)
+		// other was created after full, so the move back to full widens no budget.
+		setIssueOverride(t, id, f.other)
+		req := withURLParam(withActorSource(newRequest("PUT", "/api/issues/"+id+"/workflow", map[string]any{"workflow_id": f.full}), "task_token"), "id", id)
 		testutil.Call(t, testHandler.SetIssueWorkflow, req).Want(http.StatusOK)
-		if got := issueOverride(t, id); got != f.other {
-			t.Fatalf("issue follows %s, want %s", got, f.other)
+		if got := issueOverride(t, id); got != f.full {
+			t.Fatalf("issue follows %s, want %s", got, f.full)
 		}
 	})
 	t.Run("member switches freely", func(t *testing.T) {
