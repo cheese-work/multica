@@ -25,6 +25,12 @@ import (
 // re-enters the step for its resolved handler; a second consecutive failure
 // blocks the issue.
 
+// activityChainedRunEntered records that a run carried the issue into a step
+// itself (a chain_same_owner move, no handoff run). Its details name the task
+// and the step. A failed run is retried only with this evidence, so a run
+// dispatched straight into a flagged step is never mistaken for a chained one.
+const activityChainedRunEntered = "chained_run_entered"
+
 // activityChainedRunRetry records the retry a failed chained run got. Its
 // details name the step, the failed task and the retry task, so a failure of
 // the retry (or of an infrastructure retry of it) is the second one.
@@ -67,7 +73,7 @@ type chainedRunRetryRecord struct {
 // ApplyChainedRunRetry handles one terminal non-completed task. It writes
 // nothing unless the task is a chained run on its issue's current step, ended
 // by the server and not by a person, with no pending switch and no live task on
-// the issue. A failure that a repeat can clear is logged; the next terminal
+// the issue, and that itself (or a run it retried) carried the issue into the step. A failure that a repeat can clear is logged; the next terminal
 // event tries again.
 func (h *Handler) ApplyChainedRunRetry(ctx context.Context, taskID pgtype.UUID) {
 	task, err := h.Queries.GetAgentTask(ctx, taskID)
@@ -132,8 +138,8 @@ func (h *Handler) applyChainedRunRetry(ctx context.Context, task db.AgentTaskQue
 		return nil
 	}
 
-	second, err := h.isSecondChainedFailure(ctx, qtx, issue, task)
-	if err != nil {
+	chained, second, err := h.chainedFailureKind(ctx, qtx, issue, task)
+	if err != nil || !chained {
 		return err
 	}
 	if second {
@@ -142,36 +148,46 @@ func (h *Handler) applyChainedRunRetry(ctx context.Context, task db.AgentTaskQue
 	return h.retryChainedRun(ctx, lk, task)
 }
 
-// isSecondChainedFailure reports whether the task is the retry the newest
-// chained_run_retry row recorded for this step, or a retry of that retry.
-func (h *Handler) isSecondChainedFailure(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue) (bool, error) {
+// chainedFailureKind reads the failed task's lineage (the task, then its retry
+// parents) against the evidence. chained: the task or an ancestor carried the
+// issue into the step, or is the retry this feature recorded for it. second:
+// the lineage reaches the retry the newest chained_run_retry row recorded for
+// this step, so this is the second consecutive failure.
+func (h *Handler) chainedFailureKind(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue) (chained, second bool, err error) {
+	step := task.WorkflowStep.String
+	var retryTaskID string
 	raw, err := q.GetLatestChainedRunRetryDetails(ctx, issue.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, false, err
 	}
-	if err != nil {
-		return false, err
-	}
-	var rec chainedRunRetryRecord
-	if err := json.Unmarshal(raw, &rec); err != nil || rec.RetryTaskID == "" || rec.Step != task.WorkflowStep.String {
-		return false, nil
+	if err == nil {
+		var rec chainedRunRetryRecord
+		if json.Unmarshal(raw, &rec) == nil && rec.Step == step {
+			retryTaskID = rec.RetryTaskID
+		}
 	}
 	current := task
 	for range chainedRunLineageDepth {
-		if uuidToString(current.ID) == rec.RetryTaskID {
-			return true, nil
+		id := uuidToString(current.ID)
+		if retryTaskID != "" && id == retryTaskID {
+			return true, true, nil
 		}
+		entered, err := q.HasChainedRunEntered(ctx, db.HasChainedRunEnteredParams{IssueID: issue.ID, TaskID: id, Step: step})
+		if err != nil {
+			return false, false, err
+		}
+		chained = chained || entered
 		if !current.ParentTaskID.Valid {
-			return false, nil
+			return chained, false, nil
 		}
 		if current, err = q.GetAgentTask(ctx, current.ParentTaskID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return false, nil
+				return chained, false, nil
 			}
-			return false, err
+			return false, false, err
 		}
 	}
-	return false, nil
+	return chained, false, nil
 }
 
 // retryChainedRun re-enters the issue's current step, which starts a run for

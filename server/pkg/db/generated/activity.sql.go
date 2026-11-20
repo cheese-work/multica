@@ -213,6 +213,29 @@ func (q *Queries) GetLatestChainedRunRetryDetails(ctx context.Context, issueID p
 	return details, err
 }
 
+const hasChainedRunEntered = `-- name: HasChainedRunEntered :one
+SELECT EXISTS (
+  SELECT 1 FROM activity_log
+  WHERE issue_id = $1 AND action = 'chained_run_entered'
+    AND details->>'task_id' = $2::text AND details->>'step' = $3::text
+)
+`
+
+type HasChainedRunEnteredParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	TaskID  string      `json:"task_id"`
+	Step    string      `json:"step"`
+}
+
+// Whether the task carried the issue into the step itself (a chained move,
+// CHE-7675), as opposed to being dispatched straight into it.
+func (q *Queries) HasChainedRunEntered(ctx context.Context, arg HasChainedRunEnteredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasChainedRunEntered, arg.IssueID, arg.TaskID, arg.Step)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasSquadLeaderNoActionEvaluationForTask = `-- name: HasSquadLeaderNoActionEvaluationForTask :one
 SELECT EXISTS (
   SELECT 1

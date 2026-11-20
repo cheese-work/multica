@@ -5322,7 +5322,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue); err != nil {
+	if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue, chained); err != nil {
 		slog.Error("run not stopped after failed workflow role write", append(logger.RequestAttrs(r), "error", err, "issue_id", id)...)
 		writeErrorCode(w, http.StatusInternalServerError, "workflow_role_unrecorded", "the issue changed but the run's role evidence was not recorded and the run could not be stopped")
 		return
@@ -6383,7 +6383,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-		if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue); err != nil {
+		if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue, false); err != nil {
 			slog.Error("batch: run not stopped after failed workflow role write", "issue_id", issueID, "error", err)
 			failed = append(failed, map[string]any{"id": issueID, "code": "workflow_role_unrecorded"})
 			continue
