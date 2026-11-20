@@ -28,6 +28,8 @@ Multica is a task management platform where people and agents collaborate on iss
 
 ## Settings-first features
 
+The fork ships capability; Cheese Work configuration stays outside fork runtime code. Before you design a change, run three tests (`F0 Boundary` in the multica-dotfiles fork checklist): (1) identity: if it names a person, agent, host, lab, language or issue of one workspace, it is configuration; (2) second workspace: if a fresh Solo workspace would not turn it on, it is a plugin or guard rule, default off; (3) primitive: if a settings value, guard policy, workflow step text, wakeup rule or skill can express it, it is configuration and needs no fork PR. Only a change that passes all three goes into fork core, with a neutral default.
+
 - Ship an opinionated default that works out of the box; every opinion is a setting. Gates use `off | warn | block`.
 - Generalize the incident into a primitive: for example, catalog-based status entry conditions attached to upstream project-workflow columns, not a one-off "no draft PR in in_review" check.
 - Provide presets such as Solo, Team with review, and Cheese strict so new workspaces are usable without tuning.
