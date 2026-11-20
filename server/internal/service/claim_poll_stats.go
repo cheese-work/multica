@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +34,52 @@ const (
 	ClaimPollOutcomeRankWalkExhausted = "rank_walk_exhausted"
 )
 
-// ClaimPollBucketBoundsMs are inclusive upper bounds in milliseconds. A poll
-// slower than the last bound lands in a final overflow slot, so a bucket slice
-// has len(ClaimPollBucketBoundsMs)+1 entries.
-var ClaimPollBucketBoundsMs = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000}
+// ClaimPollBucketBoundsMs are inclusive upper bounds in milliseconds: 1, 2, 5,
+// then every 10 ms up to 1000. The rollout kill rule is "claim poll p95 up 50 ms
+// or more", so a bucket must be much narrower than 50 ms; 10 ms wide buckets
+// put a 50 ms shift five buckets apart. A poll slower than the last bound lands
+// in a final overflow slot, so a bucket slice has len(ClaimPollBucketBoundsMs)+1
+// entries. The server writes the slice as is; readers must use the same bounds.
+var ClaimPollBucketBoundsMs = claimPollBucketBounds()
+
+func claimPollBucketBounds() []float64 {
+	bounds := []float64{1, 2, 5}
+	for ms := 10.0; ms <= 1000; ms += 10 {
+		bounds = append(bounds, ms)
+	}
+	return bounds
+}
+
+// ClaimPollPercentileMs estimates the q quantile (0 < q <= 1) of a bucket
+// slice as the upper bound of the bucket holding it, so it never reads below
+// the true value. This is the conservative rule for the rollback comparison:
+// when the quantile falls in the overflow slot the poll has no upper bound and
+// the result is +Inf, which trips a "p95 up 50 ms" check instead of hiding. No
+// polls reads as 0.
+func ClaimPollPercentileMs(buckets []int64, q float64) float64 {
+	var total int64
+	for _, n := range buckets {
+		total += n
+	}
+	if total == 0 {
+		return 0
+	}
+	rank := int64(math.Ceil(q * float64(total)))
+	if rank < 1 {
+		rank = 1
+	}
+	var seen int64
+	for i, n := range buckets {
+		seen += n
+		if seen >= rank {
+			if i >= len(ClaimPollBucketBoundsMs) {
+				return math.Inf(1)
+			}
+			return ClaimPollBucketBoundsMs[i]
+		}
+	}
+	return math.Inf(1)
+}
 
 // ClaimPollFlushInterval is how often RunClaimPollStatsFlusher writes.
 const ClaimPollFlushInterval = 60 * time.Second
