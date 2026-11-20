@@ -363,11 +363,18 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	wf.markManualPark(ctx)
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
 	if err != nil {
 		return issue, nil, err
 	}
+	if issue, err = wf.recordManualPark(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
 	if err := wf.recordVerdict(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	if err := wf.recordAuthor(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
 	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
@@ -4007,6 +4014,18 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 	return overrideID, def, project, true
 }
 
+// createWorkflowSource says who chose the create's workflow override: the
+// request (caller), the workspace's title map (title_type) or nobody ("").
+func createWorkflowSource(rawWorkflowID *string, overrideID pgtype.UUID) string {
+	switch {
+	case rawWorkflowID != nil && *rawWorkflowID != "":
+		return issueworkflow.WorkflowSourceCaller
+	case overrideID.Valid:
+		return issueworkflow.WorkflowSourceTitleType
+	}
+	return ""
+}
+
 // workflowFromTitleType loads the workflow the workspace's workflow_by_type
 // setting maps the title's type to. ok is false when project workflows are off,
 // no entry matches, or the mapped workflow is gone.
@@ -4222,7 +4241,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		// in place of it.
 		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
 			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID, workflowSubject{Title: req.Title})
 			if err != nil {
 				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
@@ -4422,7 +4441,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
+	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID, req.Title)
 	markedWriter := false
 	if req.Description != nil {
 		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
@@ -4453,6 +4472,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		ParentIssueID:   parentIssueID,
 		ProjectID:       projectID,
 		WorkflowID:      overrideID,
+		WorkflowSource:  createWorkflowSource(req.WorkflowID, overrideID),
 		RequestedByID:   requestedByID,
 		StartDate:       startDate,
 		DueDate:         dueDate,
@@ -4838,12 +4858,19 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, err
 	}
 
+	wf.markManualPark(ctx)
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
 	}
+	if issue, err = wf.recordManualPark(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record manual park: %w", err)
+	}
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
+	}
+	if err := wf.recordAuthor(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record author: %w", err)
 	}
 	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)

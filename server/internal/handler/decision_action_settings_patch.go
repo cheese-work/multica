@@ -133,6 +133,10 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateCardLintSetting(map[string]any{key: value})
 	case key == decisiontx.SettingServerActions || key == decisiontx.SettingStandingAnswers:
 		err = validateServerActionSetting(map[string]any{key: value})
+	case key == "auto_close":
+		err = validateAutoClosePatch(raw)
+	case key == "blocked_run_skip":
+		err = validateBlockedRunSkipPatch(raw)
 	case key == designguard.SettingKey:
 		err = validateDesignGuardSetting(map[string]any{key: value})
 	case key == decisionAskParkKey:
@@ -170,6 +174,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = capabilityrouting.Validate(raw)
 	case key == intakehold.SettingKey:
 		err = intakehold.Validate(raw)
+	case key == issueworkflow.SettingsKeyQuickFirst:
+		err = issueworkflow.ValidateQuickFirst(raw)
 	case key == "pr_event_capture":
 		flags, isObject := value.(map[string]any)
 		if !isObject {

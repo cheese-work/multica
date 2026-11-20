@@ -60,6 +60,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 设置了 `chain_same_owner: true` 的步骤，在智能体把事项移入该步骤、且该智能体就是这一步的处理人时，不会启动新的运行，前提是该智能体的运行所开始的那一步的处理人类型相同（智能体、项目负责人等）。智能体继续在自己的运行中工作，状态响应的 `step_brief` 携带这一步的说明，`multica issue status` 会打印它。换了智能体、处理人类型改变，或由人移动事项时，仍像以前一样启动运行。批量更新从不链式处理。该选项默认关闭，通过 API 或 CLI 设置。
 
+步骤可以带有自己的 `auto_close: {"mode": "off|warn|block", "top_level": true|false}`。工作区设置 `auto_close` 为 `off` 时是总开关，始终优先。否则，进入该步骤的事项使用步骤的 mode，取代工作区的 mode；没有 `auto_close` 的步骤沿用工作区设置。设置 `top_level: true` 后，没有父事项的根事项也可以被关闭：跳过父事项检查，子事项仍然要求父事项未被停止。在 `block` 模式的步骤上，通往 `done` 的 `pr.merged` 边在合并已到达但关闭检查未通过时，不会把事项移到 `done`，而是立即、仅一次地转到该边的 `on_timeout` 状态，不等待截止时间。该字段默认关闭，通过 API 或 CLI 设置。
+
 ## 在项目中使用
 
 打开项目，在**工作流**属性中选择刚才的工作流。工作区的 `owner`、`admin`，以及担任项目负责人的成员可以切换它。
@@ -72,9 +74,15 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 工作区所有者或管理员可在工作区设置中配置 `workflow_by_type`，例如 `{"design": "<工作流 ID>", "plan": "<工作流 ID>"}`。标题以已映射类型开头的新问题（如 `design(x): …`）会使用该工作流，而不是所在项目的工作流。`--workflow`（CLI）或显式选择始终优先。没有对应条目的类型，或对应工作流已不存在时，沿用项目的工作流。`multica issue create` 会打印所选工作流。标题带有已映射类型时，新建窗口会显示将选用的工作流的状态和交接。该映射属于工作区策略：对包括智能体在内的所有创建者生效，不会经过非交互调用方使用显式 `--workflow` 时的运行预算检查。若两个键仅大小写不同，按字母顺序靠前的生效。之后修改标题不会改变工作流；更新响应带有一行 `workflow_hint`（`multica issue update` 会打印），给出移动它的命令。
 
+工作区所有者或管理员可在工作区设置中配置 `quick_first`，让一部分新问题试用 Quick 工作流：`{"workflow_id": "<Quick 工作流 ID>", "types": ["feat", "fix"], "starts_at": "<RFC 3339>", "ends_at": "<RFC 3339>"}`。从 `starts_at`（含）到 `ends_at`（不含），标题类型在 `types` 中、且已遵循完整工作流（所在项目的工作流，或 `workflow_by_type` 指定的工作流）的新根问题按编号分组：偶数编号从 `todo` 起进入 Quick 工作流，奇数编号沿用原工作流。子问题沿用父问题的 Quick 工作流。调用方用 `--workflow` 指定了工作流、状态不是 `todo` 或 `backlog`、已分配给成员或小队，或所在项目的 A/B 分流正处于其时间窗口内，则不参与。被指定为经办人的智能体会保留为问题的作者。设置之前该功能关闭；未设置时，创建行为不变。
+
+每次绑定到 Quick 工作流，都会在该议题的活动中写入一行 `quick_entry`：抽签为两个分组各写一行（`source` 为 `arm`，`arm` 为 `Q` 或 `D`），议题级覆盖到 Quick 时写入 `source` 为 `override` 的一行。Quick 是名为 `Quick` 的工作流，或 `quick_first` 指定的工作流。`full_workflow_id` 由服务器设置为议题紧接此前所遵循的工作流：抽签时是奇数编号保留的路线；覆盖时依次是议题此前的覆盖、其标题类型在 `workflow_by_type` 中的条目、其项目的工作流。若议题没有则省略。调用方不能指定它。
+
 ## 按能力路由工作
 
-工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，目前没有任何功能读取它，因此行为不变。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
+工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，未设置时行为不变。只有 **Author** 处理人会读取它。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
+
+**Author** 是可用于“进行中”等步骤的处理人。进入该步骤的工单会交给它的作者：即最近一次把工单带入该步骤的人或智能体；若没有，则取 `capability_routing` 为该工单类型（标题的 Conventional Commit 前缀，如 `feat`）指定的 `author`。修改表不会改变工单已有的作者；有人重新分配工单后，该人成为下次进入时的作者。两者都没有时，该步骤不交给任何人；工作区没有路由任何作者时，工作流 lint 会给出警告（WF015）。用 `multica workflow handoff set <workflow> <status-key> --handler author` 设置。
 
 ## 把任务交给下一步
 

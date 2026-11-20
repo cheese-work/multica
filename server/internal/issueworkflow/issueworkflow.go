@@ -20,6 +20,7 @@
 package issueworkflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,7 +56,15 @@ const (
 	// is independent of every author of the issue (CHE-7658). The verdict
 	// guard enforces it; routing to such a reviewer is a separate step.
 	HandlerReviewer = "reviewer"
+	// HandlerAuthor hands the issue to its author (CHE-7677): the sticky row
+	// under AuthorStepKey, else capability_routing[type].author. The step
+	// stores no id.
+	HandlerAuthor = "author"
 )
+
+// AuthorStepKey is the reserved issue_step_assignee key that holds an issue's
+// author. It is not a status key, so no status can collide with it.
+const AuthorStepKey = "$author"
 
 const (
 	MaxSteps             = 50
@@ -222,6 +231,42 @@ type Step struct {
 	// step the run is in. The status response then carries the step brief.
 	// Default off.
 	ChainSameOwner bool `json:"chain_same_owner,omitempty"`
+	// AutoClose scopes auto close (CHE-6969) to this step: its mode replaces the
+	// workspace mode unless the workspace is off, and TopLevel lets a root issue
+	// close. Nil follows the workspace setting. Default nil.
+	AutoClose *AutoClose `json:"auto_close,omitempty"`
+}
+
+// AutoClose is a step's own auto-close setting. Mode is off, warn or block.
+// TopLevel skips the has_parent predicate, and skips parent_not_stopped when
+// the issue has no parent.
+type AutoClose struct {
+	Mode     string `json:"mode"`
+	TopLevel bool   `json:"top_level,omitempty"`
+}
+
+// UnmarshalJSON refuses a value that is not an object of mode and top_level.
+func (a *AutoClose) UnmarshalJSON(raw []byte) error {
+	type plain AutoClose
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var p plain
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf(`auto_close must be an object {"mode": "off"|"warn"|"block", "top_level": bool}`)
+	}
+	*a = AutoClose(p)
+	return nil
+}
+
+func validateAutoClose(s Step) error {
+	if s.AutoClose == nil {
+		return nil
+	}
+	switch s.AutoClose.Mode {
+	case "off", "warn", "block":
+		return nil
+	}
+	return invalid("auto_close of %q needs a mode of off, warn or block", s.StatusKey)
 }
 
 // LintWaiver waives one lint rule on a step.
@@ -288,7 +333,7 @@ func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEnt
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor:
 		return true
 	}
 	return false
@@ -314,6 +359,8 @@ type storedStep struct {
 	// KeepOtherAssignee: see Step. TEMPORARY, CHE-5024.
 	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 	ChainSameOwner    bool `json:"chain_same_owner,omitempty"`
+
+	AutoClose *AutoClose `json:"auto_close,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -365,6 +412,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			LintWaive:           s.LintWaive,
 			KeepOtherAssignee:   s.KeepOtherAssignee,
 			ChainSameOwner:      s.ChainSameOwner,
+			AutoClose:           s.AutoClose,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -386,7 +434,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, WaitsOnOpenDecision: s.WaitsOnOpenDecision, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee, ChainSameOwner: s.ChainSameOwner}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, WaitsOnOpenDecision: s.WaitsOnOpenDecision, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee, ChainSameOwner: s.ChainSameOwner, AutoClose: s.AutoClose}
 		// A human_in_charge step hands nothing off, but its handler is the entry
 		// rule of a decision episode and must survive storage.
 		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
@@ -592,8 +640,11 @@ func ValidateHandoff(s Step, def Definition) error {
 	if !def.Has(s.StatusKey) {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
+	if err := validateAutoClose(s); err != nil {
+		return err
+	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge, HandlerAuthor:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -748,6 +799,10 @@ type Humans struct {
 	WorkspaceOwner pgtype.UUID
 	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
 	RoutingAgent pgtype.UUID
+	// AuthorType and AuthorID are the issue's author, resolved by the caller
+	// for an author handler (CHE-7677). An invalid id means none.
+	AuthorType string
+	AuthorID   pgtype.UUID
 }
 
 // ResolveHandler turns a step's handler into a concrete assignee for one
@@ -764,6 +819,10 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 			return "", pgtype.UUID{}, false
 		}
 		return step.Handler.Type, id, true
+	case HandlerAuthor:
+		if humans.AuthorID.Valid && humans.AuthorType != "" {
+			return humans.AuthorType, humans.AuthorID, true
+		}
 	case HandlerProjectLead:
 		if !project.LeadType.Valid || !project.LeadID.Valid {
 			return "", pgtype.UUID{}, false

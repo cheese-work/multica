@@ -1200,3 +1200,28 @@ func (q *Queries) UpdateIssueWorkflowCols(ctx context.Context, arg UpdateIssueWo
 	)
 	return i, err
 }
+
+const upsertIssueWorkflowSwitchPending = `-- name: UpsertIssueWorkflowSwitchPending :exec
+INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text)
+ON CONFLICT (issue_id) DO UPDATE
+SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now()
+`
+
+type UpsertIssueWorkflowSwitchPendingParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowID  pgtype.UUID `json:"workflow_id"`
+	Reason      string      `json:"reason"`
+}
+
+// Parks a workflow switch: one row per issue, the newest request wins.
+func (q *Queries) UpsertIssueWorkflowSwitchPending(ctx context.Context, arg UpsertIssueWorkflowSwitchPendingParams) error {
+	_, err := q.db.Exec(ctx, upsertIssueWorkflowSwitchPending,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.WorkflowID,
+		arg.Reason,
+	)
+	return err
+}

@@ -453,3 +453,25 @@ func TestChecksFlakyHoldsOnlyOnGreenRerunOfTheSameHead(t *testing.T) {
 		t.Errorf("pr.checks_flaky must parse and need a timeout: %v", err)
 	}
 }
+
+// A draft PR is the author's early push, so pr.checks_green holds for it only
+// with the author's ready marker (CHE-5741). A PR that is not draft needs none.
+func TestChecksGreenOnDraftPRNeedsReadyMarker(t *testing.T) {
+	green := func(state string) PRFact { return PRFact{State: state, ChecksRollup: "SUCCESS", HeadFresh: true} }
+	cases := []struct {
+		name  string
+		state string
+		ready bool
+		want  bool
+	}{
+		{"draft, no marker", "draft", false, false},
+		{"draft, marker", "draft", true, true},
+		{"open, no marker", "open", false, true},
+	}
+	for _, c := range cases {
+		_, ok := FirstMatch([]Edge{{To: "code_review", Guard: GuardPRChecksGreen}}, Facts{PRs: []PRFact{green(c.state)}, ReadyForReview: c.ready})
+		if ok != c.want {
+			t.Errorf("%s: pr.checks_green = %v, want %v", c.name, ok, c.want)
+		}
+	}
+}

@@ -107,6 +107,8 @@ type IssueWorkflowStepPayload struct {
 	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 	// ChainSameOwner: see issueworkflow.Step.
 	ChainSameOwner bool `json:"chain_same_owner,omitempty"`
+	// AutoClose: see issueworkflow.Step.
+	AutoClose *issueworkflow.AutoClose `json:"auto_close,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -182,6 +184,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		LintWaive:         s.LintWaive,
 		KeepOtherAssignee: s.KeepOtherAssignee,
 		ChainSameOwner:    s.ChainSameOwner,
+		AutoClose:         s.AutoClose,
 	}
 	if s.WaitsOnOpenDecision {
 		set := true
@@ -208,6 +211,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 		KeepOtherAssignee:   in.KeepOtherAssignee,
 		ChainSameOwner:      in.ChainSameOwner,
+		AutoClose:           in.AutoClose,
 	}
 }
 
@@ -452,6 +456,8 @@ type IssueWorkflowStepInput struct {
 	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 	// ChainSameOwner: see IssueWorkflowStepPayload.
 	ChainSameOwner bool `json:"chain_same_owner,omitempty"`
+	// AutoClose: see IssueWorkflowStepPayload.
+	AutoClose *issueworkflow.AutoClose `json:"auto_close,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -528,6 +534,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 			KeepOtherAssignee:   in.KeepOtherAssignee,
 			ChainSameOwner:      in.ChainSameOwner,
+			AutoClose:           in.AutoClose,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -1641,6 +1648,9 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 		if step.Entry == nil {
 			step.Entry = stored.Entry
+		}
+		if step.AutoClose == nil {
+			step.AutoClose = stored.AutoClose
 		}
 		if req.WaitsOnOpenDecision == nil {
 			step.WaitsOnOpenDecision = stored.WaitsOnOpenDecision

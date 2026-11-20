@@ -124,6 +124,18 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 			return nil
 		}
 	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
+		if exit, predicates, rejected := h.rejectedMergeExit(ctx, issue, edges, decision); rejected {
+			// The merge matched but the close check rejects: take the edge's
+			// on_timeout exit now, once. A move that is refused retries the same
+			// exit; the watch never waits for the deadline (CHE-7672).
+			moved, _ := h.moveIssueOnEdge(ctx, issue, exit, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": reasonCloseRejected, "predicates": predicates}, true)
+			if !moved {
+				h.watchAgainIn(ctx, w, edgeRetryDelay)
+			}
+			return nil
+		}
+	}
 	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge {
 		bridged, err := h.bridgePRMergedEdge(ctx, issue)
 		if err != nil {
@@ -147,6 +159,32 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		h.watchAgainIn(ctx, w, edgeRetryDelay)
 	}
 	return nil
+}
+
+// reasonCloseRejected is the reason of a move that a matched pr.merged edge
+// made through its on_timeout exit because the close check rejected.
+const reasonCloseRejected = "close_rejected"
+
+// rejectedMergeExit decides whether a matched pr.merged -> done edge takes its
+// on_timeout exit instead (CHE-7672). It does only on an auto-close step whose
+// own auto_close mode is block, with the workspace not off, when the edge has an
+// on_timeout and the close check rejects. Every other case keeps the edge's move.
+func (h *Handler) rejectedMergeExit(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, decision issueworkflow.Decision) (exit, predicates string, rejected bool) {
+	if !entersAutoCloseStep(issue.Status) || h.stepAutoClose(ctx, issue) == nil {
+		return "", "", false
+	}
+	if mode, _ := h.autoCloseSettings(ctx, issue); mode != "block" {
+		return "", "", false
+	}
+	i := slices.IndexFunc(edges, func(e issueworkflow.Edge) bool { return e.Guard == decision.Guard && e.To == decision.To })
+	if i < 0 || edges[i].OnTimeout == "" {
+		return "", "", false
+	}
+	d := h.closeOrDispatch(ctx, issue)
+	if d.Outcome != closeOutcomeDispatch {
+		return "", "", false
+	}
+	return edges[i].OnTimeout, d.Predicates, true
 }
 
 // bridgePRMergedEdge hands a holding pr.merged edge to the PR merge decision
@@ -214,7 +252,7 @@ func (h *Handler) watchAgainIn(ctx context.Context, w db.IssueWakeup, d time.Dur
 // greenHead is the head of the first PR whose checks pass on its newest head.
 func greenHead(f issueworkflow.Facts) string {
 	for _, p := range f.PRs {
-		if (p.State == "open" || p.State == "draft") && p.HeadFresh && p.ChecksRollup == "SUCCESS" {
+		if f.ChecksGreen(p) {
 			return p.HeadSHA
 		}
 	}
@@ -241,7 +279,7 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 // success event since the issue entered the step.
 func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
 	includeChildren := def.IncludeChildPRs
-	var facts issueworkflow.Facts
+	facts := issueworkflow.Facts{ReadyForReview: issueReadyForReview(issue)}
 	children, err := q.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return facts, err
