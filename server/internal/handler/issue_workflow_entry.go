@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Project workflows on the issue write paths (MUL-7420).
@@ -548,11 +550,11 @@ func (h *Handler) writeWillRun(r *http.Request, actorType, actorID string, prev 
 // already committed when this runs, so if the write fails the run is stopped:
 // left alive it would work as an author with only its reviewer row. It returns
 // an error only when the run could not be stopped either.
-func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue) error {
+func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue, chained bool) error {
 	if run == nil || !run.WorkflowStep.Valid || prev.Status == issue.Status {
 		return nil
 	}
-	err := h.advanceRunStepWithRole(ctx, run, issue)
+	err := h.advanceRunStepWithRole(ctx, run, issue, chained)
 	if err == nil {
 		return nil
 	}
@@ -563,7 +565,7 @@ func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, pr
 	return nil
 }
 
-func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue) error {
+func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue, chained bool) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -578,6 +580,19 @@ func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQ
 	}
 	if err := service.RecordWorkflowRole(ctx, qtx, issue, *run, issue.Status); err != nil {
 		return err
+	}
+	if chained {
+		// The run carried the issue into this step itself and no handoff run
+		// started: this row is what a failed-chained-run retry (CHE-7675) reads
+		// to tell it from a run dispatched straight into the step.
+		details, _ := json.Marshal(map[string]string{"task_id": uuidToString(run.ID), "step": issue.Status})
+		if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
+			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+			ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: run.AgentID,
+			Action: activityChainedRunEntered, Details: details,
+		}); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
