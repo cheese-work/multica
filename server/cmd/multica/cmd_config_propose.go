@@ -200,6 +200,14 @@ func checkProposeField(field string, settings map[string]json.RawMessage) error 
 	if err := decisionaction.CheckConfigChange(gateField, keys); err != nil {
 		return fmt.Errorf("%s: %w", decisionaction.CodeDenylisted, err)
 	}
+	// A null removes the key; any other value must pass the server's request check.
+	for _, key := range keys {
+		if slices.Contains(decisionaction.ModeSettingKeys, key) && !isJSONNull(settings[key]) {
+			if err := decisionaction.ValidateModeSetting(key, settings[key]); err != nil {
+				return fmt.Errorf("%s: %w", decisionaction.CodeInvalidParams, err)
+			}
+		}
+	}
 	return nil
 }
 
