@@ -235,7 +235,7 @@ func execute(src source, agents []string, cutoff time.Time, asJSON bool, workers
 		fmt.Fprint(out, Render(rep))
 	}
 	if len(g.failures) > 0 {
-		return fmt.Errorf("%d CLI calls failed, report is incomplete; first: %v", len(g.failures), g.failures[0])
+		return fmt.Errorf("%d CLI calls failed, report is incomplete; first: %w", len(g.failures), g.failures[0])
 	}
 	return nil
 }
