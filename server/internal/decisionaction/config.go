@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"slices"
 )
 
@@ -127,4 +128,24 @@ func WorkflowDigest(workflowID string, steps json.RawMessage) (string, error) {
 	}
 	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// ModeSettingKeys are the settings whose value is exactly {"mode": "off"|"warn"|"block"}.
+var ModeSettingKeys = []string{"auto_close", "blocked_run_skip"}
+
+// ValidateModeSetting checks a non-null value of a ModeSettingKeys key: an
+// object holding exactly a mode of off, warn or block. The server request path
+// and the config propose dry run share it (CHE-7716), so a preview refuses what
+// the request refuses.
+func ValidateModeSetting(key string, raw json.RawMessage) error {
+	shape := fmt.Errorf(`%s must be an object {"mode": "off"|"warn"|"block"}`, key)
+	var patch map[string]any
+	if err := json.Unmarshal(raw, &patch); err != nil || len(patch) != 1 {
+		return shape
+	}
+	mode, _ := patch["mode"].(string)
+	if mode != "off" && mode != "warn" && mode != "block" {
+		return shape
+	}
+	return nil
 }
