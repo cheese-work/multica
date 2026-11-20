@@ -254,9 +254,19 @@ WHERE authority = 'human' AND origin = 'asked' AND status = 'open'
   AND (ping_notified_at IS NOT NULL OR id = sqlc.arg('id'));
 
 -- name: UpdateDecisionPingLine :exec
--- Rewrites the coalesced line in place. chat_message_id stays, so no push is queued.
+-- Rewrites the coalesced line and moves the item to the top of the inbox. At
+-- most once per 15 minutes (CHE-8878, rule of CHE-6009) it also re-points the
+-- item at the newest ask's card; the chat_message_id change makes the push
+-- trigger queue one new push. The window runs from the item's last push
+-- (details.push_at, else created_at), so a stream of asks cannot spam.
 UPDATE inbox_item
-SET body = sqlc.arg('body'), details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int), updated_at = now()
+SET body = sqlc.arg('body'),
+    details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int)
+        || CASE WHEN sqlc.narg('chat_message_id')::uuid IS NOT NULL AND COALESCE((details->>'push_at')::timestamptz, created_at) <= clock_timestamp() - interval '15 minutes'
+                THEN jsonb_build_object('push_at', clock_timestamp()) ELSE '{}'::jsonb END,
+    chat_message_id = CASE WHEN sqlc.narg('chat_message_id')::uuid IS NOT NULL AND COALESCE((details->>'push_at')::timestamptz, created_at) <= clock_timestamp() - interval '15 minutes'
+                THEN sqlc.narg('chat_message_id')::uuid ELSE chat_message_id END,
+    updated_at = now()
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: ListDecisionPingRepings :many

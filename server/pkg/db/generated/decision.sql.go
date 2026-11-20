@@ -3715,22 +3715,34 @@ func (q *Queries) StampCommentDecisionIntent(ctx context.Context, arg StampComme
 
 const updateDecisionPingLine = `-- name: UpdateDecisionPingLine :exec
 UPDATE inbox_item
-SET body = $1, details = details || jsonb_build_object('open_ask_count', $2::int), updated_at = now()
-WHERE workspace_id = $3 AND id = $4
+SET body = $1,
+    details = details || jsonb_build_object('open_ask_count', $2::int)
+        || CASE WHEN $3::uuid IS NOT NULL AND COALESCE((details->>'push_at')::timestamptz, created_at) <= clock_timestamp() - interval '15 minutes'
+                THEN jsonb_build_object('push_at', clock_timestamp()) ELSE '{}'::jsonb END,
+    chat_message_id = CASE WHEN $3::uuid IS NOT NULL AND COALESCE((details->>'push_at')::timestamptz, created_at) <= clock_timestamp() - interval '15 minutes'
+                THEN $3::uuid ELSE chat_message_id END,
+    updated_at = now()
+WHERE workspace_id = $4 AND id = $5
 `
 
 type UpdateDecisionPingLineParams struct {
-	Body         pgtype.Text `json:"body"`
-	OpenAskCount int32       `json:"open_ask_count"`
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-	ID           pgtype.UUID `json:"id"`
+	Body          pgtype.Text `json:"body"`
+	OpenAskCount  int32       `json:"open_ask_count"`
+	ChatMessageID pgtype.UUID `json:"chat_message_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ID            pgtype.UUID `json:"id"`
 }
 
-// Rewrites the coalesced line in place. chat_message_id stays, so no push is queued.
+// Rewrites the coalesced line and moves the item to the top of the inbox. At
+// most once per 15 minutes (CHE-8878, rule of CHE-6009) it also re-points the
+// item at the newest ask's card; the chat_message_id change makes the push
+// trigger queue one new push. The window runs from the item's last push
+// (details.push_at, else created_at), so a stream of asks cannot spam.
 func (q *Queries) UpdateDecisionPingLine(ctx context.Context, arg UpdateDecisionPingLineParams) error {
 	_, err := q.db.Exec(ctx, updateDecisionPingLine,
 		arg.Body,
 		arg.OpenAskCount,
+		arg.ChatMessageID,
 		arg.WorkspaceID,
 		arg.ID,
 	)
