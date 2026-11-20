@@ -60,6 +60,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 设置了 `chain_same_owner: true` 的步骤，在智能体把事项移入该步骤、且该智能体就是这一步的处理人时，不会启动新的运行，前提是该智能体的运行所开始的那一步的处理人类型相同（智能体、项目负责人等）。智能体继续在自己的运行中工作，状态响应的 `step_brief` 携带这一步的说明，`multica issue status` 会打印它。换了智能体、处理人类型改变，或由人移动事项时，仍像以前一样启动运行。批量更新从不链式处理。该选项默认关闭，通过 API 或 CLI 设置。
 
+步骤可以带有自己的 `auto_close: {"mode": "off|warn|block", "top_level": true|false}`。工作区设置 `auto_close` 为 `off` 时是总开关，始终优先。否则，进入该步骤的事项使用步骤的 mode，取代工作区的 mode；没有 `auto_close` 的步骤沿用工作区设置。设置 `top_level: true` 后，没有父事项的根事项也可以被关闭：跳过父事项检查，子事项仍然要求父事项未被停止。在 `block` 模式的步骤上，通往 `done` 的 `pr.merged` 边在合并已到达但关闭检查未通过时，不会把事项移到 `done`，而是立即、仅一次地转到该边的 `on_timeout` 状态，不等待截止时间。该字段默认关闭，通过 API 或 CLI 设置。
+
 ## 在项目中使用
 
 打开项目，在**工作流**属性中选择刚才的工作流。工作区的 `owner`、`admin`，以及担任项目负责人的成员可以切换它。

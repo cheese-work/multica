@@ -60,6 +60,8 @@ A step with `keep_other_assignee: true` skips the handoff when the issue's curre
 
 A step with `chain_same_owner: true` starts no new run when an agent moves the issue into it and that same agent is the step's handler, provided the step the agent's run started in has the same kind of handler (agent, project lead, and so on). The agent keeps working in its run, and the status response carries the step's instructions as `step_brief`; `multica issue status` prints it. A different agent, a changed handler kind, or a person moving the issue starts a run as before. A batch update never chains. The flag is off by default and is set through the API or CLI.
 
+A step can carry its own `auto_close: {"mode": "off|warn|block", "top_level": true|false}`. The workspace setting `auto_close` set to `off` is the kill switch and always wins. Otherwise the step's mode replaces the workspace mode for issues entering that step, and a step with no `auto_close` follows the workspace. With `top_level: true`, a root issue can close too: the parent check is skipped, and a child still waits for a parent that is not stopped. On a step in `block` mode, a `pr.merged` edge to `done` whose merge has arrived but whose close checks fail does not move the issue to `done`. It takes the edge's `on_timeout` status at once, one time, and does not wait for the deadline. The field is off by default; set it through the API or CLI.
+
 ## Use it in a project
 
 Open a project and choose its **Workflow**. Workspace owners, admins, and the project's lead, when that lead is a member, can change this choice.
