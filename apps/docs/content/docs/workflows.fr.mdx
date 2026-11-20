@@ -122,6 +122,15 @@ Quand un agent a besoin de la décision d’une personne sur une dépense, un d�
 
 Une personne libère une tâche de deux façons. Soit elle la déplace hors de Backlog dans l’application web, l’application de bureau ou la CLI, connectée en son nom ; soit elle la déplace hors d’un statut où la tâche avait été mise en attente depuis Backlog, et le serveur enregistre la libération. Un jeton qui appartient à un agent ou à un runtime cloud ne libère jamais une tâche.
 
+## Conditionner une étape à l’intake ou à la preuve QA [#intake-qa-gates]
+
+Une étape peut porter des garde-fous d’entrée : des conditions qu’un changement de statut vers l’étape doit remplir. Deux garde-fous lisent ce qu’un agent a écrit sur le ticket. Ajoutez-les à la liste `entry` de l’étape, par exemple `{"guard": "intake_simple", "mode": "warn", "param": "1"}`. Le mode est `off`, `warn` ou `block` ; un garde-fou absent de la liste est désactivé, et si tous le sont, un ticket change de statut comme avant. En `warn`, le changement passe et le ticket reçoit un seul avertissement ; en `block`, il est refusé avec le fait en cause et un correctif, et une personne peut le forcer avec un motif, sauf si le garde-fou définit `member_override` à `false`.
+
+- `intake_simple` est satisfait quand la description ou les commentaires du ticket contiennent les lignes `Estimate:`, `Repos:`, `Schema change:`, `Security change:` et `Human decision:`, et que les réponses indiquent un ticket simple. La ligne la plus récente de chaque type compte. Il échoue si une ligne manque ou est illisible, si l’estimation (par exemple `1h` ou `45m`) dépasse le `param` du garde-fou (en heures, supérieur à 0 et au plus 24), si `Repos:` cite plus d’un dépôt, si une ligne oui/non vaut `yes`, ou tant que le ticket a une demande de décision ouverte. `param` est obligatoire.
+- `qa_proof` est satisfait quand l’agent qui effectue le changement a écrit, depuis l’entrée du ticket dans l’étape courante, un commentaire avec une ligne `QA:` contenant un lien (`https://…`) ou suivie d’un bloc de code, et que cet agent a lui-même défini la métadonnée `post_close_work` du ticket (sa dernière écriture ; une valeur laissée par un autre acteur ou une exécution antérieure ne compte pas). Il n’accepte pas de `param`. Le commentaire de quelqu’un d’autre ne compte pas.
+
+Les deux garde-fous échouent par défaut : une valeur illisible compte comme un échec. Aucun n’est accepté comme garde de transition. À chaque contrôle de `intake_simple`, l’activité du ticket reçoit une ligne `intake_call` avec `call` (`simple` ou `rejected`), le `estimate` brut et le `step`.
+
 ## Guides associés
 
 - [Projets](/projects) — regrouper les tâches qui suivent un workflow.
