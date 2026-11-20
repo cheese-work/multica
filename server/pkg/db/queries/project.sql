@@ -44,10 +44,12 @@ FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
 AND i.project_id=$1 AND i.workspace_id=$2;
 
 -- name: CancelProjectAgentTasks :many
+-- keep_running: a pause drains, so a running run lives on; cancel and complete stop it.
 UPDATE agent_task_queue t
 SET status='cancelled', completed_at=now(), prepare_lease_expires_at=NULL,
     cancelled_by_type='system', cancelled_by_id=NULL, cancelled_by_name=NULL
 WHERE t.status IN ('queued','dispatched','running','waiting_local_directory','deferred')
+AND NOT (sqlc.arg(keep_running)::bool AND t.status='running')
 AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=sqlc.arg(project_id)::uuid AND i.workspace_id=sqlc.arg(workspace_id)::uuid)
  OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=sqlc.arg(project_id)::uuid AND a.workspace_id=sqlc.arg(workspace_id)::uuid))
  OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=sqlc.arg(project_id)::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=sqlc.arg(workspace_id)::uuid)))
