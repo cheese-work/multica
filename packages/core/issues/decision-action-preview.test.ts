@@ -119,3 +119,19 @@ describe("issue.workflow.set (CHE-5629)", () => {
     expect(isRunBudgetActionType("issue.project.set")).toBe(false);
   });
 });
+
+describe("Quick move actions (CHE-7734)", () => {
+  const preview = {
+    sha256: "e".repeat(64),
+    fields: [{ label: "Run cap", current: "10", proposed: "40" }],
+  };
+
+  it.each(["issue.project.quick_set", "project.workflow.quick_set"])("approves %s against the server preview", (type) => {
+    expect(approvablePreview({ action_type: type, preview })).toEqual(preview);
+  });
+
+  it("keeps both out of the Run budget group", () => {
+    expect(isRunBudgetActionType("issue.project.quick_set")).toBe(false);
+    expect(isRunBudgetActionType("project.workflow.quick_set")).toBe(false);
+  });
+});

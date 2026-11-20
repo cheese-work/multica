@@ -237,8 +237,10 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return []ActionPreviewField{{"Weekly run limit", strconv.FormatInt(limit, 10), strconv.FormatInt(limit+int64(params.Runs), 10)}}, nil
 	case issueWorkflowSetType:
 		return handler.issueWorkflowSetPreview(ctx, action)
-	case issueProjectSetType:
+	case issueProjectSetType, issueProjectQuickSetType:
 		return handler.issueProjectSetPreview(ctx, action)
+	case projectWorkflowQuickSetType:
+		return handler.projectWorkflowQuickSetPreview(ctx, action)
 	case "agent.env.patch":
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":

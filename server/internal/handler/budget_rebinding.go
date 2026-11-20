@@ -66,6 +66,21 @@ func withBudgetActor(ctx context.Context, r *http.Request) context.Context {
 	return context.WithValue(ctx, budgetActorKey{}, isInteractiveRequest(r))
 }
 
+type quickCardKey struct{}
+
+// withQuickMoveCard marks a write whose caller may be handed an owner card for
+// a move into Quick: an agent run's task token (CHE-7734). Any other credential,
+// and the writes that cannot answer with a card, keep the refusal.
+func withQuickMoveCard(ctx context.Context, r *http.Request) context.Context {
+	return context.WithValue(ctx, quickCardKey{}, r.Header.Get("X-Actor-Source") == "task_token")
+}
+
+// quickMoveApproval is what guardIssueProjectRebinding returns for an agent's
+// move into a project that follows Quick: the owners confirm it with a card.
+type quickMoveApproval struct{ issueID, projectID pgtype.UUID }
+
+func (quickMoveApproval) Error() string { return "quick move needs owner approval" }
+
 // verifyBoundRebinding admits a widening that a workspace owner approved for
 // the issue.workflow field (CHE-5228). Only an agent task token that names a
 // decision gets this far; anything else keeps the interactive-only refusal.
@@ -136,6 +151,19 @@ func guardIssueProjectRebinding(ctx context.Context, q *db.Queries, params db.Up
 	if current.ProjectID == params.ProjectID {
 		return nil
 	}
+	// An agent's move into a project that follows Quick is a de-escalation the
+	// owners confirm, as an override into Quick is (CHE-7682): a task token gets
+	// a card (CHE-7734), any other credential the refusal.
+	intoQuick, err := bindsIntoQuick(ctx, q, current.WorkspaceID, current.WorkflowID, current.ProjectID, params.ProjectID)
+	if err != nil {
+		return err
+	}
+	if intoQuick {
+		if card, _ := ctx.Value(quickCardKey{}).(bool); card {
+			return quickMoveApproval{issueID: current.ID, projectID: params.ProjectID}
+		}
+		return errBudgetRebinding
+	}
 	before, err := issueBinding(ctx, q, current.WorkspaceID, current.WorkflowID, current.ProjectID, current.MaxRunsOverride)
 	if err != nil {
 		return err
@@ -145,15 +173,6 @@ func guardIssueProjectRebinding(ctx context.Context, q *db.Queries, params db.Up
 		return err
 	}
 	if budgetWidens(before, after) {
-		return errBudgetRebinding
-	}
-	// An agent's move into a project that follows Quick is a de-escalation the
-	// owners confirm, as an override into Quick is (CHE-7682).
-	intoQuick, err := bindsIntoQuick(ctx, q, current.WorkspaceID, current.WorkflowID, current.ProjectID, params.ProjectID)
-	if err != nil {
-		return err
-	}
-	if intoQuick {
 		return errBudgetRebinding
 	}
 	return nil
@@ -182,40 +201,53 @@ func bindsIntoQuick(ctx context.Context, q *db.Queries, workspaceID, workflowID,
 	return follows(afterProject)
 }
 
-// projectSwitchWidensBudget reports whether a non-interactive project switch
-// needs the owners: it widens a budget or lands in Quick. It compares the workflow a project uses now with the
-// one it would use after the switch (nil target is Default). The issue that
-// gains most is the one with the smallest max_runs_override among those that
-// follow the project, so that override is applied on both sides.
-func projectSwitchWidensBudget(ctx context.Context, q *db.Queries, project db.Project, target *issueworkflow.Definition) (bool, error) {
-	current, err := issueworkflow.ForProjectRow(ctx, q, project)
+// projectSwitchVerdict is what a non-interactive project switch needs the
+// owners for: a wider run budget, or a landing in Quick.
+type projectSwitchVerdict struct{ widens, intoQuick bool }
+
+func (v projectSwitchVerdict) refused() bool { return v.widens || v.intoQuick }
+
+// projectSwitchWidensBudget prices a project switch. It compares the workflow a
+// project uses now with the one it would use after the switch (nil target is
+// Default). The issue that gains most is the one with the smallest
+// max_runs_override among those that follow the project, so that override is
+// applied on both sides.
+func projectSwitchWidensBudget(ctx context.Context, q *db.Queries, project db.Project, target *issueworkflow.Definition) (projectSwitchVerdict, error) {
+	current, next, override, err := projectSwitchBindings(ctx, q, project, target)
 	if err != nil {
-		return false, err
+		return projectSwitchVerdict{}, err
 	}
-	next := target
+	verdict := projectSwitchVerdict{widens: budgetWidens(workflowBinding(current, override), workflowBinding(next, override))}
+	// Switching a project to Quick binds every issue that follows it into Quick:
+	// the same owner-confirmed de-escalation as an issue override (CHE-7682).
+	workspace, err := q.GetWorkspace(ctx, project.WorkspaceID)
+	if err != nil {
+		return projectSwitchVerdict{}, err
+	}
+	qf := issueworkflow.DecodeQuickFirst(workspace.Settings)
+	verdict.intoQuick = !issueworkflow.IsQuick(current, qf) && issueworkflow.IsQuick(next, qf)
+	return verdict, nil
+}
+
+// projectSwitchBindings is the workflow a project uses now and after the switch
+// (nil target is Default), and the override that gains most from it.
+func projectSwitchBindings(ctx context.Context, q *db.Queries, project db.Project, target *issueworkflow.Definition) (current, next *issueworkflow.Definition, override pgtype.Int4, err error) {
+	if current, err = issueworkflow.ForProjectRow(ctx, q, project); err != nil {
+		return nil, nil, override, err
+	}
+	next = target
 	if next == nil {
 		def, err := issueworkflow.DefaultFor(ctx, q, project.WorkspaceID)
 		if err != nil {
-			return false, err
+			return nil, nil, override, err
 		}
 		next = &def
 	}
 	least, err := q.MinInheritedRunsOverrideForProject(ctx, db.MinInheritedRunsOverrideForProjectParams{WorkspaceID: project.WorkspaceID, ProjectID: project.ID})
 	if err != nil {
-		return false, err
+		return nil, nil, override, err
 	}
-	override := pgtype.Int4{Int32: least, Valid: least > 0}
-	if budgetWidens(workflowBinding(current, override), workflowBinding(next, override)) {
-		return true, nil
-	}
-	// Switching a project to Quick binds every issue that follows it into Quick:
-	// the same owner-confirmed de-escalation as an issue override (CHE-7682).
-	workspace, err := q.GetWorkspace(ctx, project.WorkspaceID)
-	if err != nil {
-		return false, err
-	}
-	qf := issueworkflow.DecodeQuickFirst(workspace.Settings)
-	return !issueworkflow.IsQuick(current, qf) && issueworkflow.IsQuick(next, qf), nil
+	return current, next, pgtype.Int4{Int32: least, Valid: least > 0}, nil
 }
 
 // workflowDeleteWidensBudget covers a delete that would strand references:

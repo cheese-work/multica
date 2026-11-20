@@ -247,6 +247,15 @@ WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND project_id = sqlc.arg('project_id')::uuid
   AND workflow_id IS NULL;
 
+-- name: ListInheritedRunsOverridesForProject :many
+-- The distinct run overrides (0 for none) among a project's issues that follow
+-- its workflow. Each one prices its issues' cap under a workflow switch.
+SELECT DISTINCT COALESCE(max_runs_override, 0)::int AS runs_override FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id = sqlc.arg('project_id')::uuid
+  AND workflow_id IS NULL
+ORDER BY 1;
+
 -- name: ListOverrideIssueStatusesForWorkflow :many
 -- Statuses held by issues that follow this workflow by override, for an edit
 -- that would drop one of them.

@@ -95,14 +95,26 @@ func workflowSetAsk(issue db.Issue, params decisionaction.IssueWorkflowSetParams
 	return fmt.Sprintf("**Run budget request**\nAn agent asked to move [Issue](mention://issue/%s) to a workflow that allows more runs (cap %d to %d).\nApprove it with your passkey in the web app, or reject it.", uuidToString(issue.ID), params.Before.Cap, params.After.Cap)
 }
 
+// ownerCard is one server-opened decision card: the sealed action, the text
+// the owners read, and the name its fingerprint carries.
+type ownerCard struct {
+	actionType, name, ask string
+	params                any
+}
+
 // openIssueWorkflowSetCard opens the card for every workspace owner, and
-// returns the card an owner already has open for the same sealed move. It runs
-// in its own transaction: opening a decision takes the workspace and topic
-// locks, which come before the issue lock.
+// returns the card an owner already has open for the same sealed move.
 func (h *Handler) openIssueWorkflowSetCard(ctx context.Context, issue db.Issue, params decisionaction.IssueWorkflowSetParams) (RunBudgetActionResponse, error) {
+	return h.openOwnerCard(ctx, issue, ownerCard{actionType: issueWorkflowSetType, name: "issue_workflow_set", ask: workflowSetAsk(issue, params), params: params})
+}
+
+// openOwnerCard hosts the card on issue. It runs in its own transaction:
+// opening a decision takes the workspace and topic locks, which come before
+// the issue lock.
+func (h *Handler) openOwnerCard(ctx context.Context, issue db.Issue, card ownerCard) (RunBudgetActionResponse, error) {
 	var out RunBudgetActionResponse
 	var results []decisionRequestResult
-	raw, err := json.Marshal(params)
+	raw, err := json.Marshal(card.params)
 	if err != nil {
 		return out, err
 	}
@@ -123,14 +135,14 @@ func (h *Handler) openIssueWorkflowSetCard(ctx context.Context, issue db.Issue, 
 		if err != nil {
 			return err
 		}
-		draft, err := draftDecisionAction(&decisionActionWire{Type: issueWorkflowSetType, Version: 1, Params: raw})
+		draft, err := draftDecisionAction(&decisionActionWire{Type: card.actionType, Version: 1, Params: raw})
 		if err != nil {
 			return err
 		}
 		digest := sha256.Sum256(draft.Params)
 		input := decisionRequestInput{
-			Ask: workflowSetAsk(issue, params), EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
-			Fingerprint: serverDecisionFingerprint + "issue_workflow_set:" + hex.EncodeToString(digest[:]),
+			Ask: card.ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
+			Fingerprint: serverDecisionFingerprint + card.name + ":" + hex.EncodeToString(digest[:]),
 		}
 		results = nil
 		out = RunBudgetActionResponse{}
