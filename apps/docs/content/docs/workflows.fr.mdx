@@ -58,6 +58,8 @@ Sans passage de relais, le responsable ne change pas. Confier la tâche à un me
 
 Une étape avec `keep_other_assignee: true` saute le passage de relais lorsque le responsable actuel a été choisi volontairement : il n’est ni le responsable de cette étape ni celui de l’étape que la tâche quitte. Il garde la tâche, et un agent responsable lance une exécution pour cette étape. L’option est désactivée par défaut et se définit via l’API ou la CLI. Elle est temporaire : les workflows par tâche (CHE-5024) la remplaceront.
 
+Une étape avec `chain_same_owner: true` ne lance aucune nouvelle exécution lorsqu’un agent y déplace la tâche et que ce même agent est le responsable de l’étape, à condition que l’étape dans laquelle son exécution a démarré ait le même type de responsable (agent, responsable du projet, etc.). L’agent poursuit dans son exécution, et la réponse de changement de statut contient les instructions de l’étape dans `step_brief` ; `multica issue status` l’affiche. Un autre agent, un type de responsable différent ou une personne qui déplace la tâche lancent une exécution comme avant. Une mise à jour par lot n’enchaîne jamais. L’option est désactivée par défaut et se définit via l’API ou la CLI.
+
 ## L’utiliser dans un projet
 
 Ouvrez un projet et choisissez son **Workflow**. Les `owner`, les `admin` et le responsable du projet, s’il s’agit d’un membre, peuvent modifier ce choix.

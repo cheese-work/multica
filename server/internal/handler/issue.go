@@ -100,8 +100,12 @@ type IssueResponse struct {
 	// WorkflowHint is set on an update that changed the title to a type the
 	// workspace maps to a different workflow than the issue's. The issue keeps
 	// its workflow; the hint tells the caller how to move it. (CHE-5271)
-	WorkflowHint string  `json:"workflow_hint,omitempty"`
-	Position     float64 `json:"position"`
+	WorkflowHint string `json:"workflow_hint,omitempty"`
+	// StepBrief is the entered step's brief on a move that chained the
+	// caller's own run into the step (chain_same_owner): no new run starts, so
+	// the response is where the step's text arrives.
+	StepBrief string  `json:"step_brief,omitempty"`
+	Position  float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -5187,7 +5191,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	suppressRun := req.SuppressRun
+	chained := chainsSameOwner(actorType, callerRun, handoff, params)
+	suppressRun := req.SuppressRun || chained
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	writeCtx = withBudgetActor(writeCtx, r)
 	// The handoff comment rides to the run as context. A run that will start
@@ -5330,6 +5335,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	if chained {
+		resp.StepBrief = h.workflowHandoffBrief(r.Context(), issue, handoff)
+	}
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
