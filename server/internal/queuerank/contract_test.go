@@ -80,14 +80,6 @@ func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 
 var priorities = []string{"none", "low", "medium", "high", "urgent"}
 
-type issueFix struct {
-	ws          string // workspace label
-	own         string
-	project     *string
-	parent      *string
-	projectName string
-}
-
 // TestSQLMatchesGo: queue_rank_at equals Go Score on every fixture row.
 func TestSQLMatchesGo(t *testing.T) {
 	pool := sandbox(t)
