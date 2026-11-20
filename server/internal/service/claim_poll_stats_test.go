@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -293,5 +294,69 @@ func TestClaimOrderIsPriorityOrderWithAndWithoutQueueOrderSetting(t *testing.T) 
 	set := claimOrder(t, true)
 	if fmt.Sprint(def) != "[3 1]" || fmt.Sprint(set) != fmt.Sprint(def) {
 		t.Fatalf("claim order default=%v with queue_order=priority=%v, want [3 1] both", def, set)
+	}
+}
+
+// observeN adds n polls of the same duration to a fresh histogram and returns
+// the bucket counts of the one (path, outcome) key they share.
+func observeN(t *testing.T, polls map[time.Duration]int) []int64 {
+	t.Helper()
+	stats := NewClaimPollStats()
+	for d, n := range polls {
+		for i := 0; i < n; i++ {
+			stats.Observe(claimPathRuntime, ClaimPollOutcomeClaimed, d)
+		}
+	}
+	return stats.Snapshot()[ClaimPollKey{Path: claimPathRuntime, Outcome: ClaimPollOutcomeClaimed}].Buckets
+}
+
+// The rollout kill rule is "claim poll p95 up 50 ms or more" (plan r4). The
+// histogram must tell these two shapes apart: same count, same sum, p95 74 ms
+// higher in the second (review round 1, P1).
+func TestClaimPollStatsP95SeparatesShapesWithEqualCountAndSum(t *testing.T) {
+	flat := observeN(t, map[time.Duration]int{175 * time.Millisecond: 100})
+	split := observeN(t, map[time.Duration]int{101 * time.Millisecond: 50, 249 * time.Millisecond: 50})
+
+	flatP95 := ClaimPollPercentileMs(flat, 0.95)
+	splitP95 := ClaimPollPercentileMs(split, 0.95)
+	if splitP95-flatP95 < 50 {
+		t.Errorf("p95 flat = %v ms, split = %v ms; want the split shape at least 50 ms higher", flatP95, splitP95)
+	}
+	// An upper-bound estimate never reads below the true value.
+	if flatP95 < 175 || splitP95 < 249 {
+		t.Errorf("p95 flat = %v (true 175), split = %v (true 249); estimates must not under-report", flatP95, splitP95)
+	}
+}
+
+// A poll slower than the last bound has no upper bound, so a p95 that lands in
+// the overflow slot reads as +Inf: a rollback comparison must trip, not pass.
+func TestClaimPollStatsP95OverflowIsConservative(t *testing.T) {
+	b := observeN(t, map[time.Duration]int{20 * time.Millisecond: 90, 5 * time.Second: 10})
+	if got := ClaimPollPercentileMs(b, 0.95); !math.IsInf(got, 1) {
+		t.Errorf("p95 with 10%% of polls in overflow = %v, want +Inf", got)
+	}
+	if got := ClaimPollPercentileMs(b, 0.5); got != 20 {
+		t.Errorf("p50 = %v, want 20", got)
+	}
+	if got := ClaimPollPercentileMs(make([]int64, len(ClaimPollBucketBoundsMs)+1), 0.95); got != 0 {
+		t.Errorf("p95 of no polls = %v, want 0", got)
+	}
+}
+
+// Buckets are at most 10 ms wide up to 1 s, so a 50 ms shift is at least five
+// buckets wide and cannot hide inside one.
+func TestClaimPollBucketBoundsResolveFiftyMilliseconds(t *testing.T) {
+	prev := 0.0
+	for _, b := range ClaimPollBucketBoundsMs {
+		if b <= prev {
+			t.Fatalf("bounds must increase: %v after %v", b, prev)
+		}
+		if b > 10 && b-prev > 10 {
+			t.Errorf("bucket (%v, %v] wider than 10 ms", prev, b)
+		}
+		prev = b
+	}
+	if prev < 1000 {
+		t.Errorf("last bound = %v ms, want at least 1000", prev)
 	}
 }
