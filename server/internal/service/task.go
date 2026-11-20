@@ -4776,6 +4776,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
 			MinPriority:      minPriority,
+			ChatOnly:         scope.chatOnly,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
@@ -5232,7 +5233,37 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 // The returned slice contains both reclaimed and freshly-claimed tasks, each
 // already carrying its runtime_id so the daemon routes it to the matching
 // runtime locally.
-func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) (polled []db.AgentTaskQueue, pollErr error) {
+func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) ([]db.AgentTaskQueue, error) {
+	return s.ClaimTasksForRuntimesWithNonDMLimit(ctx, runtimeIDs, maxTasks, nil)
+}
+
+// isDMTask reports whether a task is a DM run for reserved_chat_slots: a chat
+// task that is not a group channel conversation. A web chat or a p2p channel
+// chat is a DM; an issue task and a group channel task are not. Group-ness is
+// the task's own delivery snapshot, the same signal the daemon reads as
+// chat_type, so the server budget and the daemon's slot accounting agree. The
+// ClaimAgentTask chat_only filter applies the same rule in SQL.
+func (s *TaskService) isDMTask(ctx context.Context, task db.AgentTaskQueue) bool {
+	if !task.ChatSessionID.Valid {
+		return false
+	}
+	delivery, err := s.Queries.GetChannelTaskDelivery(ctx, task.ID)
+	if err != nil {
+		// No snapshot (pgx.ErrNoRows) is a web chat, a DM. On a lookup error
+		// count it as a DM: the task is already claimed, and wrongly counting
+		// it as non-DM would only shrink what this batch claims.
+		return true
+	}
+	return delivery.ChatType != "group"
+}
+
+// ClaimTasksForRuntimesWithNonDMLimit is ClaimTasksForRuntimes with the daemon's
+// reserved_chat_slots budget: at most *maxNonDMTasks of the claimed tasks may be
+// non-chat tasks, the rest of maxTasks goes to DM (chat) tasks only. nil means
+// no limit and is exactly ClaimTasksForRuntimes. Reclaimed stale tasks were
+// already dispatched, so they are returned regardless but count against the
+// budget.
+func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int, maxNonDMTasks *int) (polled []db.AgentTaskQueue, pollErr error) {
 	if len(runtimeIDs) == 0 || maxTasks <= 0 {
 		return nil, nil
 	}
@@ -5414,7 +5445,20 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for i := range candidates {
 		candidatesByAgent[util.UUIDToString(candidates[i].AgentID)]++
 	}
+	nonDMClaimed := 0
+	if maxNonDMTasks != nil {
+		for i := range claimed {
+			if !s.isDMTask(ctx, claimed[i]) {
+				nonDMClaimed++
+			}
+		}
+	}
 	for i := range candidates {
+		nonDMBudgetSpent := maxNonDMTasks != nil && nonDMClaimed >= *maxNonDMTasks
+		if nonDMBudgetSpent && !candidates[i].ChatSessionID.Valid {
+			// Not marked tried: the same agent's chat task may follow.
+			continue
+		}
 		if len(claimed) >= maxTasks {
 			slog.Debug("batch claim: reached max tasks",
 				"claimed", len(claimed),
@@ -5432,6 +5476,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			claimPath:  claimPathBatch,
 			candidates: candidatesByAgent[agentKey],
 			tally:      tally,
+			chatOnly:   nonDMBudgetSpent,
 		})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
@@ -5460,6 +5505,9 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			continue
 		}
 		claimed = append(claimed, *task)
+		if maxNonDMTasks != nil && !s.isDMTask(ctx, *task) {
+			nonDMClaimed++
+		}
 	}
 
 	return claimed, nil

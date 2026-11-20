@@ -2768,6 +2768,16 @@ WHERE id = (
                 AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
           )
       )
+      -- reserved_chat_slots: when the daemon's non-DM budget is spent it asks for
+      -- DM tasks only: a chat task that is not a group channel conversation.
+      -- A reserved slot never takes an issue task or a group channel task.
+      AND (NOT $6::boolean OR (
+          atq.chat_session_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM channel_task_delivery ctd
+              WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
+          )
+      ))
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -2781,6 +2791,7 @@ type ClaimAgentTaskParams struct {
 	RuntimeID        pgtype.UUID `json:"runtime_id"`
 	MinPriority      int32       `json:"min_priority"`
 	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
+	ChatOnly         bool        `json:"chat_only"`
 }
 
 // Claims the next queued task for an agent on one healthy runtime, enforcing
@@ -2801,6 +2812,7 @@ func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) 
 		arg.RuntimeID,
 		arg.MinPriority,
 		arg.RuntimeStaleSecs,
+		arg.ChatOnly,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
