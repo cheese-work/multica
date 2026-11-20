@@ -153,7 +153,16 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to set workflow")
 			return
 		}
-		if budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
+		// An agent move into Quick is a de-escalation the owners confirm
+		// (CHE-7682), whatever the budget does; escalating out of Quick is the
+		// agent's own call.
+		workspace, err := qtx.GetWorkspace(ctx, issue.WorkspaceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
+			return
+		}
+		intoQuick := issueworkflow.IsQuick(next, issueworkflow.DecodeQuickFirst(workspace.Settings))
+		if intoQuick || budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
 			// A task token with no decision asks the owners (CHE-5505); one that
 			// names a decision spends it.
 			if r.Header.Get("X-Actor-Source") == "task_token" && strings.TrimSpace(req.DecisionID) == "" {

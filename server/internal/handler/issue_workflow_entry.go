@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Project workflows on the issue write paths (MUL-7420).
@@ -137,6 +139,13 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
 	}
 	if assigneeTouched || prev.TriageState.Valid {
+		// A move that names the assignee itself still enters the step: a
+		// reviewer step holds that assignee to the independence rule.
+		if assigneeTouched && statusExplicit && statusChanging && !prev.TriageState.Valid {
+			if err := h.checkTouchedReviewer(ctx, q, prev, params, def); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 	// A manual park keeps the assignee: no handoff (CHE-6460 D1c).
@@ -163,19 +172,39 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
-	if err != nil {
-		return nil, err
+	var (
+		assigneeType string
+		assigneeID   pgtype.UUID
+		guard        *reviewerGuard
+		pickRefusal  error
+	)
+	if step.Handler.Type == issueworkflow.HandlerReviewer {
+		// The pick needs the issue's authors, so it is not ResolveHandler's.
+		var err error
+		if guard, err = h.loadReviewerGuard(ctx, q, prev.ID); err != nil {
+			return nil, err
+		}
+		var picked pgtype.UUID
+		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
+		if ok {
+			assigneeType, assigneeID = issueworkflow.HandlerAgent, picked
+		}
+	} else {
+		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
+		if err != nil {
+			return nil, err
+		}
+		assigneeType, assigneeID, ok = issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
 	}
-	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
 	sticky, err := issueworkflow.StickyStepAssignee(ctx, q, prev.WorkspaceID, prev.ID, entering)
 	if err != nil {
 		return nil, err
 	}
 	// A step with nobody to resolve to hands off only when the move names one
-	// or the issue keeps one for the step.
+	// or the issue keeps one for the step. A reviewer step whose table lists
+	// no qualified reviewer refuses instead.
 	if !ok && caller.handoffAssignee == nil && sticky == nil {
-		return nil, nil
+		return nil, pickRefusal
 	}
 	if ok && step.KeepOtherAssignee {
 		keep, err := h.keepsOtherAssignee(ctx, q, prev, *def, project, assigneeType, assigneeID)
@@ -191,6 +220,11 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	}
 	stepHandler := issueworkflow.StepAssignee{Type: assigneeType, ID: assigneeID}
 	assignee, overridden, kept := issueworkflow.ResolveStepAssignee(stepHandler, caller.handoffAssignee, sticky)
+	if guard != nil {
+		if err := h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, assignee); err != nil {
+			return nil, err
+		}
+	}
 	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
 	params.AssigneeID = assignee.ID
 	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden, kept: kept}, nil
@@ -332,6 +366,18 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"code":          "status_move_not_allowed",
 			"from":          notAllowed.From,
 			"allowed_moves": notAllowed.Allowed,
+		})
+		return true
+	}
+	var notIndependent *ReviewIndependenceError
+	if errors.As(err, &notIndependent) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        notIndependent.Error(),
+			"code":         reviewIndependenceCode,
+			"reason":       notIndependent.Reason,
+			"author_labs":  notIndependent.AuthorLabs,
+			"reviewer_lab": notIndependent.ReviewerLab,
+			"reviewer_id":  notIndependent.ReviewerID,
 		})
 		return true
 	}
@@ -548,11 +594,11 @@ func (h *Handler) writeWillRun(r *http.Request, actorType, actorID string, prev 
 // already committed when this runs, so if the write fails the run is stopped:
 // left alive it would work as an author with only its reviewer row. It returns
 // an error only when the run could not be stopped either.
-func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue) error {
+func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue, chained bool) error {
 	if run == nil || !run.WorkflowStep.Valid || prev.Status == issue.Status {
 		return nil
 	}
-	err := h.advanceRunStepWithRole(ctx, run, issue)
+	err := h.advanceRunStepWithRole(ctx, run, issue, chained)
 	if err == nil {
 		return nil
 	}
@@ -563,7 +609,7 @@ func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, pr
 	return nil
 }
 
-func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue) error {
+func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue, chained bool) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -578,6 +624,19 @@ func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQ
 	}
 	if err := service.RecordWorkflowRole(ctx, qtx, issue, *run, issue.Status); err != nil {
 		return err
+	}
+	if chained {
+		// The run carried the issue into this step itself and no handoff run
+		// started: this row is what a failed-chained-run retry (CHE-7675) reads
+		// to tell it from a run dispatched straight into the step.
+		details, _ := json.Marshal(map[string]string{"task_id": uuidToString(run.ID), "step": issue.Status})
+		if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
+			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+			ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: run.AgentID,
+			Action: activityChainedRunEntered, Details: details,
+		}); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -875,6 +934,8 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 			return "a person (none found)"
 		case issueworkflow.HandlerAuthor:
 			return "the author (none set)"
+		case issueworkflow.HandlerReviewer:
+			return "a reviewer of another lab (from capability routing)"
 		}
 		return ""
 	}

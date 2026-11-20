@@ -218,6 +218,8 @@ multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start 
 
 Without `--owner`, the project workflow picks the handler, as with `issue status`. An explicit `--owner` (a member, agent, or squad; `--owner-id` takes a UUID instead of a name) replaces the workflow's handler. A route that keeps the current status and changes only the owner is allowed. A route with the same status and the same owner is refused with HTTP 409 and writes nothing. `--no-start` starts no agent run, as it does for `issue update`. `--expected-revision` refuses the route if the issue changed in the meantime.
 
+`multica issue workflow escalate <id> --reason "..."` moves an issue that follows Quick to the full workflow it followed before. `--reason` is required, and `rollback` needs no `Estimate:` line from `todo` or `investigating`. The command takes no workflow: the server reads the target from the issue's newest `quick_entry` row. It prints `applied` when the issue entered the full workflow, or `pending` when a live task keeps it on Quick until the last task ends; `--output json` prints `state` and `workflow_id`. See [Workflows](/workflows) for the refusal codes.
+
 ### Timeline
 
 `issue get` shows an issue as it is now. `issue timeline` lists, in order, the changes to status, priority, assignee, title, and dates and the run outcomes, interleaved with comments, which answers questions like "when did it move to in_review" or "how long has it been stuck in this status":

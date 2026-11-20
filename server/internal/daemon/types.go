@@ -91,6 +91,7 @@ type Task struct {
 	WorkspaceID              string                 `json:"workspace_id"`
 	WorkspaceSlug            string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier          string                 `json:"issue_identifier,omitempty"`
+	RootIssueIdentifier      string                 `json:"root_issue_identifier,omitempty"` // identifier of the root of this issue's parent chain (CHE-6498 S6a); empty on old servers
 	RemoteMCPConnections     []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// Profile, Scopes, Epoch and TaintIDs are the server's claim-time launch hint
 	// (CHE-2216 plan 3.1). Read the profile through EffectiveProfile.

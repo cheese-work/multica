@@ -33,6 +33,9 @@ func TestSearchCommonTokenMultiTermIsFast(t *testing.T) {
 		// The repository name sits in 80% of descriptions and comments.
 		`UPDATE issue_search_text SET description_folded = description_folded || ' cheese-work/multica' WHERE workspace_id = $1 AND hashtext(issue_id::text) % 5 <> 0`,
 		`UPDATE comment_search_text SET content_folded = content_folded || ' cheese-work/multica' WHERE workspace_id = $1 AND hashtext(comment_id::text) % 5 <> 0`,
+		// red-main is common too (the incident issues): about 6% of descriptions and comments.
+		`UPDATE issue_search_text SET description_folded = description_folded || ' red-main' WHERE workspace_id = $1 AND hashtext(issue_id::text) % 16 = 1`,
+		`UPDATE comment_search_text SET content_folded = content_folded || ' red-main' WHERE workspace_id = $1 AND hashtext(comment_id::text) % 16 = 1`,
 		// Two issues hold the rare tokens: one in the title, one split title/comment.
 		`UPDATE issue_search_text SET title_folded = 'red-main cheese-work/multica build-images--web-: fix red check' WHERE issue_id = (SELECT id FROM issue WHERE workspace_id = $1 AND number = 11)`,
 		`UPDATE issue_search_text SET title_folded = 'red-main cheese-work/multica x' WHERE issue_id = (SELECT id FROM issue WHERE workspace_id = $1 AND number = 12)`,
@@ -43,6 +46,20 @@ func TestSearchCommonTokenMultiTermIsFast(t *testing.T) {
 		if _, err := testPool.Exec(ctx, stmt, wsID); err != nil && stmt[0] != 'A' {
 			t.Fatalf("%s: %v", stmt, err)
 		}
+	}
+	// The longest term is the repository name, which names most comments, so it
+	// made the candidate list the whole workspace. The rarest term must drive.
+	terms := splitSearchTerms("red-main cheese-work/multica build-images--web-")
+	wsUUID, _ := parseUUIDOrBadRequest(httptest.NewRecorder(), wsID, "workspace_id")
+	if got := testHandler.pickDrivingTerm(ctx, wsUUID, terms); got != 2 {
+		t.Errorf("pickDrivingTerm = %d, want 2 (build-images--web-)", got)
+	}
+	// A short term and a single term never probe: the default stays.
+	if got := testHandler.pickDrivingTerm(ctx, wsUUID, splitSearchTerms("red-main ab")); got != -1 {
+		t.Errorf("pickDrivingTerm with one long term = %d, want -1", got)
+	}
+	if got := testHandler.pickDrivingTerm(ctx, wsUUID, splitSearchTerms("red-main")); got != -1 {
+		t.Errorf("pickDrivingTerm with one term = %d, want -1", got)
 	}
 	// The claim script searches before any fix issue exists, so the common case
 	// finds nothing and falls through to the typo fallback, which must stay a

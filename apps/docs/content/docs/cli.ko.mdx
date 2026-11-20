@@ -177,6 +177,8 @@ multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start 
 
 `--owner`가 없으면 `issue status`와 같이 프로젝트 워크플로가 담당자를 정합니다. 명시적인 `--owner`(멤버, 에이전트 또는 스쿼드. `--owner-id`는 이름 대신 UUID를 받습니다)는 워크플로의 담당자를 대체합니다. 현재 상태는 유지하고 담당자만 바꾸는 라우트는 허용됩니다. 상태와 담당자가 모두 같은 라우트는 HTTP 409로 거부되며 아무것도 기록하지 않습니다. `--no-start`는 `issue update`와 같이 에이전트 실행을 시작하지 않습니다. `--expected-revision`을 지정하면 그 사이에 이슈가 바뀐 경우 라우트를 거부합니다.
 
+`multica issue workflow escalate <id> --reason "..."`는 Quick을 따르는 이슈를 이전에 따르던 전체 워크플로로 옮깁니다. `--reason`은 필수이며, `rollback`이면 `todo`나 `investigating`에서도 `Estimate:` 줄이 필요 없습니다. 이 명령은 워크플로를 받지 않으며, 대상은 서버가 이슈의 가장 최근 `quick_entry` 행에서 읽습니다. 이슈가 전체 워크플로에 들어가면 `applied`를, 실행 중인 작업 때문에 마지막 작업이 끝날 때까지 Quick에 머무르면 `pending`을 출력합니다. `--output json`은 `state`와 `workflow_id`를 출력합니다. 거부 코드는 [Workflows](/workflows)를 참고하세요.
+
 ### 타임라인
 
 `issue get`은 태스크의 현재 상태를 보여 줍니다. `issue timeline`은 상태, 우선순위, 담당자, 제목, 날짜 변경과 실행 결과를 시간순으로 나열하고 댓글도 섞어 보여 줍니다. "언제 in_review로 바뀌었나", "지금 상태에 얼마나 머물러 있나"를 확인할 때 씁니다.

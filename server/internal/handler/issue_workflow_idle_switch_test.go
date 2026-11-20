@@ -175,3 +175,52 @@ func TestIdleSwitchOfAFinishedIssueStartsNoRun(t *testing.T) {
 		})
 	}
 }
+
+// A transient apply failure on an idle issue must reach the caller (CHE-7714).
+// With no live task no later terminal event retries the row, so a request that
+// returned nil here could stay parked with nobody told. The row stays, so a
+// repeat request applies once the failure clears.
+func TestIdleSwitchReturnsATransientApplyError(t *testing.T) {
+	c := newIdleSwitchCase(t, "in_progress")
+	ctx := context.Background()
+	// Scoped to this issue so parallel tests are unaffected.
+	for _, stmt := range []string{
+		`CREATE OR REPLACE FUNCTION che7714_fail_rebind() RETURNS trigger AS $$
+		 BEGIN
+		   IF NEW.id = '` + c.issueID + `' AND NEW.workflow_id IS DISTINCT FROM OLD.workflow_id THEN
+		     RAISE EXCEPTION 'synthetic rebind outage';
+		   END IF;
+		   RETURN NEW;
+		 END $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER che7714_fail_rebind BEFORE UPDATE ON issue FOR EACH ROW EXECUTE FUNCTION che7714_fail_rebind()`,
+	} {
+		if _, err := testPool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("install failing rebind trigger: %v", err)
+		}
+	}
+	dropTrigger := func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS che7714_fail_rebind ON issue`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS che7714_fail_rebind()`)
+	}
+	t.Cleanup(dropTrigger)
+
+	err := testHandler.RequestWorkflowSwitch(ctx, util.MustParseUUID(testWorkspaceID), util.MustParseUUID(c.issueID), util.MustParseUUID(c.full), "idle apply")
+	if err == nil {
+		t.Fatal("the apply failed and the request returned nil: the switch stays parked unnoticed")
+	}
+	if got := issueOverride(t, c.issueID); got != c.quick {
+		t.Fatalf("a failed apply changed the workflow: issue follows %q", got)
+	}
+	if c.pending(t) != 1 {
+		t.Fatalf("pending rows = %d, the failed request must stay parked for a retry", c.pending(t))
+	}
+
+	dropTrigger()
+	c.request(t, c.full)
+	if got := issueOverride(t, c.issueID); got != c.full {
+		t.Fatalf("the repeat request did not apply: issue follows %q, want %q", got, c.full)
+	}
+	if c.pending(t) != 0 {
+		t.Fatalf("pending rows = %d after the repeat request", c.pending(t))
+	}
+}

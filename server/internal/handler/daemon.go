@@ -2927,7 +2927,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.StartClaimSupported = true
 		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
-	var issueNumber, parentIssueNumber int32
+	var issueNumber, parentIssueNumber, rootIssueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -3262,6 +3262,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if issue.ParentIssueID.Valid {
 			resp.ParentIssue, parentIssueNumber = h.loadClaimParentIssue(r.Context(), task, issue)
 		}
+		rootIssueNumber = h.claimRootIssueNumber(r.Context(), issue)
 		// This claim's own snapshot, recorded by FinalizeTaskClaim so a LATER
 		// run that resumes this one's session can compare against what THIS run
 		// was actually handed. Building it here, from the issue row already
@@ -4433,6 +4434,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		if resp.ParentIssue != nil && parentIssueNumber > 0 {
 			resp.ParentIssue.Identifier = service.IssueIdentifier(ws.IssuePrefix, parentIssueNumber)
+		}
+		if rootIssueNumber > 0 {
+			resp.RootIssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, rootIssueNumber)
 		}
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
@@ -7167,7 +7171,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 	for _, row := range rows {
 		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
-			row.CacheWriteTokens, row.CostUsdTicks, row.CreditsMicros)
+			row.CacheWriteTokens, row.CacheWrite1hTokens, row.CostUsdTicks, row.CreditsMicros)
 	}
 	attachTaskUsage(resp, byTask)
 }
@@ -7196,7 +7200,7 @@ func (h *Handler) hydrateAgentTaskUsage(ctx context.Context, agentID pgtype.UUID
 	for _, row := range rows {
 		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
-			row.CacheWriteTokens, row.CostUsdTicks, row.CreditsMicros)
+			row.CacheWriteTokens, row.CacheWrite1hTokens, row.CostUsdTicks, row.CreditsMicros)
 	}
 	attachTaskUsage(resp, byTask)
 	return nil
@@ -7211,6 +7215,7 @@ func appendTaskUsage(
 	outputTokens int64,
 	cacheReadTokens int64,
 	cacheWriteTokens int64,
+	cacheWrite1hTokens pgtype.Int8,
 	costUsdTicks pgtype.Int8,
 	creditsMicros pgtype.Int8,
 ) {
@@ -7219,6 +7224,11 @@ func appendTaskUsage(
 		value := costUsdTicks.Int64
 		cost = &value
 	}
+	var cacheWrite1h *int64
+	if cacheWrite1hTokens.Valid {
+		value := cacheWrite1hTokens.Int64
+		cacheWrite1h = &value
+	}
 	var credits *int64
 	if creditsMicros.Valid {
 		value := creditsMicros.Int64
@@ -7226,14 +7236,15 @@ func appendTaskUsage(
 	}
 	id := uuidToString(taskID)
 	byTask[id] = append(byTask[id], TaskUsageData{
-		Provider:         provider,
-		Model:            model,
-		InputTokens:      inputTokens,
-		OutputTokens:     outputTokens,
-		CacheReadTokens:  cacheReadTokens,
-		CacheWriteTokens: cacheWriteTokens,
-		CostUsdTicks:     cost,
-		CreditsMicros:    credits,
+		Provider:           provider,
+		Model:              model,
+		InputTokens:        inputTokens,
+		OutputTokens:       outputTokens,
+		CacheReadTokens:    cacheReadTokens,
+		CacheWriteTokens:   cacheWriteTokens,
+		CacheWrite1hTokens: cacheWrite1h,
+		CostUsdTicks:       cost,
+		CreditsMicros:      credits,
 	})
 }
 
