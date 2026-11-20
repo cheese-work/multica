@@ -38,7 +38,7 @@ var errBudgetRebinding = errors.New(budgetRebindingCode)
 
 func writeBudgetRebindingRefused(w http.ResponseWriter) {
 	writeErrorCode(w, http.StatusForbidden, budgetRebindingCode,
-		"widening a run budget needs an interactive sign-in (web or desktop app) or an owner-approved issue.workflow decision of class spend (answered with a passkey while the gate blocks); an agent run's `multica issue update <id> --workflow <workflow-id>` opens an approval card for the owners instead. For a decision, run `multica issue update <id> --workflow <workflow-id> --print-hash`, submit it with `multica decision request`, then repeat the command with --decision-id")
+		"widening a run budget or binding work into Quick needs an interactive sign-in (web or desktop app) or an owner-approved issue.workflow decision of class spend (answered with a passkey while the gate blocks); an agent run's `multica issue update <id> --workflow <workflow-id>` opens an approval card for the owners instead. For a decision, run `multica issue update <id> --workflow <workflow-id> --print-hash`, submit it with `multica decision request`, then repeat the command with --decision-id")
 }
 
 // writeBudgetRebindingError renders errBudgetRebinding and reports whether it
@@ -147,10 +147,43 @@ func guardIssueProjectRebinding(ctx context.Context, q *db.Queries, params db.Up
 	if budgetWidens(before, after) {
 		return errBudgetRebinding
 	}
+	// An agent's move into a project that follows Quick is a de-escalation the
+	// owners confirm, as an override into Quick is (CHE-7682).
+	intoQuick, err := bindsIntoQuick(ctx, q, current.WorkspaceID, current.WorkflowID, current.ProjectID, params.ProjectID)
+	if err != nil {
+		return err
+	}
+	if intoQuick {
+		return errBudgetRebinding
+	}
 	return nil
 }
 
-// projectSwitchWidensBudget compares the workflow a project uses now with the
+// bindsIntoQuick reports whether moving an issue from beforeProject to
+// afterProject changes the workflow it follows from not-Quick to Quick. An
+// issue with its own override follows it in both projects.
+func bindsIntoQuick(ctx context.Context, q *db.Queries, workspaceID, workflowID, beforeProject, afterProject pgtype.UUID) (bool, error) {
+	workspace, err := q.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	qf := issueworkflow.DecodeQuickFirst(workspace.Settings)
+	follows := func(projectID pgtype.UUID) (bool, error) {
+		def, _, err := issueworkflow.ForIssue(ctx, q, workspaceID, workflowID, projectID)
+		if errors.Is(err, issueworkflow.ErrOverrideMissing) {
+			return false, nil
+		}
+		return issueworkflow.IsQuick(def, qf), err
+	}
+	before, err := follows(beforeProject)
+	if err != nil || before {
+		return false, err
+	}
+	return follows(afterProject)
+}
+
+// projectSwitchWidensBudget reports whether a non-interactive project switch
+// needs the owners: it widens a budget or lands in Quick. It compares the workflow a project uses now with the
 // one it would use after the switch (nil target is Default). The issue that
 // gains most is the one with the smallest max_runs_override among those that
 // follow the project, so that override is applied on both sides.
@@ -172,7 +205,17 @@ func projectSwitchWidensBudget(ctx context.Context, q *db.Queries, project db.Pr
 		return false, err
 	}
 	override := pgtype.Int4{Int32: least, Valid: least > 0}
-	return budgetWidens(workflowBinding(current, override), workflowBinding(next, override)), nil
+	if budgetWidens(workflowBinding(current, override), workflowBinding(next, override)) {
+		return true, nil
+	}
+	// Switching a project to Quick binds every issue that follows it into Quick:
+	// the same owner-confirmed de-escalation as an issue override (CHE-7682).
+	workspace, err := q.GetWorkspace(ctx, project.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	qf := issueworkflow.DecodeQuickFirst(workspace.Settings)
+	return !issueworkflow.IsQuick(current, qf) && issueworkflow.IsQuick(next, qf), nil
 }
 
 // workflowDeleteWidensBudget covers a delete that would strand references:

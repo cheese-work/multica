@@ -484,8 +484,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).
 	h.BrowserLeases = &browserlease.Service{
 		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
-		Registry: browserlease.NameRegistry{Queries: queries},
-		Class3:   loadBrowserClass3Deny(),
+		Registry: browserlease.NameRegistry{Queries: queries}, Audit: handler.BrowserLeaseAudit,
+		Class3: loadBrowserClass3Deny(),
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -2341,6 +2341,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/taint/clear", h.ClearIssueTaint)
 					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
+					r.Post("/workflow/escalate", h.EscalateIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)

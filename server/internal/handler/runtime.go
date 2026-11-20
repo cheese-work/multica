@@ -126,6 +126,9 @@ type RuntimeUsageResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
 }
 
 // GetRuntimeUsage returns daily token usage for a runtime, aggregated from
@@ -167,19 +170,20 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 	resp := make([]RuntimeUsageResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageResponse{
-			RuntimeID:                resolvedRuntimeID,
-			Date:                     row.Date.Time.Format("2006-01-02"),
-			Provider:                 row.Provider,
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			RuntimeID:                  resolvedRuntimeID,
+			Date:                       row.Date.Time.Format("2006-01-02"),
+			Provider:                   row.Provider,
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
 		}
 	}
 	return resp, nil
@@ -239,7 +243,10 @@ type RuntimeUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32 `json:"task_count"`
 }
 
 // GetRuntimeUsageByAgent returns per-agent token aggregates for a runtime
@@ -268,19 +275,20 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 	resp := make([]RuntimeUsageByAgentResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByAgentResponse{
-			AgentID:                  uuidToString(row.AgentID),
-			Provider:                 row.Provider,
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
-			TaskCount:                row.TaskCount,
+			AgentID:                    uuidToString(row.AgentID),
+			Provider:                   row.Provider,
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
+			TaskCount:                  row.TaskCount,
 		}
 	}
 
@@ -307,7 +315,10 @@ type RuntimeUsageByHourResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32 `json:"task_count"`
 }
 
 // GetRuntimeUsageByHour returns hourly (0..23) token aggregates for a
@@ -339,18 +350,19 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 	resp := make([]RuntimeUsageByHourResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByHourResponse{
-			Hour:                     int(row.Hour),
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
-			TaskCount:                row.TaskCount,
+			Hour:                       int(row.Hour),
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
+			TaskCount:                  row.TaskCount,
 		}
 	}
 

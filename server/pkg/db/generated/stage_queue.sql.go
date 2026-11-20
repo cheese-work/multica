@@ -46,9 +46,11 @@ SELECT s.id AS run_issue_id,
                   WHERE ipr.issue_id = s.parent_issue_id), p.created_at)::timestamptz AS created_at,
        EXISTS (SELECT 1 FROM agent_task_queue t
                 WHERE t.issue_id = s.id AND t.agent_id = $1::uuid
-                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active
+                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active,
+       COALESCE(pj.status, '')::text AS project_status
 FROM issue s
 JOIN issue p ON p.id = s.parent_issue_id
+LEFT JOIN project pj ON pj.id = s.project_id AND pj.workspace_id = s.workspace_id
 WHERE s.assignee_type = 'agent' AND s.assignee_id = $1::uuid
   AND s.title ILIKE $2::text || ' gate:%'
   AND s.status NOT IN ('done', 'cancelled', 'agent_accepted', 'merged')
@@ -70,11 +72,12 @@ type ListGateStageEntriesParams struct {
 }
 
 type ListGateStageEntriesRow struct {
-	RunIssueID pgtype.UUID        `json:"run_issue_id"`
-	PrKey      pgtype.UUID        `json:"pr_key"`
-	OpenGates  int32              `json:"open_gates"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	Active     bool               `json:"active"`
+	RunIssueID    pgtype.UUID        `json:"run_issue_id"`
+	PrKey         pgtype.UUID        `json:"pr_key"`
+	OpenGates     int32              `json:"open_gates"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	Active        bool               `json:"active"`
+	ProjectStatus string             `json:"project_status"`
 }
 
 // Device and browser stages: gate sub-issues titled "<stage> gate: <KEY>"
@@ -96,6 +99,7 @@ func (q *Queries) ListGateStageEntries(ctx context.Context, arg ListGateStageEnt
 			&i.OpenGates,
 			&i.CreatedAt,
 			&i.Active,
+			&i.ProjectStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -119,8 +123,10 @@ SELECT i.id AS run_issue_id,
                   WHERE ipr.issue_id = i.id), i.created_at)::timestamptz AS created_at,
        EXISTS (SELECT 1 FROM agent_task_queue t
                 WHERE t.issue_id = i.id AND t.agent_id = $1::uuid
-                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active
+                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active,
+       COALESCE(pj.status, '')::text AS project_status
 FROM issue i
+LEFT JOIN project pj ON pj.id = i.project_id AND pj.workspace_id = i.workspace_id
 WHERE i.assignee_type = 'agent' AND i.assignee_id = $1::uuid
   AND i.status IN ('agent_review', 'in_review')
   AND EXISTS (SELECT 1 FROM issue_pull_request ipr
@@ -143,17 +149,20 @@ type ListReviewStageEntriesParams struct {
 }
 
 type ListReviewStageEntriesRow struct {
-	RunIssueID pgtype.UUID        `json:"run_issue_id"`
-	PrKey      pgtype.UUID        `json:"pr_key"`
-	OpenGates  int32              `json:"open_gates"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	Active     bool               `json:"active"`
+	RunIssueID    pgtype.UUID        `json:"run_issue_id"`
+	PrKey         pgtype.UUID        `json:"pr_key"`
+	OpenGates     int32              `json:"open_gates"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	Active        bool               `json:"active"`
+	ProjectStatus string             `json:"project_status"`
 }
 
 // Review stage: issues in a review status assigned to the reviewer, with a
 // linked open or draft PR (pr_key is the issue itself). An entry is listed when
 // it holds a slot, was refused and has not run since, or is the candidate being
-// admitted now.
+// admitted now. project_status lets the caller drop an issue whose project
+// refuses runs (service.ProjectInactive): it can never run, so it must not hold
+// a slot.
 func (q *Queries) ListReviewStageEntries(ctx context.Context, arg ListReviewStageEntriesParams) ([]ListReviewStageEntriesRow, error) {
 	rows, err := q.db.Query(ctx, listReviewStageEntries, arg.AgentID, arg.CandidateID)
 	if err != nil {
@@ -169,6 +178,7 @@ func (q *Queries) ListReviewStageEntries(ctx context.Context, arg ListReviewStag
 			&i.OpenGates,
 			&i.CreatedAt,
 			&i.Active,
+			&i.ProjectStatus,
 		); err != nil {
 			return nil, err
 		}

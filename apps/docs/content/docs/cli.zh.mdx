@@ -177,6 +177,8 @@ multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start 
 
 不带 `--owner` 时，由项目工作流选择处理人，与 `issue status` 相同。显式的 `--owner`（成员、智能体或小队；`--owner-id` 接受 UUID 而不是名称）会替换工作流的处理人。保持当前状态、只修改负责人的路由是允许的。状态和负责人都相同的路由会被拒绝并返回 HTTP 409，不写入任何内容。`--no-start` 与 `issue update` 一样，不会启动智能体运行。`--expected-revision` 会在任务期间发生变化时拒绝该路由。
 
+`multica issue workflow escalate <id> --reason "..."` 会把遵循 Quick 的议题移回它之前遵循的完整工作流。`--reason` 必填；原因为 `rollback` 时，从 `todo` 或 `investigating` 升级无需 `Estimate:` 行。该命令不接受工作流参数：目标由服务器从议题最新的 `quick_entry` 行读取。议题进入完整工作流时输出 `applied`；因有运行中的任务而在最后一个任务结束前保持在 Quick 时输出 `pending`；`--output json` 输出 `state` 和 `workflow_id`。拒绝代码见 [Workflows](/workflows)。
+
 ### 时间线
 
 `issue get` 给出任务现在的状态；`issue timeline` 按时间顺序列出状态、优先级、负责人、标题、日期的改动和运行结果，并混排评论，用来回答"什么时候进入 in_review""卡在当前状态多久了"：
@@ -416,6 +418,8 @@ multica me background-agents set dm_title --agent none   # 恢复为工作区默
 
 `--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
 
+`multica workspace capability-routing [workspace]` 以 JSON 输出 `capability_routing` 设置（工单类型到作者和评审智能体的映射），未设置时输出 `{}`。它只读；修改请使用 `multica config propose workspace.settings --set 'capability_routing:=<json>'`。参见 [Workflows](/docs/workflows)。
+
 ## 浏览器租约
 
 在守护进程任务内租用共享的远程浏览器。命令经由本地守护进程转发，任务的守护进程凭据只保存在守护进程中，智能体从不持有。获批的租约只在 stdout 输出网关 URL 和短期令牌，不写入日志。排队中的租约只输出队列位置，不输出令牌。
@@ -564,7 +568,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `resource list/add/update/remove` | 管理项目附加资源 | `--type`、`--url`、`--default-branch-hint`、`--ref`、`--local-path`、`--daemon-id`、`--execution-mode`（本地目录的 `in_place` / `worktree`） |
 | | `workflow get/set <project-id>` | 查看项目当前生效的工作流，或切换工作流 | `set <project-id> <workflow\|default>`：`--map old=new`（可重复），`--dry-run` 打印状态迁移计划；切换不会重新分配任务，也不会启动运行。仅管理员和项目负责人可操作 |
 | `workflow` | `list/get/create/update/delete` | 管理工作流；`get` 等命令接受 ID、ID 前缀、完整名称或 `default` | `create` / `update`：`--name`、`--description`、`--steps-file`（步骤的 JSON 数组，整体替换）；`update`：`--map old=new`（可重复）、`--dry-run`。编辑和删除仅限工作流所有者和工作区管理员；仍被项目使用的工作流不能删除 |
-| | `handoff set <workflow> <status-key>` | 设置单个步骤的处理人、说明和下一步/退回状态，未指定的字段保持不变 | `--handler`（`none`、`project_lead`、`creator`，或成员/智能体/小队的名称或 UUID）、`--instructions` / `--instructions-file`、`--next`、`--back`、`--copy-for-project` |
+| | `handoff set <workflow> <status-key>` | 设置单个步骤的处理人、说明和下一步/退回状态，未指定的字段保持不变 | `--handler`（`none`、`project_lead`、`creator`、`author`，或成员/智能体/小队的名称或 UUID）、`--instructions` / `--instructions-file`、`--next`、`--back`、`--copy-for-project` |
 | `label` | `list/get/create/update/delete` | 管理工作区标签 | `list`：`--resource-type`（`issue` 或 `skill`）、`--full-id`；`create`：`--name`、`--color`、`--resource-type`（`issue` 或 `skill`）、`--description` |
 | `property` | `list/get/create/update/archive/unarchive` | 管理工作区自定义属性 | `create`：`--name`、`--type`（`text`、`number`、`select`、`multi_select`、`date`、`checkbox`、`url`、`actor`、`multi_actor`、`multi_text`、`multi_url`）、`--option`（可重复，仅 select 类型）；`list`：`--include-archived`；类型创建后不可修改 |
 | `view` | `list/get/issues` | 读取你能打开的视图（自己的和工作区共享的）；`issues` 按视图保存的排序列出视图里的任务，视图保存的全部筛选条件都由服务端执行。在智能体运行中，看到的视图和其中「我的」条件都属于运行时的所有者 | `<view>` 接受 ID、ID 前缀或完整名称；`list`：`--scope`（`workspace`、`my`、`project`）、`--project`、`--full-id`；`issues`：`--limit`（最多 100）、`--cursor`（上一页的 `next_cursor`）、`--today`（相对到期日筛选按哪一天计算，默认今天）、`--fields`（仅 JSON）、`--full-id` |

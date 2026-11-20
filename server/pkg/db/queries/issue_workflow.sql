@@ -267,3 +267,20 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha'):
 -- name: DeleteIssueWorkflowLintOverridesForWorkspace :exec
 -- Workspace teardown only; the log outlives a deleted workflow.
 DELETE FROM issue_workflow_lint_override WHERE workspace_id = sqlc.arg('workspace_id')::uuid;
+
+-- name: DeleteIssueWorkflowSwitchPending :one
+-- Consumes an issue's pending workflow switch. No row means another event
+-- already applied it, so the caller writes nothing.
+DELETE FROM issue_workflow_switch_pending
+WHERE issue_id = sqlc.arg('issue_id')::uuid
+RETURNING *;
+
+-- name: UpsertIssueWorkflowSwitchPending :exec
+-- Parks a workflow switch: one row per issue, the newest request wins.
+INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
+VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('workspace_id')::uuid, sqlc.arg('workflow_id')::uuid, sqlc.arg('reason')::text)
+ON CONFLICT (issue_id) DO UPDATE
+SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now();
+
+-- name: HasIssueWorkflowSwitchPending :one
+SELECT EXISTS (SELECT 1 FROM issue_workflow_switch_pending WHERE issue_id = sqlc.arg('issue_id')::uuid);

@@ -6103,6 +6103,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	} else {
 		taskLog.Info("picked task", "issue", task.IssueID, "agent", agentName, "provider", provider)
 	}
+	logTrialArm(taskLog, task)
 	taskLog.Debug("task context",
 		"workspace_id", task.WorkspaceID,
 		"runtime_id", task.RuntimeID,
@@ -10213,13 +10214,14 @@ func taskUsageEntries(provider string, usage map[string]agent.TokenUsage) []Task
 			continue
 		}
 		entries = append(entries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
+			Provider:           provider,
+			Model:              model,
+			InputTokens:        u.InputTokens,
+			OutputTokens:       u.OutputTokens,
+			CacheReadTokens:    u.CacheReadTokens,
+			CacheWriteTokens:   u.CacheWriteTokens,
+			CacheWrite1hTokens: u.CacheWrite1hTokens,
+			CostUSDTicks:       u.CostUSDTicks,
 		})
 	}
 	// Stable ordering lets the flush compare snapshots across map iterations.
@@ -11075,6 +11077,22 @@ func (d *Daemon) runIdleWatchdogWithClock(agentCtx context.Context, window, tool
 	}
 }
 
+// addOptional sums two nullable counters into a fresh pointer: nil only when
+// both are nil, so a side without a TTL split never erases the other's.
+func addOptional(a, b *int64) *int64 {
+	if a == nil && b == nil {
+		return nil
+	}
+	var sum int64
+	if a != nil {
+		sum += *a
+	}
+	if b != nil {
+		sum += *b
+	}
+	return &sum
+}
+
 func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 	if len(a) == 0 {
 		return b
@@ -11092,6 +11110,7 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		existing.OutputTokens += u.OutputTokens
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
+		existing.CacheWrite1hTokens = addOptional(existing.CacheWrite1hTokens, u.CacheWrite1hTokens)
 		existing.CostUSDTicks += u.CostUSDTicks
 		merged[model] = existing
 	}

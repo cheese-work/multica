@@ -282,6 +282,27 @@ func (q *Queries) DeleteIssueWorkflowLintOverridesForWorkspace(ctx context.Conte
 	return err
 }
 
+const deleteIssueWorkflowSwitchPending = `-- name: DeleteIssueWorkflowSwitchPending :one
+DELETE FROM issue_workflow_switch_pending
+WHERE issue_id = $1::uuid
+RETURNING issue_id, workspace_id, workflow_id, reason, created_at
+`
+
+// Consumes an issue's pending workflow switch. No row means another event
+// already applied it, so the caller writes nothing.
+func (q *Queries) DeleteIssueWorkflowSwitchPending(ctx context.Context, issueID pgtype.UUID) (IssueWorkflowSwitchPending, error) {
+	row := q.db.QueryRow(ctx, deleteIssueWorkflowSwitchPending, issueID)
+	var i IssueWorkflowSwitchPending
+	err := row.Scan(
+		&i.IssueID,
+		&i.WorkspaceID,
+		&i.WorkflowID,
+		&i.Reason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const deleteIssueWorkflowsForWorkspace = `-- name: DeleteIssueWorkflowsForWorkspace :exec
 DELETE FROM issue_workflow WHERE workspace_id = $1::uuid
 `
@@ -397,6 +418,17 @@ func (q *Queries) GetIssueWorkflowCols(ctx context.Context, arg GetIssueWorkflow
 		&i.LintFindings,
 	)
 	return i, err
+}
+
+const hasIssueWorkflowSwitchPending = `-- name: HasIssueWorkflowSwitchPending :one
+SELECT EXISTS (SELECT 1 FROM issue_workflow_switch_pending WHERE issue_id = $1::uuid)
+`
+
+func (q *Queries) HasIssueWorkflowSwitchPending(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueWorkflowSwitchPending, issueID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const hasLiveTaskForIssue = `-- name: HasLiveTaskForIssue :one
@@ -1167,4 +1199,29 @@ func (q *Queries) UpdateIssueWorkflowCols(ctx context.Context, arg UpdateIssueWo
 		&i.LintFindings,
 	)
 	return i, err
+}
+
+const upsertIssueWorkflowSwitchPending = `-- name: UpsertIssueWorkflowSwitchPending :exec
+INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text)
+ON CONFLICT (issue_id) DO UPDATE
+SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now()
+`
+
+type UpsertIssueWorkflowSwitchPendingParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowID  pgtype.UUID `json:"workflow_id"`
+	Reason      string      `json:"reason"`
+}
+
+// Parks a workflow switch: one row per issue, the newest request wins.
+func (q *Queries) UpsertIssueWorkflowSwitchPending(ctx context.Context, arg UpsertIssueWorkflowSwitchPendingParams) error {
+	_, err := q.db.Exec(ctx, upsertIssueWorkflowSwitchPending,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.WorkflowID,
+		arg.Reason,
+	)
+	return err
 }

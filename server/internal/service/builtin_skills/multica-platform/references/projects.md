@@ -239,7 +239,7 @@ The workspace setting `intake_hold` keeps new top-level requests of a project in
 
 A person's release is stored on their own status row, in the key `intake_release` of its details, set to the entry `source`. The server writes it under the issue lock only for a person's move (a member through the web app, the desktop app, or the CLI or a PAT signed in as themselves) that changes the status to something other than `backlog`, while an open entry covers the issue. The park, the unpark, system moves and moves by an agent or a cloud runtime never carry the key. A person's move out of the parked state therefore releases the issue even when it began before the park and was stored after it.
 
-While the issue is held, a decision request keeps its full flow, but delivering its answer or another decision event (withdrawn, expired, asked again, retracted) starts no run: the delivery settles as `skipped_ineligible` and is not retried. In mode `warn` it runs as usual.
+While the issue is held, a decision request keeps its full flow, but delivering its answer or another decision event (withdrawn, expired, asked again, retracted) starts no run: the delivery settles as `skipped_ineligible` and is not retried. In mode `warn` it runs as usual. The same holds for a wait episode in a human-in-charge step (it closes as `skipped_ineligible`, no resume run), a person's discussion message on an open action card (the comment is stored, the wake is `skipped_ineligible`) and a person's revoke of an executed action (the revoke is stored, no run starts).
 
 ## Deleting a project
 

@@ -177,6 +177,8 @@ multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start 
 
 Sans `--owner`, le workflow du projet choisit le responsable, comme avec `issue status`. Un `--owner` explicite (un membre, un agent ou une squad ; `--owner-id` prend un UUID au lieu d'un nom) remplace le responsable du workflow. Une route qui garde le statut actuel et ne change que le responsable est autorisée. Une route avec le même statut et le même responsable est refusée avec un HTTP 409 et n'écrit rien. `--no-start` ne lance aucune exécution d'agent, comme pour `issue update`. `--expected-revision` refuse la route si la tâche a changé entre-temps.
 
+`multica issue workflow escalate <id> --reason "..."` fait passer un ticket qui suit Quick au workflow complet qu'il suivait auparavant. `--reason` est obligatoire, et `rollback` ne demande pas de ligne `Estimate:` depuis `todo` ou `investigating`. La commande n'accepte aucun workflow : le serveur lit la cible dans la ligne `quick_entry` la plus récente du ticket. Elle affiche `applied` quand le ticket est entré dans le workflow complet, ou `pending` quand une tâche active le garde sur Quick jusqu'à la fin de la dernière tâche ; `--output json` affiche `state` et `workflow_id`. Les codes de refus sont décrits dans [Workflows](/workflows).
+
 ### Chronologie
 
 `issue get` montre la tâche telle qu'elle est maintenant. `issue timeline` liste dans l'ordre les changements de statut, de priorité, d'assigné, de titre et de dates ainsi que les résultats des exécutions, entremêlés avec les commentaires. C'est la commande pour savoir « quand est-elle passée en in_review » ou « depuis combien de temps est-elle bloquée dans ce statut » :
@@ -415,6 +417,8 @@ multica me background-agents set dm_title --agent none   # retour à la valeur p
 ```
 
 `--agent` et `--fallback` acceptent un identifiant ou un nom d’agent ; `none` efface le champ. `multica me` couvre `dm_title`, `quick_actions` et `compact` ; `routing` est réservé à l’espace de travail. Écrire dans l’espace de travail exige un propriétaire ou un administrateur, et les deux commandes refusent les jetons de tâche. Pour le comportement sans agent et les échéances, voir [Agents en arrière-plan](/background-agents).
+
+`multica workspace capability-routing [workspace]` affiche le paramètre `capability_routing` (type de ticket vers agents auteur et relecteurs) en JSON, ou `{}` s’il est vide. Elle ne fait que lire ; modifiez le paramètre avec `multica config propose workspace.settings --set 'capability_routing:=<json>'`. Voir [Workflows](/docs/workflows).
 
 ## Baux de navigateur
 

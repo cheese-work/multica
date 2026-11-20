@@ -66,6 +66,7 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.cache_write_1h_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_1h_tokens,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -82,18 +83,19 @@ type GetRuntimeUsageByHourParams struct {
 }
 
 type GetRuntimeUsageByHourRow struct {
-	Hour                     int32  `json:"hour"`
-	Model                    string `json:"model"`
-	InputTokens              int64  `json:"input_tokens"`
-	OutputTokens             int64  `json:"output_tokens"`
-	CacheReadTokens          int64  `json:"cache_read_tokens"`
-	CacheWriteTokens         int64  `json:"cache_write_tokens"`
-	CostUsdTicks             int64  `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64  `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32  `json:"task_count"`
+	Hour                       int32  `json:"hour"`
+	Model                      string `json:"model"`
+	InputTokens                int64  `json:"input_tokens"`
+	OutputTokens               int64  `json:"output_tokens"`
+	CacheReadTokens            int64  `json:"cache_read_tokens"`
+	CacheWriteTokens           int64  `json:"cache_write_tokens"`
+	CostUsdTicks               int64  `json:"cost_usd_ticks"`
+	UncostedInputTokens        int64  `json:"uncosted_input_tokens"`
+	UncostedOutputTokens       int64  `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens    int64  `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens   int64  `json:"uncosted_cache_write_tokens"`
+	UncostedCacheWrite1hTokens int64  `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32  `json:"task_count"`
 }
 
 // Per-(hour, model) token aggregates (hour ∈ 0..23) for a runtime since a
@@ -125,6 +127,7 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.UncostedCacheWrite1hTokens,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err
@@ -150,7 +153,8 @@ SELECT
     SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
-    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens
 FROM task_usage_hourly
 WHERE runtime_id = $1
   AND bucket_hour >= $3::timestamptz
@@ -165,18 +169,19 @@ type ListRuntimeUsageParams struct {
 }
 
 type ListRuntimeUsageRow struct {
-	Date                     pgtype.Date `json:"date"`
-	Provider                 string      `json:"provider"`
-	Model                    string      `json:"model"`
-	InputTokens              int64       `json:"input_tokens"`
-	OutputTokens             int64       `json:"output_tokens"`
-	CacheReadTokens          int64       `json:"cache_read_tokens"`
-	CacheWriteTokens         int64       `json:"cache_write_tokens"`
-	CostUsdTicks             int64       `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64       `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	Date                       pgtype.Date `json:"date"`
+	Provider                   string      `json:"provider"`
+	Model                      string      `json:"model"`
+	InputTokens                int64       `json:"input_tokens"`
+	OutputTokens               int64       `json:"output_tokens"`
+	CacheReadTokens            int64       `json:"cache_read_tokens"`
+	CacheWriteTokens           int64       `json:"cache_write_tokens"`
+	CostUsdTicks               int64       `json:"cost_usd_ticks"`
+	UncostedInputTokens        int64       `json:"uncosted_input_tokens"`
+	UncostedOutputTokens       int64       `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens    int64       `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens   int64       `json:"uncosted_cache_write_tokens"`
+	UncostedCacheWrite1hTokens int64       `json:"uncosted_cache_write_1h_tokens"`
 }
 
 // Reads from the UTC-bucketed `task_usage_hourly` rollup table,
@@ -212,6 +217,7 @@ func (q *Queries) ListRuntimeUsage(ctx context.Context, arg ListRuntimeUsagePara
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.UncostedCacheWrite1hTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -237,6 +243,7 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.cache_write_1h_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_1h_tokens,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -252,19 +259,20 @@ type ListRuntimeUsageByAgentParams struct {
 }
 
 type ListRuntimeUsageByAgentRow struct {
-	AgentID                  pgtype.UUID `json:"agent_id"`
-	Provider                 string      `json:"provider"`
-	Model                    string      `json:"model"`
-	InputTokens              int64       `json:"input_tokens"`
-	OutputTokens             int64       `json:"output_tokens"`
-	CacheReadTokens          int64       `json:"cache_read_tokens"`
-	CacheWriteTokens         int64       `json:"cache_write_tokens"`
-	CostUsdTicks             int64       `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64       `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32       `json:"task_count"`
+	AgentID                    pgtype.UUID `json:"agent_id"`
+	Provider                   string      `json:"provider"`
+	Model                      string      `json:"model"`
+	InputTokens                int64       `json:"input_tokens"`
+	OutputTokens               int64       `json:"output_tokens"`
+	CacheReadTokens            int64       `json:"cache_read_tokens"`
+	CacheWriteTokens           int64       `json:"cache_write_tokens"`
+	CostUsdTicks               int64       `json:"cost_usd_ticks"`
+	UncostedInputTokens        int64       `json:"uncosted_input_tokens"`
+	UncostedOutputTokens       int64       `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens    int64       `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens   int64       `json:"uncosted_cache_write_tokens"`
+	UncostedCacheWrite1hTokens int64       `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32       `json:"task_count"`
 }
 
 // Per-(agent, provider, model) token aggregates for a runtime since a cutoff. Powers
@@ -300,6 +308,7 @@ func (q *Queries) ListRuntimeUsageByAgent(ctx context.Context, arg ListRuntimeUs
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.UncostedCacheWrite1hTokens,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err

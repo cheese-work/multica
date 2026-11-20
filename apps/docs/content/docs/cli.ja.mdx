@@ -177,6 +177,8 @@ multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start 
 
 `--owner` を指定しない場合は、`issue status` と同じく、プロジェクトのワークフローが担当者を決めます。明示的な `--owner`（メンバー、エージェント、スクワッド。`--owner-id` は名前の代わりに UUID を取ります）は、ワークフローの担当者を置き換えます。現在のステータスを保ったまま担当者だけを変えるルートは許可されます。ステータスも担当者も同じルートは HTTP 409 で拒否され、何も書き込まれません。`--no-start` は `issue update` と同じく、エージェントの実行を開始しません。`--expected-revision` を指定すると、その間にタスクが変更されていた場合にルートを拒否します。
 
+`multica issue workflow escalate <id> --reason "..."` は、Quick に従う課題を、以前従っていたフルワークフローへ移します。`--reason` は必須で、`rollback` なら `todo` や `investigating` からでも `Estimate:` 行は不要です。このコマンドはワークフローを受け取らず、移行先はサーバーが課題の最新の `quick_entry` 行から読み取ります。課題がフルワークフローに入ると `applied`、実行中のタスクがあり最後のタスクが終わるまで Quick に留まる場合は `pending` を表示します。`--output json` は `state` と `workflow_id` を出力します。拒否コードは [Workflows](/workflows) を参照してください。
+
 ### タイムライン
 
 `issue get` はタスクの現在の状態を返します。`issue timeline` はステータス、優先度、担当者、タイトル、日付の変更と実行結果を時系列に並べ、コメントも混ぜて表示します。「いつ in_review に移ったか」「今のステータスにどれだけ留まっているか」を調べるときに使います。
@@ -415,6 +417,8 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 ```
 
 `--agent` と `--fallback` にはエージェントの ID または名前を指定し、`none` でフィールドを解除します。`multica me` が扱うのは `dm_title`、`quick_actions`、`compact` で、`routing` はワークスペース専用です。ワークスペースへの書き込みにはオーナーまたは管理者が必要で、どちらのコマンドもタスクトークンを拒否します。エージェントなしの動作と期限は[バックグラウンドエージェント](/background-agents)を参照してください。
+
+`multica workspace capability-routing [workspace]` は、`capability_routing` 設定(課題タイプから作成者・レビュアーのエージェントへの対応)を JSON で表示します。未設定なら `{}` です。読み取り専用で、変更は `multica config propose workspace.settings --set 'capability_routing:=<json>'` で行います。[Workflows](/docs/workflows) を参照してください。
 
 ## ブラウザリース
 

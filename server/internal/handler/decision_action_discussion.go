@@ -111,6 +111,16 @@ func (handler *Handler) discussDecision(ctx context.Context, caller decisionActi
 	if mayInvoke, err := handler.personMayInvoke(ctx, queries, current.AskingAgentID, caller.userID, caller.workspaceID); err != nil {
 		return "", noComment, noTask, err
 	} else if mayInvoke && snapshot.recipient.RuntimeID.Valid && !snapshot.recipient.ArchivedAt.Valid {
+		// A held issue gets no dispatch (CHE-6911 E3, row 4): the comment is stored
+		// and the wake stays skipped_ineligible.
+		if held, err := intakeHoldSkips(ctx, transaction, uuidToString(issue.ID), "decision_discussion"); err != nil {
+			return "", noComment, noTask, err
+		} else if held {
+			if err := transaction.Commit(ctx); err != nil {
+				return "", noComment, noTask, err
+			}
+			return wake, comment, noTask, nil
+		}
 		wake, queued, err := handler.dispatchDecisionInputs(ctx, queries, snapshot, comment, []pgtype.UUID{comment.ID}, discussionSummary(message))
 		if err != nil {
 			return "", noComment, noTask, err
