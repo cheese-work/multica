@@ -197,6 +197,22 @@ func (q *Queries) GetLastIssueStatusChange(ctx context.Context, issueID pgtype.U
 	return i, err
 }
 
+const getLatestChainedRunRetryDetails = `-- name: GetLatestChainedRunRetryDetails :one
+SELECT details FROM activity_log
+WHERE issue_id = $1 AND action = 'chained_run_retry'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// The newest chained_run_retry row of an issue: the retry a failed chained run
+// got (CHE-7675). pgx.ErrNoRows when the issue never had one.
+func (q *Queries) GetLatestChainedRunRetryDetails(ctx context.Context, issueID pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getLatestChainedRunRetryDetails, issueID)
+	var details []byte
+	err := row.Scan(&details)
+	return details, err
+}
+
 const hasSquadLeaderNoActionEvaluationForTask = `-- name: HasSquadLeaderNoActionEvaluationForTask :one
 SELECT EXISTS (
   SELECT 1
