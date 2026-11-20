@@ -360,3 +360,27 @@ func TestClaimPollBucketBoundsResolveFiftyMilliseconds(t *testing.T) {
 		t.Errorf("last bound = %v ms, want at least 1000", prev)
 	}
 }
+
+// The rollback check "p95 up 50 ms or more" must not pass silently when a p95
+// overflows (review round 2, P1): +Inf minus +Inf is NaN and NaN >= 50 is false.
+func TestClaimPollP95RiseTripsConservatively(t *testing.T) {
+	at := func(d time.Duration, n int) []int64 { return observeN(t, map[time.Duration]int{d: n}) }
+	cases := []struct {
+		name          string
+		base, current []int64
+		want          bool
+	}{
+		{"rise of 70 ms trips", at(175*time.Millisecond, 100), observeN(t, map[time.Duration]int{101 * time.Millisecond: 50, 249 * time.Millisecond: 50}), true},
+		{"rise of 10 ms passes", at(100*time.Millisecond, 100), at(110*time.Millisecond, 100), false},
+		{"drop passes", at(200*time.Millisecond, 100), at(100*time.Millisecond, 100), false},
+		{"current overflows, baseline finite: trips", at(20*time.Millisecond, 100), at(3*time.Second, 100), true},
+		{"both overflow (1100 ms then 3 s): indeterminate, trips", at(1100*time.Millisecond, 100), at(3*time.Second, 100), true},
+		{"baseline overflows, current finite: cannot have risen", at(1100*time.Millisecond, 100), at(900*time.Millisecond, 100), false},
+		{"no polls in the current window: nothing to compare", at(20*time.Millisecond, 100), make([]int64, len(ClaimPollBucketBoundsMs)+1), false},
+	}
+	for _, c := range cases {
+		if got := ClaimPollP95Rose(c.base, c.current, 50); got != c.want {
+			t.Errorf("%s: ClaimPollP95Rose = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
