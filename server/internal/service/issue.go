@@ -632,6 +632,16 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			return IssueCreateResult{}, fmt.Errorf("record workflow split: %w", err)
 		}
 	}
+	// An issue created into an author step keeps its first assignee as its
+	// author, so a later capability_routing change does not move it (CHE-7677).
+	if def != nil && issue.AssigneeID.Valid && issue.AssigneeType.Valid {
+		if step, ok := def.Step(p.Status); ok && step.Handler.Type == issueworkflow.HandlerAuthor {
+			author := issueworkflow.StepAssignee{Type: issue.AssigneeType.String, ID: issue.AssigneeID}
+			if err := issueworkflow.SetStepAssignee(ctx, qtx, issue.WorkspaceID, issue.ID, issueworkflow.AuthorStepKey, author, p.CreatorType, p.CreatorID); err != nil {
+				return IssueCreateResult{}, fmt.Errorf("record author: %w", err)
+			}
+		}
+	}
 	if recordEntry != nil {
 		if err := recordEntry(ctx, qtx, issue); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("record entry gate: %w", err)

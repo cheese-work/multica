@@ -51,7 +51,15 @@ const (
 	// of a decision request (CHE-2591 L5). Entering it never hands off by
 	// itself: the entry check assigns the issue explicitly.
 	HandlerHumanInCharge = "human_in_charge"
+	// HandlerAuthor hands the issue to its author (CHE-7677): the sticky row
+	// under AuthorStepKey, else capability_routing[type].author. The step
+	// stores no id.
+	HandlerAuthor = "author"
 )
+
+// AuthorStepKey is the reserved issue_step_assignee key that holds an issue's
+// author. It is not a status key, so no status can collide with it.
+const AuthorStepKey = "$author"
 
 const (
 	MaxSteps             = 50
@@ -284,7 +292,7 @@ func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEnt
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor:
 		return true
 	}
 	return false
@@ -589,7 +597,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge, HandlerAuthor:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -744,6 +752,10 @@ type Humans struct {
 	WorkspaceOwner pgtype.UUID
 	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
 	RoutingAgent pgtype.UUID
+	// AuthorType and AuthorID are the issue's author, resolved by the caller
+	// for an author handler (CHE-7677). An invalid id means none.
+	AuthorType string
+	AuthorID   pgtype.UUID
 }
 
 // ResolveHandler turns a step's handler into a concrete assignee for one
@@ -760,6 +772,10 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 			return "", pgtype.UUID{}, false
 		}
 		return step.Handler.Type, id, true
+	case HandlerAuthor:
+		if humans.AuthorID.Valid && humans.AuthorType != "" {
+			return humans.AuthorType, humans.AuthorID, true
+		}
 	case HandlerProjectLead:
 		if !project.LeadType.Valid || !project.LeadID.Valid {
 			return "", pgtype.UUID{}, false

@@ -738,7 +738,7 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 	// on an ordinary create, resolved under the locks the create takes.
 	var handoffResolver service.CreateHandoffResolver
 	if !assigneeType.Valid && !assigneeID.Valid {
-		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID, userID)
+		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID, userID, title)
 	}
 	result, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID, "member", util.UUIDToString(userID)), PropertyGate: h.createPropertyGate(workspaceID),
