@@ -171,9 +171,9 @@ Owners and admins can set default wakeups for a whole workspace or one project, 
 |---|---|---|
 | Workspace | **Settings → Wakeups → Workspace rules** | Owners and admins |
 | Project | The project page, **Project rules** | Owners and admins |
-| Issue | The issue's **Default wakeups** list: **Override**, **Edit override**, **Reset** | Members |
+| Issue | The **Defaults · N on** button in the Wakeups header opens the issue's default rules inline; each rule's more menu has **Override**, **Edit override**, **Reset to default** and **Open project** | Members |
 
-Each default shows where its value comes from (**Inherited from workspace**, from the project, or **Overridden on this issue**) and its state: **On**, **Disabled**, or **Paused** with the reason. **Reset** deletes the override, and the issue follows the level above again.
+Each default is one line with its state: **On**, **Disabled**, or **Paused** with the reason. A tag shows where it differs from the built-in default: **Workspace**, **Project**, or **Edited** when this issue overrides it. The button reads **Defaults · N paused** when a rule is paused and adds **N edited** when issue overrides exist. **Reset to default** deletes the override, and the issue follows the level above again.
 
 **API.** The same three scopes are available over the API. Send `revision` as a string: `"0"` to create, the revision from your last read to update. A stale revision returns `409`; read again and retry.
 

@@ -63,3 +63,38 @@ WHERE cm.issue_id = sqlc.arg(issue_id) AND cm.workspace_id = sqlc.arg(workspace_
   AND cm.decision_request_id IS NULL AND cm.decision_comment_kind IS NULL
 ORDER BY cm.created_at DESC, cm.id DESC
 LIMIT 1;
+
+-- name: ClaimDueHandoffDispatches :many
+-- The recovery sweep's claim (CHE-5488). Counts the attempt and pushes
+-- next_attempt_at out by its backoff (30 s, 30 s, then 60 s), so the claim is
+-- also the lease: another sweeper skips the row until the backoff ends.
+UPDATE issue_handoff_dispatch
+SET attempts = attempts + 1,
+    next_attempt_at = sqlc.arg(now)::timestamptz + (CASE WHEN attempts < 2 THEN 30 ELSE 60 END) * interval '1 second'
+WHERE id IN (
+    SELECT d.id FROM issue_handoff_dispatch d
+    WHERE d.state = 'pending'
+      AND d.created_at <= sqlc.arg(created_before)::timestamptz
+      AND d.next_attempt_at <= sqlc.arg(now)::timestamptz
+    ORDER BY d.created_at
+    LIMIT @batch_size
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+
+-- name: HandoffDispatchSuperseded :one
+-- True when the issue is no longer where the intent's write left it: gone,
+-- handed to someone else, or moved again since the intent's status-history row.
+SELECT
+    NOT EXISTS (SELECT 1 FROM issue i WHERE i.id = @issue_id
+                  AND i.assignee_type = sqlc.arg(target_type)::text AND i.assignee_id = @target_id)
+    OR EXISTS (SELECT 1 FROM activity_log a
+               WHERE a.issue_id = @issue_id AND a.action = 'status_changed'
+                 AND a.id IS DISTINCT FROM sqlc.narg(status_history_id)::uuid
+                 AND a.created_at > COALESCE(
+                     (SELECT h.created_at FROM activity_log h WHERE h.id = sqlc.narg(status_history_id)::uuid),
+                     @created_at::timestamptz))
+    OR EXISTS (SELECT 1 FROM activity_log h JOIN issue i ON i.id = h.issue_id
+               WHERE h.id = sqlc.narg(status_history_id)::uuid
+                 AND h.details->>'to' IS NOT NULL AND h.details->>'to' <> i.status)
+    AS superseded;

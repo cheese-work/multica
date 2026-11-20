@@ -113,6 +113,17 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		}
 		return h.Queries.ScheduleWorkflowEdges(ctx, db.ScheduleWorkflowEdgesParams{ID: w.ID, NextFireAt: pgtype.Timestamptz{Time: next, Valid: true}})
 	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
+		handled, err := h.settlePendingMerge(ctx, issue, w.ID)
+		if err != nil {
+			h.watchAgainIn(ctx, w, edgeRetryDelay)
+			return err
+		}
+		if handled {
+			h.watchAgainIn(ctx, w, issueworkflow.EdgePollInterval)
+			return nil
+		}
+	}
 	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge {
 		bridged, err := h.bridgePRMergedEdge(ctx, issue)
 		if err != nil {
@@ -150,6 +161,13 @@ func (h *Handler) bridgePRMergedEdge(ctx context.Context, issue db.Issue) (bool,
 	}
 	if prMergeStatusSetting(ws) == prMergeStatusNone {
 		return false, nil
+	}
+	// On an auto-close step the close check comes first: a clean issue takes its
+	// done edge, with this watcher left out of no_live_wakeup (CHE-7671).
+	if entersAutoCloseStep(issue.Status) {
+		if d := h.closeOrDispatch(ctx, issue); d.Outcome == closeOutcomeClosed && h.closeIssue(ctx, issue, d.Predicates) {
+			return true, nil
+		}
 	}
 	return true, h.autoCompleteIssue(ctx, issue.WorkspaceID, issue.ID, nil)
 }
@@ -196,7 +214,7 @@ func (h *Handler) watchAgainIn(ctx context.Context, w db.IssueWakeup, d time.Dur
 // greenHead is the head of the first PR whose checks pass on its newest head.
 func greenHead(f issueworkflow.Facts) string {
 	for _, p := range f.PRs {
-		if (p.State == "open" || p.State == "draft") && p.HeadFresh && p.ChecksRollup == "SUCCESS" {
+		if f.ChecksGreen(p) {
 			return p.HeadSHA
 		}
 	}
@@ -223,7 +241,7 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 // success event since the issue entered the step.
 func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
 	includeChildren := def.IncludeChildPRs
-	var facts issueworkflow.Facts
+	facts := issueworkflow.Facts{ReadyForReview: issueReadyForReview(issue)}
 	children, err := q.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return facts, err
@@ -242,6 +260,13 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 		if facts.ChildrenDone {
 			cat := issuestatus.Category(ctx, q, c.WorkspaceID, c.Status)
 			facts.ChildrenDone = cat == issuestatus.CategoryDone || cat == issuestatus.CategoryClosed
+		}
+	}
+	// OpenChildren looks at every direct child, whatever the sub-workflow stage.
+	for _, c := range children {
+		if cat := issuestatus.Category(ctx, q, c.WorkspaceID, c.Status); cat != issuestatus.CategoryDone && cat != issuestatus.CategoryClosed {
+			facts.OpenChildren = true
+			break
 		}
 	}
 	facts.ChildrenDone = facts.ChildrenDone && joined > 0

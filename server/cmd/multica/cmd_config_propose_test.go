@@ -417,3 +417,16 @@ func TestProposeWorkflowBudgetRejectsBadInputWithoutWriting(t *testing.T) {
 		t.Error("a file was written for bad input")
 	}
 }
+
+// CHE-7666: capability_routing is on the settings allow table, so a dry run proposes it.
+func TestProposeCapabilityRoutingDryRunIsAccepted(t *testing.T) {
+	proposeServer(t, map[string]any{"/api/workspaces/ws-1": map[string]any{"settings": map[string]any{}}})
+	table := `{"feat":{"author":"` + proposeAgentID + `","reviewers":["` + proposeSquadID + `"]}}`
+	stdout, err := propose(t, map[string]string{"dry-run": "true", "set": "capability_routing:=" + table}, "workspace.settings")
+	if err != nil {
+		t.Fatalf("dry run refused: %v", err)
+	}
+	if !strings.Contains(stdout, "workspace.settings.patch") || !strings.Contains(stdout, "capability_routing") {
+		t.Fatalf("dry run output = %s", stdout)
+	}
+}

@@ -146,7 +146,7 @@ func runChatCompact(cmd *cobra.Command, _ []string) error {
 		if serverLacksCompact(err) {
 			return fmt.Errorf("server does not support in-place compaction; DM unchanged")
 		}
-		return fmt.Errorf("compact chat: %w", err)
+		return bgWriteError("compact chat", err) // DX-4: stable code and server message on stderr
 	}
 	return cli.PrintJSON(cmd.OutOrStdout(), response)
 }
@@ -184,7 +184,7 @@ func runChatContinue(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 	var response map[string]any
 	if err := client.PostJSON(ctx, endpoint, body, &response); err != nil {
-		return fmt.Errorf("%s: %w", action, err)
+		return bgWriteError(action, err) // DX-4: stable code and server message on stderr
 	}
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {

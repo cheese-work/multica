@@ -46,8 +46,13 @@ WHERE ipr.issue_id = $1;
 -- Entering a done-category step disables the issue's wakeups in the same
 -- transaction, so "enabled" after the write is always empty. A wakeup that was
 -- live at entry is one still enabled, or disabled at or after the newest move
--- into the step being entered (that move's own close rule).
-SELECT count(*)::bigint FROM issue_wakeup w
+-- into the step being entered (that move's own close rule). other leaves out
+-- the issue's own workflow_edges watcher (CHE-7671): on an auto-close step it
+-- is the merge wait, not work. own counts that watcher while it is enabled.
+SELECT
+    (count(*) FILTER (WHERE w.system_rule IS DISTINCT FROM 'workflow_edges'))::bigint AS other,
+    (count(*) FILTER (WHERE w.system_rule = 'workflow_edges' AND w.enabled))::bigint AS own
+FROM issue_wakeup w
 WHERE w.issue_id = sqlc.arg('issue_id') AND (w.enabled OR w.disabled_at >= (
     SELECT max(a.created_at) FROM activity_log a
     WHERE a.issue_id = sqlc.arg('issue_id') AND a.action = 'status_changed' AND a.details->>'to' = sqlc.arg('step')::text));

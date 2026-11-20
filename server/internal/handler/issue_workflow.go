@@ -105,6 +105,8 @@ type IssueWorkflowStepPayload struct {
 	// KeepOtherAssignee: see issueworkflow.Step. TEMPORARY, replaced by
 	// per-issue workflows (CHE-5024).
 	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
+	// ChainSameOwner: see issueworkflow.Step.
+	ChainSameOwner bool `json:"chain_same_owner,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -179,6 +181,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		DynamicAssignment: s.DynamicAssignment,
 		LintWaive:         s.LintWaive,
 		KeepOtherAssignee: s.KeepOtherAssignee,
+		ChainSameOwner:    s.ChainSameOwner,
 	}
 	if s.WaitsOnOpenDecision {
 		set := true
@@ -204,6 +207,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		LintWaive:           in.LintWaive,
 		WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 		KeepOtherAssignee:   in.KeepOtherAssignee,
+		ChainSameOwner:      in.ChainSameOwner,
 	}
 }
 
@@ -446,6 +450,8 @@ type IssueWorkflowStepInput struct {
 	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
 	// KeepOtherAssignee: see IssueWorkflowStepPayload.
 	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
+	// ChainSameOwner: see IssueWorkflowStepPayload.
+	ChainSameOwner bool `json:"chain_same_owner,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -521,6 +527,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			LintWaive:           in.LintWaive,
 			WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 			KeepOtherAssignee:   in.KeepOtherAssignee,
+			ChainSameOwner:      in.ChainSameOwner,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}

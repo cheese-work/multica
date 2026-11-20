@@ -132,13 +132,22 @@ func TestInactiveProjectCloseCancelsRunsAndResumeDoesNotReplay(test *testing.T) 
 					map[string]any{"status": next}), "id", projectID)).Want(http.StatusOK)
 			}
 			update(status)
-			if count := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status <> 'cancelled'", issueID); count != 0 {
-				test.Errorf("closing project left %d uncancelled runs", count)
+			// A pause drains: the running run lives on. Cancel and complete stop every run.
+			wantLive := 0
+			if status == "paused" {
+				wantLive = 1
+			}
+			if count := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status <> 'cancelled'", issueID); count != wantLive {
+				test.Errorf("%s left %d uncancelled runs, want %d", status, count, wantLive)
 			}
 			eventMu.Lock()
-			for _, taskID := range taskIDs {
-				if cancelledEvents[taskID] != 1 {
-					test.Errorf("task %s published %d cancellation events, want 1", taskID, cancelledEvents[taskID])
+			for index, taskID := range taskIDs {
+				wantEvents := 1
+				if status == "paused" && index == 2 {
+					wantEvents = 0
+				}
+				if cancelledEvents[taskID] != wantEvents {
+					test.Errorf("task %s published %d cancellation events, want %d", taskID, cancelledEvents[taskID], wantEvents)
 				}
 			}
 			eventMu.Unlock()
@@ -349,6 +358,76 @@ func TestInactiveProjectMemberWriteTriggers(test *testing.T) {
 			})).Want(http.StatusOK).JSON(&batch)
 			if batch.Updated != 1 || tasksOn(test, batchIssueID) != 0 || len(batch.TriggerOutcomes) != 1 || batch.TriggerOutcomes[0].ReasonCode != ReasonProjectInactive {
 				test.Fatalf("member batch did not report project_inactive: %+v", batch)
+			}
+		})
+	}
+}
+
+func TestPausedProjectLetsRunningRunWrite(test *testing.T) {
+	fixture := newTriageRunFixture(test)
+	projectID := inactiveProject(test, "in_progress")
+	issueID := fixture.issueFor(test, "", "paused project drain")
+	dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
+	otherIssueID := fixture.issueFor(test, "", "paused project drain, other project")
+	runningTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID, "status": "running"})
+	queuedTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID, "status": "queued",
+		"trigger_comment_id": dbfx.Comment(test, issueID, "queued")})
+	foreignTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": otherIssueID, "status": "running"})
+	testutil.Call(test, testHandler.UpdateProject, withURLParam(newRequest(http.MethodPut, "/api/projects/"+projectID,
+		map[string]any{"status": "paused"}), "id", projectID)).Want(http.StatusOK)
+	statusOf := func(taskID string) string {
+		task, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))
+		if err != nil {
+			test.Fatal(err)
+		}
+		return task.Status
+	}
+	if got := statusOf(runningTask); got != "running" {
+		test.Errorf("pause changed the running run to %s", got)
+	}
+	if got := statusOf(queuedTask); got != "cancelled" {
+		test.Errorf("pause left the queued run %s", got)
+	}
+	call := func(taskID string, handler http.HandlerFunc, method string, body map[string]any) *testutil.Response {
+		request := withURLParam(newRequest(method, "/api/issues/"+issueID, body), "id", issueID)
+		return testutil.Call(test, handler, asAgentActor(request, fixture.agentID, taskID))
+	}
+	call(runningTask, testHandler.CreateComment, http.MethodPost, map[string]any{"content": "Final report from a draining run"}).Want(http.StatusCreated)
+	call(runningTask, testHandler.UpdateIssue, http.MethodPut, map[string]any{"title": "Updated by a draining run", "suppress_run": true}).Want(http.StatusOK)
+	// A run of another project, or one that already ended, is still refused.
+	for name, taskID := range map[string]string{"another project": foreignTask, "cancelled run": queuedTask} {
+		response := call(taskID, testHandler.CreateComment, http.MethodPost, map[string]any{"content": "Refused comment"})
+		response.Want(http.StatusForbidden)
+		if response.Map()["reason_code"] != "project_inactive" {
+			test.Errorf("%s: missing project_inactive: %s", name, response.Text())
+		}
+	}
+	// New issues in the paused project stay refused.
+	create := newRequest(http.MethodPost, "/api/issues", map[string]any{"title": "New issue in paused project", "project_id": projectID, "status": "backlog"})
+	testutil.Call(test, testHandler.CreateIssue, asAgentActor(create, fixture.agentID, runningTask)).Want(http.StatusForbidden)
+	if commentsOn(test, issueID) != 2 {
+		test.Errorf("want the queued trigger comment and the drain comment, got %d", commentsOn(test, issueID))
+	}
+}
+
+func TestCancelledProjectRefusesRunningRunWrite(test *testing.T) {
+	fixture := newTriageRunFixture(test)
+	for _, status := range []string{"cancelled", "completed"} {
+		test.Run(status, func(test *testing.T) {
+			projectID := inactiveProject(test, "in_progress")
+			issueID := fixture.issueFor(test, "", "closed project write")
+			dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
+			runningTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID, "status": "running"})
+			testutil.Call(test, testHandler.UpdateProject, withURLParam(newRequest(http.MethodPut, "/api/projects/"+projectID,
+				map[string]any{"status": status}), "id", projectID)).Want(http.StatusOK)
+			if got := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE id=$1 AND status='cancelled'", runningTask); got != 1 {
+				test.Fatalf("%s did not cancel the running run", status)
+			}
+			request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "Refused"}), "id", issueID)
+			response := testutil.Call(test, testHandler.CreateComment, asAgentActor(request, fixture.agentID, runningTask))
+			response.Want(http.StatusForbidden)
+			if response.Map()["reason_code"] != "project_inactive" {
+				test.Errorf("missing project_inactive: %s", response.Text())
 			}
 		})
 	}

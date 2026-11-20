@@ -63,6 +63,7 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"provider hold deadline", "workspace.settings", []string{"provider_breaker_max_hold_seconds"}, false},
 		{"guard policy", "workspace.settings", []string{"guard_policy"}, false},
 		{"title type to workflow map", "workspace.settings", []string{"workflow_by_type"}, false},
+		{"capability routing", "workspace.settings", []string{"capability_routing"}, false},
 		{"ask guard mode", "workspace.settings", []string{"ask_guard_mode"}, false},
 		{"decision ask park", "workspace.settings", []string{"decision_ask_park"}, false},
 		{"design card guard", "workspace.settings", []string{"design_card_guard"}, false},

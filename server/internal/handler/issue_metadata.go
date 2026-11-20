@@ -260,6 +260,11 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			h.recordIssueMetadataMutation(r, "set", "noop", issueID, key, queryDuration)
+			if key == postCloseWorkKey {
+				// An identical value still is this actor's declaration.
+				actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+				h.recordPostCloseWorkSetter(r.Context(), issue, actorType, actorID, req.Value)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"metadata":       parseIssueMetadata(current.Metadata),
 				"issue_revision": current.Revision,
@@ -279,6 +284,9 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 
 	workspaceID := uuidToString(updated.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if key == postCloseWorkKey {
+		h.recordPostCloseWorkSetter(r.Context(), issue, actorType, actorID, req.Value)
+	}
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id":       uuidToString(updated.ID),

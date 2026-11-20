@@ -58,6 +58,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 设置了 `keep_other_assignee: true` 的步骤，在当前负责人是被有意选定的（既不是这一步的处理人，也不是事项离开的那一步的处理人）时会跳过交接。该负责人继续持有事项，若是智能体，则为这一步启动一次运行。该选项默认关闭，通过 API 或 CLI 设置。它是临时的：按事项配置的工作流（CHE-5024）将取代它。
 
+设置了 `chain_same_owner: true` 的步骤，在智能体把事项移入该步骤、且该智能体就是这一步的处理人时，不会启动新的运行，前提是该智能体的运行所开始的那一步的处理人类型相同（智能体、项目负责人等）。智能体继续在自己的运行中工作，状态响应的 `step_brief` 携带这一步的说明，`multica issue status` 会打印它。换了智能体、处理人类型改变，或由人移动事项时，仍像以前一样启动运行。批量更新从不链式处理。该选项默认关闭，通过 API 或 CLI 设置。
+
 ## 在项目中使用
 
 打开项目，在**工作流**属性中选择刚才的工作流。工作区的 `owner`、`admin`，以及担任项目负责人的成员可以切换它。
@@ -69,6 +71,12 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 ## 按标题类型选择工作流
 
 工作区所有者或管理员可在工作区设置中配置 `workflow_by_type`，例如 `{"design": "<工作流 ID>", "plan": "<工作流 ID>"}`。标题以已映射类型开头的新问题（如 `design(x): …`）会使用该工作流，而不是所在项目的工作流。`--workflow`（CLI）或显式选择始终优先。没有对应条目的类型，或对应工作流已不存在时，沿用项目的工作流。`multica issue create` 会打印所选工作流。标题带有已映射类型时，新建窗口会显示将选用的工作流的状态和交接。该映射属于工作区策略：对包括智能体在内的所有创建者生效，不会经过非交互调用方使用显式 `--workflow` 时的运行预算检查。若两个键仅大小写不同，按字母顺序靠前的生效。之后修改标题不会改变工作流；更新响应带有一行 `workflow_hint`（`multica issue update` 会打印），给出移动它的命令。
+
+工作区所有者或管理员可在工作区设置中配置 `quick_first`，让一部分新问题试用 Quick 工作流：`{"workflow_id": "<Quick 工作流 ID>", "types": ["feat", "fix"], "starts_at": "<RFC 3339>", "ends_at": "<RFC 3339>"}`。从 `starts_at`（含）到 `ends_at`（不含），标题类型在 `types` 中、且已遵循完整工作流（所在项目的工作流，或 `workflow_by_type` 指定的工作流）的新根问题按编号分组：偶数编号从 `todo` 起进入 Quick 工作流，奇数编号沿用原工作流。子问题沿用父问题的 Quick 工作流。调用方用 `--workflow` 指定了工作流、状态不是 `todo` 或 `backlog`、已分配给成员或小队，或所在项目的 A/B 分流正处于其时间窗口内，则不参与。被指定为经办人的智能体会保留为问题的作者。设置之前该功能关闭；未设置时，创建行为不变。
+
+## 按能力路由工作
+
+工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，目前没有任何功能读取它，因此行为不变。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
 
 ## 把任务交给下一步
 
@@ -102,7 +110,7 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 移除一列时，如果还有任务停在那里，需要为它们选择新状态。其他任务保持不变，这次移动也不会启动智能体。工作流列表下方的状态库可以修改状态名称和颜色，使用同一个状态的地方都会同步变化。
 
-在工作流编辑器中设置**每个 Issue 的最大运行次数**，可限制一个 Issue 在被工作流阻止前最多能启动多少次运行（1 到 1000；留空则使用默认值 15）。修改需要已登录的网页或桌面会话；不改动该字段的保存可从任何客户端进行。旁边的**包含子 Issue 的 PR** 开关决定 PR 守卫是否也读取子 Issue 的 PR（默认开启），遵循同一规则。智能体或令牌不能直接修改这两个字段：会收到 `budget_requires_decision`，需用 `multica config propose workflow.budget` 提出修改，再由所有者用通行密钥批准。智能体或令牌创建 Issue、或把 Issue 改绑到预算更宽的工作流时，同样受此限制（`budget_rebinding_requires_interactive`）。同一个决定即可放行：`multica issue create` 和 `multica issue update` 接受 `--workflow <id> --decision-id <id>`。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
+在工作流编辑器中设置**每个 Issue 的最大运行次数**，可限制一个 Issue 在被工作流阻止前最多能启动多少次运行（1 到 1000；留空则使用默认值 15）。修改需要已登录的网页或桌面会话；不改动该字段的保存可从任何客户端进行。旁边的**包含子 Issue 的 PR** 开关决定 PR 守卫是否也读取子 Issue 的 PR（默认开启），遵循同一规则。智能体或令牌不能直接修改这两个字段：会收到 `budget_requires_decision`，需用 `multica config propose workflow.budget` 提出修改，再由所有者用通行密钥批准。智能体或令牌创建 Issue、或把 Issue 改绑到预算更宽的工作流时，同样受此限制（`budget_rebinding_requires_interactive`）。同一个决定即可放行：`multica issue create` 和 `multica issue update` 接受 `--workflow <id> --decision-id <id>`。 该决定的类别必须为 `spend`，且所有者不能处于通行密钥恢复状态。当工作区通行密钥闸门为 `block` 时，所有者还必须用通行密钥回答；否则写入会被拒绝，并指出缺少的条件。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
 
 设有运行预算的 Issue，侧边栏会显示一个计量条：已用运行数、剩余运行数、80 % 时的警告，以及**运行预算已用完**状态。**提高上限**和**补充**会请求工作区所有者批准更多运行。如果你是所有者，可直接用通行密钥在原处批准；否则请求会发给所有者。在列表和看板中，被预算停住的 Issue 会在状态旁显示**预算已用完**标签。所有者批准后，已决定的卡片和审批面板会显示新的上限，以及被停住的 Issue 之后的结果（运行已入队、运行已开始、状态已恢复，或未恢复的原因），并且无需刷新即可更新。
 
@@ -118,9 +126,18 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 `GET /api/issues/{id}` 返回 `intake_hold` 字段，包含 `source`、`held`、`owned`、`reason`、`ends_at` 和 `exempt_after`。`owned` 在 `ends_at` 之后仍为 true，因此可以区分暂缓覆盖过的任务和从未覆盖的任务。有父任务的任务和没有条目的项目不返回该字段，列表接口也不返回。`reason` 取 `held`、`ended`、`not_started`、`mode_off`、`created_before_start`、`left_backlog`、`released_by_member`、`exempt_type`、`exempt_label`、`exempt_escalation_class`、`exempt_autopilot` 或 `exempt_issue_id`。标题没有类型的任务（例如 `plain words`）会被暂缓。优先级不豁免任何任务。
 
-智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。 事项仍被保留时，请求保持完整流程，但其答复或其他决策事件（撤回、过期、重新提问、收回）的投递不会启动任何运行。该投递以 `skipped_ineligible` 结案，不会重试。在 `warn` 模式下，投递照常执行。创建了该暂缓任务的运行，在它仍在运行期间，也可以在这个任务上发起该请求；没有创建该任务的智能体不能发起，创建它的运行发出的 `reversible` 请求会被拒绝。请求会引用该任务上的一条评论，所以创建它的运行须先在任务上发表评论。
+智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。 事项仍被保留时，请求保持完整流程，但其答复或其他决策事件（撤回、过期、重新提问、收回）的投递不会启动任何运行。该投递以 `skipped_ineligible` 结案，不会重试。在 `warn` 模式下，投递照常执行。 负责人等待步骤中的等待阶段（关闭并以 `skipped_ineligible` 结案，不启动恢复运行）、某人在未决操作卡片上发送的讨论消息（评论会保存，唤醒为 `skipped_ineligible`）以及某人对已执行操作的撤销（撤销会保存，不启动任何运行）也是如此。创建了该暂缓任务的运行，在它仍在运行期间，也可以在这个任务上发起该请求；没有创建该任务的智能体不能发起，创建它的运行发出的 `reversible` 请求会被拒绝。请求会引用该任务上的一条评论，所以创建它的运行须先在任务上发表评论。
 
 人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。
+
+## 按 intake 或 QA 证据限制步骤 [#intake-qa-gates]
+
+步骤可以设置进入关卡：状态移入该步骤时必须满足的条件。有两个关卡会读取智能体写在事项上的内容。把它们加入步骤的 `entry` 列表，例如 `{"guard": "intake_simple", "mode": "warn", "param": "1"}`。模式为 `off`、`warn` 或 `block`；未列出的关卡视为关闭，全部关闭时事项的移动与以前一致。`warn` 模式下移动照常通过，事项上记录一条警告；`block` 模式下移动会被拒绝，并给出未通过的事实和修复方法，除非关卡把 `member_override` 设为 `false`，否则成员可以填写理由后放行。
+
+- `intake_simple`：事项的描述或评论里有 `Estimate:`、`Repos:`、`Schema change:`、`Security change:`、`Human decision:` 这几行，且答案表明这是个简单事项时通过。每类行以最新的一条为准。缺少某行或无法读取、估时（如 `1h`、`45m`）超过关卡的 `param`（单位为小时，大于 0 且不超过 24）、`Repos:` 列出多个仓库、是/否行为 `yes`，或事项存在未关闭的决策请求时，都会失败。`param` 必填。
+- `qa_proof`：执行移动的智能体在事项进入当前步骤之后写过一条评论，其中有一行 `QA:`，值为链接（`https://…`）或其后紧跟代码块，并且该智能体自己设置了事项的 `post_close_work` 元数据（最新一次写入）时通过。其他主体或之前的运行留下的值不算。它不接受 `param`。其他人写的评论不算。
+
+两个关卡都按失败处理读不出的值。两者都不能用作流转守卫。每次评估 `intake_simple`，事项的活动记录里都会新增一条 `intake_call`，包含 `call`（`simple` 或 `rejected`）、原始的 `estimate` 和 `step`。
 
 ## 相关指引
 

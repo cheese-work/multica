@@ -75,6 +75,16 @@ var workspaceGetCmd = &cobra.Command{
 	RunE: runWorkspaceGet,
 }
 
+var workspaceCapabilityRoutingCmd = &cobra.Command{
+	Use:   "capability-routing [workspace-id|slug|prefix]",
+	Short: "Show the capability_routing setting (issue type to author and reviewers)",
+	Long: "Prints the workspace setting capability_routing: per issue type, the author " +
+		"agent and the ordered reviewer agents. Prints {} when it is unset. Read-only; " +
+		"change it with 'multica config propose workspace.settings --set capability_routing:=<json>'.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkspaceCapabilityRouting,
+}
+
 var workspaceMemberCmd = &cobra.Command{
 	Use:   "member",
 	Short: "Manage workspace members",
@@ -186,6 +196,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceGetCmd)
+	workspaceCmd.AddCommand(workspaceCapabilityRoutingCmd)
 	workspaceCmd.AddCommand(workspaceMemberCmd)
 	workspaceMemberCmd.AddCommand(workspaceMemberListCmd)
 	workspaceMemberCmd.AddCommand(workspaceMemberInviteCmd)
@@ -230,6 +241,7 @@ func init() {
 	workspaceUpdateCmd.Flags().String("merge-queue-watch-issue", "", "Set the issue that receives merge_queue.changed events (settings.merge_queue_watch_issue); pass none to clear. Owner only; may combine only with the other --merge-queue-* flags")
 	workspaceUpdateCmd.Flags().Int("idle-guard-after-hours", 0, "Set the idle-issue guard threshold in whole hours, 1 to 72. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("routing-agent", "", "Set the routing agent (agent id) that handles routing-only workflow steps; pass none to turn routing off. Human owner/admin only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("compact-agent", "", "Set the /compact agent (agent id or name in this workspace); pass null to reset. An alias over `workspace background-agents set compact`. Human owner/admin only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("routing-fallback-agent", "", "Set the agent used when the routing agent is archived (agent id); pass none to clear")
 	workspaceUpdateCmd.Flags().String("routing-statuses", "", "Comma-separated status keys that count as routing steps (default todo,blocked,merged,need_decision)")
 	workspaceUpdateCmd.Flags().String("routing-overrides", "", "Comma-separated status=agent-id pairs sending one routing status to another agent; a key <workflow-id>:<status> limits it to one workflow; pass none to clear")
@@ -549,6 +561,37 @@ func runWorkspaceGet(cmd *cobra.Command, args []string) error {
 	return printWorkspace(cmd, ws)
 }
 
+func runWorkspaceCapabilityRouting(cmd *cobra.Command, args []string) error {
+	wsID, err := resolveWorkspaceArg(cmd, args)
+	if err != nil {
+		return err
+	}
+	if wsID == "" {
+		return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	var ws struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := client.GetJSON(ctx, "/api/workspaces/"+wsID, &ws); err != nil {
+		return fmt.Errorf("get workspace: %w", err)
+	}
+	table := ws.Settings["capability_routing"]
+	if len(table) == 0 || string(table) == "null" {
+		table = json.RawMessage("{}")
+	}
+	var out any
+	if err := json.Unmarshal(table, &out); err != nil {
+		return fmt.Errorf("capability_routing is not JSON: %w", err)
+	}
+	return cli.PrintJSON(os.Stdout, out)
+}
+
 func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
@@ -660,7 +703,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
 	conflicting = append(conflicting, mergeQueueFlags...)
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
@@ -761,7 +804,7 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 		if !cmd.Flags().Changed(single.flag) {
 			continue
 		}
-		for _, name := range append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...) {
+		for _, name := range append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...) {
 			if name != single.flag && cmd.Flags().Changed(name) {
 				return nil, fmt.Errorf("--%s cannot be combined with --%s; it changes only the %s", single.flag, name, single.what)
 			}
@@ -866,6 +909,13 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 		}
 		return printDigestSwapResult(cmd, "workspace", result)
 	}
+	if cmd.Flags().Changed("compact-agent") {
+		for _, name := range compactAgentExclusive {
+			if cmd.Flags().Changed(name) {
+				return fmt.Errorf("--compact-agent cannot be combined with --%s; it changes only the compact agent", name)
+			}
+		}
+	}
 
 	wsID, err := resolveWorkspaceArg(cmd, args)
 	if err != nil {
@@ -883,6 +933,9 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	if cmd.Flags().Changed("compact-agent") {
+		return runCompactAgentUpdate(ctx, cmd, client, wsID)
+	}
 	body, err := buildWorkspaceUpdateBody(cmd)
 	if err != nil {
 		return err
@@ -1294,4 +1347,42 @@ func mergeRoutingFlags(cmd *cobra.Command, current map[string]any) (map[string]a
 		next["overrides"] = overrides
 	}
 	return next, nil
+}
+
+// compactAgentExclusive lists every other update flag; --compact-agent changes
+// only the compact setting, so any of them next to it is refused before a request.
+var compactAgentExclusive = append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...)
+
+// runCompactAgentUpdate is `--compact-agent <id-or-name|null>` (CHE-2915, DX-6):
+// an alias over `background-agents set compact`. The name is resolved in the
+// target workspace, not the ambient one, and the saved value is read back.
+func runCompactAgentUpdate(ctx context.Context, cmd *cobra.Command, client *cli.APIClient, wsID string) error {
+	var id *string // nil resets
+	if v, _ := cmd.Flags().GetString("compact-agent"); strings.TrimSpace(v) != "null" {
+		client.WorkspaceID = wsID
+		resolved, err := resolveAgent(ctx, client, strings.TrimSpace(v))
+		if err != nil {
+			return err
+		}
+		id = &resolved
+	}
+	body, err := bgWriteBody(ctx, client, wsID, bgWorkspaceScope, "compact", map[string]*string{"agent_id": id})
+	if err != nil {
+		return err
+	}
+	if err := client.PutJSON(ctx, "/api/workspaces/"+wsID+bgWorkspaceScope.path, body, nil); err != nil {
+		return bgWriteError("set compact agent", err)
+	}
+	saved, err := bgRead(ctx, client, wsID, bgWorkspaceScope)
+	if err != nil {
+		return err
+	}
+	want, got := "", strVal(saved["compact"], "agent_id")
+	if id != nil {
+		want = *id
+	}
+	if got != want {
+		return fmt.Errorf("compact agent was not saved: sent %q, the server now has %q; check that the agent is active in this workspace and you are an owner or admin, then run `multica workspace background-agents list`", want, got)
+	}
+	return bgPrint(cmd, wsID, bgWorkspaceScope, bgView(bgWorkspaceScope, saved, nil))
 }

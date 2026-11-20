@@ -63,7 +63,7 @@ go_version="$(sed -n 's/^FROM golang:\([0-9][0-9.]*\)-alpine .*/\1/p' "$root/Doc
 # Checksums are pinned here (from https://go.dev/dl/) so a changed or poisoned
 # download cannot pass. Raising the Dockerfile Go version needs a new line.
 case "$go_version" in
-  1.27.3) go_sha256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;;
+  1.27.4) go_sha256=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840 ;;
   *) fail "no pinned checksum for Go $go_version: add it to scripts/build-cd-backend-binaries.sh" ;;
 esac
 

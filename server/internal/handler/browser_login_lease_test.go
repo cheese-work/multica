@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/browserlease"
@@ -249,5 +250,55 @@ func TestBrowserLoginLeaseRouteDoesNotTouchAnAgentLease(t *testing.T) {
 	}
 	if state, _ := browserLeaseState(t, lease); state != "active" {
 		t.Fatalf("the login route ended an agent lease: state = %q", state)
+	}
+}
+
+// CHE-4744: a human login lease audits the acting member, never the system.
+func (f loginLeaseFixture) auditedMember(t *testing.T) {
+	t.Helper()
+	f.h.BrowserLeases.Audit = BrowserLeaseAudit
+	prevTx := f.h.TxStarter
+	f.h.TxStarter = testPool
+	t.Cleanup(func() { f.h.TxStarter = prevTx })
+}
+
+func assertLoginLeaseRow(t *testing.T, kind, leaseID string) auditRow {
+	t.Helper()
+	rows := auditRowsFor(t, kind, leaseID)
+	if len(rows) != 1 {
+		t.Fatalf("%s rows = %d, want 1", kind, len(rows))
+	}
+	if rows[0].ActorType != "member" || rows[0].ActorID != testUserID {
+		t.Errorf("%s actor = %s/%s, want member %s", kind, rows[0].ActorType, rows[0].ActorID, testUserID)
+	}
+	return rows[0]
+}
+
+func TestBrowserLoginLeaseStartAndReleaseAuditTheMember(t *testing.T) {
+	f := newLoginLeaseFixture(t)
+	f.auditedMember(t)
+	out := f.mint(t, testUserID)
+	assertLoginLeaseRow(t, "browser.lease.start", out.LeaseID)
+	if code := f.status(f.h.ReleaseBrowserLoginLease, f.req(testUserID, out.LeaseID, nil)); code != http.StatusOK {
+		t.Fatalf("release: %d", code)
+	}
+	row := assertLoginLeaseRow(t, "browser.lease.revoke", out.LeaseID)
+	if row.After["revoke_reason"] != browserlease.ReasonRelease {
+		t.Errorf("revoke_reason = %v, want release", row.After["revoke_reason"])
+	}
+}
+
+func TestBrowserLoginLeaseExpiryOnRenewAuditsTheMember(t *testing.T) {
+	f := newLoginLeaseFixture(t)
+	f.auditedMember(t)
+	out := f.mint(t, testUserID)
+	f.h.BrowserLeases.Now = func() time.Time { return time.Now().Add(browserlease.MaxLeaseDuration) }
+	t.Cleanup(func() { f.h.BrowserLeases.Now = nil })
+	if code := f.status(f.h.RenewBrowserLoginLease, f.req(testUserID, out.LeaseID, nil)); code != http.StatusConflict {
+		t.Fatalf("renew past the hard limit: %d", code)
+	}
+	row := assertLoginLeaseRow(t, "browser.lease.end", out.LeaseID)
+	if row.After["end_reason"] != "expired" {
+		t.Errorf("end_reason = %v, want expired", row.After["end_reason"])
 	}
 }
