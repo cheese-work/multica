@@ -6103,6 +6103,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	} else {
 		taskLog.Info("picked task", "issue", task.IssueID, "agent", agentName, "provider", provider)
 	}
+	logTrialArm(taskLog, task)
 	taskLog.Debug("task context",
 		"workspace_id", task.WorkspaceID,
 		"runtime_id", task.RuntimeID,
