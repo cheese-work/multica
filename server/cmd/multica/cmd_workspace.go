@@ -75,6 +75,16 @@ var workspaceGetCmd = &cobra.Command{
 	RunE: runWorkspaceGet,
 }
 
+var workspaceCapabilityRoutingCmd = &cobra.Command{
+	Use:   "capability-routing [workspace-id|slug|prefix]",
+	Short: "Show the capability_routing setting (issue type to author and reviewers)",
+	Long: "Prints the workspace setting capability_routing: per issue type, the author " +
+		"agent and the ordered reviewer agents. Prints {} when it is unset. Read-only; " +
+		"change it with 'multica config propose workspace.settings --set capability_routing:=<json>'.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkspaceCapabilityRouting,
+}
+
 var workspaceMemberCmd = &cobra.Command{
 	Use:   "member",
 	Short: "Manage workspace members",
@@ -186,6 +196,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceGetCmd)
+	workspaceCmd.AddCommand(workspaceCapabilityRoutingCmd)
 	workspaceCmd.AddCommand(workspaceMemberCmd)
 	workspaceMemberCmd.AddCommand(workspaceMemberListCmd)
 	workspaceMemberCmd.AddCommand(workspaceMemberInviteCmd)
@@ -548,6 +559,37 @@ func runWorkspaceGet(cmd *cobra.Command, args []string) error {
 	}
 
 	return printWorkspace(cmd, ws)
+}
+
+func runWorkspaceCapabilityRouting(cmd *cobra.Command, args []string) error {
+	wsID, err := resolveWorkspaceArg(cmd, args)
+	if err != nil {
+		return err
+	}
+	if wsID == "" {
+		return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	var ws struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := client.GetJSON(ctx, "/api/workspaces/"+wsID, &ws); err != nil {
+		return fmt.Errorf("get workspace: %w", err)
+	}
+	table := ws.Settings["capability_routing"]
+	if len(table) == 0 || string(table) == "null" {
+		table = json.RawMessage("{}")
+	}
+	var out any
+	if err := json.Unmarshal(table, &out); err != nil {
+		return fmt.Errorf("capability_routing is not JSON: %w", err)
+	}
+	return cli.PrintJSON(os.Stdout, out)
 }
 
 func printWorkspace(cmd *cobra.Command, ws map[string]any) error {

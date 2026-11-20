@@ -1575,3 +1575,46 @@ func TestBuildWorkspaceUpdateBodyMergeQueueFlags(t *testing.T) {
 		t.Errorf("digest mode with a merge-queue flag: err = %v", err)
 	}
 }
+
+// CHE-7666: `workspace capability-routing` prints only the capability_routing setting.
+const capWS = "44444444-4444-4444-8444-444444444444"
+
+func TestRunWorkspaceCapabilityRoutingPrintsTheSetting(t *testing.T) {
+	table := map[string]any{"feat": map[string]any{"author": "a1", "reviewers": []any{"r1"}}}
+	for name, settings := range map[string]map[string]any{
+		"set":   {"capability_routing": table, "compact_prompt": "x"},
+		"unset": {"compact_prompt": "x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/workspaces/"+capWS {
+					http.NotFound(w, r)
+					return
+				}
+				json.NewEncoder(w).Encode(map[string]any{"id": "ws-1", "settings": settings})
+			}))
+			defer srv.Close()
+			redirectTestHome(t, t.TempDir())
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_TOKEN", "mat_test-token")
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+
+			cmd := newWorkspaceCreateTestCmd()
+			out, err := captureStdout(t, func() error { return runWorkspaceCapabilityRouting(cmd, []string{capWS}) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			var printed map[string]any
+			if err := json.Unmarshal([]byte(out), &printed); err != nil {
+				t.Fatalf("stdout %q: %v", out, err)
+			}
+			want := map[string]any{}
+			if v, ok := settings["capability_routing"].(map[string]any); ok {
+				want = v
+			}
+			if !reflect.DeepEqual(printed, want) {
+				t.Fatalf("printed %v, want %v", printed, want)
+			}
+		})
+	}
+}

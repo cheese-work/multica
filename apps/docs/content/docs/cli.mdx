@@ -468,6 +468,8 @@ multica me background-agents set dm_title --agent none   # back to the workspace
 
 `multica workspace update --compact-agent <id-or-name|null>` is an alias for `set compact` (see Compacting a web DM). `--agent` and `--fallback` take an agent id or name; `none` clears the field. `multica me` covers `dm_title`, `quick_actions` and `compact`; `routing` is workspace-only. Workspace writes need an owner or admin, and both commands refuse task tokens. See [Background Agents](/background-agents) for the no-agent behaviour and deadlines.
 
+`multica workspace capability-routing [workspace]` prints the `capability_routing` setting (issue type to author and reviewer agents) as JSON, or `{}` when it is unset. It only reads; change the setting with `multica config propose workspace.settings --set 'capability_routing:=<json>'`. See [Workflows](/docs/workflows).
+
 ## Browser leases
 
 Inside a daemon task, lease the shared remote browser. The command goes through the local daemon, which holds the task's daemon credential; the agent never does. A granted lease prints the gateway URL and a short-lived token on stdout only; nothing is logged. A queued lease prints its queue position and no token.

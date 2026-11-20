@@ -70,6 +70,10 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 工作区所有者或管理员可在工作区设置中配置 `workflow_by_type`，例如 `{"design": "<工作流 ID>", "plan": "<工作流 ID>"}`。标题以已映射类型开头的新问题（如 `design(x): …`）会使用该工作流，而不是所在项目的工作流。`--workflow`（CLI）或显式选择始终优先。没有对应条目的类型，或对应工作流已不存在时，沿用项目的工作流。`multica issue create` 会打印所选工作流。标题带有已映射类型时，新建窗口会显示将选用的工作流的状态和交接。该映射属于工作区策略：对包括智能体在内的所有创建者生效，不会经过非交互调用方使用显式 `--workflow` 时的运行预算检查。若两个键仅大小写不同，按字母顺序靠前的生效。之后修改标题不会改变工作流；更新响应带有一行 `workflow_hint`（`multica issue update` 会打印），给出移动它的命令。
 
+## 按能力路由工作
+
+工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，目前没有任何功能读取它，因此行为不变。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
+
 ## 把任务交给下一步
 
 修改任务状态，或把卡片拖到另一列。如果这一步设有交接，先确认接收人；交给智能体时，还可以查看它会收到的说明。
