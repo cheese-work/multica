@@ -16,7 +16,7 @@ import (
 
 type claimBody struct {
 	MaxTasks      int  `json:"max_tasks"`
-	MaxIssueTasks *int `json:"max_issue_tasks"`
+	MaxNonDMTasks *int `json:"max_non_dm_tasks"`
 }
 
 // reservedSlotsHarness runs the batch poller against a fake server whose claim
@@ -122,6 +122,7 @@ func (h *reservedSlotsHarness) waitBody(match func(claimBody) bool, what string)
 const (
 	reservedIssueTaskJSON = `{"id":"%s","runtime_id":"rt-1","issue_id":"i-%s","agent":{"name":"a"}}`
 	reservedChatTaskJSON  = `{"id":"%s","runtime_id":"rt-1","chat_session_id":"c-%s","agent":{"name":"a"}}`
+	reservedGroupTaskJSON = `{"id":"%s","runtime_id":"rt-1","chat_session_id":"c-%s","chat_type":"group","agent":{"name":"a"}}`
 )
 
 func taskJSON(tmpl, id string) string { return strings.ReplaceAll(tmpl, "%s", id) }
@@ -140,10 +141,41 @@ func TestReservedChatSlotsLimitIssueClaims(t *testing.T) {
 		}
 		return `{"tasks":[]}`
 	})
-	h.waitBody(func(b claimBody) bool { return b.MaxIssueTasks != nil && *b.MaxIssueTasks == 2 && b.MaxTasks == 4 }, "first claim: max_issue_tasks=2")
+	h.waitBody(func(b claimBody) bool { return b.MaxNonDMTasks != nil && *b.MaxNonDMTasks == 2 && b.MaxTasks == 4 }, "first claim: max_non_dm_tasks=2")
 	h.waitStarted("t1", "t2")
-	h.waitBody(func(b claimBody) bool { return b.MaxIssueTasks != nil && *b.MaxIssueTasks == 0 }, "claim with issue budget 0 once two issue tasks run")
+	h.waitBody(func(b claimBody) bool { return b.MaxNonDMTasks != nil && *b.MaxNonDMTasks == 0 }, "claim with issue budget 0 once two issue tasks run")
 	h.waitStarted("t3")
+}
+
+// A group channel task has a chat session but is not a DM: it counts against
+// the non-DM budget, so it cannot hold a reserved slot.
+func TestReservedChatSlotsGroupChannelTaskCountsAsNonDM(t *testing.T) {
+	t.Parallel()
+	h := newReservedSlotsHarness(t, 4, 2, func(call int) string {
+		switch call {
+		case 1:
+			return `{"tasks":[` + taskJSON(reservedGroupTaskJSON, "g1") + `,` + taskJSON(reservedIssueTaskJSON, "t2") + `]}`
+		case 2:
+			return `{"tasks":[` + taskJSON(reservedChatTaskJSON, "dm1") + `]}`
+		}
+		return `{"tasks":[]}`
+	})
+	h.waitStarted("g1", "t2")
+	h.waitBody(func(b claimBody) bool { return b.MaxNonDMTasks != nil && *b.MaxNonDMTasks == 0 }, "non-DM budget 0 once a group task and an issue task run")
+	h.waitStarted("dm1")
+}
+
+// A DM does not spend the non-DM budget.
+func TestReservedChatSlotsDMDoesNotSpendBudget(t *testing.T) {
+	t.Parallel()
+	h := newReservedSlotsHarness(t, 4, 2, func(call int) string {
+		if call == 1 {
+			return `{"tasks":[` + taskJSON(reservedChatTaskJSON, "dm1") + `]}`
+		}
+		return `{"tasks":[]}`
+	})
+	h.waitStarted("dm1")
+	h.waitBody(func(b claimBody) bool { return b.MaxTasks == 3 && b.MaxNonDMTasks != nil && *b.MaxNonDMTasks == 2 }, "budget still 2 with a DM running")
 }
 
 // reserved_chat_slots=0 sends no limit, so claim requests equal today's.
@@ -160,8 +192,8 @@ func TestReservedChatSlotsZeroSendsNoIssueLimit(t *testing.T) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, b := range h.bodies {
-		if b.MaxIssueTasks != nil {
-			t.Fatalf("max_issue_tasks sent with reserved_chat_slots=0: %+v", b)
+		if b.MaxNonDMTasks != nil {
+			t.Fatalf("max_non_dm_tasks sent with reserved_chat_slots=0: %+v", b)
 		}
 	}
 }
