@@ -187,8 +187,11 @@ func (h *Handler) retryChainedRun(ctx context.Context, lk *lockedDeferredSwitchI
 		}
 		return err
 	}
-	if move.RunRefused != nil || !move.TaskID.Valid {
-		return fmt.Errorf("retry run not started: %v", move.RunRefused)
+	if move.RunRefused != nil {
+		return fmt.Errorf("retry run not started: %w", move.RunRefused)
+	}
+	if !move.TaskID.Valid {
+		return errors.New("retry run not started: no task was created")
 	}
 	details, _ := json.Marshal(chainedRunRetryRecord{
 		Step: task.WorkflowStep.String, FailedTaskID: uuidToString(task.ID), RetryTaskID: uuidToString(move.TaskID),
