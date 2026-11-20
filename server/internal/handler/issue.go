@@ -374,6 +374,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := wf.recordVerdict(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
+	if err := wf.recordAuthor(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
 	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
 }
 
@@ -4238,7 +4241,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		// in place of it.
 		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
 			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID, workflowSubject{Title: req.Title})
 			if err != nil {
 				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
@@ -4438,7 +4441,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
+	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID, req.Title)
 	markedWriter := false
 	if req.Description != nil {
 		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
@@ -4865,6 +4868,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	}
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
+	}
+	if err := wf.recordAuthor(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record author: %w", err)
 	}
 	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)

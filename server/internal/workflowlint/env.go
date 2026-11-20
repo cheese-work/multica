@@ -43,6 +43,10 @@ type Env struct {
 	// Statuses is the workspace status catalog, status key to display name.
 	// It turns on WF009 and WF010, which read step instructions. Nil skips them.
 	Statuses map[string]string
+	// AuthorRoutes is the set of issue types capability_routing names an
+	// author for. It turns on WF015. Nil skips it; an empty map means the
+	// workspace routes no author.
+	AuthorRoutes map[string]bool
 }
 
 // The two JSON files below are the only place that names a qualified runtime
@@ -113,13 +117,14 @@ func (m labMap) of(a Agent) (string, bool) {
 	return lab, ok
 }
 
-// LintWith is Lint plus the agent, runtime and usage rules (WF004-006, 009, 010, 012, 013).
+// LintWith is Lint plus the agent, runtime and usage rules (WF004-006, 009, 010, 012, 013, 015).
 func LintWith(def issueworkflow.Definition, env Env) []Finding {
 	l := linter{def: def, reached: reachedStatuses(def)}
 	for _, s := range def.Steps {
 		l.lintStep(s)
 		l.lintHandler(s, env)
 		l.lintInstructions(s, env)
+		l.lintAuthor(s, env)
 	}
 	l.lintRunBudget()
 	l.lintLabs(env)
@@ -209,4 +214,15 @@ func (l *linter) lintUsage(env Env) {
 		l.add("WF013", LevelInfo, nil, "No project uses this workflow and no other workflow refers to it.",
 			"Attach it to a project or delete it.")
 	}
+}
+
+// lintAuthor is WF015: an author step hands off only when the issue already
+// has an author or capability_routing names one for its type, so with no
+// routing an issue entering the step is assigned to nobody (CHE-7677).
+func (l *linter) lintAuthor(s issueworkflow.Step, env Env) {
+	if env.AuthorRoutes == nil || s.Handler.Type != issueworkflow.HandlerAuthor || len(env.AuthorRoutes) > 0 {
+		return
+	}
+	l.add("WF015", LevelWarning, &s, fmt.Sprintf("%q hands off to the author, but capability_routing names no author, so a new issue entering it has no assignee.", s.StatusKey),
+		"Set capability_routing for the issue types this workflow serves, or pick a concrete handler.")
 }
