@@ -1146,6 +1146,12 @@ func foldedLikeAny(column string, likeParams []string) string {
 // when that is cheaper. Cost is the planner's call, so the SQL never forces an
 // index, and the eligibility rules and ranking read the same flags as before.
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	return buildSearchQueryDriving(phrase, terms, queryNum, hasNum, includeClosed, terminalStatusKeys, -1)
+}
+
+// buildSearchQueryDriving is buildSearchQuery with the driving term chosen by
+// the caller (index into terms; -1 picks the longest term).
+func buildSearchQueryDriving(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string, drivingTerm int) (string, []any) {
 	// The stored search text is lowered and diacritic-folded (search_fold), so the
 	// patterns are folded the same way. The lowered-only query is kept to rank a
 	// match that also agrees on diacritics above one that matches after folding.
@@ -1199,6 +1205,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		if hasNum || utf8.RuneCountInString(terms[0]) > longest {
 			drivingParam = phraseContainsParam
 		}
+	} else if drivingTerm >= 0 && drivingTerm < len(terms) && utf8.RuneCountInString(terms[drivingTerm]) > shortTermLen {
+		drivingParam = termContainsParams[drivingTerm]
 	} else {
 		for index, term := range terms {
 			if n := utf8.RuneCountInString(term); n > longest {
@@ -1737,7 +1745,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		sqlQuery, args = buildTitleSearchQuery(terms, includeClosed, terminalStatusKeys)
 		wsArg = 0
 	} else {
-		sqlQuery, args = buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
+		drivingTerm := h.pickDrivingTerm(ctx, wsUUID, terms)
+		sqlQuery, args = buildSearchQueryDriving(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys, drivingTerm)
 	}
 	// Fill placeholder args: workspace_id, last two = limit, offset
 	args[wsArg] = wsUUID
