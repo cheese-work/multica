@@ -9201,6 +9201,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	} else {
 		selfBin = agentEnv["MULTICA_CLI_PATH"]
 	}
+	// Log every guard decision to a file and upload it when the run ends, so the
+	// Guard settings page can count them (CHE-5207). Deferred after the temp-dir
+	// cleanup, so it runs first.
+	guardLog := setGuardLog(agentEnv, taskTempDir)
+	defer d.uploadGuardDecisions(ctx, task.ID, guardLog, taskLog)
 	// Hand the guard the workspace's stored policy (CHE-5204); without one it
 	// keeps the compiled default.
 	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {

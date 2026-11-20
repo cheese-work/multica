@@ -125,6 +125,12 @@ Un événement qui ne peut pas être envoyé comme avis va plutôt à l'agent do
 
 Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
 
+### Garde des outils
+
+**Paramètres → Guard** liste les plugins de garde des outils de l'espace de travail et ce que chacun a fait ces 7 derniers jours. Chaque plugin affiche le nombre d'appels corrigés, refusés ou en erreur, un graphique des occurrences par jour et ses dernières décisions. Les chiffres viennent des mêmes lignes que `multica guard stats` et `multica guard log`. Les jours suivent votre fuseau horaire d'affichage.
+
+Un propriétaire de l'espace de travail modifie ici une règle de niveau espace de travail : **Modifier avec une clé d'accès** change son action et son message, et le propriétaire signe cette modification exacte avec une passkey. La signature nomme la version de la politique dont elle part. Si une autre modification est arrivée avant, rien n'est enregistré et la page montre les deux versions avec **Réappliquer** (votre modification sur la nouvelle version, avec une nouvelle passkey), **Recharger l'actuelle** et **Abandonner**. Les membres voient la page en lecture seule. Les règles d'une couche org, dépôt ou chemin se modifient en CLI : un agent crée la modification avec `multica guard plugin set`, puis une personne l'approuve avec une passkey sur la carte de décision. Sans politique enregistrée, la page affiche les valeurs par défaut intégrées.
+
 ### Écritures gouvernées déléguées
 
 Le paramètre d'espace de travail `delegated_governed_writes` décide quels agents peuvent écrire dans les champs gouvernés, et si chaque écriture exige encore la décision d'une personne. Il se trouve dans les paramètres de l'espace de travail, sous **Écritures gouvernées déléguées**.

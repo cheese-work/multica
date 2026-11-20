@@ -125,6 +125,12 @@ An event that cannot be sent as a notice goes to the agent whose run produced it
 
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
 
+### Tool guard
+
+**Settings → Guard** lists the tool-guard plugins of the workspace and what each one did in the last 7 days. Each plugin shows how many calls it fixed, refused or failed on, a chart of hits per day, and its latest decisions. The numbers come from the same rows as `multica guard stats` and `multica guard log`. Days follow your viewing time zone.
+
+A workspace owner edits a workspace-level rule here: **Edit with passkey** changes its action and message, and the owner signs that exact change with a passkey. The signature names the policy version it started from. If another change landed first, nothing is saved and the page shows the two versions with **Re-apply** (put your change on the new version, with a new passkey), **Reload current** and **Discard**. Members see the page read-only. Rules that belong to an org, repo or path layer are edited with the CLI: an agent creates the change with `multica guard plugin set`, and a person approves it on the decision card with a passkey. Without a saved policy, the page shows the built-in defaults.
+
 ### Held-setting ask guard
 
 The workspace setting `held_setting_ask_mode` (`off` by default, `warn` or `block`) controls what happens when a decision or action request asks a person for a workspace setting the workspace settings already hold. The request names the keys in the typed field `settings_needed`; the server never reads the prose. A key counts as held when its stored value is not null, not an empty string, list or object. Key names compare without case.
