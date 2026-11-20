@@ -387,8 +387,8 @@ func (h *Handler) agentDecisionJevMetrics(ctx context.Context, workspaceID pgtyp
         count(*) FILTER (WHERE sc.scope->'Proposal'->>'decision_class' = ANY($3))
         FROM decision_agent_settlement s
         JOIN decision_agent_scope sc ON sc.instance_id=s.instance_id AND sc.workspace_id=s.workspace_id
-        WHERE s.workspace_id=$1 AND sc.scope->'Proposal'->>'decider'=$2`,
-		workspaceID, agentDecisionDeciderJev, agentDecisionExcludedClasses).
+        WHERE s.workspace_id=$1 AND sc.scope->'Proposal'->>'decider' = ANY($2)`,
+		workspaceID, []string{agentDecisionDeciderJev, agentDecisionDeciderDelegate}, agentDecisionExcludedClasses).
 		Scan(&m.Decisions, &m.Vetoed, &m.ExcludedClassDecisions)
 	if err != nil {
 		return m, err
