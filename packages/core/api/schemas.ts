@@ -1110,6 +1110,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
+  preview_unavailable: z.string().optional().catch(undefined),
   // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
   config_change: z.object({
     field: z.string(),

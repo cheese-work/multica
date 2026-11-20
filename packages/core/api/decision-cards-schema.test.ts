@@ -69,6 +69,12 @@ describe("DM decision cards", () => {
       expect(parse(action)).toEqual(action);
     });
 
+    it("keeps the server's reason for a missing preview, and drops a non-text one", () => {
+      const { preview: _omit, ...bare } = action;
+      expect(parse({ ...bare, preview_unavailable: "The run cap is already 48." })?.preview_unavailable).toBe("The run cap is already 48.");
+      expect(parse({ ...bare, preview_unavailable: 7 })?.preview_unavailable).toBeUndefined();
+    });
+
     it("keeps the action without a preview when the preview is missing or malformed", () => {
       const { preview: _omit, ...bare } = action;
       expect(parse(bare)?.preview).toBeUndefined();
