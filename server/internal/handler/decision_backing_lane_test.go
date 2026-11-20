@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -167,7 +168,7 @@ func TestA6aLaneIsInvisibleToLaneQueries(test *testing.T) {
 	var topicID string
 	dbfx.QueryRow(test, `SELECT topic_id::text FROM decision_backing_lane WHERE session_id = $1`, session).Scan(&topicID)
 	ctx := test.Context()
-	if _, err := testHandler.Queries.GetDecisionTopicLane(ctx, db.GetDecisionTopicLaneParams{WorkspaceID: parseUUID(testWorkspaceID), CreatorID: parseUUID(testUserID), TopicID: parseUUID(topicID)}); err != pgx.ErrNoRows {
+	if _, err := testHandler.Queries.GetDecisionTopicLane(ctx, db.GetDecisionTopicLaneParams{WorkspaceID: parseUUID(testWorkspaceID), CreatorID: parseUUID(testUserID), TopicID: parseUUID(topicID)}); !errors.Is(err, pgx.ErrNoRows) {
 		test.Fatalf("GetDecisionTopicLane returned the backing lane (err %v)", err)
 	}
 	lanes, err := testHandler.Queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: parseUUID(testWorkspaceID), AgentID: parseUUID(fixture.agentID), TopicID: parseUUID(topicID), CreatorID: parseUUID(testUserID), SessionID: parseUUID(session)})
