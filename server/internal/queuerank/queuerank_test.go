@@ -97,14 +97,9 @@ func TestStarvationBound(t *testing.T) {
 	if four >= fresh {
 		t.Fatalf("4 steps older base-0 item = %d must not yet beat fresh %d: the bound is tight", four, fresh)
 	}
-	// Every pair of bases, plus the same pair with a partial extra step on the loser.
+	// Every pair of bases.
 	for a := 0; a <= 124; a++ {
 		for b := 0; b <= 124; b++ {
-			older := Effective(a, 5*aging, aging)
-			newer := Effective(b, aging-time.Nanosecond, aging) // newer waited less than one step
-			if older <= newer && a+125 <= b {
-				t.Fatalf("base %d, 5 steps older, lost to base %d", a, b)
-			}
 			if Effective(a, 5*aging, aging) <= Effective(b, 0, aging) {
 				t.Fatalf("base %d aged 5 steps does not beat fresh base %d", a, b)
 			}

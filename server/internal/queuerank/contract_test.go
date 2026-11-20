@@ -95,11 +95,7 @@ func TestSQLMatchesGo(t *testing.T) {
 	exec(t, pool, migration(t, "99d_queue_rank.up.sql"))
 
 	// One workspace per setting shape.
-	type wsFix struct {
-		settings string
-		mode     string
-		aging    string
-	}
+	type wsFix struct{ settings, mode, aging string } // mode and aging as Go reads the setting
 	wsFixes := map[string]wsFix{
 		"rank":      {`{"queue_order":"project_rank"}`, "project_rank", ""},
 		"rank5":     {`{"queue_order":"project_rank","queue_aging_minutes":5}`, "project_rank", "5"},
@@ -201,7 +197,6 @@ func TestSQLMatchesGo(t *testing.T) {
 
 	// No issue: fallback priority gives all three keys. Also an unknown issue,
 	// an issue of another workspace, and a NULL fallback.
-	other := uuid.NewString()
 	var otherWS string
 	for _, is := range issues {
 		if is.ws == "priority" {
@@ -209,7 +204,6 @@ func TestSQLMatchesGo(t *testing.T) {
 			break
 		}
 	}
-	_ = other
 	for _, label := range []string{"rank", "rank5", "priority", "unset"} {
 		f := wsFixes[label]
 		for fb := 0; fb <= 4; fb++ {
@@ -276,11 +270,10 @@ func TestSlotPreservingRerank(t *testing.T) {
 		{p, none, "high", 0, 4}, {r, high, "medium", 0, 5}, {r, high, "low", 0, 6}, {p, high, "low", 0, 7},
 		{p, none, "none", 1, 8}, {r, high, "none", 1, 9}, {r, none, "medium", 1, 10}, {p, high, "medium", 1, 11},
 	}
-	for i, rw := range rows {
+	for _, rw := range rows {
 		issueID, id := uuid.NewString(), uuid.NewString()
 		exec(t, pool, `INSERT INTO issue (id, workspace_id, project_id, priority) VALUES ($1, $2, $3, $4)`, issueID, rw.ws, rw.project, rw.prio)
 		exec(t, pool, `INSERT INTO cand VALUES ($1, $2, $3, $4, $5, $6)`, id, rw.ws, issueID, rw.class, Band(rw.prio), base.Add(time.Duration(rw.age)*time.Minute))
-		_ = i
 	}
 
 	// Today's order: class first (one-shot lane), then priority DESC, created_at, id.
