@@ -249,7 +249,7 @@ var budgetBindingQueries = map[string]string{
 	"SetIssueWorkflow":                     "guarded: SetIssueWorkflow",
 	"SetProjectWorkflow":                   "guarded: SetProjectWorkflow",
 	"DeleteIssueWorkflow":                  "guarded: DeleteIssueWorkflow",
-	"UpdateIssueWorkflow":                  "guarded: workflow budget fields (S1b)",
+	"UpdateIssueWorkflowCols":              "guarded: workflow budget fields (S1b)",
 	"RemoveStatusFromDefaultIssueWorkflow": "exempt: writes steps only, no budget column",
 	"DeleteIssueWorkflowsForWorkspace":     "exempt: workspace teardown",
 }
@@ -352,7 +352,8 @@ var budgetGuardFor = map[string][]string{
 
 // budgetGuardExempt names callers that cannot change a binding.
 var budgetGuardExempt = map[string]string{
-	"MoveIssue": "delegates to the UpdateIssue handler, which sets the actor for the guard",
+	"executeIssueWorkflowSetAction": "the card seals the binding before and after through sealWorkflowBinding, and the executor recomputes both under the issue lock and ends stale_base on any difference",
+	"MoveIssue":                     "delegates to the UpdateIssue handler, which sets the actor for the guard",
 }
 
 func TestBudgetBindingCallersAreGuarded(t *testing.T) {

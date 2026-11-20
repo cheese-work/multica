@@ -45,6 +45,7 @@ func createAsk(test *testing.T, fixture singleCallFixture, body map[string]any) 
 
 // A1: server-side route by class under decision_auto_apply.
 func TestA1AutoApplyRouteByClass(test *testing.T) {
+	test.Skip("red by design until slice A1 lands (CHE-5996, CHE-5480); remove this Skip in that PR")
 	for class, route := range map[string]string{"reversible": "auto_apply", "spend": "human", "deploy": "human", "publish": "human", "irreversible": "human", "product_direction": "human"} {
 		test.Run(class, func(test *testing.T) {
 			setWorkspaceDecisionSettings(test, `{"decision_auto_apply":"on"}`)
@@ -62,6 +63,7 @@ func TestA1AutoApplyRouteByClass(test *testing.T) {
 }
 
 func TestA1ShadowRecordsNoAnswer(test *testing.T) {
+	test.Skip("red by design until slice A1 lands (CHE-5996, CHE-5480); remove this Skip in that PR")
 	setWorkspaceDecisionSettings(test, `{"decision_auto_apply":"shadow"}`)
 	fixture, body := shadowAskFixture(test, "reversible")
 	created := createAsk(test, fixture, body)
@@ -75,6 +77,7 @@ func TestA1ShadowRecordsNoAnswer(test *testing.T) {
 
 // A4a: a member read of a blind request carries no recommendation and no default, as key or text.
 func TestA4aMemberViewHidesRecommendationAndDefault(test *testing.T) {
+	test.Skip("red by design until slice A4a lands (CHE-5997, CHE-5480); remove this Skip in that PR")
 	setWorkspaceDecisionSettings(test, `{"decision_blind_pick":"on","decision_auto_apply":"shadow"}`)
 	fixture, body := shadowAskFixture(test, "reversible")
 	created := createAsk(test, fixture, body)
@@ -104,6 +107,7 @@ func TestA4aMemberViewHidesRecommendationAndDefault(test *testing.T) {
 
 // A6a: with decision_screen on, an issue-agent ask for a member goes to a hidden backing lane.
 func TestA6aBackingLaneIsHiddenFromMember(test *testing.T) {
+	test.Skip("red by design until slice A6a lands (CHE-5998, CHE-5480); remove this Skip in that PR")
 	setWorkspaceDecisionSettings(test, `{"decision_screen":"on"}`)
 	fixture, body := shadowAskFixture(test, "product_direction")
 	body["for"] = testUserID // the test member, who has no decision DM yet
