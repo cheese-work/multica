@@ -317,6 +317,10 @@ func (h *Handler) projectIDsByWorkflow(ctx context.Context, wsUUID pgtype.UUID, 
 // workflowStatusCatalog loads the workspace catalog keyed by status key,
 // including archived rows so validation can say why a key is unusable.
 func (h *Handler) workflowStatusCatalog(ctx context.Context, q *db.Queries, wsUUID pgtype.UUID) (map[string]issueworkflow.CatalogEntry, error) {
+	return loadWorkflowStatusCatalog(ctx, q, wsUUID)
+}
+
+func loadWorkflowStatusCatalog(ctx context.Context, q *db.Queries, wsUUID pgtype.UUID) (map[string]issueworkflow.CatalogEntry, error) {
 	if err := issuestatus.Ensure(ctx, q, wsUUID); err != nil {
 		return nil, err
 	}
@@ -1451,95 +1455,76 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to change workflow")
 		return
 	}
-	var target *issueworkflow.Definition
-	if targetID.Valid {
-		row, err := qtx.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: targetID, WorkspaceID: wsUUID})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "workflow not found in this workspace")
-			return
-		}
-		def, err := issueworkflow.Decode(row)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read workflow")
-			return
-		}
-		if def.IsDefault {
-			// Choosing the Default row is the same as choosing Default.
-			targetID = pgtype.UUID{}
-		} else {
-			target = &def
-		}
+	target, targetID, err := loadSwitchTarget(ctx, qtx, wsUUID, targetID)
+	if errors.Is(err, errSwitchTargetMissing) {
+		writeError(w, http.StatusBadRequest, "workflow not found in this workspace")
+		return
 	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read workflow")
+		return
+	}
+	var host db.Issue
+	openCard := false
 	if !isInteractiveRequest(r) {
-		widens, err := projectSwitchWidensBudget(ctx, qtx, project, target)
+		verdict, err := projectSwitchWidensBudget(ctx, qtx, project, target)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to change workflow")
 			return
 		}
-		if widens {
+		// A task token that names its run asks the owners for a switch into
+		// Quick (CHE-7734); a widening switch, and any other credential, is refused.
+		var hosted bool
+		if verdict.intoQuick && r.Header.Get("X-Actor-Source") == "task_token" {
+			host, hosted = h.runIssue(r)
+		}
+		switch {
+		case hosted:
+			openCard = true
+		case verdict.refused():
 			writeBudgetRebindingRefused(w)
 			return
 		}
 	}
-	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
+	switchPlan, err := planProjectSwitch(ctx, qtx, project, target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load issue statuses")
 		return
 	}
-	// The Default workflow accepts every catalog status, archived included:
-	// issues already on an archived status keep it, as they always have.
-	allowed := func(key string) bool {
-		if target == nil {
-			_, ok := catalog[key]
-			return ok
-		}
-		return target.Has(key)
-	}
-	targetAccepts := func(key string) bool {
-		if target == nil {
-			entry, ok := catalog[key]
-			return ok && !entry.Archived
-		}
-		return target.Has(key)
-	}
-	counts, err := qtx.CountProjectIssuesByStatus(ctx, db.CountProjectIssuesByStatusParams{WorkspaceID: wsUUID, ProjectIds: []pgtype.UUID{project.ID}})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to change workflow")
-		return
-	}
-	categoryOf := func(key string) string { return catalog[key].Category }
-	plan := mappingPlan(counts, allowed, func(key string) string {
-		if target == nil {
-			return issuestatus.Todo
-		}
-		return issueworkflow.MoveTarget(*target, key, categoryOf)
-	})
 	if req.DryRun {
-		writeJSON(w, http.StatusOK, map[string]any{"dry_run": true, "plan": plan})
+		writeJSON(w, http.StatusOK, map[string]any{"dry_run": true, "plan": switchPlan.plan})
 		return
 	}
-	if msg := checkMapping(plan, req.StatusMapping, targetAccepts); msg != "" {
-		writeMappingRequired(w, plan, msg)
+	if msg := checkMapping(switchPlan.plan, req.StatusMapping, switchPlan.accepts); msg != "" {
+		writeMappingRequired(w, switchPlan.plan, msg)
 		return
 	}
-	updated, err := qtx.SetProjectWorkflow(ctx, db.SetProjectWorkflowParams{ID: project.ID, WorkspaceID: wsUUID, WorkflowID: targetID})
+	if openCard {
+		params, err := projectWorkflowQuickParams(ctx, qtx, switchPlan, target, targetID, req.StatusMapping)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to change workflow")
+			return
+		}
+		// Release the project and catalog locks before the card takes its own.
+		if err := tx.Rollback(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to change workflow")
+			return
+		}
+		opened, err := h.openProjectWorkflowQuickCard(ctx, host, project, params)
+		if err != nil {
+			writeDecisionError(w, err, "project workflow request")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, opened)
+		return
+	}
+	updated, changed, cancelledWakeups, err := applyProjectSwitch(ctx, qtx, switchPlan, targetID, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to change workflow")
-		return
-	}
-	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, []pgtype.UUID{project.ID}, plan, req.StatusMapping, uuidToString(member.UserID))
-	if err != nil {
-		slog.Warn("SetProjectWorkflow remap failed", append(logger.RequestAttrs(r), "error", err)...)
+		slog.Warn("SetProjectWorkflow failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to move issues to the new statuses")
 		return
 	}
-	if err := h.writeAudit(ctx, qtx, r, auditInput{
-		Kind:        "project.workflow.update",
-		WorkspaceID: wsUUID,
-		TargetID:    project.ID,
-		Before:      map[string]any{"workflow_id": optionalUUIDString(project.WorkflowID)},
-		After:       map[string]any{"workflow_id": optionalUUIDString(updated.WorkflowID), "issues_remapped": len(changed)},
-	}); err != nil {
+	if err := h.writeAudit(ctx, qtx, r, projectSwitchAudit(project, updated, len(changed))); err != nil {
 		writeAuditFailure(w, r, err, "project.workflow.update")
 		return
 	}
@@ -1553,8 +1538,103 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":        resp,
 		"updated_issues": len(changed),
-		"plan":           plan,
+		"plan":           switchPlan.plan,
 	})
+}
+
+var errSwitchTargetMissing = errors.New("workflow not found in this workspace")
+
+// loadSwitchTarget resolves the workflow a project switch names: nil for
+// Default, and the Default row is the same as none, so the returned id is zero
+// then.
+func loadSwitchTarget(ctx context.Context, q *db.Queries, wsUUID, targetID pgtype.UUID) (*issueworkflow.Definition, pgtype.UUID, error) {
+	if !targetID.Valid {
+		return nil, targetID, nil
+	}
+	row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: targetID, WorkspaceID: wsUUID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, targetID, errSwitchTargetMissing
+	}
+	if err != nil {
+		return nil, targetID, err
+	}
+	def, err := issueworkflow.Decode(row)
+	if err != nil {
+		return nil, targetID, err
+	}
+	if def.IsDefault {
+		return nil, pgtype.UUID{}, nil
+	}
+	return &def, targetID, nil
+}
+
+// projectSwitchPlan is what switching a project's workflow does to its issues,
+// read under the catalog and project locks the caller holds.
+type projectSwitchPlan struct {
+	project db.Project
+	plan    workflowMappingPlan
+	// accepts says whether the new workflow takes a status an issue can move to.
+	accepts func(string) bool
+}
+
+func planProjectSwitch(ctx context.Context, q *db.Queries, project db.Project, target *issueworkflow.Definition) (projectSwitchPlan, error) {
+	catalog, err := loadWorkflowStatusCatalog(ctx, q, project.WorkspaceID)
+	if err != nil {
+		return projectSwitchPlan{}, err
+	}
+	// The Default workflow accepts every catalog status, archived included:
+	// issues already on an archived status keep it, as they always have.
+	allowed := func(key string) bool {
+		if target == nil {
+			_, ok := catalog[key]
+			return ok
+		}
+		return target.Has(key)
+	}
+	accepts := func(key string) bool {
+		if target == nil {
+			entry, ok := catalog[key]
+			return ok && !entry.Archived
+		}
+		return target.Has(key)
+	}
+	counts, err := q.CountProjectIssuesByStatus(ctx, db.CountProjectIssuesByStatusParams{WorkspaceID: project.WorkspaceID, ProjectIds: []pgtype.UUID{project.ID}})
+	if err != nil {
+		return projectSwitchPlan{}, err
+	}
+	categoryOf := func(key string) string { return catalog[key].Category }
+	plan := mappingPlan(counts, allowed, func(key string) string {
+		if target == nil {
+			return issuestatus.Todo
+		}
+		return issueworkflow.MoveTarget(*target, key, categoryOf)
+	})
+	return projectSwitchPlan{project: project, plan: plan, accepts: accepts}, nil
+}
+
+// applyProjectSwitch writes the switch and moves the issues the mapping names,
+// in the caller's transaction. The returned wakeups are for its post-commit
+// broadcast.
+func applyProjectSwitch(ctx context.Context, q *db.Queries, sw projectSwitchPlan, targetID pgtype.UUID, mapping map[string]string, actorID string) (db.Project, []db.Issue, []db.AgentTaskQueue, error) {
+	updated, err := q.SetProjectWorkflow(ctx, db.SetProjectWorkflowParams{ID: sw.project.ID, WorkspaceID: sw.project.WorkspaceID, WorkflowID: targetID})
+	if err != nil {
+		return db.Project{}, nil, nil, err
+	}
+	changed, cancelled, err := remapIssues(ctx, q, sw.project.WorkspaceID, []pgtype.UUID{sw.project.ID}, sw.plan, mapping, actorID)
+	if err != nil {
+		return db.Project{}, nil, nil, err
+	}
+	return updated, changed, cancelled, nil
+}
+
+func projectSwitchAudit(before, after db.Project, remapped int) auditInput {
+	return auditInput{
+		Kind:        "project.workflow.update",
+		WorkspaceID: before.WorkspaceID,
+		TargetID:    before.ID,
+		Before:      map[string]any{"workflow_id": optionalUUIDString(before.WorkflowID)},
+		After:       map[string]any{"workflow_id": optionalUUIDString(after.WorkflowID), "issues_remapped": remapped},
+	}
 }
 
 // SetIssueWorkflowHandoffRequest is a column's handoff. CopyForProjectID,
@@ -1775,12 +1855,12 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, "failed to save handoff")
 			return
 		}
-		widens, err := projectSwitchWidensBudget(ctx, qtx, project, &def)
+		verdict, err := projectSwitchWidensBudget(ctx, qtx, project, &def)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save handoff")
 			return
 		}
-		if widens {
+		if verdict.refused() {
 			writeBudgetRebindingRefused(w)
 			return
 		}

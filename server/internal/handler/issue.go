@@ -5230,7 +5230,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	chained := chainsSameOwner(actorType, callerRun, handoff, params)
 	suppressRun := req.SuppressRun || chained
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
-	writeCtx = withBudgetActor(writeCtx, r)
+	writeCtx = withQuickMoveCard(withBudgetActor(writeCtx, r), r)
 	// The handoff comment rides to the run as context. A run that will start
 	// refuses a comment that is not a live comment of this issue; a move that
 	// starts no run keeps the lenient drop-and-mark of the status history.
@@ -5337,6 +5337,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.flushRefusedIntakeCall(r.Context(), workflowWrite)
 		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+			return
+		}
+		var approval quickMoveApproval
+		if errors.As(err, &approval) {
+			h.writeQuickMoveCard(w, r, approval, rawFields)
 			return
 		}
 		if writeDuplicateMarkError(w, err) {

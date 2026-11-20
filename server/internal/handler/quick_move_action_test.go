@@ -214,6 +214,10 @@ func TestIssueMoveCardPreviewShowsProjectAndWorkflowBeforeAndAfter(t *testing.T)
 
 // projectSwitchFixture is a Default project with two issues and the agent run
 // that asks for the switch, which hosts the owner card.
+// offQuickStatus is a catalog status the Quick workflow does not list, so a
+// switch to Quick has to move its issues.
+const offQuickStatus = "qa_hold"
+
 type projectSwitchFixture struct {
 	quickMoveFixture
 	project, taskID, hostIssue string
@@ -224,13 +228,14 @@ func newProjectSwitchFixture(t *testing.T) projectSwitchFixture {
 	f := projectSwitchFixture{quickMoveFixture: newQuickMoveFixture(t)}
 	f.project = createWorkflowTestProject(t, "Switch project "+workflowTestSuffix())
 	f.hostIssue = dbfx.Issue(t, "host "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": f.project})
-	dbfx.Issue(t, "backlog issue "+workflowTestSuffix(), testutil.Cols{"status": "backlog", "project_id": f.project})
+	createTestCustomStatus(t, offQuickStatus, "started")
+	dbfx.Issue(t, "off-Quick issue "+workflowTestSuffix(), testutil.Cols{"status": offQuickStatus, "project_id": f.project})
 	f.taskID = createHandlerTestTaskForAgentOnIssue(t, seededReadyAgentID(t), f.hostIssue)
 	return f
 }
 
 func (f projectSwitchFixture) body() map[string]any {
-	return map[string]any{"workflow_id": f.quick, "status_mapping": map[string]string{"backlog": "todo"}}
+	return map[string]any{"workflow_id": f.quick, "status_mapping": map[string]string{offQuickStatus: "in_review"}}
 }
 
 func (f projectSwitchFixture) openCard(t *testing.T) openedWorkflowSetCard {
@@ -259,8 +264,8 @@ func TestAgentProjectSwitchToQuickOpensTheOwnerCard(t *testing.T) {
 	if got := projectWorkflowOf(t, f.project); got != "-" {
 		t.Fatalf("an unapproved agent switch changed the project workflow to %s", got)
 	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE project_id = $1 AND status = 'backlog'`, f.project); got != 1 {
-		t.Fatalf("backlog issues = %d after an unapproved switch, want the one still there", got)
+	if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE project_id = $1 AND status = '`+offQuickStatus+`'`, f.project); got != 1 {
+		t.Fatalf("off-Quick issues = %d after an unapproved switch, want the one still there", got)
 	}
 }
 
@@ -274,8 +279,8 @@ func TestApproveQuickProjectSwitchAppliesTheSwitchAndTheRemap(t *testing.T) {
 	if got := projectWorkflowOf(t, f.project); got != f.quick {
 		t.Fatalf("project workflow = %s, want Quick %s", got, f.quick)
 	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE project_id = $1 AND status = 'backlog'`, f.project); got != 0 {
-		t.Fatalf("%d issues still on backlog; the mapping sends them to todo", got)
+	if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE project_id = $1 AND status = '`+offQuickStatus+`'`, f.project); got != 0 {
+		t.Fatalf("%d issues still on the off-Quick status; the mapping sends them to in_review", got)
 	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM workspace_audit_event WHERE kind = 'project.workflow.update' AND target_id = $1`, f.project); got != 1 {
 		t.Fatalf("project.workflow.update audit rows = %d, want 1", got)
@@ -288,16 +293,16 @@ func TestApproveQuickProjectSwitchFailsStaleBase(t *testing.T) {
 		mutate func(t *testing.T, f projectSwitchFixture)
 	}{
 		{"project switched meanwhile", func(t *testing.T, f projectSwitchFixture) {
-			setProjectWorkflow(t, f.project, map[string]any{"workflow_id": f.other}).Want(http.StatusOK)
+			setProjectWorkflow(t, f.project, map[string]any{"workflow_id": f.other, "status_mapping": map[string]string{offQuickStatus: "in_review"}}).Want(http.StatusOK)
 		}},
 		{"target workflow cap edited", func(t *testing.T, f projectSwitchFixture) {
 			dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue = 9 WHERE id = $1`, f.quick)
 		}},
 		{"an issue joined the project", func(t *testing.T, f projectSwitchFixture) {
-			dbfx.Issue(t, "late "+workflowTestSuffix(), testutil.Cols{"status": "backlog", "project_id": f.project})
+			dbfx.Issue(t, "late "+workflowTestSuffix(), testutil.Cols{"status": offQuickStatus, "project_id": f.project})
 		}},
 		{"an issue left the project", func(t *testing.T, f projectSwitchFixture) {
-			dbfx.Exec(t, `UPDATE issue SET project_id = NULL WHERE project_id = $1 AND status = 'backlog'`, f.project)
+			dbfx.Exec(t, `UPDATE issue SET project_id = NULL WHERE project_id = $1 AND status = '`+offQuickStatus+`'`, f.project)
 		}},
 	}
 	for _, c := range cases {
@@ -352,7 +357,7 @@ func TestQuickProjectSwitchStaysImmediateForMembersAndAsksForAMapping(t *testing
 	})
 	t.Run("an agent switch that is not to Quick needs no card", func(t *testing.T) {
 		f := newProjectSwitchFixture(t)
-		agentSwitchProject(t, f.project, f.taskID, map[string]any{"workflow_id": f.full, "status_mapping": map[string]string{"backlog": "todo"}}).Want(http.StatusOK)
+		agentSwitchProject(t, f.project, f.taskID, map[string]any{"workflow_id": f.full, "status_mapping": map[string]string{offQuickStatus: "in_review"}}).Want(http.StatusOK)
 	})
 }
 
