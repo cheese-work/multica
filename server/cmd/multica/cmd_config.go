@@ -184,6 +184,9 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		cfg.WorkspacesRoot = root
 	case "max_concurrent_tasks":
 		if value == "" {
+			if err := validateReservedAgainstMax(cfg.ReservedChatSlots, 0); err != nil {
+				return err
+			}
 			cfg.MaxConcurrentTasks = 0
 			return nil
 		}
@@ -194,7 +197,7 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		if n < 0 {
 			return fmt.Errorf("max_concurrent_tasks must be >= 0 (got %d)", n)
 		}
-		if err := daemon.ValidateReservedChatSlots(cfg.ReservedChatSlots, effectiveMaxConcurrentTasks(n)); err != nil {
+		if err := validateReservedAgainstMax(cfg.ReservedChatSlots, n); err != nil {
 			return err
 		}
 		cfg.MaxConcurrentTasks = n
@@ -207,7 +210,7 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		if err != nil {
 			return fmt.Errorf("reserved_chat_slots must be an integer: %w", err)
 		}
-		if err := daemon.ValidateReservedChatSlots(n, effectiveMaxConcurrentTasks(cfg.MaxConcurrentTasks)); err != nil {
+		if err := validateReservedAgainstMax(n, cfg.MaxConcurrentTasks); err != nil {
 			return err
 		}
 		cfg.ReservedChatSlots = n
@@ -368,13 +371,14 @@ func valueOrDefault(v, fallback string) string {
 	return v
 }
 
-// effectiveMaxConcurrentTasks is the cap the daemon will run with: the
-// persisted value, or the built-in default when none is set.
-func effectiveMaxConcurrentTasks(persisted int) int {
-	if persisted > 0 {
-		return persisted
+// validateReservedAgainstMax checks a reservation against the cap the daemon
+// will actually run with (persisted override, then env, then default).
+func validateReservedAgainstMax(reserved, persistedMax int) error {
+	max, err := daemon.EffectiveMaxConcurrentTasks(persistedMax)
+	if err != nil {
+		return err
 	}
-	return daemon.DefaultMaxConcurrentTasks
+	return daemon.ValidateReservedChatSlots(reserved, max)
 }
 
 func intOrDefault(v int, fallback string) string {

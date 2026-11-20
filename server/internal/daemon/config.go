@@ -520,12 +520,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		codexTurnInterruptTimeout = DefaultCodexTurnInterruptTimeout
 	}
 
-	maxConcurrentTasks, err := intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
+	maxConcurrentTasks, err := EffectiveMaxConcurrentTasks(overrides.MaxConcurrentTasks)
 	if err != nil {
 		return Config{}, err
-	}
-	if overrides.MaxConcurrentTasks > 0 {
-		maxConcurrentTasks = overrides.MaxConcurrentTasks
 	}
 	reservedChatSlots, err := intFromEnv("MULTICA_DAEMON_RESERVED_CHAT_SLOTS", overrides.ReservedChatSlots)
 	if err != nil {
@@ -1600,6 +1597,17 @@ func (c Config) agentTimeoutFor(provider string) time.Duration {
 		return c.CodexAgentTimeout
 	}
 	return c.AgentTimeout
+}
+
+// EffectiveMaxConcurrentTasks is the cap the daemon runs with: the persisted
+// override when positive, else MULTICA_DAEMON_MAX_CONCURRENT_TASKS, else the
+// default. LoadConfig and `multica config set` share it so a value accepted
+// by one is never refused by the other.
+func EffectiveMaxConcurrentTasks(persisted int) (int, error) {
+	if persisted > 0 {
+		return persisted, nil
+	}
+	return intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
 }
 
 // ValidateReservedChatSlots rejects a reserved_chat_slots value that would

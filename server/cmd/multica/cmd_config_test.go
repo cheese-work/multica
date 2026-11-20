@@ -223,6 +223,42 @@ func TestApplyConfigSetReservedChatSlots(t *testing.T) {
 	}
 }
 
+// The reservation is checked against the cap the daemon will run with, so the
+// env value counts when no override is persisted, and a persisted override
+// beats the env. Not parallel: it sets env.
+func TestApplyConfigSetReservedChatSlotsUsesEffectiveMax(t *testing.T) {
+	t.Setenv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", "4")
+
+	cfg := cli.CLIConfig{}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", "4"); err == nil || !strings.Contains(err.Error(), "4") {
+		t.Fatalf("reserved 4 with env max 4 must be refused; got %v", err)
+	}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", "3"); err != nil || cfg.ReservedChatSlots != 3 {
+		t.Fatalf("reserved 3 with env max 4 = %v, got %d", err, cfg.ReservedChatSlots)
+	}
+	// An env max of 4 would leave no issue slot; the override wins and allows it.
+	if err := applyConfigSet(&cfg, "max_concurrent_tasks", "10"); err != nil {
+		t.Fatalf("override 10: %v", err)
+	}
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", "8"); err != nil || cfg.ReservedChatSlots != 8 {
+		t.Fatalf("reserved 8 with override max 10 = %v, got %d", err, cfg.ReservedChatSlots)
+	}
+	// Clearing the override falls back to env max 4, which cannot hold 8.
+	if err := applyConfigSet(&cfg, "max_concurrent_tasks", ""); err == nil {
+		t.Fatal("clearing max_concurrent_tasks must be refused while reserved 8 exceeds env max 4")
+	}
+	if cfg.MaxConcurrentTasks != 10 {
+		t.Fatalf("a refused clear changed the config: %d", cfg.MaxConcurrentTasks)
+	}
+	// Lowering the reservation first makes the clear valid.
+	if err := applyConfigSet(&cfg, "reserved_chat_slots", ""); err != nil || cfg.ReservedChatSlots != 0 {
+		t.Fatalf("reset = %v, got %d", err, cfg.ReservedChatSlots)
+	}
+	if err := applyConfigSet(&cfg, "max_concurrent_tasks", ""); err != nil || cfg.MaxConcurrentTasks != 0 {
+		t.Fatalf("clear = %v, got %d", err, cfg.MaxConcurrentTasks)
+	}
+}
+
 // TestApplyConfigSetSupportsDaemonKeys locks in the daemon keys added
 // for issue #3824 (device_name, runtime_name, max_concurrent_tasks,
 // poll_interval) plus the follow-up knobs that use the same shape
