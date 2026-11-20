@@ -52,10 +52,6 @@ const (
 	// of a decision request (CHE-2591 L5). Entering it never hands off by
 	// itself: the entry check assigns the issue explicitly.
 	HandlerHumanInCharge = "human_in_charge"
-	// HandlerReviewer marks a step whose verdict must come from an agent that
-	// is independent of every author of the issue (CHE-7658). The verdict
-	// guard enforces it; routing to such a reviewer is a separate step.
-	HandlerReviewer = "reviewer"
 	// HandlerAuthor hands the issue to its author (CHE-7677): the sticky row
 	// under AuthorStepKey, else capability_routing[type].author. The step
 	// stores no id.
