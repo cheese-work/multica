@@ -26,10 +26,10 @@ type RunBudgetSnapshot struct {
 	WindowStartedAt time.Time `json:"window_started_at"`
 	// WindowID is opaque to clients: a budget action echoes it back so the
 	// server can tell whether the window it was asked about is still open.
-	WindowID     string            `json:"window_id"`
-	RunsState    string            `json:"runs_state,omitempty"`
-	State        string            `json:"state,omitempty"`
-	Blocking     []string          `json:"blocking"`
+	WindowID  string   `json:"window_id"`
+	RunsState string   `json:"runs_state,omitempty"`
+	State     string   `json:"state,omitempty"`
+	Blocking  []string `json:"blocking"`
 	CanRaise     bool              `json:"can_raise"`
 	RaisePreview *RunBudgetPreview `json:"raise_preview,omitempty"`
 }
