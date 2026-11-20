@@ -604,6 +604,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID, intent.TaskID); err != nil {
 		return empty, err
 	}
+	if err := serveAskGuardEvents(ctx, queries, issue, session.CreatorID, intent.TaskID); err != nil {
+		return empty, err
+	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
 		return empty, err
 	}
