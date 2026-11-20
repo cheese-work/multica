@@ -18,7 +18,7 @@ import type { Project, ProjectStatus, ProjectPriority, UpdateProjectRequest } fr
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
 
-export function ProjectStatusBadge({ project, handleUpdate, triggerClassName, align = "end" }: { project: Project; handleUpdate: (data: UpdateProjectRequest) => void; triggerClassName?: string; align?: "start" | "end" | "center" }) {
+export function ProjectStatusBadge({ project, handleUpdate, statusPending = false, triggerClassName, align = "end" }: { project: Project; handleUpdate: (data: UpdateProjectRequest) => void; statusPending?: boolean; triggerClassName?: string; align?: "start" | "end" | "center" }) {
   const statusLabels = useProjectStatusLabels();
   const statusCfg = PROJECT_STATUS_CONFIG[project.status];
 
@@ -26,8 +26,8 @@ export function ProjectStatusBadge({ project, handleUpdate, triggerClassName, al
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <button type="button" className={cn(
-            "inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-caption font-medium cursor-pointer hover:opacity-80 transition-opacity",
+          <button type="button" disabled={statusPending} className={cn(
+            "inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-caption font-medium cursor-pointer hover:opacity-80 transition-opacity disabled:pointer-events-none disabled:opacity-50",
             statusCfg.badgeBg, statusCfg.badgeText,
             triggerClassName
           )}>
