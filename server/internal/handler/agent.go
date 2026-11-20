@@ -466,6 +466,7 @@ type AgentTaskResponse struct {
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
+	RootIssueIdentifier  string                 `json:"root_issue_identifier,omitempty"` // root of this issue's parent chain; the cost-trial arm key (CHE-6498 S6a)
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so

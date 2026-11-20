@@ -260,3 +260,44 @@ func TestStepAutoClose_SaveValidatesAndReadsBack(t *testing.T) {
 		}
 	}
 }
+
+// A merge that arrives after the issue entered pending-merge, with a predicate
+// broken in between, takes the edge's on_timeout exit once. It does not
+// dispatch the accepted-step handler (CHE-7672 review finding, pending path).
+func TestStepAutoClose_PendingMergeWithAPredicateBrokenTakesOnTimeoutOnce(t *testing.T) {
+	changes := map[string]func(t *testing.T, c autoClose, prID string){
+		"a new head merges without a PASS": func(t *testing.T, c autoClose, prID string) {
+			dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2 WHERE id = $1`, prID, autoCloseHead2)
+		},
+		"a live wakeup appears": func(t *testing.T, c autoClose, prID string) {
+			dbfx.Exec(t, `INSERT INTO issue_wakeup (id, workspace_id, issue_id, agent_id, instruction, kind, mode, enabled)
+				SELECT gen_random_uuid(), workspace_id, id, $2, 'look again', 'event', 'continuous', true FROM issue WHERE id = $1`, c.issueID, c.agentID)
+			dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
+		},
+	}
+	for change, apply := range changes {
+		t.Run(change, func(t *testing.T) {
+			c := newStepAutoClose(t, "", stepBlock)
+			c.seedVerdict(t, "review_passed", "[]", autoCloseHead, "1 hour")
+			prID := c.newPR(t, autoCloseHead)
+			c.enter(t)
+			c.wantPending(t)
+			apply(t, c, prID)
+			c.mergeNow(t, prID)
+			tickEdges(t)
+			if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != "agent_review" {
+				t.Fatalf("status = %q, want agent_review", status)
+			}
+			if n := c.statusMoves(t, "agent_review"); n != 1 {
+				t.Fatalf("moves to agent_review = %d, want 1", n)
+			}
+			if n := c.acceptorRuns(t); n != 0 {
+				t.Fatalf("acceptor runs = %d, want 0: the handler must not start", n)
+			}
+			tickEdges(t)
+			if n := c.statusMoves(t, "agent_review"); n != 1 {
+				t.Fatalf("moves to agent_review after another tick = %d, want 1", n)
+			}
+		})
+	}
+}

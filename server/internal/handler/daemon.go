@@ -2927,7 +2927,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.StartClaimSupported = true
 		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
-	var issueNumber, parentIssueNumber int32
+	var issueNumber, parentIssueNumber, rootIssueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -3262,6 +3262,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if issue.ParentIssueID.Valid {
 			resp.ParentIssue, parentIssueNumber = h.loadClaimParentIssue(r.Context(), task, issue)
 		}
+		rootIssueNumber = h.claimRootIssueNumber(r.Context(), issue)
 		// This claim's own snapshot, recorded by FinalizeTaskClaim so a LATER
 		// run that resumes this one's session can compare against what THIS run
 		// was actually handed. Building it here, from the issue row already
@@ -4433,6 +4434,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		if resp.ParentIssue != nil && parentIssueNumber > 0 {
 			resp.ParentIssue.Identifier = service.IssueIdentifier(ws.IssuePrefix, parentIssueNumber)
+		}
+		if rootIssueNumber > 0 {
+			resp.RootIssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, rootIssueNumber)
 		}
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String

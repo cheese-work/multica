@@ -60,6 +60,11 @@ const (
 	// under AuthorStepKey, else capability_routing[type].author. The step
 	// stores no id.
 	HandlerAuthor = "author"
+	// HandlerReviewer hands the issue to a reviewer picked from the workspace's
+	// capability_routing entry for the issue type, independent of every author
+	// (CHE-7678). It carries no id: the pick needs the issue's author history,
+	// so the server resolves it, not ResolveHandler.
+	HandlerReviewer = "reviewer"
 )
 
 // AuthorStepKey is the reserved issue_step_assignee key that holds an issue's
@@ -333,7 +338,7 @@ func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEnt
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor, HandlerReviewer:
 		return true
 	}
 	return false
@@ -644,7 +649,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return err
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge, HandlerAuthor:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge, HandlerAuthor, HandlerReviewer:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)

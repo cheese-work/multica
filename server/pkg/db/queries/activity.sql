@@ -114,3 +114,20 @@ FROM activity_log a
 WHERE a.issue_id = @issue_id AND a.action = 'workflow_role' AND a.details->>'task_id' = @parent_task_id::text
 ORDER BY a.created_at DESC, a.id DESC
 LIMIT 1;
+
+-- name: GetLatestChainedRunRetryDetails :one
+-- The newest chained_run_retry row of an issue: the retry a failed chained run
+-- got (CHE-7675). pgx.ErrNoRows when the issue never had one.
+SELECT details FROM activity_log
+WHERE issue_id = $1 AND action = 'chained_run_retry'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: HasChainedRunEntered :one
+-- Whether the task carried the issue into the step itself (a chained move,
+-- CHE-7675), as opposed to being dispatched straight into it.
+SELECT EXISTS (
+  SELECT 1 FROM activity_log
+  WHERE issue_id = @issue_id AND action = 'chained_run_entered'
+    AND details->>'task_id' = @task_id::text AND details->>'step' = @step::text
+);

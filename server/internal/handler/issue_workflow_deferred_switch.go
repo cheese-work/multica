@@ -58,8 +58,7 @@ func (h *Handler) RequestWorkflowSwitch(ctx context.Context, workspaceID, issueI
 	}); err != nil {
 		return err
 	}
-	h.ApplyDeferredWorkflowSwitch(ctx, issueID)
-	return nil
+	return h.applyDeferredWorkflowSwitchOrKeep(ctx, issueID)
 }
 
 // deferredSwitchRefusal is a switch the target workflow cannot take: the issue
@@ -89,24 +88,32 @@ func isWorkflowRefusal(err error) bool {
 // ApplyDeferredWorkflowSwitch applies the issue's pending switch when no task
 // of the issue can still run. It writes nothing when there is no row (a
 // duplicate or unrelated event) or another live task remains; a failure that a
-// retry can clear keeps the row for the next terminal event.
+// retry can clear keeps the row for the next terminal event and is logged. A
+// caller with no later event to rely on uses RequestWorkflowSwitch, which
+// returns it.
 func (h *Handler) ApplyDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID) {
+	if err := h.applyDeferredWorkflowSwitchOrKeep(ctx, issueID); err != nil {
+		slog.Warn("deferred workflow switch: apply failed, row kept", "err", err, "issue_id", uuidToString(issueID))
+	}
+}
+
+// applyDeferredWorkflowSwitchOrKeep is the apply behind both entry points. It
+// returns nil when the row was applied, settled as a refusal, absent or left
+// for another live task, and the error of a failure that keeps the row.
+func (h *Handler) applyDeferredWorkflowSwitchOrKeep(ctx context.Context, issueID pgtype.UUID) error {
 	pending, err := h.Queries.HasIssueWorkflowSwitchPending(ctx, issueID)
-	if err != nil || !pending {
-		if err != nil {
-			slog.Warn("deferred workflow switch: read pending row failed", "err", err, "issue_id", uuidToString(issueID))
-		}
-		return
+	if err != nil {
+		return fmt.Errorf("read pending workflow switch: %w", err)
+	}
+	if !pending {
+		return nil
 	}
 	err = h.applyDeferredWorkflowSwitch(ctx, issueID)
 	var refusal *deferredSwitchRefusal
-	switch {
-	case err == nil:
-	case errors.As(err, &refusal):
-		h.refuseDeferredWorkflowSwitch(ctx, issueID, refusal)
-	default:
-		slog.Warn("deferred workflow switch: apply failed, row kept", "err", err, "issue_id", uuidToString(issueID))
+	if errors.As(err, &refusal) {
+		return h.refuseDeferredWorkflowSwitch(ctx, issueID, refusal)
 	}
+	return err
 }
 
 // lockedDeferredSwitchIssue is the issue row, locked in the order every issue
@@ -278,12 +285,14 @@ func resyncWorkflowEdgesWatch(ctx context.Context, q *db.Queries, issue db.Issue
 // A request that cannot be blocked (a workflow with no blocked step or no way
 // to blocked) keeps its row, so it recovers once the workflow can block; the
 // comment and blocked_reason are written once per cause, not on every event. A
-// finished issue has nothing to block: its row is consumed with the comment.
-func (h *Handler) refuseDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID, refusal *deferredSwitchRefusal) {
+// finished issue has nothing to block: its row is consumed with the comment. A
+// failure to settle is returned (CHE-7714), the row kept.
+func (h *Handler) refuseDeferredWorkflowSwitch(ctx context.Context, issueID pgtype.UUID, refusal *deferredSwitchRefusal) error {
 	err := h.settleDeferredSwitchRefusal(ctx, issueID, refusal)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("deferred workflow switch: settle refusal failed, row kept", "err", err, "issue_id", uuidToString(issueID))
+		return fmt.Errorf("settle workflow switch refusal: %w", err)
 	}
+	return nil
 }
 
 func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtype.UUID, refusal *deferredSwitchRefusal) error {

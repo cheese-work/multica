@@ -114,6 +114,19 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		return h.Queries.ScheduleWorkflowEdges(ctx, db.ScheduleWorkflowEdgesParams{ID: w.ID, NextFireAt: pgtype.Timestamptz{Time: next, Valid: true}})
 	}
 	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
+		if exit, predicates, rejected := h.rejectedMergeExit(ctx, issue, edges, decision); rejected {
+			// The merge matched but the close check rejects, also for an issue
+			// that was pending its merge: take the edge's on_timeout exit now,
+			// once. A move that is refused retries the same exit; the watch never
+			// waits for the deadline (CHE-7672).
+			moved, _ := h.moveIssueOnEdge(ctx, issue, exit, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": reasonCloseRejected, "predicates": predicates}, true)
+			if !moved {
+				h.watchAgainIn(ctx, w, edgeRetryDelay)
+			}
+			return nil
+		}
+	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
 		handled, err := h.settlePendingMerge(ctx, issue, w.ID)
 		if err != nil {
 			h.watchAgainIn(ctx, w, edgeRetryDelay)
@@ -121,18 +134,6 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		}
 		if handled {
 			h.watchAgainIn(ctx, w, issueworkflow.EdgePollInterval)
-			return nil
-		}
-	}
-	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
-		if exit, predicates, rejected := h.rejectedMergeExit(ctx, issue, edges, decision); rejected {
-			// The merge matched but the close check rejects: take the edge's
-			// on_timeout exit now, once. A move that is refused retries the same
-			// exit; the watch never waits for the deadline (CHE-7672).
-			moved, _ := h.moveIssueOnEdge(ctx, issue, exit, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": reasonCloseRejected, "predicates": predicates}, true)
-			if !moved {
-				h.watchAgainIn(ctx, w, edgeRetryDelay)
-			}
 			return nil
 		}
 	}

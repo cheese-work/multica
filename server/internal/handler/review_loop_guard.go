@@ -81,13 +81,31 @@ func writeReviewLoopError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// verdictOf is the verdict an agent's write delivers: an explicit move along
-// the step's agent_verdict exit ("CHANGES", "PASS"), "" for any other write.
-func verdictOf(def *issueworkflow.Definition, from string, to pgtype.Text, caller workflowCaller) string {
-	if !caller.agent || !to.Valid || to.String == from {
-		return ""
+// explicitAgentMove reports whether the write is an agent's move off a step, the
+// only write that can deliver a verdict.
+func explicitAgentMove(from string, to pgtype.Text, caller workflowCaller) bool {
+	return caller.agent && to.Valid && to.String != from
+}
+
+// verdictOf is the verdict a move from a step to a status delivers: "CHANGES",
+// "PASS", or "" when no agent_verdict exit leads there. When both exits lead to
+// the same status, the findings decide: CHANGES with a P0 or P1, else PASS. The
+// guard and the record both resolve through it, with the same findings.
+func verdictOf(def *issueworkflow.Definition, from, to string, findings []ReviewFinding) string {
+	var pass, changes bool
+	for _, e := range def.EdgesOf(from) {
+		if g, err := issueworkflow.ParseGuard(e.Guard); err == nil && g.Kind == issueworkflow.GuardAgentVerdict && e.To == to {
+			pass = pass || g.Args[0] == "PASS"
+			changes = changes || g.Args[0] == "CHANGES"
+		}
 	}
-	return def.VerdictOf(from, to.String)
+	if pass && changes {
+		if blocking(findings) {
+			return "CHANGES"
+		}
+		return "PASS"
+	}
+	return def.VerdictOf(from, to)
 }
 
 // runReviewHead is the PR lineage and head the verdict's review run was
@@ -112,7 +130,10 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if capped, err := h.reviewRoundsCapped(ctx, q, prev, params, def, caller); err != nil || capped {
 		return err
 	}
-	verdict := verdictOf(def, prev.Status, params.Status, caller)
+	if !explicitAgentMove(prev.Status, params.Status, caller) {
+		return nil
+	}
+	verdict := verdictOf(def, prev.Status, params.Status.String, caller.findings)
 	if verdict == "" {
 		return nil
 	}
@@ -233,7 +254,10 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 	if err != nil || def == nil {
 		return err
 	}
-	action := map[string]string{"CHANGES": activityChangesRequested, "PASS": activityPassed}[verdictOf(def, prev.Status, w.pre.Status, w.caller)]
+	if !explicitAgentMove(prev.Status, w.pre.Status, w.caller) {
+		return nil
+	}
+	action := map[string]string{"CHANGES": activityChangesRequested, "PASS": activityPassed}[verdictOf(def, prev.Status, w.pre.Status.String, w.caller.findings)]
 	if action == "" {
 		return nil
 	}

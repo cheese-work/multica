@@ -748,6 +748,8 @@ func main() {
 	registerAutopilotListeners(bus, autopilotSvc)
 	// A pending workflow switch applies when its issue's last live task ends (CHE-7669).
 	h.RegisterDeferredWorkflowSwitch(bus)
+	// A chained run that failed gets one retry, then blocks the issue (CHE-7675). After the switch: a pending switch wins.
+	h.RegisterChainedRunRetry(bus)
 	// A task's Steel browser leases end with the task (CHE-4734).
 	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
