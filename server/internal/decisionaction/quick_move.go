@@ -44,12 +44,15 @@ type StatusCount struct {
 // lacks with the issue count each had when the card was opened, and
 // StatusMapping says where each goes. Before and After seal the project's
 // binding, with the smallest run override among the issues that follow it.
+// Overrides lists every distinct run override (0 for none) among those issues,
+// sorted: each one sets its issues' effective cap before and after the switch.
 type ProjectWorkflowQuickParams struct {
 	ProjectID     string                  `json:"project_id"`
 	WorkflowID    *string                 `json:"workflow_id"`
 	StatusMapping map[string]string       `json:"status_mapping"`
 	Required      []StatusCount           `json:"required"`
 	TotalIssues   int64                   `json:"total_issues"`
+	Overrides     []int32                 `json:"overrides"`
 	Before        IssueWorkflowSetBinding `json:"before"`
 	After         IssueWorkflowSetBinding `json:"after"`
 }
@@ -123,6 +126,15 @@ func normalizeProjectWorkflowQuickSet(raw json.RawMessage, slots []SecretSlot) (
 		}
 		if params.StatusMapping[required.StatusKey] == "" {
 			return nil, nil, invalid("status_mapping has no destination for %q", required.StatusKey)
+		}
+	}
+	if params.Overrides == nil {
+		params.Overrides = []int32{}
+	}
+	sort.Slice(params.Overrides, func(i, j int) bool { return params.Overrides[i] < params.Overrides[j] })
+	for _, override := range params.Overrides {
+		if override < 0 {
+			return nil, nil, invalid("overrides must not be negative")
 		}
 	}
 	if err := normalizeWorkflowSetBinding("before", &params.Before); err != nil {

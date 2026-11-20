@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -177,11 +178,16 @@ func projectWorkflowQuickParams(ctx context.Context, q *db.Queries, sw projectSw
 	if err != nil {
 		return decisionaction.ProjectWorkflowQuickParams{}, err
 	}
+	overrides, err := q.ListInheritedRunsOverridesForProject(ctx, db.ListInheritedRunsOverridesForProjectParams{WorkspaceID: sw.project.WorkspaceID, ProjectID: sw.project.ID})
+	if err != nil {
+		return decisionaction.ProjectWorkflowQuickParams{}, err
+	}
 	params := decisionaction.ProjectWorkflowQuickParams{
 		ProjectID: uuidToString(sw.project.ID), WorkflowID: uuidStringPtr(targetID),
 		StatusMapping: map[string]string{}, Required: []decisionaction.StatusCount{}, TotalIssues: sw.plan.TotalIssues,
-		Before: projectBinding(sw.project, sw.project.WorkflowID, current, override),
-		After:  projectBinding(sw.project, targetID, next, override),
+		Overrides: overrides,
+		Before:    projectBinding(sw.project, sw.project.WorkflowID, current, override),
+		After:     projectBinding(sw.project, targetID, next, override),
 	}
 	for _, required := range sw.plan.Required {
 		params.Required = append(params.Required, decisionaction.StatusCount{StatusKey: required.StatusKey, IssueCount: required.IssueCount})
@@ -246,7 +252,8 @@ func executeProjectWorkflowQuickSetAction(ctx context.Context, execution decisio
 		return nil, err
 	}
 	if !sameOptionalID(current.WorkflowID, params.WorkflowID) || current.TotalIssues != params.TotalIssues ||
-		current.Before != params.Before || current.After != params.After || !sameStatusCounts(current.Required, params.Required) {
+		current.Before != params.Before || current.After != params.After || !sameStatusCounts(current.Required, params.Required) ||
+		!slices.Equal(current.Overrides, params.Overrides) {
 		return nil, staleBase("the project, its issues or the run budget changed since the request; ask again")
 	}
 	if msg := checkMapping(sw.plan, params.StatusMapping, sw.accepts); msg != "" {
@@ -364,10 +371,16 @@ func (h *Handler) projectWorkflowQuickSetPreview(ctx context.Context, action db.
 	if err != nil || !ok {
 		return nil, err
 	}
-	return []ActionPreviewField{
+	fields := []ActionPreviewField{
 		{"Project", project.Title, project.Title},
 		{"Workflow", from, to},
 		{"Run cap", workflowSetCapLabel(params.Before), workflowSetCapLabel(params.After)},
 		{"Issues moved to another status", "0", strconv.FormatInt(movedIssueCount(params), 10)},
-	}, nil
+	}
+	// One row per status that moves: the source status, its issue count and where
+	// those issues go.
+	for _, required := range params.Required {
+		fields = append(fields, ActionPreviewField{"Status " + required.StatusKey, strconv.FormatInt(required.IssueCount, 10) + " issues", params.StatusMapping[required.StatusKey]})
+	}
+	return fields, nil
 }

@@ -322,6 +322,26 @@ func TestApproveQuickProjectSwitchFailsStaleBase(t *testing.T) {
 	}
 }
 
+// A run override above the smallest one still moves that issue's effective cap
+// when the project's workflow changes, so the card seals every override.
+func TestApproveQuickProjectSwitchFailsStaleBaseOnANonMinimumOverrideChange(t *testing.T) {
+	f := newProjectSwitchFixture(t)
+	low := dbfx.Issue(t, "low override "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": f.project})
+	high := dbfx.Issue(t, "high override "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": f.project})
+	dbfx.Exec(t, `UPDATE issue SET max_runs_override = 1 WHERE id = $1`, low)
+	dbfx.Exec(t, `UPDATE issue SET max_runs_override = 20 WHERE id = $1`, high)
+	dbfx.Exec(t, `UPDATE issue SET max_runs_override = 1 WHERE project_id = $1 AND workflow_id IS NULL AND max_runs_override IS NULL`, f.project)
+	card := f.openCard(t)
+	dbfx.Exec(t, `UPDATE issue SET max_runs_override = 30 WHERE id = $1`, high)
+	out := card.approve(t)
+	if out.State != "failed" || out.ErrorCode != staleBaseCode {
+		t.Fatalf("outcome = %+v, want failed/%s", out, staleBaseCode)
+	}
+	if got := projectWorkflowOf(t, f.project); got != "-" {
+		t.Fatalf("a stale approval switched the project to %s", got)
+	}
+}
+
 func TestQuickProjectSwitchStaysImmediateForMembersAndAsksForAMapping(t *testing.T) {
 	t.Run("member switch applies at once", func(t *testing.T) {
 		f := newProjectSwitchFixture(t)
@@ -375,5 +395,8 @@ func TestProjectSwitchCardPreviewShowsTheSwitch(t *testing.T) {
 	}
 	if _, found := fields["Project"]; !found {
 		t.Fatalf("preview lacks the project: %v", fields)
+	}
+	if got := fields["Status "+offQuickStatus]; len(got) < 2 || got[1] != "in_review" {
+		t.Fatalf("Status %s = %v; want the mapping to in_review", offQuickStatus, got)
 	}
 }

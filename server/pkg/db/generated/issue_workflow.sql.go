@@ -474,6 +474,41 @@ func (q *Queries) InsertIssueWorkflowLintOverride(ctx context.Context, arg Inser
 	return err
 }
 
+const listInheritedRunsOverridesForProject = `-- name: ListInheritedRunsOverridesForProject :many
+SELECT DISTINCT COALESCE(max_runs_override, 0)::int AS runs_override FROM issue
+WHERE workspace_id = $1::uuid
+  AND project_id = $2::uuid
+  AND workflow_id IS NULL
+ORDER BY 1
+`
+
+type ListInheritedRunsOverridesForProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+// The distinct run overrides (0 for none) among a project's issues that follow
+// its workflow. Each one prices its issues' cap under a workflow switch.
+func (q *Queries) ListInheritedRunsOverridesForProject(ctx context.Context, arg ListInheritedRunsOverridesForProjectParams) ([]int32, error) {
+	rows, err := q.db.Query(ctx, listInheritedRunsOverridesForProject, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int32{}
+	for rows.Next() {
+		var runs_override int32
+		if err := rows.Scan(&runs_override); err != nil {
+			return nil, err
+		}
+		items = append(items, runs_override)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueWorkflowLintOverrides = `-- name: ListIssueWorkflowLintOverrides :many
 SELECT id, workspace_id, workflow_id, version, reason, actor_id, created_at FROM issue_workflow_lint_override
 WHERE workflow_id = $1::uuid
