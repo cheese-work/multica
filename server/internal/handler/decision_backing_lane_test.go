@@ -66,8 +66,12 @@ func TestA6aNoDMMemberAskGoesToNewBackingLane(test *testing.T) {
 	}
 	var unread int
 	dbfx.QueryRow(test, `SELECT count(*) FROM chat_message m JOIN chat_session s ON s.id = m.chat_session_id WHERE s.creator_id = $1 AND m.role = 'assistant' AND m.created_at > s.last_read_at AND s.id = $2`, testUserID, session).Scan(&unread)
-	if strings.Contains(memberSessionList(test), session) {
+	listAfter := memberSessionList(test)
+	if strings.Contains(listAfter, session) {
 		test.Fatalf("member list shows lane %s with %d unread", session, unread)
+	}
+	if before, after := strings.Count(listBefore, `"has_unread":true`), strings.Count(listAfter, `"has_unread":true`); before != after {
+		test.Fatalf("member unread count changed: %d before, %d after", before, after)
 	}
 }
 
@@ -182,6 +186,53 @@ func TestA6aLaneIsInvisibleToLaneQueries(test *testing.T) {
 	for _, row := range decisions {
 		if uuidToString(row.ID) == created["id"] {
 			test.Fatalf("Needs-you decision rows include the backing-lane request %v", created["id"])
+		}
+	}
+}
+
+// A6a review round 1: an open-intent (two-step) ask from an issue task takes the same lane.
+func TestA6aOpenIntentAskIgnoresSessionAndNewDM(test *testing.T) {
+	for _, flag := range []string{"on", "off"} {
+		for _, choice := range []string{"session_id", "new_dm"} {
+			test.Run(flag+"/"+choice, func(test *testing.T) {
+				setWorkspaceDecisionSettings(test, `{"decision_screen":"`+flag+`"}`)
+				fixture := newRequestCoreFixture(test, false)
+				body := map[string]any{"issue_id": fixture.issueID, "for": fixture.humanID, "ask": fixture.structuredAsk(), "escalation_class": "reversible"}
+				if choice == "session_id" {
+					body["session_id"] = fixture.sessionID
+				} else {
+					body["new_dm"] = true
+				}
+				request := newRequest(http.MethodPost, "/api/decisions", body)
+				request.Header.Set("X-Actor-Source", "task_token")
+				request.Header.Set("X-Agent-ID", fixture.agentID)
+				request.Header.Set("X-Task-ID", fixture.taskID)
+				var created map[string]any
+				response := testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusCreated)
+				response.JSON(&created)
+				session, _ := created["chat_session_id"].(string)
+				test.Cleanup(func() {
+					dbfx.Exec(test, `DELETE FROM decision_backing_lane WHERE session_id = $1`, session)
+					dbfx.Exec(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, session)
+					dbfx.Exec(test, `DELETE FROM chat_session WHERE id = $1 AND id <> $2`, session, fixture.sessionID)
+				})
+				visibleDMPings := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_request'`, fixture.sessionID)
+				if flag == "off" {
+					if registeredLanes(test, session) != 0 || strings.Contains(response.Text(), "backing lane") {
+						test.Fatalf("flag off: ask must keep today's path, got lane %s: %s", session, response.Text())
+					}
+					return
+				}
+				if registeredLanes(test, session) != 1 || session == fixture.sessionID || visibleDMPings != 0 {
+					test.Fatalf("flag on: ask landed in %s (visible DM pings %d), want a new backing lane", session, visibleDMPings)
+				}
+				if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND human_user_id = $2 AND chat_session_id = $3`, created["id"], fixture.humanID, session) != 1 {
+					test.Fatal("request does not hold the named person and the lane")
+				}
+				if !strings.Contains(response.Text(), "backing lane") {
+					test.Fatalf("response carries no hint about the ignored flag: %s", response.Text())
+				}
+			})
 		}
 	}
 }

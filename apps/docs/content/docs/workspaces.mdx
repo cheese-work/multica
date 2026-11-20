@@ -127,7 +127,7 @@ The guard also covers an agent registering a wakeup that a person can trigger. B
 
 ### Decision screen
 
-The workspace setting `decision_screen` (`off` by default, `on`) hides the chat lane that holds an agent's decision ask. With `on`, an issue agent's ask to a member who has no visible DM goes to a hidden backing lane. The lane does not appear in the member's chat list, unread count, badge or "Needs you" list, and the member cannot send messages into it (`409`). The ask itself still opens the same decision card. For these agents the server ignores `session_id` and `new_dm` and adds one hint to the response. An agent that asks from a DM still asks in that DM. Set it back to `off` to revert; no new lanes are created and existing lanes stay hidden.
+The workspace setting `decision_screen` (`off` by default, `on`) hides the chat lane that holds an agent's decision ask. With `on`, an issue agent's ask to a member goes to a hidden backing lane, even when the member has a visible DM with that agent; nothing is posted in that DM. The lane does not appear in the member's chat list, unread count, badge or "Needs you" list, and the member cannot send messages into it (`409`). The ask itself still opens the same decision card. For these agents the server ignores `session_id` and `new_dm` and adds one hint to the response. An agent that asks from a DM still asks in that DM. Set it back to `off` to revert; no new lanes are created and existing lanes stay hidden.
 
 ### Held-setting ask guard
 

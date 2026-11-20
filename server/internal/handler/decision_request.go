@@ -422,8 +422,40 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	backing, err := handler.issueAskGoesToBackingLane(ctx, queries, issue, input.dmSession().Valid)
+	if err != nil {
+		return empty, err
+	}
 	newDM := input.NewDM
-	if newDM {
+	if backing {
+		// session_id and new_dm only name the person: the ask goes to that person's backing lane.
+		humanID := input.HumanUserID
+		if !humanID.Valid {
+			named, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: input.SessionID, WorkspaceID: issue.WorkspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return empty, deny
+			}
+			if err != nil {
+				return empty, err
+			}
+			humanID = named.CreatorID
+		}
+		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, humanID)
+		if err != nil {
+			return empty, err
+		}
+		var found bool
+		if session, found, err = backingLane(ctx, queries, issue, topic, targetID); err != nil {
+			return empty, err
+		}
+		if newDM = !found; newDM {
+			steward, err := handler.decisionSteward(ctx, queries, topic, agent, targetID)
+			if err != nil {
+				return empty, err
+			}
+			session = db.ChatSession{AgentID: steward.ID, CreatorID: targetID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
+		}
+	} else if newDM {
 		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
 		if err != nil {
 			return empty, err
@@ -534,10 +566,19 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 			return empty, err
 		}
 		createdSession = &session
+		if backing {
+			if err := queries.CreateDecisionBackingLane(ctx, db.CreateDecisionBackingLaneParams{SessionID: session.ID, WorkspaceID: issue.WorkspaceID, CreatorID: session.CreatorID, TopicID: topic.ID}); err != nil {
+				return empty, err
+			}
+		}
 	}
 	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, intent.CommentID, dbid.NewV7(), &tag)
 	if err != nil {
 		return empty, err
+	}
+	if backing {
+		result.BackingLane = true
+		result.Warnings = append(result.Warnings, "decision_screen is on: session_id and new_dm are ignored; the ask goes to the member's decision backing lane")
 	}
 	if result.ParkedIssue, result.ParkedActivity, err = parkForDecisionRequest(ctx, queries, issue, input.Wait); err != nil {
 		return empty, err
