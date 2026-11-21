@@ -44,9 +44,14 @@ func NewRedisUpdateStore(rdb redis.UniversalClient) *RedisUpdateStore {
 }
 
 func (s *RedisUpdateStore) Create(ctx context.Context, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error) {
+	return s.CreateWithID(ctx, randomID(), "", runtimeID, targetVersion, initiatorUserID)
+}
+
+func (s *RedisUpdateStore) CreateWithID(ctx context.Context, id, cycleID, runtimeID, targetVersion, initiatorUserID string) (*UpdateRequest, error) {
 	now := time.Now()
 	req := &UpdateRequest{
-		ID:              randomID(),
+		ID:              id,
+		CycleID:         cycleID,
 		RuntimeID:       runtimeID,
 		InitiatorUserID: initiatorUserID,
 		Status:          UpdatePending,
@@ -68,13 +73,23 @@ func (s *RedisUpdateStore) Create(ctx context.Context, runtimeID, targetVersion,
 		return nil, errUpdateInProgress
 	}
 
+	// NX on the record key rejects a duplicate caller-given id before anything
+	// else is written.
+	fresh, err := s.rdb.SetNX(ctx, updateKey(req.ID), data, updateStoreRetention).Result()
+	if err != nil || !fresh {
+		_ = s.clearActiveIfMatches(ctx, runtimeID, req.ID)
+		if err != nil {
+			return nil, fmt.Errorf("persist update request: %w", err)
+		}
+		return nil, errUpdateDuplicateID
+	}
+
 	// The active reservation above provides the concurrency guarantee this
 	// write needs. Use a plain pipeline so managed Redis deployments that allow
 	// SET/ZADD but deny MULTI can still create update requests. Exec failures
 	// remain safe because the compensation below removes every partially
 	// written key and releases the reservation.
 	pipe := s.rdb.Pipeline()
-	pipe.Set(ctx, updateKey(req.ID), data, updateStoreRetention)
 	pipe.ZAdd(ctx, updatePendingKey(runtimeID), redis.Z{
 		Score:  float64(now.UnixNano()),
 		Member: req.ID,
@@ -87,6 +102,44 @@ func (s *RedisUpdateStore) Create(ctx context.Context, runtimeID, targetVersion,
 		return nil, fmt.Errorf("persist update request: %w", err)
 	}
 	return req, nil
+}
+
+// cancelPendingScript flips a pending request to cancelled and releases the
+// runtime's active slot in one atomic step. The ZREM decides the race with
+// PopPending (claimPendingScript): exactly one of them removes the entry.
+//
+//	KEYS[1] = pending zset   KEYS[2] = record key   KEYS[3] = active key
+//	ARGV[1] = request id     ARGV[2] = new record JSON   ARGV[3] = TTL seconds
+var cancelPendingScript = redis.NewScript(`
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[3]))
+if redis.call('GET', KEYS[3]) == ARGV[1] then
+    redis.call('DEL', KEYS[3])
+end
+return 1
+`)
+
+func (s *RedisUpdateStore) Cancel(ctx context.Context, id string) (bool, error) {
+	req, err := s.loadRequest(ctx, id)
+	if err != nil || req == nil || req.Status != UpdatePending {
+		return false, err
+	}
+	req.Status = UpdateCancelled
+	req.UpdatedAt = time.Now()
+	data, err := s.marshalRequest(req)
+	if err != nil {
+		return false, err
+	}
+	won, err := cancelPendingScript.Run(ctx, s.rdb,
+		[]string{updatePendingKey(req.RuntimeID), updateKey(id), updateActiveKey(req.RuntimeID)},
+		id, data, int(updateStoreRetention.Seconds()),
+	).Int64()
+	if err != nil {
+		return false, fmt.Errorf("cancel pending update: %w", err)
+	}
+	return won == 1, nil
 }
 
 func (s *RedisUpdateStore) Get(ctx context.Context, id string) (*UpdateRequest, error) {

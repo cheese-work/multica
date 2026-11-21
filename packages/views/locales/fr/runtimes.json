@@ -350,7 +350,8 @@
       "running": "Mise à jour...",
       "completed": "Mise à jour terminée. Le daemon redémarre...",
       "failed": "Échec de la mise à jour",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "cancelled": "Annulée"
     },
     "phase": {
       "download": "Téléchargement",
