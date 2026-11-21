@@ -24,7 +24,7 @@ func pool(t *testing.T) (*pgxpool.Pool, uuid.UUID) {
 	}
 	ws := uuid.New()
 	t.Cleanup(func() {
-		for _, table := range []string{"merge_queue_epoch", "merge_queue_intake"} {
+		for _, table := range []string{"merge_queue_epoch", "merge_queue_evidence", "merge_queue_intake"} {
 			if _, err := p.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", ws); err != nil {
 				t.Errorf("cleanup %s: %v", table, err)
 			}
