@@ -148,37 +148,60 @@ UPDATE issue_pr_event SET status = 'notified' WHERE id = ANY(@ids::uuid[]) AND s
 
 -- name: MarkStartedPREventsDelivered :execrows
 -- A wake that started carries its receipts' events: a next-turn pr.event
--- receipt's, or the legacy rule's receipt for the same cause (CHE-2540).
+-- receipt's, or the legacy rule's receipt for the same cause (CHE-2540). One
+-- UNION arm per receipt kind: an OR of EXISTS cannot be a semi-join, so it plans
+-- as a SubPlan per event, or a hashed one that reads every pr.event receipt on
+-- each tick (CHE-8956). The outer status check stays for rows changed meanwhile.
 UPDATE issue_pr_event e
 SET status = 'delivered'
-FROM github_pull_request pr
-WHERE pr.id = e.pull_request_id
-  AND e.status IN ('accepted', 'next_turn', 'notified')
-  AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR e.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
-  AND (EXISTS (
-      SELECT 1
-      FROM issue_wakeup w
-      JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
-      JOIN agent_task_queue t ON t.id = r.task_id
-      WHERE w.issue_id = e.issue_id
-        AND w.system_rule = 'pr_needs_attention'
-        AND r.event_type = 'pr.event'
-        AND r.payload->>'event_id' = e.id::text
-        AND t.started_at IS NOT NULL)
-   OR EXISTS (
-      SELECT 1
-      FROM issue_wakeup lw
-      JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id
-      JOIN agent_task_queue lt ON lt.id = lr.task_id
-      WHERE lw.issue_id = e.issue_id
-        AND lr.payload->>'head_sha' = e.head_sha
-        AND lr.payload->>'repo_owner' = pr.repo_owner
-        AND lr.payload->>'repo_name' = pr.repo_name
-        AND lr.payload->>'pr_number' = pr.pr_number::text
-        AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
-             OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
-                 AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
-        AND lt.started_at IS NOT NULL));
+FROM (
+    -- A next-turn pr.event receipt names the event.
+    SELECT ce.id
+    FROM issue_pr_event ce
+    JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
+    JOIN issue_wakeup w ON w.issue_id = ce.issue_id AND w.system_rule = 'pr_needs_attention'
+    JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id AND r.event_type = 'pr.event' AND r.payload->>'event_id' = ce.id::text
+    JOIN agent_task_queue t ON t.id = r.task_id
+    WHERE ce.status IN ('accepted', 'next_turn', 'notified')
+      AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR ce.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+      AND t.started_at IS NOT NULL
+    UNION
+    -- The legacy checks-failed rule's receipt for the same head.
+    SELECT ce.id
+    FROM issue_pr_event ce
+    JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
+    JOIN issue_wakeup lw ON lw.issue_id = ce.issue_id AND lw.system_rule = 'pr_checks_failed'
+    JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id AND lr.event_type = 'pr.checks_failed'
+        AND lr.payload->>'head_sha' = ce.head_sha
+        AND lr.payload->>'repo_owner' = cpr.repo_owner
+        AND lr.payload->>'repo_name' = cpr.repo_name
+        AND lr.payload->>'pr_number' = cpr.pr_number::text
+    JOIN agent_task_queue lt ON lt.id = lr.task_id
+    WHERE ce.kind = 'checks_failed'
+      AND ce.status IN ('accepted', 'next_turn', 'notified')
+      AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR ce.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+      AND lt.started_at IS NOT NULL
+    UNION
+    -- The legacy mergeability rule's DIRTY receipt for the same head and base.
+    SELECT ce.id
+    FROM issue_pr_event ce
+    JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
+    JOIN issue_wakeup lw ON lw.issue_id = ce.issue_id AND lw.system_rule = 'pr_needs_attention'
+    JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id AND lr.event_type = 'pr.mergeability'
+        AND lr.payload->>'head_sha' = ce.head_sha
+        AND lr.payload->>'repo_owner' = cpr.repo_owner
+        AND lr.payload->>'repo_name' = cpr.repo_name
+        AND lr.payload->>'pr_number' = cpr.pr_number::text
+        AND lr.payload->>'merge_state' = 'DIRTY'
+        AND COALESCE(lr.payload->>'base_sha', '') = ce.base_sha
+    JOIN agent_task_queue lt ON lt.id = lr.task_id
+    WHERE ce.kind = 'conflict'
+      AND ce.status IN ('accepted', 'next_turn', 'notified')
+      AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR ce.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+      AND lt.started_at IS NOT NULL
+) carried
+WHERE e.id = carried.id
+  AND e.status IN ('accepted', 'next_turn', 'notified');
 
 -- name: LatestPRConflictBase :one
 -- The base commit of the newest conflict the snapshot pipeline captured for a
