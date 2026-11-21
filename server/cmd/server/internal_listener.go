@@ -48,5 +48,6 @@ func internalMounts(h *handler.Handler) []func(chi.Router) {
 	})
 	acks := browserlease.NewAckService(h.BrowserLeases.Pool)
 	acks.Queue = h.BrowserLeases
-	return []func(chi.Router){acks.Mount(auth)}
+	sums := browserlease.NewSummaryService(h.BrowserLeases.Pool)
+	return []func(chi.Router){acks.Mount(auth), sums.Mount(auth)}
 }

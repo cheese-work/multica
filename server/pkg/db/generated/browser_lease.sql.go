@@ -16,7 +16,7 @@ UPDATE browser_lease
 SET cleanup_acked_at = clock_timestamp()
 WHERE instance_id = $1 AND workspace_id = $2 AND epoch = $3
   AND state = 'ended' AND cleanup_acked_at IS NULL
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type AckBrowserLeaseCleanupParams struct {
@@ -49,6 +49,8 @@ func (q *Queries) AckBrowserLeaseCleanup(ctx context.Context, arg AckBrowserLeas
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -57,7 +59,7 @@ const activateBrowserLease = `-- name: ActivateBrowserLease :one
 UPDATE browser_lease
 SET state = 'active', instance_id = $3, epoch = $4, granted_at = $5, expires_at = $6
 WHERE id = $1 AND workspace_id = $2 AND state = 'queued'
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type ActivateBrowserLeaseParams struct {
@@ -101,6 +103,8 @@ func (q *Queries) ActivateBrowserLease(ctx context.Context, arg ActivateBrowserL
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -252,7 +256,7 @@ INSERT INTO browser_lease (
     decision_id, class, state, expires_at
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', $10)
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type CreateQueuedBrowserLeaseParams struct {
@@ -302,6 +306,8 @@ func (q *Queries) CreateQueuedBrowserLease(ctx context.Context, arg CreateQueued
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -336,7 +342,7 @@ WHERE workspace_id = $1
   AND ($5::uuid IS NULL OR agent_id = $5)
   AND ($6::uuid IS NULL OR profile_id = $6)
   AND ($7::uuid IS NULL OR decision_id = $7)
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type DeleteQueuedBrowserLeasesParams struct {
@@ -390,6 +396,8 @@ func (q *Queries) DeleteQueuedBrowserLeases(ctx context.Context, arg DeleteQueue
 			&i.EndReason,
 			&i.CleanupAckedAt,
 			&i.CreatedAt,
+			&i.Summary,
+			&i.SummaryAt,
 		); err != nil {
 			return nil, err
 		}
@@ -405,7 +413,7 @@ const endBrowserLease = `-- name: EndBrowserLease :one
 UPDATE browser_lease
 SET state = 'ended', ended_at = $3, end_reason = $4
 WHERE id = $1 AND workspace_id = $2 AND state = 'active'
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type EndBrowserLeaseParams struct {
@@ -444,6 +452,8 @@ func (q *Queries) EndBrowserLease(ctx context.Context, arg EndBrowserLeaseParams
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -461,7 +471,7 @@ WHERE workspace_id = $2
   AND ($6::uuid IS NULL OR agent_id = $6)
   AND ($7::uuid IS NULL OR profile_id = $7)
   AND ($8::uuid IS NULL OR decision_id = $8)
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type EndBrowserLeasesParams struct {
@@ -519,6 +529,8 @@ func (q *Queries) EndBrowserLeases(ctx context.Context, arg EndBrowserLeasesPara
 			&i.EndReason,
 			&i.CleanupAckedAt,
 			&i.CreatedAt,
+			&i.Summary,
+			&i.SummaryAt,
 		); err != nil {
 			return nil, err
 		}
@@ -591,7 +603,7 @@ func (q *Queries) GetBrowserInstanceForGateway(ctx context.Context, arg GetBrows
 }
 
 const getBrowserInstanceHolder = `-- name: GetBrowserInstanceHolder :one
-SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at FROM browser_lease
 WHERE instance_id = $1 AND workspace_id = $2
   AND state <> 'queued' AND cleanup_acked_at IS NULL
 `
@@ -625,12 +637,14 @@ func (q *Queries) GetBrowserInstanceHolder(ctx context.Context, arg GetBrowserIn
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
 
 const getBrowserLease = `-- name: GetBrowserLease :one
-SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at FROM browser_lease
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -662,12 +676,14 @@ func (q *Queries) GetBrowserLease(ctx context.Context, arg GetBrowserLeaseParams
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
 
 const getBrowserLeaseForTask = `-- name: GetBrowserLeaseForTask :one
-SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at FROM browser_lease
 WHERE id = $1 AND workspace_id = $2 AND task_id = $3
 `
 
@@ -700,6 +716,8 @@ func (q *Queries) GetBrowserLeaseForTask(ctx context.Context, arg GetBrowserLeas
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -767,7 +785,7 @@ func (q *Queries) GetBrowserProfile(ctx context.Context, arg GetBrowserProfilePa
 }
 
 const getOpenBrowserLeaseForTask = `-- name: GetOpenBrowserLeaseForTask :one
-SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at FROM browser_lease
 WHERE workspace_id = $1 AND task_id = $2 AND state <> 'ended'
 ORDER BY created_at DESC
 LIMIT 1
@@ -801,6 +819,8 @@ func (q *Queries) GetOpenBrowserLeaseForTask(ctx context.Context, arg GetOpenBro
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -847,7 +867,7 @@ func (q *Queries) GetOpenBrowserLoginLeaseForUser(ctx context.Context, arg GetOp
 }
 
 const headQueuedBrowserLease = `-- name: HeadQueuedBrowserLease :one
-SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at FROM browser_lease
 WHERE workspace_id = $1 AND class = $2 AND state = 'queued'
 ORDER BY created_at, id
 LIMIT 1
@@ -881,6 +901,8 @@ func (q *Queries) HeadQueuedBrowserLease(ctx context.Context, arg HeadQueuedBrow
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
@@ -1157,10 +1179,62 @@ func (q *Queries) SetBrowserLeaseJTI(ctx context.Context, arg SetBrowserLeaseJTI
 	return err
 }
 
+const setBrowserLeaseSummary = `-- name: SetBrowserLeaseSummary :one
+UPDATE browser_lease
+SET summary = $3, summary_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND epoch = $4
+  AND state = 'ended' AND summary IS NULL
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
+`
+
+type SetBrowserLeaseSummaryParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Summary     []byte      `json:"summary"`
+	Epoch       pgtype.Int8 `json:"epoch"`
+}
+
+// Gateway lease summary (CHE-4745, W3-16): write-once, only on an ended lease at the epoch the
+// gateway served. No row means the lease is missing, not ended, at another epoch, or already has
+// a summary; the caller reads the lease to tell which.
+func (q *Queries) SetBrowserLeaseSummary(ctx context.Context, arg SetBrowserLeaseSummaryParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, setBrowserLeaseSummary,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.Summary,
+		arg.Epoch,
+	)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
+	)
+	return i, err
+}
+
 const shortenBrowserLeaseExpiry = `-- name: ShortenBrowserLeaseExpiry :one
 UPDATE browser_lease SET expires_at = LEAST(expires_at, $3)
 WHERE id = $1 AND workspace_id = $2 AND state = 'active'
-RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
+RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at, summary, summary_at
 `
 
 type ShortenBrowserLeaseExpiryParams struct {
@@ -1195,6 +1269,8 @@ func (q *Queries) ShortenBrowserLeaseExpiry(ctx context.Context, arg ShortenBrow
 		&i.EndReason,
 		&i.CleanupAckedAt,
 		&i.CreatedAt,
+		&i.Summary,
+		&i.SummaryAt,
 	)
 	return i, err
 }
