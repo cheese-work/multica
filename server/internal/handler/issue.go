@@ -6153,6 +6153,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// against a mid-batch snapshot.
 	var changedParents []pgtype.UUID
 	batchFilter := h.newReadFilter(r)
+	// An exit that skips an explicit release (a continue, a panic) must not
+	// keep a lock. release runs once, so the explicit calls stay.
+	var heldMoves []func()
+	defer func() {
+		for _, release := range heldMoves {
+			release()
+		}
+	}()
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -6369,10 +6377,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			releaseMove = release
-			// An exit that skips the explicit release below (a continue, a
-			// panic) must not keep the lock. release runs once, so the
-			// explicit calls stay.
-			defer releaseMove()
+			heldMoves = append(heldMoves, release)
 		}
 		// Same recording as UpdateIssue: the row commits with the status.
 		var statusRec *statusRecord
