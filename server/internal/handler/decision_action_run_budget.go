@@ -68,7 +68,7 @@ func executeRunBudgetTopUpAction(ctx context.Context, execution decisionActionEx
 	if err != nil {
 		return nil, err
 	}
-	if err := linkRunBudgetRefusal(ctx, queries, issueID, params.RefusalID, execution.Action.ID, window); err != nil {
+	if err := linkRunBudgetRefusal(ctx, queries, issueID, params.RefusalID, params.RefusalGeneration, execution.Action.ID, window); err != nil {
 		return nil, err
 	}
 	receipt["issue_id"], receipt["window_id"] = params.IssueID, window

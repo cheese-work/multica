@@ -97,6 +97,6 @@ func (h *Handler) linkRefusalIfFunded(ctx context.Context, action db.DecisionAct
 		if err != nil || window == "" || balance <= 0 {
 			return err
 		}
-		return linkRunBudgetRefusal(ctx, q, refusal.IssueID, uuidToString(refusal.ID), action.ID, window)
+		return linkRunBudgetRefusalAt(ctx, q, refusal.IssueID, uuidToString(refusal.ID), nil, action.ID, window)
 	})
 }

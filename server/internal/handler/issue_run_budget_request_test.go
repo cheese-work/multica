@@ -66,7 +66,7 @@ func TestRequestRunBudgetRaiseOpensASpendRequestForAnOwner(test *testing.T) {
 	var fingerprint, class, origin, human, params, actionType string
 	dbfx.QueryRow(test, `SELECT r.request_fingerprint, r.escalation_class, r.origin, r.human_user_id::text, a.params::text, a.action_type FROM decision_request r JOIN decision_action a ON a.decision_request_id = r.id WHERE r.id = $1 AND a.id = $2`, got.RequestID, got.ActionID).
 		Scan(&fingerprint, &class, &origin, &human, &params, &actionType)
-	if want := "server:run_budget_action:raise:" + fixture.window + ":9"; fingerprint != want {
+	if want := "server:run_budget_action:raise:" + fixture.window + ":9:g0"; fingerprint != want {
 		test.Fatalf("fingerprint = %q, want %q", fingerprint, want)
 	}
 	if class != "spend" || human != fixture.humanID || actionType != "issue.run_budget.raise" {
