@@ -154,6 +154,15 @@ describe("canvas dialog: focus-depth levels (CHE-5715)", () => {
     press(" ");
     expect(ready()).toBe("1");
   });
+  it("Space on a focused card steps in, where arrow keys leave the focus (R1 check 3)", () => {
+    render(ui());
+    openCanvas();
+    press("+");
+    expect(ready()).toBe("1");
+    const card = within(canvas()).getAllByRole("link")[0]!;
+    fireEvent.keyDown(card, { key: " " });
+    expect(ready()).toBe("2");
+  });
   it("marks level-start then level-ready for every level change", () => {
     render(ui());
     openCanvas();

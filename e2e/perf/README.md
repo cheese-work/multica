@@ -175,3 +175,16 @@ comparable when the digests match, which the comparison report states.
 
 Do not add DOM to the page to keep the pressure up. A future virtualization
 change that legitimately renders fewer nodes should show up as fewer nodes.
+
+## Hierarchy level zoom (CHE-4312 R1)
+
+`hierarchy-level-zoom.spec.ts` opens the hierarchy dialog on one issue of a real workspace, finds the deepest path by
+keyboard, then steps in (`+`) and out (`-`) along it: one warm-up pass, then 3 passes x 20 level changes. Each change
+is the `level-start` to `level-ready` mark interval. Gate: warm p95 < 500 ms; the first change after load is recorded
+as the cold value, not gated. It only reads and presses keys.
+
+```bash
+PLAYWRIGHT_BASE_URL=http://localhost:3000 PERF_TOKEN=<token> \
+  pnpm exec playwright test --config=playwright.perf.config.ts hierarchy-level-zoom --project=chromium
+# optional: PERF_WORKSPACE_SLUG (cheese-work), PERF_ISSUE (CHE-2797), PERF_REPORT_PATH
+```
