@@ -51,6 +51,8 @@ multica project create --title "<title>" --repo <github-url> --output json
 multica project create --title "<title>" --start-date 2026-03-01 --due-date 2026-03-31 --output json
 multica project update <project-id> --title "<title>" --output json
 multica project update <project-id> --due-date 2026-04-15 --output json
+multica project create --title "<title>" --priority high --output json   # urgent|high|medium|low|none
+multica project update <project-id> --priority medium --output json
 multica project update <project-id> --start-date "" --output json   # clear the start date
 multica project status <project-id> in_progress --output json
 multica project resource list <project-id> --output json

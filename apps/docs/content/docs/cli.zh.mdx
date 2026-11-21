@@ -366,6 +366,8 @@ multica autopilot create --title "每周销售周报" --agent "运营助手" \
 multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/Shanghai
 ```
 
+`multica project create --priority <urgent|high|medium|low|none>` 和 `multica project update <project> --priority <值>` 设置项目优先级。该值目前只被保存，领取路径会在后续版本中读取它；`project_rank` 暂不使用它。
+
 - `--lead` 接受成员或智能体的名称。`--default-branch-hint` 只告诉智能体仓库的默认分支，不会切换分支。
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。该设置存储为 `background_agents` 的 `routing` 任务。这些标志是 `multica workspace background-agents set routing` 的别名，旧的 `/routing-agent` API 路由也会作为别名保留一个版本。
@@ -421,6 +423,8 @@ multica me background-agents set dm_title --agent none   # 恢复为工作区默
 `--agent` 和 `--fallback` 接受智能体 ID 或名称；`none` 表示清除该字段。`multica me` 涵盖 `dm_title`、`quick_actions` 和 `compact`；`routing` 仅限工作区。写入工作区需要所有者或管理员，两个命令都会拒绝任务令牌。无智能体时的行为和时限见[后台智能体](/background-agents)。
 
 `multica workspace capability-routing [workspace]` 以 JSON 输出 `capability_routing` 设置（工单类型到作者和评审智能体的映射），未设置时输出 `{}`。它只读；修改请使用 `multica config propose workspace.settings --set 'capability_routing:=<json>'`。参见 [Workflows](/docs/workflows)。
+
+`multica workspace queue-order show [workspace]` 以 JSON 输出 `queue_order`(`priority` 或 `project_rank`)和 `queue_aging_minutes`(5 到 720)的生效值。`multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` 修改其中一项或两项(仅限所有者或管理员;每次修改都会记入审计,含操作者、旧值、新值和时间)。默认的 `priority` 保持现有的排队顺序;`project_rank` 按项目优先级、父议题优先级、自身优先级依次给排队的运行排序,等待每满一个老化周期就上升一级。领取路径会在后续版本中读取该设置,目前它只被保存并记入审计。被拒绝的值会列出允许的取值。用 `--order priority` 即可回滚。
 
 ## 浏览器租约
 

@@ -62,6 +62,23 @@ multica me background-agents set <job> [--agent <id|name|none>] [--fallback <id|
   reads, edits one job and writes back). Writes are human-only: a task token gets
   403 `background_agents_human_only`, printed with exit code 3.
 
+## Run queue order
+
+```bash
+multica workspace queue-order show [workspace] --output json
+multica workspace queue-order set [workspace] [--order priority|project_rank] [--aging-minutes 5..720]
+```
+
+- `show` prints the effective `queue_order` (`priority` default) and
+  `queue_aging_minutes` (30 default).
+- `set` changes only the flags you pass. A value outside the allowed set is
+  refused with an error that lists the allowed values, before any request.
+- Writes need owner or admin; a member gets 403. Each change is audited as kind
+  `workspace.queue_order` (actor, old, new, time): read it with
+  `multica audit list --kind workspace.queue_order`.
+- Roll back with `--order priority`. Claim-path use of the setting arrives in a
+  later release; today it is stored and audited.
+
 ## Audit trail
 
 ```bash
