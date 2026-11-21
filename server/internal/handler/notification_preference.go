@@ -20,6 +20,7 @@ import (
 var validNotifGroups = map[string]bool{
 	"unassigned_activity":  true,
 	"assignments":          true,
+	"assignee_changes":     true,
 	"status_changes":       true,
 	"comments":             true,
 	"mentions":             true,
