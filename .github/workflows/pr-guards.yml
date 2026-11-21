@@ -37,7 +37,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       # Full checkout on purpose: a sparse input would leak the same state again.
       - name: Checkout trusted workflow checker
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
@@ -63,7 +63,7 @@ jobs:
       pull-requests: read # the changed-file list; a failed read warns and passes (CHE-4016)
     steps:
       - name: Checkout trusted workflow checker
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
@@ -97,7 +97,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout trusted workflow checker
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
@@ -121,7 +121,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 0

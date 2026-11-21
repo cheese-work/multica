@@ -120,7 +120,7 @@ jobs:
       notice: ${{ steps.resolve.outputs.notice }}
     steps:
       - name: Checkout the workflow revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -154,7 +154,7 @@ jobs:
       authorized: ${{ steps.gate.outputs.authorized }}
       candidate_sha: ${{ steps.gate.outputs.candidate_sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/authorize-c00.py
@@ -186,7 +186,7 @@ jobs:
       group: c00-approval-notice
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/notify-approval.sh
@@ -222,7 +222,7 @@ jobs:
       eligible: ${{ steps.candidate.outputs.eligible }}
     steps:
       - name: Checkout the workflow revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -292,7 +292,7 @@ jobs:
       notice: ${{ steps.resolve.outputs.notice }}
     steps:
       - name: Checkout the workflow revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -319,7 +319,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/post-stale-notice.sh
@@ -376,7 +376,7 @@ jobs:
           { echo "sha=$CANDIDATE_SHA"; echo "run_id=$run_id"; echo "event=push"; echo "branch=main"; } >> "$GITHUB_OUTPUT"
 
       - name: Checkout the qualified commit
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.q.outputs.sha }}
           # Full history, not a shallow clone: the baseline step resolves the
@@ -544,7 +544,7 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.paths.outputs.ref }}
           fetch-depth: 1
@@ -642,7 +642,7 @@ jobs:
       queue: max
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.admission.outputs.ref }}
           fetch-depth: 0
@@ -845,7 +845,7 @@ jobs:
       restarts: ${{ steps.window.outputs.restarts }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -919,7 +919,7 @@ jobs:
     environment: c00-runtime
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -993,7 +993,7 @@ jobs:
       queue: max
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
