@@ -252,7 +252,7 @@ func TestExecuteFailsOnFailedPageAfterGoodPage(t *testing.T) {
 		"c1": {err: errors.New("boom")},
 	}}}
 	var out bytes.Buffer
-	err := execute(src, []string{"a1"}, wed.Add(-time.Hour), true, 2, &out)
+	err := execute(src, []string{"a1"}, wed.Add(-time.Hour), time.Time{}, true, 2, &out)
 	if err == nil || !strings.Contains(err.Error(), "report is incomplete") {
 		t.Fatalf("err = %v, want an incomplete-report error", err)
 	}
@@ -267,7 +267,7 @@ func TestExecuteFailsOnFailedIssueLookup(t *testing.T) {
 		failIssue: map[string]bool{"I1": true},
 	}
 	var out bytes.Buffer
-	err := execute(src, []string{"a1"}, wed.Add(-time.Hour), false, 2, &out)
+	err := execute(src, []string{"a1"}, wed.Add(-time.Hour), time.Time{}, false, 2, &out)
 	if err == nil {
 		t.Fatal("want an error for a failed issue lookup, got nil")
 	}
@@ -282,10 +282,48 @@ func TestExecuteSucceedsOnCompleteRead(t *testing.T) {
 		issues: map[string]Issue{"I1": {ID: "I1", Identifier: "CHE-1", StatusCategory: "done"}},
 	}
 	var out bytes.Buffer
-	if err := execute(src, []string{"a1"}, wed.Add(-time.Hour), false, 2, &out); err != nil {
+	if err := execute(src, []string{"a1"}, wed.Add(-time.Hour), time.Time{}, false, 2, &out); err != nil {
 		t.Fatalf("complete read returned %v, want nil", err)
 	}
 	if strings.Contains(out.String(), "INCOMPLETE") || !strings.Contains(out.String(), "USD per done root issue (1 roots)") {
 		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+}
+
+// CHE-6536: the daily check prices one ICT calendar day, not "the last 24 h",
+// so it lines up with the sub2api day the watch reconciles against.
+func TestDayWindowIsOneICTCalendarDay(t *testing.T) {
+	start, end, err := dayWindow("2026-11-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC); !start.Equal(want) {
+		t.Fatalf("start = %s, want %s (00:00 ICT)", start.UTC(), want)
+	}
+	if want := time.Date(2026, 11, 20, 17, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Fatalf("end = %s, want %s (24 h later)", end.UTC(), want)
+	}
+	if _, _, err := dayWindow("20-11-2026"); err == nil {
+		t.Fatal("a malformed day must be an error")
+	}
+}
+
+func TestExecuteDropsRunsAtOrAfterEnd(t *testing.T) {
+	in := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)    // 10:00 ICT on 20 Nov
+	next := time.Date(2026, 11, 20, 17, 0, 0, 0, time.UTC) // 00:00 ICT on 21 Nov: next day
+	r1, r2 := sonnetRun("r-in", ""), sonnetRun("r-next", "")
+	r1.CreatedAt, r2.CreatedAt = in, next
+	src := fakeSource{pages: map[string]map[string]fakePage{"a1": {"": {runs: []Run{r2, r1}}}}}
+	var out bytes.Buffer
+	start := in.Add(-time.Hour)
+	if err := execute(src, []string{"a1"}, start, next, true, 2, &out); err != nil {
+		t.Fatal(err)
+	}
+	var rep Report
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.RunCount != 1 {
+		t.Fatalf("runs_priced = %d, want 1 (the run at the end bound is the next day)", rep.RunCount)
 	}
 }
