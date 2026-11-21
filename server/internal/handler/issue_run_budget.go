@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -388,6 +389,18 @@ func (h *Handler) enterRunBudgetBoundaries(ctx context.Context, issueIDs ...pgty
 	return leave, nil
 }
 
+var (
+	// runBudgetBoundaryIdleTimeout ends a boundary transaction that has sat
+	// idle this long. A legitimate holder issues its next statement within
+	// seconds.
+	runBudgetBoundaryIdleTimeout = 60 * time.Second
+	// runBudgetBoundaryHoldLimit force-releases a boundary lock held this long,
+	// freeing the in-process turn and pool slot the server cannot.
+	runBudgetBoundaryHoldLimit = 90 * time.Second
+)
+
+const runBudgetBoundaryRollbackTimeout = 5 * time.Second
+
 // lockRunBudgetBoundary holds the issue's boundary lock until release runs;
 // release is safe to call more than once. An agent's or the platform's status
 // write takes it around the write and its grant. A person's move reads the
@@ -403,14 +416,37 @@ func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID
 		leave()
 		return nil, err
 	}
+	var watchdog *time.Timer
 	release = sync.OnceFunc(func() {
-		_ = tx.Rollback(ctx)
+		if watchdog != nil {
+			watchdog.Stop()
+		}
+		// The request may be cancelled by now; a rollback on a cancelled
+		// context is never sent and would leave the lock to the server.
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runBudgetBoundaryRollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
 		leave()
 	})
+	// Backstop for a holder that never releases: the server ends the
+	// transaction, and with it the lock, once it sits idle too long.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL idle_in_transaction_session_timeout = %d", runBudgetBoundaryIdleTimeout.Milliseconds())); err != nil {
+		release()
+		return nil, err
+	}
 	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
 		release()
 		return nil, err
 	}
+	// The same backstop for the in-process turn and slot, which the server
+	// cannot free. Set only after the lock is held, so the timer cannot race
+	// the assignment above.
+	started := time.Now()
+	issue := uuidToString(issueID)
+	watchdog = time.AfterFunc(runBudgetBoundaryHoldLimit, func() {
+		slog.Error("run budget: boundary lock held too long; releasing it", "issue_id", issue, "held", time.Since(started).String())
+		release()
+	})
 	return release, nil
 }
 
