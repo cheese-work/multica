@@ -267,3 +267,12 @@ export function NeedsYouList({
     </section>
   );
 }
+
+/** True when the box would show a row or the unclassified group. */
+export function hasAttention(sessions: ChatSession[]): boolean {
+  return sessions.some((s) => isAttention(s) || (s.attention_unclassified_keys?.length ?? 0) > 0);
+}
+
+export function attentionRowCount(sessions: ChatSession[]): number {
+  return sessions.filter(isAttention).length;
+}

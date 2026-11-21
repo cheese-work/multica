@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useSyncExternalStore } from "react";
-import type { Agent } from "@multica/core/types";
+import type { Agent, ChatSession } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
 import { useSearchStore } from "../search/search-store";
 import { chatKeys } from "@multica/core/chat/queries";
@@ -117,6 +117,7 @@ const layout = vi.hoisted(() => ({ width: 1440 }));
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => layout.width < 768,
   useIsCompact: () => layout.width < 768,
+  useIsBelowDock: () => layout.width < 1280,
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
@@ -137,6 +138,7 @@ const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
 const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
+const sessionsRef = vi.hoisted(() => ({ current: [] as ChatSession[] }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 // Spy over the REAL store's setter (wired in beforeEach). The page's effects
@@ -175,7 +177,7 @@ vi.mock("./components/use-chat-controller", async () => {
       agents: availableAgentsRef.current,
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
-      sessions: [],
+      sessions: sessionsRef.current,
       interactiveLoginRequired: interactiveLoginRequiredRef.current,
       activeSessionId: activeSession,
       selectedAgentId: null,
@@ -304,6 +306,7 @@ const activeSession = () => useChatStore.getState().activeSessionId;
 beforeEach(() => {
   interactiveLoginRequiredRef.current = false;
   messagesLoadedRef.current = true;
+  sessionsRef.current = [];
   vi.clearAllMocks();
   mockSetActiveSession.mockImplementation((id: string | null) =>
     useChatStore.getState().setActiveSession(id),
@@ -680,6 +683,40 @@ describe("ChatPage responsive layout", () => {
       screen.getByRole("button", { name: "select-thread" }),
     ).toBeInTheDocument();
     expect(screen.getByText("chat-input")).toBeInTheDocument();
+  });
+});
+
+// CHE-4152 (Terra C1): the compact conversation unmounts the thread list, which
+// owns the attention refresh. A future-only reminder must still appear when due.
+describe("ChatPage attention refresh in a compact conversation", () => {
+  const DUE_MS = 60_000;
+  const reminder = () =>
+    ({ id: "session-1", next_change_at: new Date(Date.now() + DUE_MS).toISOString() }) as ChatSession;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    sessionsRef.current = [reminder()];
+    seedSession("session-1");
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("refetches the sessions when the reminder is due, with an empty queue and no navigation", () => {
+    layout.width = FOLD_INNER_PORTRAIT;
+    const { qc } = renderPage("session=session-1");
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    act(() => void vi.advanceTimersByTime(DUE_MS + 1_000));
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: chatKeys.sessions("ws-1") });
+  });
+
+  it("leaves the refresh to the thread list when it stays mounted", () => {
+    const { qc } = renderPage("session=session-1");
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    act(() => void vi.advanceTimersByTime(DUE_MS + 1_000));
+
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: chatKeys.sessions("ws-1") });
   });
 });
 

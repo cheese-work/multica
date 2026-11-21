@@ -77,6 +77,15 @@ describe("ChatSessionHeader breadcrumb", () => {
     ).toBeTruthy();
   });
 
+  it("renders the Needs you drawer button passed as `attention` in the header", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={null} attention={<button type="button">Needs you 2</button>} />
+      </I18nProvider>,
+    );
+    expect(within(screen.getByRole("banner")).getByRole("button", { name: "Needs you 2" })).toBeInTheDocument();
+  });
+
   it("opens the agent's settings from the ⋯ menu", () => {
     const agent = { id: "agent-1", name: "Lambda" } as Agent;
     render(
