@@ -151,6 +151,12 @@ Both gates fail closed: a value they cannot read counts as a failure. Neither is
 
 `pr.none_open` is a third entry gate that reads PRs, not what an agent wrote. It holds when no open or draft PR is linked to the issue, or to its children when the workflow includes child PRs. Merged and closed PRs do not hold it back, and an issue with no PR passes. Put it on the step an agent closes into (for example `agent_accepted`) and give the step before it an `agent_done` edge to that step, so an agent can close an `in_review` issue that has nothing left to merge. An agent can never use the shortcut while a PR is open: the refusal lists each open PR (for example `acme/widget#12 (draft)`) with the fix, which is to merge or close it. Like the other entry gates it is not accepted as a transition guard, and `multica workflow lint` accepts it in `entry`.
 
+## Check a workflow [#checks]
+
+Open a saved workflow and select **Checks** to see what the server's lint found in it. The button shows the count of errors, warnings and notes. Each step card that has a finding carries the same marks, so you can see which step to open. The sheet lists the findings grouped by step. Filter them with the tabs **All**, **Errors**, **Warnings** and **Notes**. Each finding shows its message, a **Fix:** hint and its rule ID. **Go to step** selects that step in the editor. **Re-run** checks the saved workflow again. A waived finding stays in the list, muted, with its reason, and is not counted.
+
+Checks judge the saved workflow, not your unsaved edits. The server judges the edits when you save. If the save has errors that are not waived, the server refuses it and the editor opens **Save refused: unresolved errors**. Fix the errors and save again, or type a reason and select **Save anyway**. The reason is sent as `lint_override`, up to 500 characters, and a save without one is refused. The editor keeps the text you typed until the save goes through. If the checks fail to run, saving stays allowed.
+
 ## Related guides
 
 - [Projects](/projects) — organize the issues that follow a workflow.

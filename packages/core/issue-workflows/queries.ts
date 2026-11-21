@@ -14,6 +14,7 @@ import type { HandoffPreviewBinding, IssueWorkflow, IssueWorkflowStep, Project }
 export const issueWorkflowKeys = {
   all: (wsId: string) => ["issue-workflows", wsId] as const,
   list: (wsId: string) => [...issueWorkflowKeys.all(wsId), "list"] as const,
+  lint: (wsId: string, workflowId: string) => [...issueWorkflowKeys.all(wsId), "lint", workflowId] as const,
   handoffPreview: (wsId: string, issueId: string, status: string, projectId = "") =>
     [...issueWorkflowKeys.all(wsId), "handoff-preview", issueId, status, projectId] as const,
 };
@@ -40,6 +41,15 @@ export function issueWorkflowListOptions(wsId: string) {
     // Workflows change only when an admin edits one; the
     // `issue_workflow:changed` event refreshes every client when that happens.
     staleTime: 5 * 60_000,
+  });
+}
+
+/** The saved workflow, linted by the server. Refreshed by the `issue_workflow:changed` event, which invalidates `all`. */
+export function issueWorkflowLintOptions(wsId: string, workflowId: string) {
+  return queryOptions({
+    queryKey: issueWorkflowKeys.lint(wsId, workflowId),
+    queryFn: () => api.lintIssueWorkflow(workflowId),
+    staleTime: 60_000,
   });
 }
 

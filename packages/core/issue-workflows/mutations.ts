@@ -44,6 +44,8 @@ export function useUpdateIssueWorkflow() {
       // refused as a conflict with the editor's own write. A dry run saved
       // nothing.
       if (variables.dry_run || !saved?.id) return;
+      // The saved structure is what the next lint judges.
+      qc.invalidateQueries({ queryKey: issueWorkflowKeys.lint(wsId, saved.id) });
       qc.setQueryData<ListIssueWorkflowsResponse>(issueWorkflowKeys.list(wsId), (previous) =>
         previous ? { ...previous, workflows: previous.workflows.map((w) => (w.id === saved.id ? saved : w)) } : previous,
       );

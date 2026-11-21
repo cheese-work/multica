@@ -3,6 +3,7 @@ import { normalizeIssueStatusCategory } from "../issues/config/status";
 import type {
   WorkflowHandoffPreview,
   IssueWorkflow,
+  WorkflowLintResponse,
   IssueWorkflowDryRunResponse,
   IssueWorkflowHandlerType,
   AgentBuilderRuntimeSwitch,
@@ -605,6 +606,34 @@ const IssueWorkflowStepSchema = z.lazy(() => z.object({
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose());
 
+const IssueWorkflowLintFindingSchema = z.object({
+  rule: z.string(),
+  level: z.enum(["error", "warning", "info"]).catch("info"),
+  step: z.string().optional(),
+  message: z.string().default(""),
+  hint: z.string().optional(),
+  waived: z.boolean().optional(),
+  waive_reason: z.string().optional(),
+}).loose();
+
+export const WorkflowLintResponseSchema = z.lazy(() => z.object({
+  workflow_id: z.string().default(""),
+  workflow: z.string().default(""),
+  findings: z.array(IssueWorkflowLintFindingSchema).default([]),
+  errors: z.number().default(0),
+  warnings: z.number().default(0),
+  infos: z.number().default(0),
+}).loose());
+
+export const EMPTY_WORKFLOW_LINT: WorkflowLintResponse = {
+  workflow_id: "",
+  workflow: "",
+  findings: [],
+  errors: 0,
+  warnings: 0,
+  infos: 0,
+};
+
 export const IssueWorkflowSchema = z.lazy(() => z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -625,15 +654,7 @@ export const IssueWorkflowSchema = z.lazy(() => z.object({
   lint_override_reason: z.string().nullable().default(null),
   lint_overridden_at: z.string().nullable().default(null),
   // Findings of the last save (warnings, info, waived errors); absent from an older server.
-  lint_findings: z.array(z.object({
-    rule: z.string(),
-    level: z.enum(["error", "warning", "info"]).catch("info"),
-    step: z.string().optional(),
-    message: z.string().default(""),
-    hint: z.string().optional(),
-    waived: z.boolean().optional(),
-    waive_reason: z.string().optional(),
-  }).loose()).default([]),
+  lint_findings: z.array(IssueWorkflowLintFindingSchema).default([]),
 }).loose());
 
 export const ListIssueWorkflowsResponseSchema = z.lazy(() => z.object({

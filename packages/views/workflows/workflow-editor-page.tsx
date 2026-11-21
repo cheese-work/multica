@@ -26,6 +26,7 @@ import {
   CornerDownRight,
   FolderKanban,
   GripVertical,
+  ListChecks,
   MoreHorizontal,
   Plus,
   Trash2,
@@ -37,13 +38,18 @@ import { usePersistedDraft } from "@multica/core/drafts";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
   EMPTY_WORKFLOW_EDITOR_DRAFT,
+  EMPTY_WORKFLOW_LINT_OVERRIDE_DRAFT,
   useWorkflowEditorDraftStore,
+  useWorkflowLintOverrideDraftStore,
 } from "@multica/core/issue-workflows/draft-stores";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { statusColumnKeys } from "@multica/core/issues";
 import {
   isFixedWorkflowStatus,
+  issueWorkflowLintOptions,
+  lintCounts,
+  type LintCounts,
   statusAcceptsHandoff,
   useCreateIssueWorkflow,
   useDeleteIssueWorkflow,
@@ -58,6 +64,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type {
   IssueWorkflow,
+  IssueWorkflowLintFinding,
   IssueWorkflowMappingPlan,
   IssueWorkflowStep,
   IssueWorkflowStepInput,
@@ -78,6 +85,9 @@ import { Switch } from "@multica/ui/components/ui/switch";
 import { cn } from "@multica/ui/lib/utils";
 import { StatusIcon } from "../issues/components/status-icon";
 import { useStatusLabel } from "../issues/utils/status-label";
+import { LintMarks } from "./workflow-lint-marks";
+import { WorkflowChecksSheet } from "./workflow-checks-sheet";
+import { WorkflowLintRefusalDialog } from "./workflow-lint-refusal-dialog";
 import { ActorAvatar } from "../common/actor-avatar";
 import { useT } from "../i18n";
 import { BriefPreviewDialog, HandoffFields, savedHandoff } from "./handoff-form";
@@ -195,6 +205,14 @@ function mappingPlanFrom(err: unknown): IssueWorkflowMappingPlan | null {
   const body = err.body as { code?: unknown; plan?: IssueWorkflowMappingPlan };
   if (body.code !== "workflow_status_mapping_required" || !body.plan) return null;
   return { ...body.plan, unchanged: body.plan.unchanged ?? [] };
+}
+
+/** The unwaived errors a refused save carries (422 `workflow_lint_errors`), or null for any other error. */
+function lintRefusalFrom(err: unknown): IssueWorkflowLintFinding[] | null {
+  if (!(err instanceof ApiError) || err.status !== 422 || !err.body || typeof err.body !== "object") return null;
+  const body = err.body as { code?: unknown; findings?: unknown };
+  if (body.code !== "workflow_lint_errors" || !Array.isArray(body.findings) || body.findings.length === 0) return null;
+  return body.findings as IssueWorkflowLintFinding[];
 }
 
 /**
@@ -360,6 +378,24 @@ export function WorkflowEditorPage({
   const restored = useRef(false);
   const created = useRef(false);
   const edited = !sameDraft(draft, baseline);
+  // Lint of the saved workflow; the draft is judged by the server on save.
+  const lintQuery = useQuery({ ...issueWorkflowLintOptions(wsId, workflowId ?? ""), enabled: !!workflowId });
+  const lintResult = lintQuery.data;
+  const lintByStep = useMemo(() => {
+    const byStep = new Map<string, IssueWorkflowLintFinding[]>();
+    for (const f of lintResult?.findings ?? []) {
+      if (f.step) byStep.set(f.step, [...(byStep.get(f.step) ?? []), f]);
+    }
+    return byStep;
+  }, [lintResult]);
+  const [checksOpen, setChecksOpen] = useState(false);
+  const [refused, setRefused] = useState<IssueWorkflowLintFinding[] | null>(null);
+  // The override reason survives closing the dialog, a remount or a reload.
+  const [overrideHeld, holdOverride, dropOverride] = usePersistedDraft(
+    useWorkflowLintOverrideDraftStore,
+    targetKey,
+    EMPTY_WORKFLOW_LINT_OVERRIDE_DRAFT,
+  );
   useEffect(() => {
     if (created.current) return;
     if (edited) {
@@ -462,7 +498,7 @@ export function WorkflowEditorPage({
     setNewName(null);
   };
 
-  const save = async (mapping?: Record<string, string>) => {
+  const save = async (mapping?: Record<string, string>, lintOverride?: string) => {
     // Never write an existing workflow from defaults the row has not replaced.
     if (workflowId && !saved) return;
     // An unresolved conflict holds every save, including the mapping dialog's:
@@ -494,6 +530,7 @@ export function WorkflowEditorPage({
       description: draft.description.trim(),
       steps,
       ...(mapping ? { status_mapping: mapping } : {}),
+      ...(lintOverride ? { lint_override: lintOverride } : {}),
       // Only a changed budget field is sent: the server takes a budget change
       // from an interactive session alone, so an untouched field must stay out of the write.
       ...(draft.maxRuns !== baseline.maxRuns ? { max_runs_per_issue: Number(draft.maxRuns.trim() || 0) } : {}),
@@ -508,6 +545,9 @@ export function WorkflowEditorPage({
         const startedOn = targetKey;
         const response = await updateWorkflow.mutateAsync({ id: workflowId, ...body });
         toast.success(t(($) => $.workflows.editor.saved));
+        // The override went through: its reason has done its job.
+        setRefused(null);
+        dropOverride();
         // A late response for another target changes nothing here.
         if (synced.current.targetKey === startedOn) {
           if (response?.version) {
@@ -535,6 +575,12 @@ export function WorkflowEditorPage({
       const plan = mappingPlanFrom(err);
       if (plan) {
         setMappingPlan(plan);
+        return;
+      }
+      const refusal = lintRefusalFrom(err);
+      if (refusal) {
+        setMappingPlan(null);
+        setRefused(refusal);
         return;
       }
       if (workflowId && isChangedElsewhere(err)) {
@@ -613,6 +659,7 @@ export function WorkflowEditorPage({
       handoff: off ? undefined : draft.handoffs[column.id],
       nextLabel: off ? undefined : columnLabel(nextOf(column, draft.handoffs[column.id])) || undefined,
       selected: current.id === column.id,
+      lint: key ? lintCounts(lintByStep.get(key) ?? []) : undefined,
       onSelect: () => setSelected(column.id),
       toggle: optional
         ? { checked: !off, disabled: !canEdit, onChange: (on: boolean) => setDraft((d) => ({ ...d, [key]: on })) }
@@ -732,6 +779,13 @@ export function WorkflowEditorPage({
               {canEdit && dirty && workflowId && (
                 <span className="text-caption text-muted-foreground">{t(($) => $.workflows.editor.unsaved)}</span>
               )}
+              {workflowId && (
+                <Button variant="outline" className="gap-1.5" onClick={() => setChecksOpen(true)}>
+                  <ListChecks className="size-3.5" />
+                  {t(($) => $.workflows.lint.checks)}
+                  {lintResult && <LintMarks counts={lintCounts(lintResult.findings)} />}
+                </Button>
+              )}
               {canDuplicate && workflowId && (
                 <Button variant="outline" className="gap-1.5" onClick={() => onOpen({ duplicateOf: workflowId })}>
                   <Copy className="size-3.5" />
@@ -805,6 +859,34 @@ export function WorkflowEditorPage({
           </div>
         )}
       </div>
+
+      {workflowId && (
+        <WorkflowChecksSheet
+          open={checksOpen}
+          onOpenChange={setChecksOpen}
+          workflowName={saved?.name ?? draft.name}
+          result={lintResult}
+          loading={lintQuery.isPending}
+          failed={lintQuery.isError}
+          checkedAt={lintQuery.dataUpdatedAt ? new Date(lintQuery.dataUpdatedAt).toISOString() : undefined}
+          stepLabel={columnLabel}
+          onRerun={() => void lintQuery.refetch()}
+          onGoToStep={(key) => {
+            setSelected(key);
+            setChecksOpen(false);
+          }}
+        />
+      )}
+      <WorkflowLintRefusalDialog
+        open={refused !== null}
+        findings={refused ?? []}
+        reason={overrideHeld.reason}
+        onReasonChange={(reason) => holdOverride({ reason })}
+        pending={pending}
+        stepLabel={columnLabel}
+        onSaveAnyway={(reason) => void save(undefined, reason)}
+        onBack={() => setRefused(null)}
+      />
 
       <WorkflowGraph
         workflow={{ steps: graphSteps }}
@@ -978,6 +1060,8 @@ interface StepCardProps {
   /** Where the handler is told to move the issue next, by label. */
   nextLabel: string | undefined;
   selected: boolean;
+  /** Lint counts for this step; the badge shows only when something is flagged. */
+  lint?: LintCounts;
   onSelect: () => void;
   toggle?: { checked: boolean; disabled: boolean; onChange: (on: boolean) => void };
 }
@@ -1011,6 +1095,7 @@ function StepCard({
   handoff,
   nextLabel,
   selected,
+  lint,
   onSelect,
   toggle,
   sortable,
@@ -1079,6 +1164,7 @@ function StepCard({
           <span className="min-w-0 truncate text-body font-medium">{label}</span>
           {start && <Badge>{t(($) => $.workflows.editor.start)}</Badge>}
           {!("status_key" in column) && <Badge>{t(($) => $.workflows.editor.new_badge)}</Badge>}
+          {lint && <LintMarks counts={lint} className="ml-auto shrink-0" />}
         </span>
         <span className="mt-1 flex min-w-0 items-center gap-1 text-caption text-muted-foreground">
           {off ? (

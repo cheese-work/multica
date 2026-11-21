@@ -173,6 +173,7 @@ import type {
   CreateIssueStatusRequest,
   UpdateIssueStatusRequest,
   IssueWorkflow,
+  WorkflowLintResponse,
   IssueWorkflowWriteRequest,
   IssueWorkflowDryRunResponse,
   ListIssueWorkflowsResponse,
@@ -515,6 +516,8 @@ import {
   IssueStatusEntrySchema,
   ListIssueWorkflowsResponseSchema,
   IssueWorkflowSchema,
+  WorkflowLintResponseSchema,
+  EMPTY_WORKFLOW_LINT,
   IssueWorkflowDryRunResponseSchema,
   EMPTY_ISSUE_WORKFLOW,
   EMPTY_ISSUE_WORKFLOW_DRY_RUN,
@@ -5146,6 +5149,14 @@ export class ApiClient {
     });
     return parseWithFallback(raw, IssueWorkflowDryRunResponseSchema, EMPTY_ISSUE_WORKFLOW_DRY_RUN, {
       endpoint: "PATCH /api/issue-workflows/{id} (dry run)",
+    });
+  }
+
+  /** Lints the saved workflow now (WF001-WF014). Any workspace member may read it. */
+  async lintIssueWorkflow(id: string): Promise<WorkflowLintResponse> {
+    const raw = await this.fetch<unknown>(`/api/issue-workflows/${id}/lint`);
+    return parseWithFallback(raw, WorkflowLintResponseSchema, EMPTY_WORKFLOW_LINT, {
+      endpoint: "GET /api/issue-workflows/{id}/lint",
     });
   }
 
