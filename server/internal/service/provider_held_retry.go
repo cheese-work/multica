@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -55,9 +54,11 @@ func isHeldProviderRetryReason(reason string) bool {
 // planHeldProviderRetry loads, before the transaction, what the held retry
 // needs: the agent, its MCP overlay (may do network I/O) and the hold marker
 // values. It reports false when the task is outside the held path: other
-// reasons, no issue, a wakeup-bound run (M1b) or no transaction handle.
+// reasons, no issue or no transaction handle. A wakeup-bound run is inside it
+// (CHE-1754 M1b); the owner seam leaves the recurring guard's and the once
+// re-arm's runs to their own owners.
 func (s *TaskService) planHeldProviderRetry(ctx context.Context, reason string, parent db.AgentTaskQueue) (heldProviderRetry, bool) {
-	if !isHeldProviderRetryReason(reason) || !parent.IssueID.Valid || s.TxStarter == nil || taskHasWakeupContext(parent) {
+	if !isHeldProviderRetryReason(reason) || !parent.IssueID.Valid || s.TxStarter == nil {
 		return heldProviderRetry{}, false
 	}
 	agent, err := s.Queries.GetAgent(ctx, parent.AgentID)
@@ -84,17 +85,6 @@ func (s *TaskService) planHeldProviderRetry(ctx context.Context, reason string, 
 		plan.holdProvider = pgtype.Text{String: heldUnknownProvider, Valid: true}
 	}
 	return plan, true
-}
-
-// taskHasWakeupContext reports a wakeup-bound run, whose recovery is M1b's.
-func taskHasWakeupContext(t db.AgentTaskQueue) bool {
-	if len(t.Context) == 0 {
-		return false
-	}
-	var c struct {
-		WakeupID string `json:"wakeup_id"`
-	}
-	return json.Unmarshal(t.Context, &c) == nil && c.WakeupID != ""
 }
 
 // heldRetryCreator inserts the retry row. failTask passes its own CreateRetryTask
@@ -206,6 +196,9 @@ func heldRetryPreChecks(ctx context.Context, tx pgx.Tx, failed db.AgentTaskQueue
 	}
 	if allowed, err := q.GetProviderHeldRetryFence(ctx, failed.ID); err != nil || !allowed {
 		return "", pgtype.UUID{}, "newer run, terminal issue or reassignment", err
+	}
+	if allowed, err := q.GetWakeupHeldRetryFence(ctx, failed.ID); err != nil || !allowed {
+		return "", pgtype.UUID{}, "wakeup is gone, disabled, edited or paused", err
 	}
 	kind, id, err = providerFailureTrigger(ctx, q, failed.ID)
 	if err != nil {
