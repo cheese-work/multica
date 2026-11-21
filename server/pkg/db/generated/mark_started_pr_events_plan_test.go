@@ -50,13 +50,17 @@ func seedMarkStartedPlan(ctx context.Context, t *testing.T, tx pgx.Tx) string {
 		`INSERT INTO agent (id, workspace_id, name, runtime_mode) VALUES (gen_random_uuid(), $1::uuid, 'plan', 'local')`,
 		`INSERT INTO agent_task_queue (id, agent_id, status, started_at, completed_at)
 		 SELECT t.id, (SELECT id FROM agent WHERE workspace_id = $1::uuid), 'completed', now(), now() FROM plan_task t`,
-		// pr.event receipts: 30 per pr_needs_attention wakeup, plus one wakeup
-		// (the first issue's) holding 13,000. None names a stuck event.
+		// pr.event receipts: 84 per pr_needs_attention wakeup, plus one wakeup
+		// (the first issue's) holding 13,000. Every one names the issue's open
+		// event and none names a run: production receipts are mostly processed
+		// without a task (paused, skipped, coalesced), and CHE-8960 saw 143
+		// receipts per event, about 198,000 in all, each probing
+		// agent_task_queue to match none.
 		`INSERT INTO issue_wakeup_receipt (id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at)
 		 SELECT gen_random_uuid(), w.id, 1, 'k' || k, 'pr.event',
-		        jsonb_build_object('event_id', gen_random_uuid()::text, 'head_sha', 'z' || k, 'repo_owner', 'acme', 'repo_name', 'widget', 'pr_number', '1',
+		        jsonb_build_object('event_id', (SELECT e.id::text FROM issue_pr_event e WHERE e.issue_id = i.id), 'head_sha', 'z' || k, 'repo_owner', 'acme', 'repo_name', 'widget', 'pr_number', '1',
 		                           'detail', (SELECT string_agg(md5(random()::text || g), '') FROM generate_series(1, 45) g WHERE k > 0)),
-		        (SELECT id FROM plan_task), now()
+		        NULL, now()
 		 FROM issue_wakeup w
 		 JOIN plan_issue i ON i.id = w.issue_id AND w.system_rule = 'pr_needs_attention'
 		 JOIN LATERAL generate_series(1, CASE WHEN i.g = 1 THEN $4::int ELSE $3::int END) k ON true
@@ -128,8 +132,13 @@ func TestMarkStartedPREventsDeliveredPlanUsesReceiptIndexes(t *testing.T) {
 			t.Errorf("plan scans issue_wakeup_receipt in full: %s\n%s", strings.TrimSpace(line), plan)
 		}
 	}
-	if !strings.Contains(plan, "idx_issue_wakeup_receipt_pr_event_id") {
-		t.Errorf("plan does not use idx_issue_wakeup_receipt_pr_event_id\n%s", plan)
+	// The partial index holds only receipts that name a run; the full
+	// (event_id, wakeup_id) index would read every receipt of the event.
+	if !strings.Contains(plan, "idx_issue_wakeup_receipt_pr_event_id_task") {
+		t.Errorf("plan does not use idx_issue_wakeup_receipt_pr_event_id_task\n%s", plan)
+	}
+	if strings.Contains(plan, "using idx_issue_wakeup_receipt_pr_event_id on") {
+		t.Errorf("plan reads the full receipt event_id index, which holds receipts that name no run\n%s", plan)
 	}
 
 	work, raw, err := explainOracle(ctx, tx, markStartedPREventsDelivered, []pgtype.UUID(nil))

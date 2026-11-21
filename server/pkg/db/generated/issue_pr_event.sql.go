@@ -454,7 +454,8 @@ FROM (
     FROM issue_pr_event ce
     JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
     JOIN issue_wakeup w ON w.issue_id = ce.issue_id AND w.system_rule = 'pr_needs_attention'
-    JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id AND r.event_type = 'pr.event' AND r.payload->>'event_id' = ce.id::text
+    JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id AND r.event_type = 'pr.event' AND r.task_id IS NOT NULL
+        AND r.payload->>'event_id' = ce.id::text
     JOIN agent_task_queue t ON t.id = r.task_id
     WHERE ce.status IN ('accepted', 'next_turn', 'notified')
       AND ($1::uuid[] IS NULL OR ce.workspace_id = ANY($1::uuid[]))
