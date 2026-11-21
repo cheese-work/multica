@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -416,10 +417,12 @@ func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID
 		leave()
 		return nil, err
 	}
-	var watchdog *time.Timer
+	// The watchdog fires on its own goroutine and calls release, so the timer
+	// is shared through an atomic pointer.
+	var watchdog atomic.Pointer[time.Timer]
 	release = sync.OnceFunc(func() {
-		if watchdog != nil {
-			watchdog.Stop()
+		if t := watchdog.Load(); t != nil {
+			t.Stop()
 		}
 		// The request may be cancelled by now; a rollback on a cancelled
 		// context is never sent and would leave the lock to the server.
@@ -439,14 +442,13 @@ func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID
 		return nil, err
 	}
 	// The same backstop for the in-process turn and slot, which the server
-	// cannot free. Set only after the lock is held, so the timer cannot race
-	// the assignment above.
+	// cannot free. Set only after the lock is held.
 	started := time.Now()
 	issue := uuidToString(issueID)
-	watchdog = time.AfterFunc(runBudgetBoundaryHoldLimit, func() {
+	watchdog.Store(time.AfterFunc(runBudgetBoundaryHoldLimit, func() {
 		slog.Error("run budget: boundary lock held too long; releasing it", "issue_id", issue, "held", time.Since(started).String())
 		release()
-	})
+	}))
 	return release, nil
 }
 
