@@ -130,55 +130,20 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 	if err != nil {
 		return err
 	}
-	topic, err := resolveDecisionTopic(ctx, queries, issue)
-	if err != nil {
-		return err
-	}
-	session, found, err := topicLane(ctx, queries, issue, topic, event.MemberID, agent.ID)
+	identifier := fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number)
+	content := askRecoveryContent(identifier, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)), uuidToString(issue.ID), source)
+	sent, err := handler.writeMemberNotice(ctx, queries, memberNotice{
+		Issue: issue, Agent: agent, MemberID: event.MemberID, Content: content,
+		Kind: protocol.ChatMessageKindAskRecovery, AuthorType: "agent", AuthorID: agent.ID,
+		Link: func(commentID, messageID, sessionID pgtype.UUID) (string, pgtype.UUID, error) {
+			notice, err := queries.InsertAskRecoveryNotice(ctx, db.InsertAskRecoveryNoticeParams{ID: dbid.NewV7(), WorkspaceID: event.WorkspaceID, IssueID: issue.ID, EventID: event.ID, MemberID: event.MemberID, ChatSessionID: sessionID, ChatMessageID: messageID, CommentID: commentID})
+			return "ask_recovery_notice_id", notice.ID, err
+		},
+	})
 	var refusal decisionIntentRefusal
 	if errors.As(err, &refusal) {
 		return repair(askRecoveryLaneNotUsable)
 	}
-	if err != nil {
-		return err
-	}
-	if !found {
-		steward, err := handler.decisionSteward(ctx, queries, topic, agent, event.MemberID)
-		if err != nil {
-			return err
-		}
-		lane := db.ChatSession{AgentID: steward.ID, CreatorID: event.MemberID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
-		if session, err = createDecisionDM(ctx, queries, issue, lane); err != nil {
-			return err
-		}
-	}
-
-	identifier := fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number)
-	content := askRecoveryContent(identifier, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)), uuidToString(issue.ID), source)
-	commentRow, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: agent.ID, Content: content, Type: "comment"})
-	if err != nil {
-		return err
-	}
-	comment := commentRow.Comment()
-	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: content, MessageKind: pgtype.Text{String: protocol.ChatMessageKindAskRecovery, Valid: true}, SentVia: pgtype.Text{String: "system", Valid: true}})
-	if err != nil {
-		return err
-	}
-	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
-		return err
-	}
-	notice, err := queries.InsertAskRecoveryNotice(ctx, db.InsertAskRecoveryNoticeParams{ID: dbid.NewV7(), WorkspaceID: event.WorkspaceID, IssueID: issue.ID, EventID: event.ID, MemberID: event.MemberID, ChatSessionID: session.ID, ChatMessageID: message.ID, CommentID: comment.ID})
-	if err != nil {
-		return err
-	}
-	details, err := json.Marshal(map[string]pgtype.UUID{"comment_id": comment.ID, "ask_recovery_notice_id": notice.ID})
-	if err != nil {
-		return err
-	}
-	// The recovery ping is mandatory: it skips the delivery preferences that
-	// inbox.CreateIfEligible applies, and a missing recipient fails the delivery.
-	// The item opens the issue comment, not the DM, so push says nothing about a decision.
-	item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{ID: dbid.NewV7(), WorkspaceID: event.WorkspaceID, RecipientType: "member", RecipientID: event.MemberID, Type: "mentioned", Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: pgtype.Text{String: content, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: agent.ID, Details: details})
 	if err != nil {
 		return err
 	}
@@ -191,10 +156,88 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 	if err := transaction.Commit(ctx); err != nil {
 		return err
 	}
-	workspaceID, agentID := uuidToString(event.WorkspaceID), uuidToString(agent.ID)
-	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(event.MemberID), uuidToString(session.ID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
-	handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})
+	handler.publishMemberNotice(event.WorkspaceID, "agent", agent.ID, event.MemberID, sent)
 	return askRecoveryFaultAt("after_commit")
+}
+
+// memberNotice is one notice to one member: an issue comment, a message in the
+// member's decision DM for the issue's topic, and a mandatory inbox item.
+type memberNotice struct {
+	Issue      db.Issue
+	Agent      db.Agent // owns the DM lane when the topic has no DM yet
+	MemberID   pgtype.UUID
+	Content    string
+	Kind       string // chat message kind
+	AuthorType string // comment author; the inbox actor is the same
+	AuthorID   pgtype.UUID
+	// Link writes the caller's own record of this notice and returns the key and
+	// id the inbox item carries in its details.
+	Link func(commentID, messageID, sessionID pgtype.UUID) (key string, id pgtype.UUID, err error)
+}
+
+type sentMemberNotice struct {
+	Session db.ChatSession
+	Message db.ChatMessage
+	Item    db.InboxItem
+}
+
+// writeMemberNotice writes the notice in the caller's transaction. A lane the
+// member cannot use returns a decisionIntentRefusal and writes nothing.
+func (handler *Handler) writeMemberNotice(ctx context.Context, queries *db.Queries, n memberNotice) (sentMemberNotice, error) {
+	issue := n.Issue
+	topic, err := resolveDecisionTopic(ctx, queries, issue)
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	session, found, err := topicLane(ctx, queries, issue, topic, n.MemberID, n.Agent.ID)
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	if !found {
+		steward, err := handler.decisionSteward(ctx, queries, topic, n.Agent, n.MemberID)
+		if err != nil {
+			return sentMemberNotice{}, err
+		}
+		lane := db.ChatSession{AgentID: steward.ID, CreatorID: n.MemberID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
+		if session, err = createDecisionDM(ctx, queries, issue, lane); err != nil {
+			return sentMemberNotice{}, err
+		}
+	}
+	commentRow, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: n.AuthorType, AuthorID: n.AuthorID, Content: n.Content, Type: "comment"})
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	comment := commentRow.Comment()
+	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: n.Content, MessageKind: pgtype.Text{String: n.Kind, Valid: true}, SentVia: pgtype.Text{String: "system", Valid: true}})
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+		return sentMemberNotice{}, err
+	}
+	key, id, err := n.Link(comment.ID, message.ID, session.ID)
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	details, err := json.Marshal(map[string]pgtype.UUID{"comment_id": comment.ID, key: id})
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	// The ping is mandatory: it skips the delivery preferences that
+	// inbox.CreateIfEligible applies, and a missing recipient fails the delivery.
+	// The item opens the issue comment, not the DM, so push says nothing about a decision.
+	item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: n.MemberID, Type: "mentioned", Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: pgtype.Text{String: n.Content, Valid: true}, ActorType: pgtype.Text{String: n.AuthorType, Valid: true}, ActorID: n.AuthorID, Details: details})
+	if err != nil {
+		return sentMemberNotice{}, err
+	}
+	return sentMemberNotice{Session: session, Message: message, Item: item}, nil
+}
+
+// publishMemberNotice announces a committed notice.
+func (handler *Handler) publishMemberNotice(workspace pgtype.UUID, actorType string, actorID, member pgtype.UUID, sent sentMemberNotice) {
+	workspaceID, actor := uuidToString(workspace), uuidToString(actorID)
+	handler.publishChatFor(protocol.EventChatMessage, workspaceID, actorType, actor, uuidToString(member), uuidToString(sent.Session.ID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(sent.Session.ID), MessageID: uuidToString(sent.Message.ID), Role: sent.Message.Role, Content: sent.Message.Content, CreatedAt: timestampToString(sent.Message.CreatedAt), MessageKind: sent.Message.MessageKind})
+	handler.publish(protocol.EventInboxNew, workspaceID, actorType, actor, map[string]any{"item": inboxToResponse(sent.Item)})
 }
 
 // askRecoveryNoticeAnswer finds the notice that a reply under parent is for. A

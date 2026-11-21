@@ -382,6 +382,10 @@ const (
 	// ChatMessageKindAskRecovery is the automatic notice that an ask never
 	// reached this person. It is not a decision request and carries no action.
 	ChatMessageKindAskRecovery = "ask_recovery"
+	// ChatMessageKindStepWatchdog is the automatic notice that the step watchdog
+	// acted on an issue the person requested (CHE-6116). Like ask recovery, it
+	// carries no action.
+	ChatMessageKindStepWatchdog = "step_watchdog"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this
