@@ -45,6 +45,28 @@ func TestProviderBreakerWorkspaceDeletionIsExplicit(t *testing.T) {
 	}
 }
 
+// CHE-7545: these workspace-keyed tables have no FK to workspace, so only an
+// explicit statement in the leaf teardown removes their rows.
+func TestWorkspaceKeyedNoFKTablesHaveExplicitTeardown(t *testing.T) {
+	queries, err := os.ReadFile("../../pkg/db/queries/workspace_delete.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"ask_recovery_notice", "ask_repair_root", "browser_gateway_credential",
+		"issue_handoff_dispatch", "issue_step_assignee", "issue_step_watchdog_action",
+		"merge_receipt_fact", "merge_veto", "merge_veto_deadline",
+		"weekly_run_guard_allowance", "weekly_run_guard_refusal",
+	} {
+		if workspaceDeletionManifest[table] != workspaceDelete {
+			t.Errorf("%s must be classified workspaceDelete", table)
+		}
+		if !strings.Contains(string(queries), "DELETE FROM "+table+" WHERE workspace_id = $1") {
+			t.Errorf("%s lacks explicit workspace-scoped teardown", table)
+		}
+	}
+}
+
 type workspaceDeleteAction string
 
 const (
@@ -337,6 +359,30 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"ci_watch_event":                     workspaceDelete,     // CHE-4279 storm-breaker event log; no FK.
 	"gh_installation_budget":             workspaceDeleteKeep, // CHE-4273 per GitHub App installation, shared across workspaces; no workspace_id.
 	"gh_budget_reservation":              workspaceDeleteKeep, // CHE-4273 same; no workspace_id.
+	"ask_recovery_notice":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"ask_repair_root":                    workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"browser_gateway_credential":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"ci_broker_audit":                    workspaceDeleteKeep, // CHE-7545 global GitHub-repository audit; no workspace_id.
+	"comment_content_edit":               workspaceDeleteKeep, // CHE-7545 keyed by comment_id, no FK, no workspace_id; orphan edit marks survive comment deletion (tiny; unsure).
+	"daemon_update_cycle":                workspaceDeleteKeep, // CHE-7545 keyed by machine owner and daemon; no workspace_id.
+	"daemon_update_schedule":             workspaceDeleteKeep, // CHE-7545 keyed by machine owner and daemon; no workspace_id.
+	"dm_progress_epic_episode":           workspaceDelete,     // CHE-7545 no FK; DeleteDMProgressByWorkspace.
+	"github_release_deploy":              workspaceDelete,     // CHE-7545 FK workspace ON DELETE CASCADE.
+	"github_release_intake":              workspaceDeleteKeep, // CHE-7545 per GitHub App installation; no workspace_id.
+	"github_release_pending":             workspaceDelete,     // CHE-7545 FK workspace ON DELETE CASCADE.
+	"issue_description_revision":         workspaceDelete,     // CHE-7545 FK issue ON DELETE CASCADE; no workspace_id.
+	"issue_handoff_dispatch":             workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"issue_step_assignee":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"issue_step_watchdog_action":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"merge_pause_state":                  workspaceDeleteKeep, // CHE-7545 per repository variable cache; no workspace_id.
+	"merge_receipt_fact":                 workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"merge_veto":                         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"merge_veto_deadline":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"run_budget_window_cutover":          workspaceDeleteKeep, // CHE-7545 global singleton; no workspace_id.
+	"server_deploy":                      workspaceDeleteKeep, // CHE-7545 global deploy log; no workspace_id.
+	"system1_epoch":                      workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"weekly_run_guard_allowance":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"weekly_run_guard_refusal":           workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }

@@ -1119,6 +1119,40 @@ deleted_merge_queue_state AS (
 ),
 deleted_merge_queue_evidence AS (
     DELETE FROM merge_queue_evidence WHERE workspace_id = $1
+),
+-- CHE-7545 workspace-owned leaves with workspace_id and no FK.
+deleted_ask_recovery_notice AS (
+    DELETE FROM ask_recovery_notice WHERE workspace_id = $1
+),
+deleted_ask_repair_root AS (
+    DELETE FROM ask_repair_root WHERE workspace_id = $1
+),
+deleted_browser_gateway_credential AS (
+    DELETE FROM browser_gateway_credential WHERE workspace_id = $1
+),
+deleted_issue_handoff_dispatch AS (
+    DELETE FROM issue_handoff_dispatch WHERE workspace_id = $1
+),
+deleted_issue_step_assignee AS (
+    DELETE FROM issue_step_assignee WHERE workspace_id = $1
+),
+deleted_issue_step_watchdog_action AS (
+    DELETE FROM issue_step_watchdog_action WHERE workspace_id = $1
+),
+deleted_merge_receipt_fact AS (
+    DELETE FROM merge_receipt_fact WHERE workspace_id = $1
+),
+deleted_merge_veto AS (
+    DELETE FROM merge_veto WHERE workspace_id = $1
+),
+deleted_merge_veto_deadline AS (
+    DELETE FROM merge_veto_deadline WHERE workspace_id = $1
+),
+deleted_weekly_run_guard_allowance AS (
+    DELETE FROM weekly_run_guard_allowance WHERE workspace_id = $1
+),
+deleted_weekly_run_guard_refusal AS (
+    DELETE FROM weekly_run_guard_refusal WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;
