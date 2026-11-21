@@ -135,10 +135,10 @@ func reviewRoundsAsk(issue db.Issue, rounds int) decisiontx.Ask {
 	return decisiontx.Ask{
 		ContextELI10:  fmt.Sprintf("%q has had %d review rounds without a PASS. The platform stopped the loop and moved the issue to Need Decision.", issue.Title, rounds),
 		AgentDid:      fmt.Sprintf("The reviewer sent the work back %d times (%d review rounds). The platform refused a further round instead of letting the loop run.", rounds, rounds),
-		Decision:      "Do you split the work into smaller issues, or accept the current head?",
+		Decision:      "Do you split the work (remove part of it and go on in this issue), or accept the current head?",
 		StakesIfWrong: "If you accept a head the reviewer rejected, a known defect can ship. If you split work that was nearly done, you add issues and runs for little gain.",
 		Options: []decisiontx.AskOption{
-			{Label: "Split the work", WhatHappens: "The issue is split into smaller issues, each with its own review rounds. The open findings move to the issue they belong to.", Pros: []string{"Each part gets a fresh round count", "The reviewer's findings stay open"}, Cons: []string{"More issues to track"}, CostOrTime: "A few new issues and their runs"},
+			{Label: "Split the work", WhatHappens: "The same issue and session go on with less work: the part you name is removed from this issue and filed as one backlog issue that keeps its existing behavior. The round count so far, the exact candidate and the open findings carry over.", Pros: []string{"The reviewer's findings stay open on the same candidate", "The work that stays is smaller, so a review can settle it"}, Cons: []string{"The round count does not reset", "The removed work waits in the backlog"}, CostOrTime: "One backlog issue and the rounds still to run"},
 			{Label: "Accept the current head", WhatHappens: "You accept the PR as it stands. The open findings are recorded as accepted risk and the issue goes on.", Pros: []string{"No more review runs"}, Cons: []string{"The findings stay in the code"}, CostOrTime: "Free"},
 		},
 		Recommendation:   "Read the last verdict. If the findings repeat, split the work; if they are small, accept the head.",
