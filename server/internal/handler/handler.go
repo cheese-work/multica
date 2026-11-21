@@ -50,6 +50,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // randomID returns a random 16-byte hex string used as a request ID for
@@ -667,6 +668,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
 	service.SetOnWeeklyRunGuardTripped(h.onWeeklyRunGuardTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
+	bus.Subscribe(protocol.EventIssueUpdated, h.closeIncidentsOnStatusMove)
 
 	if h.IssueService != nil {
 		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {
