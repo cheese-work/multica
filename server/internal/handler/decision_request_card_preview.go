@@ -46,6 +46,9 @@ type DecisionRequestCardAction struct {
 	// Preview is absent when the server cannot render the action as the
 	// executor would run it now: an unknown type, or a state the executor refuses.
 	Preview *ActionPreview `json:"preview,omitempty"`
+	// PreviewUnavailable says why Preview is absent when the server knows the
+	// reason (CHE-8772), so the card never ends at a bare "Details unavailable".
+	PreviewUnavailable string `json:"preview_unavailable,omitempty"`
 	// OwnerOnly: only the workspace owner may approve (the server refuses
 	// anyone else with needs_owner); the card hides the approve button.
 	OwnerOnly bool `json:"owner_only,omitempty"`
@@ -99,6 +102,12 @@ func previewDigest(raw []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// previewUnavailableError is a preview the server declines to render for a reason
+// the person can act on. The reason is server text, never agent text.
+type previewUnavailableError struct{ Reason string }
+
+func (err previewUnavailableError) Error() string { return err.Reason }
+
 func newActionPreview(fields []ActionPreviewField) (*ActionPreview, error) {
 	raw, err := json.Marshal(fields)
 	if err != nil {
@@ -131,6 +140,11 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 	fields, err := handler.cardPreviewFields(ctx, action)
 	if err == nil && len(fields) > 0 {
 		card.Preview, err = newActionPreview(fields)
+	}
+	var unavailable previewUnavailableError
+	if errors.As(err, &unavailable) {
+		card.PreviewUnavailable = unavailable.Reason
+		return card
 	}
 	if err != nil {
 		slog.WarnContext(ctx, "decision card preview unavailable", "action_id", card.ID, "action_type", action.ActionType, "error", err)
@@ -204,7 +218,8 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 			return nil, err
 		}
 		if params.NewCap <= snapshot.RunsLimit {
-			return nil, nil // the executor refuses a raise that does not raise
+			// The executor refuses a raise that does not raise (stale_cap).
+			return nil, previewUnavailableError{fmt.Sprintf("The run cap is already %d; this request asks for %d, which does not raise it. Reject it and ask again with a total above %d.", snapshot.RunsLimit, params.NewCap, snapshot.RunsLimit)}
 		}
 		delta := int64(params.NewCap - snapshot.RunsLimit)
 		return []ActionPreviewField{
@@ -262,9 +277,9 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 	return nil, nil
 }
 
-// openBudgetSnapshot reads the issue's run budget as the executor does, and
-// returns nil when the issue is unbudgeted or its window is no longer the one
-// the action names (the executor ends both with a failure).
+// openBudgetSnapshot reads the issue's run budget as the executor does. It
+// reports why there is none to show when the issue is unbudgeted or its window
+// is no longer the one the action names (the executor ends both with a failure).
 func (handler *Handler) openBudgetSnapshot(ctx context.Context, issueID, windowID string) (*service.RunBudgetSnapshot, error) {
 	id, err := parseUUIDString(issueID)
 	if err != nil {
@@ -275,8 +290,14 @@ func (handler *Handler) openBudgetSnapshot(ctx context.Context, issueID, windowI
 		return nil, err
 	}
 	snapshot, err := service.LoadRunBudgetSnapshot(ctx, handler.Queries, issue)
-	if err != nil || !snapshot.Budgeted || snapshot.WindowID != windowID {
+	if err != nil {
 		return nil, err
+	}
+	if !snapshot.Budgeted {
+		return nil, previewUnavailableError{"The issue has no run budget now, so there is nothing to raise. Reject this request."}
+	}
+	if snapshot.WindowID != windowID {
+		return nil, previewUnavailableError{"The run budget window changed since this was requested. Reject it and ask again."}
 	}
 	return &snapshot, nil
 }
