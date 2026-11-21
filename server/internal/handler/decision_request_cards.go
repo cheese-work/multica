@@ -80,6 +80,8 @@ type DecisionRequestAnswer struct {
 	ChosenOptionIndex *int   `json:"chosen_option_index,omitempty"`
 	OptionLabel       string `json:"option_label,omitempty"`
 	AnsweredAt        string `json:"answered_at"`
+	// UndoUntil is set only while the undo grace runs.
+	UndoUntil *string `json:"undo_until,omitempty"`
 }
 
 // DecisionRequestRun names the run that picked an answer up.
@@ -94,6 +96,7 @@ func decisionRequestAnswerFromRow(row db.ListDecisionRequestCardsRow) *DecisionR
 	}
 	answer := &DecisionRequestAnswer{State: "recorded", AnsweredAt: timestampToString(row.AnswerCreatedAt)}
 	answer.ChosenOptionIndex, answer.OptionLabel = chosenOption(row.Options, row.AnswerChosenOptionIndex)
+	answer.UndoUntil = runningUndoUntil(row.AnswerUndoUntil, row.AnswerDisclaimedAt)
 	switch {
 	case row.AnswerDisclaimedAt.Valid:
 		answer.State = "disclaimed"

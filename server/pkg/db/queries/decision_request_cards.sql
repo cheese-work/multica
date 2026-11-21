@@ -9,7 +9,7 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     request.covers_request_ids, request.answered_by_batch_request_id, request.batch_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
-    last_answer.chosen_option_index AS answer_chosen_option_index,
+    last_answer.chosen_option_index AS answer_chosen_option_index, last_answer.undo_until AS answer_undo_until,
     COALESCE(asker.name, '')::text AS asking_agent_name,
     pickup.id AS pickup_task_id, COALESCE(pickup.agent_name, '')::text AS pickup_agent_name
 FROM decision_request request
@@ -23,7 +23,7 @@ LEFT JOIN comment source ON source.id = request.source_comment_id
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
     AND record.disclaimed_at IS NULL
 LEFT JOIN LATERAL (
-    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index, answer.issue_comment_id
+    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index, answer.undo_until, answer.issue_comment_id
     FROM decision_answer answer WHERE answer.decision_request_id = request.id
     ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
 ) last_answer ON true

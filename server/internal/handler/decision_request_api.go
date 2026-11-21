@@ -372,6 +372,8 @@ type decisionAnswerRead struct {
 	// WokenAt and WakeOutcome say when and how the answer reached the agent; null until it did.
 	WokenAt     *string `json:"woken_at"`
 	WakeOutcome *string `json:"wake_outcome"`
+	// UndoUntil is set only while the undo grace runs (section 3.11 of the decision screen plan).
+	UndoUntil *string `json:"undo_until,omitempty"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
@@ -405,6 +407,7 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
 			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
 			WokenAt: timestampToPtr(answer.WokenAt), WakeOutcome: textToPtr(answer.WakeOutcome),
+			UndoUntil: runningUndoUntil(answer.UndoUntil, answer.DisclaimedAt),
 		}
 		receipt, err := handler.answerReceiptState(request.Context(), stored)
 		if err != nil {
