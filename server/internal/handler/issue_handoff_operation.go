@@ -35,9 +35,12 @@ type handoffOperationSeed struct {
 	actorType   string
 	actorID     pgtype.UUID
 	hash        string
-	// prefix is the issue prefix of the replay response written in the
-	// transaction.
+	// prefix is the issue prefix of the bare response, used when the write sets
+	// no response builder.
 	prefix string
+	// response builds the whole response of the move from the moved issue: the
+	// body the first request sends, step brief and hints included.
+	response func(db.Issue) IssueResponse
 }
 
 var errOperationKeyReused = errors.New("operation_key was already used for a different request or actor")
@@ -117,14 +120,20 @@ func claimHandoffOperation(ctx context.Context, q *db.Queries) error {
 }
 
 // recordWrites names what the move wrote, in the same transaction as the receipt.
-// It also stores the replayable response: the moved issue as the transaction
-// leaves it, so a retry returns the first result even if the process stops
-// after the commit.
+// It also stores the replayable response, built from the moved issue as the
+// transaction leaves it, so a retry returns the first response even if the
+// process stops after the commit. Only a warning comment the handler posts after
+// the commit (a warn entry gate) can make the final response differ; the
+// post-commit store then replaces this one.
 func (s *handoffOperationSeed) recordWrites(ctx context.Context, q *db.Queries, rec *statusRecord, moved db.Issue) error {
 	if s == nil {
 		return nil
 	}
-	response, err := json.Marshal(issueToResponse(moved, s.prefix))
+	resp := issueToResponse(moved, s.prefix)
+	if s.response != nil {
+		resp = s.response(moved)
+	}
+	response, err := json.Marshal(resp)
 	if err != nil {
 		return fmt.Errorf("marshal handoff operation response: %w", err)
 	}
@@ -139,8 +148,8 @@ func (s *handoffOperationSeed) recordWrites(ctx context.Context, q *db.Queries, 
 }
 
 // storeHandoffOperationResponse replaces the in-transaction response with the
-// full one the first request sent (step brief, hints). A failure is harmless:
-// the receipt already holds the moved issue.
+// one the first request sent, which can differ only after a warn entry gate. A
+// failure is harmless: the receipt already holds the whole response.
 func (h *Handler) storeHandoffOperationResponse(ctx context.Context, s *handoffOperationSeed, resp any) {
 	if s == nil {
 		return

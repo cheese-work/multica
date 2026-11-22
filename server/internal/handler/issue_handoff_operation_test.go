@@ -297,3 +297,24 @@ func TestHandoffOperation_ChangedAnyFieldRefused(t *testing.T) {
 		})
 	}
 }
+
+// Review finding P1 round 2 (failure-path): the stored first response must be
+// the whole response, not the bare issue. A chained handoff adds step_brief after
+// the commit; with the post-commit store lost, the retry still returns it.
+func TestHandoffOperation_LostStoreRetryReturnsWholeChainedResponse(t *testing.T) {
+	f := newChainFixture(t, chainCase{flag: true})
+	failPostCommitStore(t, f.issueID)
+	t.Cleanup(func() { cleanupOperations(f.issueID) })
+	body := map[string]any{"status": "in_progress", "operation_key": uuid.NewString()}
+
+	first := f.moveAs(t, f.runHeaders(), body).Want(http.StatusOK)
+	if stepBriefOf(t, first) == "" {
+		t.Fatalf("first response has no step_brief; the fixture does not chain: %s", first.Body.String())
+	}
+	dbfx.Exec(t, `UPDATE issue SET title = 'changed later' WHERE id = $1`, f.issueID)
+	retry := f.moveAs(t, f.runHeaders(), body).Want(http.StatusOK)
+
+	if !reflect.DeepEqual(first.Map(), retry.Map()) {
+		t.Fatalf("retry differs from the first response:\nfirst: %s\nretry: %s", first.Body.String(), retry.Body.String())
+	}
+}

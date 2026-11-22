@@ -5411,6 +5411,24 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if actorType == "member" {
 		writeCtx = withMemberRouteOverride(writeCtx)
 	}
+	// The response of this write. The receipt stores the same response in the
+	// move's transaction (CHE-5491), so a retry returns the whole first response.
+	buildResponse := func(moved db.Issue) IssueResponse {
+		resp := issueToResponse(moved, h.getIssuePrefix(r.Context(), moved.WorkspaceID))
+		h.newReadFilter(r).stubDescription(h, moved, &resp)
+		h.fillProjectTriggerOutcome(r.Context(), moved, &resp)
+		if req.Title != nil && prevIssue.Title != moved.Title {
+			resp.WorkflowHint = h.titleTypeWorkflowHint(r, moved)
+		}
+		h.fillStatusCategory(r.Context(), moved.WorkspaceID, &resp)
+		if chained {
+			resp.StepBrief = h.workflowHandoffBrief(r.Context(), moved, handoff)
+		}
+		return resp
+	}
+	if statusRec != nil && statusRec.operation != nil {
+		statusRec.operation.response = buildResponse
+	}
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -5460,19 +5478,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
-	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-	resp := issueToResponse(issue, prefix)
-	h.newReadFilter(r).stubDescription(h, issue, &resp)
+	resp := buildResponse(issue)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
-	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
-	if req.Title != nil && prevIssue.Title != issue.Title {
-		resp.WorkflowHint = h.titleTypeWorkflowHint(r, issue)
-	}
-
-	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
-	if chained {
-		resp.StepBrief = h.workflowHandoffBrief(r.Context(), issue, handoff)
-	}
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
