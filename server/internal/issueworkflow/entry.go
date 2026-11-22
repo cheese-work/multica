@@ -240,6 +240,8 @@ func factFor(g Guard, f Facts) string {
 		return "no closed PR is linked"
 	case GuardChildrenDone:
 		return "a child issue is not done"
+	case GuardRootIssue:
+		return "this issue has a parent issue"
 	case GuardAdoptionLinked:
 		return f.Adoption.Refusal()
 	case GuardIssueStatus:
@@ -271,6 +273,8 @@ func fixFor(g Guard) string {
 		return "merge or close every open or draft PR linked to the issue or its children"
 	case GuardChildrenDone:
 		return "finish or close every child issue"
+	case GuardRootIssue:
+		return "only a root issue enters this step; keep a child in blocked and route the choice with a wakeup or a comment"
 	case GuardAdoptionLinked:
 		return adoptionFix()
 	case GuardIssueStatus:
