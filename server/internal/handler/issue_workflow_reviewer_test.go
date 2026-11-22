@@ -280,3 +280,54 @@ func TestReviewerHandler_LabsNeedNoVoteGateRegistry(t *testing.T) {
 		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "unknown")
 	})
 }
+
+// roleTask is a completed task of agentID on the issue with one workflow_role
+// row saying it ran at step with role, as the enqueue of a real run leaves it.
+// An empty step is a wakeup run: it is queued for no workflow step.
+func roleTask(t *testing.T, issueID, agentID, role, step string) {
+	t.Helper()
+	var runtimeID, model string
+	dbfx.QueryRow(t, `SELECT runtime_id::text, COALESCE(model, '') FROM agent WHERE id = $1`, agentID).Scan(&runtimeID, &model)
+	cols := testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "completed", "applied_model": model}
+	if step != "" {
+		cols["workflow_step"] = step
+	}
+	taskID := dbfx.Task(t, agentID, cols)
+	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
+		VALUES ($1, $2, 'agent', $3::text::uuid, 'workflow_role', jsonb_build_object('task_id', $4::text, 'agent_id', $3::text, 'role', $5::text, 'status', $6::text))`,
+		testWorkspaceID, issueID, agentID, taskID, role, step)
+}
+
+// CHE-9002: only an agent that ran a work step is an author. The reviewer's own
+// review run (its step is handed to an agent handler in the Default workflow)
+// and a wakeup run are not authorship, so the reviewer of another lab stays
+// eligible after it has run on the issue.
+func TestReviewerHandler_ReviewAndWakeupRunsDoNotMakeTheReviewerAnAuthor(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	reviewer := reviewerAgent(t, "codex", "gpt-5.5")
+	c := newReviewerCase(t, author, reviewer)
+	issueID := c.issue(t) // no unlabelled tasks: the evidence is the role rows below
+	roleTask(t, issueID, author, "agent", "in_progress")
+	roleTask(t, issueID, reviewer, "agent", "agent_review")
+	roleTask(t, issueID, reviewer, "none", "")
+
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+
+	if status, typ, id := issueStatusAndAssignee(t, issueID); status != "in_review" || typ != "agent" || id != reviewer {
+		t.Fatalf("issue = (%s, %s, %s), want in_review assigned to the reviewer %s who only reviewed", status, typ, id, reviewer)
+	}
+}
+
+// An agent that ran a work step is still an author, whatever else it ran.
+func TestReviewerHandler_AgentThatRanAWorkStepIsStillRefused(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	coder := reviewerAgent(t, "codex", "gpt-5.5")
+	c := newReviewerCase(t, author, coder)
+	issueID := c.issue(t)
+	roleTask(t, issueID, author, "agent", "in_progress")
+	roleTask(t, issueID, coder, "agent", "agent_review")
+	roleTask(t, issueID, coder, "agent", "in_progress")
+
+	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
+		"the reviewer is an author of this issue")
+}
