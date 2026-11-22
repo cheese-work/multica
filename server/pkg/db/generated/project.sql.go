@@ -11,10 +11,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const bumpProjectWakeupRevisions = `-- name: BumpProjectWakeupRevisions :exec
-UPDATE issue_wakeup w SET revision=w.revision+1
-FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
-AND i.project_id=$1 AND i.workspace_id=$2
+const advanceWakeupsBatch = `-- name: AdvanceWakeupsBatch :exec
+UPDATE issue_wakeup w SET enabled=u.enabled AND w.paused_reason IS NULL AND w.disabled_at IS NULL,
+ next_fire_at=u.next_fire_at, updated_at=clock_timestamp()
+FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::bool[]) AS enabled, unnest($3::timestamptz[]) AS next_fire_at) u
+WHERE w.id=u.id
+`
+
+type AdvanceWakeupsBatchParams struct {
+	Ids        []pgtype.UUID        `json:"ids"`
+	Enabled    []bool               `json:"enabled"`
+	NextFireAt []pgtype.Timestamptz `json:"next_fire_at"`
+}
+
+// AdvanceIssueWakeup for many rules in one statement; it leaves last_error alone.
+func (q *Queries) AdvanceWakeupsBatch(ctx context.Context, arg AdvanceWakeupsBatchParams) error {
+	_, err := q.db.Exec(ctx, advanceWakeupsBatch, arg.Ids, arg.Enabled, arg.NextFireAt)
+	return err
+}
+
+const bumpProjectWakeupRevisions = `-- name: BumpProjectWakeupRevisions :many
+WITH bumped AS (
+ UPDATE issue_wakeup w SET revision=w.revision+1
+ FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+ AND i.project_id=$1 AND i.workspace_id=$2
+ RETURNING w.id, w.revision, w.next_fire_at, w.enabled, w.condition, w.system_rule
+)
+SELECT id, revision, next_fire_at FROM bumped
+WHERE enabled AND condition IS NOT NULL
+AND system_rule IS DISTINCT FROM 'workflow_edges'
+AND system_rule IS DISTINCT FROM 'pr_merge_owed'
+ORDER BY id
 `
 
 type BumpProjectWakeupRevisionsParams struct {
@@ -22,9 +49,33 @@ type BumpProjectWakeupRevisionsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) BumpProjectWakeupRevisions(ctx context.Context, arg BumpProjectWakeupRevisionsParams) error {
-	_, err := q.db.Exec(ctx, bumpProjectWakeupRevisions, arg.ProjectID, arg.WorkspaceID)
-	return err
+type BumpProjectWakeupRevisionsRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	Revision   int64              `json:"revision"`
+	NextFireAt pgtype.Timestamptz `json:"next_fire_at"`
+}
+
+// Returns the condition rules the baseline pass owns, with the revision and
+// hold the flip left on them. The pass writes a rule only while both still
+// match, so a later flip, edit or poll wins over an older pass.
+func (q *Queries) BumpProjectWakeupRevisions(ctx context.Context, arg BumpProjectWakeupRevisionsParams) ([]BumpProjectWakeupRevisionsRow, error) {
+	rows, err := q.db.Query(ctx, bumpProjectWakeupRevisions, arg.ProjectID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BumpProjectWakeupRevisionsRow{}
+	for rows.Next() {
+		var i BumpProjectWakeupRevisionsRow
+		if err := rows.Scan(&i.ID, &i.Revision, &i.NextFireAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const cancelProjectAgentTasks = `-- name: CancelProjectAgentTasks :many
@@ -32,19 +83,22 @@ UPDATE agent_task_queue t
 SET status='cancelled', completed_at=now(), prepare_lease_expires_at=NULL,
     cancelled_by_type='system', cancelled_by_id=NULL, cancelled_by_name=NULL
 WHERE t.status IN ('queued','dispatched','running','waiting_local_directory','deferred')
-AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=$1::uuid AND i.workspace_id=$2::uuid)
- OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=$1::uuid AND a.workspace_id=$2::uuid))
- OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=$1::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=$2::uuid)))
-RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason, t.source_chat_session_id, t.trigger_kind, t.handoff_dispatch_id
+AND NOT ($1::bool AND t.status='running')
+AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=$2::uuid AND i.workspace_id=$3::uuid)
+ OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=$2::uuid AND a.workspace_id=$3::uuid))
+ OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=$2::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=$3::uuid)))
+RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason, t.source_chat_session_id, t.trigger_kind, t.handoff_dispatch_id, t.first_dispatched_at
 `
 
 type CancelProjectAgentTasksParams struct {
+	KeepRunning bool        `json:"keep_running"`
 	ProjectID   pgtype.UUID `json:"project_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
+// keep_running: a pause drains, so a running run lives on; cancel and complete stop it.
 func (q *Queries) CancelProjectAgentTasks(ctx context.Context, arg CancelProjectAgentTasksParams) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, cancelProjectAgentTasks, arg.ProjectID, arg.WorkspaceID)
+	rows, err := q.db.Query(ctx, cancelProjectAgentTasks, arg.KeepRunning, arg.ProjectID, arg.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +197,7 @@ func (q *Queries) CancelProjectAgentTasks(ctx context.Context, arg CancelProject
 			&i.SourceChatSessionID,
 			&i.TriggerKind,
 			&i.HandoffDispatchID,
+			&i.FirstDispatchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -240,6 +295,54 @@ func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) er
 	return err
 }
 
+const disableProjectDueOneShots = `-- name: DisableProjectDueOneShots :exec
+UPDATE issue_wakeup w SET enabled=false, next_fire_at=NULL, updated_at=clock_timestamp()
+FROM issue i
+WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+AND i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+AND w.condition IS NULL AND w.kind='at' AND w.next_fire_at<=now()
+`
+
+type DisableProjectDueOneShotsParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// A one-shot that came due while the project was inactive does not fire later.
+func (q *Queries) DisableProjectDueOneShots(ctx context.Context, arg DisableProjectDueOneShotsParams) error {
+	_, err := q.db.Exec(ctx, disableProjectDueOneShots, arg.ProjectID, arg.WorkspaceID)
+	return err
+}
+
+const discardProjectWakeupReceipts = `-- name: DiscardProjectWakeupReceipts :exec
+
+UPDATE issue_wakeup_receipt r SET processed_at=now()
+FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+WHERE r.wakeup_id=w.id AND r.processed_at IS NULL
+AND i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+`
+
+type DiscardProjectWakeupReceiptsParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// A status flip settles a project's wakeups with set-based statements, one per
+// step, so its cost does not grow with the number of rules (CHE-9000: a
+// per-rule loop in the flip's transaction timed out resuming a 5,365-issue
+// project). The rules in scope are the enabled ones that are not the
+// platform's own workflow_edges watch (it waits out an inactive project in its
+// evaluator) or pr_merge_owed. A disabled rule cannot fire, so it has nothing
+// to settle (CHE-7652); the revision bump still covers it.
+func (q *Queries) DiscardProjectWakeupReceipts(ctx context.Context, arg DiscardProjectWakeupReceiptsParams) error {
+	_, err := q.db.Exec(ctx, discardProjectWakeupReceipts, arg.ProjectID, arg.WorkspaceID)
+	return err
+}
+
 const getIssueProjectStatus = `-- name: GetIssueProjectStatus :one
 SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id
 WHERE i.id=$1
@@ -328,23 +431,22 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 	return items, nil
 }
 
-const listProjectWakeups = `-- name: ListProjectWakeups :many
+const listProjectOverdueRecurringWakeups = `-- name: ListProjectOverdueRecurringWakeups :many
 SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at, w.content_revision, w.workflow_step, w.purpose, w.decision_request_id, w.followup_instance_id, w.watch_inputs FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
-WHERE i.project_id=$1 AND i.workspace_id=$2
+WHERE i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
 AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+AND w.condition IS NULL AND w.kind IN ('every','cron') AND w.next_fire_at<=now()
 ORDER BY w.id FOR UPDATE OF w
 `
 
-type ListProjectWakeupsParams struct {
+type ListProjectOverdueRecurringWakeupsParams struct {
 	ProjectID   pgtype.UUID `json:"project_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// The workflow_edges watch is the platform's own, not a rule to settle: it
-// stays and waits out an inactive project in its evaluator.
-func (q *Queries) ListProjectWakeups(ctx context.Context, arg ListProjectWakeupsParams) ([]IssueWakeup, error) {
-	rows, err := q.db.Query(ctx, listProjectWakeups, arg.ProjectID, arg.WorkspaceID)
+func (q *Queries) ListProjectOverdueRecurringWakeups(ctx context.Context, arg ListProjectOverdueRecurringWakeupsParams) ([]IssueWakeup, error) {
+	rows, err := q.db.Query(ctx, listProjectOverdueRecurringWakeups, arg.ProjectID, arg.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -516,6 +618,37 @@ func (q *Queries) LockProjectForDelete(ctx context.Context, arg LockProjectForDe
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const markProjectWakeupsSettled = `-- name: MarkProjectWakeupsSettled :exec
+UPDATE issue_wakeup w SET last_error=$1, updated_at=clock_timestamp(),
+ next_fire_at=CASE WHEN w.condition IS NOT NULL THEN now()+make_interval(secs => $2::int) ELSE w.next_fire_at END
+FROM issue i
+WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+AND i.project_id=$3 AND i.workspace_id=$4 AND w.enabled
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+`
+
+type MarkProjectWakeupsSettledParams struct {
+	LastError   pgtype.Text `json:"last_error"`
+	HoldSeconds int32       `json:"hold_seconds"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Sets the settle error (project_inactive on a pause, null on a resume). A
+// condition rule is held until hold_seconds from now: the baseline pass after
+// the commit re-polls it sooner, and if that pass never runs the rule falls
+// back to its ordinary poll once the hold ends.
+func (q *Queries) MarkProjectWakeupsSettled(ctx context.Context, arg MarkProjectWakeupsSettledParams) error {
+	_, err := q.db.Exec(ctx, markProjectWakeupsSettled,
+		arg.LastError,
+		arg.HoldSeconds,
+		arg.ProjectID,
+		arg.WorkspaceID,
+	)
+	return err
 }
 
 const requireActiveProject = `-- name: RequireActiveProject :one

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/multica-ai/multica/server/internal/cibroker"
+	"github.com/multica-ai/multica/server/internal/secrets/seal"
 	"log/slog"
 	"math"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/bgagents"
@@ -233,6 +235,11 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// threadRelationsForTest replaces the thread relation read (CHE-6428).
+	threadRelationsForTest func(context.Context, threadRelationQuery) (threadRelationSet, error)
+	// handoffDispatchHook is a test seam (CHE-5488): it is called at named points of
+	// dispatchHandoffIntent, and an error it returns fails the dispatch there.
+	handoffDispatchHook func(point string) error
 	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
 	// that writes merge receipts (CHE-5594). Nil leaves the route off.
 	MergeReceiptBroker *cibroker.Broker
@@ -260,6 +267,10 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	PluginService          *service.PluginService
+
+	// SecretsKeyring seals scoped secrets (MULTICA_SECRETS_KEY). Nil means the
+	// feature is off: handlers answer writeFeatureDisabled("secrets_storage_disabled").
+	SecretsKeyring *seal.Keyring
 	// BrowserLeases serves the browser lease API (CHE-4732); nil answers 503.
 	BrowserLeases    *browserlease.Service
 	IssueService     *service.IssueService
@@ -569,6 +580,11 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	)
 
 	taskSvc := service.NewTaskService(queries, txStarter, hub, bus, daemonHub)
+	// CHE-4568: the retry, recurring and watchdog writers share one claim store.
+	// Test starters that are not a pool leave it nil, which skips claiming.
+	if pool, ok := txStarter.(*pgxpool.Pool); ok {
+		taskSvc.RecoveryClaims = service.NewRecoveryClaimStore(pool)
+	}
 	probe, probeErr := service.NewHTTPProviderFailureProbe(cfg.ProviderRecoveryBaseURL)
 	if probeErr != nil {
 		slog.Error("provider recovery probe configuration is invalid", "error", probeErr)

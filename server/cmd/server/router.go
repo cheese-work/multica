@@ -43,6 +43,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -479,13 +480,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Fail closed until W3-4 (signer) and W3-8/9 (user gate) fill the seams. Decisions are live: an
-	// answered decision (per lease or once per issue) is validated at every mint, renew and queued
-	// grant, and a mint with no decision opens the decision request (W3-10).
+	// Scoped secrets keyring (CHE-989). Production already refused to boot
+	// without a usable key (exitOnSecretsKeyBootError); elsewhere nil disables the feature.
+	secretsKeyring, secretsKeyStatus, _ := secrets.LoadKeyring(os.Getenv)
+	h.SecretsKeyring = secretsKeyring
+	secrets.LogKeyStatus(slog.Default(), secretsKeyStatus)
+	// Fail closed until W3-4 (signer) fills the seam. The user gate (W3-8/9) reads the permission tables.
+	// Decisions are live: an answered decision (per lease or once per issue) is validated at every
+	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).
 	h.BrowserLeases = &browserlease.Service{
-		Pool: pool, Queries: queries, Gate: browserlease.DenyAll{}, Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
-		Registry: browserlease.NameRegistry{Queries: queries},
-		Class3:   loadBrowserClass3Deny(),
+		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
+		Registry: browserlease.NameRegistry{Queries: queries}, Audit: handler.BrowserLeaseAudit,
+		Class3: loadBrowserClass3Deny(),
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -1727,6 +1733,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/elevation/downgrade", h.StartTaskDowngrade)
 		r.Post("/tasks/{taskId}/elevation/downgrade/deliver", h.DeliverTaskDowngrade)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
+		r.Post("/tasks/{taskId}/guard-decisions", h.ReportGuardDecisions)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Post("/tasks/{taskId}/silence-alert", h.ReportSilenceAlert)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
@@ -1910,6 +1917,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
 					r.Get("/plugins", h.ListPlugins)
+					// The stored guard policy and its digest, the base a passkey edit names (CHE-5207).
+					r.Get("/guard-policy", h.GetGuardPolicy)
 					// One short-lived hosted surface launch. Member-visible
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
@@ -1920,6 +1929,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
 					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
 					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+					// The Guard settings page edits the guard policy with a passkey (CHE-5207).
+					r.With(handler.RequireHumanActor).Post("/guard-policy/challenge", h.ChallengeGuardPolicy)
+					r.With(handler.RequireHumanActor).Put("/guard-policy", h.SetGuardPolicy)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -2332,8 +2344,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)
-					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
-					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					// CHE-2798 S1c: the direct raise and top-up are gone; a raise or top-up is a
+					// decision action request an owner approves (POST /run-budget/requests below).
+					r.Post("/run-budget", h.RunBudgetDirectRouteGone)
+					r.Post("/run-budget/top-up", h.RunBudgetDirectRouteGone)
 					r.With(handler.RequireHumanActor).Post("/run-budget/requests", h.RequestIssueRunBudgetAction)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
@@ -2341,6 +2355,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/taint/clear", h.ClearIssueTaint)
 					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
+					r.Post("/workflow/escalate", h.EscalateIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
@@ -2712,6 +2727,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Dashboard — workspace-wide token + run-time rollups for the
 			// "/{slug}/dashboard" page. Optional ?project_id filter scopes
 			// the rollup to a single project.
+			// Tool-guard decisions and counts (CHE-5207): same rows for the
+			// Guard settings page and `multica guard log|stats`.
+			r.Get("/api/guard/decisions", h.ListGuardDecisions)
+			r.Get("/api/guard/stats", h.GetGuardStats)
+
 			r.Route("/api/dashboard", func(r chi.Router) {
 				r.Get("/usage/daily", h.GetDashboardUsageDaily)
 				r.Get("/usage/by-agent", h.GetDashboardUsageByAgent)
@@ -2956,6 +2976,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/discuss", h.DiscussDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/undo", h.UndoDecisionRequest)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/revoke", h.RevokeDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/revoke/challenge", h.ChallengeDecisionRevoke)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)

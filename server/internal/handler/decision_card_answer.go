@@ -227,6 +227,13 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
+	var undoUntil pgtype.Timestamptz
+	if grace := decisionUndoGrace(workspace.Settings); grace > 0 && decision.Kind != "action" {
+		undoUntil = pgtype.Timestamptz{Time: time.Now().Add(grace), Valid: true}
+		if undoUntil.Time.After(effectiveAt.Time) {
+			effectiveAt = undoUntil
+		}
+	}
 	// A task-less user row: the card answer is the human's own message in the
 	// DM, so the answer's source rules and the delivery lock hold unchanged.
 	answerMessage, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "user", Content: content, MessageKind: pgtype.Text{String: "message", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}})
@@ -238,7 +245,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}, AnsweredLabel: pgtype.Text{String: label, Valid: label != ""}})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}, AnsweredLabel: pgtype.Text{String: label, Valid: label != ""}, UndoUntil: undoUntil})
 	if err != nil {
 		return empty, err
 	}
@@ -269,7 +276,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: workspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
-	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content)
+	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content, undoUntil)
 	if err != nil {
 		return empty, err
 	}

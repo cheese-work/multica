@@ -45,6 +45,28 @@ func TestProviderBreakerWorkspaceDeletionIsExplicit(t *testing.T) {
 	}
 }
 
+// CHE-7545: these workspace-keyed tables have no FK to workspace, so only an
+// explicit statement in the leaf teardown removes their rows.
+func TestWorkspaceKeyedNoFKTablesHaveExplicitTeardown(t *testing.T) {
+	queries, err := os.ReadFile("../../pkg/db/queries/workspace_delete.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"ask_recovery_notice", "ask_repair_root", "browser_gateway_credential",
+		"issue_handoff_dispatch", "issue_step_assignee", "issue_step_watchdog_action",
+		"merge_receipt_fact", "merge_veto", "merge_veto_deadline", "decision_backing_lane", "guard_decision",
+		"weekly_run_guard_allowance", "weekly_run_guard_refusal",
+	} {
+		if workspaceDeletionManifest[table] != workspaceDelete {
+			t.Errorf("%s must be classified workspaceDelete", table)
+		}
+		if !strings.Contains(string(queries), "DELETE FROM "+table+" WHERE workspace_id = $1") {
+			t.Errorf("%s lacks explicit workspace-scoped teardown", table)
+		}
+	}
+}
+
 type workspaceDeleteAction string
 
 const (
@@ -195,6 +217,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dm_progress_pending":                workspaceDelete, // CHE-3404 unsent progress events; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
+	"issue_workflow_switch_pending":      workspaceDelete, // CHE-7669 deferred workflow switch; no FK, swept by DeleteWorkspaceIssueRoots and the issue delete.
 	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
 	"issue_decision_park":                workspaceDelete, // CHE-3946 decision park; issue_id FK ON DELETE CASCADE removes its rows with the workspace.
 	"issue_wakeup_receipt":               workspaceDelete,
@@ -336,6 +359,35 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"ci_watch_event":                     workspaceDelete,     // CHE-4279 storm-breaker event log; no FK.
 	"gh_installation_budget":             workspaceDeleteKeep, // CHE-4273 per GitHub App installation, shared across workspaces; no workspace_id.
 	"gh_budget_reservation":              workspaceDeleteKeep, // CHE-4273 same; no workspace_id.
+	"ask_recovery_notice":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"ask_repair_root":                    workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"browser_gateway_credential":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"ci_broker_audit":                    workspaceDeleteKeep, // CHE-7545 global GitHub-repository audit; no workspace_id.
+	"comment_content_edit":               workspaceDeleteKeep, // CHE-7545 keyed by comment_id, no FK, no workspace_id; orphan edit marks survive comment deletion (tiny; unsure).
+	"daemon_update_cycle":                workspaceDeleteKeep, // CHE-7545 keyed by machine owner and daemon; no workspace_id.
+	"daemon_update_schedule":             workspaceDeleteKeep, // CHE-7545 keyed by machine owner and daemon; no workspace_id.
+	"dm_progress_epic_episode":           workspaceDelete,     // CHE-7545 no FK; DeleteDMProgressByWorkspace.
+	"github_release_deploy":              workspaceDelete,     // CHE-7545 FK workspace ON DELETE CASCADE.
+	"github_release_intake":              workspaceDeleteKeep, // CHE-7545 per GitHub App installation; no workspace_id.
+	"github_release_pending":             workspaceDelete,     // CHE-7545 FK workspace ON DELETE CASCADE.
+	"issue_description_revision":         workspaceDelete,     // CHE-7545 FK issue ON DELETE CASCADE; no workspace_id.
+	"issue_handoff_dispatch":             workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"issue_step_assignee":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"issue_step_watchdog_action":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"merge_pause_state":                  workspaceDeleteKeep, // CHE-7545 per repository variable cache; no workspace_id.
+	"merge_receipt_fact":                 workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"merge_veto":                         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"merge_veto_deadline":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"run_budget_window_cutover":          workspaceDeleteKeep, // CHE-7545 global singleton; no workspace_id.
+	"server_deploy":                      workspaceDeleteKeep, // CHE-7545 global deploy log; no workspace_id.
+	"system1_epoch":                      workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"weekly_run_guard_allowance":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"weekly_run_guard_refusal":           workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"claim_poll_stats":                   workspaceDeleteKeep, // CHE-7545 global per-minute claim poll histogram; no workspace_id.
+	"decision_backing_lane":              workspaceDelete,     // CHE-7545 workspace_id column, no FK; explicit teardown in DeleteWorkspaceAdministration.
+	"guard_decision":                     workspaceDelete,     // CHE-7545 workspace_id column, no FK (migration 9999940); explicit teardown in DeleteWorkspaceAdministration.
+	"decision_pick":                      workspaceDeleteKeep, // CHE-7545 UNSURE: keyed by decision_request_id and member_id, no FK, no workspace_id; rows orphan after request cleanup. Decision-worker owner should add cleanup.
+	"decision_snooze":                    workspaceDeleteKeep, // CHE-7545 UNSURE: same as decision_pick.
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }
@@ -436,8 +488,9 @@ func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	// decision_wait (L5b) is workspace-scoped with no FK, so baseline deletion owns it.
-	if strings.Contains(strings.ReplaceAll(string(queries), "decision_wait", ""), "decision_") {
+	// decision_wait (L5b) and decision_backing_lane (CHE-7545) are workspace-scoped with no FK, so baseline deletion owns them.
+	baseline := strings.NewReplacer("decision_wait", "", "decision_backing_lane", "").Replace(string(queries))
+	if strings.Contains(baseline, "decision_") {
 		test.Error("baseline workspace deletion must not run a decision statement")
 	}
 }

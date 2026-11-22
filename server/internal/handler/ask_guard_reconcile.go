@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/askguard"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -48,7 +49,9 @@ func (h *Handler) reconcileAskGuard(ctx context.Context) error {
 // clears nothing. An event that is already cleared stays cleared. A request
 // answers one event: the unique index on the clearing request refuses a retry
 // that names a second one, even when two retries race. An event with no member
-// is recovered only by the repair run its root admitted, named by taskID.
+// is recovered only by the repair run its root admitted, named by taskID. A
+// request whose event's run already asked the same person on the same issue is
+// refused with the existing request's id.
 func clearAskGuardEvent(ctx context.Context, queries *db.Queries, issue db.Issue, eventID, member, requestID, taskID pgtype.UUID) error {
 	if !eventID.Valid {
 		return nil
@@ -63,10 +66,48 @@ func clearAskGuardEvent(ctx context.Context, queries *db.Queries, issue db.Issue
 	if event.ClearedByRequestID == requestID {
 		return nil // a retry of the request that already cleared it
 	}
+	// The run that left the event already asked this person on this issue: a
+	// second card would repeat it (CHE-8752). The server names the first one.
+	earlier, err := queries.GetEarlierRequestOfTaskForMember(ctx, db.GetEarlierRequestOfTaskForMemberParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, HumanUserID: member, TaskID: event.TaskID, ID: requestID})
+	if err == nil {
+		return decisionIntentRefusal{http.StatusConflict, "recovers names an event whose run already asked this person on this issue: decision request " + uuidToString(earlier) + " serves it; do not open another"}
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
 	err = queries.ClearAskGuardEvent(ctx, db.ClearAskGuardEventParams{ID: eventID, ClearedByRequestID: requestID})
 	var constraint *pgconn.PgError
 	if errors.As(err, &constraint) && constraint.Code == "23505" {
 		return decisionIntentRefusal{http.StatusBadRequest, "this request already recovers another guard event"}
 	}
 	return err
+}
+
+// clearNotifyOnlyAskEvents (CHE-7438) closes the no-member events that a
+// refused comment of this task opened, when the task posts the same report with
+// --notify-only: the FYI is the exit the refusal named, and it asks nobody. A
+// source that names a member is a real ask and stays open for a decision
+// request. It runs in the comment's transaction, so the clear and the comment
+// commit together.
+func clearNotifyOnlyAskEvents(ctx context.Context, queries *db.Queries, issue db.Issue, taskID, commentID pgtype.UUID) error {
+	events, err := queries.ListNotifyOnlyClearableAskGuardEvents(ctx, db.ListNotifyOnlyClearableAskGuardEventsParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if len(askguard.MentionedMembers(event.Source)) > 0 {
+			continue
+		}
+		if err := queries.ClearAskGuardEventByComment(ctx, db.ClearAskGuardEventByCommentParams{ID: event.ID, ClearedByCommentID: commentID}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// serveAskGuardEvents is the other half of the same rule: a decision request from
+// a run to a person on an issue serves that run's open events for that person
+// and issue, so recovery sends no repair run and the person gets no second card.
+func serveAskGuardEvents(ctx context.Context, queries *db.Queries, issue db.Issue, member, taskID pgtype.UUID) error {
+	return queries.ServeAskGuardEventsForRequest(ctx, db.ServeAskGuardEventsForRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID, MemberID: member})
 }

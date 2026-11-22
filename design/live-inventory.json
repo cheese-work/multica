@@ -1,0 +1,3924 @@
+{
+  "version": 1,
+  "counts": {
+    "dialogs": 165,
+    "toasts": 602,
+    "decisionVariants": 15
+  },
+  "dialogs": [
+    {
+      "id": "packages/views/agents/components/agent-advanced-settings.tsx#AgentAdvancedSettings#1",
+      "element": "Dialog",
+      "line": 254
+    },
+    {
+      "id": "packages/views/agents/components/agent-advanced-settings.tsx#AgentAdvancedSettings#2",
+      "element": "AlertDialog",
+      "line": 408
+    },
+    {
+      "id": "packages/views/agents/components/agent-batch-toolbar.tsx#AgentBatchToolbar#1",
+      "element": "Dialog",
+      "line": 177
+    },
+    {
+      "id": "packages/views/agents/components/agent-batch-toolbar.tsx#AgentBatchToolbar#2",
+      "element": "Dialog",
+      "line": 227
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage#1",
+      "element": "AlertDialog",
+      "line": 760
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage#2",
+      "element": "Dialog",
+      "line": 794
+    },
+    {
+      "id": "packages/views/agents/components/agent-instructions-section.tsx#AgentInstructionsSection#1",
+      "element": "AlertDialog",
+      "line": 81
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions#1",
+      "element": "AlertDialog",
+      "line": 224
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions#2",
+      "element": "AlertDialog",
+      "line": 258
+    },
+    {
+      "id": "packages/views/agents/components/agent-scheduling.tsx#AgentSchedulingDialog#1",
+      "element": "AlertDialog",
+      "line": 121
+    },
+    {
+      "id": "packages/views/agents/components/agent-work-dialog.tsx#AgentWorkDialog#1",
+      "element": "Dialog",
+      "line": 27
+    },
+    {
+      "id": "packages/views/agents/components/create-agent-dialog.tsx#CreateAgentDialog#1",
+      "element": "Dialog",
+      "line": 298
+    },
+    {
+      "id": "packages/views/agents/components/skill-add-dialog.tsx#SkillAddDialog#1",
+      "element": "Dialog",
+      "line": 98
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab#1",
+      "element": "AlertDialog",
+      "line": 533
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-server-dialog.tsx#McpServerDialog#1",
+      "element": "Dialog",
+      "line": 499
+    },
+    {
+      "id": "packages/views/agents/components/tabs/skills-tab.tsx#SkillDetailDialog#1",
+      "element": "Dialog",
+      "line": 437
+    },
+    {
+      "id": "packages/views/agents/create/builder-workspace.tsx#BuilderWorkspace#1",
+      "element": "AlertDialog",
+      "line": 410
+    },
+    {
+      "id": "packages/views/agents/create/unfinished-drafts.tsx#UnfinishedDraftsBanner#1",
+      "element": "Dialog",
+      "line": 71
+    },
+    {
+      "id": "packages/views/autopilots/components/add-trigger-dialog.tsx#AddTriggerDialog#1",
+      "element": "Dialog",
+      "line": 115
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#AutopilotDetailPage#1",
+      "element": "AlertDialog",
+      "line": 1116
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#TriggerRow#1",
+      "element": "AlertDialog",
+      "line": 473
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#TriggerRow#2",
+      "element": "AlertDialog",
+      "line": 503
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog#1",
+      "element": "Dialog",
+      "line": 559
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-list-actions.tsx#DeleteAutopilotsDialog#1",
+      "element": "Dialog",
+      "line": 71
+    },
+    {
+      "id": "packages/views/autopilots/components/edit-schedule-trigger-dialog.tsx#EditScheduleTriggerDialogBody#1",
+      "element": "Dialog",
+      "line": 143
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-deliveries-section.tsx#DeliveryDetailDialog#1",
+      "element": "Dialog",
+      "line": 251
+    },
+    {
+      "id": "packages/views/autopilots/components/workspace-wakeups.tsx#WorkspaceWakeupCreate#1",
+      "element": "Dialog",
+      "line": 311
+    },
+    {
+      "id": "packages/views/autopilots/components/workspace-wakeups.tsx#WorkspaceWakeups#1",
+      "element": "Dialog",
+      "line": 622
+    },
+    {
+      "id": "packages/views/chat/components/chat-session-header.tsx#ChatSessionHeader#1",
+      "element": "AlertDialog",
+      "line": 452
+    },
+    {
+      "id": "packages/views/chat/components/chat-session-stats-dialog.tsx#ChatSessionStatsDialog#1",
+      "element": "Dialog",
+      "line": 83
+    },
+    {
+      "id": "packages/views/chat/components/chat-supplement-status.tsx#ChatSupplementStatus#1",
+      "element": "AlertDialog",
+      "line": 90
+    },
+    {
+      "id": "packages/views/chat/components/decision-artifacts.tsx#ArtifactFile#1",
+      "element": "Dialog",
+      "line": 282
+    },
+    {
+      "id": "packages/views/chat/components/decision-dm-card.tsx#DecisionDmCard#1",
+      "element": "AlertDialog",
+      "line": 179
+    },
+    {
+      "id": "packages/views/chat/components/use-archived-send.tsx#useArchivedSend#1",
+      "element": "AlertDialog",
+      "line": 75
+    },
+    {
+      "id": "packages/views/common/avatar-crop-dialog.tsx#AvatarCropDialog#1",
+      "element": "Dialog",
+      "line": 113
+    },
+    {
+      "id": "packages/views/common/task-transcript/agent-transcript-dialog.tsx#AgentTranscriptDialog#1",
+      "element": "Dialog",
+      "line": 878
+    },
+    {
+      "id": "packages/views/editor/mermaid-viewer.tsx#MermaidViewer#1",
+      "element": "Dialog",
+      "line": 124
+    },
+    {
+      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#1",
+      "element": "AlertDialog",
+      "line": 29
+    },
+    {
+      "id": "packages/views/issues/components/attachment-revision-diff.tsx#AttachmentRevisionDiffDialog#1",
+      "element": "Dialog",
+      "line": 59
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar#1",
+      "element": "AlertDialog",
+      "line": 418
+    },
+    {
+      "id": "packages/views/issues/components/comment-card.tsx#DeleteCommentDialog#1",
+      "element": "AlertDialog",
+      "line": 258
+    },
+    {
+      "id": "packages/views/issues/components/decision-action-panel.tsx#DecisionActionPanel#1",
+      "element": "Dialog",
+      "line": 49
+    },
+    {
+      "id": "packages/views/issues/components/decision-quote-card.tsx#DecisionQuoteCard#1",
+      "element": "AlertDialog",
+      "line": 309
+    },
+    {
+      "id": "packages/views/issues/components/deliverables/deliverables-overview.tsx#DeliverablesOverview#1",
+      "element": "Dialog",
+      "line": 100
+    },
+    {
+      "id": "packages/views/issues/components/hierarchy/hierarchy-dialog.tsx#HierarchyDialog#1",
+      "element": "Dialog",
+      "line": 68
+    },
+    {
+      "id": "packages/views/issues/components/issue-detail.tsx#IssueDetail#1",
+      "element": "Dialog",
+      "line": 4019
+    },
+    {
+      "id": "packages/views/issues/components/issue-detail.tsx#IssueDetail#2",
+      "element": "Sheet",
+      "line": 5076
+    },
+    {
+      "id": "packages/views/issues/components/issue-runs-dialog.tsx#IssueRunsDialog#1",
+      "element": "Dialog",
+      "line": 152
+    },
+    {
+      "id": "packages/views/issues/components/metadata-section.tsx#MetadataSection#1",
+      "element": "Dialog",
+      "line": 32
+    },
+    {
+      "id": "packages/views/issues/components/quick-actions-section.tsx#QuickActionsSection#1",
+      "element": "AlertDialog",
+      "line": 103
+    },
+    {
+      "id": "packages/views/issues/components/source-context-viewer.tsx#SourceContextBadge#1",
+      "element": "Dialog",
+      "line": 208
+    },
+    {
+      "id": "packages/views/issues/components/status-history-dialog.tsx#StatusHistoryDialog#1",
+      "element": "Dialog",
+      "line": 112
+    },
+    {
+      "id": "packages/views/issues/components/terminate-task-confirm-dialog.tsx#TerminateTaskConfirmDialog#1",
+      "element": "AlertDialog",
+      "line": 47
+    },
+    {
+      "id": "packages/views/issues/components/wakeup-control.tsx#RescheduleWakeup#1",
+      "element": "Dialog",
+      "line": 146
+    },
+    {
+      "id": "packages/views/issues/components/wakeup-instruction-editor.tsx#WakeupInstructionEditor#1",
+      "element": "Dialog",
+      "line": 65
+    },
+    {
+      "id": "packages/views/issues/components/wakeups-section.tsx#DeleteWakeup#1",
+      "element": "AlertDialog",
+      "line": 117
+    },
+    {
+      "id": "packages/views/labels/label-manager.tsx#DeleteLabelDialog#1",
+      "element": "AlertDialog",
+      "line": 370
+    },
+    {
+      "id": "packages/views/labels/label-manager.tsx#LabelEditorDialog#1",
+      "element": "Dialog",
+      "line": 278
+    },
+    {
+      "id": "packages/views/layout/compact-nav-sheet.tsx#CompactNavSheet#1",
+      "element": "Sheet",
+      "line": 40
+    },
+    {
+      "id": "packages/views/layout/object-page.tsx#ObjectPage#1",
+      "element": "Sheet",
+      "line": 173
+    },
+    {
+      "id": "packages/views/modals/create-issue-dialog.tsx#CreateIssueDialogBody#1",
+      "element": "Dialog",
+      "line": 167
+    },
+    {
+      "id": "packages/views/modals/create-project.tsx#CreateProjectModal#1",
+      "element": "Dialog",
+      "line": 473
+    },
+    {
+      "id": "packages/views/modals/create-squad.tsx#CreateSquadModal#1",
+      "element": "Dialog",
+      "line": 163
+    },
+    {
+      "id": "packages/views/modals/delete-issue-confirm.tsx#DeleteIssueConfirmModal#1",
+      "element": "AlertDialog",
+      "line": 56
+    },
+    {
+      "id": "packages/views/modals/feedback.tsx#FeedbackModal#1",
+      "element": "Dialog",
+      "line": 143
+    },
+    {
+      "id": "packages/views/modals/issue-limit-upgrade-dialog.tsx#IssueLimitUpgradeDialog#1",
+      "element": "Dialog",
+      "line": 142
+    },
+    {
+      "id": "packages/views/modals/rename-issue.tsx#RenameIssueModal#1",
+      "element": "Dialog",
+      "line": 94
+    },
+    {
+      "id": "packages/views/modals/run-confirm.tsx#RunConfirmModal#1",
+      "element": "Dialog",
+      "line": 237
+    },
+    {
+      "id": "packages/views/onboarding/source-backfill-modal.tsx#SourceBackfillModal#1",
+      "element": "Dialog",
+      "line": 129
+    },
+    {
+      "id": "packages/views/onboarding/steps/step-platform-fork.tsx#CliInstallDialog#1",
+      "element": "Dialog",
+      "line": 312
+    },
+    {
+      "id": "packages/views/plugins/plugin-modal-surface.tsx#PluginModalSurface#1",
+      "element": "Dialog",
+      "line": 84
+    },
+    {
+      "id": "packages/views/projects/components/github-ref-dialog.tsx#GithubRefDialog#1",
+      "element": "Dialog",
+      "line": 60
+    },
+    {
+      "id": "packages/views/projects/components/local-directory-mode-dialog.tsx#LocalDirectoryModeDialog#1",
+      "element": "Dialog",
+      "line": 83
+    },
+    {
+      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#2",
+      "element": "Sheet",
+      "line": 616
+    },
+    {
+      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#3",
+      "element": "AlertDialog",
+      "line": 626
+    },
+    {
+      "id": "packages/views/projects/components/projects-page.tsx#ProjectBatchToolbar#1",
+      "element": "Dialog",
+      "line": 441
+    },
+    {
+      "id": "packages/views/projects/components/projects-page.tsx#ProjectRowActions#1",
+      "element": "Dialog",
+      "line": 210
+    },
+    {
+      "id": "packages/views/quick-actions/components/quick-action-dialog.tsx#QuickActionDialog#1",
+      "element": "Dialog",
+      "line": 108
+    },
+    {
+      "id": "packages/views/rich-content/rich-table-dialog.tsx#RichTableDialog#1",
+      "element": "Dialog",
+      "line": 249
+    },
+    {
+      "id": "packages/views/runtimes/components/cloud-runtime-dialog.tsx#CloudRuntimeDialog#1",
+      "element": "Dialog",
+      "line": 96
+    },
+    {
+      "id": "packages/views/runtimes/components/connect-remote-dialog.tsx#WorkspaceConnectDialog#1",
+      "element": "Dialog",
+      "line": 145
+    },
+    {
+      "id": "packages/views/runtimes/components/custom-pricing-dialog.tsx#CustomPricingDialog#1",
+      "element": "Dialog",
+      "line": 127
+    },
+    {
+      "id": "packages/views/runtimes/components/delete-runtime-dialog.tsx#DeleteRuntimeDialog#1",
+      "element": "AlertDialog",
+      "line": 199
+    },
+    {
+      "id": "packages/views/runtimes/components/delete-runtime-profile-dialog.tsx#DeleteRuntimeProfileDialog#1",
+      "element": "AlertDialog",
+      "line": 85
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#EditConnectionDialog#1",
+      "element": "Dialog",
+      "line": 379
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#LimitsDialog#1",
+      "element": "Dialog",
+      "line": 940
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#RemoveRepositoryDialog#1",
+      "element": "AlertDialog",
+      "line": 807
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#RepositoryDialog#1",
+      "element": "Dialog",
+      "line": 701
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#DisconnectQoderDialog#1",
+      "element": "AlertDialog",
+      "line": 510
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#ManageCard#1",
+      "element": "AlertDialog",
+      "line": 379
+    },
+    {
+      "id": "packages/views/runtimes/components/remote-runtime-dialog.tsx#RemoteRuntimeDialog#1",
+      "element": "Dialog",
+      "line": 27
+    },
+    {
+      "id": "packages/views/runtimes/components/rename-machine-dialog.tsx#RenameMachineDialog#1",
+      "element": "AlertDialog",
+      "line": 84
+    },
+    {
+      "id": "packages/views/runtimes/components/revoke-runtime-access-dialog.tsx#RevokeRuntimeAccessDialog#1",
+      "element": "AlertDialog",
+      "line": 103
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-profiles-dialog.tsx#RuntimeProfilesDialog#1",
+      "element": "Dialog",
+      "line": 114
+    },
+    {
+      "id": "packages/views/runtimes/components/runtimes-page.tsx#MikaSetupCard#1",
+      "element": "Dialog",
+      "line": 991
+    },
+    {
+      "id": "packages/views/search/host-dialogs.tsx#BatchDeleteDialog#1",
+      "element": "AlertDialog",
+      "line": 93
+    },
+    {
+      "id": "packages/views/search/search-command.tsx#SearchCommand#1",
+      "element": "Dialog",
+      "line": 53
+    },
+    {
+      "id": "packages/views/settings/components/agent-decisions-row.tsx#AgentDecisionsRow#1",
+      "element": "AlertDialog",
+      "line": 79
+    },
+    {
+      "id": "packages/views/settings/components/billing-tab.tsx#BillingTabContent#1",
+      "element": "Dialog",
+      "line": 1536
+    },
+    {
+      "id": "packages/views/settings/components/billing-tab.tsx#BillingTabContent#2",
+      "element": "AlertDialog",
+      "line": 1670
+    },
+    {
+      "id": "packages/views/settings/components/code-tab.tsx#CodeTab#1",
+      "element": "AlertDialog",
+      "line": 328
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows#1",
+      "element": "Dialog",
+      "line": 255
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows#2",
+      "element": "Dialog",
+      "line": 336
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows#3",
+      "element": "AlertDialog",
+      "line": 373
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows#4",
+      "element": "AlertDialog",
+      "line": 397
+    },
+    {
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab#3",
+      "element": "AlertDialog",
+      "line": 232
+    },
+    {
+      "id": "packages/views/settings/components/delete-workspace-dialog.tsx#DeleteWorkspaceDialog#1",
+      "element": "Dialog",
+      "line": 65
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkAgentBindButton#1",
+      "element": "Dialog",
+      "line": 948
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkAgentBotConnectedBadge#1",
+      "element": "AlertDialog",
+      "line": 1130
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkBotGroups#1",
+      "element": "AlertDialog",
+      "line": 479
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkTab#1",
+      "element": "AlertDialog",
+      "line": 650
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#ArchiveStatusDialog#1",
+      "element": "AlertDialog",
+      "line": 963
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#IssueStatusesTab#1",
+      "element": "Dialog",
+      "line": 279
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#StatusEditorDialog#1",
+      "element": "Dialog",
+      "line": 730
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#StatusEditorDialog#2",
+      "element": "AlertDialog",
+      "line": 894
+    },
+    {
+      "id": "packages/views/settings/components/keyboard-shortcuts-tab.tsx#KeyboardShortcutsTab#1",
+      "element": "AlertDialog",
+      "line": 211
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkAgentBotConnectedBadge#1",
+      "element": "AlertDialog",
+      "line": 666
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkInstallDialog#1",
+      "element": "Dialog",
+      "line": 883
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkTab#1",
+      "element": "AlertDialog",
+      "line": 178
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab#1",
+      "element": "AlertDialog",
+      "line": 322
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab#1",
+      "element": "Dialog",
+      "line": 1047
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab#2",
+      "element": "Dialog",
+      "line": 1123
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab#3",
+      "element": "AlertDialog",
+      "line": 1200
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab#4",
+      "element": "AlertDialog",
+      "line": 1313
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager#1",
+      "element": "AlertDialog",
+      "line": 244
+    },
+    {
+      "id": "packages/views/settings/components/properties-tab.tsx#ArchivePropertyDialog#1",
+      "element": "AlertDialog",
+      "line": 678
+    },
+    {
+      "id": "packages/views/settings/components/properties-tab.tsx#PropertyEditorDialog#1",
+      "element": "Dialog",
+      "line": 460
+    },
+    {
+      "id": "packages/views/settings/components/provider-breakers-tab.tsx#ProviderBreakersTab#1",
+      "element": "AlertDialog",
+      "line": 78
+    },
+    {
+      "id": "packages/views/settings/components/quick-actions-tab.tsx#QuickActionsTab#1",
+      "element": "AlertDialog",
+      "line": 379
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#3",
+      "element": "Dialog",
+      "line": 549
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#4",
+      "element": "Dialog",
+      "line": 630
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#5",
+      "element": "AlertDialog",
+      "line": 824
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackAgentBindButton#1",
+      "element": "Dialog",
+      "line": 374
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackAgentBotConnectedBadge#1",
+      "element": "AlertDialog",
+      "line": 573
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackTab#1",
+      "element": "AlertDialog",
+      "line": 156
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramAgentBindButton#1",
+      "element": "Dialog",
+      "line": 357
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramAgentBotConnectedBadge#1",
+      "element": "AlertDialog",
+      "line": 528
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramTab#1",
+      "element": "AlertDialog",
+      "line": 150
+    },
+    {
+      "id": "packages/views/settings/components/tokens-tab.tsx#TokensTab#1",
+      "element": "AlertDialog",
+      "line": 244
+    },
+    {
+      "id": "packages/views/settings/components/tokens-tab.tsx#TokensTab#2",
+      "element": "Dialog",
+      "line": 267
+    },
+    {
+      "id": "packages/views/settings/components/wecom-scan-install-dialog.tsx#WecomScanInstallDialog#1",
+      "element": "Dialog",
+      "line": 234
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomAgentBindButton#1",
+      "element": "Dialog",
+      "line": 391
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomAgentBotConnectedBadge#1",
+      "element": "AlertDialog",
+      "line": 606
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomTab#1",
+      "element": "AlertDialog",
+      "line": 153
+    },
+    {
+      "id": "packages/views/settings/components/workspace-scheduling-row.tsx#WorkspaceSchedulingRow#1",
+      "element": "AlertDialog",
+      "line": 68
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#4",
+      "element": "Dialog",
+      "line": 783
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#5",
+      "element": "AlertDialog",
+      "line": 863
+    },
+    {
+      "id": "packages/views/skills/components/create-skill-dialog.tsx#CreateSkillDialog#1",
+      "element": "Dialog",
+      "line": 724
+    },
+    {
+      "id": "packages/views/skills/components/refresh-skill-dialog.tsx#RefreshSkillDialog#1",
+      "element": "Dialog",
+      "line": 99
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail#1",
+      "element": "Dialog",
+      "line": 1202
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#AddToAgentDialog#1",
+      "element": "Dialog",
+      "line": 312
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#DeleteSkillsDialog#1",
+      "element": "Dialog",
+      "line": 443
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#UpdateSkillsDialog#1",
+      "element": "Dialog",
+      "line": 576
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-controls.tsx#SkillFilterMenu#1",
+      "element": "Dialog",
+      "line": 325
+    },
+    {
+      "id": "packages/views/skills/components/skill-versions-tab.tsx#SkillVersionsTab#1",
+      "element": "Dialog",
+      "line": 329
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#AddMemberDialog#1",
+      "element": "Dialog",
+      "line": 1201
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDescriptionEditor#1",
+      "element": "Dialog",
+      "line": 1406
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage#2",
+      "element": "AlertDialog",
+      "line": 456
+    },
+    {
+      "id": "packages/views/squads/components/squads-page.tsx#ArchiveSquadDialog#1",
+      "element": "Dialog",
+      "line": 182
+    },
+    {
+      "id": "packages/views/workflows/batch-handoff-confirm-dialog.tsx#BatchHandoffConfirmDialog#1",
+      "element": "Dialog",
+      "line": 111
+    },
+    {
+      "id": "packages/views/workflows/handoff-confirm-dialog.tsx#WorkflowHandoffConfirmDialog#1",
+      "element": "Dialog",
+      "line": 191
+    },
+    {
+      "id": "packages/views/workflows/handoff-form.tsx#BriefPreviewDialog#1",
+      "element": "Dialog",
+      "line": 763
+    },
+    {
+      "id": "packages/views/workflows/issue-flow-card.tsx#IssueFlowCard#1",
+      "element": "Dialog",
+      "line": 172
+    },
+    {
+      "id": "packages/views/workflows/project-workflow-menu.tsx#WorkflowFlowSheet#1",
+      "element": "Sheet",
+      "line": 144
+    },
+    {
+      "id": "packages/views/workflows/workflow-mapping-dialog.tsx#WorkflowMappingDialog#1",
+      "element": "Dialog",
+      "line": 121
+    }
+  ],
+  "toasts": [
+    {
+      "id": "packages/views/agents/components/agent-auto-compact-section.tsx#AgentAutoCompactSection.save#1",
+      "method": "error",
+      "line": 57
+    },
+    {
+      "id": "packages/views/agents/components/agent-batch-toolbar.tsx#AgentBatchToolbar.applyAccessBulk#1",
+      "method": "error",
+      "line": 99
+    },
+    {
+      "id": "packages/views/agents/components/agent-batch-toolbar.tsx#AgentBatchToolbar.runBatch#1",
+      "method": "error",
+      "line": 126
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleArchive#1",
+      "method": "success",
+      "line": 305
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleArchive#2",
+      "method": "error",
+      "line": 307
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleAssign#1",
+      "method": "error",
+      "line": 476
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleCancelRuns#1",
+      "method": "success",
+      "line": 325
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleCancelRuns#2",
+      "method": "error",
+      "line": 331
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleCopy#1",
+      "method": "success",
+      "line": 485
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleDm#1",
+      "method": "error",
+      "line": 466
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleDm#2",
+      "method": "error",
+      "line": 471
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleRestore#1",
+      "method": "success",
+      "line": 315
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleRestore#2",
+      "method": "error",
+      "line": 317
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleUpdate#1",
+      "method": "success",
+      "line": 279
+    },
+    {
+      "id": "packages/views/agents/components/agent-detail-page.tsx#AgentDetailPage.handleUpdate#2",
+      "method": "error",
+      "line": 294
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions.handleArchive#1",
+      "method": "success",
+      "line": 107
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions.handleArchive#2",
+      "method": "error",
+      "line": 109
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions.handleCancelTasks#1",
+      "method": "success",
+      "line": 127
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions.handleCancelTasks#2",
+      "method": "error",
+      "line": 133
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions.handleRestore#1",
+      "method": "success",
+      "line": 117
+    },
+    {
+      "id": "packages/views/agents/components/agent-row-actions.tsx#AgentRowActions.handleRestore#2",
+      "method": "error",
+      "line": 119
+    },
+    {
+      "id": "packages/views/agents/components/agent-scheduling.tsx#AgentSchedulingDialog.confirm#1",
+      "method": "success",
+      "line": 108
+    },
+    {
+      "id": "packages/views/agents/components/agent-scheduling.tsx#AgentSchedulingDialog.confirm#2",
+      "method": "error",
+      "line": 111
+    },
+    {
+      "id": "packages/views/agents/components/agent-skills-section.tsx#AgentSkillsSection.handleRemove#1",
+      "method": "error",
+      "line": 50
+    },
+    {
+      "id": "packages/views/agents/components/create-agent-dialog.tsx#CreateAgentDialog.attachToSquad#1",
+      "method": "warning",
+      "line": 203
+    },
+    {
+      "id": "packages/views/agents/components/create-agent-dialog.tsx#CreateAgentDialog.handleSubmit#1",
+      "method": "error",
+      "line": 288
+    },
+    {
+      "id": "packages/views/agents/components/skill-add-dialog.tsx#SkillAddDialog.handleConfirm#1",
+      "method": "error",
+      "line": 89
+    },
+    {
+      "id": "packages/views/agents/components/tabs/activity-tab.tsx#LiveTaskRow.handleCancel#1",
+      "method": "error",
+      "line": 599
+    },
+    {
+      "id": "packages/views/agents/components/tabs/agent-mcp-tab.tsx#AgentMcpTab.handleToggle.onError#1",
+      "method": "error",
+      "line": 111
+    },
+    {
+      "id": "packages/views/agents/components/tabs/custom-args-tab.tsx#CustomArgsTab.handleSave#1",
+      "method": "success",
+      "line": 166
+    },
+    {
+      "id": "packages/views/agents/components/tabs/custom-args-tab.tsx#CustomArgsTab.handleSave#2",
+      "method": "error",
+      "line": 168
+    },
+    {
+      "id": "packages/views/agents/components/tabs/env-tab.tsx#EnvTab.enterBulkEditing#1",
+      "method": "error",
+      "line": 264
+    },
+    {
+      "id": "packages/views/agents/components/tabs/env-tab.tsx#EnvTab.handleEnvPaste#1",
+      "method": "error",
+      "line": 231
+    },
+    {
+      "id": "packages/views/agents/components/tabs/env-tab.tsx#EnvTab.handleReveal#1",
+      "method": "error",
+      "line": 162
+    },
+    {
+      "id": "packages/views/agents/components/tabs/env-tab.tsx#EnvTab.handleSave#1",
+      "method": "error",
+      "line": 319
+    },
+    {
+      "id": "packages/views/agents/components/tabs/env-tab.tsx#EnvTab.handleSave#2",
+      "method": "success",
+      "line": 344
+    },
+    {
+      "id": "packages/views/agents/components/tabs/env-tab.tsx#EnvTab.handleSave#3",
+      "method": "error",
+      "line": 347
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleAddWorkspaceServer#1",
+      "method": "success",
+      "line": 282
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleDelete#1",
+      "method": "success",
+      "line": 301
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleDelete#2",
+      "method": "error",
+      "line": 304
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleRemoveWorkspaceServer#1",
+      "method": "success",
+      "line": 291
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleRename#1",
+      "method": "success",
+      "line": 222
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleRename#2",
+      "method": "error",
+      "line": 232
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleSaveServer#1",
+      "method": "success",
+      "line": 250
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.handleSaveServer#2",
+      "method": "error",
+      "line": 256
+    },
+    {
+      "id": "packages/views/agents/components/tabs/mcp-config-tab.tsx#McpConfigTab.runAssignmentAction#1",
+      "method": "error",
+      "line": 271
+    },
+    {
+      "id": "packages/views/agents/components/tabs/qoder-agent-tab.tsx#QoderAgentTab#1",
+      "method": "success",
+      "line": 64
+    },
+    {
+      "id": "packages/views/agents/components/tabs/qoder-agent-tab.tsx#QoderAgentTab#2",
+      "method": "error",
+      "line": 66
+    },
+    {
+      "id": "packages/views/agents/components/tabs/runtime-config-tab.tsx#RuntimeConfigTab.handleSave#1",
+      "method": "success",
+      "line": 140
+    },
+    {
+      "id": "packages/views/agents/components/tabs/runtime-config-tab.tsx#RuntimeConfigTab.handleSave#2",
+      "method": "error",
+      "line": 142
+    },
+    {
+      "id": "packages/views/agents/components/tabs/skills-tab.tsx#SkillsTab.handleRemove#1",
+      "method": "error",
+      "line": 93
+    },
+    {
+      "id": "packages/views/agents/components/tabs/skills-tab.tsx#SkillsTab.handleRuntimeToggle#1",
+      "method": "error",
+      "line": 137
+    },
+    {
+      "id": "packages/views/agents/components/tabs/skills-tab.tsx#SkillsTab.handleToggle#1",
+      "method": "error",
+      "line": 109
+    },
+    {
+      "id": "packages/views/agents/create/use-builder-session.ts#useBuilderSession.switchRuntime#1",
+      "method": "success",
+      "line": 195
+    },
+    {
+      "id": "packages/views/agents/create/use-create-agent-submit.ts#useCreateAgentSubmit.create#1",
+      "method": "warning",
+      "line": 108
+    },
+    {
+      "id": "packages/views/auth/use-logout.ts#useLogout#1",
+      "method": "error",
+      "line": 49
+    },
+    {
+      "id": "packages/views/autopilots/components/add-trigger-dialog.tsx#AddTriggerDialog.handleSubmit#1",
+      "method": "success",
+      "line": 89
+    },
+    {
+      "id": "packages/views/autopilots/components/add-trigger-dialog.tsx#AddTriggerDialog.handleSubmit#2",
+      "method": "success",
+      "line": 96
+    },
+    {
+      "id": "packages/views/autopilots/components/add-trigger-dialog.tsx#AddTriggerDialog.handleSubmit#3",
+      "method": "error",
+      "line": 104
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-access-manager.tsx#AutopilotAccessManager.handleGrant#1",
+      "method": "success",
+      "line": 69
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-access-manager.tsx#AutopilotAccessManager.handleGrant#2",
+      "method": "error",
+      "line": 71
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-access-manager.tsx#AutopilotAccessManager.handleRevoke#1",
+      "method": "success",
+      "line": 78
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-access-manager.tsx#AutopilotAccessManager.handleRevoke#2",
+      "method": "error",
+      "line": 80
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#AutopilotDetailPage.copyLink#1",
+      "method": "success",
+      "line": 924
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#AutopilotDetailPage.copyLink#2",
+      "method": "error",
+      "line": 925
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#AutopilotDetailPage.handleDelete#1",
+      "method": "success",
+      "line": 910
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#AutopilotDetailPage.handleDelete#2",
+      "method": "error",
+      "line": 913
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#AutopilotProperties.update.onError#1",
+      "method": "error",
+      "line": 645
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#SubscribersProperty.handleOpenChange.onError#1",
+      "method": "error",
+      "line": 593
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#TriggerRow.handleDelete#1",
+      "method": "success",
+      "line": 315
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#TriggerRow.handleDelete#2",
+      "method": "error",
+      "line": 318
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#TriggerRow.handleRotate#1",
+      "method": "success",
+      "line": 344
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-detail-page.tsx#TriggerRow.handleRotate#2",
+      "method": "error",
+      "line": 347
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog.handleSubmit#1",
+      "method": "error",
+      "line": 450
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog.handleSubmit#2",
+      "method": "success",
+      "line": 459
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog.handleSubmit#3",
+      "method": "success",
+      "line": 463
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog.handleSubmit#4",
+      "method": "error",
+      "line": 535
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog.handleSubmit#5",
+      "method": "success",
+      "line": 541
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-dialog.tsx#AutopilotDialog.handleSubmit#6",
+      "method": "error",
+      "line": 544
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-list-actions.tsx#DeleteAutopilotsDialog.handleDelete#1",
+      "method": "error",
+      "line": 64
+    },
+    {
+      "id": "packages/views/autopilots/components/autopilot-list-actions.tsx#useSetStatus#1",
+      "method": "error",
+      "line": 130
+    },
+    {
+      "id": "packages/views/autopilots/components/edit-schedule-trigger-dialog.tsx#EditScheduleTriggerDialogBody.handleSubmit#1",
+      "method": "success",
+      "line": 129
+    },
+    {
+      "id": "packages/views/autopilots/components/edit-schedule-trigger-dialog.tsx#EditScheduleTriggerDialogBody.handleSubmit#2",
+      "method": "error",
+      "line": 132
+    },
+    {
+      "id": "packages/views/autopilots/components/schedule-editor/validate.ts#toastScheduleRejection#1",
+      "method": "error",
+      "line": 64
+    },
+    {
+      "id": "packages/views/autopilots/components/use-run-autopilot-now.ts#useRunAutopilotNow.runNow#1",
+      "method": "success",
+      "line": 28
+    },
+    {
+      "id": "packages/views/autopilots/components/use-run-autopilot-now.ts#useRunAutopilotNow.runNow#2",
+      "method": "warning",
+      "line": 35
+    },
+    {
+      "id": "packages/views/autopilots/components/use-run-autopilot-now.ts#useRunAutopilotNow.runNow#3",
+      "method": "error",
+      "line": 37
+    },
+    {
+      "id": "packages/views/autopilots/components/use-run-autopilot-now.ts#useRunAutopilotNow.runNow#4",
+      "method": "error",
+      "line": 42
+    },
+    {
+      "id": "packages/views/autopilots/components/use-run-autopilot-now.ts#useRunAutopilotNow.runNow#5",
+      "method": "error",
+      "line": 48
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-deliveries-section.tsx#CodeBlock.handleCopy#1",
+      "method": "success",
+      "line": 457
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-deliveries-section.tsx#CodeBlock.handleCopy#2",
+      "method": "error",
+      "line": 460
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-deliveries-section.tsx#ReplayButton.handleClick#1",
+      "method": "success",
+      "line": 544
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-deliveries-section.tsx#ReplayButton.handleClick#2",
+      "method": "error",
+      "line": 551
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-payload-preview.tsx#WebhookPayloadPreview.handleCopy#1",
+      "method": "success",
+      "line": 72
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-payload-preview.tsx#WebhookPayloadPreview.handleCopy#2",
+      "method": "error",
+      "line": 75
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-url-field.tsx#WebhookUrlField.handleCopy#1",
+      "method": "success",
+      "line": 65
+    },
+    {
+      "id": "packages/views/autopilots/components/webhook-url-field.tsx#WebhookUrlField.handleCopy#2",
+      "method": "error",
+      "line": 68
+    },
+    {
+      "id": "packages/views/autopilots/components/workspace-wakeups.tsx#SystemWakeupControl.onError#1",
+      "method": "error",
+      "line": 227
+    },
+    {
+      "id": "packages/views/autopilots/components/workspace-wakeups.tsx#WakeupControls.onError#1",
+      "method": "error",
+      "line": 268
+    },
+    {
+      "id": "packages/views/billing/billing-test-page.tsx#BuyAndPortalSection.handleBuy#1",
+      "method": "error",
+      "line": 270
+    },
+    {
+      "id": "packages/views/billing/billing-test-page.tsx#BuyAndPortalSection.handleBuy#2",
+      "method": "error",
+      "line": 279
+    },
+    {
+      "id": "packages/views/billing/billing-test-page.tsx#BuyAndPortalSection.handlePortal#1",
+      "method": "error",
+      "line": 291
+    },
+    {
+      "id": "packages/views/billing/billing-test-page.tsx#BuyAndPortalSection.handlePortal#2",
+      "method": "error",
+      "line": 302
+    },
+    {
+      "id": "packages/views/chat/chat-page.tsx#ChatPage#1",
+      "method": "error",
+      "line": 367
+    },
+    {
+      "id": "packages/views/chat/chat-page.tsx#ChatPage.settleJump#1",
+      "method": "error",
+      "line": 130
+    },
+    {
+      "id": "packages/views/chat/components/chat-input.tsx#ChatInput#1",
+      "method": "info",
+      "line": 787
+    },
+    {
+      "id": "packages/views/chat/components/chat-input.tsx#ChatInput#2",
+      "method": "info",
+      "line": 801
+    },
+    {
+      "id": "packages/views/chat/components/chat-input.tsx#ChatInput.onSubmit#1",
+      "method": "error",
+      "line": 587
+    },
+    {
+      "id": "packages/views/chat/components/chat-message-list.tsx#MessageCopyButton.handleCopy#1",
+      "method": "success",
+      "line": 1856
+    },
+    {
+      "id": "packages/views/chat/components/chat-message-list.tsx#MessageCopyButton.handleCopy#2",
+      "method": "error",
+      "line": 1858
+    },
+    {
+      "id": "packages/views/chat/components/chat-message-list.tsx#QuickActions.handleRegenerate#1",
+      "method": "error",
+      "line": 1679
+    },
+    {
+      "id": "packages/views/chat/components/chat-supplement-status.tsx#ChatSupplementStatus.resend#1",
+      "method": "error",
+      "line": 39
+    },
+    {
+      "id": "packages/views/chat/components/chat-thread-list.tsx#ChatThreadList.handleBulk#1",
+      "method": "error",
+      "line": 292
+    },
+    {
+      "id": "packages/views/chat/components/chat-thread-list.tsx#ChatThreadList.handleBulk#2",
+      "method": "toast",
+      "line": 299
+    },
+    {
+      "id": "packages/views/chat/components/chat-thread-list.tsx#ChatThreadList.handleRenameSubmit#1",
+      "method": "error",
+      "line": 315
+    },
+    {
+      "id": "packages/views/chat/components/chat-thread-list.tsx#ChatThreadList.handleRenameSubmit.onError#1",
+      "method": "error",
+      "line": 320
+    },
+    {
+      "id": "packages/views/chat/components/chat-window.tsx#ChatWindow.handleSend#1",
+      "method": "error",
+      "line": 473
+    },
+    {
+      "id": "packages/views/chat/components/chat-window.tsx#ChatWindow.handleSend#2",
+      "method": "error",
+      "line": 495
+    },
+    {
+      "id": "packages/views/chat/components/chat-window.tsx#ChatWindow.handleSend#3",
+      "method": "error",
+      "line": 532
+    },
+    {
+      "id": "packages/views/chat/components/chat-window.tsx#ChatWindow.handleSend#4",
+      "method": "error",
+      "line": 536
+    },
+    {
+      "id": "packages/views/chat/components/chat-window.tsx#ChatWindow.handleSend#5",
+      "method": "error",
+      "line": 619
+    },
+    {
+      "id": "packages/views/chat/components/needs-you-list.tsx#NeedsYouList.markAllDone.onSuccess#1",
+      "method": "toast",
+      "line": 106
+    },
+    {
+      "id": "packages/views/chat/components/needs-you-list.tsx#NeedsYouList.onActionError#1",
+      "method": "error",
+      "line": 99
+    },
+    {
+      "id": "packages/views/chat/components/new-chat-button.tsx#NewChatButton#1",
+      "method": "error",
+      "line": 198
+    },
+    {
+      "id": "packages/views/chat/components/scheduled-wakeups-chip.tsx#ScheduledWakeupsChip.onError#1",
+      "method": "error",
+      "line": 91
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-controller.ts#useChatController.handleSend#1",
+      "method": "error",
+      "line": 517
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-controller.ts#useChatController.handleSend#2",
+      "method": "error",
+      "line": 540
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-controller.ts#useChatController.handleSend#3",
+      "method": "error",
+      "line": 577
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-controller.ts#useChatController.handleSend#4",
+      "method": "error",
+      "line": 585
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-controller.ts#useChatController.handleSend#5",
+      "method": "error",
+      "line": 661
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-rename.ts#useChatRename.handleRename#1",
+      "method": "error",
+      "line": 16
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-rename.ts#useChatRename.handleRename#2",
+      "method": "error",
+      "line": 25
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-rename.ts#useChatRename.handleRename#3",
+      "method": "error",
+      "line": 33
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-session-actions.ts#useChatSessionActions.archive#1",
+      "method": "error",
+      "line": 76
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-session-actions.ts#useChatSessionActions.archive#2",
+      "method": "toast",
+      "line": 82
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-session-actions.ts#useChatSessionActions.markUnseen#1",
+      "method": "error",
+      "line": 118
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-session-actions.ts#useChatSessionActions.togglePin#1",
+      "method": "error",
+      "line": 101
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-session-actions.ts#useChatSessionActions.unarchive#1",
+      "method": "error",
+      "line": 60
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-task-actions.ts#useChatTaskActions.handleClearQueuedTasks#1",
+      "method": "error",
+      "line": 182
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-task-actions.ts#useChatTaskActions.handleEditQueuedTask#1",
+      "method": "error",
+      "line": 141
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-task-actions.ts#useChatTaskActions.handleRemoveQueuedTask#1",
+      "method": "error",
+      "line": 154
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-task-actions.ts#useChatTaskActions.handleStopAndSendQueuedTask#1",
+      "method": "error",
+      "line": 261
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-task-actions.ts#useChatTaskActions.steerQueuedChatTask#1",
+      "method": "error",
+      "line": 207
+    },
+    {
+      "id": "packages/views/chat/components/use-chat-task-actions.ts#useChatTaskActions.steerQueuedChatTask#2",
+      "method": "error",
+      "line": 209
+    },
+    {
+      "id": "packages/views/chat/components/use-dm-session-surface.tsx#useDmSessionSurface.snoozeSession#1",
+      "method": "error",
+      "line": 108
+    },
+    {
+      "id": "packages/views/chat/components/use-dm-session-surface.tsx#useDmSessionSurface.snoozeSession#2",
+      "method": "error",
+      "line": 119
+    },
+    {
+      "id": "packages/views/chat/components/use-dm-session-surface.tsx#useDmSessionSurface.snoozeSession#3",
+      "method": "toast",
+      "line": 123
+    },
+    {
+      "id": "packages/views/chat/components/use-quick-actions-failure-toast.ts#useQuickActionsFailureToast#1",
+      "method": "error",
+      "line": 35
+    },
+    {
+      "id": "packages/views/common/avatar-upload-control.tsx#AvatarUploadControl.handleCropped#1",
+      "method": "success",
+      "line": 198
+    },
+    {
+      "id": "packages/views/common/avatar-upload-control.tsx#AvatarUploadControl.handleCropped#2",
+      "method": "error",
+      "line": 201
+    },
+    {
+      "id": "packages/views/common/avatar-upload-control.tsx#AvatarUploadControl.handlePick#1",
+      "method": "error",
+      "line": 182
+    },
+    {
+      "id": "packages/views/common/use-language-switch.ts#useLanguageSwitch.changeLanguage#1",
+      "method": "warning",
+      "line": 57
+    },
+    {
+      "id": "packages/views/editor/attachment-preview-modal.tsx#GenericPreviewPanel.handleCopyImage#1",
+      "method": "success",
+      "line": 790
+    },
+    {
+      "id": "packages/views/editor/attachment-preview-modal.tsx#GenericPreviewPanel.handleCopyImage#2",
+      "method": "error",
+      "line": 792
+    },
+    {
+      "id": "packages/views/editor/attachment.tsx#ImageAttachmentView.handleCopyLink#1",
+      "method": "success",
+      "line": 475
+    },
+    {
+      "id": "packages/views/editor/attachment.tsx#ImageAttachmentView.handleCopyLink#2",
+      "method": "error",
+      "line": 477
+    },
+    {
+      "id": "packages/views/editor/bubble-menu.tsx#CreateSubIssueButton.handleClick#1",
+      "method": "success",
+      "line": 438
+    },
+    {
+      "id": "packages/views/editor/bubble-menu.tsx#CreateSubIssueButton.handleClick#2",
+      "method": "error",
+      "line": 440
+    },
+    {
+      "id": "packages/views/editor/link-hover-card.tsx#LinkHoverCard.handleCopy#1",
+      "method": "success",
+      "line": 180
+    },
+    {
+      "id": "packages/views/editor/link-hover-card.tsx#LinkHoverCard.handleCopy#2",
+      "method": "error",
+      "line": 182
+    },
+    {
+      "id": "packages/views/editor/preview-sequence-context.tsx#PreviewSequenceProvider.handleImageError#1",
+      "method": "error",
+      "line": 238
+    },
+    {
+      "id": "packages/views/editor/use-coordinated-uploads.ts#useCoordinatedUploads.handleUpload#1",
+      "method": "error",
+      "line": 404
+    },
+    {
+      "id": "packages/views/editor/use-coordinated-uploads.ts#useCoordinatedUploads.handleUpload.onSettled#1",
+      "method": "error",
+      "line": 477
+    },
+    {
+      "id": "packages/views/editor/use-download-attachment.ts#useDownloadAttachment.failed#1",
+      "method": "error",
+      "line": 121
+    },
+    {
+      "id": "packages/views/editor/use-editor-upload.ts#useEditorUpload.onError#1",
+      "method": "error",
+      "line": 25
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage#1",
+      "method": "success",
+      "line": 901
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage#2",
+      "method": "error",
+      "line": 910
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleArchive.onError#1",
+      "method": "error",
+      "line": 495
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleArchive.onSuccess#1",
+      "method": "success",
+      "line": 493
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleArchiveAll.onError#1",
+      "method": "error",
+      "line": 556
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleArchiveAllRead.onError#1",
+      "method": "error",
+      "line": 569
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleArchiveCompleted.onError#1",
+      "method": "error",
+      "line": 612
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleMarkAllRead.onError#1",
+      "method": "error",
+      "line": 544
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleMarkRead.onError#1",
+      "method": "error",
+      "line": 450
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleMarkUnread.onError#1",
+      "method": "error",
+      "line": 465
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleUnarchive.onError#1",
+      "method": "error",
+      "line": 508
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.handleUnarchive.onSuccess#1",
+      "method": "success",
+      "line": 506
+    },
+    {
+      "id": "packages/views/inbox/components/inbox-page.tsx#InboxPage.onError#1",
+      "method": "error",
+      "line": 381
+    },
+    {
+      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#2",
+      "method": "success",
+      "line": 48
+    },
+    {
+      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#3",
+      "method": "error",
+      "line": 49
+    },
+    {
+      "id": "packages/views/issue-views/use-view-actions.ts#useIssueViewActions.copyLink#1",
+      "method": "success",
+      "line": 171
+    },
+    {
+      "id": "packages/views/issue-views/use-view-actions.ts#useIssueViewActions.create.onError#1",
+      "method": "error",
+      "line": 91
+    },
+    {
+      "id": "packages/views/issue-views/use-view-actions.ts#useIssueViewActions.update.onError#1",
+      "method": "error",
+      "line": 113
+    },
+    {
+      "id": "packages/views/issue-views/use-view-actions.ts#useIssueViewActions.update.onSuccess#1",
+      "method": "success",
+      "line": 110
+    },
+    {
+      "id": "packages/views/issue-views/view-header.tsx#IssueViewHeader#1",
+      "method": "info",
+      "line": 153
+    },
+    {
+      "id": "packages/views/issues/actions/inbox-restore.tsx#InboxRestoreMenuItem.onError#1",
+      "method": "error",
+      "line": 35
+    },
+    {
+      "id": "packages/views/issues/actions/inbox-restore.tsx#InboxRestoreMenuItem.onSuccess#1",
+      "method": "success",
+      "line": 33
+    },
+    {
+      "id": "packages/views/issues/actions/issue-actions-context-menu.tsx#StopRunConfirmDialog#1",
+      "method": "error",
+      "line": 186
+    },
+    {
+      "id": "packages/views/issues/actions/issue-actions-menu-items.tsx#IssueActionsMenuItems.copyIdentifier#1",
+      "method": "success",
+      "line": 228
+    },
+    {
+      "id": "packages/views/issues/actions/issue-actions-menu-items.tsx#IssueActionsMenuItems.handleCopyWorkdirPath#1",
+      "method": "error",
+      "line": 203
+    },
+    {
+      "id": "packages/views/issues/actions/issue-actions-menu-items.tsx#IssueActionsMenuItems.handleCopyWorkdirPath#2",
+      "method": "error",
+      "line": 208
+    },
+    {
+      "id": "packages/views/issues/actions/issue-actions-menu-items.tsx#IssueActionsMenuItems.handleCopyWorkdirPath#3",
+      "method": "success",
+      "line": 212
+    },
+    {
+      "id": "packages/views/issues/actions/issue-actions-menu-items.tsx#IssueActionsMenuItems.handleCopyWorkdirPath#4",
+      "method": "success",
+      "line": 221
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.copyCommentLink#1",
+      "method": "success",
+      "line": 189
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.copyCommentLink#2",
+      "method": "error",
+      "line": 191
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.copyLink#1",
+      "method": "success",
+      "line": 169
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.copyLink#2",
+      "method": "error",
+      "line": 171
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.removeParent.onError#1",
+      "method": "error",
+      "line": 278
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.removeParent.onSuccess#1",
+      "method": "success",
+      "line": 263
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.removeParent.onSuccess#2",
+      "method": "success",
+      "line": 276
+    },
+    {
+      "id": "packages/views/issues/actions/use-issue-actions.ts#useIssueActions.updateField.onError#1",
+      "method": "error",
+      "line": 109
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar.handleBatchDelete#1",
+      "method": "success",
+      "line": 328
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar.handleBatchDelete#2",
+      "method": "error",
+      "line": 330
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar.reportFailure#1",
+      "method": "error",
+      "line": 212
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar.reportOutcome#1",
+      "method": "success",
+      "line": 194
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar.reportOutcome#2",
+      "method": "warning",
+      "line": 199
+    },
+    {
+      "id": "packages/views/issues/components/batch-action-toolbar.tsx#BatchActionToolbar.reportOutcome#3",
+      "method": "warning",
+      "line": 203
+    },
+    {
+      "id": "packages/views/issues/components/batch-workflow-picker.tsx#WorkflowMenu.choose#1",
+      "method": "success",
+      "line": 68
+    },
+    {
+      "id": "packages/views/issues/components/batch-workflow-picker.tsx#WorkflowMenu.choose#2",
+      "method": "error",
+      "line": 71
+    },
+    {
+      "id": "packages/views/issues/components/batch-workflow-picker.tsx#WorkflowMenu.choose#3",
+      "method": "warning",
+      "line": 73
+    },
+    {
+      "id": "packages/views/issues/components/board-view.tsx#BoardViewImpl.applyPropertyGroupValue.onError#1",
+      "method": "error",
+      "line": 316
+    },
+    {
+      "id": "packages/views/issues/components/board-view.tsx#BoardViewImpl.handleDragEnd#1",
+      "method": "info",
+      "line": 684
+    },
+    {
+      "id": "packages/views/issues/components/board-view.tsx#BoardViewImpl.handleDragEnd#2",
+      "method": "info",
+      "line": 755
+    },
+    {
+      "id": "packages/views/issues/components/board-view.tsx#BoardViewImpl.handleDragEnd#3",
+      "method": "info",
+      "line": 781
+    },
+    {
+      "id": "packages/views/issues/components/comment-card.tsx#CommentCardImpl#1",
+      "method": "error",
+      "line": 1147
+    },
+    {
+      "id": "packages/views/issues/components/comment-card.tsx#CommentCardImpl#2",
+      "method": "success",
+      "line": 1396
+    },
+    {
+      "id": "packages/views/issues/components/comment-card.tsx#CommentRow#1",
+      "method": "success",
+      "line": 853
+    },
+    {
+      "id": "packages/views/issues/components/comment-card.tsx#TaskCommentRetryButton.handleRetry#1",
+      "method": "error",
+      "line": 340
+    },
+    {
+      "id": "packages/views/issues/components/comment-card.tsx#useEditAttachmentState.onSubmit#1",
+      "method": "error",
+      "line": 538
+    },
+    {
+      "id": "packages/views/issues/components/execution-log-section.tsx#ActiveTaskRow.handleCancel#1",
+      "method": "error",
+      "line": 504
+    },
+    {
+      "id": "packages/views/issues/components/inline-comment-run.tsx#InlineCommentRun.onError#1",
+      "method": "error",
+      "line": 161
+    },
+    {
+      "id": "packages/views/issues/components/inline-comment-run.tsx#InlineCommentRun.onError#2",
+      "method": "error",
+      "line": 229
+    },
+    {
+      "id": "packages/views/issues/components/issue-detail.tsx#IssueDetail.onSuccess#1",
+      "method": "success",
+      "line": 4345
+    },
+    {
+      "id": "packages/views/issues/components/issue-detail.tsx#SubIssueRow.handleUpdate.onError#1",
+      "method": "error",
+      "line": 932
+    },
+    {
+      "id": "packages/views/issues/components/list-view.tsx#ListViewImpl.handleDragEnd#1",
+      "method": "info",
+      "line": 285
+    },
+    {
+      "id": "packages/views/issues/components/metadata-section.tsx#MetadataSection.copy#1",
+      "method": "success",
+      "line": 23
+    },
+    {
+      "id": "packages/views/issues/components/metadata-section.tsx#MetadataSection.copy#2",
+      "method": "error",
+      "line": 24
+    },
+    {
+      "id": "packages/views/issues/components/pickers/custom-property-picker.tsx#CustomPropertyValueEditor.onError#1",
+      "method": "error",
+      "line": 100
+    },
+    {
+      "id": "packages/views/issues/components/pickers/label-picker.tsx#LabelPicker.createAndAttach.onError#1",
+      "method": "error",
+      "line": 193
+    },
+    {
+      "id": "packages/views/issues/components/pull-request-list.tsx#AutoCompleteLine.onError#1",
+      "method": "error",
+      "line": 331
+    },
+    {
+      "id": "packages/views/issues/components/pull-request-list.tsx#useUnlinkPullRequest.onError#1",
+      "method": "error",
+      "line": 190
+    },
+    {
+      "id": "packages/views/issues/components/pull-request-list.tsx#useUnlinkPullRequest.onSuccess#1",
+      "method": "success",
+      "line": 175
+    },
+    {
+      "id": "packages/views/issues/components/pull-request-list.tsx#useUnlinkPullRequest.onSuccess#2",
+      "method": "success",
+      "line": 183
+    },
+    {
+      "id": "packages/views/issues/components/pull-requests-section.tsx#AutoCompleteMenu.onError#1",
+      "method": "error",
+      "line": 213
+    },
+    {
+      "id": "packages/views/issues/components/quick-actions-section.tsx#QuickActionRow.handleRun#1",
+      "method": "success",
+      "line": 172
+    },
+    {
+      "id": "packages/views/issues/components/quick-actions-section.tsx#QuickActionRow.handleRun#2",
+      "method": "error",
+      "line": 173
+    },
+    {
+      "id": "packages/views/issues/components/quick-actions-section.tsx#QuickActionRow.handleRun#3",
+      "method": "info",
+      "line": 174
+    },
+    {
+      "id": "packages/views/issues/components/quick-actions-section.tsx#QuickActionRow.handleRun#4",
+      "method": "error",
+      "line": 183
+    },
+    {
+      "id": "packages/views/issues/components/retry-run-button.tsx#RetryRunButton.handleRetry#1",
+      "method": "error",
+      "line": 49
+    },
+    {
+      "id": "packages/views/issues/components/steer-receipts.tsx#SteerReceipt.onError#1",
+      "method": "error",
+      "line": 186
+    },
+    {
+      "id": "packages/views/issues/components/steer-receipts.tsx#SteerReceipt.resendToAgent#1",
+      "method": "error",
+      "line": 123
+    },
+    {
+      "id": "packages/views/issues/components/system-wakeup-row.tsx#SystemWakeupRow.toggle#1",
+      "method": "error",
+      "line": 67
+    },
+    {
+      "id": "packages/views/issues/components/table-view.tsx#TableView#1",
+      "method": "info",
+      "line": 1409
+    },
+    {
+      "id": "packages/views/issues/components/table-view.tsx#TableView#2",
+      "method": "info",
+      "line": 1474
+    },
+    {
+      "id": "packages/views/issues/components/table-view.tsx#TableView.handleExport#1",
+      "method": "success",
+      "line": 2450
+    },
+    {
+      "id": "packages/views/issues/components/table-view.tsx#TableView.handleExport#2",
+      "method": "error",
+      "line": 2452
+    },
+    {
+      "id": "packages/views/issues/components/use-comment-annotations.tsx#useCommentAnnotations.add#1",
+      "method": "error",
+      "line": 348
+    },
+    {
+      "id": "packages/views/issues/components/use-comment-annotations.tsx#useCommentAnnotations.add#2",
+      "method": "error",
+      "line": 356
+    },
+    {
+      "id": "packages/views/issues/components/use-stop-runs-before-send.ts#useStopRunsBeforeSend#1",
+      "method": "error",
+      "line": 23
+    },
+    {
+      "id": "packages/views/issues/components/wakeup-control.tsx#WakeupControl#1",
+      "method": "error",
+      "line": 82
+    },
+    {
+      "id": "packages/views/issues/components/wakeup-control.tsx#WakeupControl#2",
+      "method": "error",
+      "line": 114
+    },
+    {
+      "id": "packages/views/issues/components/wakeups-section.tsx#DeleteWakeup.onError#1",
+      "method": "error",
+      "line": 138
+    },
+    {
+      "id": "packages/views/issues/components/wakeups-section.tsx#WakeupRow.onError#1",
+      "method": "error",
+      "line": 336
+    },
+    {
+      "id": "packages/views/issues/components/wakeups-section.tsx#WakeupRow.onSuccess#1",
+      "method": "success",
+      "line": 335
+    },
+    {
+      "id": "packages/views/issues/components/wakeups-section.tsx#WakeupsSection.row.onError#1",
+      "method": "error",
+      "line": 417
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-subscribers.ts#useIssueSubscribers.toggleSubscriber.onError#1",
+      "method": "error",
+      "line": 167
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-subscribers.ts#useIssueSubscribers.unsubscribeFromSubtree.onError#1",
+      "method": "error",
+      "line": 199
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-subscribers.ts#useIssueSubscribers.unsubscribeFromSubtree.onSuccess#1",
+      "method": "success",
+      "line": 197
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-timeline.ts#useIssueTimeline.deleteComment#1",
+      "method": "error",
+      "line": 442
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-timeline.ts#useIssueTimeline.submitComment#1",
+      "method": "error",
+      "line": 384
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-timeline.ts#useIssueTimeline.submitReply#1",
+      "method": "error",
+      "line": 412
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-timeline.ts#useIssueTimeline.toggleResolveComment#1",
+      "method": "error",
+      "line": 457
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-timeline.ts#useIssueTimeline.warnUnhandledTriggers#1",
+      "method": "warning",
+      "line": 354
+    },
+    {
+      "id": "packages/views/issues/hooks/use-issue-timeline.ts#useIssueTimeline.warnUnhandledTriggers#2",
+      "method": "warning",
+      "line": 363
+    },
+    {
+      "id": "packages/views/issues/hooks/use-quick-action-menu.ts#useQuickActionMenu.getQuickActionContent#1",
+      "method": "error",
+      "line": 51
+    },
+    {
+      "id": "packages/views/issues/invalid-agent-mentions-copy.ts#rejectInvalidAgentMentions#1",
+      "method": "error",
+      "line": 26
+    },
+    {
+      "id": "packages/views/issues/surface/use-issue-surface-actions.ts#useIssueSurfaceActions.moveIssue.onError#1",
+      "method": "error",
+      "line": 99
+    },
+    {
+      "id": "packages/views/issues/surface/use-issue-surface-actions.ts#useIssueSurfaceActions.updateIssue.onError#1",
+      "method": "error",
+      "line": 67
+    },
+    {
+      "id": "packages/views/labels/label-manager.tsx#DeleteLabelDialog.onError#1",
+      "method": "error",
+      "line": 391
+    },
+    {
+      "id": "packages/views/labels/label-manager.tsx#LabelEditorDialog.submit.onError#1",
+      "method": "error",
+      "line": 257
+    },
+    {
+      "id": "packages/views/labels/label-manager.tsx#LabelEditorDialog.submit.onError#2",
+      "method": "error",
+      "line": 272
+    },
+    {
+      "id": "packages/views/layout/machine-pause-banner.tsx#ResumeButton.onError#1",
+      "method": "error",
+      "line": 251
+    },
+    {
+      "id": "packages/views/layout/workspace-pause-banner.tsx#WorkspacePauseBanner.onError#1",
+      "method": "error",
+      "line": 61
+    },
+    {
+      "id": "packages/views/media/media-context.tsx#MediaLinkAction#1",
+      "method": "error",
+      "line": 81
+    },
+    {
+      "id": "packages/views/media/media-context.tsx#MediaLinkAction.activate#1",
+      "method": "error",
+      "line": 66
+    },
+    {
+      "id": "packages/views/modals/add-child-issue.tsx#AddChildIssueModal.onError#1",
+      "method": "error",
+      "line": 64
+    },
+    {
+      "id": "packages/views/modals/add-child-issue.tsx#AddChildIssueModal.onSuccess#1",
+      "method": "success",
+      "line": 58
+    },
+    {
+      "id": "packages/views/modals/add-project-issue.tsx#AddProjectIssueModal.onError#1",
+      "method": "error",
+      "line": 40
+    },
+    {
+      "id": "packages/views/modals/add-project-issue.tsx#AddProjectIssueModal.onSuccess#1",
+      "method": "success",
+      "line": 34
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#1",
+      "method": "error",
+      "line": 639
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#10",
+      "method": "dismiss",
+      "line": 814
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#11",
+      "method": "error",
+      "line": 826
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#2",
+      "method": "error",
+      "line": 672
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#3",
+      "method": "custom",
+      "line": 680
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#4",
+      "method": "dismiss",
+      "line": 706
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#5",
+      "method": "error",
+      "line": 725
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#6",
+      "method": "error",
+      "line": 729
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#7",
+      "method": "error",
+      "line": 733
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#8",
+      "method": "error",
+      "line": 778
+    },
+    {
+      "id": "packages/views/modals/create-issue.tsx#ManualCreatePanel.onSubmit#9",
+      "method": "custom",
+      "line": 793
+    },
+    {
+      "id": "packages/views/modals/create-project.tsx#CreateProjectModal.handleSubmit#1",
+      "method": "success",
+      "line": 408
+    },
+    {
+      "id": "packages/views/modals/create-project.tsx#CreateProjectModal.handleSubmit#2",
+      "method": "error",
+      "line": 411
+    },
+    {
+      "id": "packages/views/modals/create-squad.tsx#CreateSquadModal.handleSubmit#1",
+      "method": "warning",
+      "line": 132
+    },
+    {
+      "id": "packages/views/modals/create-squad.tsx#CreateSquadModal.handleSubmit#2",
+      "method": "success",
+      "line": 150
+    },
+    {
+      "id": "packages/views/modals/create-squad.tsx#CreateSquadModal.handleSubmit#3",
+      "method": "error",
+      "line": 153
+    },
+    {
+      "id": "packages/views/modals/delete-issue-confirm.tsx#DeleteIssueConfirmModal.handleDelete#1",
+      "method": "success",
+      "line": 40
+    },
+    {
+      "id": "packages/views/modals/delete-issue-confirm.tsx#DeleteIssueConfirmModal.handleDelete#2",
+      "method": "error",
+      "line": 46
+    },
+    {
+      "id": "packages/views/modals/feedback.tsx#FeedbackModal.handleSubmit#1",
+      "method": "info",
+      "line": 101
+    },
+    {
+      "id": "packages/views/modals/feedback.tsx#FeedbackModal.handleSubmit#2",
+      "method": "error",
+      "line": 110
+    },
+    {
+      "id": "packages/views/modals/feedback.tsx#FeedbackModal.handleSubmit#3",
+      "method": "success",
+      "line": 131
+    },
+    {
+      "id": "packages/views/modals/feedback.tsx#FeedbackModal.handleSubmit#4",
+      "method": "error",
+      "line": 138
+    },
+    {
+      "id": "packages/views/modals/mark-duplicate-issue.tsx#MarkDuplicateIssueModal.onError#1",
+      "method": "error",
+      "line": 122
+    },
+    {
+      "id": "packages/views/modals/mark-duplicate-issue.tsx#MarkDuplicateIssueModal.onError#2",
+      "method": "error",
+      "line": 129
+    },
+    {
+      "id": "packages/views/modals/mark-duplicate-issue.tsx#MarkDuplicateIssueModal.onError#3",
+      "method": "error",
+      "line": 132
+    },
+    {
+      "id": "packages/views/modals/mark-duplicate-issue.tsx#MarkDuplicateIssueModal.onSuccess#1",
+      "method": "success",
+      "line": 114
+    },
+    {
+      "id": "packages/views/modals/quick-create-issue.tsx#AgentCreatePanel.onSubmit#1",
+      "method": "success",
+      "line": 486
+    },
+    {
+      "id": "packages/views/modals/rename-issue.tsx#RenameIssueModal.handleSubmit#1",
+      "method": "error",
+      "line": 67
+    },
+    {
+      "id": "packages/views/modals/rename-issue.tsx#RenameIssueModal.handleSubmit#2",
+      "method": "success",
+      "line": 80
+    },
+    {
+      "id": "packages/views/modals/rename-issue.tsx#RenameIssueModal.handleSubmit#3",
+      "method": "error",
+      "line": 83
+    },
+    {
+      "id": "packages/views/modals/run-confirm.tsx#RunConfirmModal.submit#1",
+      "method": "warning",
+      "line": 169
+    },
+    {
+      "id": "packages/views/modals/run-confirm.tsx#RunConfirmModal.submit#2",
+      "method": "error",
+      "line": 179
+    },
+    {
+      "id": "packages/views/modals/set-parent-issue.tsx#SetParentIssueModal.onError#1",
+      "method": "error",
+      "line": 55
+    },
+    {
+      "id": "packages/views/modals/set-parent-issue.tsx#SetParentIssueModal.onSuccess#1",
+      "method": "success",
+      "line": 49
+    },
+    {
+      "id": "packages/views/modals/workflow-handoff.tsx#WorkflowHandoffModal.onError#1",
+      "method": "error",
+      "line": 42
+    },
+    {
+      "id": "packages/views/onboarding/components/cloud-waitlist-expand.tsx#CloudWaitlistExpand.submit#1",
+      "method": "success",
+      "line": 49
+    },
+    {
+      "id": "packages/views/onboarding/components/cloud-waitlist-expand.tsx#CloudWaitlistExpand.submit#2",
+      "method": "error",
+      "line": 52
+    },
+    {
+      "id": "packages/views/onboarding/onboarding-flow.tsx#OnboardingFlow.applyAnswers#1",
+      "method": "error",
+      "line": 232
+    },
+    {
+      "id": "packages/views/onboarding/onboarding-flow.tsx#OnboardingFlow.handleRuntimeNext#1",
+      "method": "error",
+      "line": 295
+    },
+    {
+      "id": "packages/views/onboarding/onboarding-flow.tsx#OnboardingFlow.handleRuntimeNext#2",
+      "method": "error",
+      "line": 340
+    },
+    {
+      "id": "packages/views/onboarding/onboarding-flow.tsx#OnboardingFlow.handleRuntimeNext#3",
+      "method": "error",
+      "line": 350
+    },
+    {
+      "id": "packages/views/onboarding/onboarding-flow.tsx#OnboardingFlow.handleWelcomeSkip#1",
+      "method": "error",
+      "line": 248
+    },
+    {
+      "id": "packages/views/onboarding/source-backfill-modal.tsx#SourceBackfillDialogBody.skip#1",
+      "method": "error",
+      "line": 274
+    },
+    {
+      "id": "packages/views/onboarding/source-backfill-modal.tsx#SourceBackfillDialogBody.submit#1",
+      "method": "error",
+      "line": 250
+    },
+    {
+      "id": "packages/views/onboarding/steps/step-workspace.tsx#StepWorkspace.handleCreate.onError#1",
+      "method": "error",
+      "line": 217
+    },
+    {
+      "id": "packages/views/onboarding/steps/step-workspace.tsx#StepWorkspace.handleCreate.onError#2",
+      "method": "error",
+      "line": 220
+    },
+    {
+      "id": "packages/views/plugins/plugin-hook-actions.tsx#useRunPluginHook.run#1",
+      "method": "success",
+      "line": 94
+    },
+    {
+      "id": "packages/views/plugins/plugin-hook-actions.tsx#useRunPluginHook.run#2",
+      "method": "error",
+      "line": 96
+    },
+    {
+      "id": "packages/views/plugins/plugin-hook-actions.tsx#useRunPluginHook.run#3",
+      "method": "error",
+      "line": 100
+    },
+    {
+      "id": "packages/views/plugins/plugin-hook-actions.tsx#useRunPluginHook.run#4",
+      "method": "error",
+      "line": 106
+    },
+    {
+      "id": "packages/views/plugins/plugin-mcp-approval.tsx#PluginMCPApproval.save#1",
+      "method": "success",
+      "line": 79
+    },
+    {
+      "id": "packages/views/plugins/plugin-mcp-approval.tsx#PluginMCPApproval.save#2",
+      "method": "error",
+      "line": 82
+    },
+    {
+      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#1",
+      "method": "success",
+      "line": 535
+    },
+    {
+      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail.handleDelete.onSuccess#1",
+      "method": "success",
+      "line": 240
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttach#1",
+      "method": "success",
+      "line": 196
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttach#2",
+      "method": "error",
+      "line": 199
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttachLocalDirectory#1",
+      "method": "error",
+      "line": 208
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttachLocalDirectory#2",
+      "method": "error",
+      "line": 215
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttachLocalDirectory#3",
+      "method": "error",
+      "line": 221
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttachLocalDirectory#4",
+      "method": "error",
+      "line": 230
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttachLocalDirectory#5",
+      "method": "error",
+      "line": 235
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleAttachLocalDirectory#6",
+      "method": "error",
+      "line": 274
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleConfirmMode#1",
+      "method": "success",
+      "line": 299
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleConfirmMode#2",
+      "method": "success",
+      "line": 311
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ProjectResourcesSection.handleSaveRef#1",
+      "method": "success",
+      "line": 349
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ResourceRow.onRemove#1",
+      "method": "success",
+      "line": 647
+    },
+    {
+      "id": "packages/views/projects/components/project-resources-section.tsx#ResourceRow.onRemove#2",
+      "method": "error",
+      "line": 649
+    },
+    {
+      "id": "packages/views/projects/components/projects-page.tsx#ProjectRowActions.onError#1",
+      "method": "error",
+      "line": 234
+    },
+    {
+      "id": "packages/views/projects/components/use-project-field-update.ts#useProjectFieldUpdate.handleUpdate.onError#1",
+      "method": "error",
+      "line": 24
+    },
+    {
+      "id": "packages/views/quick-actions/components/quick-action-dialog.tsx#QuickActionDialog.handleSubmit#1",
+      "method": "error",
+      "line": 101
+    },
+    {
+      "id": "packages/views/runtimes/components/cloud-runtime-dialog.tsx#CloudRuntimeDialog.handleSubmit#1",
+      "method": "error",
+      "line": 72
+    },
+    {
+      "id": "packages/views/runtimes/components/cloud-runtime-dialog.tsx#CloudRuntimeDialog.handleSubmit#2",
+      "method": "success",
+      "line": 82
+    },
+    {
+      "id": "packages/views/runtimes/components/cloud-runtime-dialog.tsx#CloudRuntimeDialog.handleSubmit#3",
+      "method": "error",
+      "line": 87
+    },
+    {
+      "id": "packages/views/runtimes/components/cloud-runtime-dialog.tsx#CloudRuntimeNodeRow.onError#1",
+      "method": "error",
+      "line": 334
+    },
+    {
+      "id": "packages/views/runtimes/components/cloud-runtime-dialog.tsx#CloudRuntimeNodeRow.onSuccess#1",
+      "method": "success",
+      "line": 332
+    },
+    {
+      "id": "packages/views/runtimes/components/delete-runtime-dialog.tsx#DeleteRuntimeDialog.handleConfirm#1",
+      "method": "error",
+      "line": 181
+    },
+    {
+      "id": "packages/views/runtimes/components/delete-runtime-profile-dialog.tsx#DeleteRuntimeProfileDialog.handleConfirm#1",
+      "method": "success",
+      "line": 61
+    },
+    {
+      "id": "packages/views/runtimes/components/delete-runtime-profile-dialog.tsx#DeleteRuntimeProfileDialog.handleConfirm#2",
+      "method": "error",
+      "line": 74
+    },
+    {
+      "id": "packages/views/runtimes/components/machine-pause-card.tsx#MachinePauseCard.pause.onError#1",
+      "method": "error",
+      "line": 98
+    },
+    {
+      "id": "packages/views/runtimes/components/machine-pause-card.tsx#MachinePauseCard.resume.onError#1",
+      "method": "error",
+      "line": 104
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-configuration.tsx#QoderConfiguration#1",
+      "method": "success",
+      "line": 47
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#EditConnectionDialog.submit#1",
+      "method": "success",
+      "line": 369
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#QoderConnectionCard.test.onError#1",
+      "method": "error",
+      "line": 211
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#QoderConnectionCard.test.onSuccess#1",
+      "method": "success",
+      "line": 209
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-connection-cards.tsx#RemoveRepositoryDialog.onError#1",
+      "method": "error",
+      "line": 842
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#DisconnectQoderDialog.confirm.onError#1",
+      "method": "error",
+      "line": 504
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#ManageCard.onError#1",
+      "method": "error",
+      "line": 407
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#ManageCard.resume.onError#1",
+      "method": "error",
+      "line": 328
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#ManageCard.resume.onSuccess#1",
+      "method": "success",
+      "line": 327
+    },
+    {
+      "id": "packages/views/runtimes/components/qoder-detail-page.tsx#QoderDetailPage#1",
+      "method": "success",
+      "line": 267
+    },
+    {
+      "id": "packages/views/runtimes/components/rename-machine-dialog.tsx#RenameMachineDialog.handleSave.onError#1",
+      "method": "error",
+      "line": 74
+    },
+    {
+      "id": "packages/views/runtimes/components/rename-machine-dialog.tsx#RenameMachineDialog.handleSave.onSuccess#1",
+      "method": "success",
+      "line": 66
+    },
+    {
+      "id": "packages/views/runtimes/components/revoke-runtime-access-dialog.tsx#RevokeRuntimeAccessDialog.handleConfirm.onError#1",
+      "method": "error",
+      "line": 92
+    },
+    {
+      "id": "packages/views/runtimes/components/revoke-runtime-access-dialog.tsx#RevokeRuntimeAccessDialog.handleConfirm.onSuccess#1",
+      "method": "success",
+      "line": 82
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-access-editor.tsx#RuntimeAccessEditor.apply.onError#1",
+      "method": "error",
+      "line": 109
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-access-editor.tsx#RuntimeAccessEditor.apply.onSuccess#1",
+      "method": "success",
+      "line": 96
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-concurrency-field.tsx#RuntimeConcurrencyField.commit.onError#1",
+      "method": "error",
+      "line": 76
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-detail.tsx#RuntimeDetail.handleRuntimeDeleted#1",
+      "method": "success",
+      "line": 148
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-list.tsx#RuntimeRowMenu#1",
+      "method": "success",
+      "line": 533
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-profiles-dialog.tsx#ProfileDetailsForm.handleSubmit#1",
+      "method": "success",
+      "line": 804
+    },
+    {
+      "id": "packages/views/runtimes/components/runtime-profiles-dialog.tsx#ProfileDetailsForm.handleSubmit#2",
+      "method": "success",
+      "line": 816
+    },
+    {
+      "id": "packages/views/runtimes/components/runtimes-page.tsx#MikaSetupCard.handleStart#1",
+      "method": "error",
+      "line": 962
+    },
+    {
+      "id": "packages/views/search/commands/context-commands.tsx#useAgentCommandGroup.guard#1",
+      "method": "error",
+      "line": 135
+    },
+    {
+      "id": "packages/views/search/commands/context-commands.tsx#useAgentCommandGroup.guard#2",
+      "method": "error",
+      "line": 139
+    },
+    {
+      "id": "packages/views/search/commands/context-commands.tsx#useProjectCommandGroup.run#1",
+      "method": "success",
+      "line": 97
+    },
+    {
+      "id": "packages/views/search/commands/global-commands.tsx#useGlobalCommands.run#1",
+      "method": "error",
+      "line": 104
+    },
+    {
+      "id": "packages/views/search/commands/global-commands.tsx#useGlobalCommands.run#2",
+      "method": "error",
+      "line": 123
+    },
+    {
+      "id": "packages/views/search/commands/issue-commands.tsx#useIssueCommandGroup.run#1",
+      "method": "success",
+      "line": 213
+    },
+    {
+      "id": "packages/views/search/commands/issue-commands.tsx#useIssueCommandGroup.run#2",
+      "method": "error",
+      "line": 215
+    },
+    {
+      "id": "packages/views/search/commands/issue-commands.tsx#useIssueCommandGroup.run#3",
+      "method": "success",
+      "line": 247
+    },
+    {
+      "id": "packages/views/search/commands/issue-commands.tsx#useIssueCommandGroup.run#4",
+      "method": "error",
+      "line": 251
+    },
+    {
+      "id": "packages/views/search/commands/issue-commands.tsx#useIssueCommandGroup.run#5",
+      "method": "success",
+      "line": 272
+    },
+    {
+      "id": "packages/views/search/delegate/use-delegate.ts#useDelegateSubmit#1",
+      "method": "success",
+      "line": 98
+    },
+    {
+      "id": "packages/views/search/delegate/use-delegate.ts#useDelegateSubmit#2",
+      "method": "error",
+      "line": 107
+    },
+    {
+      "id": "packages/views/search/delegate/use-delegate.ts#useDelegateSubmit#3",
+      "method": "error",
+      "line": 111
+    },
+    {
+      "id": "packages/views/search/delegate/use-delegate.ts#useDelegateSubmit#4",
+      "method": "error",
+      "line": 120
+    },
+    {
+      "id": "packages/views/search/host-dialogs.tsx#BatchDeleteDialog.handleDelete#1",
+      "method": "success",
+      "line": 85
+    },
+    {
+      "id": "packages/views/search/host-dialogs.tsx#BatchDeleteDialog.handleDelete#2",
+      "method": "error",
+      "line": 87
+    },
+    {
+      "id": "packages/views/search/host-dialogs.tsx#CancelRunDialog#1",
+      "method": "success",
+      "line": 62
+    },
+    {
+      "id": "packages/views/search/host-dialogs.tsx#CancelRunDialog#2",
+      "method": "error",
+      "line": 64
+    },
+    {
+      "id": "packages/views/search/issue-target.ts#useIssueTargetWriter.applyBatch#1",
+      "method": "warning",
+      "line": 48
+    },
+    {
+      "id": "packages/views/search/issue-target.ts#useIssueTargetWriter.applyBatch#2",
+      "method": "success",
+      "line": 50
+    },
+    {
+      "id": "packages/views/search/issue-target.ts#useIssueTargetWriter.applyBatch#3",
+      "method": "error",
+      "line": 53
+    },
+    {
+      "id": "packages/views/search/issue-target.ts#useIssueTargetWriter.applySingle#1",
+      "method": "error",
+      "line": 69
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueLabelsPage.toggle#1",
+      "method": "success",
+      "line": 345
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueLabelsPage.toggle#2",
+      "method": "error",
+      "line": 346
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueLabelsPage.toggle#3",
+      "method": "error",
+      "line": 354
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueLabelsPage.toggle#4",
+      "method": "success",
+      "line": 355
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueQuickActionPage#1",
+      "method": "success",
+      "line": 560
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueQuickActionPage#2",
+      "method": "error",
+      "line": 561
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueQuickActionPage#3",
+      "method": "info",
+      "line": 562
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueQuickActionPage#4",
+      "method": "error",
+      "line": 566
+    },
+    {
+      "id": "packages/views/search/pages/issue-pages.tsx#IssueQuickActionPage#5",
+      "method": "error",
+      "line": 569
+    },
+    {
+      "id": "packages/views/search/pages/other-pages.tsx#AgentAssignIssuePage.assign#1",
+      "method": "success",
+      "line": 129
+    },
+    {
+      "id": "packages/views/search/pages/other-pages.tsx#AgentAssignIssuePage.assign#2",
+      "method": "error",
+      "line": 131
+    },
+    {
+      "id": "packages/views/search/pages/other-pages.tsx#ProjectStatusPage#1",
+      "method": "error",
+      "line": 85
+    },
+    {
+      "id": "packages/views/settings/components/account-tab.tsx#AccountTab#1",
+      "method": "error",
+      "line": 121
+    },
+    {
+      "id": "packages/views/settings/components/account-tab.tsx#AccountTab.onError#1",
+      "method": "error",
+      "line": 81
+    },
+    {
+      "id": "packages/views/settings/components/agent-decisions-row.tsx#AgentDecisionsRow.save#1",
+      "method": "error",
+      "line": 46
+    },
+    {
+      "id": "packages/views/settings/components/auto-compact-tokens-row.tsx#AutoCompactTokensRow.onError#1",
+      "method": "error",
+      "line": 45
+    },
+    {
+      "id": "packages/views/settings/components/background-agents-tab.tsx#BackgroundAgentsTab.save.run#1",
+      "method": "error",
+      "line": 109
+    },
+    {
+      "id": "packages/views/settings/components/code-tab.tsx#CodeTab.handleConnect#1",
+      "method": "error",
+      "line": 113
+    },
+    {
+      "id": "packages/views/settings/components/code-tab.tsx#CodeTab.handleConnect#2",
+      "method": "error",
+      "line": 118
+    },
+    {
+      "id": "packages/views/settings/components/code-tab.tsx#CodeTab.handleDisconnect#1",
+      "method": "success",
+      "line": 130
+    },
+    {
+      "id": "packages/views/settings/components/code-tab.tsx#CodeTab.handleDisconnect#2",
+      "method": "error",
+      "line": 133
+    },
+    {
+      "id": "packages/views/settings/components/code-tab.tsx#CodeTab.persistSetting#1",
+      "method": "error",
+      "line": 102
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows.copy#1",
+      "method": "success",
+      "line": 143
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows.copy#2",
+      "method": "error",
+      "line": 145
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows.handleConnect#1",
+      "method": "error",
+      "line": 104
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows.handleDelete#1",
+      "method": "success",
+      "line": 131
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows.handleDelete#2",
+      "method": "error",
+      "line": 134
+    },
+    {
+      "id": "packages/views/settings/components/code-vcs.tsx#VCSConnectionRows.handleRotateWebhook#1",
+      "method": "error",
+      "line": 119
+    },
+    {
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab#1",
+      "method": "success",
+      "line": 83
+    },
+    {
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab#2",
+      "method": "error",
+      "line": 86
+    },
+    {
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab.handleConnect#1",
+      "method": "error",
+      "line": 154
+    },
+    {
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab.handleDisconnect#1",
+      "method": "success",
+      "line": 165
+    },
+    {
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab.handleDisconnect#2",
+      "method": "error",
+      "line": 168
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkAgentBindButton.handleSubmit#1",
+      "method": "success",
+      "line": 908
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkAgentBindButton.handleSubmit#2",
+      "method": "error",
+      "line": 913
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkAgentBotConnectedBadge.handleDisconnect#1",
+      "method": "success",
+      "line": 1091
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkAgentBotConnectedBadge.handleDisconnect#2",
+      "method": "error",
+      "line": 1094
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkBotGroups.handleForget#1",
+      "method": "success",
+      "line": 305
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkBotGroups.handleForget#2",
+      "method": "error",
+      "line": 308
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkTab.handleDisconnect#1",
+      "method": "success",
+      "line": 573
+    },
+    {
+      "id": "packages/views/settings/components/dingtalk-tab.tsx#DingTalkTab.handleDisconnect#2",
+      "method": "error",
+      "line": 576
+    },
+    {
+      "id": "packages/views/settings/components/github-review-mappings.tsx#MappingRow.save#1",
+      "method": "error",
+      "line": 70
+    },
+    {
+      "id": "packages/views/settings/components/idle-guard-rows.tsx#IdleGuardRows.save.run#1",
+      "method": "error",
+      "line": 64
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#ArchiveStatusDialog.onError#1",
+      "method": "error",
+      "line": 992
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#CategorySection.move.onError#1",
+      "method": "error",
+      "line": 360
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#StatusEditorDialog.submit.onError#1",
+      "method": "error",
+      "line": 672
+    },
+    {
+      "id": "packages/views/settings/components/issue-statuses-tab.tsx#StatusEditorDialog.submit.onSuccess#1",
+      "method": "success",
+      "line": 720
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkAgentBotConnectedBadge.handleDisconnect#1",
+      "method": "success",
+      "line": 575
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkAgentBotConnectedBadge.handleDisconnect#2",
+      "method": "error",
+      "line": 578
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkInstallDialog.poll#1",
+      "method": "success",
+      "line": 816
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkInstallDialog.poll#2",
+      "method": "message",
+      "line": 868
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkTab.handleDisconnect#1",
+      "method": "success",
+      "line": 101
+    },
+    {
+      "id": "packages/views/settings/components/lark-tab.tsx#LarkTab.handleDisconnect#2",
+      "method": "error",
+      "line": 104
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab.handleDelete#1",
+      "method": "success",
+      "line": 194
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab.handleDelete#2",
+      "method": "error",
+      "line": 197
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab.handleRename#1",
+      "method": "success",
+      "line": 174
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab.handleRename#2",
+      "method": "error",
+      "line": 184
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab.handleSaveServer#1",
+      "method": "success",
+      "line": 122
+    },
+    {
+      "id": "packages/views/settings/components/mcp-tab.tsx#McpTab.handleSaveServer#2",
+      "method": "error",
+      "line": 128
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleCopyShareLink#1",
+      "method": "success",
+      "line": 879
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleCopyShareLink#2",
+      "method": "error",
+      "line": 880
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleCopyShareLink#3",
+      "method": "success",
+      "line": 891
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleCopyShareLink#4",
+      "method": "error",
+      "line": 893
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleCreateShareLink#1",
+      "method": "success",
+      "line": 853
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleCreateShareLink#2",
+      "method": "error",
+      "line": 855
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#1",
+      "method": "error",
+      "line": 557
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#2",
+      "method": "error",
+      "line": 578
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#3",
+      "method": "error",
+      "line": 590
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#4",
+      "method": "error",
+      "line": 608
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#5",
+      "method": "error",
+      "line": 617
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#6",
+      "method": "error",
+      "line": 621
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleInviteMember#7",
+      "method": "error",
+      "line": 624
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRemoveMember.onConfirm#1",
+      "method": "success",
+      "line": 836
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRemoveMember.onConfirm#2",
+      "method": "error",
+      "line": 838
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRevokeInvitation.onConfirm#1",
+      "method": "success",
+      "line": 801
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRevokeInvitation.onConfirm#2",
+      "method": "error",
+      "line": 803
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRevokeShareLink#1",
+      "method": "success",
+      "line": 867
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRevokeShareLink#2",
+      "method": "error",
+      "line": 870
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRoleChange#1",
+      "method": "success",
+      "line": 817
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.handleRoleChange#2",
+      "method": "error",
+      "line": 819
+    },
+    {
+      "id": "packages/views/settings/components/members-tab.tsx#MembersTab.sendInvitation#1",
+      "method": "success",
+      "line": 534
+    },
+    {
+      "id": "packages/views/settings/components/notifications-tab.tsx#NotificationsTab.handleToggle.onError#1",
+      "method": "error",
+      "line": 50
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.finishCodeRevoke#1",
+      "method": "success",
+      "line": 139
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.finishCodeRevoke#2",
+      "method": "error",
+      "line": 142
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.finishEnrollment#1",
+      "method": "success",
+      "line": 103
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.finishEnrollment#2",
+      "method": "error",
+      "line": 106
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.revoke#1",
+      "method": "success",
+      "line": 124
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.revoke#2",
+      "method": "error",
+      "line": 127
+    },
+    {
+      "id": "packages/views/settings/components/passkeys-tab.tsx#PasskeysManager.startEnrollment#1",
+      "method": "error",
+      "line": 86
+    },
+    {
+      "id": "packages/views/settings/components/personal-background-agents-tab.tsx#PersonalBackgroundAgentsTab.save#1",
+      "method": "error",
+      "line": 89
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#ConfigForm.submit#1",
+      "method": "success",
+      "line": 188
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#ConfigForm.submit#2",
+      "method": "error",
+      "line": 190
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#InstalledPlugin#1",
+      "method": "success",
+      "line": 609
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#InstalledPlugin#2",
+      "method": "success",
+      "line": 620
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#InstalledPlugin.reportError#1",
+      "method": "error",
+      "line": 566
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#PublishAndInstall#1",
+      "method": "success",
+      "line": 424
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#PublishAndInstall.confirmInstall#1",
+      "method": "success",
+      "line": 375
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#PublishAndInstall.publish#1",
+      "method": "success",
+      "line": 348
+    },
+    {
+      "id": "packages/views/settings/components/plugins-tab.tsx#PublishAndInstall.reportError#1",
+      "method": "error",
+      "line": 342
+    },
+    {
+      "id": "packages/views/settings/components/pr-merge-status-row.tsx#PRMergeStatusRow.persist#1",
+      "method": "error",
+      "line": 92
+    },
+    {
+      "id": "packages/views/settings/components/preferences-tab.tsx#TimezoneRow.handleChange#1",
+      "method": "error",
+      "line": 449
+    },
+    {
+      "id": "packages/views/settings/components/properties-tab.tsx#ArchivePropertyDialog.onError#1",
+      "method": "error",
+      "line": 698
+    },
+    {
+      "id": "packages/views/settings/components/properties-tab.tsx#PropertiesTab.onError#1",
+      "method": "error",
+      "line": 288
+    },
+    {
+      "id": "packages/views/settings/components/properties-tab.tsx#PropertyEditorDialog.submit.onError#1",
+      "method": "error",
+      "line": 422
+    },
+    {
+      "id": "packages/views/settings/components/provider-breakers-tab.tsx#ProviderBreakersTab.confirmReset#1",
+      "method": "success",
+      "line": 49
+    },
+    {
+      "id": "packages/views/settings/components/provider-breakers-tab.tsx#ProviderBreakersTab.confirmReset#2",
+      "method": "error",
+      "line": 52
+    },
+    {
+      "id": "packages/views/settings/components/quick-actions-tab.tsx#QuickActionsTab.handleArchiveToggle#1",
+      "method": "error",
+      "line": 194
+    },
+    {
+      "id": "packages/views/settings/components/quick-actions-tab.tsx#QuickActionsTab.handleDelete#1",
+      "method": "error",
+      "line": 204
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#1",
+      "method": "error",
+      "line": 231
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#2",
+      "method": "error",
+      "line": 240
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection.connectGitHub#1",
+      "method": "error",
+      "line": 324
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection.connectGitHub#2",
+      "method": "error",
+      "line": 329
+    },
+    {
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection.persist#1",
+      "method": "error",
+      "line": 270
+    },
+    {
+      "id": "packages/views/settings/components/runtime-profile-row.tsx#RuntimeProfileRow.save#1",
+      "method": "error",
+      "line": 48
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackAgentBindButton.handleSubmit#1",
+      "method": "success",
+      "line": 334
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackAgentBindButton.handleSubmit#2",
+      "method": "error",
+      "line": 339
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackAgentBotConnectedBadge.handleDisconnect#1",
+      "method": "success",
+      "line": 520
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackAgentBotConnectedBadge.handleDisconnect#2",
+      "method": "error",
+      "line": 523
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackTab.handleDisconnect#1",
+      "method": "success",
+      "line": 83
+    },
+    {
+      "id": "packages/views/settings/components/slack-tab.tsx#SlackTab.handleDisconnect#2",
+      "method": "error",
+      "line": 86
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramAgentBindButton.handleSubmit#1",
+      "method": "success",
+      "line": 319
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramAgentBindButton.handleSubmit#2",
+      "method": "error",
+      "line": 323
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramAgentBotConnectedBadge.handleDisconnect#1",
+      "method": "success",
+      "line": 474
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramAgentBotConnectedBadge.handleDisconnect#2",
+      "method": "error",
+      "line": 477
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramTab.handleDisconnect#1",
+      "method": "success",
+      "line": 78
+    },
+    {
+      "id": "packages/views/settings/components/telegram-tab.tsx#TelegramTab.handleDisconnect#2",
+      "method": "error",
+      "line": 81
+    },
+    {
+      "id": "packages/views/settings/components/tokens-tab.tsx#TokensTab.handleCreateToken#1",
+      "method": "error",
+      "line": 90
+    },
+    {
+      "id": "packages/views/settings/components/tokens-tab.tsx#TokensTab.handleRevokeToken#1",
+      "method": "success",
+      "line": 101
+    },
+    {
+      "id": "packages/views/settings/components/tokens-tab.tsx#TokensTab.handleRevokeToken#2",
+      "method": "error",
+      "line": 103
+    },
+    {
+      "id": "packages/views/settings/components/tokens-tab.tsx#TokensTab.loadTokens#1",
+      "method": "error",
+      "line": 72
+    },
+    {
+      "id": "packages/views/settings/components/wakeups-tab.tsx#ChildDoneDefault.save#1",
+      "method": "error",
+      "line": 135
+    },
+    {
+      "id": "packages/views/settings/components/wakeups-tab.tsx#PauseSwitch.toggle#1",
+      "method": "error",
+      "line": 84
+    },
+    {
+      "id": "packages/views/settings/components/wecom-scan-install-dialog.tsx#WecomScanInstallDialog.poll#1",
+      "method": "success",
+      "line": 172
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomAgentBindButton.handleSubmit#1",
+      "method": "success",
+      "line": 318
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomAgentBindButton.handleSubmit#2",
+      "method": "error",
+      "line": 355
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomAgentBotConnectedBadge.handleDisconnect#1",
+      "method": "success",
+      "line": 564
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomAgentBotConnectedBadge.handleDisconnect#2",
+      "method": "error",
+      "line": 567
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomTab.handleDisconnect#1",
+      "method": "success",
+      "line": 80
+    },
+    {
+      "id": "packages/views/settings/components/wecom-tab.tsx#WecomTab.handleDisconnect#2",
+      "method": "error",
+      "line": 83
+    },
+    {
+      "id": "packages/views/settings/components/workspace-scheduling-row.tsx#WorkspaceSchedulingRow.set.onError#1",
+      "method": "error",
+      "line": 46
+    },
+    {
+      "id": "packages/views/settings/components/workspace-scheduling-row.tsx#WorkspaceSchedulingRow.set.onSuccess#1",
+      "method": "success",
+      "line": 43
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#1",
+      "method": "error",
+      "line": 474
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#2",
+      "method": "error",
+      "line": 609
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#3",
+      "method": "error",
+      "line": 691
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab.handleConfirmDelete#1",
+      "method": "error",
+      "line": 405
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab.handleLeaveWorkspace.onConfirm#1",
+      "method": "error",
+      "line": 382
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab.onError#1",
+      "method": "error",
+      "line": 276
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab.onError#2",
+      "method": "error",
+      "line": 304
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab.onError#3",
+      "method": "error",
+      "line": 336
+    },
+    {
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab.performPrefixSave#1",
+      "method": "error",
+      "line": 362
+    },
+    {
+      "id": "packages/views/skills/components/create-skill-dialog.tsx#LocalForm.submit#1",
+      "method": "success",
+      "line": 471
+    },
+    {
+      "id": "packages/views/skills/components/create-skill-dialog.tsx#ManualForm.submit#1",
+      "method": "success",
+      "line": 148
+    },
+    {
+      "id": "packages/views/skills/components/create-skill-dialog.tsx#UrlForm.submit#1",
+      "method": "success",
+      "line": 319
+    },
+    {
+      "id": "packages/views/skills/components/refresh-skill-dialog.tsx#RefreshSkillDialog.handleConfirm#1",
+      "method": "success",
+      "line": 84
+    },
+    {
+      "id": "packages/views/skills/components/refresh-skill-dialog.tsx#RefreshSkillDialog.handleConfirm#2",
+      "method": "error",
+      "line": 88
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleCopyLink#1",
+      "method": "success",
+      "line": 746
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleDelete#1",
+      "method": "success",
+      "line": 733
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleDelete#2",
+      "method": "error",
+      "line": 735
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleSave#1",
+      "method": "success",
+      "line": 700
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleSave#2",
+      "method": "success",
+      "line": 702
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleSave#3",
+      "method": "success",
+      "line": 708
+    },
+    {
+      "id": "packages/views/skills/components/skill-detail-page.tsx#SkillDetail.handleSave#4",
+      "method": "error",
+      "line": 711
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#AddToAgentDialog.handleConfirm#1",
+      "method": "success",
+      "line": 293
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#AddToAgentDialog.handleConfirm#2",
+      "method": "error",
+      "line": 301
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#DeleteSkillsDialog.handleConfirm#1",
+      "method": "success",
+      "line": 428
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#DeleteSkillsDialog.handleConfirm#2",
+      "method": "error",
+      "line": 432
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#UpdateSkillsDialog.handleConfirm#1",
+      "method": "success",
+      "line": 560
+    },
+    {
+      "id": "packages/views/skills/components/skill-list-actions.tsx#UpdateSkillsDialog.handleConfirm#2",
+      "method": "error",
+      "line": 564
+    },
+    {
+      "id": "packages/views/skills/components/skill-versions-tab.tsx#SkillVersionsTab.handleRestore#1",
+      "method": "success",
+      "line": 147
+    },
+    {
+      "id": "packages/views/skills/components/skill-versions-tab.tsx#SkillVersionsTab.handleRestore#2",
+      "method": "error",
+      "line": 154
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#InlineEditPopover.commit#1",
+      "method": "success",
+      "line": 1094
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#InlineEditPopover.commit#2",
+      "method": "error",
+      "line": 1096
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage#1",
+      "method": "success",
+      "line": 436
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.copyLink#1",
+      "method": "success",
+      "line": 303
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onError#1",
+      "method": "error",
+      "line": 198
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onError#2",
+      "method": "error",
+      "line": 205
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onError#3",
+      "method": "error",
+      "line": 217
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onError#4",
+      "method": "error",
+      "line": 229
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onError#5",
+      "method": "error",
+      "line": 236
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onSuccess#1",
+      "method": "success",
+      "line": 196
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onSuccess#2",
+      "method": "success",
+      "line": 203
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onSuccess#3",
+      "method": "success",
+      "line": 215
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onSuccess#4",
+      "method": "success",
+      "line": 226
+    },
+    {
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage.onSuccess#5",
+      "method": "success",
+      "line": 234
+    },
+    {
+      "id": "packages/views/squads/components/squads-page.tsx#ArchiveSquadDialog.onError#1",
+      "method": "error",
+      "line": 179
+    },
+    {
+      "id": "packages/views/squads/components/squads-page.tsx#ArchiveSquadDialog.onSuccess#1",
+      "method": "success",
+      "line": 176
+    },
+    {
+      "id": "packages/views/workflows/handoff-form.tsx#WorkflowHandoffForm.save#1",
+      "method": "success",
+      "line": 222
+    },
+    {
+      "id": "packages/views/workflows/handoff-form.tsx#WorkflowHandoffForm.save#2",
+      "method": "error",
+      "line": 238
+    },
+    {
+      "id": "packages/views/workflows/issue-flow-card.tsx#IssueFlowCard.choose.onError#1",
+      "method": "error",
+      "line": 74
+    },
+    {
+      "id": "packages/views/workflows/project-workflow-row.tsx#useProjectWorkflowSwitch.apply#1",
+      "method": "success",
+      "line": 79
+    },
+    {
+      "id": "packages/views/workflows/project-workflow-row.tsx#useProjectWorkflowSwitch.apply#2",
+      "method": "error",
+      "line": 84
+    },
+    {
+      "id": "packages/views/workflows/project-workflow-row.tsx#useProjectWorkflowSwitch.choose#1",
+      "method": "error",
+      "line": 64
+    },
+    {
+      "id": "packages/views/workflows/use-notify-catalog-unresolved.ts#useNotifyCatalogUnresolved#1",
+      "method": "error",
+      "line": 17
+    },
+    {
+      "id": "packages/views/workflows/workflow-editor-page.tsx#WorkflowEditorPage.remove#1",
+      "method": "success",
+      "line": 555
+    },
+    {
+      "id": "packages/views/workflows/workflow-editor-page.tsx#WorkflowEditorPage.remove#2",
+      "method": "error",
+      "line": 558
+    },
+    {
+      "id": "packages/views/workflows/workflow-editor-page.tsx#WorkflowEditorPage.save#1",
+      "method": "error",
+      "line": 471
+    },
+    {
+      "id": "packages/views/workflows/workflow-editor-page.tsx#WorkflowEditorPage.save#2",
+      "method": "success",
+      "line": 510
+    },
+    {
+      "id": "packages/views/workflows/workflow-editor-page.tsx#WorkflowEditorPage.save#3",
+      "method": "success",
+      "line": 527
+    },
+    {
+      "id": "packages/views/workflows/workflow-editor-page.tsx#WorkflowEditorPage.save#4",
+      "method": "error",
+      "line": 547
+    }
+  ],
+  "decisionVariants": [
+    {
+      "id": "packages/core/types/decision.ts#DecisionBatchItem#shape",
+      "kind": "shape",
+      "line": 68
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCommentKind#ask",
+      "kind": "literal",
+      "line": 164
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCommentKind#cancel",
+      "kind": "literal",
+      "line": 164
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCommentKind#delivery",
+      "kind": "literal",
+      "line": 164
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCommentKind#disclaim",
+      "kind": "literal",
+      "line": 164
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCommentKind#quote",
+      "kind": "literal",
+      "line": 164
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCommentKind#veto",
+      "kind": "literal",
+      "line": 164
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionCoveredCard#shape",
+      "kind": "shape",
+      "line": 80
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionRequestAction#shape",
+      "kind": "shape",
+      "line": 120
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionRequestCard.state#answered",
+      "kind": "literal",
+      "line": 46
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionRequestCard.state#open",
+      "kind": "literal",
+      "line": 46
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionRequestCard.state#withdrawn",
+      "kind": "literal",
+      "line": 46
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionState#disclaimed",
+      "kind": "literal",
+      "line": 1
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionState#effective",
+      "kind": "literal",
+      "line": 1
+    },
+    {
+      "id": "packages/core/types/decision.ts#DecisionState#pending",
+      "kind": "literal",
+      "line": 1
+    }
+  ]
+}

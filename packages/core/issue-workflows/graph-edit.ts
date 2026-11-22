@@ -39,7 +39,11 @@ const GUARD_ARITY: Record<string, number> = {
   "pr.review_approved": 0,
   children_done: 0,
   issue_status: 2,
+  webhook: 1,
 };
+
+/** The endpoint name a `webhook(...)` guard may reference (`webhookNameRe`). */
+const WEBHOOK_NAME = /^[a-z0-9_-]{1,32}$/;
 
 const DEFAULT_TIMEOUT = "72h";
 const MIN_TIMEOUT_MS = 60_000;
@@ -76,7 +80,7 @@ export interface GraphIssue {
   index?: number;
 }
 
-function isValidGuard(guard: string): boolean {
+export function isValidGuard(guard: string): boolean {
   const s = guard.trim();
   const open = s.indexOf("(");
   const kind = open < 0 ? s : s.slice(0, open);
@@ -91,12 +95,14 @@ function isValidGuard(guard: string): boolean {
   if (kind === "agent_verdict" && args[0] !== "PASS" && args[0] !== "CHANGES") {
     return false;
   }
+  if (kind === "webhook" && !WEBHOOK_NAME.test(args[0]!)) return false;
   return args.every((a) => a !== "");
 }
 
-/** A guard on a PR fact waits on the outside world, so it needs a timeout. */
+/** A guard on a PR fact or a webhook waits on the outside world, so it needs a timeout. */
 export function guardNeedsTimeout(guard: string): boolean {
-  return guard.trim().startsWith("pr.");
+  const g = guard.trim();
+  return g.startsWith("pr.") || g.split("(")[0] === "webhook";
 }
 
 /** Milliseconds of a Go duration such as "72h" or "1h30m"; null when malformed. */

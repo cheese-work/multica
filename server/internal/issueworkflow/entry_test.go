@@ -148,3 +148,69 @@ func TestEntryRoundTripsThroughStoredSteps(t *testing.T) {
 		t.Fatalf("entry lost in storage: %+v", back)
 	}
 }
+
+// CHE-6831: a child issue must not enter a step that only root issues leave.
+func TestEvaluateEntryRootIssueRefusesAChild(t *testing.T) {
+	if got := EvaluateEntry(gates(EntryModeBlock, "root_issue"), Facts{}); len(got) != 0 {
+		t.Fatalf("a root issue must pass root_issue: %v", guardNames(got))
+	}
+	got := EvaluateEntry(gates(EntryModeBlock, "root_issue"), Facts{HasParent: true})
+	if len(got) != 1 || !strings.Contains(got[0].Fact, "parent") || got[0].Fix == "" {
+		t.Fatalf("a child must fail root_issue with a parent fact and a fix: %+v", got)
+	}
+	if err := validateEntry(Step{StatusKey: "investigating", Entry: gates(EntryModeBlock, "root_issue")}); err != nil {
+		t.Fatalf("root_issue is a valid entry gate: %v", err)
+	}
+}
+
+// pr.none_open (CHE-8771): an agent may close an issue only when no open or
+// draft PR is linked. Merged and closed PRs do not hold it back.
+func TestEvaluateEntryPRNoneOpen(t *testing.T) {
+	cases := []struct {
+		name string
+		prs  []PRFact
+		want bool // the gate holds
+	}{
+		{"no PR", nil, true},
+		{"merged only", []PRFact{{State: "merged"}}, true},
+		{"closed only", []PRFact{{State: "closed"}}, true},
+		{"merged and closed", []PRFact{{State: "merged"}, {State: "closed"}}, true},
+		{"open", []PRFact{{State: "open", Ref: "cheese-work/multica#12"}}, false},
+		{"draft", []PRFact{{State: "draft", Ref: "cheese-work/multica#13"}}, false},
+		{"open beside merged", []PRFact{{State: "merged"}, {State: "open", Ref: "cheese-work/multica#14"}}, false},
+	}
+	for _, c := range cases {
+		got := EvaluateEntry(gates(EntryModeBlock, "pr.none_open"), Facts{PRs: c.prs})
+		if holds := len(got) == 0; holds != c.want {
+			t.Errorf("%s: gate holds = %v, want %v (failed %+v)", c.name, holds, c.want, got)
+		}
+	}
+}
+
+func TestPRNoneOpenRefusalNamesEveryOpenPR(t *testing.T) {
+	got := EvaluateEntry(gates(EntryModeBlock, "pr.none_open"), Facts{PRs: []PRFact{
+		{State: "open", Ref: "cheese-work/multica#12"},
+		{State: "merged", Ref: "cheese-work/multica#9"},
+		{State: "draft", Ref: "cheese-work/multica#13"},
+	}})
+	if len(got) != 1 {
+		t.Fatalf("want one failure, got %+v", got)
+	}
+	for _, want := range []string{"cheese-work/multica#12", "cheese-work/multica#13"} {
+		if !strings.Contains(got[0].Fact, want) {
+			t.Errorf("fact %q must name %s", got[0].Fact, want)
+		}
+	}
+	if strings.Contains(got[0].Fact, "#9") {
+		t.Errorf("fact %q must not name the merged PR", got[0].Fact)
+	}
+	if got[0].Fix == "" || got[0].Fix == "make the condition hold" {
+		t.Errorf("fix should say what to do, got %q", got[0].Fix)
+	}
+}
+
+func TestPRNoneOpenIsAnEntryGateNotAnEdgeGuard(t *testing.T) {
+	if err := validateEntry(Step{StatusKey: "agent_accepted", Entry: gates(EntryModeBlock, "pr.none_open")}); err != nil {
+		t.Fatalf("pr.none_open must validate as an entry gate: %v", err)
+	}
+}

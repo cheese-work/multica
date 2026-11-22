@@ -51,7 +51,7 @@ func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID
 		return err
 	}
 	if scope.Proposal.Decider != "" {
-		// Jev records settle only in live mode, whatever agent_decisions_enabled says.
+		// Any stored decider (the legacy label or "delegate") settles only in live mode, whatever agent_decisions_enabled says.
 		if agentID, mode, err := agentDecisionJevSetting(ctx, tx, workspaceID); err != nil || mode != agentDecisionJevLive || agentID != scope.Author.AgentID {
 			return err
 		}

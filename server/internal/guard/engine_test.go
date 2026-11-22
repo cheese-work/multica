@@ -232,3 +232,48 @@ func TestReviewRuleMostSpecificWins(t *testing.T) {
 		}
 	}
 }
+
+// CHE-7519: red_main_claim.py creates and deletes only the red-main claim refs;
+// every other git-data write stays refused.
+func TestAPIRedMainClaimRefsAreAllowed(t *testing.T) {
+	create := func(ref string) []string {
+		return []string{"api", "-X", "POST", "repos/o/r/git/refs", "-f", "ref=" + ref, "-f", "sha=abc123"}
+	}
+	allowed := [][]string{
+		create("refs/heads/red-main/build-images--web-"),
+		create("refs/heads/red-main-owner/build-images--web-/0123abcd"),
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/red-main/build-images--web-"},
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/red-main-owner/build-images--web-/0123abcd"},
+	}
+	for _, args := range allowed {
+		f := newFake()
+		code, _, errs := run(t, f, DefaultPolicy(), args...)
+		if code != 0 || len(f.streamed) != 1 || errs != "" {
+			t.Errorf("%v: exit %d streamed %v errs %q", args, code, f.streamed, errs)
+		}
+	}
+	refused := [][]string{
+		create("refs/heads/main"),
+		create("refs/heads/red-main"),         // no key
+		create("refs/heads/red-mainx/y"),      // prefix lookalike
+		create("refs/heads/red-main/../main"), // traversal
+		create("refs/tags/red-main/x"),        // other namespace
+		{"api", "-X", "POST", "repos/o/r/git/refs", "--input", "x.json"},
+		{"api", "-X", "POST", "repos/o/r/git/refs", "-f", "ref=refs/heads/red-main/x", "-f", "ref=refs/heads/main", "-f", "sha=a"},
+		{"api", "-X", "POST", "repos/o/r/git/refs", "-f", "ref=refs/heads/red-main/x", "-f", "force=true"},
+		{"api", "-X", "PATCH", "repos/o/r/git/refs/heads/red-main/x", "-f", "sha=a", "-f", "force=true"},
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/main"},
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/red-main/../main"},
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/red-main/%2e%2e/main"},
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/red-main/x?y=z"},
+		{"api", "-X", "DELETE", "repos/o/r/git/refs/heads/red-main/"},
+		{"api", "-X", "POST", "repos/o/r/git/commits", "-f", "message=x"},
+	}
+	for _, args := range refused {
+		f := newFake()
+		code, _, _ := run(t, f, DefaultPolicy(), args...)
+		if code != 2 || len(f.streamed) != 0 {
+			t.Errorf("%v: exit %d streamed %v", args, code, f.streamed)
+		}
+	}
+}

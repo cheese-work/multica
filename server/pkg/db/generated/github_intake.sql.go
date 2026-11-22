@@ -20,9 +20,9 @@ WITH touched_issue AS (
 ), inserted_comment AS (
     INSERT INTO comment (id,issue_id,workspace_id,author_type,author_id,content,type,github_notify_only)
     SELECT $3,touched_issue.id,touched_issue.workspace_id,'system','00000000-0000-0000-0000-000000000000',$4,'comment',true
-    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read
+    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id
 )
-SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only, inserted_comment.taint_ids, inserted_comment.external_read,touched_issue.revision AS issue_revision
+SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only, inserted_comment.taint_ids, inserted_comment.external_read, inserted_comment.notify_only, inserted_comment.ask_source_root_id,touched_issue.revision AS issue_revision
 FROM inserted_comment JOIN touched_issue ON touched_issue.id=inserted_comment.issue_id
 `
 
@@ -61,6 +61,8 @@ type CreateGitHubNotifyCommentRow struct {
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
 	ExternalRead        bool               `json:"external_read"`
+	NotifyOnly          pgtype.Bool        `json:"notify_only"`
+	AskSourceRootID     pgtype.UUID        `json:"ask_source_root_id"`
 	IssueRevision       int64              `json:"issue_revision"`
 }
 
@@ -100,6 +102,8 @@ func (q *Queries) CreateGitHubNotifyComment(ctx context.Context, arg CreateGitHu
 		&i.GithubNotifyOnly,
 		&i.TaintIds,
 		&i.ExternalRead,
+		&i.NotifyOnly,
+		&i.AskSourceRootID,
 		&i.IssueRevision,
 	)
 	return i, err

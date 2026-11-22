@@ -57,6 +57,7 @@ import {
   wakeupActivityChip,
 } from "./wakeup-activity";
 import { useWakeupText } from "./wakeup-presentation";
+import { NEVER_COALESCE_ACTIONS, NO_TIME_LIMIT_ACTIONS } from "./timeline-coalesce";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
 import { StatusSummary, statusSummaryOf } from "./status-summary";
@@ -1826,20 +1827,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // - task_completed / task_failed: no time limit (these repeat across runs)
     // - all other actions: within a 2-minute window
     // - squad_leader_evaluated: never coalesce; outcome/reason are audit data
+    // The two action lists live in ./timeline-coalesce (pinned to Go by a contract test).
     const COALESCE_MS = 2 * 60 * 1000;
-    const NO_TIME_LIMIT_ACTIONS = new Set(["task_completed", "task_failed", "wakeup_checkin"]);
-    // Duplicate marks name a different issue on every row.
-    const NEVER_COALESCE_ACTIONS = new Set([
-      "squad_leader_evaluated",
-      "wakeup_created",
-      "wakeup_triggered",
-      "wakeup_timed_out",
-      "wakeup_paused",
-      "duplicate_marked",
-      "duplicate_unmarked",
-      "duplicate_added",
-      "duplicate_removed",
-    ]);
     // Unanchored runs keep their enqueue-time slot while working, then use
     // the published reply's time or the run's end time.
     const entryById = new Map(displayTimeline.map((entry) => [entry.id, entry]));
@@ -3911,17 +3900,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
-      <WakeupsSection
-        issueId={issue.id}
-        closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
-        defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
-        projectId={issue.project_id ?? undefined}
-      />
-      <PluginPanelSection issueId={issue.id} />
 
-      <IssueDuplicatesSection issueId={issue.id} />
-
-      {/* Pull requests — hidden when the workspace disables the PR sidebar
+      {/* Pull requests — sits above Wakeups per the locked compact-sidebar
+          design (CHE-4317). Hidden when the workspace disables the PR sidebar
           (or the GitHub master switch is off). Backend data is kept either
           way so re-enabling restores the section instantly. */}
       {githubSettings.prSidebar && (
@@ -3932,6 +3913,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           onOpenChange={setPullRequestsOpen}
         />
       )}
+
+      <WakeupsSection
+        issueId={issue.id}
+        closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
+        defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
+        projectId={issue.project_id ?? undefined}
+      />
+      <PluginPanelSection issueId={issue.id} />
+
+      <IssueDuplicatesSection issueId={issue.id} />
 
       {/* Deliverables — the files this issue's comments delivered. Hidden
           while there are none. */}

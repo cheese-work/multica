@@ -8,7 +8,7 @@
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read, i.created_via
 FROM issue i
 WHERE i.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
@@ -502,6 +502,9 @@ cleared_wakeup_pr_events AS (
 cleared_ci_advances AS (
  DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_workflow_switch_pending AS (
+ DELETE FROM issue_workflow_switch_pending WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_comment_supersessions AS (
  DELETE FROM comment_supersession WHERE issue_id IN (SELECT target.id FROM target)
 ),
@@ -552,11 +555,15 @@ DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read, i.created_via
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.
   AND NOT (i.status = ANY(sqlc.arg('terminal_status_keys')::text[]))
+  -- created_via: values to match; 'unknown' also matches NULL rows.
+  AND (sqlc.narg('created_via')::text[] IS NULL
+       OR i.created_via = ANY(sqlc.narg('created_via')::text[])
+       OR ('unknown' = ANY(sqlc.narg('created_via')::text[]) AND i.created_via IS NULL))
   AND (sqlc.narg('priority')::text IS NULL OR i.priority = sqlc.narg('priority'))
   AND (sqlc.narg('assignee_id')::uuid IS NULL OR i.assignee_id = sqlc.narg('assignee_id'))
   AND (sqlc.narg('assignee_ids')::uuid[] IS NULL OR i.assignee_id = ANY(sqlc.narg('assignee_ids')::uuid[]))

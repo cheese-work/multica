@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -272,6 +273,9 @@ func (h *Handler) mergeTimeline(r *http.Request, comments []db.Comment, activiti
 	out = append(out, h.commentsToEntries(r, comments)...)
 	activityFilter := h.newReadFilter(r)
 	for _, a := range activities {
+		if a.Action == service.ActivityWorkflowRole {
+			continue // role evidence for the author query, not issue history (CHE-7676)
+		}
 		if a.Action == ownerScriptAction {
 			continue // the guard's audit rows are not issue history (CHE-7138)
 		}

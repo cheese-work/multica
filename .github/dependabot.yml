@@ -68,6 +68,10 @@ updates:
       interval: "weekly"
       day: "monday"
       timezone: "Asia/Ho_Chi_Minh"
+    # CHE-7520: Node 25+ ships no corepack, so Dockerfile.web/.docs break. Move to Node 26 by hand (corepack install first).
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 3
     commit-message:
       prefix: "build"

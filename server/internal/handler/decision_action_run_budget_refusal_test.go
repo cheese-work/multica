@@ -23,7 +23,7 @@ func pendingBudgetAction(test *testing.T, typ string, refusal func(issueID, wind
 		budgetFixtureIssue(test, fixture.issueID)
 		windowID = snapshotWindowID(test, fixture.issueID)
 	}
-	params := map[string]any{"issue_id": fixture.issueID, "window_id": windowID, "refusal_id": refusal(fixture.issueID, windowID)}
+	params := map[string]any{"issue_id": fixture.issueID, "window_id": windowID, "refusal_id": refusal(fixture.issueID, windowID), "refusal_generation": 0}
 	if typ == raiseAction {
 		params["new_cap"] = 30
 	}

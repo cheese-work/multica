@@ -152,14 +152,14 @@ func (request settingsRequest) assertNotApplied(test *testing.T) {
 }
 
 func TestSettingsPatchAppliesNamedKeysOnly(test *testing.T) {
-	patch := map[string]any{"compact_prompt": "new", "mermaid_orientation": "author", "github_wake_on_pr_merge": nil, "ask_guard_mode": "warn", "owner_script_guard": "block"}
+	patch := map[string]any{"compact_prompt": "new", "mermaid_orientation": "author", "github_wake_on_pr_merge": nil, "ask_guard_mode": "warn", "owner_script_guard": "block", "decision_ask_park": "on_wait", "auto_close": map[string]any{"mode": "block"}, "blocked_run_skip": map[string]any{"mode": "block"}}
 	request, _ := requestSettings(test, http.StatusCreated, patch, nil)
 	_, keyID := request.action.enrollPasskey(test)
 	verify := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) { return parseUUID(keyID), nil }
 	request.approveOwner(test, withVerifier(verify), http.StatusOK)
 
 	got := storedSettings(test)
-	if string(got["compact_prompt"]) != `"new"` || string(got["mermaid_orientation"]) != `"author"` || string(got["ask_guard_mode"]) != `"warn"` || string(got["owner_script_guard"]) != `"block"` {
+	if string(got["compact_prompt"]) != `"new"` || string(got["mermaid_orientation"]) != `"author"` || string(got["ask_guard_mode"]) != `"warn"` || string(got["owner_script_guard"]) != `"block"` || string(got["decision_ask_park"]) != `"on_wait"` || string(got["auto_close"]) != `{"mode": "block"}` || string(got["blocked_run_skip"]) != `{"mode": "block"}` {
 		test.Fatalf("named keys not written: %v", got)
 	}
 	if _, present := got["github_wake_on_pr_merge"]; present {
@@ -224,7 +224,13 @@ func TestSettingsPatchRequestRefusals(test *testing.T) {
 		{"mermaid_orientation outside enum", http.StatusBadRequest, "invalid_params", map[string]any{"mermaid_orientation": "sideways"}, nil},
 		{"ask_guard_mode outside the modes", http.StatusBadRequest, "invalid_params", map[string]any{"ask_guard_mode": "bogus"}, nil},
 		{"ask_guard_mode is not a string", http.StatusBadRequest, "invalid_params", map[string]any{"ask_guard_mode": true}, nil},
+		{"decision_ask_park outside the modes", http.StatusBadRequest, "invalid_params", map[string]any{"decision_ask_park": "bogus"}, nil},
+		{"decision_ask_park is not a string", http.StatusBadRequest, "invalid_params", map[string]any{"decision_ask_park": true}, nil},
 		{"design_card_guard with a bad mode", http.StatusBadRequest, "invalid_params", map[string]any{"design_card_guard": map[string]any{"mode": "on"}}, nil},
+		{"auto_close with an unknown mode", http.StatusBadRequest, "invalid_params", map[string]any{"auto_close": map[string]any{"mode": "bogus"}}, nil},
+		{"auto_close is not an object", http.StatusBadRequest, "invalid_params", map[string]any{"auto_close": "block"}, nil},
+		{"blocked_run_skip with an unknown mode", http.StatusBadRequest, "invalid_params", map[string]any{"blocked_run_skip": map[string]any{"mode": "bogus"}}, nil},
+		{"blocked_run_skip with an extra field", http.StatusBadRequest, "invalid_params", map[string]any{"blocked_run_skip": map[string]any{"mode": "block", "extra": 1}}, nil},
 		{"no keys", http.StatusBadRequest, "invalid_params", map[string]any{}, nil},
 		{"agent after digest is wrong", http.StatusBadRequest, "after_digest_mismatch", ok, func(params map[string]any) { params["after_sha256"] = strings.Repeat("0", 64) }},
 		{"agent base digest is stale", http.StatusConflict, "precondition_drift", ok, func(params map[string]any) { params["base_sha256"] = strings.Repeat("0", 64) }},
@@ -579,4 +585,29 @@ func TestSettingsPatchResumeSettlesHeldWakeups(test *testing.T) {
 	test.Cleanup(func() {
 		dbfx.Exec(test, `DELETE FROM activity_log WHERE workspace_id = $1 AND action = $2`, testWorkspaceID, wakeupsResumedAction)
 	})
+}
+
+func TestValidateSettingsPatchValueRunCuttingModes(test *testing.T) {
+	for _, tc := range []struct {
+		key, value string
+		refused    bool
+	}{
+		{"auto_close", `{"mode":"off"}`, false},
+		{"auto_close", `{"mode":"warn"}`, false},
+		{"auto_close", `{"mode":"block"}`, false},
+		{"auto_close", `{"mode":"bogus"}`, true},
+		{"auto_close", `"block"`, true},
+		{"blocked_run_skip", `{"mode":"block"}`, false},
+		{"blocked_run_skip", `{"mode":"on"}`, true},
+		{"run_guard", `{"mode":"warn"}`, false},
+		{"run_guard", `{"mode":"on"}`, true},
+		{"run_budget", `{"mode":"warn"}`, false},
+		{"run_budget", `{"mode":"block","extra":1}`, true},
+		{"blocked_run_skip", `{"mode":"block","extra":1}`, true},
+	} {
+		err := validateSettingsPatchValue(tc.key, json.RawMessage(tc.value))
+		if (err != nil) != tc.refused {
+			test.Errorf("validateSettingsPatchValue(%s, %s) = %v, refused want %v", tc.key, tc.value, err, tc.refused)
+		}
+	}
 }

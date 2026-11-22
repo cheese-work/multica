@@ -325,6 +325,10 @@ func (e *Engine) CheckPR(ctx context.Context, sel []string) (int, error) {
 	}
 	e.noRepair = true
 	d := e.ensure(ctx, pl, info.URL, false, 1, nil)
+	// CHE-8780: show which base tip and rules file this check judged, on the ok path and the refused path.
+	if e.rulesNote != "" {
+		fmt.Fprintln(e.Err, "guard: "+e.rulesNote)
+	}
 	if d.kind == KindRefused {
 		fmt.Fprintln(e.Err, "guard: "+d.line)
 		return d.code, nil

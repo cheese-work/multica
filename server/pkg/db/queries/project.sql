@@ -24,25 +24,83 @@ WHERE i.id=$1;
 SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id
 WHERE i.id=$1 FOR SHARE OF p;
 
--- name: ListProjectWakeups :many
-SELECT w.* FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
-WHERE i.project_id=$1 AND i.workspace_id=$2
--- The workflow_edges watch is the platform's own, not a rule to settle: it
--- stays and waits out an inactive project in its evaluator.
+-- A status flip settles a project's wakeups with set-based statements, one per
+-- step, so its cost does not grow with the number of rules (CHE-9000: a
+-- per-rule loop in the flip's transaction timed out resuming a 5,365-issue
+-- project). The rules in scope are the enabled ones that are not the
+-- platform's own workflow_edges watch (it waits out an inactive project in its
+-- evaluator) or pr_merge_owed. A disabled rule cannot fire, so it has nothing
+-- to settle (CHE-7652); the revision bump still covers it.
+
+-- name: DiscardProjectWakeupReceipts :exec
+UPDATE issue_wakeup_receipt r SET processed_at=now()
+FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+WHERE r.wakeup_id=w.id AND r.processed_at IS NULL
+AND i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed';
+
+-- name: MarkProjectWakeupsSettled :exec
+-- Sets the settle error (project_inactive on a pause, null on a resume). A
+-- condition rule is held until hold_seconds from now: the baseline pass after
+-- the commit re-polls it sooner, and if that pass never runs the rule falls
+-- back to its ordinary poll once the hold ends.
+UPDATE issue_wakeup w SET last_error=sqlc.narg(last_error), updated_at=clock_timestamp(),
+ next_fire_at=CASE WHEN w.condition IS NOT NULL THEN now()+make_interval(secs => sqlc.arg(hold_seconds)::int) ELSE w.next_fire_at END
+FROM issue i
+WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+AND i.project_id=sqlc.arg(project_id) AND i.workspace_id=sqlc.arg(workspace_id) AND w.enabled
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed';
+
+-- name: DisableProjectDueOneShots :exec
+-- A one-shot that came due while the project was inactive does not fire later.
+UPDATE issue_wakeup w SET enabled=false, next_fire_at=NULL, updated_at=clock_timestamp()
+FROM issue i
+WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+AND i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
 AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+AND w.condition IS NULL AND w.kind='at' AND w.next_fire_at<=now();
+
+-- name: ListProjectOverdueRecurringWakeups :many
+SELECT w.* FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+WHERE i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
+AND w.condition IS NULL AND w.kind IN ('every','cron') AND w.next_fire_at<=now()
 ORDER BY w.id FOR UPDATE OF w;
 
--- name: BumpProjectWakeupRevisions :exec
-UPDATE issue_wakeup w SET revision=w.revision+1
-FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
-AND i.project_id=$1 AND i.workspace_id=$2;
+-- name: AdvanceWakeupsBatch :exec
+-- AdvanceIssueWakeup for many rules in one statement; it leaves last_error alone.
+UPDATE issue_wakeup w SET enabled=u.enabled AND w.paused_reason IS NULL AND w.disabled_at IS NULL,
+ next_fire_at=u.next_fire_at, updated_at=clock_timestamp()
+FROM (SELECT unnest(@ids::uuid[]) AS id, unnest(@enabled::bool[]) AS enabled, unnest(@next_fire_at::timestamptz[]) AS next_fire_at) u
+WHERE w.id=u.id;
+
+-- name: BumpProjectWakeupRevisions :many
+-- Returns the condition rules the baseline pass owns, with the revision and
+-- hold the flip left on them. The pass writes a rule only while both still
+-- match, so a later flip, edit or poll wins over an older pass.
+WITH bumped AS (
+ UPDATE issue_wakeup w SET revision=w.revision+1
+ FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+ AND i.project_id=$1 AND i.workspace_id=$2
+ RETURNING w.id, w.revision, w.next_fire_at, w.enabled, w.condition, w.system_rule
+)
+SELECT id, revision, next_fire_at FROM bumped
+WHERE enabled AND condition IS NOT NULL
+AND system_rule IS DISTINCT FROM 'workflow_edges'
+AND system_rule IS DISTINCT FROM 'pr_merge_owed'
+ORDER BY id;
 
 -- name: CancelProjectAgentTasks :many
+-- keep_running: a pause drains, so a running run lives on; cancel and complete stop it.
 UPDATE agent_task_queue t
 SET status='cancelled', completed_at=now(), prepare_lease_expires_at=NULL,
     cancelled_by_type='system', cancelled_by_id=NULL, cancelled_by_name=NULL
 WHERE t.status IN ('queued','dispatched','running','waiting_local_directory','deferred')
+AND NOT (sqlc.arg(keep_running)::bool AND t.status='running')
 AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=sqlc.arg(project_id)::uuid AND i.workspace_id=sqlc.arg(workspace_id)::uuid)
  OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=sqlc.arg(project_id)::uuid AND a.workspace_id=sqlc.arg(workspace_id)::uuid))
  OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=sqlc.arg(project_id)::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=sqlc.arg(workspace_id)::uuid)))

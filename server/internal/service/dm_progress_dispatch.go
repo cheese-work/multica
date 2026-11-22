@@ -41,11 +41,19 @@ type DMProgressDispatcher struct {
 	Pool    *pgxpool.Pool
 	Queries *db.Queries
 	Bus     *events.Bus
+	// DeliverCards is the server switch for posting progress cards to DMs
+	// (CHE-7568). The zero value is off.
+	DeliverCards bool
 }
 
 // Run sends every card due at now. A lane that fails is retried by the next
-// run; the other lanes still go out.
+// run; the other lanes still go out. With DeliverCards off it does nothing:
+// no card, and every pending row stays for the run that follows the switch
+// turning on (CHE-7568).
 func (d *DMProgressDispatcher) Run(ctx context.Context, now time.Time) error {
+	if !d.DeliverCards {
+		return nil
+	}
 	lanes, err := d.Queries.ListDMProgressPendingLanes(ctx)
 	if err != nil {
 		return err

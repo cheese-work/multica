@@ -188,7 +188,7 @@
     }
   },
   "budget_receipt": {
-    "applied_runs": "適用しました。{{issue}} は現在 {{limit}} 回中 {{used}} 回の実行を示しています。",
+    "applied_runs": "適用しました。適用時点で {{issue}} は {{limit}} 回中 {{used}} 回の実行でした。",
     "runs_used": "使用した実行回数",
     "change": "{{limit}} 回中 {{used}} 回 → {{limitAfter}} 回中 {{usedAfter}} 回",
     "change_new_window": "{{limit}} 回中 {{used}} 回 → {{limitAfter}} 回中 {{usedAfter}} 回（新しいウィンドウ）",

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -19,11 +20,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/mergequeue"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/queueorder"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -404,14 +407,28 @@ type UpdateWorkspaceRequest struct {
 	// BlockedRunSkip sets settings.blocked_run_skip alone (CHE-6973): the
 	// object {"mode": off|warn|block}. Owner only.
 	BlockedRunSkip json.RawMessage `json:"blocked_run_skip"`
+	// RunGuard sets settings.run_guard alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunGuard json.RawMessage `json:"run_guard"`
+	// RunBudget sets settings.run_budget alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunBudget json.RawMessage `json:"run_budget"`
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
+	// DecisionAskPark sets settings.decision_ask_park alone (CHE-6460): the
+	// string always|on_wait. Owner only.
+	DecisionAskPark json.RawMessage `json:"decision_ask_park"`
 	// The merge-queue settings (CHE-7408, plan 4.6) each set one settings key
 	// alone. Owner only; mergequeue.ValidateSetting checks the values.
 	MergeQueueRouting  json.RawMessage `json:"merge_queue_dequeue_routing"`
 	MergeQueueBindings json.RawMessage `json:"merge_queue_actor_bindings"`
 	MergeQueueWatch    json.RawMessage `json:"merge_queue_watch_issue"`
+	// QueueOrder and QueueAgingMinutes each set one settings key alone
+	// (CHE-8761): queue_order priority|project_rank and queue_aging_minutes
+	// 5 to 720. Owner or admin; queueorder.ValidateSetting checks the values.
+	QueueOrder        json.RawMessage `json:"queue_order"`
+	QueueAgingMinutes json.RawMessage `json:"queue_aging_minutes"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -587,7 +604,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -685,6 +702,26 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		params.BlockedRunSkip = req.BlockedRunSkip
 	}
+	for _, mode := range []struct {
+		key  string
+		raw  json.RawMessage
+		dest *[]byte
+	}{
+		{"run_guard", req.RunGuard, &params.RunGuard},
+		{"run_budget", req.RunBudget, &params.RunBudget},
+	} {
+		if mode.raw == nil {
+			continue
+		}
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := decisionaction.ValidateModeSetting(mode.key, mode.raw); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		*mode.dest = mode.raw
+	}
 	if req.AskGuardMode != nil {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
 			return
@@ -701,6 +738,21 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		params.AskGuardMode = req.AskGuardMode
 	}
+	if req.DecisionAskPark != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		var mode any
+		_ = json.Unmarshal(req.DecisionAskPark, &mode)
+		if err := validateDecisionAskParkSetting(map[string]any{decisionAskParkKey: mode}); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.DecisionAskPark = req.DecisionAskPark
+	}
+	// Both field groups reach the update as one settings object that replaces
+	// only its own keys (params.MergeQueue).
+	fieldPatch := map[string]any{}
 	if patch := mergeQueueFieldPatch(req.MergeQueueRouting, req.MergeQueueBindings, req.MergeQueueWatch); len(patch) > 0 {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
 			return
@@ -709,7 +761,20 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		merged, _ := json.Marshal(patch)
+		maps.Copy(fieldPatch, patch)
+	}
+	if patch := queueOrderFieldPatch(req.QueueOrder, req.QueueAgingMinutes); len(patch) > 0 {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner", "admin"); !ok {
+			return
+		}
+		if err := queueorder.ValidateSetting(patch); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		maps.Copy(fieldPatch, patch)
+	}
+	if len(fieldPatch) > 0 {
+		merged, _ := json.Marshal(fieldPatch)
 		params.MergeQueue = merged
 	}
 	for _, mapping := range []struct {

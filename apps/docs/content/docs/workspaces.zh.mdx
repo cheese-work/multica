@@ -52,11 +52,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 - 任务有父任务。根任务永远不会被关闭。
 - 最新的评审结论是不含 P0 或 P1 问题的 PASS，并且针对当前候选。有 PR 时，每个关联的 PR 都已在 PASS 所指的 head 上合并。没有 PR 时，候选是任务的文本：PASS 之后没有新附件、描述变更、评论（评审者自己的除外）、CHANGES 结论、过期或被取代标记，也没有回到 `in_progress`。
-- 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒。
+- 没有未完成的子任务、没有未处理的决策请求，并且任务进入该步骤时没有处于启用状态的唤醒（任务自己的合并监视，即 `pr.merged` 边，除外）。
 - 描述中没有 `Blockers: Cheese stop` 行，且父任务的 `delivery_stop` 元数据不是 `stopped`。
 - 任务元数据 `post_close_work` 为 `none`。由作者写入：`multica issue metadata set <issue> --key post_close_work --value none --type string`。任何其他值（例如对剩余工作的简短描述）都会保留这次运行。
-- 工作流中有从该步骤到 `done` 的 `agent_done` 边。
+- 工作流中有从该步骤到 `done` 的 `agent_done` 或 `pr.merged` 边。
 - 仅 `merged`：每个关联的 PR 都已在 PASS 所指的 head 上合并到其仓库的默认分支。合并到其他分支（堆叠的一层）的 PR，或其推送未带 base 或默认分支的 PR，会保留这次运行。
+
+PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.merged` 边以及任务自己的监视，则不会保留运行：服务器不启动运行，并记录一条 `auto_close_pending_merge` 活动记录。之后合并会不经运行直接关闭任务。合并时服务器会重新检查所有条件。若有条件不再成立（新的 head 没有 PASS、出现新的有效唤醒等），则不关闭任务，而是启动该步骤的运行并移除监视。
 
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
@@ -78,6 +80,23 @@ import { Callout } from "fumadocs-ui/components/callout";
 - 运行会被准入：任务还有运行预算，智能体未暂停。
 
 如果关联的唤醒之后被停用或删除、出现 `last_error`、未产生运行就结束（已过期或被守卫拒绝），或不再匹配 `blocked_on`，服务器会启动阻塞步骤的运行，并记录一条 `blocked_entry_rearmed` 活动记录。若运行预算已用尽或智能体已暂停，该运行同样会被拒绝，记录中会注明。
+
+### 运行次数上限
+
+两个工作区设置决定任务用完运行次数上限后的行为。两者的值都是 `{"mode": "off" | "warn" | "block"}`，默认值为 `block`，即当前行为。
+
+| 设置 | 控制的上限 |
+| --- | --- |
+| `run_budget` | 任务所属工作流的单任务运行预算（`max_runs_per_issue`）。 |
+| `run_guard` | 每周运行守卫：任务在 7 天内启动的运行次数。 |
+
+| 值 | 效果 |
+| --- | --- |
+| `block` | 下一次派生运行被拒绝，负责人收到一张卡片。 |
+| `warn` | 运行照常计数，超出部分显示在简报和 `multica issue budget get`（`state: warn`）中。不拒绝运行，不阻塞任务，也不打开卡片。 |
+| `off` | 不阻塞、不警告、不开卡片。 |
+
+循环断路器（`MULTICA_LOOP_BREAKER_MAX_RUNS`）不受影响。用 `multica workspace update --run-budget-mode` 或 `--run-guard-mode` 设置模式；代理在 `workspace.settings` 卡片上提议 `run_budget` 或 `run_guard`。
 
 ### 请求守卫
 
@@ -124,6 +143,16 @@ import { Callout } from "fumadocs-ui/components/callout";
 无法作为通知发送的事件会改交给产生它的那次运行所属的智能体：每个恢复根只有一次修复运行，并经过常规的运行关卡（项目停止、运行预算、角色和审批关卡）启动。第一个 `block` 事件是根，修复运行产生的事件继承该根，因此修复永远不会再启动第二次修复。运行消息包含准确的 `multica decision request ... --recovers <event-id>` 命令，不含原文。运行被拒绝、智能体不可用、修复运行结束时没有匹配的请求，或修复运行又产生了新的请求，都会使该根失败。智能体是其负责人：议题上会有一条点名该智能体、不提及任何成员的系统评论，`multica decision brief` 会连同请求摘录一起列出该失败。聊天通道中的运行只产生 `warn` 事件，因此不会被修复。
 
 守卫也覆盖智能体注册人可触发的唤醒。用 `--decision` 绑定、标记 `--purpose observe`，或限定为仅智能体；见[唤醒](/cli#wakeups)。
+
+### 工具守卫
+
+**设置 → Guard** 列出工作区的工具守卫插件，以及每个插件在过去 7 天里做了什么。每个插件显示被修正、被拒绝或出错的调用数量、按天统计的命中图表，以及最近的判定。数字与 `multica guard stats`、`multica guard log` 来自同一批记录。日期按你的查看时区计算。
+
+工作区所有者可在此编辑工作区级规则：**用通行密钥编辑** 可更改其动作和消息，所有者用通行密钥对这次确切的更改签名。签名指明编辑所基于的策略版本。若期间已有其他更改，则不会保存，页面会显示两个版本，并提供 **重新应用**（用新的通行密钥把你的更改放到新版本上）、**重新加载当前版本** 和 **放弃**。成员看到的是只读页面。属于组织、仓库或路径层的规则用 CLI 编辑：由智能体用 `multica guard plugin set` 创建变更，再由人在决策卡片上用通行密钥批准。没有已保存的策略时，页面显示内置默认值。
+
+### 决策界面
+
+工作区设置 `decision_screen`(默认 `off`,可设为 `on`)会隐藏承载智能体决策请求的聊天通道。设为 `on` 时,议题智能体向成员发出的请求会进入一个隐藏的后备通道,即使该成员与此智能体有可见私信也一样;该私信中不会发布任何内容。该通道不会出现在成员的聊天列表、未读数、角标或“Needs you”列表中,成员也无法向其中发送消息(`409`)。请求本身仍会打开同样的决策卡片。对这类智能体,服务器会忽略 `session_id` 和 `new_dm`,并在响应中附加一条提示。从私信中发起请求的智能体仍在该私信中请求。要还原,请将其设回 `off`:不会再创建新通道,已有通道仍保持隐藏。
 
 ### 委托的受管写入
 

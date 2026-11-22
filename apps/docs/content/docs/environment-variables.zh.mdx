@@ -42,6 +42,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `MULTICA_DATABASE_CONNECT_TIMEOUT` | `5s` | 启动期间单次数据库连接的兜底超时；pgx 原生 `connect_timeout`、`PGCONNECT_TIMEOUT` 或 service 配置优先 |
 | `PORT` | `8080` | API 监听端口 |
 | `JWT_SECRET` | 生产环境必填 | 登录 JWT、部分签名流程使用的密钥；生产环境对空值或已知占位值拒绝启动 |
+| `MULTICA_SECRETS_KEY` | 生产环境必填 | 范围密钥使用的 Base64 编码 32 字节密钥（`openssl rand -base64 32`）；生产环境缺失时拒绝启动，请保留备份。可选的 `MULTICA_SECRETS_KEY_PREVIOUS` 用于轮换期间继续读取旧信封 |
 | `APP_ENV` | 空 | 生产环境设为 `production` |
 | `AUTH_TOKEN_TTL` | `720h`（30 天） | 浏览器 JWT 与 cookie 有效期；接受 Go duration 或正整数秒数。会话会滑动续期：剩余有效期过半后，持续使用的会话会被续期而不是到期。低于 `60s` 的取值会按 `60s` 处理 |
 | `LOG_LEVEL` | 应用默认 | 日志级别 |
@@ -261,6 +262,7 @@ API key 与 base URL 都为空时，这一层关闭，不会发出任何上游�
 | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` | 健康 WebSocket 下 claim 安全轮询的上限，与 `MULTICA_DAEMON_POLL_INTERVAL` 独立配置；向下抖动后默认实际为 `2m30s`–`2m45s`，旧 Server 或结果不确定的 claim 仍使用普通轮询间隔 |
 | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` | 心跳间隔 |
 | `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` | `20` | 单个守护进程的并发运行上限 |
+| `MULTICA_DAEMON_RESERVED_CHAT_SLOTS` | `0` | 仅供聊天（DM）运行使用的槽位数；议题运行最多使用 `max_concurrent_tasks - reserved_chat_slots` 个槽位 |
 | `MULTICA_AGENT_TIMEOUT` | `0` | 单次执行的绝对时限；`0` 表示不设置 |
 | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` | 没有输出且没有工具执行时的静默上限；`0` 表示整套 watchdog 关闭 |
 | `MULTICA_AGENT_TOOL_WATCHDOG` | 同 `MULTICA_AGENT_IDLE_WATCHDOG` | 单个工具调用持续静默的上限；只有希望工具比模型有更多余量时才单独设置，`0` 表示工具执行期间永不强制停止。Cursor 的后台 shell 在它启动的进程退出前一直算作执行中；到达这个上限时，守护进程会停止这些进程，并给 Cursor 一段新的 watchdog 预算来产出终态结果。若进程归属或清理无法验证，则回到普通的运行取消策略 |
@@ -398,6 +400,7 @@ multica config show
 | `runtime_name` | `Local Agent` | 运行时显示名 |
 | `workspaces_root` | `~` 下按 profile 区分的路径 | 执行工作目录的根目录 |
 | `max_concurrent_tasks` | `20` | 并发运行上限；`0` 或留空表示未设置 |
+| `reserved_chat_slots` | `0` | 为聊天（DM）运行保留的槽位；议题运行最多使用 `max_concurrent_tasks - reserved_chat_slots` 个槽位。`0` 或留空表示不保留 |
 | `poll_interval` | `30s` | 运行轮询间隔 |
 | `ws_claim_poll_interval` | `3m` | 健康 WebSocket 下 claim 安全轮询的上限，与 `poll_interval` 独立配置；Daemon 会应用向下抖动 |
 | `heartbeat_interval` | `15s` | 心跳间隔 |
@@ -413,6 +416,7 @@ multica config show
 - duration 类键接受正的 Go duration（如 `10s`、`2h`），`0s` 和负值会被拒绝。唯一例外是 `agent_timeout`：`0s` 合法，表示明确关闭执行时限。
 - 传空字符串清除已持久化的值，回到环境变量或内置默认，例如 `multica config set poll_interval ""`。
 - `max_concurrent_tasks` 要求非负整数。
+- `reserved_chat_slots` 要求不小于 `0` 且小于 `max_concurrent_tasks` 的整数；其他值会被拒绝，错误信息同时列出这两个值。
 - 相对的 `workspaces_root` 值在保存时会转换为绝对路径。
 
 ## 观测与统计

@@ -452,3 +452,116 @@ func TestCIGreenAdvanceWaitsForOpenChildren(t *testing.T) {
 		})
 	}
 }
+
+// Workflow step 2 has the author push a draft PR early, so a green draft must
+// not move the issue to agent_review before the author says the work is ready
+// (CHE-5741): the issue metadata marker ready_for_review=true. A PR that is
+// not draft needs no marker, and the marker is spent by the move so a fix
+// round must set it again.
+func TestCIGreenAdvanceDraftPRNeedsReadyMarker(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	cases := []struct {
+		name     string
+		prState  string
+		metadata string
+		want     string
+	}{
+		{"draft, no marker", "draft", `{}`, "in_progress"},
+		{"draft, marker false", "draft", `{"ready_for_review": false}`, "in_progress"},
+		{"draft, marker set", "draft", `{"ready_for_review": true}`, "in_review"},
+		{"open, no marker", "open", `{}`, "in_review"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installationID := int64(1966020 + i)
+			prNumber := int32(196620 + i)
+			fx := newPRMergeWebhookFixture(t, installationID)
+			wf := createTestWorkflowSteps(t, "CI ready marker "+workflowTestSuffix(), []map[string]any{
+				{"status_key": "backlog"},
+				{"status_key": "in_progress", "edges": []map[string]any{
+					{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+				}},
+				{"status_key": "in_review"},
+				{"status_key": "blocked"},
+			})
+			projectID := createWorkflowTestProject(t, "CI ready marker project")
+			setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL, metadata=$3::jsonb WHERE id=$1`, fx.child.ID, projectID, tc.metadata); err != nil {
+				t.Fatal(err)
+			}
+			linkedPRForWakeup(t, fx, installationID, prNumber, "green-ready-a")
+			if _, err := testPool.Exec(context.Background(), `UPDATE github_pull_request SET state=$2 WHERE pr_number=$1 AND installation_id=$3`, prNumber, tc.prState, installationID); err != nil {
+				t.Fatal(err)
+			}
+			setWorkspacePRWakeSetting(t, "github_enabled", true)
+			refresh := startSnapshotRefresh(t, installationID, prNumber, newGreenSnapshot("green-ready-a").get)
+			refresh()
+			if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != tc.want {
+				t.Fatalf("green %s PR with metadata %s left the issue at %s, want %s", tc.prState, tc.metadata, got, tc.want)
+			}
+			if tc.want == "in_review" && tc.prState == "draft" {
+				var marker bool
+				if err := testPool.QueryRow(context.Background(), `SELECT metadata ? 'ready_for_review' FROM issue WHERE id=$1`, fx.child.ID).Scan(&marker); err != nil {
+					t.Fatal(err)
+				}
+				if marker {
+					t.Fatalf("the move left ready_for_review set; the next fix round would skip the author's marker")
+				}
+			}
+		})
+	}
+}
+
+// The marker covers one handoff. A manual move out of the author step (the
+// author set it, CI was already green, so they moved the issue by hand) spends
+// it too: when review returns the issue to in_progress, a green draft waits for
+// a fresh marker, and a marker set after the move is kept (CHE-5741).
+func TestCIGreenReadyMarkerIsSpentByAManualHandoff(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	const installationID int64 = 1966030
+	const prNumber int32 = 196630
+	fx := newPRMergeWebhookFixture(t, installationID)
+	wf := createTestWorkflowSteps(t, "CI ready marker spent "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+		}},
+		{"status_key": "in_review"},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CI ready marker spent project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL, metadata='{"ready_for_review": true}'::jsonb WHERE id=$1`, fx.child.ID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-spent-a")
+	if _, err := testPool.Exec(ctx, `UPDATE github_pull_request SET state='draft' WHERE pr_number=$1 AND installation_id=$2`, prNumber, installationID); err != nil {
+		t.Fatal(err)
+	}
+	// Manual handoff and the review's return, before any green snapshot lands.
+	for _, status := range []string{"in_review", "in_progress"} {
+		if _, err := testPool.Exec(ctx, `UPDATE issue SET status=$2 WHERE id=$1`, fx.child.ID, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	refresh := startSnapshotRefresh(t, installationID, prNumber, newGreenSnapshot("green-spent-a").get)
+	refresh()
+	if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != "in_progress" {
+		t.Fatalf("green draft advanced to %s on a marker the manual handoff should have spent", got)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata=metadata||'{"ready_for_review": true}'::jsonb WHERE id=$1`, fx.child.ID); err != nil {
+		t.Fatal(err)
+	}
+	refresh()
+	if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != "in_review" {
+		t.Fatalf("green draft with a fresh marker left the issue at %s, want in_review", got)
+	}
+}

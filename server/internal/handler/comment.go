@@ -99,6 +99,9 @@ type CommentResponse struct {
 	// pulls the folded comments back with `comment list --full`.
 	ThreadResolved *bool `json:"thread_resolved,omitempty"`
 	FoldedCount    *int  `json:"folded_count,omitempty"`
+	// ThreadRelation is the thread's relation to the caller (or to for=<id>).
+	// Set on thread roots only; omitted when the relation read failed.
+	ThreadRelation *ThreadRelationResponse `json:"thread_relation,omitempty"`
 	// TriggerOutcomes is the per-target result of every EXPLICIT @agent / @squad
 	// mention in this comment (MUL-4525 §2). It is additive and populated only on
 	// create/edit responses: old clients ignore it. A saved comment whose mention
@@ -464,6 +467,16 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	relFilter, relOK := parseRelationFilter(q.Get("relation"))
+	if !relOK {
+		writeError(w, http.StatusBadRequest, "invalid relation parameter; expected with_me, without_me or waiting")
+		return
+	}
+	relViewer, ok := h.resolveRelationViewer(w, r, issue, q.Get("for"))
+	if !ok {
+		return
+	}
+
 	// --- combination validation ----------------------------------------
 	if fold && sinceTime.Valid {
 		writeError(w, http.StatusBadRequest, "fold and since are mutually exclusive: since returns a partial thread, and a fold over a partial thread could hide a resolution that was not fetched")
@@ -604,6 +617,13 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	// oversized untailed --thread read, however, intentionally keeps only the
 	// newest replies, so folding that partial thread would invent resolution
 	// state and folded_count.
+	// The relation filter works on whole threads, so it runs before the fold.
+	var relations *threadRelationSet
+	result.Comments, relations = h.applyThreadRelation(r.Context(), threadRelationQuery{Issue: issue, Viewer: relViewer}, relFilter, result.Comments)
+	if relations == nil {
+		w.Header().Set(HeaderThreadRelation, "unavailable")
+	}
+
 	var foldInfo map[string]foldStat
 	if fold && !result.FoldUnsafe {
 		result.Comments, foldInfo = foldResolvedThreads(result.Comments)
@@ -621,6 +641,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	for i, c := range result.Comments {
 		cid := uuidToString(c.ID)
 		resp[i] = commentToResponse(c, grouped[cid], groupedAtt[cid])
+		if relations != nil && !c.ParentID.Valid {
+			if rel, ok := relations.ByRoot[cid]; ok {
+				resp[i].ThreadRelation = &rel
+			}
+		}
 		// Attach roots_only orientation stats when present (nil map elsewhere).
 		if st, ok := result.RootStats[cid]; ok {
 			rc := st.ReplyCount
@@ -1495,6 +1520,9 @@ type CreateCommentRequest struct {
 	// NotifyOnly declares an FYI: an agent-task comment may mention a member
 	// without a decision request. It never binds a wait.
 	NotifyOnly bool `json:"notify_only"`
+	// FromThread opens the comment as a new root that links back to the thread
+	// of the named comment on this issue (T5a, CHE-6429).
+	FromThread string `json:"from_thread"`
 	// Ask and NoAsk are the typed audience of a comment on a waiting issue
 	// (S4, CHE-7289): the member who acts next, or none. They never combine.
 	Ask              string   `json:"ask"`
@@ -1820,6 +1848,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		parentComment = &parent
 	}
+	askSourceRootID, ok := h.askSourceRootForFromThread(w, r, issue, req)
+	if !ok {
+		return
+	}
 	notice, answersNotice, ok := h.askRecoveryNoticeAnswer(w, r, parentComment, userID)
 	if !ok {
 		return
@@ -1929,7 +1961,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 					// The guard checks a parent the request sent. Here the server
 					// derives it inside the insert transaction.
 					handoffTask = &task
-				} else if task.TriggerCommentID.Valid {
+				} else if task.TriggerCommentID.Valid && !askSourceRootID.Valid {
 					if !taskCoversReplyParent(task, parentID) {
 						// Keep this error actionable for agents (MUL-4417 / GH #5266).
 						// The two rejections need different copy. A resumed
@@ -1969,6 +2001,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !h.askGuardAllowsWaitingComment(w, r, issue, authorType, actorTask, parentComment, req) {
 		return
 	}
+	askNoticeMember := h.typedAskCommentMember(r, issue, authorType, actorTask, req.Ask)
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
 	// rendering layer (rehype-sanitize) and at the editor layer
@@ -1989,6 +2022,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// The author's "don't start" choices outlive this call: completion
 		// replay skips the agents it names.
 		SuppressedAgentIds: suppressAgentIDs,
+		// Stored for every new comment (CHE-6426): false is an ask, NULL is a
+		// row from before the column existed.
+		NotifyOnly: pgtype.Bool{Bool: req.NotifyOnly, Valid: true},
+		// Set only for a --from-thread ask; the stub below links the source.
+		AskSourceRootID: askSourceRootID,
 	}
 
 	// A reply takes the same thread-scoped advisory lock ResolveComment's
@@ -2128,6 +2166,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
+	var askStub db.CreateCommentRow
+	if err == nil && askSourceRootID.Valid {
+		askStub, err = qtx.CreateComment(r.Context(), askSourceStubParams(issue, askSourceRootID, created.ID, req.Content))
+	}
 	if err == nil {
 		err = annotateAgentDecision(r.Context(), tx, created.ID, decisionAnnotation)
 	}
@@ -2165,6 +2207,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil && answersNotice && authorType == "member" {
 		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
+	}
+	if err == nil && req.NotifyOnly && authorType == "agent" && actorTask != nil {
+		err = clearNotifyOnlyAskEvents(r.Context(), qtx, issue, actorTask.ID, created.ID)
+	}
+	if err == nil && askNoticeMember.Valid {
+		err = recordTypedAskComment(r, qtx, issue, actorTask, askNoticeMember, created.Comment())
 	}
 	var actionAnswer decisionRecordResult
 	if err == nil && bindsAction {
@@ -2226,6 +2274,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// (TaskService.createAgentComment) — both reply paths use the same
 	// publisher.
 	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
+	if askSourceRootID.Valid {
+		h.publishAskSourceStub(issue, askStub)
+	}
 	h.publishSupersedeEvents(r, supersedeOutcomes, resp.ID, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	// Set after the websocket publish: web_url is for CLI callers, not the event.
@@ -2777,6 +2828,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
+	}
+	if errors.Is(err, service.ErrIntakeHold) {
+		return ReasonIntakeHold
 	}
 	return ReasonInternalError
 }
@@ -4953,6 +5007,10 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wasResolved := comment.ResolvedAt.Valid
+	if r.Header.Get("X-Actor-Source") == "task_token" && !comment.ParentID.Valid && comment.AskSourceRootID.Valid {
+		writeErrorCode(w, http.StatusConflict, "ask_root_not_resolvable", askRootNotResolvableMessage(comment.AskSourceRootID))
+		return
+	}
 
 	// KnownAsOf is optional so existing callers that send no body keep working
 	// unguarded. When a caller does supply it (the timestamp of the thread state
