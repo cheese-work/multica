@@ -1,0 +1,98 @@
+/**
+ * Stub runtime for the Live record (CHE-6753 A1, CHE-5793 C9: a repo fixture that counts as seed).
+ *
+ * It speaks the daemon API of a local instance with a dev token and moves runs through
+ * queued, running (streamed messages), completed, failed and cancelled. It never advances on
+ * its own: each call is one step, so a test signal decides the state and runs are deterministic.
+ */
+
+const fail = (code, message) => Object.assign(new Error(`${code}: ${message}`), { code });
+
+// Only a literal 127.0.0.1 host is local enough: "localhost" can resolve elsewhere.
+export function assertLocalServer(serverUrl) {
+  let url;
+  try {
+    url = new URL(serverUrl);
+  } catch {
+    throw fail("server-url-refused", `not a URL: ${serverUrl}`);
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.hostname !== "127.0.0.1") {
+    throw fail("server-url-refused", `the stub runtime talks to 127.0.0.1 only, got ${url.hostname}`);
+  }
+  return url.origin;
+}
+
+// What each step needs the run to be in, and what it leaves behind.
+const NEXT = {
+  start: { from: ["queued"], to: "running" },
+  stream: { from: ["running"], to: "running" },
+  complete: { from: ["running"], to: "completed" },
+  fail: { from: ["running"], to: "failed" },
+  ackCancelled: { from: ["queued", "running"], to: "cancelled" },
+};
+
+export function createStubRuntime({ serverUrl, token, workspaceId, deviceName = "live-stub-runtime", fetchImpl = fetch }) {
+  const origin = assertLocalServer(serverUrl);
+  let runtimeId = null;
+  const runs = new Map();
+
+  const post = async (path, body) => {
+    const res = await fetchImpl(`${origin}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw fail("request-failed", `POST ${path} -> ${res.status}`);
+    return res.json();
+  };
+
+  // Check the transition before any call, so a refused step sends nothing.
+  const step = async (taskId, name, send, marker) => {
+    const run = runs.get(taskId);
+    if (!run) throw fail("unknown-task", taskId);
+    const rule = NEXT[name];
+    if (!rule.from.includes(run.state)) throw fail("invalid-transition", `${name} on a ${run.state} run`);
+    await send();
+    run.state = rule.to;
+    run.timeline.push(marker ?? rule.to);
+  };
+
+  return {
+    async register() {
+      const res = await post("/api/daemon/register", {
+        workspace_id: workspaceId,
+        daemon_id: deviceName,
+        device_name: deviceName,
+        cli_version: "stub",
+        runtimes: [{ name: deviceName, type: "stub", version: "stub", status: "online" }],
+      });
+      runtimeId = res.runtimes?.[0]?.id;
+      if (!runtimeId) throw fail("register-failed", "no runtime id in the response");
+      return runtimeId;
+    },
+
+    async claim() {
+      if (!runtimeId) throw fail("not-registered", "call register() first");
+      const { task } = await post(`/api/daemon/runtimes/${runtimeId}/tasks/claim`, {});
+      if (!task) return null;
+      runs.set(task.id, { state: "queued", seq: 0, timeline: ["queued"] });
+      return task;
+    },
+
+    start: (id) => step(id, "start", () => post(`/api/daemon/tasks/${id}/start`, {})),
+
+    stream(id, text) {
+      const run = runs.get(id);
+      const seq = (run?.seq ?? 0) + 1;
+      return step(id, "stream", () => post(`/api/daemon/tasks/${id}/messages`, { messages: [{ seq, type: "text", content: text }] }), `message:${seq}`).then(() => {
+        run.seq = seq;
+      });
+    },
+
+    complete: (id, output) => step(id, "complete", () => post(`/api/daemon/tasks/${id}/complete`, { output })),
+    fail: (id, error) => step(id, "fail", () => post(`/api/daemon/tasks/${id}/fail`, { error })),
+    ackCancelled: (id) => step(id, "ackCancelled", () => post(`/api/daemon/tasks/${id}/cancel-ack`, {})),
+
+    timeline: (id) => [...(runs.get(id)?.timeline ?? [])],
+  };
+}
