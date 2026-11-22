@@ -1832,6 +1832,27 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// decision_card_thread=on (T3): a decision-intent tag comment is the card's
+	// first comment, so it opens a new root. The parent it was given becomes the
+	// source thread, exactly as with from_thread.
+	cardThreadSource := ""
+	if req.DecisionIntent && req.FromThread == "" && req.ParentID != nil {
+		workspace, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load workspace settings")
+			return
+		}
+		on, err := decisiontx.CardThreadOn(workspace.Settings)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read decision_card_thread")
+			return
+		}
+		if on {
+			cardThreadSource = *req.ParentID
+			req.FromThread, req.ParentID = cardThreadSource, nil
+		}
+	}
+
 	var parentID pgtype.UUID
 	var parentComment *db.Comment
 	if req.ParentID != nil {
@@ -2247,6 +2268,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
 	resp.Hints = commentDecisionHints(comment, req.DecisionIntent)
+	if cardThreadSource != "" && askSourceRootID.Valid {
+		resp.Hints = append(resp.Hints, fmt.Sprintf("Card placed in a new thread %s; thread %s got a link.", resp.ID, uuidToString(askSourceRootID)))
+	}
 	for _, o := range supersedeOutcomes {
 		resp.Supersedes = append(resp.Supersedes, o.result)
 	}

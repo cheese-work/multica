@@ -313,6 +313,9 @@ func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Is
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	if result.AskStub != nil {
+		handler.publishAskSourceStub(issue, *result.AskStub)
+	}
 	if result.Message.ID.Valid && !result.BackingLane {
 		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 			MessageKind:   result.Message.MessageKind,
