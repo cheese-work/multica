@@ -128,3 +128,45 @@ func TestTypedWaitingMoveNoneSendsNothing(t *testing.T) {
 		t.Fatalf("notices for --waiting-on none = %d, want 0", n)
 	}
 }
+
+// A failed notice write rolls the move back, so a retry sees the status change
+// again and records the notice. Without this the move would succeed and the
+// notice would be lost for good.
+func TestTypedWaitingMoveNoticeFailureRollsBackTheMove(t *testing.T) {
+	setWaitingOnMode(t, "warn")
+	f := typedAskFixture(t)
+	before := f.status(t)
+	dbfx.Exec(t, `CREATE OR REPLACE FUNCTION fail_wait_notice() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.operation_kind = 'wait_notice' THEN RAISE EXCEPTION 'injected notice failure'; END IF;
+			RETURN NEW;
+		END $$ LANGUAGE plpgsql`)
+	dbfx.Exec(t, `CREATE TRIGGER fail_wait_notice BEFORE INSERT ON ask_guard_event FOR EACH ROW EXECUTE FUNCTION fail_wait_notice()`)
+	dropped := false
+	dropFault := func() {
+		if !dropped {
+			dropped = true
+			dbfx.Exec(t, `DROP TRIGGER fail_wait_notice ON ask_guard_event`)
+		}
+	}
+	t.Cleanup(func() {
+		dropFault()
+		dbfx.Exec(t, `DROP FUNCTION IF EXISTS fail_wait_notice()`)
+	})
+
+	if resp := f.move(t, "in_review", map[string]any{"waiting_on": "member:" + f.humanID}); resp.Code < 500 {
+		t.Fatalf("move with a failing notice write returned %d %s, want a server error", resp.Code, resp.Body.String())
+	}
+	if got := f.status(t); got != before {
+		t.Fatalf("status after the failed move = %q, want %q (rolled back)", got, before)
+	}
+
+	dropFault()
+	f.move(t, "in_review", map[string]any{"waiting_on": "member:" + f.humanID}).Want(http.StatusOK)
+	f.endRun(t)
+	deliverRecoveries(t)
+	deliverRecoveries(t)
+	if n := f.notices(t); n != 1 {
+		t.Fatalf("notices after the retry = %d, want 1", n)
+	}
+}

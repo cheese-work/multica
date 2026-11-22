@@ -439,6 +439,11 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
 		rec.activity = &row
+		if rec.waitNotice != nil {
+			if err := rec.waitNotice(ctx, q, fromStatus, issue); err != nil {
+				return db.Issue{}, nil, fmt.Errorf("record typed ask notice: %w", err)
+			}
+		}
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
 	if rec != nil && recordStatus {
@@ -5306,6 +5311,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
 		statusRec.comment, statusRec.attach = commentSeed, attached
+		if actorType == "agent" {
+			statusRec.waitNotice = h.typedWaitingMoveNotice(r, prevIssue, req.WaitingOn)
+		}
 		if handoff != nil && handed.agent != "" {
 			armHandoffIntent(statusRec, r, actorType, actorID, existingContext, req.HandoffNote, handed.write)
 		}
@@ -5396,9 +5404,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.followDecisionSteward(r.Context(), issue)
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
-	if statusChanged && actorType == "agent" {
-		h.recordTypedWaitingMove(r, prevIssue.Status, issue, req.WaitingOn)
-	}
 	priorityChanged := req.Priority != nil && prevIssue.Priority != issue.Priority
 	// project_changed gates the client's per-project issue-list refetch the way
 	// status/assignee flags gate theirs. Without it the client must diff

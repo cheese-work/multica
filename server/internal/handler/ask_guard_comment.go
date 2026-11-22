@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -307,14 +308,17 @@ func recordTypedAskComment(r *http.Request, queries *db.Queries, issue db.Issue,
 	return askguard.Guard{Queries: queries}.RecordNotice(r.Context(), issue.WorkspaceID, op)
 }
 
-// recordTypedWaitingMove stores the notice event of a move that named a member.
-func (h *Handler) recordTypedWaitingMove(r *http.Request, prevStatus string, issue db.Issue, waitingOn *string) {
+// typedWaitingMoveNotice returns the writer that stores the notice event of a
+// move that named a member, or nil when the move sends none. The status write
+// calls it in its own transaction, so a failed event write rolls the move back
+// and a retry records the notice (CHE-7292).
+func (h *Handler) typedWaitingMoveNotice(r *http.Request, issue db.Issue, waitingOn *string) func(ctx context.Context, q *db.Queries, prevStatus string, moved db.Issue) error {
 	if waitingOn == nil {
-		return
+		return nil
 	}
 	id, found := strings.CutPrefix(*waitingOn, "member:")
 	if !found {
-		return
+		return nil
 	}
 	var task *db.AgentTaskQueue
 	if t, ok := h.taskFromRequestHeader(r); ok {
@@ -322,12 +326,12 @@ func (h *Handler) recordTypedWaitingMove(r *http.Request, prevStatus string, iss
 	}
 	member, err := util.ParseUUID(id)
 	if err != nil || !h.typedNoticeOn(r, issue.WorkspaceID, task, askguard.WaitingOnModeFromSettings) {
-		return
+		return nil
 	}
-	key := fmt.Sprintf("%s|%s|%s|%s|%d", uuidToString(issue.ID), prevStatus, issue.Status, id, issue.Revision)
-	source := fmt.Sprintf("The run moved this issue from %s to %s and named you to act next.", prevStatus, issue.Status)
-	op := askguard.Op{IssueID: issue.ID, TaskID: task.ID, MemberID: member, Kind: moveNoticeKind, Payload: []byte(key), Source: source}
-	if err := (askguard.Guard{Queries: h.Queries}).RecordNotice(r.Context(), issue.WorkspaceID, op); err != nil {
-		slog.Error("typed ask notice: record move failed; no notice will be sent", "error", err, "issue_id", uuidToString(issue.ID))
+	return func(ctx context.Context, q *db.Queries, prevStatus string, moved db.Issue) error {
+		key := fmt.Sprintf("%s|%s|%s|%s|%d", uuidToString(moved.ID), prevStatus, moved.Status, id, moved.Revision)
+		source := fmt.Sprintf("The run moved this issue from %s to %s and named you to act next.", prevStatus, moved.Status)
+		op := askguard.Op{IssueID: moved.ID, TaskID: task.ID, MemberID: member, Kind: moveNoticeKind, Payload: []byte(key), Source: source}
+		return askguard.Guard{Queries: q}.RecordNotice(ctx, moved.WorkspaceID, op)
 	}
 }
