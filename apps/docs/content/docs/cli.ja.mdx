@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` は最近動きのあった N 件のスレッドを、すべての返信付きで返します。返信が多いと出力は長くなります。
 - 解決済みのスレッドは既定で最初のコメントと結論に折りたたまれます。全文が必要なら `--full` を付けます。
 
+自分（または別のメンバーやエージェント）に関わるスレッドだけを読むには、関係フラグを付けます。
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` は、自分が書き込んだ、直接メンションされた、または自分宛ての判断リクエストがあるスレッドだけを返します。`--without-me` は残りを返します。
+- `--waiting-on <member>` は、そのメンバーを待っているスレッドだけを返します。そのメンバー宛ての未決の判断リクエストがある、または直接メンションされてまだ返信がないスレッドです。メンバー ID または名前を取ります。
+- `--for <id>` は、自分の代わりにそのメンバーまたはエージェントの視点で関係を計算します。単独で使うと、絞り込みはせず各ルートに `thread_relation` を付けるだけです。
+- これらのフラグはスレッド単位で絞り込むので、`--roots-only`、`--summary`、`--thread` と併用できます。各ルートに `thread_relation` が付きます。
+- 関係フラグを付けない場合、`--compact` と `--summary` の出力に `thread_relation` は含まれないため、既存の読み取りは増えません。
+- サーバーが関係を計算できないときは、絞り込まれていない一覧を出力せず、コマンドがエラーになります。
+
 一覧も必要なフィールドだけに絞れます：`multica issue list --output json --fields id,identifier,title,status`。絞り込みは CLI 側で行われるので、減るのは出力とコンテキストで、リクエストの量は変わりません。
 
 ### ウェイクアップ
@@ -559,7 +573,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `search <query>` | タスクを検索 | `--limit`、`--include-closed` |
 | | `children <id>` | サブタスクをステージごとに一覧 | |
 | | `pull-requests <id>` | 関連付けられた PR を一覧 | |
-| | `comment list/add/update/delete/resolve/unresolve` | コメントを管理 | `add`: `--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`: `--expected-revision`（必須）、`--content` / `--content-stdin` / `--content-file`；`list`: `--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | コメントを管理 | `add`: `--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`: `--expected-revision`（必須）、`--content` / `--content-stdin` / `--content-file`；`list`: `--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full`、`--with-me`、`--without-me`、`--waiting-on`、`--for` |
 | | `timeline <id>` | アクティビティ記録とコメントを時系列で表示 | `--action`（繰り返し可）、`--activity-only`、`--since`、`--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | タスクのウェイクアップを管理。詳しくは[タスクのウェイクアップ](/issue-wakeups) | `create` / `update`: `--agent-id`、`--kind`（`event`、`at`、`every`、`cron`）、`--event`、`--at` / `--after`、`--every`、`--cron`、`--timezone`、`--until-*` 条件、`--expires-in` / `--expires-at`、`--instruction` / `--instruction-file`；`checkin`: `--note` |
 | | `subscriber list/add/remove <issue-id>` | 購読者を管理 | `--user`、`--user-id`（省略時は現在のユーザー） |
