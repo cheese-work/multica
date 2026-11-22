@@ -372,12 +372,12 @@
       "line": 83
     },
     {
-      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#1",
+      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#2",
       "element": "Sheet",
       "line": 616
     },
     {
-      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#2",
+      "id": "packages/views/projects/components/project-detail.tsx#ProjectDetail#3",
       "element": "AlertDialog",
       "line": 626
     },
@@ -532,7 +532,7 @@
       "line": 397
     },
     {
-      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab#1",
+      "id": "packages/views/settings/components/composio-tab.tsx#ComposioTab#3",
       "element": "AlertDialog",
       "line": 232
     },
@@ -652,17 +652,17 @@
       "line": 379
     },
     {
-      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#1",
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#3",
       "element": "Dialog",
       "line": 549
     },
     {
-      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#2",
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#4",
       "element": "Dialog",
       "line": 630
     },
     {
-      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#3",
+      "id": "packages/views/settings/components/repositories-section.tsx#RepositoriesSection#5",
       "element": "AlertDialog",
       "line": 824
     },
@@ -732,12 +732,12 @@
       "line": 68
     },
     {
-      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#1",
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#4",
       "element": "Dialog",
       "line": 783
     },
     {
-      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#2",
+      "id": "packages/views/settings/components/workspace-tab.tsx#WorkspaceTab#5",
       "element": "AlertDialog",
       "line": 863
     },
@@ -792,7 +792,7 @@
       "line": 1406
     },
     {
-      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage#1",
+      "id": "packages/views/squads/components/squad-detail-page.tsx#SquadDetailPage#2",
       "element": "AlertDialog",
       "line": 456
     },
@@ -1724,12 +1724,12 @@
       "line": 381
     },
     {
-      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#1",
+      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#2",
       "method": "success",
       "line": 48
     },
     {
-      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#2",
+      "id": "packages/views/issue-views/delete-view-dialog.tsx#DeleteViewDialog#3",
       "method": "error",
       "line": 49
     },

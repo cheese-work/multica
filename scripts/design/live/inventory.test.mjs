@@ -230,3 +230,24 @@ test("counts per kind are in the file and the CLI prints them", () => {
 test("the CLI exits 2 without a mode", () => {
   assert.equal(run(fixture()).status, 2);
 });
+
+test("a dialog and a toast in one symbol get different ids, and moving lines keeps both", () => {
+  const src = (pad) => `import { toast } from "sonner";
+${pad}export function DeleteViewDialog() {
+  const onDelete = () => {};
+  toast.success("a");
+  return <AlertDialog open />;
+}
+`;
+  const a = scanSource("packages/views/d.tsx", src(""));
+  const all = [...a.dialogs, ...a.toasts].map((x) => x.id);
+  assert.equal(new Set(all).size, all.length, `ids collide: ${all.join(", ")}`);
+  const b = scanSource("packages/views/d.tsx", src("// pad\n".repeat(10)));
+  assert.deepEqual([...b.dialogs, ...b.toasts].map((x) => x.id), all);
+});
+
+test("the real inventory has no id shared across kinds", () => {
+  const inv = buildInventory(REPO);
+  const all = [...inv.dialogs, ...inv.toasts, ...inv.decisionVariants].map((x) => x.id);
+  assert.equal(new Set(all).size, all.length);
+});

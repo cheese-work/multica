@@ -89,22 +89,23 @@ export function scanSource(path, text) {
   const dialogs = [];
   const toasts = [];
   const ordinals = new Map();
-  const nextId = (kind, node) => {
-    const key = `${kind}|${symbolOf(node)}`;
-    const n = (ordinals.get(key) ?? 0) + 1;
-    ordinals.set(key, n);
-    return `${path}#${symbolOf(node)}#${n}`;
+  // One counter per enclosing symbol, shared by dialogs and toasts: an id names one call site, never two.
+  const nextId = (node) => {
+    const symbol = symbolOf(node);
+    const n = (ordinals.get(symbol) ?? 0) + 1;
+    ordinals.set(symbol, n);
+    return `${path}#${symbol}#${n}`;
   };
   const visit = (node) => {
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       const tag = node.tagName.getText(sf);
-      if (DIALOG_ELEMENTS.has(tag)) dialogs.push({ id: nextId("dialog", node), element: tag, line: lineOf(sf, node) });
+      if (DIALOG_ELEMENTS.has(tag)) dialogs.push({ id: nextId(node), element: tag, line: lineOf(sf, node) });
     } else if (ts.isCallExpression(node) && toastNames.size) {
       const callee = node.expression;
       let method = null;
       if (ts.isIdentifier(callee) && toastNames.has(callee.text)) method = "toast";
       else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && toastNames.has(callee.expression.text)) method = callee.name.text;
-      if (method) toasts.push({ id: nextId("toast", node), method, line: lineOf(sf, node) });
+      if (method) toasts.push({ id: nextId(node), method, line: lineOf(sf, node) });
     }
     ts.forEachChild(node, visit);
   };
