@@ -81,6 +81,8 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	runGuardAllowType:        executeRunGuardAllowAction,
 	issueWorkflowSetType:     executeIssueWorkflowSetAction,
 	issueProjectSetType:      executeIssueProjectSetAction,
+	decisionaction.IssueProjectQuickSet:    executeIssueProjectQuickSetAction,
+	decisionaction.ProjectWorkflowQuickSet: executeProjectWorkflowQuickSetAction,
 	doopDeployLiftAction:     executeDoopDeployLiftAction,
 }
 
@@ -159,6 +161,9 @@ type approvePlan struct {
 	// issue workflow move; project is the project the issue was in when read.
 	workflowSet bool
 	project     pgtype.UUID
+	// targetProject is the project a Quick issue move lands in; projectSwitch
+	// the project a Quick switch changes, locked exclusively like a workflow edit.
+	targetProject, projectSwitch pgtype.UUID
 }
 
 // planApprove runs the pre-transaction refusals of one action's approval.
@@ -204,6 +209,31 @@ func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCa
 			return approvePlan{}, errPreconditionDrift
 		}
 		plan.boundaryIssue, plan.workflowSet, plan.project = located.IssueID, true, issue.ProjectID
+	}
+	switch preview.ActionType {
+	case decisionaction.IssueProjectQuickSet:
+		var params decisionaction.IssueProjectQuickParams
+		if err := json.Unmarshal(preview.Params, &params); err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		issue, err := handler.Queries.GetIssue(ctx, located.IssueID)
+		if err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		plan.targetProject, err = parseUUIDString(params.ProjectID)
+		if err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		plan.boundaryIssue, plan.workflowSet, plan.project = located.IssueID, true, issue.ProjectID
+	case decisionaction.ProjectWorkflowQuickSet:
+		var params decisionaction.ProjectWorkflowQuickParams
+		if err := json.Unmarshal(preview.Params, &params); err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		var err error
+		if plan.projectSwitch, err = parseUUIDString(params.ProjectID); err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
 	}
 	return plan, nil
 }
@@ -317,10 +347,23 @@ func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx,
 		if err := queries.LockIssueStatusCatalogShared(ctx, caller.workspaceID); err != nil {
 			return locked, err
 		}
-		if plan.project.Valid {
-			if _, err := queries.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: plan.project, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		for _, project := range []pgtype.UUID{plan.project, plan.targetProject} {
+			if !project.Valid {
+				continue
+			}
+			if _, err := queries.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: project, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return locked, atStep("project", err)
 			}
+		}
+	}
+	// A project switch takes the order a workflow save takes: catalog (shared),
+	// then the project exclusively, so no issue enters or leaves it meanwhile.
+	if plan.projectSwitch.Valid {
+		if err := queries.LockIssueStatusCatalogShared(ctx, caller.workspaceID); err != nil {
+			return locked, err
+		}
+		if _, err := queries.LockProjectForWorkflowChange(ctx, db.LockProjectForWorkflowChangeParams{ID: plan.projectSwitch, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return locked, atStep("project", err)
 		}
 	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
@@ -817,8 +860,11 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		}
 		return change.Publish(ctx, handler, action)
 	}
-	if action.ActionType == issueProjectSetType {
+	if action.ActionType == issueProjectSetType || action.ActionType == decisionaction.IssueProjectQuickSet {
 		return handler.publishIssueProjectSet(ctx, action)
+	}
+	if action.ActionType == decisionaction.ProjectWorkflowQuickSet {
+		return handler.publishProjectWorkflowQuickSet(ctx, action)
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)

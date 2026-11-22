@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/designguard"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -55,8 +58,19 @@ func blocking(findings []ReviewFinding) bool {
 // or skipped on.
 var errVerdictNeedsRun = errors.New("a review verdict must come from the agent's run on this issue (X-Task-ID of a run on this issue); a run of another issue names no reviewed PR or head")
 
+// reviewIndependenceError refuses a PASS verdict whose reviewer is not
+// independent of the issue's authors. code is the designguard A-code.
+type reviewIndependenceError struct{ code string }
+
+func (e *reviewIndependenceError) Error() string {
+	return "the reviewer is not independent of the issue's authors (" + e.code + "); a verdict on a reviewer step needs a reviewer of another lab that did not author this issue"
+}
+
 func writeReviewLoopError(w http.ResponseWriter, err error) bool {
+	var independence *reviewIndependenceError
 	switch {
+	case errors.As(err, &independence):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": independence.code})
 	case errors.Is(err, errFindingsRequired):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_verdict_findings_required"})
 	case errors.Is(err, errVerdictNeedsRun):
@@ -67,13 +81,31 @@ func writeReviewLoopError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// verdictOf is the verdict an agent's write delivers: an explicit move along
-// the step's agent_verdict exit ("CHANGES", "PASS"), "" for any other write.
-func verdictOf(def *issueworkflow.Definition, from string, to pgtype.Text, caller workflowCaller) string {
-	if !caller.agent || !to.Valid || to.String == from {
-		return ""
+// explicitAgentMove reports whether the write is an agent's move off a step, the
+// only write that can deliver a verdict.
+func explicitAgentMove(from string, to pgtype.Text, caller workflowCaller) bool {
+	return caller.agent && to.Valid && to.String != from
+}
+
+// verdictOf is the verdict a move from a step to a status delivers: "CHANGES",
+// "PASS", or "" when no agent_verdict exit leads there. When both exits lead to
+// the same status, the findings decide: CHANGES with a P0 or P1, else PASS. The
+// guard and the record both resolve through it, with the same findings.
+func verdictOf(def *issueworkflow.Definition, from, to string, findings []ReviewFinding) string {
+	var pass, changes bool
+	for _, e := range def.EdgesOf(from) {
+		if g, err := issueworkflow.ParseGuard(e.Guard); err == nil && g.Kind == issueworkflow.GuardAgentVerdict && e.To == to {
+			pass = pass || g.Args[0] == "PASS"
+			changes = changes || g.Args[0] == "CHANGES"
+		}
 	}
-	return def.VerdictOf(from, to.String)
+	if pass && changes {
+		if blocking(findings) {
+			return "CHANGES"
+		}
+		return "PASS"
+	}
+	return def.VerdictOf(from, to)
 }
 
 // runReviewHead is the PR lineage and head the verdict's review run was
@@ -98,12 +130,18 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if capped, err := h.reviewRoundsCapped(ctx, q, prev, params, def, caller); err != nil || capped {
 		return err
 	}
-	verdict := verdictOf(def, prev.Status, params.Status, caller)
+	if !explicitAgentMove(prev.Status, params.Status, caller) {
+		return nil
+	}
+	verdict := verdictOf(def, prev.Status, params.Status.String, caller.findings)
 	if verdict == "" {
 		return nil
 	}
 	if caller.run == nil {
 		return errVerdictNeedsRun
+	}
+	if verdict == "PASS" {
+		return h.guardReviewerIndependence(ctx, q, prev, def, caller)
 	}
 	if verdict != "CHANGES" {
 		return nil
@@ -118,6 +156,54 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	}
 	if earlier+1 >= maxChangesRounds && def.Has(statusNeedDecision) {
 		params.Status = pgtype.Text{String: statusNeedDecision, Valid: true}
+	}
+	return nil
+}
+
+// guardReviewerIndependence refuses a PASS from a step with a reviewer handler
+// unless the reviewer's run passes designguard A1 to A5 against every author
+// of the issue (CHE-7658 step 14). Authors come from the workflow_role
+// evidence of the issue's tasks, never from the current assignee, so a CHANGES
+// round or a reassignment cannot drop the first author. It runs before the
+// verdict row, so a refusal writes none.
+func (h *Handler) guardReviewerIndependence(ctx context.Context, q *db.Queries, prev db.Issue, def *issueworkflow.Definition, caller workflowCaller) error {
+	if step, ok := def.Step(prev.Status); !ok || step.Handler.Type != issueworkflow.HandlerReviewer {
+		return nil
+	}
+	authors, err := service.IssueAuthors(ctx, q, prev.ID, voteLab)
+	if err != nil {
+		return err
+	}
+	tasks := make([]designguard.Task, 0, len(authors)+1)
+	view := designguard.View{ProvenanceComplete: true}
+	for _, a := range authors {
+		view.Authors = append(view.Authors, designguard.Author{Kind: "agent", AgentID: a.AgentID, TaskID: a.TaskID})
+		tasks = append(tasks, designguard.Task{ID: a.TaskID, AgentID: a.AgentID, Provider: a.Provider, Model: a.Model})
+	}
+	if len(authors) == 0 {
+		// No agent task authored the issue: a person did.
+		view.Authors = []designguard.Author{{Kind: "user"}}
+	}
+	run := caller.run
+	reviewer := designguard.Reviewer{AgentID: uuidToString(run.AgentID), TaskID: uuidToString(run.ID)}
+	provider := ""
+	if run.RuntimeID.Valid {
+		rt, err := q.GetAgentRuntime(ctx, run.RuntimeID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		provider = rt.Provider
+	}
+	tasks = append(tasks, designguard.Task{ID: reviewer.TaskID, AgentID: reviewer.AgentID, Provider: provider, Model: run.AppliedModel.String})
+	code, err := designguard.CheckIndependence(ctx, view, reviewer, "", designguard.Deps{
+		Tasks: func(context.Context, []string) ([]designguard.Task, error) { return tasks, nil },
+		Lab:   voteLab,
+	})
+	if err != nil {
+		return err
+	}
+	if code != "" {
+		return &reviewIndependenceError{code: code}
 	}
 	return nil
 }
@@ -168,7 +254,10 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 	if err != nil || def == nil {
 		return err
 	}
-	action := map[string]string{"CHANGES": activityChangesRequested, "PASS": activityPassed}[verdictOf(def, prev.Status, w.pre.Status, w.caller)]
+	if !explicitAgentMove(prev.Status, w.pre.Status, w.caller) {
+		return nil
+	}
+	action := map[string]string{"CHANGES": activityChangesRequested, "PASS": activityPassed}[verdictOf(def, prev.Status, w.pre.Status.String, w.caller.findings)]
 	if action == "" {
 		return nil
 	}

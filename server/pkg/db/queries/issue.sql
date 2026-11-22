@@ -502,6 +502,9 @@ cleared_wakeup_pr_events AS (
 cleared_ci_advances AS (
  DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_workflow_switch_pending AS (
+ DELETE FROM issue_workflow_switch_pending WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_comment_supersessions AS (
  DELETE FROM comment_supersession WHERE issue_id IN (SELECT target.id FROM target)
 ),

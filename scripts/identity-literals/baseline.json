@@ -1,0 +1,122 @@
+{
+  "apps/web/features/landing/components/provider-marks.tsx": {
+    "person-name": 1
+  },
+  "apps/web/features/landing/i18n/en.ts": {
+    "person-name": 34
+  },
+  "apps/web/features/landing/i18n/ja.ts": {
+    "person-name": 29
+  },
+  "apps/web/features/landing/i18n/ko.ts": {
+    "person-name": 28
+  },
+  "apps/web/features/landing/i18n/zh.ts": {
+    "person-name": 32
+  },
+  "packages/views/agents/components/agents-intro.tsx": {
+    "host-token": 1
+  },
+  "packages/views/editor/utils/link-handler.ts": {
+    "host-token": 1
+  },
+  "packages/views/locales/en/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/locales/fr/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/locales/ja/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/locales/ko/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/locales/zh-Hans/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/locales/zh-Hant/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/runtimes/components/provider-logo.tsx": {
+    "person-name": 1
+  },
+  "packages/views/runtimes/components/runtimes-intro.tsx": {
+    "host-token": 1
+  },
+  "packages/views/skills/components/skills-intro.tsx": {
+    "host-token": 1
+  },
+  "server/cmd/multica/cmd_agent_decision_brief.go": {
+    "person-name": 8
+  },
+  "server/cmd/multica/cmd_decision.go": {
+    "person-name": 1
+  },
+  "server/cmd/multica/cmd_issue.go": {
+    "person-name": 2
+  },
+  "server/internal/browserlease/types.go": {
+    "host-token": 2
+  },
+  "server/internal/daemon/daemon.go": {
+    "person-name": 1
+  },
+  "server/internal/daemon/execenv/hermes_gateway.go": {
+    "person-name": 1
+  },
+  "server/internal/daemon/execenv/hermes_home.go": {
+    "person-name": 1
+  },
+  "server/internal/daemon/execenv/hermes_sessions.go": {
+    "person-name": 1
+  },
+  "server/internal/decisiontx/ask_cannot_do.go": {
+    "workspace-uuid": 1,
+    "host-token": 4,
+    "person-name": 4
+  },
+  "server/internal/handler/agent_decision.go": {
+    "person-name": 3
+  },
+  "server/internal/handler/agent_decision_brief.go": {
+    "person-name": 4
+  },
+  "server/internal/handler/github_workflow.go": {
+    "host-token": 1
+  },
+  "server/internal/handler/governed_instruction_hermes_exception.go": {
+    "workspace-uuid": 1
+  },
+  "server/internal/handler/issue_auto_close.go": {
+    "person-name": 1
+  },
+  "server/internal/handler/workspace_wakeups_pause.go": {
+    "person-name": 1
+  },
+  "server/internal/integrations/ghrun/webhook.go": {
+    "host-token": 1
+  },
+  "server/internal/service/builtin_skills/multica-platform/references/agents.md": {
+    "person-name": 1
+  },
+  "server/internal/service/release_issue.go": {
+    "host-token": 1
+  },
+  "server/internal/workflowlint/qualified_runtimes.json": {
+    "host-token": 2,
+    "person-name": 1
+  },
+  "server/pkg/agent/hermes_depsync.go": {
+    "person-name": 3
+  },
+  "server/pkg/agent/hermes_gateway.go": {
+    "person-name": 2
+  },
+  "server/pkg/db/generated/step_watchdog.sql.go": {
+    "person-name": 1
+  },
+  "server/pkg/db/queries/step_watchdog.sql": {
+    "person-name": 1
+  }
+}

@@ -315,6 +315,8 @@ Organization permissions：
 
 PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。授予可选的 Actions 权限后，还会读取该提交的工作流运行记录；未授予时，即使同一工作流的新运行已通过，被取消的旧运行仍按失败计算。
 
+从私有仓库导入或刷新技能时，会使用工作区在仓库所有者账号下的 installation 签发的短期 token，不可用时回退到服务器的 `GITHUB_TOKEN`。该 token 需要可选的 **Contents: read** 权限；没有该权限或该所有者没有 installation 时，使用 `GITHUB_TOKEN` 或不带凭据。token 只会发送给 GitHub 主机。
+
 堆叠 PR 自动关联会调用 GitHub 的堆栈 API，需要 Pull requests 的**写**权限。只有读权限的 App 其余功能照常工作，堆栈结果会显示 `no_permission`（见[报告代码](#stack-report-codes)）。给已安装的 App 提升权限后，需要各 installation 的所有者在 GitHub 上批准才会生效。
 
 <Callout type="warning">

@@ -7,6 +7,8 @@ const PREVIEWED_ACTION_TYPES = [
   "issue.run_budget.top_up",
   "issue.workflow.set",
   "issue.project.set",
+  "issue.project.quick_set",
+  "project.workflow.quick_set",
   "agent.env.patch",
   "agent.copy",
   "issue.run_guard.allow",

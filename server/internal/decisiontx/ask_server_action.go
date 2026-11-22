@@ -22,6 +22,7 @@ const (
 	ActionAssign    = "issue.assign"
 
 	SettingServerActions   = "decision_server_actions"
+	SettingDecisionScreen  = "decision_screen"
 	SettingStandingAnswers = "standing_answers"
 
 	// ServerActionsOffCode is the refusal code of a typed option while decision_server_actions is off.
@@ -273,6 +274,11 @@ func readSettings(raw []byte) map[string]any {
 // ServerActionsOn reads decision_server_actions: only the exact string "on" turns it on; anything else reads as off.
 func ServerActionsOn(raw []byte) bool {
 	return readSettings(raw)[SettingServerActions] == "on"
+}
+
+// DecisionScreenOn reads decision_screen: only the exact string "on" turns it on; anything else reads as off.
+func DecisionScreenOn(raw []byte) bool {
+	return readSettings(raw)[SettingDecisionScreen] == "on"
 }
 
 // ReviewCapAnswer reads standing_answers.review_cap: "split" or "off"; a missing or malformed value reads as "off".

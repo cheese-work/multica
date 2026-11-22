@@ -261,6 +261,7 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		return
 	}
 	handler.publishDecisionResult(request, issue, &result)
+	hints = append(hints, result.Warnings...)
 	var action *decisionActionResponse
 	if result.Action != nil {
 		action = newDecisionActionResponse(*result.Action)
@@ -273,7 +274,7 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 // that does not lead its card has no message to announce.
 func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Issue, result *decisionRequestResult) {
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
-	if result.CreatedSession != nil {
+	if result.CreatedSession != nil && !result.BackingLane {
 		session := result.CreatedSession
 		handler.publishChatFor(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.CreatorID), uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
 			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
@@ -312,7 +313,7 @@ func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Is
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	if result.Message.ID.Valid {
+	if result.Message.ID.Valid && !result.BackingLane {
 		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 			MessageKind:   result.Message.MessageKind,
 			ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
@@ -371,6 +372,8 @@ type decisionAnswerRead struct {
 	// WokenAt and WakeOutcome say when and how the answer reached the agent; null until it did.
 	WokenAt     *string `json:"woken_at"`
 	WakeOutcome *string `json:"wake_outcome"`
+	// UndoUntil is set only while the undo grace runs (section 3.11 of the decision screen plan).
+	UndoUntil *string `json:"undo_until,omitempty"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
@@ -404,6 +407,7 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
 			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
 			WokenAt: timestampToPtr(answer.WokenAt), WakeOutcome: textToPtr(answer.WakeOutcome),
+			UndoUntil: runningUndoUntil(answer.UndoUntil, answer.DisclaimedAt),
 		}
 		receipt, err := handler.answerReceiptState(request.Context(), stored)
 		if err != nil {

@@ -130,6 +130,24 @@ func TestRequestRunBudgetFromANonOwnerAsksEveryOwner(test *testing.T) {
 	}
 }
 
+// CHE-8772: --runs is the total, so a total at or under the cap in force asks
+// for no raise. The card it would open can never preview or apply.
+func TestRequestRunBudgetRefusesARaiseThatDoesNotRaise(test *testing.T) {
+	fixture := newBudgetRequestFixture(test)
+	for _, newCap := range []int{1, 3} { // the fixture's cap is 3
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		fixture.request(test, fixture.humanID, "pat", map[string]any{"kind": "raise", "new_cap": newCap, "window_id": fixture.window}).Want(http.StatusConflict).JSON(&refusal)
+		if !strings.Contains(refusal.Error, "not_a_raise") || !strings.Contains(refusal.Error, "already 3") {
+			test.Fatalf("new_cap %d refusal = %q; want not_a_raise naming the cap in force", newCap, refusal.Error)
+		}
+	}
+	if fixture.openRequests(test) != 0 {
+		test.Fatalf("a refused call opened %d requests", fixture.openRequests(test))
+	}
+}
+
 func TestRequestRunBudgetRefusals(test *testing.T) {
 	fixture := newBudgetRequestFixture(test)
 	valid := func() map[string]any {

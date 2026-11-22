@@ -24,7 +24,7 @@ func TestStableCwdFor(t *testing.T) {
 		{"empty agent id", cfg, "claude", "x99-claude-sonnet", "", ""},
 	}
 	for _, c := range cases {
-		if got := c.cfg.stableCwdFor(c.provider, c.agentName, c.agentID); got != c.want {
+		if got := c.cfg.stableCwdFor(c.provider, c.agentName, c.agentID, false); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -37,7 +37,7 @@ func TestStableCwdKeepsDaemonTaskMarkerAncestor(t *testing.T) {
 	if err := execenv.EnsureWorkspacesRootMarker(root); err != nil {
 		t.Fatal(err)
 	}
-	stable := Config{WorkspacesRoot: root, StableCwdAgents: []string{"a"}}.stableCwdFor("claude", "a", "id1")
+	stable := Config{WorkspacesRoot: root, StableCwdAgents: []string{"a"}}.stableCwdFor("claude", "a", "id1", false)
 	if stable == "" {
 		t.Fatal("stable cwd off for a listed agent")
 	}

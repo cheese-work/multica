@@ -29,7 +29,9 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_id = sqlc.arg('agent_id'):
 -- Review stage: issues in a review status assigned to the reviewer, with a
 -- linked open or draft PR (pr_key is the issue itself). An entry is listed when
 -- it holds a slot, was refused and has not run since, or is the candidate being
--- admitted now.
+-- admitted now. project_status lets the caller drop an issue whose project
+-- refuses runs (service.ProjectInactive): it can never run, so it must not hold
+-- a slot.
 SELECT i.id AS run_issue_id,
        i.id AS pr_key,
        (SELECT count(*) FROM issue g
@@ -41,8 +43,10 @@ SELECT i.id AS run_issue_id,
                   WHERE ipr.issue_id = i.id), i.created_at)::timestamptz AS created_at,
        EXISTS (SELECT 1 FROM agent_task_queue t
                 WHERE t.issue_id = i.id AND t.agent_id = sqlc.arg('agent_id')::uuid
-                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active
+                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active,
+       COALESCE(pj.status, '')::text AS project_status
 FROM issue i
+LEFT JOIN project pj ON pj.id = i.project_id AND pj.workspace_id = i.workspace_id
 WHERE i.assignee_type = 'agent' AND i.assignee_id = sqlc.arg('agent_id')::uuid
   AND i.status IN ('agent_review', 'in_review')
   AND EXISTS (SELECT 1 FROM issue_pull_request ipr
@@ -74,9 +78,11 @@ SELECT s.id AS run_issue_id,
                   WHERE ipr.issue_id = s.parent_issue_id), p.created_at)::timestamptz AS created_at,
        EXISTS (SELECT 1 FROM agent_task_queue t
                 WHERE t.issue_id = s.id AND t.agent_id = sqlc.arg('agent_id')::uuid
-                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active
+                  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')) AS active,
+       COALESCE(pj.status, '')::text AS project_status
 FROM issue s
 JOIN issue p ON p.id = s.parent_issue_id
+LEFT JOIN project pj ON pj.id = s.project_id AND pj.workspace_id = s.workspace_id
 WHERE s.assignee_type = 'agent' AND s.assignee_id = sqlc.arg('agent_id')::uuid
   AND s.title ILIKE sqlc.arg('stage')::text || ' gate:%'
   AND s.status NOT IN ('done', 'cancelled', 'agent_accepted', 'merged')
