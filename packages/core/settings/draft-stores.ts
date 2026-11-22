@@ -40,6 +40,17 @@ export const useWakeupRuleDraftStore = createKeyedDraftStore<SettingsFieldsDraft
   hasMeaningful: anyField,
 });
 
+/**
+ * Key: `<workspace id>:workspace:<plugin name>`, so two workspaces with the same plugin keep separate drafts. Fields: action, message, and `base`, the JSON of the
+ * policy version (policy + sha256) the edit started from, frozen so the passkey
+ * signs against it and a concurrent change surfaces as a 409, never an overwrite.
+ */
+export const useGuardEditDraftStore = createKeyedDraftStore<SettingsFieldsDraft>({
+  storageKey: "multica_guard_edit_drafts",
+  emptyData: {},
+  hasMeaningful: anyField,
+});
+
 /** Key: `<owner>/<name>` of the watched repo. Field: form (JSON of the unsaved CI watcher form). */
 export const useCIWatchDraftStore = createKeyedDraftStore<SettingsFieldsDraft>({
   storageKey: "multica_ci_watch_drafts",
