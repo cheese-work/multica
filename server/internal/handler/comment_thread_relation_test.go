@@ -86,16 +86,6 @@ func newThreadRelationFixture(t *testing.T) threadRelationFixture {
 	return f
 }
 
-func rootsOf(rows []CommentResponse) []CommentResponse {
-	var out []CommentResponse
-	for _, r := range rows {
-		if r.ParentID == nil {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 func relationOf(t *testing.T, rows []CommentResponse, root string) ThreadRelationResponse {
 	t.Helper()
 	got, ok := byID(rows)[root]
