@@ -473,6 +473,7 @@
       "workflows": "워크플로",
       "provider_breakers": "공급자 차단기",
       "guard": "Guard",
+      "audit_log": "감사 로그",
       "background_agents": "백그라운드 에이전트",
       "personal_background_agents": "백그라운드 에이전트"
     },
@@ -1921,5 +1922,51 @@
     "routing_before": "라우팅은 워크스페이스 전체에 설정됩니다. 소유자와 관리자가 다음에서 변경합니다:",
     "routing_link": "워크스페이스 → 백그라운드 에이전트",
     "routing_after": "."
+  },
+  "audit_log": {
+    "description": "이 워크스페이스에서 누가 언제 무엇을 변경했는지 보여 줍니다. 비밀 값과 긴 텍스트는 저장되지 않으며, 변경된 경우 \"changed\"로 표시됩니다.",
+    "empty": "일치하는 감사 이벤트가 없습니다.",
+    "loading": "감사 이벤트를 불러오는 중…",
+    "load_error": "감사 로그를 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "load_more": "더 보기",
+    "loading_more": "불러오는 중…",
+    "columns": {
+      "time": "시간",
+      "actor": "실행자",
+      "event": "이벤트",
+      "target": "대상",
+      "changes": "변경 내용"
+    },
+    "actor_types": {
+      "member": "멤버",
+      "agent": "에이전트",
+      "system": "시스템"
+    },
+    "filters": {
+      "label": "필터",
+      "kind": "이벤트 종류",
+      "kind_all": "모든 종류",
+      "actor": "실행자",
+      "actor_all": "모든 실행자",
+      "since": "시작",
+      "until": "종료",
+      "clear": "필터 지우기"
+    },
+    "kinds": {
+      "agent": "에이전트",
+      "runtime": "런타임",
+      "skill": "스킬",
+      "squad": "스쿼드",
+      "project": "프로젝트",
+      "workspace": "워크스페이스",
+      "autopilot": "오토파일럿",
+      "member": "멤버"
+    },
+    "changed": "변경됨",
+    "changed_hint": "값은 저장되지 않으며, 변경되었다는 사실만 기록됩니다.",
+    "target_deleted": "(삭제됨)",
+    "none": "—",
+    "no_changes": "기록된 필드 변경이 없습니다."
   }
 }

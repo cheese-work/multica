@@ -476,6 +476,7 @@
       "workflows": "Workflows",
       "provider_breakers": "Disjoncteurs des fournisseurs",
       "guard": "Guard",
+      "audit_log": "Journal d'audit",
       "background_agents": "Agents d'arrière-plan",
       "personal_background_agents": "Agents d'arrière-plan"
     },
@@ -1935,5 +1936,51 @@
     "routing_before": "Le routage est défini pour tout l'espace de travail. Les propriétaires et administrateurs le modifient dans",
     "routing_link": "Espace de travail → Agents d'arrière-plan",
     "routing_after": "."
+  },
+  "audit_log": {
+    "description": "Qui a modifié quoi dans cet espace de travail, et quand. Les secrets et les textes longs ne sont jamais enregistrés ; une valeur modifiée s'affiche comme « changed ».",
+    "empty": "Aucun événement d'audit ne correspond.",
+    "loading": "Chargement des événements d'audit…",
+    "load_error": "Impossible de charger le journal d'audit.",
+    "retry": "Réessayer",
+    "load_more": "Charger plus",
+    "loading_more": "Chargement…",
+    "columns": {
+      "time": "Heure",
+      "actor": "Auteur",
+      "event": "Événement",
+      "target": "Cible",
+      "changes": "Modifications"
+    },
+    "actor_types": {
+      "member": "Membre",
+      "agent": "Agent",
+      "system": "Système"
+    },
+    "filters": {
+      "label": "Filtres",
+      "kind": "Type d'événement",
+      "kind_all": "Tous les types",
+      "actor": "Auteur",
+      "actor_all": "Tous les auteurs",
+      "since": "Du",
+      "until": "Au",
+      "clear": "Effacer les filtres"
+    },
+    "kinds": {
+      "agent": "Agents",
+      "runtime": "Runtimes",
+      "skill": "Compétences",
+      "squad": "Escouades",
+      "project": "Projets",
+      "workspace": "Espace de travail",
+      "autopilot": "Autopilotes",
+      "member": "Membres"
+    },
+    "changed": "modifié",
+    "changed_hint": "La valeur n'est pas enregistrée. Seul le fait qu'elle ait changé l'est.",
+    "target_deleted": "(supprimé)",
+    "none": "—",
+    "no_changes": "Aucune modification de champ enregistrée."
   }
 }

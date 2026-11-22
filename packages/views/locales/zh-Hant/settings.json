@@ -465,6 +465,7 @@
       "export_privacy": "導出隱私",
       "provider_breakers": "服務商熔斷器",
       "guard": "Guard",
+      "audit_log": "稽核記錄",
       "background_agents": "背景智慧體",
       "personal_background_agents": "背景智慧體"
     },
@@ -1921,5 +1922,51 @@
     "routing_before": "路由在整個工作區統一設定。擁有者與管理員可在以下位置變更：",
     "routing_link": "工作區 → 背景智慧體",
     "routing_after": "。"
+  },
+  "audit_log": {
+    "description": "記錄此工作區中誰在何時變更了什麼。密鑰與長文字不會被儲存，已變更的值會顯示為「changed」。",
+    "empty": "沒有符合的稽核事件。",
+    "loading": "正在載入稽核事件…",
+    "load_error": "無法載入稽核記錄。",
+    "retry": "重試",
+    "load_more": "載入更多",
+    "loading_more": "載入中…",
+    "columns": {
+      "time": "時間",
+      "actor": "操作者",
+      "event": "事件",
+      "target": "對象",
+      "changes": "變更"
+    },
+    "actor_types": {
+      "member": "成員",
+      "agent": "智慧體",
+      "system": "系統"
+    },
+    "filters": {
+      "label": "篩選",
+      "kind": "事件類型",
+      "kind_all": "所有類型",
+      "actor": "操作者",
+      "actor_all": "所有操作者",
+      "since": "起始",
+      "until": "截止",
+      "clear": "清除篩選"
+    },
+    "kinds": {
+      "agent": "智慧體",
+      "runtime": "執行環境",
+      "skill": "技能",
+      "squad": "小隊",
+      "project": "專案",
+      "workspace": "工作區",
+      "autopilot": "自動駕駛",
+      "member": "成員"
+    },
+    "changed": "已變更",
+    "changed_hint": "值不會被儲存，只記錄它發生了變更。",
+    "target_deleted": "（已刪除）",
+    "none": "—",
+    "no_changes": "沒有記錄到欄位變更。"
   }
 }

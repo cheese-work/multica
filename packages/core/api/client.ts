@@ -16,6 +16,7 @@ import {
 } from "../runtimes/schema";
 import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { ProviderBreaker } from "../types/provider-breaker";
+import type { AuditEventFilters, AuditEventsPage } from "../types/audit";
 import type { GuardDecision, GuardDecisionFilters, GuardStats } from "../types/guard";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
@@ -1536,6 +1537,11 @@ export class ApiClient {
 
   async updateWorkspaceSystemWakeup(rule: WorkspaceSystemWakeup["rule"], input: { enabled?: boolean; instruction?: string }): Promise<void> {
     await this.fetch(`/api/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  /** STUB (CHE-5653): returns an empty page until the client is wired to the API. */
+  async listAuditEvents(_workspaceId: string, _filters: AuditEventFilters = {}): Promise<AuditEventsPage> {
+    return { events: [], next_cursor: null };
   }
 
   async listProviderBreakers(workspaceId: string): Promise<ProviderBreaker[]> {

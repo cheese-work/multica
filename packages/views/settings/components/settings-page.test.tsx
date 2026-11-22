@@ -64,6 +64,7 @@ vi.mock("./plugins-tab", stub("PluginsTab"));
 vi.mock("./mcp-tab", stub("McpTab"));
 vi.mock("./billing-tab", stub("BillingTab"));
 vi.mock("./export-privacy-tab", stub("ExportPrivacyTab"));
+vi.mock("./audit-log-page", stub("AuditLogPage"));
 
 const shell = vi.hoisted(() => ({
   appsAvailable: false,
@@ -571,5 +572,27 @@ describe("SettingsPage search for the browser notifications row", () => {
     expect(
       within(results).getByRole("option", { name: /Show system notifications/ }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage Audit log role gate (CHE-5653)", () => {
+  it("hides Audit log and falls back from its direct URL for a member", () => {
+    shell.role = "member";
+    navigationState.search = "tab=audit-log";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.queryByRole("link", { name: "Audit log" })).not.toBeInTheDocument();
+    expect(screen.queryByText("AuditLogPage")).not.toBeInTheDocument();
+  });
+
+  it.each(["admin", "owner"] as const)("shows Audit log for %s", (role) => {
+    shell.role = role;
+    navigationState.search = "tab=audit-log";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.getByRole("link", { name: "Audit log" })).toBeInTheDocument();
+    expect(screen.getByText("AuditLogPage")).toBeInTheDocument();
   });
 });

@@ -473,6 +473,7 @@
       "workflows": "ワークフロー",
       "provider_breakers": "プロバイダーのブレーカー",
       "guard": "Guard",
+      "audit_log": "監査ログ",
       "background_agents": "バックグラウンドエージェント",
       "personal_background_agents": "バックグラウンドエージェント"
     },
@@ -1921,5 +1922,51 @@
     "routing_before": "ルーティングはワークスペース全体で設定されます。オーナーと管理者が次の場所で変更できます:",
     "routing_link": "ワークスペース → バックグラウンドエージェント",
     "routing_after": "。"
+  },
+  "audit_log": {
+    "description": "このワークスペースで誰がいつ何を変更したかを記録します。秘密情報や長文の値は保存されず、変更された場合は「changed」と表示されます。",
+    "empty": "一致する監査イベントはありません。",
+    "loading": "監査イベントを読み込み中…",
+    "load_error": "監査ログを読み込めませんでした。",
+    "retry": "再試行",
+    "load_more": "さらに読み込む",
+    "loading_more": "読み込み中…",
+    "columns": {
+      "time": "日時",
+      "actor": "実行者",
+      "event": "イベント",
+      "target": "対象",
+      "changes": "変更内容"
+    },
+    "actor_types": {
+      "member": "メンバー",
+      "agent": "エージェント",
+      "system": "システム"
+    },
+    "filters": {
+      "label": "フィルター",
+      "kind": "イベントの種類",
+      "kind_all": "すべての種類",
+      "actor": "実行者",
+      "actor_all": "すべての実行者",
+      "since": "開始",
+      "until": "終了",
+      "clear": "フィルターをクリア"
+    },
+    "kinds": {
+      "agent": "エージェント",
+      "runtime": "ランタイム",
+      "skill": "スキル",
+      "squad": "スクワッド",
+      "project": "プロジェクト",
+      "workspace": "ワークスペース",
+      "autopilot": "オートパイロット",
+      "member": "メンバー"
+    },
+    "changed": "変更済み",
+    "changed_hint": "値は保存されません。変更されたという事実のみが記録されます。",
+    "target_deleted": "(削除済み)",
+    "none": "—",
+    "no_changes": "記録された項目の変更はありません。"
   }
 }

@@ -17,6 +17,7 @@ import {
   Plug,
   Search,
   Server,
+  ScrollText,
   ShieldCheck,
   Settings,
   SlidersHorizontal,
@@ -76,6 +77,7 @@ import { useListColumnCollapsed } from "../../layout/app-shell-context";
 import { ListColumn } from "../../layout/list-column";
 import { ProviderBreakersTab } from "./provider-breakers-tab";
 import { GuardTab } from "./guard-tab";
+import { AuditLogPage } from "./audit-log-page";
 import { useT } from "../../i18n";
 
 export interface ExtraSettingsTab {
@@ -209,6 +211,10 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   <ExportPrivacyTab />,
                 )]
               : []),
+            // STUB (CHE-5653): shown to everyone until the role gate lands.
+            entry("audit-log", t(($) => $.page.tabs.audit_log), ScrollText, <AuditLogPage />, {
+              wide: true,
+            }),
             ...(billingEnabled
               ? [
                   entry(
