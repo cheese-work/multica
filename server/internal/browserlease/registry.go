@@ -33,6 +33,19 @@ func hostServes(host, class string) bool {
 	return false
 }
 
+// parityHost is the fail-closed parity reader (plan r16, A1c): the host of a row only when the
+// name rule and the columns agree and the classes are exactly the host's legacy set.
+func parityHost(row db.BrowserInstance) (string, bool) {
+	host := hostOf(row.Name)
+	return host, host != ""
+}
+
+// parityServes reports whether a parity-valid row serves class.
+func parityServes(row db.BrowserInstance, class string) bool {
+	host, ok := parityHost(row)
+	return ok && hostServes(host, class)
+}
+
 func (r NameRegistry) Instances(ctx context.Context, ws pgtype.UUID, class string) ([]Instance, error) {
 	rows, err := r.Queries.ListBrowserInstances(ctx, ws)
 	if err != nil {

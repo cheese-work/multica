@@ -35,6 +35,19 @@ type Service struct {
 	Now       func() time.Time
 	// Audit records start and end events inside the transition's transaction (CHE-4744).
 	Audit AuditFunc
+	// Audiences is the token audience allowlist that E checks at grant, signing and renewal. The
+	// zero value allows nothing: no grant and no token.
+	Audiences AudienceSet
+
+	// hook is a test seam that runs at named points inside the locked sections; nil in production.
+	hook func(point string)
+}
+
+// at runs the test hook for point.
+func (s *Service) at(point string) {
+	if s.hook != nil {
+		s.hook(point)
+	}
 }
 
 // MintRequest is a running task's ask for a lease. The caller resolves task, agent, issue and
