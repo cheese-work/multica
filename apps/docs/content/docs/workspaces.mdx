@@ -81,6 +81,23 @@ A run is skipped only when all of these hold. If one fails or cannot be read, th
 
 If the linked wakeup is later disabled or deleted, gets a `last_error`, ends without a run (it expired or the guard refused it), or stops matching `blocked_on`, the server starts the blocked step's run and records a `blocked_entry_rearmed` activity row. If the run budget is spent or the agent is paused, that run is refused too and the row says so.
 
+### Run limits
+
+Two workspace settings decide what happens when an issue spends its run cap. Each is `{"mode": "off" | "warn" | "block"}`; the default is `block`, which is today's behavior.
+
+| Setting | Cap it controls |
+| --- | --- |
+| `run_budget` | The per-issue run budget of the issue's workflow (`max_runs_per_issue`). |
+| `run_guard` | The weekly run guard: runs an issue starts in 7 days. |
+
+| Value | Effect |
+| --- | --- |
+| `block` | The next derived run is refused and the owner gets a card. |
+| `warn` | Runs are still counted and the overage shows in the run brief and in `multica issue budget get` (`state: warn`). No run is refused, no issue is blocked and no card opens. |
+| `off` | No block, no warning, no card. |
+
+The loop breaker (`MULTICA_LOOP_BREAKER_MAX_RUNS`) is not affected. Set a mode with `multica workspace update --run-budget-mode` or `--run-guard-mode`; an agent proposes `run_budget` or `run_guard` on a `workspace.settings` card.
+
 ### Ask guard
 
 The workspace setting `ask_guard_mode` controls what happens when an agent operation asks a person to act without opening a decision request.

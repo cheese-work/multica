@@ -81,6 +81,23 @@ L'exécution n'est sautée que si tout ce qui suit est vrai. Si une condition é
 
 Si le réveil lié est ensuite désactivé ou supprimé, reçoit un `last_error`, se termine sans exécution (expiré ou refusé par la garde) ou ne correspond plus à `blocked_on`, le serveur lance l'exécution de l'étape bloquée et enregistre une ligne d'activité `blocked_entry_rearmed`. Si le budget d'exécutions est épuisé ou si l'agent est en pause, cette exécution est refusée aussi et la ligne l'indique.
 
+### Limites d'exécutions
+
+Deux paramètres d'espace de travail décident de ce qui se passe quand une tâche épuise son plafond d'exécutions. Chacun vaut `{"mode": "off" | "warn" | "block"}` ; la valeur par défaut est `block`, le comportement actuel.
+
+| Paramètre | Plafond contrôlé |
+| --- | --- |
+| `run_budget` | Le budget d'exécutions par tâche du workflow de la tâche (`max_runs_per_issue`). |
+| `run_guard` | La garde hebdomadaire : exécutions qu'une tâche lance en 7 jours. |
+
+| Valeur | Effet |
+| --- | --- |
+| `block` | La prochaine exécution dérivée est refusée et le propriétaire reçoit une carte. |
+| `warn` | Les exécutions sont comptées et le dépassement apparaît dans le brief et dans `multica issue budget get` (`state: warn`). Aucune exécution n'est refusée, aucune tâche n'est bloquée et aucune carte ne s'ouvre. |
+| `off` | Ni blocage, ni avertissement, ni carte. |
+
+Le coupe-boucle (`MULTICA_LOOP_BREAKER_MAX_RUNS`) n'est pas modifié. Définissez un mode avec `multica workspace update --run-budget-mode` ou `--run-guard-mode` ; un agent propose `run_budget` ou `run_guard` sur une carte `workspace.settings`.
+
 ### Garde des demandes
 
 Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quand l'opération d'un agent demande à une personne d'agir sans ouvrir de demande de décision.
