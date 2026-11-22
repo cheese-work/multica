@@ -266,3 +266,25 @@ func TestWaiverKeepsFindingMarkedWaived(t *testing.T) {
 	}
 	t.Fatalf("waived finding must still be returned, got %v", rules(fs))
 }
+
+// CHE-7677: an author step hands off only when capability_routing names an
+// author for some type, or the issue already has one.
+func TestWF015AuthorStepWithoutRouting(t *testing.T) {
+	author := issueworkflow.Handler{Type: issueworkflow.HandlerAuthor}
+	def := with(step{StatusKey: "in_progress", Handler: author, Edges: clean().Steps[2].Edges})
+
+	if fs := LintWith(def, Env{AuthorRoutes: map[string]bool{}}); !has(fs, "WF015", "in_progress") {
+		t.Fatalf("no routing: want WF015 on in_progress, got %v", rules(fs))
+	}
+	for _, f := range LintWith(def, Env{AuthorRoutes: map[string]bool{}}) {
+		if f.Rule == "WF015" && f.Level != LevelWarning {
+			t.Fatalf("WF015 is a warning, got %s", f.Level)
+		}
+	}
+	if fs := LintWith(def, Env{AuthorRoutes: map[string]bool{"feat": true}}); has(fs, "WF015", "in_progress") {
+		t.Fatalf("routing set: WF015 must not fire, got %v", rules(fs))
+	}
+	if fs := LintWith(def, Env{}); has(fs, "WF015", "in_progress") {
+		t.Fatalf("no env: the rule is off, got %v", rules(fs))
+	}
+}

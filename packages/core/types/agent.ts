@@ -56,7 +56,33 @@ export interface AgentInvocationTargetInput {
 export type RuntimeVisibility = "private" | "public";
 
 /** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
-export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
+export type RuntimePauseReason = "maintenance" | "incident" | "suspended" | "scheduled_update";
+
+/** Last update cycle result of a machine; `unknown` is an outcome a newer server added. */
+export type RuntimeUpdateOutcome =
+  | "updated"
+  | "up_to_date"
+  | "failed"
+  | "no_window"
+  | "cancelled"
+  | "skipped_manual_pause"
+  | "skipped_open_cycle"
+  | "unknown";
+
+/** Per-machine update schedule (CHE-5465). Every runtime on the machine carries the same value. */
+export interface RuntimeUpdateSchedule {
+  enabled: boolean;
+  /** Five-field cron, evaluated in `timezone`. */
+  cron: string;
+  /** IANA name; the server default is Asia/Ho_Chi_Minh. */
+  timezone: string;
+  /** Maintenance window length in minutes, 10 to 30. */
+  window_minutes: number;
+  /** Next fire times; only the schedule endpoints fill it. */
+  next_runs?: string[];
+  updated_at?: string | null;
+  updated_by?: string | null;
+}
 
 /** Machine-wide pause (CHE-2430). Every runtime on the same daemon carries the same value. */
 export interface RuntimePause {
@@ -121,6 +147,12 @@ export interface RuntimeDevice {
    * Null/absent when the runtime has no daemon or the server predates pause.
    */
   daemon_running_tasks?: number | null;
+  /** The machine's update schedule, null/absent when none is saved or the server predates it. */
+  update_schedule?: RuntimeUpdateSchedule | null;
+  /** Result of the machine's last update cycle; null until one ran. */
+  last_update_outcome?: RuntimeUpdateOutcome | null;
+  /** When that outcome was written (RFC 3339); null until a cycle ran. */
+  last_update_outcome_at?: string | null;
   /**
    * Runtime-wide cap on tasks running at once across every agent bound to
    * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
@@ -602,6 +634,8 @@ export interface TaskUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** The 1-hour-TTL part of `cache_write_tokens`; absent = no TTL split reported. */
+  cache_write_1h_tokens?: number;
   cost_usd_ticks?: number;
   credits_micros?: number;
 }
@@ -617,9 +651,17 @@ export interface MikaBootstrapResponse extends Agent {
   onboarding_session?: ChatSession;
 }
 
+/** One background job an agent serves (CHE-5439). `personal` is the viewer's own pick. */
+export interface AgentBackgroundUse {
+  scope: "workspace" | "personal";
+  job: "dm_title" | "quick_actions" | "compact" | "routing";
+}
+
 export interface Agent {
   id: string;
   workspace_id: string;
+  /** Present on a single-agent GET only; omitted when the agent serves no job. */
+  background_use?: AgentBackgroundUse[];
   /** Set while an owner/admin has paused claims for this agent (CHE-5066). */
   scheduling_paused_at?: string | null;
   scheduling_paused_by?: string | null;
@@ -1128,6 +1170,7 @@ export interface RuntimeUsage {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
 }
 
 export interface RuntimeHourlyActivity {
@@ -1153,6 +1196,7 @@ export interface RuntimeUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1171,6 +1215,7 @@ export interface RuntimeUsageByHour {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1193,6 +1238,7 @@ export interface DashboardUsageDaily {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1212,6 +1258,7 @@ export interface DashboardUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 

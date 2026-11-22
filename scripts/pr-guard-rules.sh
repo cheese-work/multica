@@ -13,7 +13,7 @@
 # too; without either, the check notes that freshness was not checked. MULTICA_SERVER_URL and MULTICA_WORKSPACE_ID
 # select the workspace.
 # Env: PR_URL or MERGE_GROUP_HEAD_REF, REPO, GUARD_POLICY_JSON, GUARD_POLICY_SHA256, RUNNER_TEMP; MULTICA_BIN (default
-# $RUNNER_TEMP/multica); GH_TOKEN for gh.
+# $RUNNER_TEMP/multica); GH_TOKEN for gh; GITHUB_EVENT_NAME (merge_group adds the REST tip line).
 set -euo pipefail
 
 policy_set=1
@@ -69,4 +69,18 @@ fi
 MULTICA_GUARD_REAL_GH="$(command -v gh || true)"
 export MULTICA_GUARD_REAL_GH
 
-exec "$bin" guard check-pr "$pr" -R "$REPO"
+rc=0
+"$bin" guard check-pr "$pr" -R "$REPO" || rc=$?
+
+# CHE-8780 (CHE-7066 criterion 8): a merge-group run also prints one REST read of the live base tip, so the run shows
+# the tip the CLI judged (its "guard: repo rules: ..." note) next to the tip REST reports at the same time. Print only:
+# this read never changes the result, the CLI exit code stays the only decision.
+if [ "${GITHUB_EVENT_NAME:-}" = merge_group ] && [[ "${MERGE_GROUP_HEAD_REF:-}" =~ gh-readonly-queue/(.+)/pr-[0-9]+-[0-9a-f]{7,40}$ ]]; then
+  base="${BASH_REMATCH[1]}"
+  if tip="$(timeout 30 gh api "repos/$REPO/commits/heads/$base" --jq .sha 2>&1)" && [[ "$tip" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "REST tip: $tip ($base of $REPO, read $(date -u +%Y-%m-%dT%H:%M:%SZ))"
+  else
+    echo "REST tip unavailable: $(printf '%s' "$tip" | head -n 1 | cut -c1-200)"
+  fi
+fi
+exit "$rc"

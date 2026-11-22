@@ -1579,6 +1579,8 @@
       "max_fires": "Arrêté après {{count}} exécutions",
       "loop": "En pause : il réveillait des règles qui le réveillaient à leur tour",
       "rate": "En pause : plus de 12 exécutions en une heure",
+      "run_budget": "En pause : l'issue a épuisé son budget d'exécutions ; une hausse le réactive",
+      "weekly_run_guard": "En pause : l'issue a atteint la limite hebdomadaire d'exécutions ; réactivé à un nouvel événement de PR ou quand le compteur baisse",
       "hint": "Réactivez-le pour reprendre ; le compteur repart de zéro."
     },
     "detail": {
@@ -1602,7 +1604,9 @@
     "paused_reason": {
       "max_fires": "limite de {{count}} exécutions atteinte",
       "loop": "il réveillait des règles qui le réveillaient à leur tour",
-      "rate": "plus de 12 exécutions en une heure"
+      "rate": "plus de 12 exécutions en une heure",
+      "run_budget": "l'issue a épuisé son budget d'exécutions",
+      "weekly_run_guard": "l'issue a atteint la limite hebdomadaire d'exécutions"
     },
     "paused_banner": "Réveils suspendus par {{name}} à {{time}}",
     "paused_banner_anonymous": "Réveils suspendus à {{time}}",
@@ -1614,24 +1618,26 @@
       "state_on": "Activé",
       "state_disabled": "Désactivé",
       "state_paused": "En pause : {{reason}}",
-      "inherited": "Hérité de {{source}}",
-      "overridden": "Remplacé sur ce ticket",
-      "source_workspace": "l’espace de travail",
-      "source_project": "le projet",
-      "source_default": "la valeur par défaut",
-      "open_project": "Modifier dans les règles du projet",
+      "open_project": "Ouvrir le projet",
       "override": "Remplacer",
-      "override_label": "Remplacer {{rule}}",
       "edit": "Modifier le remplacement",
-      "edit_label": "Modifier le remplacement de {{rule}}",
-      "reset": "Réinitialiser",
-      "reset_label": "Réinitialiser {{rule}}",
+      "reset": "Rétablir la valeur par défaut",
       "save": "Enregistrer le remplacement",
       "saving": "Enregistrement…",
       "cancel": "Annuler",
       "save_error": "Impossible d’enregistrer le remplacement.",
       "reset_error": "Impossible de réinitialiser la règle.",
-      "conflict_error": "Quelqu’un a modifié cette règle avant vous. Vos modifications sont conservées ; rechargez pour voir les siennes."
+      "conflict_error": "Quelqu’un a modifié cette règle avant vous. Vos modifications sont conservées ; rechargez pour voir les siennes.",
+      "button_on": "Par défaut · {{n}} actifs",
+      "button_on_edited": "Par défaut · {{n}} actifs, {{edited}} modifiés",
+      "button_paused": "Par défaut · {{n}} en pause",
+      "button_paused_edited": "Par défaut · {{n}} en pause, {{edited}} modifiés",
+      "caption": "Hérité de la valeur par défaut, sauf mention",
+      "more_label": "Plus d'options pour {{rule}}",
+      "tag_edited": "Modifié",
+      "tag_workspace": "Espace de travail",
+      "tag_project": "Projet",
+      "empty_live": "Aucun réveil actif. Les valeurs par défaut s'appliquent toujours."
     }
   },
   "duplicates": {

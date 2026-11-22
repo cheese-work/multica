@@ -23,3 +23,5 @@ export const PreferencesTab = Empty, TokensTab = Empty, PasskeysTab = Empty, Wor
   KeyboardShortcutsTab = Empty, PluginsTab = Empty, McpTab = Empty, BillingTab = Empty, ExportPrivacyTab = Empty,
   WakeupsTab = Empty, ProviderBreakersTab = Empty;
 export const useComposioAvailable = () => false;
+export const BackgroundAgentsTab = Empty; // settings-page.tsx imports it since main added the tab (CHE-5538)
+export const PersonalBackgroundAgentsTab = Empty; // main added the personal tab (CHE-5539)

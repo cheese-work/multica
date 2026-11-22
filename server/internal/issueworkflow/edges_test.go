@@ -30,6 +30,7 @@ func TestParseGuard(t *testing.T) {
 		{"pr.review_changes_requested", Guard{Kind: "pr.review_changes_requested"}},
 		{"pr.review_approved", Guard{Kind: "pr.review_approved"}},
 		{"children_done", Guard{Kind: "children_done"}},
+		{"pr.none_open", Guard{Kind: "pr.none_open"}},
 		{" issue_status(CHE-1, done) ", Guard{Kind: "issue_status", Args: []string{"CHE-1", "done"}}},
 		{"webhook(ci)", Guard{Kind: "webhook", Args: []string{"ci"}}},
 		{"webhook( deploy_2-a )", Guard{Kind: "webhook", Args: []string{"deploy_2-a"}}},
@@ -104,6 +105,7 @@ func TestValidateEdges(t *testing.T) {
 		{"review guard needs timeout", []Edge{{To: "implement", Guard: "pr.review_changes_requested", OnTimeout: "blocked"}}, nil, "timeout"},
 		{"review guard valid", []Edge{{To: "implement", Guard: "pr.review_changes_requested", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"adoption_linked is an entry gate only", []Edge{{To: "done", Guard: "adoption_linked"}}, nil, "entry gate"},
+		{"pr.none_open is an entry gate only", []Edge{{To: "done", Guard: "pr.none_open"}}, nil, "entry gate"},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
 	}
 	for _, c := range cases {
@@ -451,5 +453,27 @@ func TestChecksFlakyHoldsOnlyOnGreenRerunOfTheSameHead(t *testing.T) {
 	}
 	if g, err := ParseGuard("pr.checks_flaky"); err != nil || !g.needsTimeout() {
 		t.Errorf("pr.checks_flaky must parse and need a timeout: %v", err)
+	}
+}
+
+// A draft PR is the author's early push, so pr.checks_green holds for it only
+// with the author's ready marker (CHE-5741). A PR that is not draft needs none.
+func TestChecksGreenOnDraftPRNeedsReadyMarker(t *testing.T) {
+	green := func(state string) PRFact { return PRFact{State: state, ChecksRollup: "SUCCESS", HeadFresh: true} }
+	cases := []struct {
+		name  string
+		state string
+		ready bool
+		want  bool
+	}{
+		{"draft, no marker", "draft", false, false},
+		{"draft, marker", "draft", true, true},
+		{"open, no marker", "open", false, true},
+	}
+	for _, c := range cases {
+		_, ok := FirstMatch([]Edge{{To: "code_review", Guard: GuardPRChecksGreen}}, Facts{PRs: []PRFact{green(c.state)}, ReadyForReview: c.ready})
+		if ok != c.want {
+			t.Errorf("%s: pr.checks_green = %v, want %v", c.name, ok, c.want)
+		}
 	}
 }

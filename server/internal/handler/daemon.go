@@ -2125,9 +2125,17 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		DaemonID   string   `json:"daemon_id"`
 		RuntimeIDs []string `json:"runtime_ids"`
 		MaxTasks   int      `json:"max_tasks"`
+		// MaxNonDMTasks is the daemon's reserved_chat_slots budget: how many of
+		// the returned tasks may be non-DM tasks (issue tasks and group channel
+		// tasks). Absent means no limit.
+		MaxNonDMTasks *int `json:"max_non_dm_tasks"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.MaxNonDMTasks != nil && *req.MaxNonDMTasks < 0 {
+		writeError(w, http.StatusBadRequest, "max_non_dm_tasks must not be negative")
 		return
 	}
 
@@ -2265,7 +2273,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), authorized, maxTasks)
+	claimed, err := h.TaskService.ClaimTasksForRuntimesWithNonDMLimit(r.Context(), authorized, maxTasks, req.MaxNonDMTasks)
 	if err != nil {
 		slog.Warn("claim tasks failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to claim tasks")
@@ -2354,6 +2362,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.AuthToken = tokenStr
 		resp.RemoteMCPDaemonToken = remoteMCPToken
+		resp.DoopTaskAssertion = h.doopTaskAssertion(r.Context(), &task, rt, &resp)
 		resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 		out = append(out, resp)
 	}
@@ -2926,7 +2935,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.StartClaimSupported = true
 		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
-	var issueNumber, parentIssueNumber int32
+	var issueNumber, parentIssueNumber, rootIssueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -3261,6 +3270,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if issue.ParentIssueID.Valid {
 			resp.ParentIssue, parentIssueNumber = h.loadClaimParentIssue(r.Context(), task, issue)
 		}
+		rootIssueNumber = h.claimRootIssueNumber(r.Context(), issue)
 		// This claim's own snapshot, recorded by FinalizeTaskClaim so a LATER
 		// run that resumes this one's session can compare against what THIS run
 		// was actually handed. Building it here, from the issue row already
@@ -3766,6 +3776,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, false); failure != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
 		}
+		// SEC-1 rule 5: a compaction task's authority is judged again here, after
+		// the epoch rebase and before any payload or carry-over read. The setting
+		// may have moved since enqueue; a failed claim delivers no transcript.
+		isCompaction := service.IsCompactionTask(*task)
+		if isCompaction {
+			if refusal := h.decideChatTask(r.Context(), h.Queries, chatOpCompact, *task, cs, resp.WorkspaceID); refusal != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.failClaimedTaskBeforeLaunch(
+					r.Context(), task, refusal.Message, taskfailure.ReasonInvalidTaskIdentity,
+					"error_compaction_agent_not_current", http.StatusConflict, "compaction agent is no longer current",
+				)
+			}
+		}
+		// SEC-2: a compaction task starts with a fresh provider session and
+		// workdir, like a user-requested fresh start, but never inherits the DM's
+		// pointer, fallback session or a retry's workdir.
+		resumeAllowed := !task.ForceFreshSession && !isCompaction
 		resp.ChatSessionID = uuidToString(cs.ID)
 		resp.ThreadName = cs.Title
 		// Legacy compatibility: agent creation no longer creates intro chats,
@@ -3829,7 +3855,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
-		if !task.ForceFreshSession && !task.ChannelContextRevision.Valid {
+		if resumeAllowed && !task.ChannelContextRevision.Valid {
 			// Resume chat sessions only when the stored pointer was produced
 			// by the same runtime as the claiming task. When the chat_session
 			// pointer is missing (legacy NULL runtime_id), stale (last task
@@ -3893,7 +3919,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// Input ownership is the claim's fail-closed boundary. Resume-history
 		// reads belong after it: a task that cannot load its input is preserved
 		// for redelivery and must not spend two more queries before returning.
-		if !task.ForceFreshSession {
+		if resumeAllowed {
 			contextRevision := pgtype.Int8{}
 			if task.ChannelContextRevision.Valid {
 				contextRevision = task.ChannelContextRevision
@@ -3963,7 +3989,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if err == nil && missing {
 				resp.PriorSessionResumeUnavailable = true
 			}
-		} else if task.RetryOfTaskID.Valid {
+		} else if task.RetryOfTaskID.Valid && !isCompaction {
 			// Same as the issue branch. The retry lineage is what separates this
 			// from a user-requested fresh start (the Lark fresh-session command),
 			// which still inherits nothing.
@@ -4417,6 +4443,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if resp.ParentIssue != nil && parentIssueNumber > 0 {
 			resp.ParentIssue.Identifier = service.IssueIdentifier(ws.IssuePrefix, parentIssueNumber)
 		}
+		if rootIssueNumber > 0 {
+			resp.RootIssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, rootIssueNumber)
+		}
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
 		}
@@ -4793,6 +4822,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.AuthToken = tokenStr
 	resp.RemoteMCPDaemonToken = remoteMCPToken
+	resp.DoopTaskAssertion = h.doopTaskAssertion(r.Context(), task, runtime, &resp)
 	task.DeliveredCommentIds = receipt
 	resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 
@@ -5112,7 +5142,9 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	offered := service.TaskStartCapabilities{
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
 		ChatSupplement: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementChatV1),
-		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
+		PREvent: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1) ||
+			slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV2),
+		PREventV2:      slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV2),
 		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1),
 	}
 	var task *db.AgentTaskQueue
@@ -6039,6 +6071,10 @@ type TaskUsagePayload struct {
 	// (Qoder Cloud Agents). A pointer because 0 credits is a real answer that
 	// must stay distinct from "this provider does not report credits".
 	CreditsMicros *int64 `json:"credits_micros,omitempty"`
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with the 1-hour
+	// TTL. A pointer so "no split reported" (NULL, priced at the 5-minute rate)
+	// stays distinct from a real 0.
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
 }
 
 // reportedCredits converts a reported credit charge into the nullable column.
@@ -6093,6 +6129,10 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "token counts must not be negative")
 			return
 		}
+		if h1 := u.CacheWrite1hTokens; h1 != nil && (*h1 < 0 || *h1 > u.CacheWriteTokens) {
+			writeError(w, http.StatusBadRequest, "cache_write_1h_tokens must be between 0 and cache_write_tokens")
+			return
+		}
 	}
 
 	// One report's rows commit together.
@@ -6135,15 +6175,16 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			provider = runtimeProvider
 		}
 		if err := qtx.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
-			TaskID:           parseUUID(taskID),
-			Provider:         provider,
-			Model:            u.Model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
-			CreditsMicros:    reportedCredits(u.CreditsMicros),
+			TaskID:             parseUUID(taskID),
+			Provider:           provider,
+			Model:              u.Model,
+			InputTokens:        u.InputTokens,
+			OutputTokens:       u.OutputTokens,
+			CacheReadTokens:    u.CacheReadTokens,
+			CacheWriteTokens:   u.CacheWriteTokens,
+			CostUsdTicks:       authoritativeCostTicks(u.CostUSDTicks),
+			CreditsMicros:      reportedCredits(u.CreditsMicros),
+			CacheWrite1hTokens: reportedCredits(u.CacheWrite1hTokens), // same nullable-int8 shape; range already validated above
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to store usage")
@@ -7138,7 +7179,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 	for _, row := range rows {
 		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
-			row.CacheWriteTokens, row.CostUsdTicks, row.CreditsMicros)
+			row.CacheWriteTokens, row.CacheWrite1hTokens, row.CostUsdTicks, row.CreditsMicros)
 	}
 	attachTaskUsage(resp, byTask)
 }
@@ -7167,7 +7208,7 @@ func (h *Handler) hydrateAgentTaskUsage(ctx context.Context, agentID pgtype.UUID
 	for _, row := range rows {
 		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
-			row.CacheWriteTokens, row.CostUsdTicks, row.CreditsMicros)
+			row.CacheWriteTokens, row.CacheWrite1hTokens, row.CostUsdTicks, row.CreditsMicros)
 	}
 	attachTaskUsage(resp, byTask)
 	return nil
@@ -7182,6 +7223,7 @@ func appendTaskUsage(
 	outputTokens int64,
 	cacheReadTokens int64,
 	cacheWriteTokens int64,
+	cacheWrite1hTokens pgtype.Int8,
 	costUsdTicks pgtype.Int8,
 	creditsMicros pgtype.Int8,
 ) {
@@ -7190,6 +7232,11 @@ func appendTaskUsage(
 		value := costUsdTicks.Int64
 		cost = &value
 	}
+	var cacheWrite1h *int64
+	if cacheWrite1hTokens.Valid {
+		value := cacheWrite1hTokens.Int64
+		cacheWrite1h = &value
+	}
 	var credits *int64
 	if creditsMicros.Valid {
 		value := creditsMicros.Int64
@@ -7197,14 +7244,15 @@ func appendTaskUsage(
 	}
 	id := uuidToString(taskID)
 	byTask[id] = append(byTask[id], TaskUsageData{
-		Provider:         provider,
-		Model:            model,
-		InputTokens:      inputTokens,
-		OutputTokens:     outputTokens,
-		CacheReadTokens:  cacheReadTokens,
-		CacheWriteTokens: cacheWriteTokens,
-		CostUsdTicks:     cost,
-		CreditsMicros:    credits,
+		Provider:           provider,
+		Model:              model,
+		InputTokens:        inputTokens,
+		OutputTokens:       outputTokens,
+		CacheReadTokens:    cacheReadTokens,
+		CacheWriteTokens:   cacheWriteTokens,
+		CacheWrite1hTokens: cacheWrite1h,
+		CostUsdTicks:       cost,
+		CreditsMicros:      credits,
 	})
 }
 

@@ -720,13 +720,14 @@ func (q *Queries) SetRunBudgetRefusalSource(ctx context.Context, arg SetRunBudge
 	return err
 }
 
-const supersedeRunBudgetRefusalsExcept = `-- name: SupersedeRunBudgetRefusalsExcept :exec
+const supersedeRunBudgetRefusalsExcept = `-- name: SupersedeRunBudgetRefusalsExcept :many
 UPDATE run_budget_refusal
 SET state = 'superseded', state_reason = 'later_window',
     hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'later_window' ELSE hook_reason END,
     updated_at = now()
 WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked')
+RETURNING action_id
 `
 
 type SupersedeRunBudgetRefusalsExceptParams struct {
@@ -735,10 +736,26 @@ type SupersedeRunBudgetRefusalsExceptParams struct {
 }
 
 // A refusal for a later window ends every earlier non-terminal refusal of the
-// issue and its unfinished hook (P2r supersession a).
-func (q *Queries) SupersedeRunBudgetRefusalsExcept(ctx context.Context, arg SupersedeRunBudgetRefusalsExceptParams) error {
-	_, err := q.db.Exec(ctx, supersedeRunBudgetRefusalsExcept, arg.IssueID, arg.ID)
-	return err
+// issue and its unfinished hook (P2r supersession a). Returns the approved
+// action of each row it ended, whose card now reads a new outcome.
+func (q *Queries) SupersedeRunBudgetRefusalsExcept(ctx context.Context, arg SupersedeRunBudgetRefusalsExceptParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, supersedeRunBudgetRefusalsExcept, arg.IssueID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var action_id pgtype.UUID
+		if err := rows.Scan(&action_id); err != nil {
+			return nil, err
+		}
+		items = append(items, action_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const supersedeRunBudgetRefusalsOnStatusChange = `-- name: SupersedeRunBudgetRefusalsOnStatusChange :exec

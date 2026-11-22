@@ -129,3 +129,50 @@ func parseStoredBackgroundAgents(raw []byte, scope bgagents.Scope, ws pgtype.UUI
 	}
 	return cfg
 }
+
+// BackgroundUse is one background job an agent serves. Scope is "workspace" or
+// "personal" (the CLI words), never the internal "user".
+type BackgroundUse struct {
+	Scope string `json:"scope"`
+	Job   string `json:"job"`
+}
+
+// backgroundUseJobs fixes the order of the list: catalog order.
+var backgroundUseJobs = []bgagents.Job{bgagents.DMTitle, bgagents.QuickActions, bgagents.Compact, bgagents.Routing}
+
+// agentBackgroundUse lists the jobs where the agent is a primary or fallback
+// slot: the workspace chain for every viewer, the personal chain only for the
+// calling member's own member_setting row (CHE-5439). Agent actors have no
+// personal chain.
+func (h *Handler) agentBackgroundUse(ctx context.Context, agent db.Agent, wsSettings []byte, actorType, viewerID string) ([]BackgroundUse, error) {
+	var settings map[string]json.RawMessage
+	_ = json.Unmarshal(wsSettings, &settings)
+	chains := []struct {
+		scope string
+		cfg   bgagents.Config
+	}{{"workspace", parseStoredBackgroundAgents(settings[backgroundAgentsKey], bgagents.WorkspaceScope, agent.WorkspaceID)}}
+	if actorType == "member" {
+		viewer, err := parseUUIDStrict(viewerID)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := h.memberBackgroundAgents(ctx, agent.WorkspaceID, viewer)
+		if err != nil {
+			return nil, err
+		}
+		chains = append(chains, struct {
+			scope string
+			cfg   bgagents.Config
+		}{"personal", parseStoredBackgroundAgents(raw, bgagents.UserScope, agent.WorkspaceID)})
+	}
+	id := uuidToString(agent.ID)
+	var out []BackgroundUse
+	for _, job := range backgroundUseJobs {
+		for _, c := range chains {
+			if ch := c.cfg[job]; ch.AgentID == id || ch.FallbackAgentID == id {
+				out = append(out, BackgroundUse{Scope: c.scope, Job: string(job)})
+			}
+		}
+	}
+	return out, nil
+}

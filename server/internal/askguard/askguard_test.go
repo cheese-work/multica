@@ -28,3 +28,28 @@ func TestModeFromSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerScriptModeFromSettings(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		raw     string
+		want    Mode
+		wantErr bool
+	}{
+		{"missing key defaults to warn", `{"ask_guard_mode":"block"}`, ModeWarn, false},
+		{"empty settings default to warn", ``, ModeWarn, false},
+		{"off", `{"owner_script_guard":"off"}`, ModeOff, false},
+		{"warn", `{"owner_script_guard":"warn"}`, ModeWarn, false},
+		{"block", `{"owner_script_guard":"block"}`, ModeBlock, false},
+		{"unknown value", `{"owner_script_guard":"strict"}`, "", true},
+		{"not a string", `{"owner_script_guard":true}`, "", true},
+		{"null", `{"owner_script_guard":null}`, "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := OwnerScriptModeFromSettings([]byte(c.raw))
+			if (err != nil) != c.wantErr || got != c.want {
+				t.Fatalf("OwnerScriptModeFromSettings(%s) = %q, %v; want %q, err=%v", c.raw, got, err, c.want, c.wantErr)
+			}
+		})
+	}
+}

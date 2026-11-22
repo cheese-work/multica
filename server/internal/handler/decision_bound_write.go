@@ -13,7 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/passkey"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -72,6 +74,9 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	case answer.CreatedAt.Time.Add(decisionBindingTTL).Before(answer.Now.Time):
 		return refuse(http.StatusForbidden, "decision expired")
 	}
+	if err := requireSpendProof(ctx, qtx, workspaceID, request, field); err != nil {
+		return err
+	}
 	inserted, err := qtx.InsertDecisionBoundWrite(ctx, db.InsertDecisionBoundWriteParams{
 		DecisionID: decisionID, WorkspaceID: workspaceID, AgentID: agentID, Field: field, BeforeSha256: beforeSHA, AfterSha256: afterSHA,
 	})
@@ -83,6 +88,44 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	}
 	slog.Info("decision-bound write accepted", "workspace_id", uuidToString(workspaceID), "decision_id", uuidToString(decisionID),
 		"agent_id", uuidToString(agentID), "field", field, "before_sha256", beforeSHA, "after_sha256", afterSHA)
+	return nil
+}
+
+// isBudgetField is true for the fields whose decision-bound write widens a run
+// budget: issue.workflow is written this way only when the move widens one.
+func isBudgetField(field string) bool {
+	return field == workflowBudgetField || field == decisionaction.IssueWorkflowField
+}
+
+// requireSpendProof holds a budget write to the spend-class rule (CHE-5228,
+// CHE-6197), inside the write transaction: the request is of class spend, its
+// human is not in passkey recovery, and, while the workspace gate blocks, the
+// live answer was settled with a verified passkey assertion. It reads stored
+// evidence, never the card text. Other fields are not affected.
+func requireSpendProof(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, request db.DecisionRequest, field string) error {
+	if !isBudgetField(field) {
+		return nil
+	}
+	if request.EscalationClass != "spend" {
+		return decisionIntentRefusal{http.StatusForbidden, "a budget write needs a spend-class decision; this one is " + request.EscalationClass}
+	}
+	if err := refuseWhileRecovering(ctx, qtx, request.HumanUserID); err != nil {
+		return err
+	}
+	workspace, err := qtx.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if workspace.DecisionPasskeyGate != passkey.GateBlock {
+		return nil
+	}
+	proven, err := qtx.DecisionAnswerHasPasskeyProof(ctx, request.ID)
+	if err != nil {
+		return err
+	}
+	if !proven {
+		return decisionIntentRefusal{http.StatusForbidden, "a budget write needs a decision answered with a verified passkey assertion"}
+	}
 	return nil
 }
 

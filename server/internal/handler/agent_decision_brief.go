@@ -98,6 +98,8 @@ type agentDecisionBriefRecord struct {
 	// Set when Jev decided for Cheese. Still an agent decision.
 	Decider    string   `json:"decider,omitempty"`
 	Confidence *float64 `json:"confidence,omitempty"`
+	// "<agent name> for <human in charge name>", computed per read (S4b).
+	DeciderDisplay string `json:"decider_display,omitempty"`
 }
 
 type agentDecisionNoticeFailure struct {
@@ -218,6 +220,16 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 	if err := rows.Err(); err != nil {
 		fail(err)
 		return
+	}
+	var displayer *deciderDisplayer
+	for i := range records {
+		if records[i].Decider == "" {
+			continue
+		}
+		if displayer == nil {
+			displayer = h.newDeciderDisplayer(ctx, workspaceID)
+		}
+		records[i].DeciderDisplay = displayer.display(records[i].IssueID)
 	}
 
 	failures := []agentDecisionNoticeFailure{}
@@ -375,8 +387,8 @@ func (h *Handler) agentDecisionJevMetrics(ctx context.Context, workspaceID pgtyp
         count(*) FILTER (WHERE sc.scope->'Proposal'->>'decision_class' = ANY($3))
         FROM decision_agent_settlement s
         JOIN decision_agent_scope sc ON sc.instance_id=s.instance_id AND sc.workspace_id=s.workspace_id
-        WHERE s.workspace_id=$1 AND sc.scope->'Proposal'->>'decider'=$2`,
-		workspaceID, agentDecisionDeciderJev, agentDecisionExcludedClasses).
+        WHERE s.workspace_id=$1 AND sc.scope->'Proposal'->>'decider' = ANY($2)`,
+		workspaceID, []string{agentDecisionDeciderJev, agentDecisionDeciderDelegate}, agentDecisionExcludedClasses).
 		Scan(&m.Decisions, &m.Vetoed, &m.ExcludedClassDecisions)
 	if err != nil {
 		return m, err

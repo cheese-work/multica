@@ -45,6 +45,23 @@ multica chat compact --summary-file ./summary.md            # same DM id, histor
 - If the server does not support in-place compaction, the command stops and
   the DM is unchanged.
 
+The compaction task runs with the workspace's compact agent; an owner or admin
+sets it (task tokens are refused), and with none set the DM's own agent runs it:
+
+```bash
+multica workspace update <workspace> --compact-agent <agent-id-or-name>   # name resolved in that workspace
+multica workspace update <workspace> --compact-agent null                 # reset
+```
+
+- Alias for `multica workspace background-agents set compact`; exclusive with
+  every other `workspace update` flag. The CLI reads the value back and fails
+  with `compact agent was not saved` when the server kept another one.
+- A compaction task cannot fork or archive the DM, and only the current
+  compact agent may finish it. `multica chat compact` / `continue` then print
+  the stable code and message on stderr and exit 3:
+  `compaction_agent_not_current` (this agent is no longer the compact agent),
+  `compaction_continue_refused` (finish with `chat compact`, not `continue`).
+
 ## Rename a DM
 
 ```bash
@@ -116,12 +133,36 @@ multica chat wakeup cancel <wakeup-id>
 `multica chat sessions --issue <issue> --for <user-id>` lists the DM lanes a
 decision request can use. See [decisions.md](decisions.md).
 
-## DM triage
+## Waiting DMs and snooze
 
-```bash
-multica chat attention [--stale] --output json   # DMs that wait for you, oldest first; --stale = yellow (4h) or red (24h) only
-multica chat later <session> 2h                  # snooze a DM: 90m, 2h, 1d12h, seconds or an RFC3339 time (1s..168h)
-```
+- `multica chat attention [--stale] [--output json]` lists the DMs that wait
+  for you, oldest first. `--stale` keeps only those past 4 h (yellow) or 24 h
+  (red).
+- `multica chat later <session> [duration|time] [--request-id <uuid>]` snoozes
+  a DM. A duration is `90m`, `2h`, `1d12h` or seconds; a time is RFC3339. The
+  server rejects values outside 1 s to 168 h. Retry a failed call with the same
+  `--request-id` so the retry does not extend the time.
 
-Retry `chat later` with the same `--request-id <uuid>` so the retry does not
-extend the time.
+## Closed DM segments
+
+A DM run reads only the open segment. These two commands read earlier, closed
+ones. The task token names the DM, so there is no session argument; another
+DM's divider id is not found.
+
+- `multica chat segments [--output table|json]` lists the closed segments of
+  this DM, oldest first: divider id, when it was written, message count.
+- `multica chat segment <divider-id> [--limit N] [--before <next_before>]`
+  reads one segment, newest page first. When `has_more` is true the reply
+  carries `next_before`; pass it as `--before` to read the next older page.
+
+## DM progress follows
+
+A follow makes a DM show an issue's progress cards. Members pass
+`--chat <chat-session-id>` for a DM they created. Agents pass no `--chat`: the
+lane comes from the DM that started the task, and a task with no DM is refused.
+
+- `multica issue follow <issue-id>` starts following.
+- `multica issue unfollow <issue-id>` stops following.
+- `multica issue mute-follow <issue-id>` mutes the cards, keeping the follow.
+- `multica issue unmute-follow <issue-id>` turns the cards back on.
+- `multica issue follows --chat <chat-session-id>` lists the follows in a DM.

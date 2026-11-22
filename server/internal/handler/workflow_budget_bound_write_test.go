@@ -28,12 +28,17 @@ func budgetCap(n int) *int { return &n }
 // the card's agent unless delegate is false.
 func newBoundBudgetWrite(t *testing.T, delegate bool) boundBudgetWrite {
 	t.Helper()
+	return newBoundBudgetWriteOfClass(t, delegate, "spend")
+}
+
+func newBoundBudgetWriteOfClass(t *testing.T, delegate bool, class string) boundBudgetWrite {
+	t.Helper()
 	seedTestCatalog(t)
 	resetDecisionLease(t)
 	wf := createTestWorkflowSteps(t, "Bound budget "+workflowTestSuffix(), statusSteps("backlog", "in_progress", "blocked"))
 	before := decisionaction.WorkflowBudgetDigest(wf.ID, nil, true)
 	after := decisionaction.WorkflowBudgetDigest(wf.ID, budgetCap(12), true)
-	fixture := approvedBoundWriteCard(t, "workflow.budget", before, after)
+	fixture := approvedBoundWriteCardOfClass(t, "workflow.budget", class, before, after)
 
 	var previous []byte
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
@@ -157,5 +162,20 @@ func TestBoundBudgetPatchWithoutDecisionNamesThePath(t *testing.T) {
 	res := write.patchResponse(t, map[string]any{"max_runs_per_issue": 12})
 	if res.Code != http.StatusForbidden || !strings.Contains(res.Text(), "workflow.budget") {
 		t.Fatalf("unbound = %d %s", res.Code, res.Text())
+	}
+}
+
+// A reversible owner answer does not widen a budget (CHE-6197).
+func TestBoundBudgetPatchRefusesAReversibleDecision(t *testing.T) {
+	write := newBoundBudgetWriteOfClass(t, true, "reversible")
+	res := write.patchResponse(t, write.body(nil))
+	if res.Code != http.StatusForbidden || !strings.Contains(res.Text(), "spend-class") {
+		t.Fatalf("status = %d: %s", res.Code, res.Text())
+	}
+	if cap := write.storedCap(t); cap != nil {
+		t.Fatalf("refused write stored cap %d", *cap)
+	}
+	if rows := dbfx.Count(t, `SELECT count(*) FROM decision_bound_write WHERE decision_id = $1`, write.decision.ID); rows != 0 {
+		t.Fatalf("refused write recorded %d audit rows", rows)
 	}
 }

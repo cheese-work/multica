@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM golang:1.27.3-alpine AS deps
+FROM golang:1.27.4-alpine AS deps
 
 RUN apk add --no-cache git
 
@@ -46,7 +46,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
     && cp "server/bin/daemon-binaries/multica-linux-$(cd server && go env GOARCH)" server/bin/multica
 
 # --- Runtime stage ---
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata
 

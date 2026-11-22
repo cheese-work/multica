@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -59,6 +59,15 @@ test("expected slog WARN lines from backend-agent-tests fixtures are not warning
   assert.deepEqual(warningCounts([{ name: "backend-agent-tests", log: timedOut, annotations: [] }]), {})
   const unrelated = 'time=2026-11-16T10:00:00.000Z level=WARN msg="new unexpected warning" task_id=task-1'
   assert.equal(Object.keys(warningCounts([{ name: "backend-agent-tests", log: unrelated, annotations: [] }])).length, 1)
+})
+
+test("decision-card-e2e: the Postgres image's initdb trust notice and Next's no-build-cache notice are expected, other warnings still count (CHE-7000)", () => {
+  const initdb = '2026-11-18T01:00:00.0000000Z initdb: warning: enabling "trust" authentication for local connections'
+  const nextCache = "2026-11-18T01:01:00.0000000Z  \u26a0 No build cache found. Please configure build caching for faster rebuilds."
+  const log = `${initdb}\n${nextCache}`
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log, annotations: [] }]), {})
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log: `${log}\nWarning: new diagnostic`, annotations: [] }]), { "decision-card-e2e: Warning: new diagnostic": 1 })
+  assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log, annotations: [] }])).length, 2)
 })
 
 test("ANSI sequences are stripped before warning detection", () => {
@@ -267,4 +276,173 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
   const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
   const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
   assert.match(zero, /"migration-checks"/)
+})
+
+test("decision-card-e2e, added by CHE-6847, has a zero warning baseline until main runs it", () => {
+  const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"decision-card-e2e"/)
+})
+
+// CHE-7010: run the real script against a stubbed `gh` on PATH. The stub serves one job (a zero-baseline job, so no
+// baseline lookup) and fails the job-log endpoint with the given HTTP status for the first `times` calls.
+function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600, bare = false, job = "gitleaks" }) {
+  const dir = mkdtempSync(join(tmpdir(), "warning-budget-gh-"))
+  try {
+    const counter = join(dir, "log-calls")
+    writeFileSync(counter, "0")
+    const gh = join(dir, "gh")
+    writeFileSync(gh, `#!${process.execPath}
+const fs = require("node:fs")
+const endpoint = process.argv[3]
+const out = (value) => process.stdout.write(typeof value === "string" ? value : JSON.stringify(value))
+if (endpoint === "rate_limit") out({ resources: { core: { reset: Math.floor(Date.now() / 1000) + ${resetIn} } } })
+else if (endpoint.endsWith("/logs")) {
+  const calls = Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) + 1
+  fs.writeFileSync(${JSON.stringify(counter)}, String(calls))
+  if (calls <= ${times}) { process.stderr.write(${JSON.stringify(bare ? `gh: HTTP ${status}` : `gh: ${message} (HTTP ${status})`)} + "\\n"); process.exit(1) }
+  out(${JSON.stringify(warning ? "2026-11-17T00:00:00Z Warning: new diagnostic\n" : "all quiet\n")})
+} else if (endpoint.includes("/annotations")) out([])
+else if (endpoint.includes("/workflows/")) out({ workflow_runs: [] })
+else if (endpoint.includes("/jobs")) out({ jobs: [{ id: 7, name: ${JSON.stringify(job)}, status: "completed", conclusion: "success", check_run_url: "https://api.github.com/repos/cheese-work/multica/check-runs/5" }] })
+else out({ id: 1, workflow_id: 2, created_at: "2026-11-17T00:00:00Z", html_url: "run-1", head_sha: "abc" })
+`, { mode: 0o755 })
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./warning-budget.mjs", import.meta.url))], {
+      cwd: dir, encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "1", GITHUB_STEP_SUMMARY: join(dir, "summary") },
+    })
+    const summary = existsSync(join(dir, "summary")) ? readFileSync(join(dir, "summary"), "utf8") : ""
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr, summary, logCalls: Number(readFileSync(counter, "utf8")) }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test("gh api retries a transient 503 twice and then succeeds (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 2 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 3)
+})
+
+test("a real warning regression still fails the check after a retried call succeeds (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 2, warning: true })
+  assert.equal(result.logCalls, 3)
+  assert.equal(result.status, 1)
+})
+
+test("a persistent 5xx stops after 3 tries and fails (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 502, times: 99 })
+  assert.equal(result.status, 1)
+  assert.equal(result.logCalls, 3)
+})
+
+test("a 4xx is not retried (CHE-7010)", () => {
+  const result = runWithStubbedGh({ status: 404, times: 99 })
+  assert.equal(result.status, 1)
+  assert.equal(result.logCalls, 1)
+})
+
+// CHE-7032: a GitHub API rate limit is not a warning regression. The shared installation token runs dry under CI load.
+const rateLimit = "API rate limit exceeded for installation 1"
+
+test("a rate limit that resets after 5 minutes skips the check with a warning annotation and exits 0 (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 403, times: 99, message: rateLimit, resetIn: 3600 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 1)
+  assert.match(result.stdout + result.stderr, /::warning::warning-budget not checked: GitHub API rate limit/)
+  assert.match(result.summary, /warning-budget not checked: GitHub API rate limit/)
+  assert.match(result.summary, /gh api calls: 4\b/)
+})
+
+test("a rate limit that resets within 5 minutes waits and retries once (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 403, times: 1, message: rateLimit, resetIn: 1 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 2)
+  assert.doesNotMatch(result.stdout + result.stderr, /not checked/)
+  assert.match(result.summary, /gh api calls: \d+/)
+})
+
+test("a rate limit that persists after the retry skips the check (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 429, times: 99, message: rateLimit, resetIn: 1 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 2)
+  assert.match(result.summary, /not checked/)
+})
+
+test("a real new warning still fails after a rate-limit retry (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 403, times: 1, message: rateLimit, resetIn: 1, warning: true })
+  assert.equal(result.logCalls, 2)
+  assert.equal(result.status, 1)
+})
+
+test("a 403 that is not a rate limit still fails loudly (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 403, times: 99, message: "Resource not accessible by integration", resetIn: 1 })
+  assert.equal(result.status, 1)
+  assert.equal(result.logCalls, 1)
+  assert.doesNotMatch(result.stdout + result.stderr, /not checked/)
+})
+
+// CHE-7032: with no JSON error body, gh prints "gh: HTTP 503" without parentheses (seen in run 44143433633).
+test("a transient 503 in gh's bare 'gh: HTTP 503' format is retried (CHE-7032)", () => {
+  const result = runWithStubbedGh({ status: 503, times: 2, bare: true })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.logCalls, 3)
+})
+
+// CHE-7216: use a job outside zeroBaselineJobs; zero-baseline jobs are never scanned, so their baseline stays null.
+// CHE-7171: the main run that first ran a new job ended `failure` (its own warning-budget had no baseline),
+// so a `status=success` run filter hid the job's one green result forever. The job conclusion is what counts.
+test("a successful job inside a failed main run is a baseline (CHE-7171)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "warning-budget-failed-run-"))
+  try {
+    writeFileSync(join(dir, "gh"), `#!${process.execPath}
+const endpoint = process.argv[3]
+const out = (value) => process.stdout.write(typeof value === "string" ? value : JSON.stringify(value))
+if (endpoint.endsWith("/actions/runs/2")) out({ id: 2, workflow_id: 3, created_at: "2026-11-18T05:00:00Z", html_url: "pr-run", head_sha: "pr" })
+else if (endpoint.includes("/actions/workflows/3/runs?")) {
+  const status = new URLSearchParams(endpoint.split("?")[1]).get("status")
+  // Like GitHub: status=success lists only runs whose overall conclusion is success.
+  out({ workflow_runs: status === "success" ? [] : [{ id: 1, event: "push", head_branch: "main", conclusion: "failure", created_at: "2026-11-18T03:20:00Z", head_sha: "main", html_url: "failed-main-run" }] })
+} else if (endpoint.includes("/jobs?")) out({ jobs: [{ id: endpoint.includes("/runs/1/") ? 11 : 12, name: "backend-tests", status: "completed", conclusion: "success", check_run_url: "https://api.github.com/check-runs/5" }] })
+else if (endpoint.includes("/annotations?")) out([])
+else if (endpoint.endsWith("/logs")) out("")
+else throw new Error("Unexpected API request " + endpoint)
+`, { mode: 0o755 })
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./warning-budget.mjs", import.meta.url))], {
+      cwd: dir, encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", GITHUB_STEP_SUMMARY: "" },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const report = JSON.parse(readFileSync(join(dir, "warning-budget-report.json"), "utf8"))
+    assert.deepEqual(report.job_baselines["backend-tests"], { run: "failed-main-run", sha: "main", job: "backend-tests" })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// CHE-8843: GitHub can lose a job log (HTTP 404 BlobNotFound). A baseline run with a missing log is skipped like a jobs-API 5xx.
+test("a baseline job whose log returns 404 is skipped for the next older run (CHE-8843)", () => {
+  const pending = new Set(["frontend-build"])
+  const jobBaselines = { "frontend-build": null }
+  const baselineJobs = []
+  const logs = []
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }, { id: 2, html_url: "run-2", head_sha: "b" }]
+  const listJobs = (run) => [{ name: "frontend-build", status: "completed", conclusion: "success", runId: run.id }]
+  const collect = (job) => {
+    if (job.runId === 3) throw httpError(404)
+    return { name: job.name, log: "" }
+  }
+  scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log: (line) => logs.push(line) })
+  assert.equal(jobBaselines["frontend-build"].run, "run-2")
+  assert.equal(pending.size, 0)
+  assert.equal(baselineJobs.length, 1)
+  assert.match(logs.join("\n"), /run 3/)
+})
+
+test("a non-404 baseline log error still fails loudly (CHE-8843)", () => {
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }]
+  const listJobs = () => okJobs
+  const options = { pending: new Set(["frontend-build"]), jobBaselines: {}, baselineJobs: [], listJobs, log: () => {} }
+  assert.throws(() => scanBaselines(runs, { ...options, collect: () => { throw httpError(403) } }), /Command failed/)
+  assert.throws(() => scanBaselines(runs, { ...options, collect: () => { throw new SyntaxError("Unexpected token") } }), /Unexpected token/)
 })

@@ -1494,7 +1494,11 @@ type CreateCommentRequest struct {
 	DecisionVeto   bool     `json:"decision_veto"`
 	// NotifyOnly declares an FYI: an agent-task comment may mention a member
 	// without a decision request. It never binds a wait.
-	NotifyOnly       bool     `json:"notify_only"`
+	NotifyOnly bool `json:"notify_only"`
+	// Ask and NoAsk are the typed audience of a comment on a waiting issue
+	// (S4, CHE-7289): the member who acts next, or none. They never combine.
+	Ask              string   `json:"ask"`
+	NoAsk            bool     `json:"no_ask"`
 	MessageIDs       []string `json:"message_ids"`
 	ContextMessageID string   `json:"context_message_id"`
 	Excerpts         []string `json:"excerpts"`
@@ -1962,6 +1966,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !req.DecisionIntent && !req.NotifyOnly && !h.askGuardAllowsComment(w, r, issue, authorType, actorTask, parentComment, req.Content) {
 		return
 	}
+	if !h.askGuardAllowsWaitingComment(w, r, issue, authorType, actorTask, parentComment, req) {
+		return
+	}
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
 	// rendering layer (rehype-sanitize) and at the editor layer
@@ -1982,6 +1989,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// The author's "don't start" choices outlive this call: completion
 		// replay skips the agents it names.
 		SuppressedAgentIds: suppressAgentIDs,
+		// Stored for every new comment (CHE-6426): false is an ask, NULL is a
+		// row from before the column existed.
+		NotifyOnly: pgtype.Bool{Bool: req.NotifyOnly, Valid: true},
 	}
 
 	// A reply takes the same thread-scoped advisory lock ResolveComment's
@@ -2664,6 +2674,11 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				continue
 			}
 			if reason := commentEnqueueFailureReason(err); reason != ReasonInternalError {
+				// A full review stage queues the mention server-side and starts
+				// it by itself (CHE-7011): report it as deferred, not refused.
+				if reason == ReasonStageQueueFull {
+					return DispatchDeferred, reason
+				}
 				return DispatchBlocked, reason
 			}
 			return internalError("enqueue_trigger", err)

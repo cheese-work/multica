@@ -1470,6 +1470,8 @@
       "max_fires": "已觸發 {{count}} 次，達到上限後暫停",
       "loop": "已暫停：與其他喚醒規則互相觸發",
       "rate": "已暫停：1 小時內觸發超過 12 次",
+      "run_budget": "已暫停：該議題用完了執行預算；提高預算後會重新啟用",
+      "weekly_run_guard": "已暫停：該議題達到每週執行上限；有新的 PR 事件或次數下降後會重新啟用",
       "hint": "重新開啟後恢復，次數重新計算。"
     },
     "detail": {
@@ -1492,7 +1494,9 @@
     "paused_reason": {
       "max_fires": "達到 {{count}} 次上限",
       "loop": "與其他喚醒規則互相觸發",
-      "rate": "1 小時內觸發超過 12 次"
+      "rate": "1 小時內觸發超過 12 次",
+      "run_budget": "該議題用完了執行預算",
+      "weekly_run_guard": "該議題達到每週執行上限"
     },
     "paused_banner": "{{name}} 已於 {{time}} 暫停喚醒",
     "paused_banner_anonymous": "喚醒已於 {{time}} 暫停",
@@ -1504,24 +1508,26 @@
       "state_on": "已開啟",
       "state_disabled": "已停用",
       "state_paused": "已暫停：{{reason}}",
-      "inherited": "繼承自{{source}}",
-      "overridden": "已在此事項上覆寫",
-      "source_workspace": "工作區",
-      "source_project": "專案",
-      "source_default": "預設值",
-      "open_project": "在專案規則中編輯",
+      "open_project": "開啟專案",
       "override": "覆寫",
-      "override_label": "覆寫{{rule}}",
       "edit": "編輯覆寫",
-      "edit_label": "編輯{{rule}}的覆寫",
-      "reset": "重設",
-      "reset_label": "重設{{rule}}",
+      "reset": "重設為預設",
       "save": "儲存覆寫",
       "saving": "儲存中…",
       "cancel": "取消",
       "save_error": "無法儲存覆寫。",
       "reset_error": "無法重設該規則。",
-      "conflict_error": "有人先修改了此規則。你的修改已保留；請重新整理以查看對方的修改。"
+      "conflict_error": "有人先修改了此規則。你的修改已保留；請重新整理以查看對方的修改。",
+      "button_on": "預設 · {{n}} 個已開啟",
+      "button_on_edited": "預設 · {{n}} 個已開啟，{{edited}} 個已修改",
+      "button_paused": "預設 · {{n}} 個已暫停",
+      "button_paused_edited": "預設 · {{n}} 個已暫停，{{edited}} 個已修改",
+      "caption": "除非另有標註，均繼承預設值",
+      "more_label": "{{rule}}的更多選項",
+      "tag_edited": "已修改",
+      "tag_workspace": "工作區",
+      "tag_project": "專案",
+      "empty_live": "沒有進行中的喚醒。預設規則仍然生效。"
     }
   },
   "duplicates": {

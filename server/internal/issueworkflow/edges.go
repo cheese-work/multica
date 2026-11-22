@@ -32,6 +32,7 @@ const (
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
 	GuardPRReviewChanges  = "pr.review_changes_requested"
 	GuardPRReviewApproved = "pr.review_approved"
+	GuardPRNoneOpen       = "pr.none_open"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
 	GuardWebhook          = "webhook"
@@ -39,6 +40,8 @@ const (
 	GuardUpstreamChecked  = "upstream_checked"
 	GuardRootIssue        = "root_issue"
 )
+
+// GuardIntakeSimple and GuardQAProof are in intake.go.
 
 // Edge is one exit of a step. Timeout and OnTimeout are required for guards
 // on PR facts: a PR that never changes must not park an issue forever.
@@ -57,8 +60,9 @@ type Guard struct {
 
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
-	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
-	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0, GuardRootIssue: 0,
+	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardPRNoneOpen: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
+	GuardIntakeSimple: 0, GuardQAProof: 0, GuardRootIssue: 0,
 }
 
 // webhookNameRe is the endpoint name a webhook guard may reference.
@@ -162,7 +166,7 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardRootIssue {
+		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardIntakeSimple || g.Kind == GuardQAProof || g.Kind == GuardPRNoneOpen || g.Kind == GuardRootIssue {
 			return invalid("%s is an entry gate, not an edge guard", g.Kind)
 		}
 		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
@@ -208,14 +212,20 @@ type PRFact struct {
 	// marks a green snapshot whose required check was red earlier on this same
 	// head and passed on a rerun.
 	RedCause string
+	// Ref names the PR for a person reading a refusal, such as owner/repo#12.
+	Ref string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
 // and its children. IssueStatuses is keyed by the issue identifier a guard
 // names.
 type Facts struct {
-	PRs           []PRFact
-	ChildrenDone  bool
+	PRs          []PRFact
+	ChildrenDone bool
+	// OpenChildren is true while any direct child is outside the done and
+	// closed categories. pr.checks_green waits on it (CHE-6466): a parent
+	// with an open sub-issue stays on its step.
+	OpenChildren  bool
 	IssueStatuses map[string]string
 	// Webhooks holds the names of this step's webhook endpoints that received
 	// a success call at or after the issue entered the step.
@@ -223,8 +233,23 @@ type Facts struct {
 	// Adoption is what the adoption_linked entry gate reads; nil when no
 	// such gate asked for it.
 	Adoption *AdoptionFacts
+	// Intake and QA are what the intake_simple and qa_proof entry gates read;
+	// nil when no such gate asked for them.
+	Intake *IntakeFacts
+	QA     *QAFacts
 	// HasParent is what the root_issue entry gate reads (CHE-6831).
 	HasParent bool
+	// ReadyForReview is the author's ready marker on the issue (CHE-5741). A
+	// draft PR is the author's early push, so pr.checks_green holds for it only
+	// once the author set the marker.
+	ReadyForReview bool
+}
+
+// ChecksGreen reports whether p is an open PR whose newest head has green
+// checks, which is what pr.checks_green asks of a PR. A draft PR also needs the
+// author's ready marker.
+func (f Facts) ChecksGreen(p PRFact) bool {
+	return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" && (p.State != "draft" || f.ReadyForReview)
 }
 
 // FirstMatch returns the first edge, in list order, whose guard holds for the
@@ -242,7 +267,7 @@ func FirstMatch(edges []Edge, f Facts) (Edge, bool) {
 func (f Facts) holds(g Guard) bool {
 	switch g.Kind {
 	case GuardPRChecksGreen:
-		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" })
+		return f.anyPR(f.ChecksGreen) && !f.OpenChildren
 	case GuardPRChecksRed:
 		return f.anyPR(func(p PRFact) bool { return p.red() && (p.RedCause == "" || p.RedCause == "pr") })
 	case GuardPRChecksInfraRed:
@@ -253,6 +278,8 @@ func (f Facts) holds(g Guard) bool {
 		})
 	case GuardPRReady:
 		return f.anyPR(func(p PRFact) bool { return p.State == "open" })
+	case GuardPRNoneOpen:
+		return !f.anyPR(PRFact.open)
 	case GuardPRMerged:
 		return f.anyPR(func(p PRFact) bool { return p.State == "merged" }) && !f.anyPR(PRFact.open)
 	case GuardPRClosedUnmerged:

@@ -15,8 +15,8 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && 'ci-dispatch' || format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   namespace-qualification:
@@ -84,20 +84,39 @@ jobs:
 
   warning-budget:
     needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && github.event_name != 'merge_group' }}
     runs-on: ${{ vars.RUNNER_WARNING_BUDGET || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
       contents: read
       actions: read
       checks: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           package-manager-cache: false
+      # CHE-7342: the script's own unit tests run only when a PR changes the script, its tests or fixtures,
+      # so a bad script change on main cannot turn this check red on unrelated PRs. Other events run them.
+      - name: Decide whether the unit tests apply
+        id: wb_scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Fetch first: an API error must fail the step, not read as "no match" and skip the tests.
+          files=
+          [ -z "$PR" ] || files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+          if [ -z "$PR" ] || grep -Eq '^scripts/(warning-budget|fixtures/warnings/)' <<< "$files"; then
+            echo unit=true >> "$GITHUB_OUTPUT"
+          else
+            echo unit=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Test warning regression fixtures
+        if: ${{ steps.wb_scope.outputs.unit == 'true' }}
         run: node --test scripts/warning-budget.test.mjs
       - name: Compare CI logs and annotations with successful main
         env:
@@ -234,6 +253,8 @@ jobs:
         run: bash scripts/mirror-upstream-main.test.sh
       - name: Test the merge review pack script
         run: bash scripts/merge-review-pack.test.sh
+      - name: Test the merge ledger check script
+        run: bash scripts/merge-ledger-check.test.sh
       - name: Test the upstream-main rulesets
         run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
@@ -320,7 +341,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs scripts/ci-backend-shards.test.mjs scripts/e2e-warmup-timeout.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/identity-literals.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-stale-cancel.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs scripts/quick-ab-measure.test.mjs scripts/ci-backend-shards.test.mjs scripts/e2e-warmup-timeout.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs deploy/cd/quiescence.test.mjs
 
       - name: Filter paths
         id: filter
@@ -415,9 +436,10 @@ jobs:
       # recent prefix match. Each frontend worker runs a disjoint task set, so
       # it gets its own prefix rather than racing to save one key.
       # GitHub scopes caches by branch: a PR reads main's entries (so unchanged
-      # tasks hit on the first push) and writes its own (so re-pushes hit too).
+      # tasks hit on the first push) but never writes its own (CHE-7210). Only
+      # main saves, from this workflow's daily schedule run.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -438,6 +460,15 @@ jobs:
         # per-runner cgroup limit and get OOM-killed. concurrency=4 still hit
         # OOM in a later run; cap further.
         run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
@@ -476,7 +507,7 @@ jobs:
       # logs rather than artifacts -- yet a hit still skips the whole suite,
       # which is the single most expensive task in the graph.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -491,6 +522,15 @@ jobs:
         # `test` reaches dependency sources through the hash-only
         # `^cache-inputs` edge (see turbo.json), so no `tsc` runs here.
         run: pnpm exec turbo test --filter='!@multica/docs' --filter='!@multica/mobile' --filter='!@multica/views'
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Split views across two runners. GitHub reports the matrix job's combined
   # result, so the aggregate gate can continue depending on this one job ID.
@@ -534,7 +574,7 @@ jobs:
       # argument in the task hash, while dependency sources still flow through
       # turbo.json's hash-only `^cache-inputs` edge.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -545,6 +585,15 @@ jobs:
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # CHE-2418 B3: fast fail-first check for locale skew. The merge queue failed
   # 22% of runs, mostly on locales/parity.test.ts: two PRs, each green alone,
@@ -773,6 +822,12 @@ jobs:
         id: goepoch
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
+      # CHE-7000: used memory every 5 s for the whole job; the step below turns
+      # it into one peak per shard. Survives the step: the runner reaps it at job end.
+      - name: Start memory sampler
+        run: |
+          (while true; do awk '/^MemTotal:/{t=$2} /^MemAvailable:/{print int((t-$2)/1024)}' /proc/meminfo >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+
       - name: Build
         if: ${{ matrix.partition == 'rest' }}
         run: cd server && go build -race ./...
@@ -830,65 +885,10 @@ jobs:
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
-      # CHE-6247: a decision card that renders "Details unavailable" cannot be
-      # approved, and no unit test sees it (CHE-6242). This opens each
-      # previewed action type's card in a browser against the API and the
-      # database this job already has. It runs here, not in a new job, because
-      # this is the only job with Postgres and a built server; the `rest`
-      # partition only, so the six shards do not each install a browser.
-      # It follows Test on purpose: test-go.sh clones the migrated database and
-      # a connected API server would block the clone.
-      - name: Setup pnpm (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        run: bash scripts/setup-pnpm.sh
-
-      - name: Setup Node.js (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Chromium (decision card E2E)
-        if: ${{ matrix.partition == 'rest' }}
-        run: pnpm exec playwright install --with-deps chromium
-
-      # CHE-6481: a good run takes about 5.5 min. Two runs hung here with no log until the 60 min job
-      # limit. The step limit fails a hang in minutes, and the next step then dumps the API and web logs.
-      - name: Decision card E2E
-        if: ${{ matrix.partition == 'rest' }}
-        timeout-minutes: 12
-        env:
-          PORT: "8080"
-          FRONTEND_ORIGIN: http://localhost:3000
-          JWT_SECRET: ci-decision-card-e2e-secret
-          # The login fixture signs in with a fixed code: the database stores
-          # only a hash of the emailed one. Ignored when APP_ENV=production.
-          MULTICA_DEV_VERIFICATION_CODE: "888888"
-          # The passkey ceremony needs an exact https origin; the spec serves
-          # the web app over it (e2e/dm-budget-proposal-helpers.ts).
-          MULTICA_WEBAUTHN_RP_ID: localhost
-          MULTICA_WEBAUTHN_ORIGINS: https://localhost:23627
+      - name: Report peak memory
+        if: ${{ !cancelled() }}
         run: |
-          set -euo pipefail
-          (cd server && go build -o "$RUNNER_TEMP/multica-server" ./cmd/server)
-          "$RUNNER_TEMP/multica-server" > "$RUNNER_TEMP/e2e-api.log" 2>&1 &
-          API=$!
-          pnpm dev:web > "$RUNNER_TEMP/e2e-web.log" 2>&1 &
-          WEB=$!
-          trap 'kill "$API" "$WEB" 2>/dev/null || true; pkill -P "$WEB" 2>/dev/null || true' EXIT
-          ready() { for _ in $(seq 1 90); do curl -sf "$1" > /dev/null && return 0; sleep 2; done; echo "::error::$1 not ready"; return 1; }
-          ready http://localhost:8080/health
-          ready http://localhost:3000/
-          pnpm exec playwright test --project=chromium --global-timeout=600000 e2e/decision-dm-card-renders.spec.ts
-
-      - name: Show decision card E2E logs
-        if: ${{ failure() && matrix.partition == 'rest' }}
-        run: tail -n 80 "$RUNNER_TEMP/e2e-api.log" "$RUNNER_TEMP/e2e-web.log" || true
+          echo "peak-mem: ${{ matrix.partition }} $(sort -n "$RUNNER_TEMP/mem.log" | tail -1) MiB used of $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) MiB"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.
@@ -972,6 +972,121 @@ jobs:
             echo "::error::migration-checks expected $expected, got $MIGRATION_CHECKS_RESULT"
             exit 1
           fi
+
+  # CHE-6247: a decision card that renders "Details unavailable" cannot be
+  # approved, and no unit test sees it (CHE-6242). This opens each previewed
+  # action type's card in a browser against the API and a migrated database.
+  # CHE-6847: it ran inside the `rest` shard, after the Go tests, with the API,
+  # `next dev` and Chromium beside Postgres. In 15 of 36 runs the hosted runner
+  # was lost there; GitHub failed the job only ~57 min later, after the merge
+  # queue's 30 min status limit had dropped the PR. A fresh runner with a
+  # production build keeps it off the Go test path. The required `backend`
+  # aggregate waits on it, so a red or hung run still blocks merge. The memory
+  # trace in e2e-mem.log is the evidence if a runner is ever lost again.
+  decision-card-e2e:
+    name: decision-card-e2e
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
+    runs-on: ${{ vars.RUNNER_BACKEND_TESTS || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: multica_test
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d multica_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://multica:multica@localhost:5432/multica_test?sslmode=disable
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build API server
+        run: cd server && go build -o "$RUNNER_TEMP/multica-server" ./cmd/server
+
+      - name: Run migrations
+        run: cd server && go run ./cmd/migrate up
+
+      - name: Build web app
+        run: pnpm --filter @multica/web exec next build --webpack
+
+      - name: Decision card E2E
+        timeout-minutes: 10
+        env:
+          PORT: "8080"
+          FRONTEND_ORIGIN: http://localhost:3000
+          REMOTE_API_URL: http://localhost:8080
+          JWT_SECRET: ci-decision-card-e2e-secret
+          # The login fixture signs in with a fixed code: the database stores
+          # only a hash of the emailed one. Ignored when APP_ENV=production.
+          MULTICA_DEV_VERIFICATION_CODE: "888888"
+          # The passkey ceremony needs an exact https origin; the spec serves
+          # the web app over it (e2e/dm-budget-proposal-helpers.ts).
+          MULTICA_WEBAUTHN_RP_ID: localhost
+          MULTICA_WEBAUTHN_ORIGINS: https://localhost:23627
+        run: |
+          set -euo pipefail
+          (while true; do { date +%T; free -m; ps -eo rss,comm --sort=-rss | head -6; } >> "$RUNNER_TEMP/e2e-mem.log"; sleep 5; done) &
+          MEM=$!
+          "$RUNNER_TEMP/multica-server" > "$RUNNER_TEMP/e2e-api.log" 2>&1 &
+          API=$!
+          pnpm --filter @multica/web exec next start -p 3000 > "$RUNNER_TEMP/e2e-web.log" 2>&1 &
+          WEB=$!
+          trap 'kill "$API" "$WEB" "$MEM" 2>/dev/null || true; pkill -P "$WEB" 2>/dev/null || true' EXIT
+          ready() { for _ in $(seq 1 60); do curl -sf "$1" > /dev/null && return 0; sleep 2; done; echo "::error::$1 not ready"; return 1; }
+          ready http://localhost:8080/health
+          ready http://localhost:3000/
+          pnpm exec playwright test --project=chromium --global-timeout=480000 e2e/decision-dm-card-renders.spec.ts
+
+      - name: Upload decision card E2E logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: decision-card-e2e-logs
+          path: |
+            ${{ runner.temp }}/e2e-api.log
+            ${{ runner.temp }}/e2e-web.log
+            ${{ runner.temp }}/e2e-mem.log
+            test-results
+          if-no-files-found: warn
+          retention-days: 7
 
   # pkg/agent used to run as the tail of backend-tests: ~2m20s for a single
   # package, throttled to -parallel 2 because its subprocess-backed tests carry
@@ -1166,7 +1281,7 @@ jobs:
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
+    needs: [changes, backend-tests, decision-card-e2e, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
@@ -1174,7 +1289,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
+          JOB_SCOPES: '{"backend-tests":"push_backend","decision-card-e2e":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
@@ -1365,6 +1480,7 @@ jobs:
           python3 .github/scripts/test_ci_wait_policy.py
           python3 .github/scripts/ci-wait-policy.py
           python3 deploy/cd/test-rollback-failed-readback.py
+          python3 deploy/cd/test-c00-image-gc.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh

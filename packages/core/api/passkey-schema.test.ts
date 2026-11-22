@@ -36,3 +36,11 @@ it("keeps the gate assertion on enroll start", () => {
   const assertion = { challenge_id: "c", options, expires_at: "t" };
   expect(PasskeyEnrollStartSchema.parse({ ceremony_id: "c", options, expires_at: "t", assertion }).assertion).toEqual(assertion);
 });
+
+it("keeps a budget receipt on an outcome and drops a malformed one", () => {
+  const receipt = { outcome: "run_queued", applied_at: "2026-11-11T06:41:00Z", runs_used: 3, runs_limit: 5, runs_limit_after: 8 };
+  expect(PasskeyDecisionOutcomeSchema.parse({ id: "a", state: "executed", receipt }).receipt).toMatchObject(receipt);
+  const bad = PasskeyDecisionOutcomeSchema.parse({ id: "a", state: "executed", receipt: { outcome: 1 } });
+  expect(bad.state).toBe("executed");
+  expect(bad.receipt).toBeUndefined();
+});

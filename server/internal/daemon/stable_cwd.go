@@ -10,8 +10,9 @@ import (
 // per-task path forces a prompt-cache miss on everything after it. The path sits
 // under WorkspacesRoot (dot dir: GC and disk usage skip it) so the daemon-task
 // marker stays an ancestor of the cwd and the CLI impersonation guard still fires.
-func (c Config) stableCwdFor(provider, agentName, agentID string) string {
-	if c.WorkspacesRoot == "" || provider != "claude" || agentID == "" || !slices.Contains(c.StableCwdAgents, agentName) {
+// trialArm is true for a run in the cost-trial treatment arm with the boot-prefix lever on (CHE-6540).
+func (c Config) stableCwdFor(provider, agentName, agentID string, trialArm bool) string {
+	if c.WorkspacesRoot == "" || provider != "claude" || agentID == "" || !(trialArm || slices.Contains(c.StableCwdAgents, agentName)) {
 		return ""
 	}
 	return filepath.Join(c.WorkspacesRoot, ".stable-cwd", agentID)

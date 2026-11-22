@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"slices"
 )
 
@@ -70,8 +71,11 @@ var settingsKeys = []string{
 	"github_wake_on_pr_merge", "github_wake_on_ci_failure", "github_wake_on_ci_success", "github_wake_on_pr_attention",
 	"pr_event_capture", "system_wakeup_child_done", "system_wakeup_child_done_instruction",
 	"agent_comment_wake_policy_enabled", "mermaid_orientation",
-	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "reversible_ask_guard", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode",
-	"workflow_by_type",
+	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "reversible_ask_guard", "owner_script_guard", "decision_ask_park", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode", "design_card_guard",
+	"auto_close", "blocked_run_skip",
+	"workflow_by_type", "capability_routing",
+	"intake_hold", "quick_first", "decision_server_actions", "standing_answers",
+	"merge_queue_dequeue_routing", "merge_queue_actor_bindings", "merge_queue_watch_issue",
 }
 
 // SettingsKeys lists the allow table keys.
@@ -124,4 +128,24 @@ func WorkflowDigest(workflowID string, steps json.RawMessage) (string, error) {
 	}
 	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// ModeSettingKeys are the settings whose value is exactly {"mode": "off"|"warn"|"block"}.
+var ModeSettingKeys = []string{"auto_close", "blocked_run_skip"}
+
+// ValidateModeSetting checks a non-null value of a ModeSettingKeys key: an
+// object holding exactly a mode of off, warn or block. The server request path
+// and the config propose dry run share it (CHE-7716), so a preview refuses what
+// the request refuses.
+func ValidateModeSetting(key string, raw json.RawMessage) error {
+	shape := fmt.Errorf(`%s must be an object {"mode": "off"|"warn"|"block"}`, key)
+	var patch map[string]any
+	if err := json.Unmarshal(raw, &patch); err != nil || len(patch) != 1 {
+		return shape
+	}
+	mode, _ := patch["mode"].(string)
+	if mode != "off" && mode != "warn" && mode != "block" {
+		return shape
+	}
+	return nil
 }

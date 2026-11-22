@@ -29,6 +29,8 @@ type Spec struct {
 	// directory is bound read-only at brokerDir and MULTICA_BROKER_SOCKET names
 	// the socket there, overriding any value in Env.
 	BrokerSocket string
+
+	chdir string // working directory inside WorkDir; Wrap sets it from cmd.Dir
 }
 
 var (
@@ -121,7 +123,11 @@ func (s Spec) args(pins []*os.File, bridgeExe string) []string {
 		}
 		args = append(args, flag, src, b.target())
 	}
-	args = append(args, "--chdir", s.WorkDir, "--")
+	chdir := s.WorkDir
+	if s.chdir != "" {
+		chdir = s.chdir
+	}
+	args = append(args, "--chdir", chdir, "--")
 	return append(args, s.command()...)
 }
 

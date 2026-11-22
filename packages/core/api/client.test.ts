@@ -356,6 +356,32 @@ describe("ApiClient pull-request response schema", () => {
     });
   });
 
+  it("keeps snapshot_paused_until and tolerates its absence (CHE-8795)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            pull_requests: [
+              { ...validPR, snapshot_paused_until: "2026-11-20T12:05:00Z" },
+              { ...validPR, id: "pr-2", snapshot_paused_until: null },
+              { ...validPR, id: "pr-3" },
+              { ...validPR, id: "pr-4", snapshot_paused_until: 12345 },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
+    expect(result.pull_requests[0]?.snapshot_paused_until).toBe("2026-11-20T12:05:00Z");
+    expect(result.pull_requests[1]?.snapshot_paused_until).toBeNull();
+    expect(result.pull_requests[2]?.snapshot_paused_until).toBeUndefined();
+    // A malformed value degrades to absent instead of reaching the card.
+    expect(result.pull_requests[3]?.snapshot_paused_until).toBeUndefined();
+  });
+
   it("falls back safely when failed_check_names is malformed", async () => {
     vi.stubGlobal(
       "fetch",
@@ -3628,5 +3654,28 @@ describe("workspace scheduling pause", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.example.test/api/workspaces/ws-1/${verb}`);
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
     expect(result.scheduling_paused_at).toBe(body.scheduling_paused_at);
+  });
+});
+
+describe("personal background agents", () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("reads the caller's picks and treats an unset slot as empty", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ dm_title: { agent_id: "a1", fallback_agent_id: null } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").getMyBackgroundAgents("ws-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/ws-1/me/background-agents");
+    expect(result).toEqual({ dm_title: { agent_id: "a1", fallback_agent_id: "" } });
+  });
+
+  it("PUTs the patch as is and resolves null on a malformed response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json("nope"));
+    vi.stubGlobal("fetch", fetchMock);
+    const patch = { quick_actions: { agent_id: null, fallback_agent_id: null } };
+    const result = await new ApiClient("https://api.example.test").updateMyBackgroundAgents("ws-1", patch);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(patch);
+    expect(result).toBeNull();
   });
 });

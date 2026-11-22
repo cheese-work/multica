@@ -1579,6 +1579,8 @@
       "max_fires": "Stopped after reaching {{count}} runs",
       "loop": "Paused: it kept waking rules that woke it again",
       "rate": "Paused: more than 12 runs in an hour",
+      "run_budget": "Paused: the issue used its run budget; a raise turns it back on",
+      "weekly_run_guard": "Paused: the issue hit the weekly run limit; it turns back on when a new PR event arrives or the count falls",
       "hint": "Turn it back on to resume; the count starts over."
     },
     "detail": {
@@ -1602,7 +1604,9 @@
     "paused_reason": {
       "max_fires": "reached its limit of {{count}} runs",
       "loop": "it kept waking rules that woke it again",
-      "rate": "more than 12 runs in an hour"
+      "rate": "more than 12 runs in an hour",
+      "run_budget": "the issue used its run budget",
+      "weekly_run_guard": "the issue hit the weekly run limit"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
     "paused_banner_anonymous": "Wakeups paused at {{time}}",
@@ -1614,24 +1618,26 @@
       "state_on": "On",
       "state_disabled": "Disabled",
       "state_paused": "Paused: {{reason}}",
-      "inherited": "Inherited from {{source}}",
-      "overridden": "Overridden on this issue",
-      "source_workspace": "workspace",
-      "source_project": "project",
-      "source_default": "the default",
-      "open_project": "Edit in project rules",
+      "open_project": "Open project",
       "override": "Override",
-      "override_label": "Override {{rule}}",
       "edit": "Edit override",
-      "edit_label": "Edit override {{rule}}",
-      "reset": "Reset",
-      "reset_label": "Reset {{rule}}",
+      "reset": "Reset to default",
       "save": "Save override",
       "saving": "Saving…",
       "cancel": "Cancel",
       "save_error": "Could not save the override.",
       "reset_error": "Could not reset the rule.",
-      "conflict_error": "Someone changed this rule first. Your edits are kept; reload to see theirs."
+      "conflict_error": "Someone changed this rule first. Your edits are kept; reload to see theirs.",
+      "button_on": "Defaults · {{n}} on",
+      "button_on_edited": "Defaults · {{n}} on, {{edited}} edited",
+      "button_paused": "Defaults · {{n}} paused",
+      "button_paused_edited": "Defaults · {{n}} paused, {{edited}} edited",
+      "caption": "Inherited from the default unless noted",
+      "more_label": "More options for {{rule}}",
+      "tag_edited": "Edited",
+      "tag_workspace": "Workspace",
+      "tag_project": "Project",
+      "empty_live": "No live wakeups. Defaults still apply."
     }
   },
   "duplicates": {

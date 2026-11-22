@@ -146,6 +146,11 @@ type AgentResponse struct {
 	ArchivedBy                       *string                `json:"archived_by"`
 	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
 	// holds this agent's claims. Both null when scheduling runs.
+	// BackgroundUse lists the background jobs this agent serves (CHE-5439),
+	// set on GET only. Workspace entries plus the viewer's own personal
+	// entries; never another member's. Omitted when the agent serves none.
+	BackgroundUse []BackgroundUse `json:"background_use,omitempty"`
+
 	SchedulingPausedAt *string `json:"scheduling_paused_at"`
 	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 	// SchedulingPausedReason is the optional note given when the agent was paused.
@@ -461,6 +466,7 @@ type AgentTaskResponse struct {
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
+	RootIssueIdentifier  string                 `json:"root_issue_identifier,omitempty"` // root of this issue's parent chain; the cost-trial arm key (CHE-6498 S6a)
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so
@@ -471,6 +477,10 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// DoopTaskAssertion is the signed, short-lived task identity doop verifies
+	// (CHE-7064 D1.6). Minted at claim, never stored; absent when
+	// MULTICA_TASK_ASSERTION_SIGNING_KEY is unset or malformed.
+	DoopTaskAssertion string `json:"doop_task_assertion,omitempty"`
 	// CancelAckProof is minted at claim time and echoed in the daemon's
 	// cancel-ack. It is what lets the stop gate trust an ack: the runtime
 	// owner's credential alone cannot (CHE-2309).
@@ -920,8 +930,13 @@ type TaskUsageData struct {
 	OutputTokens     int64  `json:"output_tokens"`
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
-	CreditsMicros    *int64 `json:"credits_micros,omitempty"`
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with the
+	// 1-hour TTL (billed at the 1-hour write rate). nil means no TTL split was
+	// reported, so every written token bills at the 5-minute rate; 0 is a real
+	// "all 5-minute".
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
+	CostUsdTicks       *int64 `json:"cost_usd_ticks,omitempty"`
+	CreditsMicros      *int64 `json:"credits_micros,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon
@@ -1449,6 +1464,10 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("GetWorkspace failed for redact check", "workspace_id", uuidToString(agent.WorkspaceID), "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if resp.BackgroundUse, err = h.agentBackgroundUse(r.Context(), agent, ws.Settings, actorType, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load background agent use")
 		return
 	}
 	alwaysRedact := workspaceAlwaysRedactSecrets(ws.Settings)

@@ -9,7 +9,7 @@ export function isUpstreamSync({ title = "", headRef = "", changes = [] }) {
     || changes.some((change) => change.path === "UPSTREAM_VERSION" || change.previousPath === "UPSTREAM_VERSION");
 }
 
-function sourcePaths(ledger) {
+export function sourcePaths(ledger) {
   const sources = [];
   for (const line of ledger.split("\n")) {
     const feature = /^\|\s*([A-Z]\d+)\s/.exec(line)?.[1];
@@ -20,7 +20,7 @@ function sourcePaths(ledger) {
       const path = match[1].includes("/") ? match[1] : posix.join(directory, match[1]);
       directory = path.endsWith("/") ? path.slice(0, -1) : posix.dirname(path);
       const escaped = path.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
-      sources.push({ feature, pattern: new RegExp(`^${escaped}${path.endsWith("/") ? ".*" : ""}$`) });
+      sources.push({ feature, entry: match[1], pattern: new RegExp(`^${escaped}${path.endsWith("/") ? ".*" : ""}$`) });
     }
   }
   if (sources.length === 0) throw new Error("No Source paths found in the base fork feature ledger");

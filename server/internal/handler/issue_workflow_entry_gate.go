@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -74,6 +75,7 @@ func validEntryOverrideReason(reason string) (string, bool) {
 // into. It runs under the issue lock, in the write transaction.
 func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Queries, locked db.Issue, params db.UpdateIssueParams) error {
 	w.entry.warnComment = ""
+	w.refusedIntake = nil
 	if w.system || !params.Status.Valid || params.Status.String == locked.Status {
 		return nil
 	}
@@ -96,7 +98,18 @@ func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Querie
 	// root_issue reads the parent the write leaves behind: UpdateIssue sets the
 	// parent from params, so a request that also changes the parent decides it.
 	facts.HasParent = params.ParentIssueID.Valid
-	return w.applyEntry(ctx, q, locked, params.Status.String, issueworkflow.EvaluateEntry(step.Entry, facts), facts)
+	w.loadGateFacts(ctx, q, locked, step, &facts)
+	failed := issueworkflow.EvaluateEntry(step.Entry, facts)
+	err = w.applyEntry(ctx, q, locked, params.Status.String, failed, facts)
+	if !entryGateOn(step, issueworkflow.GuardIntakeSimple) {
+		return err
+	}
+	call := w.newIntakeCall(locked, params.Status.String, failed, facts.Intake)
+	if err != nil {
+		w.refusedIntake = &call
+		return err
+	}
+	return w.writeIntakeCall(ctx, q, call)
 }
 
 // applyEntry turns failed gates into a refusal, an override or a warning.
@@ -249,4 +262,18 @@ func (h *Handler) createEntryGate(workspaceID pgtype.UUID, actorType, actorID st
 			return err
 		}, nil
 	}
+}
+
+// checkIntakeHold refuses a status write that is not a person's and that moves
+// a held issue to a status other than cancelled (CHE-6911 E1). The platform's
+// own moves (system) and a person's write pass. It runs under the issue lock.
+func (w *workflowWrite) checkIntakeHold(ctx context.Context, q *db.Queries, locked db.Issue, params db.UpdateIssueParams) error {
+	if w.system || w.entry.human || !params.Status.Valid || params.Status.String == locked.Status || params.Status.String == "cancelled" {
+		return nil
+	}
+	loaded, err := intakehold.Load(ctx, q.Conn(), uuidToString(locked.ID))
+	if err != nil {
+		return err
+	}
+	return intakehold.Enforce(loaded, "status", w.entry.actorType, w.entry.actorID)
 }

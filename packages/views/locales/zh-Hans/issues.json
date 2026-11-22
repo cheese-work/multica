@@ -1522,6 +1522,8 @@
       "max_fires": "已触发 {{count}} 次，达到上限后暂停",
       "loop": "已暂停：与其他唤醒规则互相触发",
       "rate": "已暂停：1 小时内触发超过 12 次",
+      "run_budget": "已暂停：该议题用完了运行预算；提高预算后会重新启用",
+      "weekly_run_guard": "已暂停：该议题达到每周运行上限；有新的 PR 事件或次数下降后会重新启用",
       "hint": "重新开启后恢复，次数重新计算。"
     },
     "detail": {
@@ -1544,7 +1546,9 @@
     "paused_reason": {
       "max_fires": "达到 {{count}} 次上限",
       "loop": "与其他唤醒规则互相触发",
-      "rate": "1 小时内触发超过 12 次"
+      "rate": "1 小时内触发超过 12 次",
+      "run_budget": "该议题用完了运行预算",
+      "weekly_run_guard": "该议题达到每周运行上限"
     },
     "paused_banner": "{{name}} 已于 {{time}} 暂停唤醒",
     "paused_banner_anonymous": "唤醒已于 {{time}} 暂停",
@@ -1556,24 +1560,26 @@
       "state_on": "已开启",
       "state_disabled": "已停用",
       "state_paused": "已暂停：{{reason}}",
-      "inherited": "继承自{{source}}",
-      "overridden": "已在此事项上覆盖",
-      "source_workspace": "工作区",
-      "source_project": "项目",
-      "source_default": "默认值",
-      "open_project": "在项目规则中编辑",
+      "open_project": "打开项目",
       "override": "覆盖",
-      "override_label": "覆盖{{rule}}",
       "edit": "编辑覆盖",
-      "edit_label": "编辑{{rule}}的覆盖",
-      "reset": "重置",
-      "reset_label": "重置{{rule}}",
+      "reset": "重置为默认",
       "save": "保存覆盖",
       "saving": "保存中…",
       "cancel": "取消",
       "save_error": "无法保存覆盖。",
       "reset_error": "无法重置该规则。",
-      "conflict_error": "有人先修改了此规则。你的修改已保留；请刷新以查看对方的修改。"
+      "conflict_error": "有人先修改了此规则。你的修改已保留；请刷新以查看对方的修改。",
+      "button_on": "默认 · {{n}} 个已开启",
+      "button_on_edited": "默认 · {{n}} 个已开启，{{edited}} 个已修改",
+      "button_paused": "默认 · {{n}} 个已暂停",
+      "button_paused_edited": "默认 · {{n}} 个已暂停，{{edited}} 个已修改",
+      "caption": "除非另有标注，均继承默认值",
+      "more_label": "{{rule}}的更多选项",
+      "tag_edited": "已修改",
+      "tag_workspace": "工作区",
+      "tag_project": "项目",
+      "empty_live": "没有进行中的唤醒。默认规则仍然生效。"
     }
   },
   "duplicates": {
