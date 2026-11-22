@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 func chatCompactTestCommand(summaryFile string) *cobra.Command {
@@ -118,5 +120,43 @@ func TestChatCompactCommandIsRegistered(t *testing.T) {
 	cmd, _, err := chatCmd.Find([]string{"compact"})
 	if err != nil || cmd.Name() != "compact" || cmd.Flags().Lookup("summary-file") == nil {
 		t.Fatalf("multica chat compact --summary-file is not registered: %v", err)
+	}
+}
+
+// CHE-2915 (DX-4): a compaction refusal reaches stderr with its stable code and
+// the server's message, and the process exits with the auth code.
+func TestChatCompactionRefusalsPrintCodeAndExitAuth(t *testing.T) {
+	refusals := []struct{ code, message string }{
+		{"compaction_agent_not_current", "This agent is no longer the workspace's compaction agent."},
+		{"compaction_continue_refused", "A compaction task finishes in place with `multica chat compact`."},
+	}
+	runs := map[string]func() error{
+		"compact": func() error { return runChatCompact(chatCompactTestCommand(writeSummary(t, "Goal: x")), nil) },
+		"continue": func() error {
+			return runChatContinue(chatContinueTestCommand(writeSummary(t, "Goal: x")), nil)
+		},
+	}
+	for name, run := range runs {
+		for _, refusal := range refusals {
+			clearAmbientDaemonTaskEnv(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": refusal.message, "code": refusal.code})
+			}))
+			setCLITestServerEnv(t, server.URL)
+			err := run()
+			server.Close()
+			if err == nil {
+				t.Fatalf("%s/%s: refusal returned nil", name, refusal.code)
+			}
+			stderr := cli.FormatError(err, false)
+			if !strings.Contains(stderr, refusal.code) || !strings.Contains(stderr, refusal.message) {
+				t.Fatalf("%s: stderr %q lacks code %q or message", name, stderr, refusal.code)
+			}
+			if got := cli.ExitCodeFor(err); got != cli.ExitAuth {
+				t.Fatalf("%s/%s: exit code = %d, want %d", name, refusal.code, got, cli.ExitAuth)
+			}
+		}
 	}
 }

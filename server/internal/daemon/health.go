@@ -58,7 +58,11 @@ type HealthResponse struct {
 	// ActiveTaskCount remains the compatibility/safety count of every claimed
 	// handleTask lifecycle. The additive counters split actual provider
 	// execution from local-directory parking for throughput and diagnostics.
-	ActiveTaskCount       int64 `json:"active_task_count"`
+	ActiveTaskCount int64 `json:"active_task_count"`
+	// ReservedChatSlots is the daemon's reserved_chat_slots setting (slots only
+	// DM runs may use); ReservedChatSlotsFree is how many of them are free now.
+	ReservedChatSlots     int   `json:"reserved_chat_slots"`
+	ReservedChatSlotsFree int   `json:"reserved_chat_slots_free"`
 	RunningTaskCount      int64 `json:"running_task_count"`
 	ResourceWaitTaskCount int64 `json:"resource_wait_task_count"`
 	// Repo maintenance stays a liveness-safe background activity, so health
@@ -424,6 +428,8 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			CLIVersion:            d.cfg.CLIVersion,
 			CLICommit:             d.cfg.CLICommit,
 			ActiveTaskCount:       d.activeTasks.Load(),
+			ReservedChatSlots:     d.cfg.ReservedChatSlots,
+			ReservedChatSlotsFree: d.reservedChatSlotsFree(),
 			RunningTaskCount:      d.runningTasks.Load(),
 			ResourceWaitTaskCount: d.resourceWaitTasks.Load(),
 			Agents:                agents,

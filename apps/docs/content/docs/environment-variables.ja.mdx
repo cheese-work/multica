@@ -263,6 +263,7 @@ API key と base URL の両方が空の場合、このレイヤーは無効に�
 | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` | 正常な WebSocket での claim 安全ポーリング上限。`MULTICA_DAEMON_POLL_INTERVAL` とは独立して設定され、下方向のジッターにより既定値は実際には `2m30s`–`2m45s` となり、旧 Server または結果が不確実な claim では通常のポーリング間隔を維持します |
 | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` | ハートビート間隔 |
 | `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` | `20` | デーモン 1 つあたりの同時実行上限 |
+| `MULTICA_DAEMON_RESERVED_CHAT_SLOTS` | `0` | チャット（DM）の実行だけが使えるスロット数。Issue の実行は最大 `max_concurrent_tasks - reserved_chat_slots` 個まで |
 | `MULTICA_AGENT_TIMEOUT` | `0` | 1 回の実行の絶対時間上限。`0` は上限なし |
 | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` | 出力もツール実行もない状態の静穏上限。`0` で watchdog 全体を無効化 |
 | `MULTICA_AGENT_TOOL_WATCHDOG` | `MULTICA_AGENT_IDLE_WATCHDOG` と同じ | 単一のツール呼び出しが静穏なままでいられる上限。モデルより長い余裕をツールに与えたい場合のみ設定し、`0` はツール実行中に強制停止しません。Cursor のバックグラウンドシェルは、起動したプロセスが終了するまで実行中として扱われます。この上限に達すると、デーモンはそれらのプロセスを停止し、Cursor が最終結果を出すための新しい watchdog 予算を与えます。プロセスの所有権やクリーンアップを検証できない場合は、通常の実行キャンセル方針に従います |
@@ -400,6 +401,7 @@ multica config show
 | `runtime_name` | `Local Agent` | ランタイムの表示名 |
 | `workspaces_root` | `~` 配下のプロファイル別パス | 実行用作業ディレクトリのルート |
 | `max_concurrent_tasks` | `20` | 同時実行上限。`0` または空は未設定を意味します |
+| `reserved_chat_slots` | `0` | チャット（DM）の実行用に空けておくスロット。Issue の実行は最大 `max_concurrent_tasks - reserved_chat_slots` 個まで。`0` または空は予約なしを意味します |
 | `poll_interval` | `30s` | 実行のポーリング間隔 |
 | `ws_claim_poll_interval` | `3m` | 正常な WebSocket での claim 安全ポーリング上限。`poll_interval` とは独立して設定され、Daemon は下方向のジッターを適用します |
 | `heartbeat_interval` | `15s` | ハートビート間隔 |
@@ -417,6 +419,7 @@ multica config show
 - duration 系のキーは正の Go duration（`10s`、`2h` など）を受け付け、負の値は常に拒否されます。`0s` も受け付けるのは `agent_timeout`、`agent_idle_watchdog`、`agent_tool_watchdog` だけです。`agent_timeout` の `0s` は実行時間上限を明示的に無効化します。watchdog の 2 キーで `0s` が何を無効にするかは表を参照してください。
 - 空文字列を渡すと永続化された値がクリアされ、環境変数または組み込みデフォルトに戻ります。例: `multica config set poll_interval ""`。
 - `max_concurrent_tasks` には非負の整数が必要です。
+- `reserved_chat_slots` には `0` 以上で `max_concurrent_tasks` 未満の整数が必要です。それ以外の値は、両方の値を示すエラーで拒否されます。
 - 相対パスの `workspaces_root` は保存時に絶対パスへ変換されます。
 
 ## 可観測性と分析

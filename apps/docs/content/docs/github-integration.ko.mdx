@@ -315,6 +315,8 @@ Organization permissions:
 
 PR snapshot은 Pull requests, Checks 및 Commit statuses REST API로 가져옵니다. Contents 권한은 필요하지 않습니다. 선택 사항인 Actions 권한을 부여하면 해당 커밋의 워크플로 실행도 읽습니다. 부여하지 않으면 같은 워크플로의 새 실행이 통과해도 취소된 이전 실행은 실패로 계산됩니다.
 
+비공개 저장소에서 스킬을 가져오거나 새로고침할 때는 저장소 소유자 계정에 대한 워크스페이스 installation의 단기 token을 사용하고, 없으면 서버의 `GITHUB_TOKEN`으로 대체합니다. 이 token에는 선택 사항인 **Contents: read** 권한이 필요하며, 권한이나 해당 소유자의 installation이 없으면 `GITHUB_TOKEN` 또는 인증 없이 가져옵니다. token은 GitHub 호스트로만 전송됩니다.
+
 스택 자동 연결은 GitHub의 스택 API를 호출하므로 Pull requests **쓰기** 권한이 필요합니다. 읽기 권한만 있는 App도 나머지 기능은 그대로 동작하며, 스택 결과는 `no_permission`으로 표시됩니다([리포트 코드](#stack-report-codes) 참고). 이미 설치된 App의 권한을 올렸다면 각 installation owner가 GitHub에서 승인해야 적용됩니다.
 
 <Callout type="warning">

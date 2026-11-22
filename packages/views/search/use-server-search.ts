@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "@multica/core/api";
 import type { SearchIssueResult, SearchProjectResult } from "@multica/core/types";
 import { isLocalSearchReady, searchIssues, searchProjects } from "@multica/core/search-index";
 
@@ -18,9 +19,17 @@ export interface SearchResults {
 
 export const NO_RESULTS: SearchResults = { query: "", issues: [], projects: [] };
 
+const TITLE_TIER_LIMIT = 8;
+const FULL_SEARCH_DELAY_MS = 300;
+
 /**
  * Issue (and optionally project) search for the palette. An empty query
  * clears the results without a request.
+ *
+ * Without the local index the search has two tiers (CHE-7337). The title tier
+ * asks the server for title matches, newest first, on every keystroke. The full
+ * ranked search follows after a pause (or `searchNow`, on Enter) and replaces
+ * those rows in place; a title response that lands after it is dropped.
  */
 export function useServerSearch(query: string, options: { projects: boolean }) {
   const [results, setResults] = useState<SearchResults>(NO_RESULTS);
@@ -28,6 +37,7 @@ export function useServerSearch(query: string, options: { projects: boolean }) {
   const withProjects = options.projects;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const fullSearchRef = useRef<(() => Promise<void>) | null>(null);
   const q = query.trim();
 
   useEffect(() => {
@@ -41,12 +51,27 @@ export function useServerSearch(query: string, options: { projects: boolean }) {
     }
 
     setIsLoading(true);
-    // The debounce spares the server a request per keystroke; the local index
-    // answers in milliseconds, so it searches on every keystroke.
-    const delay = isLocalSearchReady() ? 0 : 300;
-    debounceRef.current = setTimeout(async () => {
-      const controller = new AbortController();
-      abortRef.current = controller;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    // The debounce spares the server a full ranked search per keystroke; the
+    // local index answers in milliseconds, so it searches on every keystroke.
+    const local = isLocalSearchReady();
+    let fullDone = false;
+    if (!local) {
+      api
+        .searchIssues({ q, limit: TITLE_TIER_LIMIT, include_closed: true, title_only: true, signal: controller.signal })
+        .then((res) => {
+          if (controller.signal.aborted || fullDone) return;
+          // Projects arrive with the full search; the title tier owns issues only.
+          setResults({ query: q, issues: res.issues, projects: [] });
+        })
+        .catch(() => {
+          // The full search reports the failure; the title tier stays silent.
+        });
+    }
+    const runFull = async () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      fullSearchRef.current = null;
       try {
         const [issueRes, projectRes] = await Promise.all([
           searchIssues({ q, limit: 20, include_closed: true, signal: controller.signal }),
@@ -55,6 +80,7 @@ export function useServerSearch(query: string, options: { projects: boolean }) {
             : Promise.resolve({ projects: [] as SearchProjectResult[] }),
         ]);
         if (!controller.signal.aborted) {
+          fullDone = true;
           setResults({ query: q, issues: issueRes.issues, projects: projectRes.projects });
           setIsLoading(false);
         }
@@ -63,12 +89,18 @@ export function useServerSearch(query: string, options: { projects: boolean }) {
           // Drop the previous query's rows rather than leaving them on screen
           // permanently greyed out: the request that would have replaced them
           // is never coming. The list falls through to the empty state.
+          fullDone = true;
           setResults({ query: q, issues: [], projects: [] });
           setIsLoading(false);
         }
       }
-    }, delay);
+    };
+    fullSearchRef.current = runFull;
+    debounceRef.current = setTimeout(runFull, local ? 0 : FULL_SEARCH_DELAY_MS);
   }, [q, withProjects]);
+
+  /** Runs the pending full search now instead of after the pause. */
+  const searchNow = useCallback(() => void fullSearchRef.current?.(), []);
 
   useEffect(
     () => () => {
@@ -84,5 +116,5 @@ export function useServerSearch(query: string, options: { projects: boolean }) {
   // valid item whenever the input changes, so a live stale row turns the next
   // Enter into a jump to a result the user has already typed past.
   const stale = results.query !== q;
-  return { results, isLoading, stale };
+  return { results, isLoading, stale, searchNow };
 }

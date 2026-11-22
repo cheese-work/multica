@@ -588,6 +588,7 @@
     "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
     "answer_discard": "丢弃草稿",
     "action_unavailable": "无法显示详情",
+    "action_retry": "重试",
     "action_approve": "使用通行密钥批准",
     "action_preview": "批准后将更改的内容",
     "recent_runs": "最近运行",

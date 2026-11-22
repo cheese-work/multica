@@ -330,7 +330,11 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.advanceRunStep(r.Context(), callerRun, prev, updated)
+	if err := h.advanceRunStep(r.Context(), callerRun, prev, updated, false); err != nil {
+		slog.Error("route: run not stopped after failed workflow role write", append(logger.RequestAttrs(r), "error", err, "issue_id", uuidToString(prev.ID))...)
+		writeErrorCode(w, http.StatusInternalServerError, "workflow_role_unrecorded", "the issue changed but the run's role evidence was not recorded and the run could not be stopped")
+		return
+	}
 	h.broadcastCancelledWakeups(r.Context(), prev.WorkspaceID, cancelledWakeups)
 	var handoffDetails map[string]string
 	if handoff != nil {

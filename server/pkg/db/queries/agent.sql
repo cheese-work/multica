@@ -1018,6 +1018,9 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
+    -- CHE-8749 S7a: set once at the first claim and never cleared, so a requeue
+    -- (dispatched_at back to NULL) or a reclaim still knows the first dispatch.
+    first_dispatched_at = COALESCE(first_dispatched_at, now()),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -1111,6 +1114,16 @@ WHERE id = (
                 AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
           )
       )
+      -- reserved_chat_slots: when the daemon's non-DM budget is spent it asks for
+      -- DM tasks only: a chat task that is not a group channel conversation.
+      -- A reserved slot never takes an issue task or a group channel task.
+      AND (NOT @chat_only::boolean OR (
+          atq.chat_session_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM channel_task_delivery ctd
+              WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
+          )
+      ))
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -1221,6 +1234,8 @@ SELECT * FROM upd;
 WITH upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    -- Rows dispatched before first_dispatched_at existed take their old dispatch time.
+    first_dispatched_at = COALESCE(first_dispatched_at, dispatched_at),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -1335,6 +1350,8 @@ WITH candidates AS MATERIALIZED (
 upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    -- Rows dispatched before first_dispatched_at existed take their old dispatch time.
+    first_dispatched_at = COALESCE(first_dispatched_at, dispatched_at),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -1874,6 +1891,56 @@ WHERE t.id = v.id
       WHERE retry_parent.id = t.parent_task_id
         AND retry_parent.failure_reason = 'runtime_offline'
   )
+RETURNING t.*;
+
+-- name: ExpireUnstartedCompactionTasks :many
+-- Compaction-only start bound (CHE-2894 step 11). A purpose = 'compaction' task
+-- that has not started (started_at IS NULL) fails once it is older than
+-- start_timeout_secs, whatever its runtime's heartbeat or prepare lease says:
+-- later DM turns wait behind it. Age origin: the later of created_at and the
+-- newest completed_at of any other task of the same DM, so a compaction queued
+-- behind a running DM turn is timed from when the DM became free. A DM with
+-- another dispatched, waiting_local_directory or running task is not a victim.
+-- Victims are locked with SKIP LOCKED; the UPDATE re-checks every condition so
+-- a claim or start that won the row lock is never overwritten. error carries no
+-- transcript content.
+WITH victims AS (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.purpose = 'compaction' AND t.started_at IS NULL
+      AND t.status IN ('queued', 'dispatched', 'waiting_local_directory')
+      AND t.chat_session_id IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_task_queue o
+          WHERE o.chat_session_id = t.chat_session_id AND o.id <> t.id
+            AND o.status IN ('dispatched', 'waiting_local_directory', 'running')
+      )
+      AND GREATEST(t.created_at, COALESCE((
+          SELECT max(o.completed_at) FROM agent_task_queue o
+          WHERE o.chat_session_id = t.chat_session_id AND o.id <> t.id
+      ), t.created_at)) < now() - make_interval(secs => @start_timeout_secs::double precision)
+    ORDER BY t.created_at ASC
+    LIMIT @max_per_tick::int
+    FOR UPDATE OF t SKIP LOCKED
+)
+UPDATE agent_task_queue t
+SET status = 'failed',
+    completed_at = now(),
+    error = 'compaction did not start in time',
+    failure_reason = 'compaction_start_timeout',
+    prepare_lease_expires_at = NULL
+FROM victims v
+WHERE t.id = v.id
+  AND t.purpose = 'compaction' AND t.started_at IS NULL
+  AND t.status IN ('queued', 'dispatched', 'waiting_local_directory')
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue o
+      WHERE o.chat_session_id = t.chat_session_id AND o.id <> t.id
+        AND o.status IN ('dispatched', 'waiting_local_directory', 'running')
+  )
+  AND GREATEST(t.created_at, COALESCE((
+      SELECT max(o.completed_at) FROM agent_task_queue o
+      WHERE o.chat_session_id = t.chat_session_id AND o.id <> t.id
+  ), t.created_at)) < now() - make_interval(secs => @start_timeout_secs::double precision)
 RETURNING t.*;
 
 -- name: FailExpiredRuntimeReconnectRetries :many

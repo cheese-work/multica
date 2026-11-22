@@ -168,9 +168,13 @@ describe("TimelineList deep-link highlight", () => {
     expect(open([root, notice])).toEqual({ rows: 1, highlight: "failure-notice" });
   });
 
-  it("highlights once per opening", () => {
+  it("highlights once per opening", async () => {
     expect(open([root, notice]).highlight).toBe("failure-notice");
-    vi.advanceTimersByTime(5000);
+    // The fork's jump controller waits JUMP_DELAY_MS, settles, then holds the
+    // flash HIGHLIGHT_HOLD_MS before releasing it. Async advance lets the
+    // controller's await continue between the two timers.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await vi.advanceTimersByTimeAsync(6000);
     expect(open([root, notice]).highlight).toBeNull();
     expect(open([root, { ...notice }]).highlight).toBeNull();
     expect(open([root, notice], "tap-2").highlight).toBe("failure-notice");

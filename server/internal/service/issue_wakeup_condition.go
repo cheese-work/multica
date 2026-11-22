@@ -265,6 +265,16 @@ const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
 	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
 	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
 
+// checksFailureHeld is true when a FAILURE rollup should wait because another
+// non-verdict check on the snapshot head is still unfinished (CHE-5422 S2).
+// Only checks_finished reads it; the green wake and the other pull_request
+// events keep the rollup as it is. A waiting check (environment approval) counts
+// as done. The hold applies only when the issue has exactly one linked PR,
+// GitHub and self-hosted together; $1 is the issue id.
+const checksFailureHeld = `COALESCE(pr.checks_rollup_state='FAILURE'
+	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status IN ('queued','in_progress','requested','pending') AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	AND (SELECT count(*) FROM issue_pull_request l WHERE l.issue_id=$1) + (SELECT count(*) FROM issue_vcs_pull_request v WHERE v.issue_id=$1) = 1, false)`
+
 // PRChecksRollupIgnoringVerdict is the PR's rollup with checksRollupIgnoringVerdict
 // applied, so the green wake and the checks_finished rule read one definition.
 func PRChecksRollupIgnoringVerdict(ctx context.Context, db interface {
@@ -328,7 +338,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
 		previous := conditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),`+checksRollupIgnoringVerdict+`,pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),`+checksRollupIgnoringVerdict+`,pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name,`+checksFailureHeld+`
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
 			return false, "", nil, err
@@ -341,7 +351,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		for rows.Next() {
 			var number int32
 			var state, head, checks, currentHead, mergeable, id, repoOwner, repoName string
-			if err = rows.Scan(&number, &state, &head, &checks, &currentHead, &mergeable, &id, &repoOwner, &repoName); err != nil {
+			var held bool
+			if err = rows.Scan(&number, &state, &head, &checks, &currentHead, &mergeable, &id, &repoOwner, &repoName, &held); err != nil {
 				rows.Close()
 				return false, "", nil, err
 			}
@@ -355,7 +366,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "checks_finished":
-				if !githubChecks {
+				if !githubChecks || held {
 					continue
 				}
 				missingSnapshot = missingSnapshot || head == ""

@@ -45,7 +45,7 @@ func TestDaemon_WokenRuntimeTracking(t *testing.T) {
 // (so an older server sees no new field), and the field appears only when a
 // runtime was actually woken.
 func TestClaimTasksBody_ForceRecheckIsOptional(t *testing.T) {
-	base := claimTasksBody("daemon-x", []string{"rt-1"}, 3)
+	base := claimTasksBody("daemon-x", []string{"rt-1"}, 3, nil)
 	if _, present := base["force_recheck_runtime_ids"]; present {
 		t.Fatalf("force_recheck_runtime_ids must be omitted when no runtime is woken; body = %v", base)
 	}
@@ -53,7 +53,7 @@ func TestClaimTasksBody_ForceRecheckIsOptional(t *testing.T) {
 		t.Fatalf("base body lost its existing fields: %v", base)
 	}
 
-	withForce := claimTasksBody("daemon-x", []string{"rt-1"}, 3, "rt-1")
+	withForce := claimTasksBody("daemon-x", []string{"rt-1"}, 3, nil, "rt-1")
 	ids, ok := withForce["force_recheck_runtime_ids"].([]string)
 	if !ok || len(ids) != 1 || ids[0] != "rt-1" {
 		t.Fatalf("force_recheck_runtime_ids = %v, want [rt-1]", withForce["force_recheck_runtime_ids"])

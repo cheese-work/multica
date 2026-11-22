@@ -608,6 +608,7 @@
     "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",
     "answer_discard": "Supprimer le brouillon",
     "action_unavailable": "Détails indisponibles",
+    "action_retry": "Réessayer",
     "action_approve": "Approuver avec une clé d’accès",
     "action_preview": "Ce que l’approbation modifie",
     "recent_runs": "Runs récents",

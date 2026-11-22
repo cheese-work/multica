@@ -2765,6 +2765,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	if output == "json" {
 		return cli.PrintJSON(os.Stdout, result)
 	}
+	// A chained move starts no run, so the entered step's text comes back here.
+	if brief := strVal(result, "step_brief"); brief != "" {
+		fmt.Fprintln(os.Stdout, brief)
+	}
 	return nil
 }
 

@@ -457,6 +457,7 @@ export const GitHubPullRequestSchema = z.lazy(() => z.object({
   failed_check_names: z.array(z.string()).optional().default([]),
   snapshot_stale: z.boolean().optional().default(false),
   snapshot_fetched_at: z.string().nullable().optional(),
+  snapshot_paused_until: z.string().nullable().optional().catch(undefined),
   mergeable_state: z.string().nullable().optional(),
   additions: z.number().optional().default(0),
   deletions: z.number().optional().default(0),
@@ -705,6 +706,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
   "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
+  "author", "reviewer",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
@@ -718,7 +720,8 @@ const IssueWorkflowEntryGateSchema = z.lazy(() => z.object({
   guard: z.string(),
   mode: z.string(),
   member_override: z.boolean().default(true),
-}));
+  // Loose: `param` and `projects` (and later gate fields) must survive a save.
+}).loose());
 
 const IssueWorkflowSubWorkflowSchema = z.lazy(() => z.object({
   workflow_id: z.string(),
@@ -1255,6 +1258,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
+  preview_unavailable: z.string().optional().catch(undefined),
   // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
   config_change: z.object({
     field: z.string(),
@@ -2565,6 +2569,10 @@ const CostSplitShape = {
   uncosted_output_tokens: z.number().optional(),
   uncosted_cache_read_tokens: z.number().optional(),
   uncosted_cache_write_tokens: z.number().optional(),
+  // The 1-hour-TTL part of uncosted_cache_write_tokens. Absent (older
+  // backend) means "no split": every uncosted written token prices at the
+  // 5-minute rate, exactly as before the field existed.
+  uncosted_cache_write_1h_tokens: z.number().optional(),
 };
 
 const DashboardUsageDailySchema = z.lazy(() => z.object({
@@ -2754,6 +2762,8 @@ const TaskUsageSchema = z.lazy(() => z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  // Absent = no TTL split reported; writes price at the 5-minute rate.
+  cache_write_1h_tokens: z.number().optional().catch(undefined),
   cost_usd_ticks: z.number().optional(),
   credits_micros: z.number().optional().catch(undefined),
 }).loose());

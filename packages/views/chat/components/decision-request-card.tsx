@@ -377,10 +377,23 @@ function ActionPreview({
   const configChange = pending && configAction ? approvableConfigChange(action) : undefined;
   const fields = pending && !configAction ? approvablePreview(action)?.fields : undefined;
   const unavailable = pending && !fields && !configChange;
+  const queryClient = useQueryClient();
+  const workspaceId = useCurrentWorkspace()?.id;
+  // The server may have moved on (a new window, a cap change): ask for the card again.
+  const retry = () => {
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+    if (workspaceId) queryClient.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(workspaceId) });
+  };
   // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
-      {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
+      {unavailable && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <p role="status" className="text-label text-warning">{action.preview_unavailable || t(($) => $.decision.action_unavailable)}</p>
+          <Button type="button" variant="ghost" size="sm" onClick={retry}>{t(($) => $.decision.action_retry)}</Button>
+        </div>
+      )}
       {configChange && (
         <div className="space-y-2">
           {/* ui-pattern-ref: allow inline disclosure toggle (aria-expanded) matching the card Details link; Button has no text-disclosure variant */}

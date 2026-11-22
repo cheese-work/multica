@@ -92,6 +92,7 @@ type Task struct {
 	WorkspaceID              string                 `json:"workspace_id"`
 	WorkspaceSlug            string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier          string                 `json:"issue_identifier,omitempty"`
+	RootIssueIdentifier      string                 `json:"root_issue_identifier,omitempty"` // identifier of the root of this issue's parent chain (CHE-6498 S6a); empty on old servers
 	RemoteMCPConnections     []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// Profile, Scopes, Epoch and TaintIDs are the server's claim-time launch hint
 	// (CHE-2216 plan 3.1). Read the profile through EffectiveProfile.
@@ -359,6 +360,10 @@ type TaskUsageEntry struct {
 	OutputTokens     int64  `json:"output_tokens"`
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with the
+	// 1-hour TTL. Omitted (not 0) when the run carried no split, so the server
+	// stores NULL and keeps pricing the write at the 5-minute rate.
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
 	// CostUSDTicks is the provider's own price for this usage, in 1e-10 USD.
 	// Omitted when the agent reports no cost, which is the common case — the
 	// server then leaves the column NULL and the client estimates from the

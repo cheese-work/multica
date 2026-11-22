@@ -9,41 +9,41 @@ func TestPriceForModelAliasAnthropicCurrentGeneration(t *testing.T) {
 	}{
 		{
 			model: "claude-sonnet-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			model: "anthropic:claude-sonnet-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			model: "claude-5-sonnet",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			model: "claude-fable-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, OutputPerM: 50},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, CacheWrite1hPerM: 20, OutputPerM: 50},
 		},
 		{
 			model: "anthropic/claude-fable-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, OutputPerM: 50},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, CacheWrite1hPerM: 20, OutputPerM: 50},
 		},
 		{
 			model: "claude-opus-4-8",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-4.8", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 25},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-4.8", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25},
 		},
 		// Opus 5 sits on the same 5/25 Opus tier as 4.5-4.8.
 		{
 			model: "claude-opus-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 25},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25},
 		},
 		{
 			model: "anthropic/claude-opus-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 25},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25},
 		},
 		// Claude Code reports the 1M-context beta with a bracketed suffix.
 		{
 			model: "claude-opus-5[1m]",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 25},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25},
 		},
 	}
 
@@ -377,7 +377,7 @@ func TestPriceForModelAliasAlibabaMoonshotVolcengine(t *testing.T) {
 			// substring matching, mirroring the frontend stripProvider
 			// regression case.
 			model: "custom:anthropic/claude-opus-4.7",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-4.7", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 25.00},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-4.7", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25.00},
 		},
 	}
 
@@ -562,8 +562,8 @@ func TestPriceForModelAliasAnthropicFable51(t *testing.T) {
 	// Fable 5 alias that did not stop at the version would swallow the `-1`
 	// suffix and bill those reads at 4x, so every spelling below must land on
 	// the Fable 5.1 row specifically.
-	fable51 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5-1", InputPerM: 10, CacheReadPerM: 0.25, CacheWritePerM: 12.5, OutputPerM: 50}
-	fable5 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, OutputPerM: 50}
+	fable51 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5-1", InputPerM: 10, CacheReadPerM: 0.25, CacheWritePerM: 12.5, CacheWrite1hPerM: 20, OutputPerM: 50}
+	fable5 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, CacheWrite1hPerM: 20, OutputPerM: 50}
 	cases := []struct {
 		model string
 		want  ModelPrice
@@ -602,13 +602,13 @@ func TestPriceForModelAliasAnthropicFable51(t *testing.T) {
 		}
 	}
 
-	// A later Fable minor is a distinct SKU at an unknown rate: it must stay
+	// A later Fable minor (5.2 now has its own row) is a distinct SKU at an unknown rate: it must stay
 	// unmapped and surface in the unpriced diagnostic rather than borrow a
 	// neighbour's tier. This is the same failure the `-1` suffix had against
 	// the Fable 5 rule, so guard it on the 5.1 rule as well.
 	for _, model := range []string{
-		"claude-fable-5-2",
-		"claude-fable-5.2",
+		"claude-fable-5-3",
+		"claude-fable-5.3",
 		"claude-fable-5-10",
 		"claude-fable-5.10",
 		"claude-fable-5-1x",
@@ -667,7 +667,7 @@ func TestPriceForModelAliasAnthropicSonnetAndHaiku55(t *testing.T) {
 				"claude-sonnet-5-20261001",
 				"claude-sonnet-5-latest",
 			},
-			want: ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want: ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			aliases: []string{
@@ -680,7 +680,7 @@ func TestPriceForModelAliasAnthropicSonnetAndHaiku55(t *testing.T) {
 				"claude-sonnet-5-5-2026-10-01[1m]",
 				"claude-sonnet-5-5-latest",
 			},
-			want: ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5-5", InputPerM: 2, CacheReadPerM: 0.1, CacheWritePerM: 2.5, OutputPerM: 10},
+			want: ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5-5", InputPerM: 2, CacheReadPerM: 0.1, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			aliases: []string{
@@ -693,7 +693,7 @@ func TestPriceForModelAliasAnthropicSonnetAndHaiku55(t *testing.T) {
 				"claude-haiku-5-5-2026-10-01[1m]",
 				"claude-haiku-5-5-latest",
 			},
-			want: ModelPrice{Provider: "anthropic", Model: "claude-haiku-5-5", InputPerM: 0.1, CacheReadPerM: 0.01, CacheWritePerM: 0.125, OutputPerM: 0.5},
+			want: ModelPrice{Provider: "anthropic", Model: "claude-haiku-5-5", InputPerM: 0.1, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0.2, OutputPerM: 0.5},
 		},
 	}
 	for _, tc := range cases {
@@ -737,8 +737,8 @@ func TestPriceForModelAliasAnthropicOpus55(t *testing.T) {
 	// ($0.20). An Opus 5 alias that did not stop at the version would swallow
 	// the `-5` suffix and bill 5.5 at Opus 5's 5/25 tier, so every spelling
 	// below must land on the Opus 5.5 row specifically.
-	opus55 := ModelPrice{Provider: "anthropic", Model: "claude-opus-5-5", InputPerM: 4, CacheReadPerM: 0.2, CacheWritePerM: 5, OutputPerM: 20}
-	opus5 := ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 25}
+	opus55 := ModelPrice{Provider: "anthropic", Model: "claude-opus-5-5", InputPerM: 4, CacheReadPerM: 0.2, CacheWritePerM: 5, CacheWrite1hPerM: 8, OutputPerM: 20}
+	opus5 := ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25}
 	cases := []struct {
 		model string
 		want  ModelPrice
@@ -800,30 +800,30 @@ func TestPriceForModelAliasBedrockAnthropicIDs(t *testing.T) {
 	}{
 		{
 			model: "us.anthropic.claude-sonnet-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			// Europe / APAC / global profiles are the same SKU at the same rate.
 			model: "eu.anthropic.claude-sonnet-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 		{
 			model: "global.anthropic.claude-opus-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 25},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, CacheWrite1hPerM: 10, OutputPerM: 25},
 		},
 		{
 			// Vendor prefix without a region family.
 			model: "anthropic.claude-haiku-5-5",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-haiku-5-5", InputPerM: 0.1, CacheReadPerM: 0.01, CacheWritePerM: 0.125, OutputPerM: 0.5},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-haiku-5-5", InputPerM: 0.1, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0.2, OutputPerM: 0.5},
 		},
 		{
 			// Snapshot id with the inference-profile version suffix.
 			model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-4.5", InputPerM: 3, CacheReadPerM: 0.3, CacheWritePerM: 3.75, OutputPerM: 15},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-4.5", InputPerM: 3, CacheReadPerM: 0.3, CacheWritePerM: 3.75, CacheWrite1hPerM: 6, OutputPerM: 15},
 		},
 		{
 			model: "custom:bedrock/us.anthropic.claude-sonnet-5-v1:0[1m]",
-			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			want:  ModelPrice{Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, CacheWrite1hPerM: 4, OutputPerM: 10},
 		},
 	}
 

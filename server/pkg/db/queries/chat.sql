@@ -478,6 +478,8 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
+  -- A decision backing lane is never the member's chat (plan r4 3.7).
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -548,6 +550,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR

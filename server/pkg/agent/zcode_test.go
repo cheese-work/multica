@@ -643,6 +643,29 @@ func TestZcodeStartupFailureWaitsForStderr(t *testing.T) {
 	}
 }
 
+// TestZcodeStderrFailurePromotionRace repeats T15 to cover the exit-before-write
+// race (CHE-7691): the fake CLI exits at once, so the session/create write can
+// fail with a broken pipe before the stderr copier has read the tail. The error
+// must still carry the stderr text on every iteration.
+func TestZcodeStderrFailurePromotionRace(t *testing.T) {
+	t.Parallel()
+	bin := writeFakeZcodeScript(t, `#!/bin/sh
+echo "zcode: authentication failed: invalid api key" >&2
+exit 1
+`)
+	backend := newZcodeTestBackend(t, bin)
+	for i := 0; i < 200; i++ {
+		session, err := backend.Execute(context.Background(), "prompt", ExecOptions{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("iteration %d: Execute error: %v", i, err)
+		}
+		_, res := collectZcodeSession(t, session)
+		if res.Status != "failed" || !strings.Contains(res.Error, "authentication failed") {
+			t.Fatalf("iteration %d: expected failed with stderr tail, got status=%q error=%q", i, res.Status, res.Error)
+		}
+	}
+}
+
 // TestZcodeThinkingDeltas covers T19: reasoning deltas map to MessageThinking.
 func TestZcodeThinkingDeltas(t *testing.T) {
 	t.Parallel()

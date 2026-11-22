@@ -205,6 +205,8 @@
   ],
   "deploy_cd": [
     "deploy/cd/**",
+    "Dockerfile",
+    "scripts/build-cd-backend-binaries.sh",
     ".github/workflows/**",
     ".github/ci-policy.yml",
     ".github/scripts/ci-wait-policy.py",

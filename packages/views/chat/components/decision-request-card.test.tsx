@@ -720,6 +720,33 @@ describe("DecisionRequestCard answering", () => {
       expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
     });
 
+    // CHE-8772: a card that cannot show details says why when the server knows, and offers a retry.
+    it("shows the server's reason, keeps Approve disabled and Reject, and offers Retry", async () => {
+      const reason = "The run cap is already 48; this request asks for 30, which does not raise it. Reject it and ask again with a total above 48.";
+      show({ ...action, preview: undefined, preview_unavailable: reason });
+      expect(screen.getByText(reason)).toBeInTheDocument();
+      expect(screen.queryByText("Details unavailable")).toBeNull();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+
+    it("Retry asks for the card again, from the generic message too", async () => {
+      const client = new QueryClient();
+      const invalidate = vi.spyOn(client, "invalidateQueries");
+      renderWithI18n(<QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, action: { ...action, preview: undefined } }} /></WorkspaceSlugProvider></QueryClientProvider>);
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: chatKeys.messagesAll() });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: chatKeys.messagesPageAll() });
+    });
+
+    it("offers no Retry while the preview renders", async () => {
+      show(action);
+      await screen.findByTestId("decision-request-action-preview");
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    });
+
     it.each([
       ["issue.run_guard.allow", "Weekly run limit", "100", "110"],
       ["agent.pause", "Scheduling", "Running", "Paused"],

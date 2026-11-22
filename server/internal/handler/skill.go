@@ -1857,8 +1857,54 @@ func doGitHubAPIGet(ctx context.Context, httpClient *http.Client, apiURL string)
 	return httpClient.Do(req)
 }
 
+type githubSkillTokenKey struct{}
+
+// withGitHubSkillToken carries a workspace installation token on ctx so every
+// GitHub request of one skill fetch authenticates with it.
+func withGitHubSkillToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, githubSkillTokenKey{}, token)
+}
+
+// githubSkillAuthContext resolves the credential for a GitHub skill fetch:
+// an installation token minted for the workspace's GitHub App installation on
+// the repo owner's account, else (when none exists or minting fails) the
+// GITHUB_TOKEN env var used by addGitHubAuthHeader, else none. The returned
+// release func revokes the minted token and must be called when the fetch ends.
+// Neither the token nor a GitHub error body is ever logged.
+func (h *Handler) githubSkillAuthContext(ctx context.Context, workspaceID pgtype.UUID, rawURL string) (context.Context, func()) {
+	noop := func() {}
+	spec, err := parseGitHubURL(rawURL)
+	if err != nil || h.Queries == nil {
+		return ctx, noop
+	}
+	rows, err := h.Queries.ListGitHubInstallationsByWorkspace(ctx, workspaceID)
+	if err != nil {
+		slog.Warn("skill github auth: installation lookup failed", "err", err)
+		return ctx, noop
+	}
+	for _, row := range rows {
+		if !strings.EqualFold(row.AccountLogin, spec.owner) || !h.githubInstallationAllowed(row) {
+			continue
+		}
+		client := &http.Client{Timeout: 15 * time.Second}
+		installationToken, err := mintGitHubInstallationToken(ctx, client, row.InstallationID, `{"permissions":{"contents":"read"}}`)
+		token := installationToken.Token
+		if err != nil {
+			slog.Warn("skill github auth: installation token unavailable; falling back to GITHUB_TOKEN",
+				"installation_id", row.InstallationID, "err", err)
+			return ctx, noop
+		}
+		return withGitHubSkillToken(ctx, token), func() { revokeGitHubInstallationToken(client, token) }
+	}
+	return ctx, noop
+}
+
 func addGitHubAuthHeader(req *http.Request) {
 	if req == nil {
+		return
+	}
+	if token, _ := req.Context().Value(githubSkillTokenKey{}).(string); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 		return
 	}
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
@@ -2389,6 +2435,11 @@ func (h *Handler) ImportSkill(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var imported *importedSkill
+	if source == sourceGitHub {
+		var release func()
+		ctx, release = h.githubSkillAuthContext(ctx, workspaceUUID, normalized)
+		defer release()
+	}
 	switch source {
 	case sourceClawHub:
 		imported, err = fetchFromClawHub(ctx, httpClient, normalized)

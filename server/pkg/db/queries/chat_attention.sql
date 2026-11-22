@@ -3,10 +3,11 @@
 
 -- name: ListChatAttentionChains :many
 -- One row per chain: its canonical DM (the session nothing continued into).
-SELECT id AS canonical_id, chain_root_session_id AS root_id, (status = 'archived')::boolean AS archived
-FROM chat_session
-WHERE workspace_id = $1 AND creator_id = $2 AND continued_into_session_id IS NULL
-  AND chain_root_session_id IS NOT NULL;
+SELECT cs.id AS canonical_id, cs.chain_root_session_id AS root_id, (cs.status = 'archived')::boolean AS archived
+FROM chat_session cs
+WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.continued_into_session_id IS NULL
+  AND cs.chain_root_session_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id);
 
 -- name: ListChatAttentionItems :many
 -- Open ask / later / unseen rows. waiting is true while the task consuming the targeted send is live (rule 3).
@@ -22,7 +23,8 @@ WHERE i.user_id = $1 AND i.workspace_id = $2 AND i.resolved_at IS NULL;
 SELECT d.id, s.chain_root_session_id, d.answer_revision, d.created_at
 FROM decision_request d
 LEFT JOIN chat_session s ON s.id = d.chat_session_id
-WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open' AND d.authority = 'human';
+WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open' AND d.authority = 'human'
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = d.chat_session_id);
 
 -- name: ListChatAttentionLatestTurns :many
 -- C2: the unclassified turn of each chain, if its latest recorded turn ended with no outcome (CHE-4149).

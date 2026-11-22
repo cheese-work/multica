@@ -215,6 +215,8 @@ function PaletteFrame({
       setChips(chips.slice(0, -1));
       return;
     }
+    // Enter does not wait for the pause before the full ranked search (CHE-7337).
+    if (!current && e.key === "Enter") model.server.searchNow();
   };
 
   return (

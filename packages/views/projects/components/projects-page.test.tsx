@@ -78,6 +78,10 @@ vi.mock("@multica/core/projects", () => ({
   useProjectsPagePrefsSync: () => mocks.savePrefs,
 }));
 
+vi.mock("@multica/core/projects/mutations", () => ({
+  useUpdateProject: () => ({ mutate: mocks.updateProject }),
+}));
+
 vi.mock("@multica/core/pins", () => ({
   pinListOptions: () => ({ queryKey: ["pins"] }),
   useCreatePin: () => ({ mutate: mocks.createPin }),

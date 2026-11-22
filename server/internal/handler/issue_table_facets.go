@@ -70,6 +70,9 @@ func issueTableQueryWithoutFacet(input issueTableQuerySpec, facet issueTableFace
 	case "priority":
 		output.Filters.Priorities = nil
 		withoutNegate("priorities")
+	case "created_via":
+		output.Filters.CreatedVia = nil
+		withoutNegate("created_via")
 	case "assignee":
 		output.Filters.Assignees = nil
 		output.Filters.IncludeNoAssignee = false
@@ -98,6 +101,10 @@ func issueTableQueryWithoutFacet(input issueTableQuerySpec, facet issueTableFace
 	return output
 }
 
+// issueTableCreatedViaFacetExpression buckets NULL rows under the same
+// `unknown` key the filter accepts.
+const issueTableCreatedViaFacetExpression = "COALESCE(i.created_via, '" + issueTableCreatedViaUnknown + "')"
+
 func issueTableFacetIdentity(facet issueTableFacetSpec) string {
 	if facet.Kind == "property" {
 		return "property:" + facet.PropertyID
@@ -111,6 +118,8 @@ func issueTableBaseFacetExpression(query issueTableQuerySpec, facet issueTableFa
 		return "i.status", len(query.Filters.Statuses) == 0
 	case "priority":
 		return "i.priority", len(query.Filters.Priorities) == 0
+	case "created_via":
+		return issueTableCreatedViaFacetExpression, len(query.Filters.CreatedVia) == 0
 	case "assignee":
 		return "CASE WHEN i.assignee_type IS NULL OR i.assignee_id IS NULL THEN '__none__' ELSE i.assignee_type || ':' || i.assignee_id::text END", len(query.Filters.Assignees) == 0 && !query.Filters.IncludeNoAssignee
 	case "creator":
@@ -215,6 +224,8 @@ func (h *Handler) issueTableFacetQuery(w http.ResponseWriter, r *http.Request, r
 		query = fmt.Sprintf(`SELECT i.status, COUNT(*)::bigint FROM issue i WHERE %s GROUP BY i.status`, compiled.where)
 	case "priority":
 		query = fmt.Sprintf(`SELECT i.priority, COUNT(*)::bigint FROM issue i WHERE %s GROUP BY i.priority`, compiled.where)
+	case "created_via":
+		query = fmt.Sprintf(`SELECT %s, COUNT(*)::bigint FROM issue i WHERE %s GROUP BY 1`, issueTableCreatedViaFacetExpression, compiled.where)
 	case "assignee":
 		query = fmt.Sprintf(`SELECT CASE WHEN i.assignee_type IS NULL OR i.assignee_id IS NULL THEN '__none__' ELSE i.assignee_type || ':' || i.assignee_id::text END, COUNT(*)::bigint FROM issue i WHERE %s GROUP BY 1`, compiled.where)
 	case "creator":

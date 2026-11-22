@@ -186,5 +186,30 @@
       "open_card": "Open the card",
       "unreadable": "This approval is not available to you, or it no longer exists. Ask the agent to propose it again."
     }
+  },
+  "budget_receipt": {
+    "applied_runs": "Applied. {{issue}} now shows {{used}} of {{limit}} runs.",
+    "runs_used": "Runs used",
+    "change": "{{used}} of {{limit}} → {{usedAfter}} of {{limitAfter}}",
+    "change_new_window": "{{used}} of {{limit}} → {{usedAfter}} of {{limitAfter}} (new window)",
+    "outcome": {
+      "run_queued": "Run queued.",
+      "run_started": "Run started.",
+      "status_restored": "Status restored.",
+      "still_blocked_runs": "Still blocked: no runs left.",
+      "still_blocked_tokens": "Still blocked: token budget used up.",
+      "still_blocked": "Still blocked.",
+      "later_window": "Not resumed: a newer budget window replaced this one.",
+      "status_moved": "Not resumed: the issue moved to another status.",
+      "window_changed": "Not resumed: the budget window changed.",
+      "issue_closed": "Not resumed: the issue is closed.",
+      "agent_archived": "Not resumed: the agent is archived.",
+      "restore_refused": "Not resumed: the status could not be restored.",
+      "unknown_origin": "Not resumed: the status before the block is unknown. Move the status by hand.",
+      "assignee_changed": "Not resumed: the assignee changed.",
+      "source_unknown": "Not resumed: the original trigger is unknown.",
+      "source_not_delivered": "Not resumed: the original trigger has no work left.",
+      "superseded": "Not resumed."
+    }
   }
 }

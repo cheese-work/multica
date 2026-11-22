@@ -18,6 +18,31 @@ type ModelPrice struct {
 	CacheReadPerM  float64
 	CacheWritePerM float64
 	OutputPerM     float64
+	// CacheWrite1hPerM is the 1-hour-TTL cache-write rate. 0 means the SKU has
+	// no separate 1-hour rate, and every written token bills at CacheWritePerM.
+	CacheWrite1hPerM float64
+}
+
+// CacheWriteCostUSD prices `total` written tokens, of which `oneHour` carry the
+// 1-hour TTL. nil means no split was reported: all tokens bill at CacheWritePerM.
+//
+// The 1-hour part prices at CacheWrite1hPerM (when the SKU has one) and the rest
+// at CacheWritePerM. A count outside [0, total] is clamped, so bad data cannot
+// bill more tokens than were written.
+func (p ModelPrice) CacheWriteCostUSD(total int64, oneHour *int64) float64 {
+	if oneHour == nil || p.CacheWrite1hPerM <= 0 {
+		return tokenCostUSD(total, p.CacheWritePerM)
+	}
+	h := min(max(*oneHour, 0), max(total, 0))
+	return tokenCostUSD(h, p.CacheWrite1hPerM) + tokenCostUSD(total-h, p.CacheWritePerM)
+}
+
+// EstimateUSD is the rate-table estimate for one usage row.
+func (p ModelPrice) EstimateUSD(input, output, cacheRead, cacheWrite int64, cacheWrite1h *int64) float64 {
+	return tokenCostUSD(input, p.InputPerM) +
+		tokenCostUSD(output, p.OutputPerM) +
+		tokenCostUSD(cacheRead, p.CacheReadPerM) +
+		p.CacheWriteCostUSD(cacheWrite, cacheWrite1h)
 }
 
 var modelPrices = map[string]ModelPrice{
@@ -53,23 +78,28 @@ var modelPrices = map[string]ModelPrice{
 	// Anthropic's Sonnet 5 launch price is $2 / $10 through 2026-08-31. This
 	// static table cannot schedule the published post-intro $3 / $15 change yet,
 	// so keep the intro rate here and update the row when catalog support exists.
-	"anthropic:claude-sonnet-5":   {Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50, OutputPerM: 10.00},
-	"anthropic:claude-sonnet-5-5": {Provider: "anthropic", Model: "claude-sonnet-5-5", InputPerM: 2.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, OutputPerM: 10.00},
+	"anthropic:claude-sonnet-5":   {Provider: "anthropic", Model: "claude-sonnet-5", InputPerM: 2.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50, CacheWrite1hPerM: 4.00, OutputPerM: 10.00},
+	"anthropic:claude-sonnet-5-5": {Provider: "anthropic", Model: "claude-sonnet-5-5", InputPerM: 2.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, CacheWrite1hPerM: 4.00, OutputPerM: 10.00},
 	// Haiku 5.5 uses the <=100K prompt tier, matching the frontend estimate.
 	// Above 100K (including cache reads/writes), all four rates are 5x higher.
 	// Usage aggregates lack per-request prompt sizes, so long requests are underestimated.
-	"anthropic:claude-haiku-5-5":  {Provider: "anthropic", Model: "claude-haiku-5-5", InputPerM: 0.10, CacheReadPerM: 0.01, CacheWritePerM: 0.125, OutputPerM: 0.50},
-	"anthropic:claude-fable-5-1":  {Provider: "anthropic", Model: "claude-fable-5-1", InputPerM: 10.00, CacheReadPerM: 0.25, CacheWritePerM: 12.50, OutputPerM: 50.00},
-	"anthropic:claude-fable-5":    {Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50, OutputPerM: 50.00},
-	"anthropic:claude-opus-5-5":   {Provider: "anthropic", Model: "claude-opus-5-5", InputPerM: 4.00, CacheReadPerM: 0.20, CacheWritePerM: 5.00, OutputPerM: 20.00},
-	"anthropic:claude-opus-5":     {Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 25.00},
-	"anthropic:claude-opus-4.8":   {Provider: "anthropic", Model: "claude-opus-4.8", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 25.00},
-	"anthropic:claude-opus-4.7":   {Provider: "anthropic", Model: "claude-opus-4.7", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 25.00},
-	"anthropic:claude-opus-4.6":   {Provider: "anthropic", Model: "claude-opus-4.6", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 25.00},
-	"anthropic:claude-opus-4.5":   {Provider: "anthropic", Model: "claude-opus-4.5", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 25.00},
-	"anthropic:claude-sonnet-4.6": {Provider: "anthropic", Model: "claude-sonnet-4.6", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, OutputPerM: 15.00},
-	"anthropic:claude-sonnet-4.5": {Provider: "anthropic", Model: "claude-sonnet-4.5", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, OutputPerM: 15.00},
-	"anthropic:claude-haiku-4.5":  {Provider: "anthropic", Model: "claude-haiku-4.5", InputPerM: 1.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25, OutputPerM: 5.00},
+	"anthropic:claude-haiku-5-5": {Provider: "anthropic", Model: "claude-haiku-5-5", InputPerM: 0.10, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0.2, OutputPerM: 0.50},
+	// Fable 5.2: $8 / $40, 5-minute write $10, 1-hour write $16, cache hits
+	// 0.025x input ($0.20), platform.claude.com/docs/en/about-claude/pricing
+	// (accessed 2026-11-20). The page lists a 1-hour write at 2x base input for
+	// every Claude row below, so CacheWrite1hPerM is 2x InputPerM throughout.
+	"anthropic:claude-fable-5-2":  {Provider: "anthropic", Model: "claude-fable-5-2", InputPerM: 8.00, CacheReadPerM: 0.20, CacheWritePerM: 10.00, CacheWrite1hPerM: 16.00, OutputPerM: 40.00},
+	"anthropic:claude-fable-5-1":  {Provider: "anthropic", Model: "claude-fable-5-1", InputPerM: 10.00, CacheReadPerM: 0.25, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, OutputPerM: 50.00},
+	"anthropic:claude-fable-5":    {Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, OutputPerM: 50.00},
+	"anthropic:claude-opus-5-5":   {Provider: "anthropic", Model: "claude-opus-5-5", InputPerM: 4.00, CacheReadPerM: 0.20, CacheWritePerM: 5.00, CacheWrite1hPerM: 8.00, OutputPerM: 20.00},
+	"anthropic:claude-opus-5":     {Provider: "anthropic", Model: "claude-opus-5", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, OutputPerM: 25.00},
+	"anthropic:claude-opus-4.8":   {Provider: "anthropic", Model: "claude-opus-4.8", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, OutputPerM: 25.00},
+	"anthropic:claude-opus-4.7":   {Provider: "anthropic", Model: "claude-opus-4.7", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, OutputPerM: 25.00},
+	"anthropic:claude-opus-4.6":   {Provider: "anthropic", Model: "claude-opus-4.6", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, OutputPerM: 25.00},
+	"anthropic:claude-opus-4.5":   {Provider: "anthropic", Model: "claude-opus-4.5", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, OutputPerM: 25.00},
+	"anthropic:claude-sonnet-4.6": {Provider: "anthropic", Model: "claude-sonnet-4.6", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, OutputPerM: 15.00},
+	"anthropic:claude-sonnet-4.5": {Provider: "anthropic", Model: "claude-sonnet-4.5", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, OutputPerM: 15.00},
+	"anthropic:claude-haiku-4.5":  {Provider: "anthropic", Model: "claude-haiku-4.5", InputPerM: 1.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25, CacheWrite1hPerM: 2.00, OutputPerM: 5.00},
 	"deepseek:v4-pro":             {Provider: "deepseek", Model: "v4-pro", InputPerM: 1.74, CacheReadPerM: 0.0145, CacheWritePerM: 1.74, OutputPerM: 3.48},
 	// DeepSeek Flash: api-docs.deepseek.com/quick_start/pricing/ (2026-10-27).
 	// The English sheet supplies USD; the Chinese sheet lists CNY. Use peak
@@ -234,6 +264,7 @@ var modelAliasRules = []struct {
 	// cache reads at 0.025x input ($0.25) instead of the standard 0.1x, so it
 	// needs its own row, and both rules end at their own version
 	// (claudeVersionEnd) so neither can swallow the other's ids.
+	{regexp.MustCompile(`claude-fable-5[-.]2` + claudeVersionEnd), "anthropic:claude-fable-5-2"},
 	{regexp.MustCompile(`claude-fable-5[-.]1` + claudeVersionEnd), "anthropic:claude-fable-5-1"},
 	{regexp.MustCompile(`claude-fable-5` + claudeVersionEnd), "anthropic:claude-fable-5"},
 	// Opus 5.5 is cheaper than Opus 5 ($4 / $20) and prices cache reads at

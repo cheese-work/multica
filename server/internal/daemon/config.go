@@ -117,6 +117,7 @@ type Config struct {
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
+	ReservedChatSlots              int                   // slots only DM (chat) runs may use; issue runs get MaxConcurrentTasks-ReservedChatSlots (default: 0)
 	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
 	Broker                         *BrokerConfig         // MULTICA_BROKER_CONFIG: GitHub App for the per-run push/read broker; nil means none (CHE-2216 A4c)
 	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex task bindings
@@ -177,6 +178,9 @@ type Config struct {
 	// StableCwdAgents (MULTICA_STABLE_CWD_AGENTS=name,name; default off) runs listed Claude agents
 	// at <WorkspacesRoot>/.stable-cwd/<agent id> so the cwd in the system prompt, and the prompt cache behind it, is stable.
 	StableCwdAgents []string
+	// CostTrialLever (MULTICA_COST_TRIAL_LEVER; default off) turns on the byte-stable boot prefix
+	// for Claude runs in trial arm 1 (CHE-6540): stable cwd and the brief through --append-system-prompt-file.
+	CostTrialLever bool
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
@@ -203,6 +207,7 @@ type Overrides struct {
 	CodexSemanticInactivityTimeout time.Duration
 	CodexHandshakeTimeout          time.Duration
 	MaxConcurrentTasks             int
+	ReservedChatSlots              int
 	DaemonID                       string
 	DeviceName                     string
 	RuntimeName                    string
@@ -527,12 +532,16 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		codexTurnInterruptTimeout = DefaultCodexTurnInterruptTimeout
 	}
 
-	maxConcurrentTasks, err := intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
+	maxConcurrentTasks, err := EffectiveMaxConcurrentTasks(overrides.MaxConcurrentTasks)
 	if err != nil {
 		return Config{}, err
 	}
-	if overrides.MaxConcurrentTasks > 0 {
-		maxConcurrentTasks = overrides.MaxConcurrentTasks
+	reservedChatSlots, err := intFromEnv("MULTICA_DAEMON_RESERVED_CHAT_SLOTS", overrides.ReservedChatSlots)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ValidateReservedChatSlots(reservedChatSlots, maxConcurrentTasks); err != nil {
+		return Config{}, err
 	}
 
 	// Profile
@@ -726,6 +735,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoReloadEnabled:               autoReloadEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
+		ReservedChatSlots:               reservedChatSlots,
 		PollInterval:                    pollInterval,
 		WSClaimPollInterval:             wsClaimPollInterval,
 		HeartbeatInterval:               heartbeatInterval,
@@ -738,6 +748,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
 		CodexSQLiteInitRetry:            codexSQLiteInitRetry,
 		StableCwdAgents:                 patternsFromEnv("MULTICA_STABLE_CWD_AGENTS", nil),
+		CostTrialLever:                  costTrialLeverFromEnv(),
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentSilenceWarnAfter:           silenceWarnAfter,
@@ -1591,4 +1602,26 @@ func (c Config) agentTimeoutFor(provider string) time.Duration {
 		return c.CodexAgentTimeout
 	}
 	return c.AgentTimeout
+}
+
+// EffectiveMaxConcurrentTasks is the cap the daemon runs with: the resolved
+// start-up override (--max-concurrent-tasks, or the persisted value when the
+// env var is unset) when positive, else MULTICA_DAEMON_MAX_CONCURRENT_TASKS,
+// else the default. LoadConfig uses it directly; `multica config set` feeds it
+// the same override the daemon start command resolves.
+func EffectiveMaxConcurrentTasks(override int) (int, error) {
+	if override > 0 {
+		return override, nil
+	}
+	return intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
+}
+
+// ValidateReservedChatSlots rejects a reserved_chat_slots value that would
+// leave issue runs no slot (>= max_concurrent_tasks) or is negative. The error
+// names both values.
+func ValidateReservedChatSlots(reserved, maxConcurrentTasks int) error {
+	if reserved < 0 || reserved >= maxConcurrentTasks {
+		return fmt.Errorf("reserved_chat_slots %d must be >= 0 and below max_concurrent_tasks %d", reserved, maxConcurrentTasks)
+	}
+	return nil
 }

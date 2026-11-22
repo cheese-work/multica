@@ -384,4 +384,59 @@ describe("useUpdateProject", () => {
 
     expect(qc.getQueryState(tableKey)?.isInvalidated).toBe(false);
   });
+
+  // CHE-7654: a status change cancels runs and settles wakeups on the
+  // server, so it is not a predictable patch. The cache must keep the old
+  // status until the server answers.
+  describe("optimistic patching", () => {
+    const base = { id: "p1", title: "P", status: "planned", priority: "none" } as unknown as Project;
+    const seed = () => {
+      qc.setQueryData(projectKeys.detail("ws-1", "p1"), base);
+      qc.setQueryData(projectKeys.list("ws-1"), { projects: [base], total: 1 });
+    };
+    const detail = () => qc.getQueryData<Project>(projectKeys.detail("ws-1", "p1"));
+    const list = () =>
+      qc.getQueryData<{ projects: Project[] }>(projectKeys.list("ws-1"))?.projects[0];
+
+    it("does not patch the cache for a status change while the request runs", async () => {
+      let resolve!: (v: unknown) => void;
+      updateProject.mockReturnValue(new Promise((r) => (resolve = r)));
+      seed();
+      const { result } = renderHook(() => useUpdateProject(), { wrapper: createWrapper(qc) });
+
+      act(() => {
+        result.current.mutate({ id: "p1", status: "paused" });
+      });
+      await vi.waitFor(() => expect(result.current.isPending).toBe(true));
+
+      expect(detail()?.status).toBe("planned");
+      expect(list()?.status).toBe("planned");
+      await act(async () => resolve({ ...base, status: "paused" }));
+    });
+
+    it("keeps the old status when the status change is rejected", async () => {
+      updateProject.mockRejectedValue(new Error("boom"));
+      seed();
+      const { result } = renderHook(() => useUpdateProject(), { wrapper: createWrapper(qc) });
+
+      await act(async () => {
+        await result.current.mutateAsync({ id: "p1", status: "paused" }).catch(() => {});
+      });
+
+      expect(detail()?.status).toBe("planned");
+      expect(list()?.status).toBe("planned");
+    });
+
+    it("still patches other fields optimistically", async () => {
+      updateProject.mockReturnValue(new Promise(() => {}));
+      seed();
+      const { result } = renderHook(() => useUpdateProject(), { wrapper: createWrapper(qc) });
+
+      act(() => {
+        result.current.mutate({ id: "p1", priority: "high" });
+      });
+      await vi.waitFor(() => expect(detail()?.priority).toBe("high"));
+      expect(list()?.priority).toBe("high");
+    });
+  });
 });

@@ -1491,6 +1491,15 @@ describe("dashboard + runtime usage schema drift", () => {
     ]);
     expect((parsed[0] as Record<string, unknown>).region).toBe("us-east");
   });
+
+  it("keeps the 1-hour write split when present and leaves it undefined when absent", () => {
+    const [withSplit, withoutSplit] = RuntimeUsageListSchema.parse([
+      { date: "2026-11-20", uncosted_cache_write_tokens: 10, uncosted_cache_write_1h_tokens: 4 },
+      { date: "2026-11-20", uncosted_cache_write_tokens: 10 },
+    ]);
+    expect(withSplit?.uncosted_cache_write_1h_tokens).toBe(4);
+    expect(withoutSplit?.uncosted_cache_write_1h_tokens).toBeUndefined();
+  });
 });
 
 // A server that never heard of worktree mode also never sends this flag, and

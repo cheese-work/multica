@@ -316,6 +316,8 @@ Abonnez-vous à ces événements :
 
 Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire. Avec la permission facultative Actions, Multica lit aussi les exécutions de workflow du commit. Sans elle, une exécution annulée compte toujours comme un échec, même après la réussite d'une exécution plus récente du même workflow.
 
+L'import ou l'actualisation d'une compétence depuis un dépôt privé utilise un jeton d'installation de courte durée pour l'installation de l'espace de travail sur le compte du propriétaire du dépôt, avec repli sur le `GITHUB_TOKEN` du serveur. Ce jeton exige la permission facultative **Contents: read** ; sans elle, ou sans installation pour ce propriétaire, la récupération utilise `GITHUB_TOKEN` ou aucun identifiant. Le jeton n'est envoyé qu'aux hôtes GitHub.
+
 La liaison automatique des piles appelle l'API des piles de GitHub et exige la permission Pull requests en **écriture**. Une App en lecture seule continue de faire tout le reste ; les résultats de pile affichent `no_permission` (voir les [codes de rapport](#stack-report-codes)). Si vous élevez la permission d'une App déjà installée, le propriétaire de chaque installation doit l'approuver sur GitHub pour qu'elle prenne effet.
 
 <Callout type="warning">

@@ -46,7 +46,10 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
      `Changelog: none` is only for internal-only changes (CI, scripts, docs, tests). A
      feat, fix or perf PR that changes user-facing code fails the check with `none`:
      write the sentence, or use a non-user-facing type (ci, test, chore).
-     Upstream-sync PRs use `Changelog: none`. -->
+     Upstream-sync PRs use `Changelog: none`.
+     Never name a host, machine or deployment target of one workspace in the sentence
+     (for example a server or deploy host). A change that only operates this workspace
+     (host setup, deploy, runbook) uses `Changelog: none`. -->
 
 Changelog: <one user-facing sentence, or none>
 

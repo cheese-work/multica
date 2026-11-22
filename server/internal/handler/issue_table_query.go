@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -84,6 +85,7 @@ type issueTableDateFilterRequest struct {
 type issueTableFiltersRequest struct {
 	Statuses          []string             `json:"statuses,omitempty"`
 	Priorities        []string             `json:"priorities,omitempty"`
+	CreatedVia        []string             `json:"created_via,omitempty"`
 	Assignees         []issueTableActorRef `json:"assignees,omitempty"`
 	IncludeNoAssignee bool                 `json:"include_no_assignee,omitempty"`
 	Creators          []issueTableActorRef `json:"creators,omitempty"`
@@ -299,6 +301,7 @@ func canonicalIssueTableFingerprint(workspaceID string, spec issueTableQuerySpec
 	normalized.Scope.AssigneeTypes = sortedUniqueStrings(normalized.Scope.AssigneeTypes)
 	normalized.Filters.Statuses = sortedUniqueStrings(normalized.Filters.Statuses)
 	normalized.Filters.Priorities = sortedUniqueStrings(normalized.Filters.Priorities)
+	normalized.Filters.CreatedVia = sortedUniqueStrings(normalized.Filters.CreatedVia)
 	normalized.Filters.ProjectIDs = sortedUniqueStrings(normalized.Filters.ProjectIDs)
 	normalized.Filters.ProjectStatuses = sortedUniqueStrings(normalized.Filters.ProjectStatuses)
 	normalized.Filters.WorkflowIDs = sortedUniqueStrings(normalized.Filters.WorkflowIDs)
@@ -447,6 +450,38 @@ var issueTableRelations = []string{"assigned", "created", "my_agents", "subscrib
 var issueTableNegatableFilters = []string{
 	"statuses", "priorities", "assignees", "creators",
 	"project_ids", "project_statuses", "label_ids", "relations", "due_dates",
+	"created_via",
+}
+
+// issueTableCreatedViaUnknown is the filter value for issues whose
+// `created_via` is NULL: made before the column existed, or by an
+// integration channel (CHE-6376 rule 7).
+const issueTableCreatedViaUnknown = "unknown"
+
+// issueTableCreatedVia are the values `filters.created_via` and advanced
+// `created_via` conditions accept: every classifier value plus `unknown`.
+var issueTableCreatedVia = []string{
+	issuecreatedvia.Dialog, issuecreatedvia.DM, issuecreatedvia.Comment,
+	issuecreatedvia.Agent, issuecreatedvia.Autopilot, issuecreatedvia.CLI,
+	issuecreatedvia.Form, issueTableCreatedViaUnknown,
+}
+
+// issueTableCreatedViaPredicate matches an issue whose created_via is one of
+// values (already validated and deduplicated), `unknown` meaning NULL.
+func issueTableCreatedViaPredicate(values []string, addArg func(any) string) string {
+	var stored []string
+	var ors []string
+	for _, value := range values {
+		if value == issueTableCreatedViaUnknown {
+			ors = append(ors, "i.created_via IS NULL")
+		} else {
+			stored = append(stored, value)
+		}
+	}
+	if len(stored) > 0 {
+		ors = append([]string{fmt.Sprintf("i.created_via = ANY(%s::text[])", addArg(stored))}, ors...)
+	}
+	return "(" + strings.Join(ors, " OR ") + ")"
 }
 
 func issueCreatedByUserPredicate(userRef string) string {
@@ -584,6 +619,16 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 	}
 	if len(spec.Filters.Priorities) > 0 {
 		appendFilter("priorities", fmt.Sprintf("i.priority = ANY(%s::text[])", addArg(sortedUniqueStrings(spec.Filters.Priorities))))
+	}
+
+	for _, value := range spec.Filters.CreatedVia {
+		if !issueTableContainsString(issueTableCreatedVia, value) {
+			writeError(w, http.StatusBadRequest, "invalid filters.created_via")
+			return issueTableSQL{}, false
+		}
+	}
+	if len(spec.Filters.CreatedVia) > 0 {
+		appendFilter("created_via", issueTableCreatedViaPredicate(sortedUniqueStrings(spec.Filters.CreatedVia), addArg))
 	}
 
 	// Workspace and project scopes share the optional assignee-type

@@ -83,8 +83,9 @@ func TestSearchIssues_FuzzyFallbackFindsTypoInTitle(t *testing.T) {
 	if !containsID(ids, id) {
 		t.Fatalf("fuzy serch did not find %q; got %v", "fuzzy search", ids)
 	}
-	if begun != 2 {
-		t.Fatalf("search transactions = %d, want 2 (normal query + fallback)", begun)
+	// A query of two terms of 3+ characters also opens the driving-term probe (CHE-7519).
+	if begun != 3 {
+		t.Fatalf("search transactions = %d, want 3 (driving probe + normal query + fallback)", begun)
 	}
 }
 
@@ -230,8 +231,8 @@ func TestSearchIssues_FuzzyFallbackSkippedForShortQueryAndNumbers(t *testing.T) 
 func TestSearchIssues_FuzzyFallbackSkippedOnLaterPages(t *testing.T) {
 	dbfx.Issue(t, "fuzzy search")
 
-	if _, begun := searchIssueIDs(t, "offset=20&q="+url.QueryEscape("fuzy serch")); begun != 1 {
-		t.Fatalf("search transactions = %d, want 1 on a later page", begun)
+	if _, begun := searchIssueIDs(t, "offset=20&q="+url.QueryEscape("fuzy serch")); begun != 2 {
+		t.Fatalf("search transactions = %d, want 2 on a later page (driving probe + normal query, no fallback)", begun)
 	}
 }
 

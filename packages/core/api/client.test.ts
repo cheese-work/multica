@@ -376,6 +376,32 @@ describe("ApiClient pull-request response schema", () => {
     });
   });
 
+  it("keeps snapshot_paused_until and tolerates its absence (CHE-8795)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            pull_requests: [
+              { ...validPR, snapshot_paused_until: "2026-11-20T12:05:00Z" },
+              { ...validPR, id: "pr-2", snapshot_paused_until: null },
+              { ...validPR, id: "pr-3" },
+              { ...validPR, id: "pr-4", snapshot_paused_until: 12345 },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
+    expect(result.pull_requests[0]?.snapshot_paused_until).toBe("2026-11-20T12:05:00Z");
+    expect(result.pull_requests[1]?.snapshot_paused_until).toBeNull();
+    expect(result.pull_requests[2]?.snapshot_paused_until).toBeUndefined();
+    // A malformed value degrades to absent instead of reaching the card.
+    expect(result.pull_requests[3]?.snapshot_paused_until).toBeUndefined();
+  });
+
   it("falls back safely when failed_check_names is malformed", async () => {
     vi.stubGlobal(
       "fetch",

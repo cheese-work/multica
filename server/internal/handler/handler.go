@@ -235,6 +235,9 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// handoffDispatchHook is a test seam (CHE-5488): it is called at named points of
+	// dispatchHandoffIntent, and an error it returns fails the dispatch there.
+	handoffDispatchHook func(point string) error
 	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
 	// that writes merge receipts (CHE-5594). Nil leaves the route off.
 	MergeReceiptBroker *cibroker.Broker

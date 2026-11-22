@@ -83,6 +83,9 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
 	b.WriteString(buildParentIssueBlock(task))
+	if opts.taskBrief != "" {
+		b.WriteString("\n" + strings.TrimRight(opts.taskBrief, "\n") + "\n")
+	}
 	return b.String()
 }
 
@@ -149,10 +152,17 @@ type promptOpts struct {
 	worktreeBranch              string
 	worktreeBase                string
 	worktreeCommitsAllLeftovers bool
+	taskBrief                   string
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
 type PromptOption func(*promptOpts)
+
+// WithTaskBrief appends the per-task part of a split runtime brief
+// (execenv.SplitRuntimeBrief) to the turn, after the cached prefix (CHE-6540).
+func WithTaskBrief(s string) PromptOption {
+	return func(o *promptOpts) { o.taskBrief = s }
+}
 
 // WithSharedLocalDirectory marks a turn that runs inside the user's own
 // directory WITHOUT holding its path mutex — today, a chat turn on an in_place

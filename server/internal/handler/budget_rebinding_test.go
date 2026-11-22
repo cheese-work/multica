@@ -348,11 +348,16 @@ var budgetGuardFor = map[string][]string{
 	"DeleteIssueWorkflow":         {"workflowDeleteWidensBudget"},
 	"UpdateIssue":                 {"guardIssueProjectRebinding", "PreserveProject"},
 	"SetIssueProjectFromDecision": {"loadIssueProjectMove"},
+	// The shared write tails: each caller prices the move before calling them.
+	"applyIssueProjectMove": {"loadIssueProjectMove"},
+	"applyProjectSwitch":    {"projectSwitchWidensBudget", "projectWorkflowQuickParams"},
 }
 
 // budgetGuardExempt names callers that cannot change a binding.
 var budgetGuardExempt = map[string]string{
-	"MoveIssue": "delegates to the UpdateIssue handler, which sets the actor for the guard",
+	"MoveIssue":             "delegates to the UpdateIssue handler, which sets the actor for the guard",
+	"applyIssueProjectMove": "write tail; its callers are held to loadIssueProjectMove above",
+	"applyProjectSwitch":    "write tail; its callers are held to a price check above",
 }
 
 func TestBudgetBindingCallersAreGuarded(t *testing.T) {

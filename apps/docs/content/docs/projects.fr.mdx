@@ -110,6 +110,18 @@ Un projet privé peut n'avoir aucun `owner` ni `admin` sur sa liste, voire plus 
 
 Cliquez sur **Rejoindre** et confirmez pour vous ajouter à la liste des membres. Vous y apparaissez comme n'importe quel membre, les membres existants reçoivent une notification dans leur boîte de réception et, en tant que propriétaire sur la liste, vous pouvez gérer l'accès du projet. Rejoindre un projet ne change pas son responsable. Un projet dont tous les membres sont partis se récupère de la même façon : rejoignez-le, puis gérez-le ou supprimez-le depuis la page du projet.
 
+## Mettre en pause, annuler et terminer
+
+Un projet `paused`, `cancelled` ou `completed` ne démarre aucune nouvelle exécution d'agent, et les agents ne peuvent ni y créer de tâches ni y déplacer des tâches.
+
+| Statut | Exécutions en file d'attente | Exécutions en cours | Modifications et commentaires d'un agent sur ses tâches |
+|---|---|---|---|
+| `paused` | Annulées | Vont jusqu'à leur fin | Autorisés pour une exécution encore en cours sur une tâche de ce projet |
+| `cancelled` | Annulées | Annulées immédiatement | Refusés avec `project_inactive` |
+| `completed` | Annulées | Annulées immédiatement | Refusés avec `project_inactive` |
+
+Une exécution d'agent d'un autre projet reste refusée sur ces tâches avec `project_inactive`. Les membres peuvent toujours modifier.
+
 ## Épingler à la barre latérale
 
 Un projet épinglé apparaît dans votre barre latérale. L'épinglage est une préférence personnelle et n'affecte pas les autres membres.

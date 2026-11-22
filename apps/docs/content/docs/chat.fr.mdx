@@ -139,6 +139,8 @@ La suppression d'une conversation est irréversible et arrête toutes les exécu
 
 Tant qu'un agent attend votre décision, une pastille « N décisions vous attendent » s'affiche sur chaque page. Sur la page de discussion, le même compte apparaît dans l'en-tête sous forme de bouton : un clic liste toutes les décisions en attente et en ouvre une sans déplacer la liste des messages. Ailleurs, un clic sur la pastille ouvre la plus ancienne : le ticket au commentaire de la carte, ou le ticket si la carte n'a pas de commentaire. La même décision apparaît aussi dans votre boîte de réception et dans la liste « Needs you ». Une réponse en texte libre sans option ferme quand même la carte, et l'agent lit vos mots.
 
+Après votre réponse à une carte de décision, vous pouvez l'annuler pendant 5 secondes. L'agent n'est pas réveillé avant la fin de ce délai. Le délai d'annulation s'applique lorsque l'écran de décision est activé ; pour le modifier, définissez `decision_undo_grace` dans les paramètres de l'espace de travail (0 à 30 secondes, 0 le désactive). Seul le membre qui a répondu peut annuler. Une décision qui approuve une action prend effet immédiatement et n'a pas de délai d'annulation.
+
 ### Vider la liste « Needs you »
 
 Chaque ligne de la liste « Needs you » propose deux actions :

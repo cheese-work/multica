@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -388,6 +389,24 @@ func (h *Handler) enterRunBudgetBoundaries(ctx context.Context, issueIDs ...pgty
 	return leave, nil
 }
 
+var (
+	// runBudgetBoundaryIdleTimeout ends a boundary transaction that has sat
+	// idle this long. It is the server-side backstop for a holder whose
+	// process stopped keeping it alive.
+	runBudgetBoundaryIdleTimeout = 60 * time.Second
+	// runBudgetBoundaryKeepalive is how often a live holder touches its
+	// transaction. The protected status write runs on other connections, so
+	// the boundary transaction is idle while the work is live; without this
+	// the idle timeout would drop the lock under a healthy holder.
+	runBudgetBoundaryKeepalive = 20 * time.Second
+	// runBudgetBoundaryHoldLimit force-releases a boundary lock held this long,
+	// freeing the in-process turn and pool slot the server cannot. The
+	// keepalive stops here, so a leak ends within this limit.
+	runBudgetBoundaryHoldLimit = 90 * time.Second
+)
+
+const runBudgetBoundaryRollbackTimeout = 5 * time.Second
+
 // lockRunBudgetBoundary holds the issue's boundary lock until release runs;
 // release is safe to call more than once. An agent's or the platform's status
 // write takes it around the write and its grant. A person's move reads the
@@ -403,15 +422,73 @@ func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID
 		leave()
 		return nil, err
 	}
+	// txMu serialises the keepalive with the rollback: a pgx connection runs
+	// one statement at a time.
+	var txMu sync.Mutex
+	stop := make(chan struct{})
 	release = sync.OnceFunc(func() {
-		_ = tx.Rollback(ctx)
+		close(stop)
+		txMu.Lock()
+		defer txMu.Unlock()
+		// The request may be cancelled by now; a rollback on a cancelled
+		// context is never sent and would leave the lock to the server.
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runBudgetBoundaryRollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
 		leave()
 	})
+	// Backstop for a holder that stops keeping its transaction alive: the
+	// server ends the transaction, and with it the lock, once it sits idle.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL idle_in_transaction_session_timeout = %d", runBudgetBoundaryIdleTimeout.Milliseconds())); err != nil {
+		release()
+		return nil, err
+	}
 	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
 		release()
 		return nil, err
 	}
+	go keepRunBudgetBoundary(ctx, issueID, tx, &txMu, stop, release, runBudgetBoundaryKeepalive, runBudgetBoundaryHoldLimit)
 	return release, nil
+}
+
+// keepRunBudgetBoundary keeps a held boundary transaction from idling out
+// while its holder works, and force-releases it at the hold limit. Reaching
+// the limit means the holder leaked, or ran longer than any status write
+// should; either way the in-process turn and slot are freed and the issue is
+// logged.
+func keepRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID, tx pgx.Tx, txMu *sync.Mutex, stop <-chan struct{}, release func(), keepalive, holdLimit time.Duration) {
+	started := time.Now()
+	ticker := time.NewTicker(keepalive)
+	defer ticker.Stop()
+	limit := time.NewTimer(holdLimit)
+	defer limit.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-limit.C:
+			slog.Error("run budget: boundary lock held too long; releasing it", "issue_id", uuidToString(issueID), "held", time.Since(started).String())
+			release()
+			return
+		case <-ticker.C:
+			txMu.Lock()
+			select {
+			case <-stop:
+				txMu.Unlock()
+				return
+			default:
+			}
+			pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runBudgetBoundaryRollbackTimeout)
+			_, err := tx.Exec(pingCtx, "SELECT 1")
+			cancel()
+			txMu.Unlock()
+			if err != nil {
+				slog.Error("run budget: boundary lock lost; releasing it", "issue_id", uuidToString(issueID), "held", time.Since(started).String(), "error", err)
+				release()
+				return
+			}
+		}
+	}
 }
 
 // lockRunBudgetMove readies a person's status write, which starts the issue's

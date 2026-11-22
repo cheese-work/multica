@@ -332,11 +332,14 @@ func (c *wsRPCClient) deliver(resp protocol.RPCResponsePayload) {
 //     hint the way it did before #7452 instead of re-forcing a server that can
 //     never acknowledge it.
 func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, forceRecheckIDs ...string) ([]*Task, *[]string, error) {
-	result, err := d.claimTasksWSFirst(ctx, daemonID, runtimeIDs, maxTasks, forceRecheckIDs...)
+	result, err := d.claimTasksWSFirst(ctx, daemonID, runtimeIDs, maxTasks, nil, forceRecheckIDs...)
 	return result.Tasks, result.ForceRecheckedRuntimeIDs, err
 }
 
-func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, forceRecheckIDs ...string) (claimTasksResult, error) {
+// maxNonDMTasks is the reserved_chat_slots non-DM budget (nil = unlimited). The
+// legacy per-runtime fallback cannot express it: it only exists for servers that
+// predate the batch route, and those predate the reservation too.
+func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int, forceRecheckIDs ...string) (claimTasksResult, error) {
 	// Un-upgraded server without the batch route: a prior poll already learned
 	// this (via a 404), so go straight to the legacy per-runtime claim and skip
 	// the WS + batch attempts each cycle.
@@ -368,7 +371,7 @@ func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		var resp claimTasksResult
 		// batchClaimRequestTimeout is the server-side execution budget; the
 		// daemon waits that plus the client's grace margin for the response.
-		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, claimTasksBody(daemonID, runtimeIDs, maxTasks, forceRecheckIDs...), &resp)
+		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, claimTasksBody(daemonID, runtimeIDs, maxTasks, maxNonDMTasks, forceRecheckIDs...), &resp)
 		if err == nil {
 			resp.ClaimedOverWS = true
 			return resp, nil
@@ -395,7 +398,7 @@ func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		}
 		d.logger.Debug("ws claim failed; falling back to http", "error", err)
 	}
-	result, err := d.client.claimTasksWithHints(ctx, daemonID, runtimeIDs, maxTasks, forceRecheckIDs...)
+	result, err := d.client.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, maxNonDMTasks, forceRecheckIDs...)
 	if err == nil {
 		return result, nil
 	}

@@ -15,7 +15,8 @@ import { useAuthStore } from "@multica/core/auth";
 import { canDeleteProject } from "@multica/core/projects/deletion-permissions";
 import { projectDetailOptions, projectSubscriptionOptions } from "@multica/core/projects/queries";
 import { Spinner } from "@multica/ui/components/ui/spinner";
-import { useUpdateProject, useDeleteProject, useSetProjectSubscription, ProjectDeletionOfflineError } from "@multica/core/projects/mutations";
+import { useDeleteProject, useSetProjectSubscription, ProjectDeletionOfflineError } from "@multica/core/projects/mutations";
+import { useProjectFieldUpdate } from "./use-project-field-update";
 import { pinListOptions } from "@multica/core/pins";
 import { useCreatePin, useDeletePin } from "@multica/core/pins";
 import { useModalStore } from "@multica/core/modals";
@@ -176,7 +177,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { getActorName } = useActorName();
-  const updateProject = useUpdateProject();
+  const { handleUpdate: handleUpdateField, statusPending } = useProjectFieldUpdate(projectId);
   const deleting = deleteProject.isPending;
   const { data: pinnedItems = [] } = useQuery({
     ...pinListOptions(wsId, userId ?? ""),
@@ -267,14 +268,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
   // Lead popover
-
-  const handleUpdateField = useCallback(
-    (data: Parameters<typeof updateProject.mutate>[0] extends { id: string } & infer R ? R : never) => {
-      if (!project) return;
-      updateProject.mutate({ id: project.id, ...data });
-    },
-    [project, updateProject],
-  );
 
   const handleStatusChange = useCallback(
     (status: ProjectStatus) => {
@@ -391,7 +384,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
-                  <button type="button" className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors">
+                  <button type="button" disabled={statusPending} className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50">
                     <span className={cn("size-2 rounded-full", statusCfg.dotColor)} />
                     <span>{statusLabels[project.status]}</span>
                   </button>

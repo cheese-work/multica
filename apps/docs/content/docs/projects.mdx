@@ -110,6 +110,18 @@ A private project may have no `owner` or `admin` on its list, or no members left
 
 Click **Join** and confirm to add yourself to the member list. You appear in the list like any member, its existing members get an inbox notification, and as an owner on the list you can manage its access. Joining does not change the lead. A project whose members have all left is recovered the same way: join it, then manage or delete it from the project page.
 
+## Pause, cancel, and complete
+
+A project that is `paused`, `cancelled`, or `completed` starts no new agent runs, and agents cannot create issues in it or move issues into it.
+
+| Status | Queued runs | Running runs | Agent edits and comments on its issues |
+|---|---|---|---|
+| `paused` | Cancelled | Run to their end | Allowed for a run that is still running on an issue of this project |
+| `cancelled` | Cancelled | Cancelled at once | Refused with `project_inactive` |
+| `completed` | Cancelled | Cancelled at once | Refused with `project_inactive` |
+
+An agent run of another project is refused on these issues with `project_inactive`. Members can always edit.
+
 ## Pin to the sidebar
 
 A pinned project appears in your sidebar. Pinning is a personal preference and does not affect other members.

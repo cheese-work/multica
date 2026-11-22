@@ -86,6 +86,7 @@ import { DeleteProjectsDialog, ProjectRowActions } from "./project-row-actions";
 import { useArchiveProjects, useRestoreProjects } from "./project-archive";
 import { useFormatRelativeDate } from "./labels";
 import { ProjectStatusBadge, ProjectPriorityBadge } from "./project-badge";
+import { useProjectFieldUpdate } from "./use-project-field-update";
 import { ProjectLeadPicker } from "./project-lead-picker";
 import { ProjectBoard, ProjectBoardLoading, type ProjectBoardColumn } from "./project-board";
 import { ProjectDate, projectDueState } from "./project-date";
@@ -156,14 +157,10 @@ function ProjectInlineCell({
   children,
 }: {
   project: Project;
-  children: (handleUpdate: (data: UpdateProjectRequest) => void) => React.ReactNode;
+  children: (handleUpdate: (data: UpdateProjectRequest) => void, statusPending: boolean) => React.ReactNode;
 }) {
-  const updateProject = useUpdateProject();
-  const handleUpdate = useCallback(
-    (data: UpdateProjectRequest) => updateProject.mutate({ id: project.id, ...data }),
-    [project.id, updateProject],
-  );
-  return <>{children(handleUpdate)}</>;
+  const { handleUpdate, statusPending } = useProjectFieldUpdate(project.id);
+  return <>{children(handleUpdate, statusPending)}</>;
 }
 
 // Header tools — scope menu, filter, display (view, sort, columns).
@@ -595,8 +592,8 @@ export function ProjectsPage() {
         interactive: true,
         cell: (project) => (
           <ProjectInlineCell project={project}>
-            {(handleUpdate) => (
-              <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+            {(handleUpdate, statusPending) => (
+              <ProjectStatusBadge project={project} handleUpdate={handleUpdate} statusPending={statusPending} align="start" />
             )}
           </ProjectInlineCell>
         ),

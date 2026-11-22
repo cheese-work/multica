@@ -34,6 +34,10 @@ export function useUpdateProject() {
     mutationFn: ({ id, ...data }: { id: string } & UpdateProjectRequest) =>
       api.updateProject(id, data),
     onMutate: ({ id, ...data }) => {
+      // A status change cancels runs and settles wakeups on the server, so it
+      // is not a predictable patch (AGENTS.md "State Rules"): wait for the
+      // server and let the caller show the pending state.
+      if ("status" in data) return undefined;
       qc.cancelQueries({ queryKey: projectKeys.list(wsId) });
       const prevList = qc.getQueryData<ListProjectsResponse>(projectKeys.list(wsId));
       const prevDetail = qc.getQueryData<Project>(projectKeys.detail(wsId, id));
@@ -46,8 +50,9 @@ export function useUpdateProject() {
       return { prevList, prevDetail, id };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prevList) qc.setQueryData(projectKeys.list(wsId), ctx.prevList);
-      if (ctx?.prevDetail) qc.setQueryData(projectKeys.detail(wsId, ctx.id), ctx.prevDetail);
+      if (!ctx) return;
+      if (ctx.prevList) qc.setQueryData(projectKeys.list(wsId), ctx.prevList);
+      if (ctx.prevDetail) qc.setQueryData(projectKeys.detail(wsId, ctx.id), ctx.prevDetail);
     },
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: projectKeys.detail(wsId, vars.id) });

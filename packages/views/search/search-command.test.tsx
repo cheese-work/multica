@@ -1470,7 +1470,8 @@ describe("SearchCommand", () => {
 
       await waitFor(() => expect(selectedValue()).toBe("hand-to-agent"), { timeout: 2000 });
       // Fork wins (CHE-7026): the empty state names the query.
-      expect(screen.getByText(`No results for “${prompt}”`)).toBeInTheDocument();
+      // The message search settles after its own pause, so wait for the state.
+      expect(await screen.findByText(`No results for “${prompt}”`, {}, { timeout: 2000 })).toBeInTheDocument();
       fireEvent.keyDown(input(), { key: "Enter" });
 
       expect(mockOpenModal).toHaveBeenCalledWith("quick-create-issue", { prompt });
@@ -1573,6 +1574,32 @@ describe("SearchCommand", () => {
       await waitFor(() => expect(resultValues()).toEqual(["issue-hit"]), { timeout: 2000 });
       expect(renderedHeadings()).not.toContain("Cancelled");
     });
+  });
+
+  // CHE-7337: the title tier paints rows on the keystroke; the full ranked search
+  // replaces them in place, and the row the user is on must not move.
+  it("keeps the selected row when the full search replaces the title rows", async () => {
+    const row = (id: string) => ({ ...makeIssue({ id, identifier: id, title: `Zebra ${id}` }), match_source: "title" });
+    let releaseFull!: (value: unknown) => void;
+    api("searchIssues").mockImplementation((params: { title_only?: boolean }) =>
+      params.title_only
+        ? Promise.resolve({ issues: [row("a"), row("b")], total: 2 })
+        : new Promise((resolve) => (releaseFull = resolve)),
+    );
+    const user = userEvent.setup();
+    renderSearch();
+    await user.type(input(), "zebra");
+    await waitFor(() => expect(renderedValues()).toContain("b"));
+    // The fork palette selects the first row on open: one step lands on "b".
+    await user.keyboard("{ArrowDown}");
+    expect(selectedValue()).toBe("b");
+
+    await waitFor(() => expect(releaseFull).toBeDefined(), { timeout: 2000 });
+    await act(async () => releaseFull({ issues: [row("c"), row("b"), row("a")], total: 3 }));
+    await waitFor(() => expect(renderedValues()).toContain("c"));
+
+    expect(selectedValue()).toBe("b");
+    expect(document.activeElement).toBe(input());
   });
 
   // Rows from the previous query stay painted while the next request is in

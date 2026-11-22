@@ -184,7 +184,10 @@ type DashboardUsageDailyResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32 `json:"task_count"`
 }
 
 // GetDashboardUsageDaily returns per-(date, model) token rows for the
@@ -232,19 +235,20 @@ func (h *Handler) listDashboardUsageDaily(
 	resp := make([]DashboardUsageDailyResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = DashboardUsageDailyResponse{
-			Date:                     row.Date.Time.Format("2006-01-02"),
-			Provider:                 row.Provider,
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
-			TaskCount:                row.TaskCount,
+			Date:                       row.Date.Time.Format("2006-01-02"),
+			Provider:                   row.Provider,
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
+			TaskCount:                  row.TaskCount,
 		}
 	}
 	return resp, nil
@@ -271,7 +275,10 @@ type DashboardUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32 `json:"task_count"`
 }
 
 // GetDashboardUsageByAgent returns per-(agent, model) token aggregates
@@ -342,6 +349,7 @@ func foldRestrictedUsageByAgent(
 			dst.UncostedOutputTokens += src.UncostedOutputTokens
 			dst.UncostedCacheReadTokens += src.UncostedCacheReadTokens
 			dst.UncostedCacheWriteTokens += src.UncostedCacheWriteTokens
+			dst.UncostedCacheWrite1hTokens += src.UncostedCacheWrite1hTokens
 			dst.TaskCount += src.TaskCount
 			return dst
 		},
@@ -365,19 +373,20 @@ func (h *Handler) listDashboardUsageByAgent(
 	resp := make([]DashboardUsageByAgentResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = DashboardUsageByAgentResponse{
-			AgentID:                  uuidToString(row.AgentID),
-			Provider:                 row.Provider,
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
-			TaskCount:                row.TaskCount,
+			AgentID:                    uuidToString(row.AgentID),
+			Provider:                   row.Provider,
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
+			TaskCount:                  row.TaskCount,
 		}
 	}
 	return resp, nil

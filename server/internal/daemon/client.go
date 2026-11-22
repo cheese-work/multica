@@ -321,36 +321,47 @@ func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []s
 	return result.Tasks, err
 }
 
-// claimTasksWithHints issues the HTTP batch claim and returns the full
-// claimTasksResult, including any scheduling hints and the #7452
-// force_rechecked_runtime_ids acknowledgement. forceRecheckIDs are the runtimes
-// woken since the last claim; they ride along in the request body so the server
-// bypasses their cached "empty" verdict for exactly this claim.
+// claimTasksWithHints issues the HTTP batch claim with no non-DM limit and
+// returns the full claimTasksResult, including any scheduling hints and the
+// #7452 force_rechecked_runtime_ids acknowledgement. forceRecheckIDs are the
+// runtimes woken since the last claim; they ride along in the request body so
+// the server bypasses their cached "empty" verdict for exactly this claim.
 func (c *Client) claimTasksWithHints(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, forceRecheckIDs ...string) (claimTasksResult, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
-	defer cancel()
-	var resp claimTasksResult
-	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", claimTasksBody(daemonID, runtimeIDs, maxTasks, forceRecheckIDs...), &resp); err != nil {
-		return claimTasksResult{}, err
-	}
-	return resp, nil
+	return c.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, nil, forceRecheckIDs...)
 }
 
-// claimTasksBody builds the batch-claim request body shared by the HTTP and
-// WS-first transports so both stay byte-identical. force_recheck_runtime_ids
-// (#7452) is an optional, additive field: it is omitted when no runtime was
-// woken so a steady-state poll is exactly the pre-#7452 request, and an older
-// server that does not know the field simply ignores it.
-func claimTasksBody(daemonID string, runtimeIDs []string, maxTasks int, forceRecheckIDs ...string) map[string]any {
+// claimTasksBody is the shared request body of the batch claim, over HTTP and
+// the tasks.claim WS RPC, so both transports stay byte-identical.
+// force_recheck_runtime_ids (#7452) lists the runtimes woken since the last
+// claim; the server bypasses their cached "empty" verdict for exactly this
+// claim. maxNonDMTasks (nil = no limit) caps how many of the returned tasks may
+// be non-DM tasks (issue or group channel tasks), which keeps
+// reserved_chat_slots free for DM runs.
+func claimTasksBody(daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int, forceRecheckIDs ...string) map[string]any {
 	body := map[string]any{
 		"daemon_id":   daemonID,
 		"runtime_ids": runtimeIDs,
 		"max_tasks":   maxTasks,
 	}
+	if maxNonDMTasks != nil {
+		body["max_non_dm_tasks"] = *maxNonDMTasks
+	}
 	if len(forceRecheckIDs) > 0 {
 		body["force_recheck_runtime_ids"] = forceRecheckIDs
 	}
 	return body
+}
+
+// claimTasksWithLimit is claimTasksWithHints plus the reserved_chat_slots
+// non-DM budget (nil = no limit).
+func (c *Client) claimTasksWithLimit(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int, forceRecheckIDs ...string) (claimTasksResult, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
+	defer cancel()
+	var resp claimTasksResult
+	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", claimTasksBody(daemonID, runtimeIDs, maxTasks, maxNonDMTasks, forceRecheckIDs...), &resp); err != nil {
+		return claimTasksResult{}, err
+	}
+	return resp, nil
 }
 
 // isBatchClaimUnsupported reports whether err is a 404 from the batch claim

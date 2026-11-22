@@ -52,6 +52,8 @@ type TaskService struct {
 	TxStarter TxStarter
 	Hub       *realtime.Hub
 	Bus       *events.Bus
+	// PollStats counts every claim poll for claim_poll_stats (CHE-8749 S7a).
+	PollStats *ClaimPollStats
 	Analytics analytics.Client
 	Metrics   *obsmetrics.BusinessMetrics
 	Wakeup    TaskWakeupNotifier
@@ -392,7 +394,7 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	if len(wakeups) > 0 {
 		wakeup = wakeups[0]
 	}
-	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup, PollStats: NewClaimPollStats()}
 	// CHE-5594: without a facts source every merge_eligibility rule stays pending.
 	if tx != nil {
 		svc.MergeFacts = &StoredMergeFacts{Tx: tx, Queries: q}
@@ -1875,6 +1877,9 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 		})
 		if err == nil {
 			err = noteRunInserted(ctx, queries, createParams.IssueID, task.ID)
+		}
+		if err == nil {
+			err = recordEnqueuedRole(ctx, queries, task)
 		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
@@ -4634,7 +4639,15 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 // ClaimTask atomically claims the next queued task for an agent on its current
 // runtime, respecting max_concurrent_tasks.
 func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.AgentTaskQueue, error) {
-	return s.claimTask(ctx, agentID, pgtype.UUID{}, claimScope{claimPath: claimPathAgent})
+	start := time.Now()
+	tally := &claimPollTally{}
+	task, err := s.claimTask(ctx, agentID, pgtype.UUID{}, claimScope{claimPath: claimPathAgent, tally: tally})
+	claimed := 0
+	if task != nil {
+		claimed = 1
+	}
+	s.observePoll(claimPathAgent, start, claimed, err, tally)
+	return task, err
 }
 
 // agentBlockedByProviderHold reports whether agent's model currently resolves
@@ -4684,6 +4697,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	defer func() {
 		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs)
 		s.recordClaimDecision(agentID, runtimeID, outcome, scope, decisionDetail)
+		scope.tally.note(outcome, scope)
 	}()
 
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -4830,6 +4844,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
 			MinPriority:      minPriority,
+			ChatOnly:         scope.chatOnly,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
@@ -4956,8 +4971,16 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 // without touching Postgres. The cache is invalidated synchronously on
 // every enqueue (notifyTaskAvailable), so a queued task becomes
 // claimable on the next call rather than waiting for the TTL.
-func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.UUID) (*db.AgentTaskQueue, error) {
+func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.UUID) (polled *db.AgentTaskQueue, pollErr error) {
 	start := time.Now()
+	tally := &claimPollTally{}
+	defer func() {
+		claimed := 0
+		if polled != nil {
+			claimed = 1
+		}
+		s.observePoll(claimPathRuntime, start, claimed, pollErr, tally)
+	}()
 	var (
 		outcome          = "no_task"
 		listMs, loopMs   int64
@@ -5084,6 +5107,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		task, err := s.claimTask(ctx, candidate.AgentID, runtimeID, claimScope{
 			claimPath:  claimPathRuntime,
 			candidates: candidatesByAgent[agentKey],
+			tally:      tally,
 		})
 		if err != nil {
 			loopMs = time.Since(loopStart).Milliseconds()
@@ -5310,6 +5334,36 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 // so a daemon can tell "this server acknowledged nothing" from "this server does
 // not know the field at all".
 func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int, forceRecheckRuntimeIDs ...pgtype.UUID) ([]db.AgentTaskQueue, []string, error) {
+	return s.ClaimTasksForRuntimesWithNonDMLimit(ctx, runtimeIDs, maxTasks, nil, forceRecheckRuntimeIDs...)
+}
+
+// isDMTask reports whether a task is a DM run for reserved_chat_slots: a chat
+// task that is not a group channel conversation. A web chat or a p2p channel
+// chat is a DM; an issue task and a group channel task are not. Group-ness is
+// the task's own delivery snapshot, the same signal the daemon reads as
+// chat_type, so the server budget and the daemon's slot accounting agree. The
+// ClaimAgentTask chat_only filter applies the same rule in SQL.
+func (s *TaskService) isDMTask(ctx context.Context, task db.AgentTaskQueue) bool {
+	if !task.ChatSessionID.Valid {
+		return false
+	}
+	delivery, err := s.Queries.GetChannelTaskDelivery(ctx, task.ID)
+	if err != nil {
+		// No snapshot (pgx.ErrNoRows) is a web chat, a DM. On a lookup error
+		// count it as a DM: the task is already claimed, and wrongly counting
+		// it as non-DM would only shrink what this batch claims.
+		return true
+	}
+	return delivery.ChatType != "group"
+}
+
+// ClaimTasksForRuntimesWithNonDMLimit is ClaimTasksForRuntimes with the daemon's
+// reserved_chat_slots budget: at most *maxNonDMTasks of the claimed tasks may be
+// non-chat tasks, the rest of maxTasks goes to DM (chat) tasks only. nil means
+// no limit and is exactly ClaimTasksForRuntimes. Reclaimed stale tasks were
+// already dispatched, so they are returned regardless but count against the
+// budget.
+func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int, maxNonDMTasks *int, forceRecheckRuntimeIDs ...pgtype.UUID) (polled []db.AgentTaskQueue, forceRechecked []string, pollErr error) {
 	if len(runtimeIDs) == 0 || maxTasks <= 0 {
 		return nil, nil, nil
 	}
@@ -5320,6 +5374,10 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for _, rid := range forceRecheckRuntimeIDs {
 		forceRecheck[util.UUIDToString(rid)] = struct{}{}
 	}
+	// The whole batch is one poll, however many agents it tries.
+	start := time.Now()
+	tally := &claimPollTally{}
+	defer func() { s.observePoll(claimPathBatch, start, len(polled), pollErr, tally) }()
 
 	// De-dup runtime IDs defensively so MarkEmpty/version bookkeeping stays
 	// unambiguous even if a daemon ever sends a duplicate.
@@ -5442,7 +5500,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	versions := make(map[string]int64, len(uniqueIDs))
 	// forceRechecked acknowledges the forced runtimes that step 5 confirms idle,
 	// so every other forced runtime stays forced (see the doc comment).
-	forceRechecked := make([]string, 0, len(forceRecheck))
+	forceRechecked = make([]string, 0, len(forceRecheck))
 	for _, rid := range uniqueIDs {
 		key := util.UUIDToString(rid)
 		_, forced := forceRecheck[key]
@@ -5521,7 +5579,20 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for i := range candidates {
 		candidatesByAgent[util.UUIDToString(candidates[i].AgentID)]++
 	}
+	nonDMClaimed := 0
+	if maxNonDMTasks != nil {
+		for i := range claimed {
+			if !s.isDMTask(ctx, claimed[i]) {
+				nonDMClaimed++
+			}
+		}
+	}
 	for i := range candidates {
+		nonDMBudgetSpent := maxNonDMTasks != nil && nonDMClaimed >= *maxNonDMTasks
+		if nonDMBudgetSpent && !candidates[i].ChatSessionID.Valid {
+			// Not marked tried: the same agent's chat task may follow.
+			continue
+		}
 		if len(claimed) >= maxTasks {
 			slog.Debug("batch claim: reached max tasks",
 				"claimed", len(claimed),
@@ -5538,6 +5609,8 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID, claimScope{
 			claimPath:  claimPathBatch,
 			candidates: candidatesByAgent[agentKey],
+			tally:      tally,
+			chatOnly:   nonDMBudgetSpent,
 		})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
@@ -5568,6 +5641,9 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			continue
 		}
 		claimed = append(claimed, *task)
+		if maxNonDMTasks != nil && !s.isDMTask(ctx, *task) {
+			nonDMClaimed++
+		}
 	}
 
 	return claimed, forceRechecked, nil
@@ -6931,6 +7007,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				if nerr := noteRunInserted(ctx, qtx, t.IssueID, child.ID); nerr != nil {
 					return nerr
 				}
+				if rerr := CopyWorkflowRoleToRetry(ctx, qtx, t, child); rerr != nil {
+					return rerr
+				}
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -7665,6 +7744,9 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if err := noteRunInserted(ctx, qtx, parent.IssueID, child.ID); err != nil {
 		return nil, err
 	}
+	if err := CopyWorkflowRoleToRetry(ctx, qtx, parent, child); err != nil {
+		return nil, err
+	}
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than
@@ -8291,6 +8373,15 @@ func (s *TaskService) FailStaleTasks(ctx context.Context, arg db.FailStaleTasksP
 func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireStaleQueuedTasksParams) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.ExpireStaleQueuedTasks(ctx, arg)
+	})
+}
+
+// ExpireUnstartedCompactionTasks fails compaction tasks that did not start
+// within the start bound. The UPDATE and SettleTerminalTaskState share one
+// transaction; the caller runs HandleFailedTasks only after it commits.
+func (s *TaskService) ExpireUnstartedCompactionTasks(ctx context.Context, arg db.ExpireUnstartedCompactionTasksParams) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.ExpireUnstartedCompactionTasks(ctx, arg)
 	})
 }
 

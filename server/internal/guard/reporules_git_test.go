@@ -28,6 +28,17 @@ func queueEnv(over map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+// withoutNote drops the "guard: repo rules: ..." line, which names the read path and so differs between REST and Git.
+func withoutNote(s string) string {
+	var keep []string
+	for _, l := range strings.SplitAfter(s, "\n") {
+		if !strings.HasPrefix(l, "guard: repo rules") {
+			keep = append(keep, l)
+		}
+	}
+	return strings.Join(keep, "")
+}
+
 func queuePR() *fakePR {
 	return &fakePR{Number: 1, Repo: repo, HeadOwner: "cheese-work", HeadRef: "feature/x", Base: "main",
 		Title: "feat: x [squash]", Draft: true}
@@ -76,7 +87,7 @@ func TestQueueUsesTheLiveTip(t *testing.T) {
 	g := newFake()
 	g.prs = append(g.prs, queuePR())
 	g.setRules(repo, "main", tipV2, "version: 1\ntitle:\n  require: [\"CHE-\"]\n")
-	if rcode, _, rerrs := checkPR(t, g, nil); rcode != code || rerrs != errs {
+	if rcode, _, rerrs := checkPR(t, g, nil); rcode != code || withoutNote(rerrs) != withoutNote(errs) {
 		t.Errorf("REST gave exit %d %q, Git gave %d %q", rcode, rerrs, code, errs)
 	}
 }
@@ -331,4 +342,52 @@ func realGit() string {
 		return "/usr/bin/git"
 	}
 	return "git"
+}
+
+// CHE-8780 (CHE-7066 criterion 8): every check prints the rules note, so a queue run shows the base tip and the rules
+// file it judged. The note is the one the decision log already holds; no new text.
+func TestCheckPRPrintsTheRulesNoteOnOk(t *testing.T) {
+	f := newFake()
+	f.prs = append(f.prs, queuePR())
+	f.tips[repo+"/main"] = tipV1
+	code, out, errs := checkPR(t, f, queueEnv(nil))
+	if code != 0 {
+		t.Fatalf("exit %d out %q err %q", code, out, errs)
+	}
+	want := "guard: repo rules: no " + RepoRulesFile + " at base tip " + tipV1 + " of " + repo + " (read through git)\n"
+	if !strings.Contains(errs, want) {
+		t.Errorf("stderr %q lacks %q", errs, want)
+	}
+	if !strings.HasPrefix(out, "guard: ok ") {
+		t.Errorf("stdout %q", out)
+	}
+	if strings.Contains(out, "repo rules") {
+		t.Errorf("the note belongs on stderr only: out %q", out)
+	}
+}
+
+func TestCheckPRPrintsTheRulesNoteOnRefused(t *testing.T) {
+	f := newFake()
+	f.prs = append(f.prs, queuePR())
+	f.setRules(repo, "main", tipV2, "version: 1\ntitle:\n  require: [\"CHE-\"]\n")
+	code, _, errs := checkPR(t, f, queueEnv(nil))
+	if code != 1 {
+		t.Fatalf("exit %d %q, want 1", code, errs)
+	}
+	note := "guard: repo rules: " + RepoRulesFile + " at base tip " + tipV2 + " of " + repo
+	i := strings.Index(errs, note)
+	j := strings.Index(errs, "CHE-")
+	if i < 0 || j < 0 || i > strings.LastIndex(errs, "guard: ") {
+		t.Errorf("stderr %q: want the note %q before the refusal line", errs, note)
+	}
+}
+
+func TestCheckPRPrintsTheRESTRulesNote(t *testing.T) {
+	f := newFake()
+	f.prs = append(f.prs, queuePR())
+	f.setRules(repo, "main", tipV1, "version: 1\n")
+	code, _, errs := checkPR(t, f, nil)
+	if code != 0 || !strings.Contains(errs, "guard: repo rules: "+RepoRulesFile+" at base tip "+tipV1+" of "+repo+"\n") {
+		t.Errorf("exit %d stderr %q", code, errs)
+	}
 }

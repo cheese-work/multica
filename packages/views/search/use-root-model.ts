@@ -85,7 +85,7 @@ export interface RootModel {
   commands: Scored<PaletteCommand>[];
   pages: Scored<NavPage>[];
   objects: ObjectHits;
-  server: { results: SearchResults; isLoading: boolean; stale: boolean };
+  server: { results: SearchResults; isLoading: boolean; stale: boolean; searchNow: () => void };
   /** Chat message-content hits and the state of that search. */
   messages: ChatMessageSearch;
   partitioned: ReturnType<typeof partitionAggregatedSearchResults>;
