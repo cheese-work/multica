@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 // armBriefFile is the arm-1 runtime brief inside the task env root; the managed
@@ -49,4 +50,24 @@ func deliverBrief(provider string, ctx execenv.TaskContextForEnv, workDir, rootD
 	_ = execenv.CleanupRuntimeConfig(workDir, provider)
 	briefPath = filepath.Join(rootDir, armBriefFile)
 	return brief, briefPath, perTask, os.WriteFile(briefPath, []byte(brief), 0o600)
+}
+
+// applyBootLaunch puts the boot-prefix decision into the launch options: the
+// stable cwd and the file for --append-system-prompt-file. A lever run uses its
+// own brief file; any other run keeps the managed-profile file (empty when the
+// profile is not managed).
+func applyBootLaunch(opts *agent.ExecOptions, stableCwd, managedBriefPath, leverBriefPath string, lever bool) {
+	opts.StableCwd = stableCwd
+	opts.AppendSystemPromptFile = managedBriefPath
+	if lever {
+		opts.AppendSystemPromptFile = leverBriefPath
+	}
+}
+
+// bootPromptOptions carries the per-task part of a lever brief into the turn prompt.
+func bootPromptOptions(perTask string) []PromptOption {
+	if perTask == "" {
+		return nil
+	}
+	return []PromptOption{WithTaskBrief(perTask)}
 }

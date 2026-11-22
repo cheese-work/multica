@@ -9194,10 +9194,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// so a sibling coding task may be writing to the same tree right now. That
 	// is the one thing it cannot work out from its own context — tell it.
 	// Worktree mode is excluded: there the tree is this task's private checkout.
-	var promptOptions []PromptOption
-	if taskBrief != "" {
-		promptOptions = append(promptOptions, WithTaskBrief(taskBrief))
-	}
+	promptOptions := bootPromptOptions(taskBrief)
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
@@ -9522,12 +9519,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
-	appendSystemPromptFile := managedClaude.BriefPath
-	if bootLever {
-		appendSystemPromptFile = leverBriefPath
-	}
 	execOpts := agent.ExecOptions{
-		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -9565,10 +9557,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		OpenclawMode:            openclawMode,
 		OpenclawModelOverride:   openclawModelOverride,
 		ClaudeSettingsPath:      env.ClaudeSettingsPath,
-		AppendSystemPromptFile:  appendSystemPromptFile,
 		DisableProviderWebTools: task.DisableProviderWebTools(),
 		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
+	applyBootLaunch(&execOpts, stableCwd, managedClaude.BriefPath, leverBriefPath, bootLever)
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
 	//   - openclaw is pinned to the task workdir via the per-task config we

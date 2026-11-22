@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 // armRoots holds one root key per arm, found by search so the test does not
@@ -153,5 +154,59 @@ func TestCostTrialLeverConfigDefaultOff(t *testing.T) {
 	t.Setenv("MULTICA_COST_TRIAL_LEVER", "1")
 	if !costTrialLeverFromEnv() {
 		t.Error("1 must turn it on")
+	}
+}
+
+// Launch path: the same steps runTask takes, for one task per arm. Arm 1 must
+// run in the stable cwd with the brief file and the per-task part in the turn
+// prompt; control must keep the real cwd, no brief file and no per-task part.
+func TestBootLaunchPathByArm(t *testing.T) {
+	arm0, arm1 := armRoots(t)
+	for _, c := range []struct {
+		name, rootKey string
+		lever         bool
+	}{{"arm 1", arm1, true}, {"arm 0 control", arm0, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			wsRoot, workDir, envRoot := t.TempDir(), t.TempDir(), t.TempDir()
+			cfg := Config{WorkspacesRoot: wsRoot, CostTrialLever: true}
+			task := Task{AgentID: "id1", Agent: &AgentData{Name: "a"}, IssueID: "issue-a", IssueIdentifier: "CHE-9", RootIssueIdentifier: c.rootKey}
+
+			stableCwd, lever := cfg.bootPrefixFor(task, "claude", true)
+			_, briefPath, perTask, err := deliverBrief("claude", armBriefCtx("issue-a"), workDir, envRoot, lever)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := agent.ExecOptions{Cwd: workDir}
+			applyBootLaunch(&opts, stableCwd, "", briefPath, lever)
+			prompt := BuildPrompt(task, "claude", bootPromptOptions(perTask)...)
+
+			if opts.Cwd != workDir {
+				t.Errorf("real cwd changed to %q", opts.Cwd)
+			}
+			if c.lever {
+				if want := filepath.Join(wsRoot, ".stable-cwd", "id1"); opts.StableCwd != want {
+					t.Errorf("StableCwd = %q, want %q", opts.StableCwd, want)
+				}
+				if want := filepath.Join(envRoot, armBriefFile); opts.AppendSystemPromptFile != want {
+					t.Errorf("AppendSystemPromptFile = %q, want %q", opts.AppendSystemPromptFile, want)
+				}
+				if !strings.Contains(prompt, "Title issue-a") {
+					t.Errorf("turn prompt lost the per-task brief:\n%s", prompt)
+				}
+				if _, err := os.Stat(filepath.Join(workDir, "CLAUDE.md")); err == nil {
+					t.Error("arm 1 left a workdir CLAUDE.md")
+				}
+				return
+			}
+			if opts.StableCwd != "" || opts.AppendSystemPromptFile != "" {
+				t.Errorf("control got StableCwd=%q AppendSystemPromptFile=%q", opts.StableCwd, opts.AppendSystemPromptFile)
+			}
+			if strings.Contains(prompt, "Title issue-a") {
+				t.Error("control prompt carries the per-task brief")
+			}
+			if _, err := os.Stat(filepath.Join(workDir, "CLAUDE.md")); err != nil {
+				t.Errorf("control must keep the workdir CLAUDE.md: %v", err)
+			}
+		})
 	}
 }
