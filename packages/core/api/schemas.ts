@@ -1600,6 +1600,15 @@ export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
   created_at: "",
 };
 
+// A thread's relation to the viewer, set on thread roots (CHE-6428). All three
+// flags are required: a partial object would read as "not with me" and hide a
+// thread, so anything malformed drops to undefined and the UI shows every thread.
+const ThreadRelationSchema = z.object({
+  with_me: z.boolean(),
+  agents_only: z.boolean(),
+  waiting_on_me: z.boolean(),
+}).loose();
+
 export const CommentSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1627,6 +1636,7 @@ export const CommentSchema = z.lazy(() => z.object({
   // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
   deleted_at: z.string().nullable().optional().catch(undefined),
+  thread_relation: ThreadRelationSchema.optional().catch(undefined),
 }).loose());
 
 export const CommentsListSchema = z.lazy(() => z.array(CommentSchema));
