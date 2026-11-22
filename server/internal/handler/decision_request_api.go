@@ -42,6 +42,10 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
 		Recovers         string   `json:"recovers"`
 		CoversRequestIDs []string `json:"covers_request_ids"`
+		// ReaskOf continues an earlier card in its thread; NewTopic says the ask is a
+		// different matter (CHE-6433). The two exclude each other.
+		ReaskOf  string `json:"reask_of"`
+		NewTopic bool   `json:"new_topic"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -147,13 +151,21 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "new_dm takes for and no session_id")
 		return
 	}
+	if input.ReaskOf != "" && input.NewTopic {
+		writeError(writer, http.StatusBadRequest, "reask_of and new_topic exclude each other: a re-ask continues a card's thread, a new topic starts its own")
+		return
+	}
+	if input.ReaskOf != "" && (input.ParentID != "" || input.NewDM || input.SessionID != "") {
+		writeError(writer, http.StatusBadRequest, "reask_of takes no parent_id, new_dm or session_id: the card goes into the thread of the card it re-asks")
+		return
+	}
 	var sessionID, humanID, parentID pgtype.UUID
-	var recovers pgtype.UUID
+	var recovers, reaskOf pgtype.UUID
 	for _, field := range []struct {
 		value string
 		name  string
 		into  *pgtype.UUID
-	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}, {input.Recovers, "recovers", &recovers}} {
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}, {input.Recovers, "recovers", &recovers}, {input.ReaskOf, "reask_of", &reaskOf}} {
 		if field.value == "" {
 			continue
 		}
@@ -201,7 +213,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers, Wait: input.Wait})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers, Wait: input.Wait, ReaskOf: reaskOf, NewTopic: input.NewTopic, AskRaw: input.Ask})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -261,6 +273,9 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		return
 	}
 	handler.publishDecisionResult(request, issue, &result)
+	if result.Withdrawn != nil {
+		handler.publishDecisionWithdrawal(uuidToString(issue.WorkspaceID), *result.Withdrawn)
+	}
 	hints = append(hints, result.Warnings...)
 	var action *decisionActionResponse
 	if result.Action != nil {

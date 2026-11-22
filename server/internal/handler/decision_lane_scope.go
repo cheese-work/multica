@@ -61,11 +61,20 @@ func rowIdentity(stored, ask string) string {
 // the same person on the same issue within decisionReaskWindow of the earlier
 // one. Asks are compared by identity: the caller's own text, without the source link or the time its state was read.
 func requireNoRecentReask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, identity string) error {
+	return requireNoRecentReaskExcept(ctx, queries, issue, agentID, humanID, identity, pgtype.UUID{})
+}
+
+// requireNoRecentReaskExcept is requireNoRecentReask for a re-ask (--reask-of):
+// the card it replaces is not an earlier ask to refuse.
+func requireNoRecentReaskExcept(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, identity string, except pgtype.UUID) error {
 	earlier, err := queries.OpenDecisionAsksSince(ctx, db.OpenDecisionAsksSinceParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID})
 	if err != nil {
 		return err
 	}
 	for _, row := range earlier {
+		if except.Valid && row.ID == except {
+			continue
+		}
 		if rowIdentity(row.AskIdentity, row.Ask) != identity {
 			continue
 		}
