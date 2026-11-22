@@ -78,19 +78,21 @@ UPDATE issue_wakeup w SET enabled=u.enabled AND w.paused_reason IS NULL AND w.di
 FROM (SELECT unnest(@ids::uuid[]) AS id, unnest(@enabled::bool[]) AS enabled, unnest(@next_fire_at::timestamptz[]) AS next_fire_at) u
 WHERE w.id=u.id;
 
--- name: ListProjectConditionWakeupIDs :many
--- Not locking: the baseline pass locks and rechecks each rule on its own.
-SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
-WHERE i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
-AND w.system_rule IS DISTINCT FROM 'workflow_edges'
-AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
-AND w.condition IS NOT NULL
-ORDER BY w.id;
-
--- name: BumpProjectWakeupRevisions :exec
-UPDATE issue_wakeup w SET revision=w.revision+1
-FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
-AND i.project_id=$1 AND i.workspace_id=$2;
+-- name: BumpProjectWakeupRevisions :many
+-- Returns the condition rules the baseline pass owns, with the revision and
+-- hold the flip left on them. The pass writes a rule only while both still
+-- match, so a later flip, edit or poll wins over an older pass.
+WITH bumped AS (
+ UPDATE issue_wakeup w SET revision=w.revision+1
+ FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+ AND i.project_id=$1 AND i.workspace_id=$2
+ RETURNING w.id, w.revision, w.next_fire_at, w.enabled, w.condition, w.system_rule
+)
+SELECT id, revision, next_fire_at FROM bumped
+WHERE enabled AND condition IS NOT NULL
+AND system_rule IS DISTINCT FROM 'workflow_edges'
+AND system_rule IS DISTINCT FROM 'pr_merge_owed'
+ORDER BY id;
 
 -- name: CancelProjectAgentTasks :many
 -- keep_running: a pause drains, so a running run lives on; cancel and complete stop it.

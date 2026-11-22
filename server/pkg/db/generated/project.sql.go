@@ -30,10 +30,18 @@ func (q *Queries) AdvanceWakeupsBatch(ctx context.Context, arg AdvanceWakeupsBat
 	return err
 }
 
-const bumpProjectWakeupRevisions = `-- name: BumpProjectWakeupRevisions :exec
-UPDATE issue_wakeup w SET revision=w.revision+1
-FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
-AND i.project_id=$1 AND i.workspace_id=$2
+const bumpProjectWakeupRevisions = `-- name: BumpProjectWakeupRevisions :many
+WITH bumped AS (
+ UPDATE issue_wakeup w SET revision=w.revision+1
+ FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+ AND i.project_id=$1 AND i.workspace_id=$2
+ RETURNING w.id, w.revision, w.next_fire_at, w.enabled, w.condition, w.system_rule
+)
+SELECT id, revision, next_fire_at FROM bumped
+WHERE enabled AND condition IS NOT NULL
+AND system_rule IS DISTINCT FROM 'workflow_edges'
+AND system_rule IS DISTINCT FROM 'pr_merge_owed'
+ORDER BY id
 `
 
 type BumpProjectWakeupRevisionsParams struct {
@@ -41,9 +49,33 @@ type BumpProjectWakeupRevisionsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) BumpProjectWakeupRevisions(ctx context.Context, arg BumpProjectWakeupRevisionsParams) error {
-	_, err := q.db.Exec(ctx, bumpProjectWakeupRevisions, arg.ProjectID, arg.WorkspaceID)
-	return err
+type BumpProjectWakeupRevisionsRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	Revision   int64              `json:"revision"`
+	NextFireAt pgtype.Timestamptz `json:"next_fire_at"`
+}
+
+// Returns the condition rules the baseline pass owns, with the revision and
+// hold the flip left on them. The pass writes a rule only while both still
+// match, so a later flip, edit or poll wins over an older pass.
+func (q *Queries) BumpProjectWakeupRevisions(ctx context.Context, arg BumpProjectWakeupRevisionsParams) ([]BumpProjectWakeupRevisionsRow, error) {
+	rows, err := q.db.Query(ctx, bumpProjectWakeupRevisions, arg.ProjectID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BumpProjectWakeupRevisionsRow{}
+	for rows.Next() {
+		var i BumpProjectWakeupRevisionsRow
+		if err := rows.Scan(&i.ID, &i.Revision, &i.NextFireAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const cancelProjectAgentTasks = `-- name: CancelProjectAgentTasks :many
@@ -392,41 +424,6 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listProjectConditionWakeupIDs = `-- name: ListProjectConditionWakeupIDs :many
-SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
-WHERE i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
-AND w.system_rule IS DISTINCT FROM 'workflow_edges'
-AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
-AND w.condition IS NOT NULL
-ORDER BY w.id
-`
-
-type ListProjectConditionWakeupIDsParams struct {
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Not locking: the baseline pass locks and rechecks each rule on its own.
-func (q *Queries) ListProjectConditionWakeupIDs(ctx context.Context, arg ListProjectConditionWakeupIDsParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listProjectConditionWakeupIDs, arg.ProjectID, arg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

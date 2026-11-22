@@ -165,6 +165,7 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 	}
 	var cancelled []db.AgentTaskQueue
 	var snapshot pgx.Tx
+	var owned []db.BumpProjectWakeupRevisionsRow
 	defer func() {
 		if snapshot != nil {
 			_ = snapshot.Rollback(context.WithoutCancel(ctx))
@@ -176,7 +177,7 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 		if snapshot, err = beginFactSnapshot(ctx, service.TxStarter); err != nil {
 			return db.Project{}, err
 		}
-		if err := settleProjectWakeups(ctx, tx, queries, project); err != nil {
+		if owned, err = settleProjectWakeups(ctx, tx, queries, project); err != nil {
 			return db.Project{}, err
 		}
 	}
@@ -206,7 +207,7 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 		snapshot = nil
 		run := func() {
 			defer facts.Rollback(context.WithoutCancel(ctx))
-			(&IssueWakeupService{Tasks: service}).baselineProjectConditions(context.WithoutCancel(ctx), project, facts)
+			(&IssueWakeupService{Tasks: service}).baselineProjectConditions(context.WithoutCancel(ctx), project, owned, facts)
 		}
 		if service.startProjectBaseline != nil {
 			service.startProjectBaseline(run)
@@ -228,28 +229,28 @@ const projectConditionHold = 5 * time.Minute
 // timed out resuming a 5,365-issue project). Condition rules, which need a
 // fact evaluation each, are only held here and baselined after the commit by
 // baselineProjectConditions.
-func settleProjectWakeups(ctx context.Context, tx pgx.Tx, queries *db.Queries, project db.Project) error {
+func settleProjectWakeups(ctx context.Context, tx pgx.Tx, queries *db.Queries, project db.Project) ([]db.BumpProjectWakeupRevisionsRow, error) {
 	scope := func() (pgtype.UUID, pgtype.UUID) { return project.ID, project.WorkspaceID }
 	projectID, workspaceID := scope()
 	var now time.Time
 	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
-		return err
+		return nil, err
 	}
 	if err := queries.DiscardProjectWakeupReceipts(ctx, db.DiscardProjectWakeupReceiptsParams{ProjectID: projectID, WorkspaceID: workspaceID}); err != nil {
-		return err
+		return nil, err
 	}
 	if err := queries.DisableProjectDueOneShots(ctx, db.DisableProjectDueOneShotsParams{ProjectID: projectID, WorkspaceID: workspaceID}); err != nil {
-		return err
+		return nil, err
 	}
 	overdue, err := queries.ListProjectOverdueRecurringWakeups(ctx, db.ListProjectOverdueRecurringWakeupsParams{ProjectID: projectID, WorkspaceID: workspaceID})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var batch db.AdvanceWakeupsBatchParams
 	for _, rule := range overdue {
 		next, enabled, err := nextSlotAfter(rule, now)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		batch.Ids = append(batch.Ids, rule.ID)
 		batch.Enabled = append(batch.Enabled, enabled)
@@ -257,7 +258,7 @@ func settleProjectWakeups(ctx context.Context, tx pgx.Tx, queries *db.Queries, p
 	}
 	if len(batch.Ids) > 0 {
 		if err := queries.AdvanceWakeupsBatch(ctx, batch); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	settled := db.MarkProjectWakeupsSettledParams{ProjectID: projectID, WorkspaceID: workspaceID, HoldSeconds: int32(projectConditionHold / time.Second)}
@@ -265,7 +266,7 @@ func settleProjectWakeups(ctx context.Context, tx pgx.Tx, queries *db.Queries, p
 		settled.LastError = pgtype.Text{String: ErrProjectInactive.Error(), Valid: true}
 	}
 	if err := queries.MarkProjectWakeupsSettled(ctx, settled); err != nil {
-		return err
+		return nil, err
 	}
 	return queries.BumpProjectWakeupRevisions(ctx, db.BumpProjectWakeupRevisionsParams{ProjectID: projectID, WorkspaceID: workspaceID})
 }
@@ -288,28 +289,26 @@ func beginFactSnapshot(ctx context.Context, starter TxStarter) (pgx.Tx, error) {
 	return tx, nil
 }
 
-// baselineProjectConditions baselines every enabled condition rule of a project
-// after a status flip, each in its own short transaction, so no request waits
+// baselineProjectConditions baselines the condition rules a status flip left
+// held (owned), each in its own short transaction, so no request waits
 // for it and the workspace lock is held for one rule at a time. A rule records
 // the facts of the flip's snapshot, not of the moment the pass runs, so a
 // condition that turns true after the commit still wakes the agent. The pass
-// discards no receipts: the flip already did, and later ones are live. It is
-// idempotent. Failures are logged; the rule's hold ends and the scheduler's
+// discards no receipts: the flip already did, and later ones are live. Each
+// write is fenced against later changes to the rule. Failures are logged; the rule's hold ends and the scheduler's
 // ordinary poll takes over.
-func (s *IssueWakeupService) baselineProjectConditions(ctx context.Context, project db.Project, facts pgx.Tx) {
-	ids, err := s.Tasks.Queries.ListProjectConditionWakeupIDs(ctx, db.ListProjectConditionWakeupIDsParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
-	if err != nil {
-		slog.Warn("project condition baseline: list failed", "project_id", util.UUIDToString(project.ID), "error", err)
-		return
-	}
-	for _, id := range ids {
-		if err := s.baselineProjectCondition(ctx, project.WorkspaceID, id, facts); err != nil {
-			slog.Warn("project condition baseline failed", "project_id", util.UUIDToString(project.ID), "wakeup_id", util.UUIDToString(id), "error", err)
+func (s *IssueWakeupService) baselineProjectConditions(ctx context.Context, project db.Project, owned []db.BumpProjectWakeupRevisionsRow, facts pgx.Tx) {
+	for _, fence := range owned {
+		if err := s.baselineProjectCondition(ctx, project.WorkspaceID, fence, facts); err != nil {
+			slog.Warn("project condition baseline failed", "project_id", util.UUIDToString(project.ID), "wakeup_id", util.UUIDToString(fence.ID), "error", err)
 		}
 	}
 }
 
-func (s *IssueWakeupService) baselineProjectCondition(ctx context.Context, workspaceID, id pgtype.UUID, facts pgx.Tx) error {
+// baselineProjectCondition writes one rule's baseline only while the rule is
+// as the flip left it. A later flip, edit or poll changes the revision or the
+// hold, and then this pass is obsolete and leaves the newer state alone.
+func (s *IssueWakeupService) baselineProjectCondition(ctx context.Context, workspaceID pgtype.UUID, fence db.BumpProjectWakeupRevisionsRow, facts pgx.Tx) error {
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -319,14 +318,14 @@ func (s *IssueWakeupService) baselineProjectCondition(ctx context.Context, works
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
 		return err
 	}
-	rule, err := queries.LockIssueWakeup(ctx, id)
+	rule, err := queries.LockIssueWakeup(ctx, fence.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if !rule.Enabled || len(rule.Condition) == 0 {
+	if !rule.Enabled || len(rule.Condition) == 0 || rule.Revision != fence.Revision || !rule.NextFireAt.Time.Equal(fence.NextFireAt.Time) {
 		return nil
 	}
 	var now time.Time
