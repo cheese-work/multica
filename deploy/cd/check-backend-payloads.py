@@ -20,7 +20,8 @@ import subprocess
 import sys
 
 SERVER_BINARIES = ['server', 'multica', 'migrate', 'maintenance',
-                   'backfill_task_usage_hourly', 'backfill_codex_usage_cache']
+                   'backfill_task_usage_hourly', 'backfill_codex_usage_cache',
+                   'backfill_issue_created_via']
 DAEMON_KEYS = ['linux-amd64', 'linux-arm64', 'darwin-arm64', 'darwin-amd64']
 MANIFEST = 'daemon-binaries/manifest.json'
 
