@@ -2001,6 +2001,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !h.askGuardAllowsWaitingComment(w, r, issue, authorType, actorTask, parentComment, req) {
 		return
 	}
+	askNoticeMember := h.typedAskCommentMember(r, issue, authorType, actorTask, req.Ask)
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
 	// rendering layer (rehype-sanitize) and at the editor layer
@@ -2206,6 +2207,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil && answersNotice && authorType == "member" {
 		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
+	}
+	if err == nil && askNoticeMember.Valid {
+		err = recordTypedAskComment(r, qtx, issue, actorTask, askNoticeMember, created.Comment())
 	}
 	var actionAnswer decisionRecordResult
 	if err == nil && bindsAction {
