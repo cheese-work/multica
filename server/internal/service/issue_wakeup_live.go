@@ -32,8 +32,9 @@ const (
 type fallbackAdmission struct {
 	item   db.ListWakeupDeliveryItemsRow
 	reason string
-	// hostFailure is the host run's failure_reason, set for a host-run end.
-	hostFailure string
+	// failureReason is the host run's failure_reason for a host-run end, or the
+	// item's own for a provider rejection.
+	failureReason string
 }
 
 // liveItems is what a pass learns from the wakeup's items.
@@ -111,8 +112,11 @@ func readLiveItems(ctx context.Context, q *db.Queries, w db.IssueWakeup, free []
 				WakeupID: w.ID, EventID: item.EventID, SeenStatus: item.Status, Reason: reason})
 			if err == nil {
 				fb := fallbackAdmission{item: item, reason: reason}
-				if reason == "host_cancelled" || reason == "host_failed" {
-					fb.hostFailure = item.TaskFailureReason.String
+				switch reason {
+				case "host_cancelled", "host_failed":
+					fb.failureReason = item.TaskFailureReason.String
+				case "rejected":
+					fb.failureReason = item.FailureReason.String
 				}
 				out.fallbacks = append(out.fallbacks, fb)
 				continue

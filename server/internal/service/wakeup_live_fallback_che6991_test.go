@@ -231,6 +231,9 @@ func TestProviderRejectionWhileHostRunsStartsOneRun(t *testing.T) {
 	e.f.Exec(t, `UPDATE task_pr_event_delivery SET status='failed', failure_reason='injection_rejected', attempt_count=1 WHERE event_id=$1`, e.item.EventID)
 	got := e.pass(t)
 	e.fellBack(t, got, "rejected", r)
+	if n := e.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='wakeup_join_fallback' AND details->>'reason'='rejected' AND details->>'failure_reason'='injection_rejected'`, e.issue); n != 1 {
+		t.Fatalf("wakeup_join_fallback rows naming the provider failure_reason = %d, want 1", n)
+	}
 	for i := 0; i < 3; i++ {
 		got = e.pass(t)
 	}

@@ -1516,8 +1516,8 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		details := map[string]any{
 			"reason": fb.reason, "task_id": util.UUIDToString(fb.item.TaskID), "firing_id": util.UUIDToString(fb.item.EventID),
 		}
-		if fb.hostFailure != "" {
-			details["failure_reason"] = fb.hostFailure
+		if fb.failureReason != "" {
+			details["failure_reason"] = fb.failureReason
 		}
 		if err := note(wakeupActivityJoinFallback, details); err != nil {
 			return err
