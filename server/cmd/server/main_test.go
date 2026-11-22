@@ -2,6 +2,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"strconv"
@@ -477,7 +481,8 @@ func runBootHelper(t *testing.T, env ...string) (exitCode int, stdout, stderr st
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
-	if ee, ok := err.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
 		exitCode = ee.ExitCode()
 	} else if err != nil {
 		t.Fatalf("run helper: %v", err)
@@ -506,5 +511,33 @@ func TestBoot_SecretsKeyUnsetInDevelopmentBoots(t *testing.T) {
 	code, stdout, stderr := runBootHelper(t, "APP_ENV=development")
 	if code != 0 || !strings.Contains(stdout, "booted") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q, want a normal boot", code, stdout, stderr)
+	}
+}
+
+// TestMainCallsSecretsKeyBootCheck proves main() runs the boot check: the
+// subprocess tests above exercise the helper, not main, so a deleted call
+// would otherwise pass every test.
+func TestMainCallsSecretsKeyBootCheck(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	found := false
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "main" || fn.Recv != nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "exitOnSecretsKeyBootError" {
+					found = true
+				}
+			}
+			return true
+		})
+	}
+	if !found {
+		t.Fatal("main() does not call exitOnSecretsKeyBootError")
 	}
 }
