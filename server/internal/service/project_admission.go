@@ -193,7 +193,12 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 		service.BroadcastCancelledTasks(ctx, util.UUIDToString(project.WorkspaceID), cancelled)
 	}
 	if settleConditions {
-		go (&IssueWakeupService{Tasks: service}).baselineProjectConditions(context.WithoutCancel(ctx), project)
+		run := func() { (&IssueWakeupService{Tasks: service}).baselineProjectConditions(context.WithoutCancel(ctx), project) }
+		if service.startProjectBaseline != nil {
+			service.startProjectBaseline(run)
+		} else {
+			go run()
+		}
 	}
 	return project, nil
 }

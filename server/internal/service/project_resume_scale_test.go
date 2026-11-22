@@ -147,3 +147,39 @@ func TestProjectStatusChangeCostIsIndependentOfWakeupCount(test *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 }
+
+// A condition that becomes true between the status commit and the baseline pass
+// is news, not baseline: the pass must not mark it as already seen.
+func TestProjectResumeBaselineKeepsConditionsThatChangeAfterCommit(test *testing.T) {
+	fixture, wakeups, issue, agent := conditionFixture(test)
+	ctx := context.Background()
+	projectID := fixture.Project(test, "Resume race", testutil.Cols{"status": "in_progress"})
+	fixture.Exec(test, "UPDATE issue SET project_id=$2, status='backlog' WHERE id=$1", issue, projectID)
+	rule := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event",
+		Condition: condition(test, map[string]any{"type": "issue_field", "field": "status", "value": "todo"}), Instruction: "Status reached todo"})
+
+	var held []func()
+	tasks := &TaskService{Queries: wakeups.Tasks.Queries, Bus: wakeups.Tasks.Bus, TxStarter: wakeups.Tasks.TxStarter,
+		startProjectBaseline: func(run func()) { held = append(held, run) }}
+	flip := func(status string) {
+		if _, err := tasks.UpdateProject(ctx, util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
+			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
+		}, false, nil); err != nil {
+			test.Fatalf("flip to %s: %v", status, err)
+		}
+	}
+	flip("paused")
+	flip("in_progress")
+	if len(held) != 2 {
+		test.Fatalf("held %d baseline passes, want 2", len(held))
+	}
+	// The condition turns true after the resume committed, before the pass ran.
+	fixture.Exec(test, "UPDATE issue SET status='todo' WHERE id=$1", issue)
+	for _, run := range held {
+		run()
+	}
+	wakeTick(test, fixture, wakeups, rule.ID)
+	if runs := wakeRuns(test, fixture, rule.ID); runs != 1 {
+		test.Errorf("condition that became true after the resume started %d runs, want 1", runs)
+	}
+}

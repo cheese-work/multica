@@ -48,6 +48,10 @@ type TaskService struct {
 	// at startup, so DO_NOT_TRACK stops collection, not just delivery.
 	RecordMemberActivity bool
 
+	// startProjectBaseline runs the condition baseline pass that follows a
+	// project status change. Nil runs it in a goroutine; tests hold it.
+	startProjectBaseline func(run func())
+
 	Queries   *db.Queries
 	TxStarter TxStarter
 	Hub       *realtime.Hub
