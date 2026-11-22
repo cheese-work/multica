@@ -29,6 +29,7 @@ const patCachePrefix = "mul:auth:pat:"
 type PATCache struct {
 	rdb   redis.UniversalClient
 	local *localTTLCache[string] // set only when rdb is nil
+	fence invalidationFence
 }
 
 // NewPATCache returns a cache backed by rdb. With a nil rdb it returns a
@@ -83,6 +84,36 @@ func (c *PATCache) Set(ctx context.Context, hash, userID string, ttl time.Durati
 	}
 }
 
+// Begin returns a fence generation. Call it after a cache miss and BEFORE the
+// Postgres read, then fill with SetIfNotInvalidated: if Invalidate ran in this
+// process in between, the fill is dropped so a revoke is not undone by a
+// request that read the token just before it.
+func (c *PATCache) Begin() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fence.begin()
+}
+
+// SetIfNotInvalidated is Set, skipped when an Invalidate ran in this process
+// since Begin returned gen. With Redis the entry is written first and removed
+// again if the fence moved meanwhile, so no interleaving leaves a stale entry.
+func (c *PATCache) SetIfNotInvalidated(ctx context.Context, gen uint64, hash, userID string, ttl time.Duration) {
+	if c == nil || ttl <= 0 {
+		return
+	}
+	if c.local != nil {
+		c.local.setIf(hash, userID, ttl, func() bool { return c.fence.unchanged(gen) })
+		return
+	}
+	c.Set(ctx, hash, userID, ttl)
+	if !c.fence.unchanged(gen) {
+		if err := c.rdb.Del(ctx, patCacheKey(hash)).Err(); err != nil {
+			slog.Warn("pat_cache: fenced fill cleanup failed; entry will expire on TTL", "error", err)
+		}
+	}
+}
+
 // TTLForExpiry returns the cache TTL for a token given its expires_at.
 //   - Zero expiresAt (token never expires) → full AuthCacheTTL.
 //   - expiresAt in the future → min(AuthCacheTTL, time until expiry).
@@ -113,6 +144,7 @@ func (c *PATCache) Invalidate(ctx context.Context, hash string) {
 	if c == nil {
 		return
 	}
+	c.fence.bump() // before the delete: see invalidationFence
 	if c.local != nil {
 		c.local.invalidate(hash)
 		return

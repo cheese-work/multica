@@ -2,6 +2,7 @@ package auth
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,11 +49,20 @@ func (c *localTTLCache[V]) get(key string) (V, bool) {
 }
 
 func (c *localTTLCache[V]) set(key string, v V, ttl time.Duration) {
+	c.setIf(key, v, ttl, nil)
+}
+
+// setIf stores the entry only if ok (when non-nil) still holds. ok runs under
+// the cache lock, so it cannot interleave with invalidate's delete.
+func (c *localTTLCache[V]) setIf(key string, v V, ttl time.Duration, ok func() bool) {
 	if ttl <= 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if ok != nil && !ok() {
+		return
+	}
 	now := c.now()
 	if _, exists := c.entries[key]; !exists && len(c.entries) >= localCacheMaxEntries {
 		for k, e := range c.entries {
@@ -72,3 +82,20 @@ func (c *localTTLCache[V]) invalidate(key string) {
 	defer c.mu.Unlock()
 	delete(c.entries, key)
 }
+
+// invalidationFence lets a cache fill detect a same-process invalidate that ran
+// after the fill read its row. A request reads the token from Postgres, a revoke
+// deletes the cache entry, then the request fills the cache with the identity it
+// read: without a fence that stale entry would outlive the revoke for up to
+// AuthCacheTTL. The counter is process-wide, not per key: a revoke is rare, and
+// a skipped fill only costs one more Postgres lookup.
+type invalidationFence struct{ gen atomic.Uint64 }
+
+// begin returns the generation to hold across the Postgres read.
+func (f *invalidationFence) begin() uint64 { return f.gen.Load() }
+
+// bump marks an invalidate. Call it BEFORE deleting the entry.
+func (f *invalidationFence) bump() { f.gen.Add(1) }
+
+// unchanged reports that no invalidate ran since begin returned gen.
+func (f *invalidationFence) unchanged(gen uint64) bool { return f.gen.Load() == gen }

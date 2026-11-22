@@ -36,6 +36,7 @@ type DaemonTokenIdentity struct {
 type DaemonTokenCache struct {
 	rdb   redis.UniversalClient
 	local *localTTLCache[DaemonTokenIdentity] // set only when rdb is nil
+	fence invalidationFence
 }
 
 // NewDaemonTokenCache returns a cache backed by rdb. With a nil rdb it
@@ -98,6 +99,32 @@ func (c *DaemonTokenCache) Set(ctx context.Context, hash string, id DaemonTokenI
 	}
 }
 
+// Begin returns a fence generation; see PATCache.Begin.
+func (c *DaemonTokenCache) Begin() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fence.begin()
+}
+
+// SetIfNotInvalidated is Set, skipped (or undone) when an Invalidate ran in
+// this process since Begin returned gen; see PATCache.SetIfNotInvalidated.
+func (c *DaemonTokenCache) SetIfNotInvalidated(ctx context.Context, gen uint64, hash string, id DaemonTokenIdentity, ttl time.Duration) {
+	if c == nil || ttl <= 0 {
+		return
+	}
+	if c.local != nil {
+		c.local.setIf(hash, id, ttl, func() bool { return c.fence.unchanged(gen) })
+		return
+	}
+	c.Set(ctx, hash, id, ttl)
+	if !c.fence.unchanged(gen) {
+		if err := c.rdb.Del(ctx, daemonTokenCacheKey(hash)).Err(); err != nil {
+			slog.Warn("daemon_token_cache: fenced fill cleanup failed; entry will expire on TTL", "error", err)
+		}
+	}
+}
+
 // Invalidate removes the entry for hash. Called when a daemon token is
 // deleted so the deletion takes effect immediately rather than waiting
 // for the TTL.
@@ -105,6 +132,7 @@ func (c *DaemonTokenCache) Invalidate(ctx context.Context, hash string) {
 	if c == nil {
 		return
 	}
+	c.fence.bump() // before the delete: see invalidationFence
 	if c.local != nil {
 		c.local.invalidate(hash)
 		return

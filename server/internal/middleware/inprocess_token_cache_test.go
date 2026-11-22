@@ -25,7 +25,13 @@ import (
 type stmtCounter struct {
 	mu     sync.Mutex
 	counts map[string]int
+	// afterQuery runs once, right after the named query finishes and before the
+	// caller sees its rows. It lets a test interleave a revoke between the
+	// middleware's DB read and its cache fill.
+	afterQuery map[string]func()
 }
+
+type stmtNameKey struct{}
 
 func (c *stmtCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
 	c.mu.Lock()
@@ -33,11 +39,24 @@ func (c *stmtCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.Tr
 	for _, name := range []string{"GetPersonalAccessTokenByHash", "UpdatePersonalAccessTokenLastUsed", "GetDaemonTokenByHash"} {
 		if strings.Contains(d.SQL, "name: "+name) {
 			c.counts[name]++
+			ctx = context.WithValue(ctx, stmtNameKey{}, name)
 		}
 	}
 	return ctx
 }
-func (c *stmtCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (c *stmtCounter) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	name, _ := ctx.Value(stmtNameKey{}).(string)
+	if name == "" {
+		return
+	}
+	c.mu.Lock()
+	fn := c.afterQuery[name]
+	delete(c.afterQuery, name)
+	c.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
 func (c *stmtCounter) get(name string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -250,4 +269,61 @@ func TestNoRedis_ScopedPATIsLookedUpOnEveryRequest(t *testing.T) {
 	if got := e.count.get("GetPersonalAccessTokenByHash"); got != 5 {
 		t.Errorf("scoped PAT lookups = %d, want 5 (never cached)", got)
 	}
+}
+
+// A request that read the token as valid, then lost a race with the revoke,
+// must not write the stale identity back into the cache: later requests would
+// accept a revoked token for up to AuthCacheTTL.
+func TestNoRedis_RevokeDuringInFlightLookupIsNotUndoneByCacheFill(t *testing.T) {
+	ctx := context.Background()
+	t.Run("PAT/Auth", func(t *testing.T) {
+		e := newTokenCacheEnv(t)
+		raw, id := e.newPAT(t, nil, time.Time{})
+		cache := auth.NewPATCache(nil)
+		h := Auth(e.queries, cache, nil, nil)(tcOKHandler)
+		e.count.afterQuery = map[string]func(){"GetPersonalAccessTokenByHash": func() {
+			// Same two steps as handler.RevokePersonalAccessToken, run on a
+			// separate pool connection while the lookup above is in flight.
+			if _, err := e.queries.RevokePersonalAccessToken(ctx, db.RevokePersonalAccessTokenParams{ID: parseTestUUID(t, id), UserID: parseTestUUID(t, e.userID)}); err != nil {
+				t.Error(err)
+			}
+			cache.Invalidate(ctx, auth.HashToken(raw))
+		}}
+		_ = tcServe(h, raw) // in-flight request: authenticated before the revoke, either outcome is fine
+		if code := tcServe(h, raw); code != http.StatusUnauthorized {
+			t.Fatalf("request after revoke: got %d, want 401 (stale entry was cached)", code)
+		}
+	})
+	t.Run("PAT/DaemonAuth", func(t *testing.T) {
+		e := newTokenCacheEnv(t)
+		raw, id := e.newPAT(t, nil, time.Time{})
+		cache := auth.NewPATCache(nil)
+		h := DaemonAuth(e.queries, cache, nil, nil)(tcOKHandler)
+		e.count.afterQuery = map[string]func(){"GetPersonalAccessTokenByHash": func() {
+			if _, err := e.queries.RevokePersonalAccessToken(ctx, db.RevokePersonalAccessTokenParams{ID: parseTestUUID(t, id), UserID: parseTestUUID(t, e.userID)}); err != nil {
+				t.Error(err)
+			}
+			cache.Invalidate(ctx, auth.HashToken(raw))
+		}}
+		_ = tcServe(h, raw)
+		if code := tcServe(h, raw); code != http.StatusUnauthorized {
+			t.Fatalf("request after revoke: got %d, want 401 (stale entry was cached)", code)
+		}
+	})
+	t.Run("DaemonToken/DaemonAuth", func(t *testing.T) {
+		e := newTokenCacheEnv(t)
+		raw := e.newDaemonToken(t)
+		cache := auth.NewDaemonTokenCache(nil)
+		h := DaemonAuth(e.queries, nil, cache, nil)(tcOKHandler)
+		e.count.afterQuery = map[string]func(){"GetDaemonTokenByHash": func() {
+			if _, err := e.pool.Exec(ctx, `DELETE FROM daemon_token WHERE token_hash = $1`, auth.HashToken(raw)); err != nil {
+				t.Error(err)
+			}
+			cache.Invalidate(ctx, auth.HashToken(raw))
+		}}
+		_ = tcServe(h, raw)
+		if code := tcServe(h, raw); code != http.StatusUnauthorized {
+			t.Fatalf("request after delete: got %d, want 401 (stale entry was cached)", code)
+		}
+	})
 }
