@@ -66,15 +66,47 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 		req.Header.Set("X-Task-ID", taskID)
 		return testutil.Call(t, testHandler.CreateIssue, req)
 	}
+	var lastIssueID string
 	status := func(r *testutil.Response) string {
 		t.Helper()
 		var got IssueResponse
 		r.Want(http.StatusCreated).JSON(&got)
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, got.ID) })
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM comment WHERE issue_id = $1`, got.ID)
+			testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, got.ID)
+		})
+		lastIssueID = got.ID
 		return got.Status
 	}
+	// comments lists the comments of the issue the last status() call filed.
+	comments := func() (contents []string, authors []string) {
+		t.Helper()
+		rows, err := testPool.Query(ctx,
+			`SELECT content, author_type || ':' || author_id::text FROM comment WHERE issue_id = $1 ORDER BY created_at`, lastIssueID)
+		if err != nil {
+			t.Fatalf("list comments: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c, a string
+			if err := rows.Scan(&c, &a); err != nil {
+				t.Fatal(err)
+			}
+			contents, authors = append(contents, c), append(authors, a)
+		}
+		return contents, authors
+	}
+	wantNoComment := func() {
+		t.Helper()
+		if got, _ := comments(); len(got) != 0 {
+			t.Fatalf("comments = %q, want none", got)
+		}
+	}
 	unclear := func(project string, title string) map[string]any {
-		return map[string]any{"title": title + " " + workflowTestSuffix(), "project_id": project, "status": "investigating"}
+		return map[string]any{
+			"title": title + " " + workflowTestSuffix(), "project_id": project, "status": "investigating",
+			"discovery_reason": "no checkable done-when",
+		}
 	}
 
 	toDiscovery := `{"design":"` + withDiscovery.ID + `"}`
@@ -85,12 +117,32 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 		if got := status(create(unclear(projectWith, "feat(x): vague"), true)); got != "investigating" {
 			t.Fatalf("status = %q, want investigating", got)
 		}
+		contents, authors := comments()
+		if len(contents) != 1 || contents[0] != "Discovery: no checkable done-when. Reply to veto." {
+			t.Fatalf("comments = %q, want exactly the one-line Discovery note", contents)
+		}
+		if want := "agent:" + agentID; authors[0] != want {
+			t.Fatalf("comment author = %q, want %q", authors[0], want)
+		}
 	})
-	t.Run("on: workflow without the step starts the issue as today", func(t *testing.T) {
+	t.Run("on: a missing reason gets the default one-line reason", func(t *testing.T) {
+		setSettings("on", `{}`)
+		body := unclear(projectWith, "feat(x): vague")
+		delete(body, "discovery_reason")
+		if got := status(create(body, true)); got != "investigating" {
+			t.Fatalf("status = %q, want investigating", got)
+		}
+		contents, _ := comments()
+		if len(contents) != 1 || contents[0] != "Discovery: the request is not clear enough to start. Reply to veto." {
+			t.Fatalf("comments = %q, want the default Discovery note", contents)
+		}
+	})
+	t.Run("on: workflow without the step starts the issue as today, with no note", func(t *testing.T) {
 		setSettings("on", `{}`)
 		if got := status(create(unclear(projectWithout, "feat(x): vague"), true)); got != "todo" {
 			t.Fatalf("status = %q, want todo", got)
 		}
+		wantNoComment()
 	})
 	t.Run("on: a clear request keeps the default status", func(t *testing.T) {
 		setSettings("on", `{}`)
@@ -99,6 +151,7 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 		if got := status(create(body, true)); got == "investigating" {
 			t.Fatalf("clear request was filed in Discovery")
 		}
+		wantNoComment()
 	})
 	t.Run("on: mixed title types judge the workflow the title picks", func(t *testing.T) {
 		// Project workflow lacks the step, the title-type workflow has it.
@@ -111,6 +164,7 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 		if got := status(create(unclear(projectWith, "design(x): vague"), true)); got != "todo" {
 			t.Fatalf("routed to a workflow without the step: status = %q, want todo", got)
 		}
+		wantNoComment()
 		// An unrouted title in the same workspace still follows its project.
 		if got := status(create(unclear(projectWith, "feat(x): vague"), true)); got != "investigating" {
 			t.Fatalf("unrouted title: status = %q, want investigating", got)
@@ -121,10 +175,15 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 		if got := status(create(unclear(projectWith, "feat(x): vague"), true)); got != "investigating" {
 			t.Fatalf("explicit status on a workflow with the step: status = %q, want investigating", got)
 		}
+		wantNoComment()
 		create(unclear(projectWithout, "feat(x): vague"), true).Want(http.StatusBadRequest)
 	})
-	t.Run("on: only a quick-create origin is downgraded", func(t *testing.T) {
+	t.Run("on: only a quick-create origin is downgraded or noted", func(t *testing.T) {
 		setSettings("on", `{}`)
 		create(unclear(projectWithout, "feat(x): vague"), false).Want(http.StatusBadRequest)
+		if got := status(create(unclear(projectWith, "feat(x): vague"), false)); got != "investigating" {
+			t.Fatalf("status = %q, want investigating", got)
+		}
+		wantNoComment()
 	})
 }

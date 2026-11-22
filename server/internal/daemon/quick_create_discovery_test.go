@@ -34,9 +34,8 @@ func TestQuickCreateDiscoveryOnClassifiesRequest(t *testing.T) {
 		"open product-direction choice",
 		"2 hours or less",
 		"`--status investigating`",
-		"Discovery: <reason>. Reply to veto.",
-		"issue comment add",
-		"only if it is `investigating`",
+		"--discovery-reason",
+		"Do not add a comment yourself",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("discovery=on prompt missing %q\n%s", want, out)

@@ -1,6 +1,9 @@
 package issueworkflow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // CHE-9075 (C1, R12): quick_create_discovery is off unless a workspace sets
 // "on"; the server keeps a requested Discovery status only on a workflow that
@@ -39,6 +42,20 @@ func TestDiscoveryFallback(t *testing.T) {
 	} {
 		if got := DiscoveryFallback(tc.def, tc.status); got != tc.want {
 			t.Errorf("%s: DiscoveryFallback = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestDiscoveryNote(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	for _, tc := range []struct{ name, reason, want string }{
+		{"plain", "no checkable done-when", "Discovery: no checkable done-when. Reply to veto."},
+		{"one line", "  needs\na design\tlock. ", "Discovery: needs a design lock. Reply to veto."},
+		{"empty gets the default", " ", "Discovery: the request is not clear enough to start. Reply to veto."},
+		{"capped", long, "Discovery: " + long[:200] + ". Reply to veto."},
+	} {
+		if got := DiscoveryNote(tc.reason); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

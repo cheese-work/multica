@@ -3,6 +3,7 @@ package issueworkflow
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 )
 
 // SettingsKeyQuickCreateDiscovery is the workspace settings key (CHE-9075,
@@ -37,4 +38,24 @@ func DiscoveryFallback(def *Definition, status string) string {
 		return StartStatus
 	}
 	return def.Start()
+}
+
+const (
+	discoveryReasonMax     = 200
+	discoveryReasonDefault = "the request is not clear enough to start"
+)
+
+// DiscoveryNote is the one-line comment on an issue filed in Discovery: the
+// reason the run gave, folded to one line and capped, then the veto line. An
+// empty reason reads as the default one.
+func DiscoveryNote(reason string) string {
+	reason = strings.Join(strings.Fields(reason), " ")
+	reason = strings.TrimRight(reason, ".! ")
+	if reason == "" {
+		reason = discoveryReasonDefault
+	}
+	if utf8.RuneCountInString(reason) > discoveryReasonMax {
+		reason = string([]rune(reason)[:discoveryReasonMax])
+	}
+	return "Discovery: " + reason + ". Reply to veto."
 }

@@ -579,14 +579,14 @@ func buildQuickCreatePrompt(task Task) string {
 // writeQuickCreateDiscoveryRule renders the status rule when the workspace
 // setting quick_create_discovery is on (CHE-9075). It applies the entry rule of
 // the Default `todo` step at creation time: a clear request keeps the default
-// status, an unclear one asks for `investigating`. The run cannot tell which
-// workflow the issue will follow, so the server keeps `investigating` only when
-// that workflow has the step and otherwise files the issue as it does today;
-// the run then posts the reason only when the created status says so.
+// status, an unclear one asks for `investigating` with a one-line reason. The
+// run cannot tell which workflow the issue will follow, so the server keeps
+// `investigating` only when that workflow has the step, and posts the Discovery
+// comment itself; the brief's one-create rule stays unchanged.
 func writeQuickCreateDiscoveryRule(b *strings.Builder) {
 	b.WriteString("- **status**: first decide whether the request is clear. It is clear only when ALL hold: it has a checkable done-when; it has no open product-direction choice; the work is 2 hours or less; every input it needs is named and readable; a UI change names its design lock or says none is needed.\n")
 	b.WriteString("    - clear request: omit `--status` (defaults to `todo`).\n")
-	b.WriteString("    - unclear request: pass `--status investigating`. Do not invent the missing facts. The platform keeps `investigating` only when the issue's workflow has a Discovery step. After the create, read `status` in the JSON response: only if it is `investigating`, add one comment on the created issue with `issue comment add <id> --content-file <path>` whose entire text is one line, `Discovery: <reason>. Reply to veto.` (the reason the request is unclear). If `status` is anything else, add no comment.\n")
+	b.WriteString("    - unclear request: pass `--status investigating` and `--discovery-reason \"<one line: why the request is unclear>\"` on the same create. Do not invent the missing facts. The platform files the issue in Discovery and posts the one-line Discovery comment itself when the issue's workflow has that step, and otherwise files it as it does today. Do not add a comment yourself.\n")
 	b.WriteString("\n")
 }
 

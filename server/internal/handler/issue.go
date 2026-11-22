@@ -39,6 +39,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/weblink"
 	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -3897,6 +3898,10 @@ type CreateIssueRequest struct {
 	// origin_id=agent_task_queue.id).
 	OriginType *string `json:"origin_type,omitempty"`
 	OriginID   *string `json:"origin_id,omitempty"`
+	// DiscoveryReason is the one-line reason a quick-create run found the
+	// request unclear (CHE-9075). It is used only when the issue is filed in
+	// Discovery; the server then posts the Discovery comment itself.
+	DiscoveryReason *string `json:"discovery_reason,omitempty"`
 
 	AllowDuplicate bool `json:"allow_duplicate,omitempty"`
 }
@@ -4122,6 +4127,34 @@ func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProject
 func (h *Handler) quickCreateDiscoveryOn(r *http.Request, wsUUID pgtype.UUID) bool {
 	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
 	return err == nil && issueworkflow.QuickCreateDiscovery(ws.Settings)
+}
+
+// postDiscoveryNote writes the Discovery comment (CHE-9075) as the creator. The
+// server posts it, not the run, so it never meets the agent comment guard and
+// exists exactly when the issue was filed in Discovery. It starts no run. A
+// failure is logged and never fails the create.
+func (h *Handler) postDiscoveryNote(r *http.Request, issue db.Issue, authorType, authorID, reason string) {
+	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
+		ID:          dbid.NewV7(),
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  authorType,
+		AuthorID:    parseUUID(authorID),
+		Content:     issueworkflow.DiscoveryNote(reason),
+		Type:        "comment",
+	})
+	if err != nil {
+		slog.Warn("quick-create discovery: comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", uuidToString(issue.ID))...)
+		return
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
+		"comment":             commentToResponse(created.Comment(), nil, nil),
+		"issue_title":         issue.Title,
+		"issue_assignee_type": textToPtr(issue.AssigneeType),
+		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
+		"issue_status":        issue.Status,
+		"issue_revision":      created.IssueRevision,
+	})
 }
 
 // titleTypeWorkflowHint is the one-line note for a title edit whose type maps
@@ -4650,6 +4683,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	issue := res.Issue
 	slog.Info("issue created", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "title", issue.Title, "status", issue.Status, "workspace_id", workspaceID)...)
+
+	if discoveryAsked && issue.Status == issueworkflow.DiscoveryStatusKey {
+		h.postDiscoveryNote(r, issue, creatorType, actualCreatorID, derefString(req.DiscoveryReason))
+	}
 
 	resp := issueToResponse(issue, prefix)
 	h.newReadFilter(r).stubDescription(h, issue, &resp)
