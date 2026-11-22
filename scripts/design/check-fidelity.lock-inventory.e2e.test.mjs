@@ -16,12 +16,20 @@ const CODE = `<p data-testid="a">Alpha</p>`;
  * files: { name: html body }, all listed in LOCK.json export_files; cases: [{ file, state, profile }].
  * `exportFiles` overrides the list in LOCK.json (default: every file).
  */
-function run({ files, cases, exportFiles }) {
+function run({ files, cases, exportFiles, extraLocks = {}, lockDirs = [] }) {
   const dir = mkdtempSync(join(tmpdir(), "fidelity-inventory-"));
   const lockDir = join(dir, "approved");
   mkdirSync(lockDir);
   for (const [name, body] of Object.entries(files)) writeFileSync(join(lockDir, name), page(body));
   writeFileSync(join(lockDir, "LOCK.json"), JSON.stringify({ export_files: Object.fromEntries((exportFiles ?? Object.keys(files)).map((n) => [n, "x"])) }));
+  // Other lock folders (name -> { file: body }) that the map has no case for.
+  const extraDirs = Object.entries(extraLocks).map(([name, fs]) => {
+    const d = join(dir, name);
+    mkdirSync(d);
+    for (const [f, body] of Object.entries(fs)) writeFileSync(join(d, f), page(body));
+    writeFileSync(join(d, "LOCK.json"), JSON.stringify({ export_files: Object.fromEntries(Object.keys(fs).map((n) => [n, "x"])) }));
+    return d;
+  });
   const harness = join(dir, "page.html");
   writeFileSync(harness, page(`<div data-fidelity-root>${CODE}</div>`));
   const map = join(dir, "x.blocks.yml");
@@ -31,7 +39,7 @@ function run({ files, cases, exportFiles }) {
     "blocks:", "  a:", '    selector: ".a"',
   ].join("\n") + "\n");
   const out = join(dir, "out");
-  const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--blocks", map, "--out", out, "--harness", harness], { encoding: "utf8" });
+  const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--blocks", map, "--out", out, "--harness", harness, ...extraDirs.filter((_, i) => lockDirs.includes(Object.keys(extraLocks)[i])).flatMap((d) => ["--lock-dir", d])], { encoding: "utf8" });
   return { r, result: JSON.parse(readFileSync(join(out, "result.json"), "utf8")) };
 }
 const of = (result, rule) => result.violations.filter((v) => v.rule === rule);
@@ -98,7 +106,7 @@ test("rule 8 profile-mismatch: a case whose profile differs from the root's data
   const v = of(result, "profile-mismatch");
   assert.equal(v.length, 1);
   assert.match(v[0].reason, /data-profile/);
-  assert.equal(of(result, "uncovered-state").length, 0, "a mismatched case still covers its state");
+  assert.deepEqual(of(result, "uncovered-state").map((x) => `${x.state}@${x.profile}`), ["s1@card-540"], "a mismatched case covers no root");
 });
 
 test("rule 8 profile-mismatch: a profile that is not in devices.yml, and a root whose rendered width is off the profile width", () => {
@@ -143,4 +151,30 @@ test("a lock folder with no LOCK.json is a hard failure, not a silent pass", () 
   const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--blocks", map, "--out", join(dir, "out"), "--harness", harness], { encoding: "utf8" });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /LOCK\.json/);
+});
+
+test("inventory: a lock folder with every case removed is still read (--lock-dir), while another lock keeps its cases", () => {
+  const { r, result } = run({
+    files: { "lock.html": root("s1", "card-540") },
+    extraLocks: { other: { "other.html": root("s9", "card-540", "Only words") + `<p>Stray</p>` } },
+    lockDirs: ["other"],
+    cases: [S1],
+  });
+  assert.equal(r.status, 1);
+  assert.deepEqual(of(result, "uncovered-state").map((v) => `${v.state}@${v.profile}`), ["s9@card-540"]);
+  assert.deepEqual(of(result, "unclaimed-lock-content").map((v) => v.item), ["Stray"]);
+  assert.equal(result.lock_files.length, 2);
+});
+
+test("inventory: a --lock-dir that does not exist is a hard failure", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fidelity-inventory-"));
+  const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--out", join(dir, "out"), "--lock-dir", join(dir, "nope")], { encoding: "utf8" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /nope/);
+});
+
+test("rule 7 per root: roots s1@card-540 and s1@phone-358 with a case for s1@dm-card-520 leave both roots uncovered", () => {
+  const { result } = run({ files: { "lock.html": root("s1", "card-540") + root("s1", "phone-358") }, cases: [{ state: "s1", profile: "dm-card-520" }] });
+  assert.deepEqual(of(result, "uncovered-state").map((v) => `${v.state}@${v.profile}`).sort(), ["s1@card-540", "s1@phone-358"]);
+  assert.equal(of(result, "profile-mismatch").length, 1);
 });

@@ -33,7 +33,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
@@ -82,13 +82,13 @@ export function lockFileViolations(file, inv) {
 }
 
 /**
- * Rule 7: the roots of one lock file that no case covers. A root is covered by a case with its state id and profile. A case
- * with its state id and a profile that no root of that state carries also covers it: that case is a profile-mismatch (rule 8).
+ * Rule 7: the roots of one lock file that no case covers. Coverage is per root: a root is covered only by a case with its
+ * state id and its profile. A case with the right state id and another profile covers no root (it is a profile-mismatch, rule 8).
  */
 export function uncoveredStates(file, roots, cases) {
   const mine = cases.filter((c) => c.lock_file === file);
   return roots
-    .filter((r) => !mine.some((c) => c.state === r.state && (c.profile === r.profile || !roots.some((o) => o.state === r.state && o.profile === c.profile))))
+    .filter((r) => !mine.some((c) => c.state === r.state && c.profile === r.profile))
     .map((r) => rootInstance("uncovered-state", file, r, `the lock draws state ${r.state}${r.profile ? ` at ${r.profile}` : ""}, and the blocks map has no case for it`));
 }
 
@@ -270,10 +270,21 @@ async function runSteps(page, steps = []) {
   if (steps.length > 0) await page.waitForTimeout(200);
 }
 
-/** The files the lock inventory reads: every HTML file in `export_files` of the LOCK.json next to each case's lock file. */
-function lockInventoryFiles(caseLockFiles, shown) {
-  const dirs = [...new Set(caseLockFiles.map((f) => dirname(resolve(ROOT, f))))];
-  return dirs.flatMap((dir) => {
+/**
+ * The files the lock inventory reads: every HTML file in `export_files` of the LOCK.json of each lock folder. The folders do
+ * not come from the cases alone (a map that dropped every case of a lock would hide it): they are the folders of the cases,
+ * the topic's own folder design/<topic>/approved when it exists, and every --lock-dir (which must exist).
+ */
+function lockInventoryFiles(caseLockFiles, topic, extraDirs, shown) {
+  const dirs = new Set(caseLockFiles.map((f) => dirname(resolve(ROOT, f))));
+  const topicDir = resolve(ROOT, "design", String(topic ?? ""), "approved");
+  if (topic && existsSync(topicDir)) dirs.add(topicDir);
+  for (const d of extraDirs) {
+    const abs = resolve(ROOT, d);
+    if (!existsSync(abs)) throw new Error(`--lock-dir ${d} does not exist`);
+    dirs.add(abs);
+  }
+  return [...dirs].flatMap((dir) => {
     let lock;
     try {
       lock = JSON.parse(readFileSync(resolve(dir, "LOCK.json"), "utf8"));
@@ -305,7 +316,7 @@ async function sideBySide(browser, lockPng, codePng, file) {
   await page.close();
 }
 
-export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [], harness } = {}) {
+export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [], harness, lockDirs = [] } = {}) {
   const { chromium } = await import("@playwright/test");
   const map = parse(readFileSync(resolve(ROOT, blocksPath), "utf8"));
   const devices = new Map(parse(readFileSync(resolve(ROOT, DEVICES), "utf8")).profiles.map((p) => [p.id, p]));
@@ -314,7 +325,7 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
   // The inventory and rule 7 read every case of the map, whatever --case selects to render.
   const shown = (p) => { const a = resolve(ROOT, p); const r = relative(ROOT, a); return r.startsWith("..") ? a : r; };
   const allCases = map.cases.map((c) => ({ ...c, lock_file: shown(c.lock_file) }));
-  const lockFiles = lockInventoryFiles(map.cases.map((c) => c.lock_file), shown);
+  const lockFiles = lockInventoryFiles(map.cases.map((c) => c.lock_file), map.topic, lockDirs, shown);
   mkdirSync(out, { recursive: true });
   const harnessPage = harness ?? buildHarness(out);
   const browser = await chromium.launch();
@@ -387,7 +398,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = process.argv.slice(2);
   const opt = (name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
   const out = resolve(opt("--out")[0] ?? ".fidelity-out/run");
-  const result = await checkFidelity({ blocksPath: opt("--blocks")[0], out, only: opt("--case"), harness: opt("--harness")[0] && resolve(opt("--harness")[0]) });
+  const result = await checkFidelity({ blocksPath: opt("--blocks")[0], out, only: opt("--case"), lockDirs: opt("--lock-dir"), harness: opt("--harness")[0] && resolve(opt("--harness")[0]) });
   for (const v of result.violations) console.error(`${v.rule} ${v.state ? `${v.state}@${v.profile}` : v.file} ${v.block ?? v.item_kind ?? ""}: ${v.reason}`);
   console.log(`${result.violations.length} violation instance(s) in ${result.cases.length} case(s); result: ${resolve(out, "result.json")}`);
   process.exit(result.ok ? 0 : 1);

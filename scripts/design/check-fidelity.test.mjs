@@ -202,8 +202,17 @@ test("uncovered-state (rule 7): a case in another lock file does not cover the r
   assert.equal(uncoveredStates(FILE, [{ state: "s1", profile: "card-540" }], [{ lock_file: "other.html", state: "s1", profile: "card-540" }]).length, 1);
 });
 
-test("uncovered-state (rule 7): a case with the right state id and another profile is a profile-mismatch (rule 8), not an uncovered state", () => {
-  assert.deepEqual(uncoveredStates(FILE, [{ state: "s1", profile: "card-540" }], [{ lock_file: FILE, state: "s1", profile: "phone-358" }]), []);
+test("uncovered-state (rule 7): a case with the right state id and another profile does not cover the root (it is also a profile-mismatch, rule 8)", () => {
+  const v = uncoveredStates(FILE, [{ state: "s1", profile: "card-540" }], [{ lock_file: FILE, state: "s1", profile: "phone-358" }]);
+  assert.deepEqual(v.map((x) => `${x.state}@${x.profile}`), ["s1@card-540"]);
+});
+
+test("uncovered-state (rule 7): coverage is per root; one case with an unmatched profile covers no root of that state", () => {
+  const roots = [{ state: "s1", profile: "card-540" }, { state: "s1", profile: "phone-358" }];
+  const v = uncoveredStates(FILE, roots, [{ lock_file: FILE, state: "s1", profile: "dm-card-520" }]);
+  assert.deepEqual(v.map((x) => `${x.state}@${x.profile}`), ["s1@card-540", "s1@phone-358"]);
+  const one = uncoveredStates(FILE, roots, [{ lock_file: FILE, state: "s1", profile: "card-540" }]);
+  assert.deepEqual(one.map((x) => `${x.state}@${x.profile}`), ["s1@phone-358"]);
 });
 
 test("profile-mismatch (rule 8): a profile id that is not in devices.yml", () => {
