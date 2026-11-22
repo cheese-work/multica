@@ -2208,6 +2208,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if err == nil && answersNotice && authorType == "member" {
 		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
 	}
+	if err == nil && req.NotifyOnly && authorType == "agent" && actorTask != nil {
+		err = clearNotifyOnlyAskEvents(r.Context(), qtx, issue, actorTask.ID, created.ID)
+	}
 	if err == nil && askNoticeMember.Valid {
 		err = recordTypedAskComment(r, qtx, issue, actorTask, askNoticeMember, created.Comment())
 	}
