@@ -151,11 +151,11 @@ func tsFileList(t *testing.T, path, name string) map[string]bool {
 func TestWebTimelineListsMatchGo(t *testing.T) {
 	writers := timelineActionWriters(t)
 	for _, c := range []struct {
-		list     string
-		rule     listRule
-		client   map[string]bool
-		server   map[string]bool
-		srvOnly  map[string]string
+		list    string
+		rule    listRule
+		client  map[string]bool
+		server  map[string]bool
+		srvOnly map[string]string
 	}{
 		{"WAKEUP_ACTIVITY_ACTIONS", equal, tsFileList(t, wakeupActivityFile, "WAKEUP_ACTIVITY_ACTIONS"), wakeupActivityKeys(t), wakeupActivityServerOnly},
 		{"PR_RULES", equal, tsFileList(t, wakeupActivityFile, "PR_RULES"), prWakeRules(t), prRulesServerOnly},
