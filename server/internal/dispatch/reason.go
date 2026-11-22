@@ -90,6 +90,11 @@ const (
 	// nothing is pending — the trigger is answered by accepting the issue out of
 	// Triage, not by waiting.
 	ReasonIssueInTriage ReasonCode = "issue_in_triage"
+	// ReasonIntakeHold: the workspace's intake_hold setting holds the issue in
+	// backlog (CHE-6911), so no run derived from it starts. A property of the
+	// ISSUE, enumeration-safe like ReasonIssueInTriage. A member naming an agent
+	// by hand, or a person's release of the issue, runs again.
+	ReasonIntakeHold ReasonCode = "intake_hold"
 	// ReasonRunBudgetExhausted: the issue used the run budget its workflow
 	// allows (CHE-2152), so no run derived from it starts. A property of the
 	// issue like ReasonIssueInTriage; a person unblocking the issue, or

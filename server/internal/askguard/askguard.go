@@ -167,6 +167,16 @@ func (g Guard) RecordWarn(ctx context.Context, workspaceID pgtype.UUID, op Op) e
 	return err
 }
 
+// RecordNotice stores a typed ask (--ask comment, --waiting-on member move) as
+// a block event, the kind the recovery pass delivers once its run ends. Unlike
+// RecordWarn, Queries may be bound to the caller's transaction, so the event
+// commits with the comment it serves. The operation key makes a repeat of the
+// same payload a no-op. It writes no metric: it is not a guard hit.
+func (g Guard) RecordNotice(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, _, err := g.record(ctx, workspaceID, ModeBlock, op)
+	return err
+}
+
 func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, op Op) (db.AskGuardEvent, string, error) {
 	sum := sha256.Sum256(op.Payload)
 	digest := hex.EncodeToString(sum[:])
