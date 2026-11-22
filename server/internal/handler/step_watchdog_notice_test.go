@@ -188,14 +188,45 @@ func TestStepWatchdogRetriesWhileNoAgentIsUsable(t *testing.T) {
 	}
 }
 
-func TestStepWatchdogRecordsUnreachableAfterTheRetryWindow(t *testing.T) {
+// An outage longer than a day does not finalize the notice: only an unreachable
+// requester does. The notice goes out once, whenever an agent is back.
+func TestStepWatchdogKeepsAnOwedNoticeThroughALongOutage(t *testing.T) {
 	f := newWatchdogFixture(t)
 	issueID := f.stalledIssue(t, 30*time.Hour, 0)
 	dbfx.Exec(t, `UPDATE issue SET requested_by_id = $2, assignee_type = NULL, assignee_id = NULL WHERE id = $1`, issueID, testUserID)
-	owedActionBy(t, issueID, "redispatch", "", stepNoticeRetryWindow+time.Hour)
+	owedActionBy(t, issueID, "redispatch", "", 72*time.Hour)
+	passOwedNotices(t)
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_step_watchdog_action WHERE issue_id = $1 AND action = 'notify'`, issueID); n != 0 {
+		t.Fatalf("notify rows after a long outage = %d, want 0", n)
+	}
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issueID, f.agentID)
 	passOwedNotices(t)
 	passOwedNotices(t)
-	if n := noticeRows(t, issueID, "notice_unreachable"); n != 1 {
-		t.Fatalf("notice_unreachable rows = %d, want 1", n)
+	if n := noticeRows(t, issueID, "delivered"); n != 1 {
+		t.Fatalf("delivered notify rows = %d, want 1", n)
+	}
+	if n := noticeRows(t, issueID, "notice_unreachable"); n != 0 {
+		t.Fatalf("notice_unreachable rows = %d, want 0", n)
+	}
+}
+
+// Rows that cannot be delivered yet must not hold back the rows behind them: a
+// full page of them is paged past.
+func TestStepWatchdogPagesPastDeferredNotices(t *testing.T) {
+	f := newWatchdogFixture(t)
+	const pageSize = 2
+	for i := 0; i < pageSize; i++ {
+		stuck := f.stalledIssue(t, 30*time.Hour, 0)
+		dbfx.Exec(t, `UPDATE issue SET requested_by_id = $2, assignee_type = NULL, assignee_id = NULL WHERE id = $1`, stuck, testUserID)
+		owedActionBy(t, stuck, "redispatch", "", 48*time.Hour+time.Duration(i)*time.Minute)
+	}
+	ready := f.stalledIssue(t, 30*time.Hour, 0)
+	dbfx.Exec(t, `UPDATE issue SET requested_by_id = $2 WHERE id = $1`, ready, testUserID)
+	owedActionBy(t, ready, "redispatch", f.agentID, 0)
+	if err := testHandler.deliverOwedStepNotices(context.Background(), pageSize); err != nil {
+		t.Fatal(err)
+	}
+	if n := noticeRows(t, ready, "delivered"); n != 1 {
+		t.Fatalf("delivered notify rows behind %d deferred rows = %d, want 1", pageSize, n)
 	}
 }

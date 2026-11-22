@@ -22,28 +22,36 @@ const (
 	stepNoticeUnreachable = "notice_unreachable"
 )
 
-// stepNoticeRetryWindow is how long a notice that cannot be sent yet (no usable
-// agent, or a lane the requester cannot use) is retried before it is recorded
-// as notice_unreachable.
-const stepNoticeRetryWindow = 24 * time.Hour
-
 // deliverOwedStepNotices sends the notice every block_budget, redispatch and
 // notify_only ledger row owes to the issue's requested_by (CHE-6116 S3). It
 // reads the ledger, not the candidates, so a status change or a crash after the
 // action cannot lose a notice. One failing row does not hold back the others.
 func (h *Handler) deliverOwedStepNotices(ctx context.Context, limit int32) error {
-	owed, err := h.Queries.ListOwedStepWatchdogNotices(ctx, limit)
-	if err != nil {
-		return err
+	if limit < 1 {
+		return nil
 	}
 	var failures error
-	for _, action := range owed {
-		if err := h.deliverStepNotice(ctx, action); err != nil {
-			slog.Warn("step watchdog: notice failed", "err", err, "issue_id", uuidToString(action.IssueID))
-			failures = errors.Join(failures, err)
+	var after db.IssueStepWatchdogAction // zero: first page
+	for {
+		owed, err := h.Queries.ListOwedStepWatchdogNotices(ctx, db.ListOwedStepWatchdogNoticesParams{
+			AfterID: after.ID, AfterCreatedAt: after.CreatedAt, RowLimit: limit,
+		})
+		if err != nil {
+			return errors.Join(failures, err)
 		}
+		for _, action := range owed {
+			if err := h.deliverStepNotice(ctx, action); err != nil {
+				slog.Warn("step watchdog: notice failed", "err", err, "issue_id", uuidToString(action.IssueID))
+				failures = errors.Join(failures, err)
+			}
+		}
+		// A row that stays owed (no usable agent or lane yet) is paged past, so it
+		// cannot hold back the rows behind it.
+		if int32(len(owed)) < limit || ctx.Err() != nil {
+			return errors.Join(failures, ctx.Err())
+		}
+		after = owed[len(owed)-1]
 	}
-	return failures
 }
 
 func stepNoticeContent(identifier, issuePath string, issue db.Issue, action db.IssueStepWatchdogAction, requester pgtype.UUID) string {
@@ -68,8 +76,9 @@ func stepNoticeContent(identifier, issuePath string, issue db.Issue, action db.I
 
 // deliverStepNotice writes one notify row and, when the requester can be
 // reached, the notice, in one transaction. The unique ledger key makes a second
-// sweeper, or a retry after a crash, write nothing. A notice with no usable agent
-// or lane is retried for stepNoticeRetryWindow, then records why.
+// sweeper, or a retry after a crash, write nothing. Only a missing issue,
+// requester or membership is recorded as notice_unreachable. A notice with no
+// usable agent or lane yet stays owed until one is back.
 func (h *Handler) deliverStepNotice(ctx context.Context, action db.IssueStepWatchdogAction) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -117,10 +126,9 @@ func (h *Handler) deliverStepNotice(ctx context.Context, action db.IssueStepWatc
 	if err != nil {
 		return err
 	}
-	// Nothing usable yet is not final: an agent can come back, so the row stays
-	// owed until the retry window has passed.
+	// Nothing usable yet is not final: an agent can come back, so the row stays owed.
 	if len(agents) == 0 {
-		return deferOrUnreachable(ctx, action, "no_agent", unreachable)
+		return deferNotice(action, "no_agent")
 	}
 	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
@@ -156,7 +164,7 @@ func (h *Handler) deliverStepNotice(ctx context.Context, action db.IssueStepWatc
 	case err != nil && !errors.As(err, &refusal):
 		return err
 	case !agent.ID.Valid:
-		return deferOrUnreachable(ctx, action, "lane_unavailable", unreachable)
+		return deferNotice(action, "lane_unavailable")
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -202,13 +210,10 @@ func (h *Handler) stepNoticeAgents(ctx context.Context, q *db.Queries, issue db.
 	return agents, nil
 }
 
-// deferOrUnreachable leaves a notice that cannot be sent now owed (the caller's
-// transaction rolls back and the next pass tries again), and records
-// notice_unreachable once the row is older than the retry window.
-func deferOrUnreachable(ctx context.Context, action db.IssueStepWatchdogAction, reason string, unreachable func(string) error) error {
-	if action.CreatedAt.Valid && time.Since(action.CreatedAt.Time) > stepNoticeRetryWindow {
-		return unreachable(reason)
-	}
-	slog.Info("step watchdog: notice deferred", "reason", reason, "issue_id", uuidToString(action.IssueID))
+// deferNotice leaves a notice that cannot be sent now owed: the caller's
+// transaction rolls back, and a later pass tries again. It never expires, since
+// an agent outage says nothing about whether the requester can be reached.
+func deferNotice(action db.IssueStepWatchdogAction, reason string) error {
+	slog.Debug("step watchdog: notice deferred", "reason", reason, "issue_id", uuidToString(action.IssueID))
 	return nil
 }
