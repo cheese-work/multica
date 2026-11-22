@@ -34,7 +34,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
@@ -272,17 +272,14 @@ async function runSteps(page, steps = []) {
 
 /**
  * The files the lock inventory reads: every HTML file in `export_files` of the LOCK.json of each lock folder. The folders do
- * not come from the cases alone (a map that dropped every case of a lock would hide it): they are the folders of the cases,
- * the topic's own folder design/<topic>/approved when it exists, and every --lock-dir (which must exist).
+ * not come from the cases (a map that dropped every case of a lock would hide it): they are every folder under
+ * design/<topic>/ that holds a LOCK.json, plus the folders of the cases.
  */
-function lockInventoryFiles(caseLockFiles, topic, extraDirs, shown) {
+function lockInventoryFiles(caseLockFiles, topic, shown) {
   const dirs = new Set(caseLockFiles.map((f) => dirname(resolve(ROOT, f))));
-  const topicDir = resolve(ROOT, "design", String(topic ?? ""), "approved");
-  if (topic && existsSync(topicDir)) dirs.add(topicDir);
-  for (const d of extraDirs) {
-    const abs = resolve(ROOT, d);
-    if (!existsSync(abs)) throw new Error(`--lock-dir ${d} does not exist`);
-    dirs.add(abs);
+  const topicDir = resolve(ROOT, "design", String(topic ?? ""));
+  if (topic && existsSync(topicDir)) {
+    for (const f of readdirSync(topicDir, { recursive: true })) if (basename(f) === "LOCK.json") dirs.add(dirname(resolve(topicDir, f)));
   }
   return [...dirs].flatMap((dir) => {
     let lock;
@@ -316,7 +313,7 @@ async function sideBySide(browser, lockPng, codePng, file) {
   await page.close();
 }
 
-export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [], harness, lockDirs = [] } = {}) {
+export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [], harness } = {}) {
   const { chromium } = await import("@playwright/test");
   const map = parse(readFileSync(resolve(ROOT, blocksPath), "utf8"));
   const devices = new Map(parse(readFileSync(resolve(ROOT, DEVICES), "utf8")).profiles.map((p) => [p.id, p]));
@@ -325,7 +322,7 @@ export async function checkFidelity({ blocksPath = DEFAULT_BLOCKS, out, only = [
   // The inventory and rule 7 read every case of the map, whatever --case selects to render.
   const shown = (p) => { const a = resolve(ROOT, p); const r = relative(ROOT, a); return r.startsWith("..") ? a : r; };
   const allCases = map.cases.map((c) => ({ ...c, lock_file: shown(c.lock_file) }));
-  const lockFiles = lockInventoryFiles(map.cases.map((c) => c.lock_file), map.topic, lockDirs, shown);
+  const lockFiles = lockInventoryFiles(map.cases.map((c) => c.lock_file), map.topic, shown);
   mkdirSync(out, { recursive: true });
   const harnessPage = harness ?? buildHarness(out);
   const browser = await chromium.launch();
@@ -398,7 +395,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = process.argv.slice(2);
   const opt = (name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
   const out = resolve(opt("--out")[0] ?? ".fidelity-out/run");
-  const result = await checkFidelity({ blocksPath: opt("--blocks")[0], out, only: opt("--case"), lockDirs: opt("--lock-dir"), harness: opt("--harness")[0] && resolve(opt("--harness")[0]) });
+  const result = await checkFidelity({ blocksPath: opt("--blocks")[0], out, only: opt("--case"), harness: opt("--harness")[0] && resolve(opt("--harness")[0]) });
   for (const v of result.violations) console.error(`${v.rule} ${v.state ? `${v.state}@${v.profile}` : v.file} ${v.block ?? v.item_kind ?? ""}: ${v.reason}`);
   console.log(`${result.violations.length} violation instance(s) in ${result.cases.length} case(s); result: ${resolve(out, "result.json")}`);
   process.exit(result.ok ? 0 : 1);

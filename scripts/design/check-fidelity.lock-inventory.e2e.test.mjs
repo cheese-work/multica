@@ -3,7 +3,7 @@
 //   node --test scripts/design/check-fidelity.lock-inventory.e2e.test.mjs
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,20 +16,12 @@ const CODE = `<p data-testid="a">Alpha</p>`;
  * files: { name: html body }, all listed in LOCK.json export_files; cases: [{ file, state, profile }].
  * `exportFiles` overrides the list in LOCK.json (default: every file).
  */
-function run({ files, cases, exportFiles, extraLocks = {}, lockDirs = [] }) {
+function run({ files, cases, exportFiles }) {
   const dir = mkdtempSync(join(tmpdir(), "fidelity-inventory-"));
   const lockDir = join(dir, "approved");
   mkdirSync(lockDir);
   for (const [name, body] of Object.entries(files)) writeFileSync(join(lockDir, name), page(body));
   writeFileSync(join(lockDir, "LOCK.json"), JSON.stringify({ export_files: Object.fromEntries((exportFiles ?? Object.keys(files)).map((n) => [n, "x"])) }));
-  // Other lock folders (name -> { file: body }) that the map has no case for.
-  const extraDirs = Object.entries(extraLocks).map(([name, fs]) => {
-    const d = join(dir, name);
-    mkdirSync(d);
-    for (const [f, body] of Object.entries(fs)) writeFileSync(join(d, f), page(body));
-    writeFileSync(join(d, "LOCK.json"), JSON.stringify({ export_files: Object.fromEntries(Object.keys(fs).map((n) => [n, "x"])) }));
-    return d;
-  });
   const harness = join(dir, "page.html");
   writeFileSync(harness, page(`<div data-fidelity-root>${CODE}</div>`));
   const map = join(dir, "x.blocks.yml");
@@ -39,7 +31,7 @@ function run({ files, cases, exportFiles, extraLocks = {}, lockDirs = [] }) {
     "blocks:", "  a:", '    selector: ".a"',
   ].join("\n") + "\n");
   const out = join(dir, "out");
-  const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--blocks", map, "--out", out, "--harness", harness, ...extraDirs.filter((_, i) => lockDirs.includes(Object.keys(extraLocks)[i])).flatMap((d) => ["--lock-dir", d])], { encoding: "utf8" });
+  const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--blocks", map, "--out", out, "--harness", harness], { encoding: "utf8" });
   return { r, result: JSON.parse(readFileSync(join(out, "result.json"), "utf8")) };
 }
 const of = (result, rule) => result.violations.filter((v) => v.rule === rule);
@@ -153,24 +145,35 @@ test("a lock folder with no LOCK.json is a hard failure, not a silent pass", () 
   assert.match(r.stderr, /LOCK\.json/);
 });
 
-test("inventory: a lock folder with every case removed is still read (--lock-dir), while another lock keeps its cases", () => {
-  const { r, result } = run({
-    files: { "lock.html": root("s1", "card-540") },
-    extraLocks: { other: { "other.html": root("s9", "card-540", "Only words") + `<p>Stray</p>` } },
-    lockDirs: ["other"],
-    cases: [S1],
-  });
-  assert.equal(r.status, 1);
-  assert.deepEqual(of(result, "uncovered-state").map((v) => `${v.state}@${v.profile}`), ["s9@card-540"]);
-  assert.deepEqual(of(result, "unclaimed-lock-content").map((v) => v.item), ["Stray"]);
-  assert.equal(result.lock_files.length, 2);
-});
-
-test("inventory: a --lock-dir that does not exist is a hard failure", () => {
-  const dir = mkdtempSync(join(tmpdir(), "fidelity-inventory-"));
-  const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--out", join(dir, "out"), "--lock-dir", join(dir, "nope")], { encoding: "utf8" });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /nope/);
+test("inventory: a second lock folder of the topic whose cases are all removed is still read, in the normal invocation", () => {
+  // The map names only design/<topic>/approved; design/<topic>/approved-b has no case at all. No extra argument is passed.
+  const topic = `zz-fidelity-fixture-${process.pid}`;
+  const topicDir = join(process.cwd(), "design", topic);
+  const lock = (name, files) => {
+    const d = join(topicDir, name);
+    mkdirSync(d, { recursive: true });
+    for (const [f, body] of Object.entries(files)) writeFileSync(join(d, f), page(body));
+    writeFileSync(join(d, "LOCK.json"), JSON.stringify({ export_files: Object.fromEntries(Object.keys(files).map((n) => [n, "x"])) }));
+    return d;
+  };
+  const tmp = mkdtempSync(join(tmpdir(), "fidelity-inventory-"));
+  try {
+    const a = lock("approved", { "lock.html": root("s1", "card-540") });
+    lock("approved-b", { "other.html": root("s9", "card-540", "Only words") + `<p>Stray</p>` });
+    const harness = join(tmp, "page.html");
+    writeFileSync(harness, page(`<div data-fidelity-root>${CODE}</div>`));
+    const map = join(tmp, "x.blocks.yml");
+    writeFileSync(map, `topic: ${topic}\ncases:\n  - lock_file: ${join(a, "lock.html")}\n    state: s1\n    profile: card-540\n    fixture: none\nblocks:\n  a:\n    selector: ".a"\n`);
+    const out = join(tmp, "out");
+    const r = spawnSync("node", ["scripts/design/check-fidelity.mjs", "--blocks", map, "--out", out, "--harness", harness], { encoding: "utf8" });
+    const result = JSON.parse(readFileSync(join(out, "result.json"), "utf8"));
+    assert.equal(r.status, 1);
+    assert.equal(result.lock_files.length, 2);
+    assert.deepEqual(of(result, "uncovered-state").map((v) => `${v.state}@${v.profile}`), ["s9@card-540"]);
+    assert.deepEqual(of(result, "unclaimed-lock-content").map((v) => v.item), ["Stray"]);
+  } finally {
+    rmSync(topicDir, { recursive: true, force: true });
+  }
 });
 
 test("rule 7 per root: roots s1@card-540 and s1@phone-358 with a case for s1@dm-card-520 leave both roots uncovered", () => {
