@@ -46,6 +46,7 @@ const (
 type stepClass struct {
 	Case    stepWatchdogCase
 	Refusal error
+	AgentID pgtype.UUID // the handler agent at decision time; the notice agent when the assignee later changes
 }
 
 // stepWatchdogCandidates lists up to limit issues, oldest first. A member
@@ -131,11 +132,11 @@ func (h *Handler) classifyStep(ctx context.Context, c stepCandidate) (stepClass,
 	refusal := service.RunAdmissionRefusal(ctx, h.Queries, c.Issue, agentID)
 	switch {
 	case refusal == nil:
-		return stepClass{Case: stepCaseRedispatch}, nil
+		return stepClass{Case: stepCaseRedispatch, AgentID: agentID}, nil
 	case errors.Is(refusal, service.ErrRunBudgetExhausted):
-		return stepClass{Case: stepCaseBlockBudget, Refusal: refusal}, nil
+		return stepClass{Case: stepCaseBlockBudget, Refusal: refusal, AgentID: agentID}, nil
 	case errors.Is(refusal, service.ErrAgentPaused), errors.Is(refusal, service.ErrAgentArchived):
-		return stepClass{Case: stepCaseNotifyOnly, Refusal: refusal}, nil
+		return stepClass{Case: stepCaseNotifyOnly, Refusal: refusal, AgentID: agentID}, nil
 	}
 	return stepClass{}, refusal
 }
@@ -293,6 +294,9 @@ func stepClassDetails(c stepCandidate, class stepClass) map[string]any {
 	d := map[string]any{"case": string(class.Case), "status": c.Issue.Status, "in_step_since": c.InStepSince.UTC().Format(time.RFC3339)}
 	if class.Refusal != nil {
 		d["refusal"] = class.Refusal.Error()
+	}
+	if class.AgentID.Valid {
+		d["agent_id"] = uuidToString(class.AgentID)
 	}
 	return d
 }
