@@ -22,18 +22,22 @@ const AuthCacheTTL = 10 * time.Minute
 // (ws:*) and local-skill (mul:local_skill:*) keys.
 const patCachePrefix = "mul:auth:pat:"
 
-// PATCache caches resolved PAT lookups in Redis. A nil *PATCache is safe
-// to use — every method becomes a no-op or reports a cache miss, and the
-// auth middleware degrades to direct DB lookups.
+// PATCache caches resolved PAT lookups in Redis, or in process when no Redis
+// client is configured. A nil *PATCache is safe to use — every method becomes
+// a no-op or reports a cache miss, and the auth middleware degrades to direct
+// DB lookups.
 type PATCache struct {
-	rdb redis.UniversalClient
+	rdb   redis.UniversalClient
+	local *localTTLCache[string] // set only when rdb is nil
 }
 
-// NewPATCache returns a cache backed by rdb. Pass nil to disable caching;
-// the returned *PATCache is safe to call but never hits Redis.
+// NewPATCache returns a cache backed by rdb. With a nil rdb it returns a
+// bounded in-process cache with the same contract (CHE-7639: C00 runs without
+// Redis, and an uncached PAT is one DB read plus one last_used write per
+// request).
 func NewPATCache(rdb redis.UniversalClient) *PATCache {
 	if rdb == nil {
-		return nil
+		return &PATCache{local: newLocalTTLCache[string]()}
 	}
 	return &PATCache{rdb: rdb}
 }
@@ -45,6 +49,9 @@ func patCacheKey(hash string) string { return patCachePrefix + hash }
 func (c *PATCache) Get(ctx context.Context, hash string) (userID string, ok bool) {
 	if c == nil {
 		return "", false
+	}
+	if c.local != nil {
+		return c.local.get(hash)
 	}
 	v, err := c.rdb.Get(ctx, patCacheKey(hash)).Result()
 	if err != nil {
@@ -65,6 +72,10 @@ func (c *PATCache) Get(ctx context.Context, hash string) (userID string, ok bool
 // request failure.
 func (c *PATCache) Set(ctx context.Context, hash, userID string, ttl time.Duration) {
 	if c == nil || ttl <= 0 {
+		return
+	}
+	if c.local != nil {
+		c.local.set(hash, userID, ttl)
 		return
 	}
 	if err := c.rdb.Set(ctx, patCacheKey(hash), userID, ttl).Err(); err != nil {
@@ -100,6 +111,10 @@ func TTLForExpiry(now, expiresAt time.Time) time.Duration {
 // revoke takes effect immediately rather than waiting for the TTL.
 func (c *PATCache) Invalidate(ctx context.Context, hash string) {
 	if c == nil {
+		return
+	}
+	if c.local != nil {
+		c.local.invalidate(hash)
 		return
 	}
 	if err := c.rdb.Del(ctx, patCacheKey(hash)).Err(); err != nil {

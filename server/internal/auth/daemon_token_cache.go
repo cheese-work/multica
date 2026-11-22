@@ -30,20 +30,19 @@ type DaemonTokenIdentity struct {
 	OwnerID string `json:"o,omitempty"`
 }
 
-// DaemonTokenCache caches resolved daemon-token (mdt_) lookups in Redis.
-// A nil *DaemonTokenCache is safe to use — every method becomes a no-op
-// or reports a cache miss, so single-node dev / tests with no REDIS_URL
-// degrade cleanly to direct DB lookups.
+// DaemonTokenCache caches resolved daemon-token (mdt_) lookups in Redis, or
+// in process when no Redis client is configured. A nil *DaemonTokenCache is
+// safe to use — every method becomes a no-op or reports a cache miss.
 type DaemonTokenCache struct {
-	rdb redis.UniversalClient
+	rdb   redis.UniversalClient
+	local *localTTLCache[DaemonTokenIdentity] // set only when rdb is nil
 }
 
-// NewDaemonTokenCache returns a cache backed by rdb. Pass nil to disable
-// caching; the returned *DaemonTokenCache is safe to call but never hits
-// Redis.
+// NewDaemonTokenCache returns a cache backed by rdb. With a nil rdb it
+// returns a bounded in-process cache with the same contract (CHE-7639).
 func NewDaemonTokenCache(rdb redis.UniversalClient) *DaemonTokenCache {
 	if rdb == nil {
-		return nil
+		return &DaemonTokenCache{local: newLocalTTLCache[DaemonTokenIdentity]()}
 	}
 	return &DaemonTokenCache{rdb: rdb}
 }
@@ -56,6 +55,9 @@ func daemonTokenCacheKey(hash string) string { return daemonTokenCachePrefix + h
 func (c *DaemonTokenCache) Get(ctx context.Context, hash string) (DaemonTokenIdentity, bool) {
 	if c == nil {
 		return DaemonTokenIdentity{}, false
+	}
+	if c.local != nil {
+		return c.local.get(hash)
 	}
 	raw, err := c.rdb.Get(ctx, daemonTokenCacheKey(hash)).Bytes()
 	if err != nil {
@@ -82,6 +84,10 @@ func (c *DaemonTokenCache) Set(ctx context.Context, hash string, id DaemonTokenI
 	if c == nil || ttl <= 0 {
 		return
 	}
+	if c.local != nil {
+		c.local.set(hash, id, ttl)
+		return
+	}
 	raw, err := json.Marshal(id)
 	if err != nil {
 		slog.Warn("daemon_token_cache: marshal failed", "error", err)
@@ -97,6 +103,10 @@ func (c *DaemonTokenCache) Set(ctx context.Context, hash string, id DaemonTokenI
 // for the TTL.
 func (c *DaemonTokenCache) Invalidate(ctx context.Context, hash string) {
 	if c == nil {
+		return
+	}
+	if c.local != nil {
+		c.local.invalidate(hash)
 		return
 	}
 	if err := c.rdb.Del(ctx, daemonTokenCacheKey(hash)).Err(); err != nil {
