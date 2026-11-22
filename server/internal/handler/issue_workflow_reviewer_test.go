@@ -284,7 +284,7 @@ func TestReviewerHandler_LabsNeedNoVoteGateRegistry(t *testing.T) {
 // roleTask is a completed task of agentID on the issue with one workflow_role
 // row saying it ran at step with role, as the enqueue of a real run leaves it.
 // An empty step is a wakeup run: it is queued for no workflow step.
-func roleTask(t *testing.T, issueID, agentID, role, step string) {
+func roleTask(t *testing.T, issueID, agentID, role, step string) string {
 	t.Helper()
 	var runtimeID, model string
 	dbfx.QueryRow(t, `SELECT runtime_id::text, COALESCE(model, '') FROM agent WHERE id = $1`, agentID).Scan(&runtimeID, &model)
@@ -296,6 +296,7 @@ func roleTask(t *testing.T, issueID, agentID, role, step string) {
 	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
 		VALUES ($1, $2, 'agent', $3::text::uuid, 'workflow_role', jsonb_build_object('task_id', $4::text, 'agent_id', $3::text, 'role', $5::text, 'status', $6::text))`,
 		testWorkspaceID, issueID, agentID, taskID, role, step)
+	return taskID
 }
 
 // CHE-9002: only an agent that ran a work step is an author. The reviewer's own
@@ -327,6 +328,32 @@ func TestReviewerHandler_AgentThatRanAWorkStepIsStillRefused(t *testing.T) {
 	roleTask(t, issueID, author, "agent", "in_progress")
 	roleTask(t, issueID, coder, "agent", "agent_review")
 	roleTask(t, issueID, coder, "agent", "in_progress")
+
+	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
+		"the reviewer is an author of this issue")
+}
+
+// CHE-9002 (planner ruling): the agent that authored a linked PR is an author
+// whatever step it ran. Here the PR author has only a wakeup run, on the PR
+// branch before the PR was opened, and is still refused as the reviewer.
+func TestReviewerHandler_PRAuthorWithOnlyAWakeupRunIsStillRefused(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	prAuthor := reviewerAgent(t, "codex", "gpt-5.5")
+	c := newReviewerCase(t, author, prAuthor)
+	issueID := c.issue(t)
+	roleTask(t, issueID, author, "agent", "in_progress")
+	wakeup := roleTask(t, issueID, prAuthor, "none", "")
+	roleTask(t, issueID, prAuthor, "agent", "agent_review")
+
+	const branch = "agent/prauthor/che-9002-0123456789ab"
+	dbfx.Exec(t, `UPDATE agent_task_queue SET branch_name = $2 WHERE id = $1`, wakeup, branch)
+	var prID string
+	dbfx.QueryRow(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, pr_created_at, pr_updated_at)
+		VALUES ($1, 1, 'multica-ai', 'multica', 990002, 'che-9002 pr author', 'open', 'https://example.test/pr', $2, now() + interval '1 hour', now())
+		RETURNING id::text`, testWorkspaceID, branch).Scan(&prID)
+	dbfx.Cleanup(t, `DELETE FROM github_pull_request WHERE id = $1::uuid`, prID)
+	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1::uuid`, prID)
+	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2::uuid)`, issueID, prID)
 
 	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
 		"the reviewer is an author of this issue")
