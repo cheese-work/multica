@@ -4281,6 +4281,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if ws, wsErr := h.Queries.GetWorkspace(r.Context(), parseUUID(qc.WorkspaceID)); wsErr == nil {
 				resp.QuickCreateFill = issueworkflow.QuickCreateFill(ws.Settings)
 				resp.QuickCreateTitleTypes = issueworkflow.WorkflowTypeKeys(ws.Settings)
+				projectID, _ := util.ParseUUID(qc.ProjectID)
+				discovery, discoveryErr := issueworkflow.QuickCreateDiscoveryApplies(r.Context(), h.Queries, ws.Settings, ws.ID, projectID)
+				if discoveryErr != nil {
+					// Fail closed: the run files the issue as it does today.
+					slog.Warn("quick-create claim: discovery check failed; filing without Discovery",
+						"task_id", uuidToString(task.ID), "error", discoveryErr)
+				}
+				resp.QuickCreateDiscovery = discovery && discoveryErr == nil
 			}
 			resp.QuickCreateAttachmentIDs = append([]string(nil), qc.AttachmentIDs...)
 			resp.ThreadName = qc.Prompt
