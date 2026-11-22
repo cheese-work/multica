@@ -14,7 +14,9 @@ import (
 // command that has no subcommands.
 func leafPaths(c *cobra.Command, prefix []string, out *[]string) {
 	for _, sub := range c.Commands() {
-		if sub.Hidden {
+		// cobra adds `help` (and `completion`) to rootCmd on its first Execute(), so
+		// they appear only when an earlier test ran a command: not ours to document.
+		if sub.Hidden || (len(prefix) == 0 && (sub.Name() == "help" || sub.Name() == "completion")) {
 			continue
 		}
 		p := append(append([]string{}, prefix...), sub.Name())

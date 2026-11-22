@@ -119,3 +119,12 @@ multica workflow webhook list <workflow-id>                    # never shows sec
 - `multica issue urgent-orphans [--output json]` lists open urgent issues with
   no queued, dispatched or running task and no enabled wakeup. The PULSE sweep
   reads it so an urgent issue never sits unowned. Read-only.
+- `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves
+  an issue that follows Quick back to the full workflow it followed before.
+  `--reason` is required; `--reason rollback` needs no Estimate. The server
+  picks the target from the issue's newest Quick entry; you cannot name one.
+  From `todo` or `investigating` the issue needs an `Estimate:` line in its
+  description or a comment, unless the reason is `rollback`. With no live task
+  the issue enters the full workflow's step now; with a live task the switch is
+  pending and applies after the last task ends. An issue that never followed
+  Quick, or has no record of entering it, is refused.
