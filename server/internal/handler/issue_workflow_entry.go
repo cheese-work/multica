@@ -839,6 +839,12 @@ func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issuew
 		return ""
 	}
 	runs := fmt.Sprintf("Run budget: %d runs left of %d", max(0, snap.RunsLeft), snap.RunsLimit)
+	if snap.State == service.RunBudgetWarn {
+		if snap.RunsLeft < 0 {
+			runs = fmt.Sprintf("Run budget: %d runs over the limit of %d", -snap.RunsLeft, snap.RunsLimit)
+		}
+		runs += " (warn mode: runs go on)"
+	}
 	usage, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("task claim: run budget usage failed", "issue_id", uuidToString(issue.ID), "error", err)

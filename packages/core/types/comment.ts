@@ -17,6 +17,13 @@ export interface Reaction {
 
 import type { DecisionCommentFields } from "./decision";
 
+/** A thread's relation to the viewer; set on thread roots by servers that support it. */
+export interface CommentThreadRelation {
+  with_me: boolean;
+  agents_only: boolean;
+  waiting_on_me: boolean;
+}
+
 export interface Comment extends DecisionCommentFields {
   id: string;
   issue_id: string;
@@ -51,6 +58,8 @@ export interface Comment extends DecisionCommentFields {
   // server keeps an empty tombstone so the replies keep their parent. Older
   // servers omit it.
   deleted_at?: string | null;
+  /** Absent on older servers and when the server's relation read failed: show every thread. */
+  thread_relation?: CommentThreadRelation;
   // Per-target result of every explicit @agent / @squad mention in this comment
   // (MUL-4525 §2). Present only on create/edit responses; older servers omit it.
   trigger_outcomes?: CommentTriggerOutcome[];

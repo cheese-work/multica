@@ -66,6 +66,8 @@ func (l layout) spec(script string) Spec {
 		ReadOnly: []string{l.cacheObjects},
 		Env:      []string{"PATH=/usr/bin:/bin", "MULTICA_TASK_ID=t1"},
 		Argv:     []string{"/bin/sh", "-c", script},
+		// most tests are not about the daemon API; its own tests clear this
+		NoDaemonAPI: true,
 	}
 }
 
@@ -359,7 +361,7 @@ func TestM1StartLatency(t *testing.T) {
 		begin := time.Now()
 		if out, err := runSandbox(t, l, Spec{
 			WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home,
-			Env: []string{"PATH=/usr/bin:/bin"}, Argv: []string{"/bin/true"},
+			Env: []string{"PATH=/usr/bin:/bin"}, Argv: []string{"/bin/true"}, NoDaemonAPI: true,
 		}); err != nil {
 			t.Fatalf("start %d: %v\n%s", i, err, out)
 		}
@@ -440,7 +442,7 @@ func TestMountSourceSwapAfterValidationIsHarmless(t *testing.T) {
 
 func TestArgsBindBrokerSocket(t *testing.T) {
 	l := newLayout(t)
-	spec := Spec{WorkDir: l.work, TempDir: l.tmp, Home: l.home, Argv: []string{"/bin/true"},
+	spec := Spec{WorkDir: l.work, TempDir: l.tmp, Home: l.home, Argv: []string{"/bin/true"}, NoDaemonAPI: true,
 		Env: []string{"MULTICA_BROKER_SOCKET=/host/elsewhere.sock"}, BrokerSocket: filepath.Join(l.root, "b", "b.sock")}
 	args, err := newLauncher().Args(spec)
 	if err != nil {

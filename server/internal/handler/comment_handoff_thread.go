@@ -25,7 +25,7 @@ const handoffThreadCap = 30
 func statusHandoffDerivesParent(task db.AgentTaskQueue, req CreateCommentRequest) bool {
 	handoffRun := task.TriggerKind.Valid && task.TriggerKind.String == "status_handoff" && task.TriggerCommentID.Valid
 	return (handoffRun || !task.TriggerCommentID.Valid) &&
-		req.ParentID == nil && req.Type == "comment" &&
+		req.ParentID == nil && req.FromThread == "" && req.Type == "comment" &&
 		!req.DecisionIntent && !req.DecisionRecord && !req.DecisionVeto &&
 		!req.NotifyOnly && len(req.Supersedes) == 0
 }

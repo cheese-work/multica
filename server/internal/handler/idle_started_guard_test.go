@@ -253,3 +253,42 @@ func TestIdleStartedGuardFixtureStoresFractionalAge(test *testing.T) {
 		test.Fatalf("stored comment age = %.4f h, want about 3.98 h", hours)
 	}
 }
+
+// openUnparkedRequest opens a decision request created hoursOld ago on the fixture
+// issue. The issue stays in_progress and carries no park record, so the answer
+// wakes the asker (CHE-6460 D1d).
+func (fixture idleGuardFixture) openUnparkedRequest(test *testing.T, hoursOld float64) {
+	test.Helper()
+	session := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agent, "creator_id": testUserID, "title": "idle request"})
+	ping := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": session, "role": "assistant", "content": "Approve?", "message_kind": "decision_request", "sent_via": "task_token"})
+	request := dbfx.Insert(test, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issue, "asking_agent_id": fixture.agent, "human_user_id": testUserID,
+		"chat_session_id": session, "ping_message_id": ping, "ask": "Approve?", "escalation_class": "reversible", "origin": "asked", "status": "open"})
+	dbfx.Exec(test, `UPDATE decision_request SET created_at = now() - make_interval(secs => $1) WHERE id = $2`, hoursOld*3600, request)
+}
+
+// CHE-6460 D1d: an open unparked request under 72 h is a continuation, because
+// the answer wakes the asker. At 72 h or more, or with a park record, the guard
+// acts as before.
+func TestIdleStartedGuardOpenUnparkedRequest(test *testing.T) {
+	for name, tc := range map[string]struct {
+		hoursOld float64
+		parked   bool
+		want     bool
+	}{
+		"1 h old, unparked":  {hoursOld: 1, want: false},
+		"73 h old, unparked": {hoursOld: 73, want: true},
+		"1 h old, parked":    {hoursOld: 1, parked: true, want: true},
+	} {
+		test.Run(name, func(test *testing.T) {
+			fixture := newIdleGuardFixture(test, 5)
+			fixture.openUnparkedRequest(test, tc.hoursOld)
+			if tc.parked {
+				dbfx.InsertNoID(test, "issue_decision_park", testutil.Cols{"issue_id": fixture.issue, "workspace_id": testWorkspaceID,
+					"prior_status": "in_progress", "to_status": "need_decision"}, "issue_id = $1", fixture.issue)
+			}
+			if got := fixture.found(test); got != tc.want {
+				test.Fatalf("listed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

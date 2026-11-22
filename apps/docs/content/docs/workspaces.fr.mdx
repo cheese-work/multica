@@ -81,6 +81,23 @@ L'exécution n'est sautée que si tout ce qui suit est vrai. Si une condition é
 
 Si le réveil lié est ensuite désactivé ou supprimé, reçoit un `last_error`, se termine sans exécution (expiré ou refusé par la garde) ou ne correspond plus à `blocked_on`, le serveur lance l'exécution de l'étape bloquée et enregistre une ligne d'activité `blocked_entry_rearmed`. Si le budget d'exécutions est épuisé ou si l'agent est en pause, cette exécution est refusée aussi et la ligne l'indique.
 
+### Limites d'exécutions
+
+Deux paramètres d'espace de travail décident de ce qui se passe quand une tâche épuise son plafond d'exécutions. Chacun vaut `{"mode": "off" | "warn" | "block"}` ; la valeur par défaut est `block`, le comportement actuel.
+
+| Paramètre | Plafond contrôlé |
+| --- | --- |
+| `run_budget` | Le budget d'exécutions par tâche du workflow de la tâche (`max_runs_per_issue`). |
+| `run_guard` | La garde hebdomadaire : exécutions qu'une tâche lance en 7 jours. |
+
+| Valeur | Effet |
+| --- | --- |
+| `block` | La prochaine exécution dérivée est refusée et le propriétaire reçoit une carte. |
+| `warn` | Les exécutions sont comptées et le dépassement apparaît dans le brief et dans `multica issue budget get` (`state: warn`). Aucune exécution n'est refusée, aucune tâche n'est bloquée et aucune carte ne s'ouvre. |
+| `off` | Ni blocage, ni avertissement, ni carte. |
+
+Le coupe-boucle (`MULTICA_LOOP_BREAKER_MAX_RUNS`) n'est pas modifié. Définissez un mode avec `multica workspace update --run-budget-mode` ou `--run-guard-mode` ; un agent propose `run_budget` ou `run_guard` sur une carte `workspace.settings`.
+
 ### Garde des demandes
 
 Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quand l'opération d'un agent demande à une personne d'agir sans ouvrir de demande de décision.
@@ -126,6 +143,12 @@ Quand l'exécution qui a produit un événement `block` est terminée, le serveu
 Un événement qui ne peut pas être envoyé comme avis va plutôt à l'agent dont l'exécution l'a produit : une exécution de reprise par racine de récupération, lancée par les garde-fous habituels (arrêts de projet, budget d'exécution, rôle et approbation). Le premier événement `block` est la racine, et un événement produit par une exécution de reprise en hérite : une reprise ne déclenche donc jamais une seconde reprise. Le message de l'exécution contient la commande exacte `multica decision request ... --recovers <event-id>` et aucun texte source. Une exécution refusée, un agent indisponible, une reprise qui se termine sans demande correspondante ou une nouvelle demande produite par la reprise font échouer la racine. L'agent en est le responsable : un commentaire système sur le ticket nomme l'agent sans mentionner de membre, et `multica decision brief` liste l'échec avec un extrait de la demande. Les exécutions d'une voie de discussion ne produisent que des événements `warn` et ne sont donc jamais reprises.
 
 Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
+
+### Garde des outils
+
+**Paramètres → Guard** liste les plugins de garde des outils de l'espace de travail et ce que chacun a fait ces 7 derniers jours. Chaque plugin affiche le nombre d'appels corrigés, refusés ou en erreur, un graphique des occurrences par jour et ses dernières décisions. Les chiffres viennent des mêmes lignes que `multica guard stats` et `multica guard log`. Les jours suivent votre fuseau horaire d'affichage.
+
+Un propriétaire de l'espace de travail modifie ici une règle de niveau espace de travail : **Modifier avec une clé d'accès** change son action et son message, et le propriétaire signe cette modification exacte avec une passkey. La signature nomme la version de la politique dont elle part. Si une autre modification est arrivée avant, rien n'est enregistré et la page montre les deux versions avec **Réappliquer** (votre modification sur la nouvelle version, avec une nouvelle passkey), **Recharger l'actuelle** et **Abandonner**. Les membres voient la page en lecture seule. Les règles d'une couche org, dépôt ou chemin se modifient en CLI : un agent crée la modification avec `multica guard plugin set`, puis une personne l'approuve avec une passkey sur la carte de décision. Sans politique enregistrée, la page affiche les valeurs par défaut intégrées.
 
 ### Écran de décision
 

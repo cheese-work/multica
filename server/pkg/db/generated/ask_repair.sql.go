@@ -68,7 +68,7 @@ func (q *Queries) FailAskRepairRoot(ctx context.Context, arg FailAskRepairRootPa
 }
 
 const getAskGuardEventInWorkspace = `-- name: GetAskGuardEventInWorkspace :one
-SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at FROM ask_guard_event WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id FROM ask_guard_event WHERE id = $1 AND workspace_id = $2
 `
 
 type GetAskGuardEventInWorkspaceParams struct {
@@ -97,6 +97,7 @@ func (q *Queries) GetAskGuardEventInWorkspace(ctx context.Context, arg GetAskGua
 		&i.RepairReason,
 		&i.RootID,
 		&i.RepairHandledAt,
+		&i.ClearedByCommentID,
 	)
 	return i, err
 }
@@ -142,7 +143,7 @@ func (q *Queries) InsertAskRepairRoot(ctx context.Context, arg InsertAskRepairRo
 }
 
 const listAskRepairEvents = `-- name: ListAskRepairEvents :many
-SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at FROM ask_guard_event event
+SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at, event.cleared_by_comment_id FROM ask_guard_event event
 JOIN agent_task_queue task ON task.id = event.task_id AND task.status IN ('completed', 'failed', 'cancelled')
 WHERE event.mode = 'block' AND event.cleared_at IS NULL AND event.repair_reason IS NOT NULL AND event.repair_handled_at IS NULL
   AND task.chat_session_id IS NULL
@@ -179,6 +180,7 @@ func (q *Queries) ListAskRepairEvents(ctx context.Context, batchSize int32) ([]A
 			&i.RepairReason,
 			&i.RootID,
 			&i.RepairHandledAt,
+			&i.ClearedByCommentID,
 		); err != nil {
 			return nil, err
 		}

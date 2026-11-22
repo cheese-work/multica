@@ -22,6 +22,7 @@
  * hyperlinks — same tap behavior, just no 📎 prefix. Acceptable degradation.
  */
 import { preprocessMentionShortcodes } from "@multica/core/markdown";
+import { encodeDetailsMarker } from "./split-markdown";
 
 // File-card line matcher, kept in sync with web's parser in
 // `packages/ui/markdown/file-cards.ts` (NEW_FILE_CARD_RE + FILE_CARD_URL_PATTERN):
@@ -119,9 +120,50 @@ function stripHtml(input: string): string {
     .replace(/<\/?[a-z][^>]*>/gi, "");
 }
 
-export function preprocessMobileMarkdown(input: string): string {
-  if (!input) return "";
+function preprocessPlain(input: string): string {
   return preprocessTaskListStrikethrough(
     preprocessFileCards(preprocessMentionShortcodes(stripHtml(input))),
   );
+}
+
+// `<details><summary>S</summary>BODY</details>`. Non-nested: the first
+// `</details>` closes the block, any inner `<details>` tag is stripped.
+const DETAILS_RE = /<details[^>]*>\s*(?:<summary[^>]*>([\s\S]*?)<\/summary>)?([\s\S]*?)<\/details>/gid;
+
+// Regions where a `<details>` tag is not real markup: a fenced code block
+// (closed, or open to the end of input) or a whole HTML comment. The leftmost
+// region wins, so a comment inside a fence (or a fence inside a comment) is
+// part of the outer region.
+const PROTECTED_RE =
+  /^ {0,3}(`{3,}|~{3,})[^\n]*(?:(?:\n[\s\S]*?)?\n {0,3}\1[`~]*[ \t]*$|[\s\S]*$)|<!--[\s\S]*?-->/gm;
+
+/** Same-length copy with protected regions blanked, so indices still line up. */
+function maskProtected(input: string): string {
+  return input.replace(PROTECTED_RE, (region) => region.replace(/[^\n]/g, " "));
+}
+
+/**
+ * Details blocks become one marker line (see `encodeDetailsMarker`) so
+ * `splitMarkdown` can render them as a collapsible segment. Details tags in a
+ * fenced code block or an HTML comment are not blocks: they stay in the plain
+ * pipeline. Every other piece, and each body, goes through the plain
+ * pipeline; a forged marker in the input is an HTML comment and is stripped
+ * there.
+ */
+export function preprocessMobileMarkdown(input: string): string {
+  if (!input) return "";
+  let out = "";
+  let last = 0;
+  // Locate blocks on the masked copy, but read summary and body from the
+  // original, so fenced code inside a real block survives.
+  for (const m of maskProtected(input).matchAll(DETAILS_RE)) {
+    const [summary, body] = [1, 2].map((i) => {
+      const span = m.indices?.[i];
+      return span ? input.slice(span[0], span[1]) : "";
+    });
+    out += preprocessPlain(input.slice(last, m.index));
+    out += `\n\n${encodeDetailsMarker(stripHtml(summary!).trim() || "Details", preprocessPlain(body!).trim())}\n\n`;
+    last = m.index + m[0].length;
+  }
+  return out + preprocessPlain(input.slice(last));
 }

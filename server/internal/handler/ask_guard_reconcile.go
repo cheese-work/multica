@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/askguard"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -80,6 +81,28 @@ func clearAskGuardEvent(ctx context.Context, queries *db.Queries, issue db.Issue
 		return decisionIntentRefusal{http.StatusBadRequest, "this request already recovers another guard event"}
 	}
 	return err
+}
+
+// clearNotifyOnlyAskEvents (CHE-7438) closes the no-member events that a
+// refused comment of this task opened, when the task posts the same report with
+// --notify-only: the FYI is the exit the refusal named, and it asks nobody. A
+// source that names a member is a real ask and stays open for a decision
+// request. It runs in the comment's transaction, so the clear and the comment
+// commit together.
+func clearNotifyOnlyAskEvents(ctx context.Context, queries *db.Queries, issue db.Issue, taskID, commentID pgtype.UUID) error {
+	events, err := queries.ListNotifyOnlyClearableAskGuardEvents(ctx, db.ListNotifyOnlyClearableAskGuardEventsParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if len(askguard.MentionedMembers(event.Source)) > 0 {
+			continue
+		}
+		if err := queries.ClearAskGuardEventByComment(ctx, db.ClearAskGuardEventByCommentParams{ID: event.ID, ClearedByCommentID: commentID}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // serveAskGuardEvents is the other half of the same rule: a decision request from

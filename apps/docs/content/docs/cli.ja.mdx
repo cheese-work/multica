@@ -149,7 +149,15 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 `in_review`、`blocked`、`need_decision` のタスクへのエージェントのコメントは、次に動く人を示す必要があります。人が動くなら `--ask <member-id>`、誰も動かないなら `--no-ask` を付けます。メンバーのメンション、`--notify-only`、決定リクエストでも満たせます。この2つのフラグは互いに、また `--notify-only` や決定フラグとも併用できません。同じ移動では `multica issue status` に `--waiting-on member:<member-id>` または `--waiting-on none` が必要で、`in_review`、`blocked`、`need_decision` でのみ使えます。ワークスペース設定 `waiting_audience_guard` と `waiting_on_guard` が、対象の欠落を許可・記録・拒否のどれにするかを決めます。
 
+長いスレッドを伸ばさずに短い質問をするには、質問スレッドを開きます。`--from-thread <comment-id>` は、そのコメントのスレッド（同じ課題のコメントであること。そうでなければ `400 thread_issue_mismatch`）へ戻るリンクを持つ新しいルートとしてコメントを作成します。サーバーは元のスレッドに `Asked <名前> in thread <id>.` という1行を追加します。誰にもメンションせず、実行を開始せず、元のスレッドの解決状態も変えません。`--from-thread` は `--parent` と併用できません。エージェントのタスクは質問スレッドのルートを解決できません（`409 ask_root_not_resolvable`）。元のスレッドに返信して解決してください。メンバーは従来どおり解決できます。
+
+```bash
+multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
+```
+
 `multica decision request` の `--recovers <event-id>` は、そのリクエストが ask ガードのイベント（拒否された操作や復旧通知に示されたもの）への回答であることを示します。サーバーは、イベントがこの課題にあり、リクエストが問い合わせる本人に対して発生したものである場合に限り、リクエストと同じトランザクションでそのイベントを解消します。ある人へのリクエストが別の人のイベントを解消することはなく、`--recovers` のないリクエストは何も解消しません。別の課題や別の人のイベントは `400` で拒否されます。1 つのリクエストが復旧できるイベントは 1 件だけです。同じリクエストの再試行が 2 件目のイベントを指定すると `400` で拒否されます。
+
+`--wait`（`multica decision request` と `multica decision ask`）は、リクエストが開いている間、課題を保留にするようサーバーに求めます。ほかに進められる作業がないときだけ付けてください。課題が保留になるのは、ワークスペース設定 `decision_ask_park` が `on_wait` のときだけです。既定の `always` では、すべてのリクエストが保留にし、`--wait` は何も変えません。`blocked` の課題はどちらでも保留になります。`--wait` がなければ、課題のステータスと担当者は変わらず、回答は依頼したエージェントを起こします。
 
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
@@ -374,6 +382,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` は、ワークスペースの時刻ウェイクアップのスキップモード（`settings.time_wakeup_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみで、変更はすべてアクティビティログに記録されます。`off` は確認をオフにし、保留中の時刻ウェイクアップをすべて実行します。`warn` は `block` なら何をするかを記録し、起動は通常どおり実行します。`block` は変化のない宣言済みの起動を保留し、エージェントには時刻ウェイクアップで `--watch <inputs>` または `--watch always` を必須にします。
 - `multica workspace update --auto-close-mode off|warn|block` は自動クローズのモード（`settings.auto_close.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーだけです。クローズに必要なチェックは [ワークスペース](/docs/workspaces) を参照してください。レビュー後にやることが残っていないとき、タスクの作成者は `multica issue metadata set <issue> --key post_close_work --value none --type string` を記録します。
 - `multica workspace update --blocked-run-skip-mode off|warn|block` はブロック時の実行スキップのモード（`settings.blocked_run_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。入り方の実行がスキップされる条件は[ワークスペース](/docs/workspaces)を参照してください。
+- `multica workspace update --run-budget-mode off|warn|block` と `--run-guard-mode off|warn|block` は、タスクごとの実行予算のモード（`settings.run_budget.mode`）と週次実行ガードのモード（`settings.run_guard.mode`）を設定します。それぞれそのキーだけを更新し、他の設定は変更しません。この2つのフラグは、たとえば `--run-guard-mode warn --run-budget-mode warn` のように1つのコマンドで同時に指定できます。他の更新フラグとは併用できません。変更できるのはオーナーのみです。各モードの動作は [ワークスペース](/docs/workspaces) を参照してください。
 - `multica workspace update --ask-guard-mode off|warn|block` は、質問ガードのモード（`settings.ask_guard_mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。コマンドは保存後のワークスペースを表示し、`multica workspace get` でも `settings` にモードが表示されます。`off` でガードをオフにし、`warn` は違反を数えるだけで通し、`block` は拒否します。
 - `multica workspace update --merge-queue-routing off|warn`、`--merge-queue-bindings '<json>'`、`--merge-queue-watch-issue <issue-id|none>` はマージキューの設定（`settings.merge_queue_dequeue_routing`、`settings.merge_queue_actor_bindings`、`settings.merge_queue_watch_issue`）を設定します。これらどうしは併用できますが、他の更新フラグとは併用できません。変更できるのはオーナーだけです。`--merge-queue-routing block` と、両方のリストにあるログインは `routing-not-available` などで拒否されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
@@ -624,6 +633,8 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `guard` | `exec <tool> -- <args>` | ガード経由でツールを実行：`gh pr create`・`edit`・`ready` はドラフト固定・タグ付け・読み戻し確認を行い、`gh api` による pull request への書き込み（GraphQL mutation を含む）は拒否。CI 待ち（`gh pr checks --watch`・`gh run watch`・20 秒以上の `sleep`）は、代わりに使う wakeup コマンドを示して拒否 | 終了コード：ツール自身のもの、ガードが拒否した場合は 2。環境変数：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
 | `guard` | `check-pr <pr-url\|number\|branch>` | プルリクエストをポリシーとリポジトリの `.github/agent-rules.yml` に照らして、変更せずに検査します。ファイルは PR の保護されたベースブランチの現在の先端からデータとして読み、PR ブランチからは読みません。ファイルがなければルールは増えず、不正な形式のファイルや読めないベースは検査を失敗させます。CI のチェックとして使います | 終了コード: 0 は合格、1 はルール違反、2 は拒否。`-R owner/name` でリポジトリを指定 |
 | `guard` | `plugin list\|get\|set` | 保存済みのガードポリシーを読む（`list`、`get <name>`）か、置き換える決定アクションファイルを書き出す（`set --file <policy.json> --out <action.json>`、または `--dry-run`）。ポリシーはワークスペースのプラグインとレビュールールに加え、org・リポジトリ・パスの各レイヤーを持つ。深いレイヤーは浅いレイヤーをキーごとに上書きし、`locked` を付けたレイヤーまたはワークスペースは、そのキーを深いレイヤーから固定する。`set` は何も送信せず、人が passkey で `workspace.settings.patch` を承認する。デーモンは承認済みポリシーを、作業ツリー外のファイル `MULTICA_GUARD_POLICY` と `MULTICA_GUARD_POLICY_SHA256` として各実行に渡す | 出力：JSON 行（`--output table` で表）。`set` は `before_sha256` と `after_sha256` を表示 |
+| `guard` | `log` | ワークスペースの最近のガード判定を新しい順に一覧表示する。`--plugin`、`--action`（`fixed`、`refused`、`plugin-error`、`shadow-hit`、`pass`）、`--since`（日数、`24h` や `7d` のような期間、または RFC 3339 の時刻。既定は `7d`）、`--limit`（既定 50、最大 500）で絞り込める。デーモンは各実行の終了時にその判定ログをアップロードする。Guard 設定ページも同じ行を表示する | 出力：JSON 行（`--output table` で表） |
+| `guard` | `stats` | プラグインごとのガード判定数（`fixed`、`refused`、`errors`）を直近 `--days` 日（既定 7、最大 90）について数える。Guard 設定ページも同じ数値を表示する | 出力：JSON 行（`--output table` で表） |
 
 `repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。Cheese Work の正規ファイルは `config/tevo-prod1-guard.json` です。
 

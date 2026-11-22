@@ -90,6 +90,7 @@ cd "$root/server" && go mod download
 (cd "$root/server" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o "$out/maintenance" ./cmd/maintenance)
 (cd "$root/server" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o "$out/backfill_task_usage_hourly" ./cmd/backfill_task_usage_hourly)
 (cd "$root/server" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o "$out/backfill_codex_usage_cache" ./cmd/backfill_codex_usage_cache)
+(cd "$root/server" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o "$out/backfill_issue_created_via" ./cmd/backfill_issue_created_via)
 (cd "$root/server" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${VERSION} -X main.build=${BUILD} -X main.commit=${COMMIT}" -o "$out/server" ./cmd/server)
 
 # The CLI and the daemon builds served to daemons come from one script, so the

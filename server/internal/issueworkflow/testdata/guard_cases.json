@@ -1,0 +1,260 @@
+[
+  {
+    "expr": "agent_done",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_verdict(PASS)",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_verdict(CHANGES)",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.checks_green",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.checks_red",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.checks_infra_red",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.checks_flaky",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.ready",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.merged",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.closed_unmerged",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.review_changes_requested",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.review_approved",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "children_done",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "issue_status(CHE-1,done)",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": " issue_status(in_progress, done) ",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(ci)",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook( deploy_2-a )",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": false
+  },
+  {
+    "expr": "  agent_done ",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.none_open",
+    "valid": true,
+    "needs_timeout": true,
+    "entry_only": true
+  },
+  {
+    "expr": "adoption_linked",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": true
+  },
+  {
+    "expr": "upstream_checked",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": true
+  },
+  {
+    "expr": "intake_simple",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": true
+  },
+  {
+    "expr": "qa_proof",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": true
+  },
+  {
+    "expr": "root_issue",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": true
+  },
+  {
+    "expr": "",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_verdict(MAYBE)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_verdict",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_verdict(PASS",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_done()",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "agent_done(x)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.checks_blue",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "bogus_guard",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "issue_status(todo)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "issue_status(a,)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "issue_status(a,b,c)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook()",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(CI)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(a b)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(a,b)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "webhook(ci",
+    "valid": false,
+    "needs_timeout": false,
+    "entry_only": false
+  }
+]

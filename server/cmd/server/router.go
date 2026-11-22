@@ -43,6 +43,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -479,6 +480,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	// Scoped secrets keyring (CHE-989). Production already refused to boot
+	// without a usable key (exitOnSecretsKeyBootError); elsewhere nil disables the feature.
+	secretsKeyring, secretsKeyStatus, _ := secrets.LoadKeyring(os.Getenv)
+	h.SecretsKeyring = secretsKeyring
+	secrets.LogKeyStatus(slog.Default(), secretsKeyStatus)
 	// Fail closed until W3-4 (signer) fills the seam. The user gate (W3-8/9) reads the permission tables.
 	// Decisions are live: an answered decision (per lease or once per issue) is validated at every
 	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).
@@ -1727,6 +1733,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/elevation/downgrade", h.StartTaskDowngrade)
 		r.Post("/tasks/{taskId}/elevation/downgrade/deliver", h.DeliverTaskDowngrade)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
+		r.Post("/tasks/{taskId}/guard-decisions", h.ReportGuardDecisions)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Post("/tasks/{taskId}/silence-alert", h.ReportSilenceAlert)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
@@ -1910,6 +1917,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
 					r.Get("/plugins", h.ListPlugins)
+					// The stored guard policy and its digest, the base a passkey edit names (CHE-5207).
+					r.Get("/guard-policy", h.GetGuardPolicy)
 					// One short-lived hosted surface launch. Member-visible
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
@@ -1920,6 +1929,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
 					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
 					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+					// The Guard settings page edits the guard policy with a passkey (CHE-5207).
+					r.With(handler.RequireHumanActor).Post("/guard-policy/challenge", h.ChallengeGuardPolicy)
+					r.With(handler.RequireHumanActor).Put("/guard-policy", h.SetGuardPolicy)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -2716,6 +2728,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Dashboard — workspace-wide token + run-time rollups for the
 			// "/{slug}/dashboard" page. Optional ?project_id filter scopes
 			// the rollup to a single project.
+			// Tool-guard decisions and counts (CHE-5207): same rows for the
+			// Guard settings page and `multica guard log|stats`.
+			r.Get("/api/guard/decisions", h.ListGuardDecisions)
+			r.Get("/api/guard/stats", h.GetGuardStats)
+
 			r.Route("/api/dashboard", func(r chi.Router) {
 				r.Get("/usage/daily", h.GetDashboardUsageDaily)
 				r.Get("/usage/by-agent", h.GetDashboardUsageByAgent)

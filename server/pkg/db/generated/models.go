@@ -277,6 +277,7 @@ type AskGuardEvent struct {
 	RepairReason       pgtype.Text        `json:"repair_reason"`
 	RootID             pgtype.UUID        `json:"root_id"`
 	RepairHandledAt    pgtype.Timestamptz `json:"repair_handled_at"`
+	ClearedByCommentID pgtype.UUID        `json:"cleared_by_comment_id"`
 }
 
 type AskRecoveryNotice struct {
@@ -2252,6 +2253,22 @@ type GovernedVoteRecord struct {
 	DecisionVerdict    pgtype.Text        `json:"decision_verdict"`
 	CommitmentSha256   pgtype.Text        `json:"commitment_sha256"`
 	DecisionSequence   pgtype.Int8        `json:"decision_sequence"`
+}
+
+type GuardDecision struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	Seq         int32              `json:"seq"`
+	DecidedAt   pgtype.Timestamptz `json:"decided_at"`
+	Plugin      string             `json:"plugin"`
+	Action      string             `json:"action"`
+	Tool        string             `json:"tool"`
+	Subcommand  string             `json:"subcommand"`
+	Line        string             `json:"line"`
+	IssueKey    string             `json:"issue_key"`
+	Note        string             `json:"note"`
+	Runtime     string             `json:"runtime"`
 }
 
 type HostSample struct {

@@ -41,7 +41,7 @@ func RunAdmissionRefusal(ctx context.Context, q *db.Queries, issue db.Issue, age
 	if err != nil {
 		return fmt.Errorf("run admission: %w", err)
 	}
-	if balance < 1 {
+	if balance < 1 && runBudgetMode(ctx, q, issue.WorkspaceID) == RunBudgetModeBlock {
 		return ErrRunBudgetExhausted
 	}
 	return nil

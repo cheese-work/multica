@@ -139,6 +139,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAutoClosePatch(raw)
 	case key == "blocked_run_skip":
 		err = validateBlockedRunSkipPatch(raw)
+	case key == "run_guard" || key == "run_budget":
+		err = decisionaction.ValidateModeSetting(key, raw)
 	case key == designguard.SettingKey:
 		err = validateDesignGuardSetting(map[string]any{key: value})
 	case key == decisionAskParkKey:
