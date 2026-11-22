@@ -177,6 +177,9 @@ type Config struct {
 	// StableCwdAgents (MULTICA_STABLE_CWD_AGENTS=name,name; default off) runs listed Claude agents
 	// at <WorkspacesRoot>/.stable-cwd/<agent id> so the cwd in the system prompt, and the prompt cache behind it, is stable.
 	StableCwdAgents []string
+	// CostTrialLever (MULTICA_COST_TRIAL_LEVER; default off) turns on the byte-stable boot prefix
+	// for Claude runs in trial arm 1 (CHE-6540): stable cwd and the brief through --append-system-prompt-file.
+	CostTrialLever bool
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
@@ -725,6 +728,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
 		CodexSQLiteInitRetry:            codexSQLiteInitRetry,
 		StableCwdAgents:                 patternsFromEnv("MULTICA_STABLE_CWD_AGENTS", nil),
+		CostTrialLever:                  costTrialLeverFromEnv(),
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentSilenceWarnAfter:           silenceWarnAfter,
