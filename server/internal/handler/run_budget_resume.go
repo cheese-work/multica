@@ -123,7 +123,7 @@ func lockResume(ctx context.Context, q *db.Queries, id, issueID, actionID pgtype
 // isRunRefusal reports whether err is an admission refusal, as opposed to a failure.
 func isRunRefusal(err error) bool {
 	return errors.Is(err, service.ErrRunBudgetExhausted) || errors.Is(err, service.ErrStageQueueFull) ||
-		errors.Is(err, service.ErrAdmissionDeferred) || errors.Is(err, service.ErrIssueInTriage) ||
+		errors.Is(err, service.ErrAdmissionDeferred) || errors.Is(err, service.ErrIssueInTriage) || errors.Is(err, service.ErrIntakeHold) ||
 		errors.Is(err, service.ErrRecoveryCaused) || errors.Is(err, errSquadLeaderNotAdmitted)
 }
 

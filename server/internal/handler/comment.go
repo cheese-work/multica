@@ -2781,6 +2781,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
 	}
+	if errors.Is(err, service.ErrIntakeHold) {
+		return ReasonIntakeHold
+	}
 	return ReasonInternalError
 }
 
