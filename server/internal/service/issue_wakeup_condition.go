@@ -671,17 +671,31 @@ func conditionFiresOnChange(raw []byte) bool {
 // baselineCondition records which facts already satisfy a new or re-enabled
 // rule, so it wakes the agent when they change rather than immediately.
 func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) error {
-	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
-	if err != nil && !conditionDiagnostic(err) {
+	fingerprint, diagnostic, err := s.baselineFingerprint(ctx, tx, q, w)
+	if err != nil {
 		return err
 	}
-	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
-		return err
+	return writeConditionBaseline(ctx, q, w, fingerprint, diagnostic, now)
+}
+
+// baselineFingerprint reads the facts that already satisfy the rule through tx
+// and returns the fingerprint to record, plus the condition's diagnostic.
+func (s *IssueWakeupService) baselineFingerprint(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (string, error, error) {
+	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
+	if err != nil && !conditionDiagnostic(err) {
+		return "", nil, err
 	}
 	if !met {
 		fingerprint = ""
 	} else if staleOnly, ok := replacedHeadChecks(w.Condition, observed); ok {
 		fingerprint = staleOnly
+	}
+	return fingerprint, err, nil
+}
+
+func writeConditionBaseline(ctx context.Context, q *db.Queries, w db.IssueWakeup, fingerprint string, diagnostic error, now time.Time) error {
+	if err := saveConditionDiagnostic(ctx, q, w, diagnostic); err != nil {
+		return err
 	}
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: fingerprint, NextFireAt: pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}})
 }

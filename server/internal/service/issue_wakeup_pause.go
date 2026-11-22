@@ -51,6 +51,17 @@ func skipMissedSlots(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWa
 	if !w.Enabled || (w.Kind != "every" && w.Kind != "cron") || !w.NextFireAt.Valid || w.NextFireAt.Time.After(now) {
 		return nil
 	}
+	next, enabled, err := nextSlotAfter(w, now)
+	if err != nil {
+		return err
+	}
+	return q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next})
+}
+
+// nextSlotAfter returns the first slot of a recurring rule after now, and
+// whether the rule stays enabled (a cron expression with no later occurrence
+// ends it).
+func nextSlotAfter(w db.IssueWakeup, now time.Time) (pgtype.Timestamptz, bool, error) {
 	next := w.NextFireAt
 	enabled := true
 	if w.Kind == "every" {
@@ -59,13 +70,13 @@ func skipMissedSlots(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWa
 	} else {
 		var err error
 		if next.Time, err = NextOccurrenceAfterUTC(w.CronExpression.String, w.Timezone, now); err != nil {
-			return err
+			return next, false, err
 		}
 		if next.Time.IsZero() {
 			next.Valid, enabled = false, false
 		}
 	}
-	return q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next})
+	return next, enabled, nil
 }
 
 // SettleWakeupsOnResume applies the pause to everything it held, in the

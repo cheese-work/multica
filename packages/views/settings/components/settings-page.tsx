@@ -80,6 +80,7 @@ import { PanelHeader } from "../../layout/panel-nav";
 import { useListColumnCollapsed } from "../../layout/app-shell-context";
 import { ListColumn } from "../../layout/list-column";
 import { ProviderBreakersTab } from "./provider-breakers-tab";
+import { GuardTab } from "./guard-tab";
 import { useT } from "../../i18n";
 
 export interface ExtraSettingsTab {
@@ -273,6 +274,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               <ProviderBreakersTab />,
               { wide: true },
             ),
+            entry("guard", t(($) => $.page.tabs.guard), ShieldCheck, <GuardTab />, { wide: true }),
             entry("labels", t(($) => $.page.tabs.labels), Tags, <LabelsTab />, {
               wide: true,
             }),

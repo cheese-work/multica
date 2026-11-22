@@ -461,7 +461,7 @@ func TestCrossWriterGenericWritersMintNothingForRecoveryReason(t *testing.T) {
 // runs it.
 var writerInventory = map[string][]string{
 	"task.go:failTask":                                          {"failTask"},
-	"task.go:MaybeRetryFailedTask":                              {"maybeRetry", "watchdog"},
+	"task.go:maybeRetryFailedTask":                              {"maybeRetry", "watchdog"},
 	"autopilot.go:dispatchCreateIssue":                          {"autopilotCreateIssue"},
 	"autopilot.go:dispatchRunOnly":                              {"autopilotRunOnly"},
 	"issue_wakeup.go:dispatch":                                  {"wakeup"},

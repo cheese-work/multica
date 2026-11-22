@@ -59,6 +59,8 @@ for (const [name, files, selected] of [
   ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
   ["inbox type contract", ["packages/core/types/inbox.ts"], ["frontend", "backend", "quality"]],
   ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
+  ["shared workflow guard case contract", ["server/internal/issueworkflow/testdata/guard_cases.json"], ["frontend", "backend", "runtime"]],
+  ["workflow editor guard list", ["packages/core/issue-workflows/graph-edit.ts"], ["frontend", "backend", "quality"]],
   ["decision card browser contract", ["e2e/decision-dm-card-renders.spec.ts"], ["backend"]],
   ["decision card preview list", ["packages/core/issues/decision-action-preview.ts"], ["frontend", "backend", "quality"]],
   ["run status lists", ["packages/core/issues/run-status.ts"], ["frontend", "backend", "quality"]],
