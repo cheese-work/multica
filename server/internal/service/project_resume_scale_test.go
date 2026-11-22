@@ -183,3 +183,39 @@ func TestProjectResumeBaselineKeepsConditionsThatChangeAfterCommit(test *testing
 		test.Errorf("condition that became true after the resume started %d runs, want 1", runs)
 	}
 }
+
+// A baseline pass that outlives a later flip must not overwrite the newer
+// baseline: true at pause, false at resume, true after resume, with the pause
+// pass running last.
+func TestProjectBaselinePassDoesNotOverwriteALaterFlip(test *testing.T) {
+	fixture, wakeups, issue, agent := conditionFixture(test)
+	ctx := context.Background()
+	projectID := fixture.Project(test, "Overlapping passes", testutil.Cols{"status": "in_progress"})
+	fixture.Exec(test, "UPDATE issue SET project_id=$2, status='todo' WHERE id=$1", issue, projectID)
+	rule := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event",
+		Condition: condition(test, map[string]any{"type": "issue_field", "field": "status", "value": "todo"}), Instruction: "Status reached todo"})
+
+	var held []func()
+	tasks := &TaskService{Queries: wakeups.Tasks.Queries, Bus: wakeups.Tasks.Bus, TxStarter: wakeups.Tasks.TxStarter,
+		startProjectBaseline: func(run func()) { held = append(held, run) }}
+	flip := func(status string) {
+		if _, err := tasks.UpdateProject(ctx, util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
+			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
+		}, false, nil); err != nil {
+			test.Fatalf("flip to %s: %v", status, err)
+		}
+	}
+	flip("paused") // condition true here
+	fixture.Exec(test, "UPDATE issue SET status='backlog' WHERE id=$1", issue)
+	flip("in_progress") // false here
+	fixture.Exec(test, "UPDATE issue SET status='todo' WHERE id=$1", issue)
+	if len(held) != 2 {
+		test.Fatalf("held %d baseline passes, want 2", len(held))
+	}
+	held[1]() // resume pass first
+	held[0]() // the older pause pass, delayed
+	wakeTick(test, fixture, wakeups, rule.ID)
+	if runs := wakeRuns(test, fixture, rule.ID); runs != 1 {
+		test.Errorf("transition after the resume started %d runs, want 1", runs)
+	}
+}
