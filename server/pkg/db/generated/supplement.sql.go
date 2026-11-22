@@ -646,7 +646,7 @@ func (q *Queries) GetTaskSupplementByRequest(ctx context.Context, arg GetTaskSup
 }
 
 const getTaskSupplementCapability = `-- name: GetTaskSupplementCapability :one
-SELECT task_id, workspace_id, issue_id, capability, created_at FROM task_supplement_capability WHERE task_id = $1
+SELECT task_id, workspace_id, issue_id, capability, created_at, chat_session_id FROM task_supplement_capability WHERE task_id = $1
 `
 
 func (q *Queries) GetTaskSupplementCapability(ctx context.Context, taskID pgtype.UUID) (TaskSupplementCapability, error) {
@@ -658,6 +658,7 @@ func (q *Queries) GetTaskSupplementCapability(ctx context.Context, taskID pgtype
 		&i.IssueID,
 		&i.Capability,
 		&i.CreatedAt,
+		&i.ChatSessionID,
 	)
 	return i, err
 }
