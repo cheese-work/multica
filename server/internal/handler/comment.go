@@ -1989,6 +1989,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// The author's "don't start" choices outlive this call: completion
 		// replay skips the agents it names.
 		SuppressedAgentIds: suppressAgentIDs,
+		// Stored for every new comment (CHE-6426): false is an ask, NULL is a
+		// row from before the column existed.
+		NotifyOnly: pgtype.Bool{Bool: req.NotifyOnly, Valid: true},
 	}
 
 	// A reply takes the same thread-scoped advisory lock ResolveComment's

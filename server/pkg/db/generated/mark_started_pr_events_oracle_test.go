@@ -22,11 +22,12 @@ import (
 const (
 	oracleEvents          = 200
 	oracleReceiptsPerWake = 125 // 2 wakeups per issue: 200 x 2 x 125 = 50,000 receipts
-	// Indexed plan: per event one probe of the (event_id, wakeup_id) index and
-	// one of the (wakeup_id, head_sha) index, plus the event and pull request
-	// scans: about 9 rows per event. The bound is 15 per event (observed 1,800
-	// of 3,000); the unindexed plan examines about 100,000.
-	oracleMaxRowsExamined = oracleEvents * 15
+	// Indexed plan (CHE-8956, three UNION arms): per event one probe of the
+	// (event_id, wakeup_id) index and one of the (wakeup_id, head_sha) index per
+	// legacy arm, plus the event and pull request scans: about 16 rows per event.
+	// The bound is 20 per event (observed 2,600 to 3,200 of 4,000); the unindexed plan
+	// examines about 100,000.
+	oracleMaxRowsExamined = oracleEvents * 20
 	// The same plan touches about 16 buffers per event (observed 3,200 of 6,000);
 	// the unindexed plan about 70 (14,500).
 	oracleMaxBuffers = oracleEvents * 30
@@ -97,11 +98,11 @@ func TestMarkStartedPREventsDeliveredExaminesBoundedRows(t *testing.T) {
 	// In-test negative control: the same fixture with the event_id predicate
 	// made non-indexable must blow through 10x the bound, or the oracle cannot
 	// tell an index from a scan.
-	const indexable = `AND r.payload->>'event_id' = e.id::text`
+	const indexable = `AND r.payload->>'event_id' = ce.id::text`
 	if !strings.Contains(markStartedPREventsDelivered, indexable) {
 		t.Fatal("production SQL no longer holds the event_id predicate the control rewrites")
 	}
-	control := strings.Replace(markStartedPREventsDelivered, indexable, `AND (r.payload->>'event_id') || '' = e.id::text`, 1)
+	control := strings.Replace(markStartedPREventsDelivered, indexable, `AND (r.payload->>'event_id') || '' = ce.id::text`, 1)
 	controlWork, _, err := explainOracle(ctx, tx, control, []string{ws})
 	if err != nil {
 		t.Fatal(err)

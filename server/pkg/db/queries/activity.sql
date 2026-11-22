@@ -86,3 +86,56 @@ SELECT id, created_at, details FROM activity_log
 WHERE issue_id = $1 AND action = 'run_skipped'
 ORDER BY created_at DESC
 LIMIT 50;
+
+-- name: ListIssueAuthorTasks :many
+-- Every agent task on an issue that counts as authorship (CHE-7658 step 11):
+-- all of them except a task whose workflow_role rows say reviewer and nothing
+-- else. A task with no row counts (fail closed). The lab inputs come from the
+-- task row: the model the daemon applied and its runtime's provider.
+SELECT t.id AS task_id, t.agent_id, COALESCE(r.provider, '')::text AS provider, COALESCE(t.applied_model, '')::text AS model
+FROM agent_task_queue t
+LEFT JOIN agent_runtime r ON r.id = t.runtime_id
+WHERE t.issue_id = @issue_id
+  AND NOT (
+    EXISTS (SELECT 1 FROM activity_log a WHERE a.issue_id = t.issue_id AND a.action = 'workflow_role'
+              AND a.details->>'task_id' = t.id::text AND a.details->>'role' = 'reviewer')
+    AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.issue_id = t.issue_id AND a.action = 'workflow_role'
+              AND a.details->>'task_id' = t.id::text AND a.details->>'role' IS DISTINCT FROM 'reviewer')
+  )
+ORDER BY t.created_at, t.id;
+
+-- name: CopyWorkflowRoleToRetry :exec
+-- A retry works the role its parent did: the newest workflow_role row of the
+-- parent task is copied for the child, so a reviewer's retry stays a reviewer's.
+INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
+SELECT a.workspace_id, a.issue_id, a.actor_type, a.actor_id, 'workflow_role',
+       jsonb_set(a.details, '{task_id}', to_jsonb(@child_task_id::text))
+FROM activity_log a
+WHERE a.issue_id = @issue_id AND a.action = 'workflow_role' AND a.details->>'task_id' = @parent_task_id::text
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT 1;
+
+-- name: GetLatestChainedRunRetryDetails :one
+-- The newest chained_run_retry row of an issue: the retry a failed chained run
+-- got (CHE-7675). pgx.ErrNoRows when the issue never had one.
+SELECT details FROM activity_log
+WHERE issue_id = $1 AND action = 'chained_run_retry'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: HasChainedRunEntered :one
+-- Whether the task carried the issue into the step itself (a chained move,
+-- CHE-7675), as opposed to being dispatched straight into it.
+SELECT EXISTS (
+  SELECT 1 FROM activity_log
+  WHERE issue_id = @issue_id AND action = 'chained_run_entered'
+    AND details->>'task_id' = @task_id::text AND details->>'step' = @step::text
+);
+
+-- name: GetLatestIssueActivityByAction :one
+-- The newest activity of one action on an issue, however old: a scan window
+-- would miss a quick_entry row that a busy issue has long buried.
+SELECT * FROM activity_log
+WHERE issue_id = $1 AND action = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

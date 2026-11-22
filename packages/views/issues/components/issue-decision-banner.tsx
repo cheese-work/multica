@@ -23,7 +23,10 @@ const ict = (iso: string) => {
 
 /** True while the card still asks the viewer for something (shown expanded). */
 const needsAnswer = (card: RequestCard) =>
-  card.state === "open" || (card.state === "answered" && card.answer?.state === "delivered");
+  !DECIDED_ACTION.includes(card.action?.state ?? "") &&
+  (card.state === "open" || (card.state === "answered" && card.answer?.state === "delivered"));
+// An action card whose action is settled is a record, not a question.
+const DECIDED_ACTION = ["executed", "failed", "rejected", "expired", "cancelled"];
 
 /**
  * Decision cards of the viewer on this issue: open ones and used ones (the used ones fold),

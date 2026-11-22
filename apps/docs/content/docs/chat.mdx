@@ -148,6 +148,8 @@ A decision that asks you to approve a change shows the plain-language ask first.
 
 A decision that asks you to approve a batch of changes lists every item with its own **Approve** and **Reject**. None is chosen when the card opens. The button reads "Choose N more items" and stays off until you choose every item. Then it names the result, for example "Approve 2, Reject 1 with passkey", and one passkey covers all approved items. After you send, each item shows its own effect: applied, or not applied with the reason.
 
+After you answer a decision card, you can undo the answer for 5 seconds. The agent is not woken until that time ends. The undo window applies when the decision screen is on; set `decision_undo_grace` in the workspace settings (0 to 30 seconds, 0 turns it off) to change it. Only the member who answered can undo. A decision that approves an action takes effect at once and has no undo window.
+
 ### Clear your "Needs you" list
 
 Each row in the "Needs you" list has two actions:

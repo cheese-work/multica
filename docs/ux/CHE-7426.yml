@@ -1,0 +1,17 @@
+# Issue sidebar: Pull requests section moves above Wakeups (CHE-7426, slice 1 of CHE-4317).
+# Design gate: CHE-3986 design v2, approved by Cheese 5 Nov 2026 17:59 ICT; lock merged in cheese-work/multica PR 1048.
+# This slice changes section order only. The Defaults redesign is slice 2 (separate issue).
+issue: CHE-7426
+design: design/issue-sidebar-compact/approved/issue-sidebar-compact-v2.html @ ca6d984b3d66460b7ae207b6b915cd58754c91a7
+pages:
+  - id: issue-detail-sidebar
+    url: /<workspace-slug>/issues/<issue-id>   # 1440 px and 390 px
+    keep:
+      - sidebar-quick-actions   # still directly under Properties
+      - sidebar-wakeups   # content and behaviour unchanged
+      - sidebar-plugin-panel
+      - sidebar-duplicates
+      - sidebar-pull-requests-guard   # still hidden when the workspace disables the PR sidebar
+    change:
+      - sidebar-pull-requests-position: "Pull requests section renders directly under Quick actions, above Wakeups"
+    remove: []

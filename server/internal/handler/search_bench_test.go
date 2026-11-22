@@ -476,3 +476,71 @@ func TestSearchTypingSequence(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchTitleTierTypingSequence times the instant title tier (CHE-7337) over
+// typingSequence on the production-shape corpus and fails when a query errors or
+// its p95 exceeds BENCH_P95_MS (default 50).
+//
+//	MULTICA_SEARCH_BENCH=1 BENCH_ISSUES=3200 BENCH_COMMENTS=62000 BENCH_RUNS=50 \
+//	  go test ./internal/handler -run TestSearchTitleTierTypingSequence -count=1 -v
+func TestSearchTitleTierTypingSequence(t *testing.T) {
+	if os.Getenv("MULTICA_SEARCH_BENCH") != "1" {
+		t.Skip("set MULTICA_SEARCH_BENCH=1 to run the search latency harness")
+	}
+	ctx := context.Background()
+	issues := benchEnvInt("BENCH_ISSUES", benchDefaultIssues)
+	runs := benchEnvInt("BENCH_RUNS", 50)
+	budget := float64(benchEnvInt("BENCH_P95_MS", 50))
+	wsID := seedSearchBenchShaped(t, ctx, benchWorkspaceSlug, issues, benchEnvInt("BENCH_COMMENTS", issues*4))
+	wsUUID := util.MustParseUUID(wsID)
+	// run mirrors SearchIssues: the newest-window query, then the trigram query
+	// when the window came back short.
+	exec := func(sql string, args []any) (int, error) {
+		n := 0
+		err := runSearchQuery(ctx, testPool, sql, args, func(rows pgx.Rows) error {
+			for rows.Next() {
+				if _, err := scanSearchIssue(rows); err != nil {
+					return err
+				}
+				n++
+			}
+			return rows.Err()
+		})
+		return n, err
+	}
+	run := func(q string) (int, error) {
+		terms := splitSearchTerms(q)
+		sql, args := buildTitleSearchQuery(terms, true, nil)
+		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+		n, err := exec(sql, args)
+		if err != nil || n >= 8 {
+			return n, err
+		}
+		sql, args = buildTitleTailQuery(terms, true, nil)
+		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+		return exec(sql, args)
+	}
+	// The short rare terms (no title holds them) must stay flat as the corpus grows.
+	for _, q := range append(append([]string{}, typingSequence...), "zq", "q", "qz xq") {
+		n, err := run(q) // warm-up
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
+		}
+		var ms []float64
+		for i := 0; i < runs; i++ {
+			start := time.Now()
+			if _, err := run(q); err != nil {
+				t.Errorf("%q: %v", q, err)
+				break
+			}
+			ms = append(ms, float64(time.Since(start).Microseconds())/1000)
+		}
+		sort.Float64s(ms)
+		p95 := benchPercentile(ms, .95)
+		t.Logf("q=%-14q results %2d  median %7.2fms  p95 %7.2fms", q, n, benchPercentile(ms, .5), p95)
+		if len(ms) > 0 && p95 > budget {
+			t.Errorf("%q: p95 %.0fms exceeds %.0fms", q, p95, budget)
+		}
+	}
+}

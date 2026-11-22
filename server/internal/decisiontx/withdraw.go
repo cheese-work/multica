@@ -22,6 +22,10 @@ const OwnerRequiredNotice = "This decision concerns the workspace owner. Post a 
 // decision: only an answer given on the card may wake the asker.
 const CardRequired = "card_required"
 
+// UndoReason is the reason of an answer the human took back inside its undo grace. The answer
+// never woke anyone, so its retraction is suppressed (plan r4, section 3.11).
+const UndoReason = "undo"
+
 func withdrawalContent(reason, origin, cardLink string) string {
 	if reason == CardRequired && origin == "unprompted" {
 		return "Decision withdrawn: " + reason + ". An unprompted record has no card. Post a new decision request for it; the person answers on that card: [open the lane](" + cardLink + ")"
@@ -128,6 +132,9 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 		params.DisclaimedByAgentID, params.DisclaimedByTaskID = comment.AuthorID, comment.SourceTaskID
 		params.VetoReason = pgtype.Text{String: string(reasonRunes), Valid: true}
 		params.SuppressRetraction = suppress && answer.WokenAt.Valid && answer.WakeOutcome.Valid && answer.WakeOutcome.String != "skipped_ineligible"
+	}
+	if reason == UndoReason {
+		params.SuppressRetraction = true
 	}
 	result.Comments = append(result.Comments, comment)
 	params.WithdrawalCommentID = comment.ID

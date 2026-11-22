@@ -1,0 +1,21 @@
+{
+  "fix": "move the value to a workspace setting, guard policy or plugin config",
+  "patterns": [
+    {
+      "id": "workspace-uuid",
+      "pattern": "15484986-973b-463c-bd1a-2308987f3bd1|1a0975b6-727c-421e-9651-d1176a1fce79|21f43514-15c7-42a1-a239-485763992e1e|29c6241f-33d8-4824-9107-a1a2d9da06f8|2c5c2f6c-7697-4f84-9ce6-3273fa45538c|33efc356-df6f-4068-b8f7-6cc385099018|3dbc7648-1d11-4c19-a7ed-03402e57c8ed|43ec200e-cbdb-410b-84c9-b9af60cbf112|4e6b035e-435e-46df-98d1-235cd2854fda|5029c4e4-f11c-4d16-9936-934b5666ddcd|5353c2a9-85a8-41d8-9940-e319ae8ac52b|5cd75ce5-d323-4004-9779-7e2ccf16bde4|5cdecef0-876d-4d68-a7b7-6f406ef7c9e9|5e351ba5-00a2-47c3-aa78-aa13459788f6|6ecca8a0-0d4d-4af1-abc6-8263aa1b10fd|75eed3bd-33c6-42f5-b612-cf0f03b8879a|7c3d731e-80ed-47bb-aa2e-1eb86736b47f|83a821e9-9deb-4ea0-bbb2-96155706e5af|8b5fe946-257a-460d-b5ea-53d9b85ad96f|8bfccd33-7872-44f8-8ab7-9c65925eac6f|96744546-f5b7-462f-bfee-8816d42cd031|a05b54c4-0d0f-4468-94df-505b69216d31|a9ec41c3-48f3-4d5a-9d8d-41a6ad5f4480|b2b52f93-32e6-4caf-80ad-1b48cf60b821|b47e8ae5-be3e-4abb-a91f-b4ac1e414b8c|be909481-6ce6-4767-95d5-1844c6f18435|dd1f4e69-bcf4-46e1-9659-4c36210ce4e9|df7da71b-a937-4eb1-bf52-b12ac5ee657f|ebedff12-c7f7-4ca5-b6f6-1eb7443576df|f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff|f2b37098-500e-406e-8e33-87ee2fbfdb66|f70b3bcd-8650-448e-b88f-7aff05b60382|f824f31b-39bb-457f-8008-1f78cc3ea0af",
+      "ignoreCase": true
+    },
+    {
+      "id": "host-token",
+      "pattern": "x99|c00|mbp",
+      "wholeWord": true,
+      "ignoreCase": true
+    },
+    {
+      "id": "person-name",
+      "pattern": "Cheese|Jev|Hermes",
+      "wholeWord": true
+    }
+  ]
+}

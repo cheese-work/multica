@@ -137,6 +137,38 @@ func (q *Queries) GetAskGuardEventForMember(ctx context.Context, arg GetAskGuard
 	return i, err
 }
 
+const getEarlierRequestOfTaskForMember = `-- name: GetEarlierRequestOfTaskForMember :one
+SELECT request.id FROM decision_request request
+JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3
+  AND intent.task_id = $4 AND request.id <> $5
+ORDER BY request.created_at, request.id
+LIMIT 1
+`
+
+type GetEarlierRequestOfTaskForMemberParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// The first request the task opened to the person on the issue, other than the
+// one named: what makes a repair run's --recovers request a duplicate.
+func (q *Queries) GetEarlierRequestOfTaskForMember(ctx context.Context, arg GetEarlierRequestOfTaskForMemberParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getEarlierRequestOfTaskForMember,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.HumanUserID,
+		arg.TaskID,
+		arg.ID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const insertAskGuardEvent = `-- name: InsertAskGuardEvent :one
 INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text, root_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE((SELECT root.id FROM ask_repair_root root WHERE root.repair_task_id = $4), $1))
@@ -399,4 +431,31 @@ func (q *Queries) ListNotifyOnlyClearableAskGuardEvents(ctx context.Context, arg
 		return nil, err
 	}
 	return items, nil
+}
+
+const serveAskGuardEventsForRequest = `-- name: ServeAskGuardEventsForRequest :exec
+UPDATE ask_guard_event SET cleared_at = clock_timestamp()
+WHERE workspace_id = $1 AND issue_id = $2 AND task_id = $3 AND member_id = $4 AND cleared_at IS NULL
+`
+
+type ServeAskGuardEventsForRequestParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	MemberID    pgtype.UUID `json:"member_id"`
+}
+
+// CHE-8752: a run that asks a person on an issue has complied with the guard for
+// that person: its open events for the same person and issue are served. Events of
+// another run, person or issue stay open. No request id is recorded: one request
+// can answer several events, and the unique index on the clearing request is for
+// --recovers only.
+func (q *Queries) ServeAskGuardEventsForRequest(ctx context.Context, arg ServeAskGuardEventsForRequestParams) error {
+	_, err := q.db.Exec(ctx, serveAskGuardEventsForRequest,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.MemberID,
+	)
+	return err
 }

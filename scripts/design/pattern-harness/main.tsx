@@ -67,6 +67,7 @@ import {
   CreateAgentDialogPage, ConcurrencyPickerPage, SkillAttachPage, VisibilityPickerPage, InstructionsEditorPage,
   DingTalkTabPage, LarkTabPage, SlackTabPage, TelegramTabPage, WecomTabPage,
   AddTriggerDialogPage, ExpandableDescriptionPage, HtmlViewerPage, PlanRevisionViewerPage, ResourceLabelPickerPage,
+  MediaContextPage, MediaPagePage, LocalDirectoryModePage, NextSelfMentionPage, ProjectWorkflowMenuPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -1160,6 +1161,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "html-viewer": HtmlViewerPage,
   "plan-revision-viewer": PlanRevisionViewerPage,
   "resource-label-picker": ResourceLabelPickerPage,
+  "media-context": MediaContextPage,
+  "media-page": MediaPagePage,
+  "local-directory-mode-dialog": LocalDirectoryModePage,
+  "next-self-mention": NextSelfMentionPage,
+  "project-workflow-menu": ProjectWorkflowMenuPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,

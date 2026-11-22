@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/ciwatch"
 	"github.com/multica-ai/multica/server/internal/inbox"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -51,6 +52,8 @@ func (d ciWatchDest) CreateIssue(ctx context.Context, tx pgx.Tx, s ciwatch.Issue
 		ID: dbid.NewV7(), WorkspaceID: ws, Title: s.Title,
 		Description: pgtype.Text{String: s.Body, Valid: true}, Status: "todo", Priority: s.Priority,
 		CreatorType: "member", CreatorID: creator, Position: position, Number: number,
+		// Made by the platform, not a person: an automated rule (CHE-6376).
+		CreatedVia: pgtype.Text{String: issuecreatedvia.Autopilot, Valid: true},
 	}
 	if s.AssigneeType != "" && s.AssigneeID != "" {
 		if params.AssigneeID, err = util.ParseUUID(s.AssigneeID); err != nil {

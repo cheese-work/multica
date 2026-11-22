@@ -14,10 +14,23 @@ services:
       MULTICA_REVIEW_ADMISSION: ${MULTICA_REVIEW_ADMISSION:-}
       MULTICA_REVIEW_ADMISSION_CHECKS: ${MULTICA_REVIEW_ADMISSION_CHECKS:-}
       MULTICA_REVIEW_ADMISSION_REVIEWERS: ${MULTICA_REVIEW_ADMISSION_REVIEWERS:-}
+      # Merge-receipt CI route (CHE-5594, CHE-7507). Same reason. The policy
+      # value is a path under /etc/multica (mounted below). Either one unset or
+      # empty leaves the route off, as before.
+      MULTICA_MERGE_RECEIPT_OIDC_POLICY: ${MULTICA_MERGE_RECEIPT_OIDC_POLICY:-}
+      MULTICA_MERGE_RECEIPT_WORKSPACE_ID: ${MULTICA_MERGE_RECEIPT_WORKSPACE_ID:-}
     volumes:
       - type: bind
         source: ${MULTICA_FEATURE_FLAGS_FILE:-${MULTICA_JEV_FLAGS_FILE:?set the absolute path of the feature-flag file}}
         target: /app/feature-flags.yaml
+        read_only: true
+      # Host policy files for the merge-receipt route (CHE-7507), same path in
+      # the container. Read-only. A missing host dir is created empty by docker
+      # (create_host_path defaults true), so startup does not fail; the server
+      # then leaves the route off ("policy unreadable").
+      - type: bind
+        source: /etc/multica
+        target: /etc/multica
         read_only: true
 
   backend-green: *flags_backend

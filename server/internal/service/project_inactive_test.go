@@ -142,3 +142,47 @@ func TestInactiveProjectAutopilotModes(test *testing.T) {
 		})
 	}
 }
+
+// A project status flip settles only the rules that can still fire. A
+// disabled rule has nothing to settle, so the request must not settle (write,
+// baseline, lock) it. Only the one-statement revision bump touches it (CHE-7652:
+// settling 12k+ rows one by one timed out the request on a large project).
+func TestProjectStatusChangeSkipsDisabledWakeups(test *testing.T) {
+	fixture, wakeups, issue, agent := conditionFixture(test)
+	ctx := context.Background()
+	projectID := fixture.Project(test, "Disabled wakeups", testutil.Cols{"status": "in_progress"})
+	fixture.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issue, projectID)
+	enabled := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Enabled rule"})
+	disabledEvent := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Disabled event rule"})
+	disabledCondition := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event", Condition: condition(test, map[string]any{"type": "issue_field", "field": "status", "value": "todo"}), Instruction: "Disabled condition rule"})
+	for _, rule := range []db.IssueWakeup{disabledEvent, disabledCondition} {
+		fixture.Exec(test, "UPDATE issue_wakeup SET enabled=false, disabled_at=now() WHERE id=$1", rule.ID)
+	}
+	for _, status := range []string{"paused", "in_progress"} {
+		_, err := wakeups.Tasks.UpdateProject(ctx, util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
+			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
+		}, false, nil)
+		if err != nil {
+			test.Fatalf("flip to %s: %v", status, err)
+		}
+		got, err := fixture.q.LocklessWakeup(ctx, enabled.ID)
+		if err != nil {
+			test.Fatal(err)
+		}
+		if paused := status == "paused"; paused != (got.LastError.String == "project_inactive") {
+			test.Errorf("enabled rule last_error = %q after flip to %s", got.LastError.String, status)
+		}
+		for _, rule := range []db.IssueWakeup{disabledEvent, disabledCondition} {
+			got, err := fixture.q.LocklessWakeup(ctx, rule.ID)
+			if err != nil {
+				test.Fatal(err)
+			}
+			if got.LastError.Valid {
+				test.Errorf("disabled rule %s was settled: last_error = %q", util.UUIDToString(rule.ID), got.LastError.String)
+			}
+			if got.Revision == rule.Revision {
+				test.Errorf("disabled rule %s revision not bumped after flip to %s", util.UUIDToString(rule.ID), status)
+			}
+		}
+	}
+}

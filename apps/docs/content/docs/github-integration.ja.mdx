@@ -313,6 +313,8 @@ Organization permissions:
 
 PR スナップショットは Pull requests、Checks、Commit statuses の REST API から取得します。Contents 権限は不要です。任意の Actions 権限を付与すると、そのコミットのワークフロー実行も読み取ります。付与しない場合、同じワークフローの新しい実行が成功しても、キャンセルされた古い実行は失敗として数えられます。
 
+非公開リポジトリからのスキルのインポートと更新では、リポジトリ所有者のアカウントに対するワークスペースの installation の短命な token を使い、なければサーバーの `GITHUB_TOKEN` にフォールバックします。この token には任意の **Contents: read** 権限が必要です。権限や該当所有者の installation がない場合は `GITHUB_TOKEN` か認証なしで取得します。token は GitHub のホストにのみ送信されます。
+
 スタックの自動リンクは GitHub のスタック API を呼ぶため、Pull requests の**書き込み**権限が必要です。読み取りだけの App でも、それ以外の機能は動きます。スタックの結果は `no_permission` になります([レポートコード](#stack-report-codes)を参照)。インストール済みの App の権限を引き上げた場合は、各 installation の所有者が GitHub 上で承認するまで有効になりません。
 
 <Callout type="warning">

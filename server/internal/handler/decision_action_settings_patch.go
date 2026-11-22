@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/capabilityrouting"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/designguard"
@@ -132,8 +133,14 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateCardLintSetting(map[string]any{key: value})
 	case key == decisiontx.SettingServerActions || key == decisiontx.SettingStandingAnswers:
 		err = validateServerActionSetting(map[string]any{key: value})
+	case key == "auto_close":
+		err = validateAutoClosePatch(raw)
+	case key == "blocked_run_skip":
+		err = validateBlockedRunSkipPatch(raw)
 	case key == designguard.SettingKey:
 		err = validateDesignGuardSetting(map[string]any{key: value})
+	case key == decisionAskParkKey:
+		err = validateDecisionAskParkSetting(map[string]any{key: value})
 	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey || key == askguard.OwnerScriptSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
@@ -163,8 +170,12 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		}
 	case key == issueworkflow.SettingsKeyWorkflowByType:
 		err = issueworkflow.ValidateWorkflowByType(raw)
+	case key == capabilityrouting.SettingsKey:
+		err = capabilityrouting.Validate(raw)
 	case key == intakehold.SettingKey:
 		err = intakehold.Validate(raw)
+	case key == issueworkflow.SettingsKeyQuickFirst:
+		err = issueworkflow.ValidateQuickFirst(raw)
 	case key == "pr_event_capture":
 		flags, isObject := value.(map[string]any)
 		if !isObject {
@@ -286,6 +297,12 @@ func readSettingsPatch(ctx context.Context, queries *db.Queries, workspaceID pgt
 	if err != nil {
 		return read, err
 	}
+	if err := refuseNewCannotDoGapRaw(stored, after); err != nil {
+		return read, settingsInvalid("%v", err)
+	}
+	if err := checkCapabilityRoutingAgents(ctx, queries, workspaceID, params.Settings); err != nil {
+		return read, err
+	}
 	before := namedSettings(stored, keys)
 	if read.LiveSHA256, err = decisionaction.SettingsDigest(read.TargetID, before); err != nil {
 		return read, err
@@ -315,6 +332,9 @@ func applySettingsPatch(ctx context.Context, execution decisionActionExecution, 
 	after, err := settingsPatchAfter(stored, params.Settings)
 	if err != nil {
 		return err
+	}
+	if err := refuseNewCannotDoGapRaw(stored, after); err != nil {
+		return settingsInvalid("%v", err)
 	}
 	for key, value := range after {
 		if value == nil {

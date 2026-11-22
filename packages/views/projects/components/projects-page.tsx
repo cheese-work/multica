@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ExternalLink,
   FolderKanban,
@@ -14,7 +14,6 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   projectListOptions,
-  useUpdateProject,
   useDeleteProject,
   useProjectViewStore,
   type ProjectColumnKey,
@@ -88,6 +87,7 @@ import { ProjectsIntro } from "./projects-intro";
 import { useT } from "../../i18n";
 import { useFormatRelativeDate } from "./labels";
 import { ProjectStatusBadge, ProjectPriorityBadge } from "./project-badge";
+import { useProjectFieldUpdate } from "./use-project-field-update";
 import { ProjectLeadPicker } from "./project-lead-picker";
 import { PAGE_GUTTER } from "../../layout/page-header";
 import { cn } from "@multica/ui/lib/utils";
@@ -252,14 +252,10 @@ function ProjectInlineCell({
   children,
 }: {
   project: Project;
-  children: (handleUpdate: (data: UpdateProjectRequest) => void) => React.ReactNode;
+  children: (handleUpdate: (data: UpdateProjectRequest) => void, statusPending: boolean) => React.ReactNode;
 }) {
-  const updateProject = useUpdateProject();
-  const handleUpdate = useCallback(
-    (data: UpdateProjectRequest) => updateProject.mutate({ id: project.id, ...data }),
-    [project.id, updateProject],
-  );
-  return <>{children(handleUpdate)}</>;
+  const { handleUpdate, statusPending } = useProjectFieldUpdate(project.id);
+  return <>{children(handleUpdate, statusPending)}</>;
 }
 
 // Card (comfortable) view — kept from the prior page.
@@ -276,11 +272,7 @@ function ProjectCard({
   const { t } = useT("projects");
   const wsPaths = useWorkspacePaths();
   const formatRelativeDate = useFormatRelativeDate();
-  const updateProject = useUpdateProject();
-  const handleUpdate = useCallback(
-    (data: UpdateProjectRequest) => updateProject.mutate({ id: project.id, ...data }),
-    [project.id, updateProject],
-  );
+  const { handleUpdate, statusPending } = useProjectFieldUpdate(project.id);
   const progressPercent =
     project.issue_count > 0
       ? Math.round((project.done_count / project.issue_count) * 100)
@@ -298,7 +290,7 @@ function ProjectCard({
             <h3 className="truncate text-body font-medium">{project.title}</h3>
           </AppLink>
           <ProjectRowActions project={project} pinned={pinned} canDelete={canDelete} />
-          <ProjectStatusBadge project={project} handleUpdate={handleUpdate} triggerClassName="shrink-0" />
+          <ProjectStatusBadge project={project} handleUpdate={handleUpdate} statusPending={statusPending} triggerClassName="shrink-0" />
         </div>
 
         {project.issue_count > 0 ? (
@@ -607,8 +599,8 @@ export function ProjectsPage() {
         interactive: true,
         cell: (project) => (
           <ProjectInlineCell project={project}>
-            {(handleUpdate) => (
-              <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+            {(handleUpdate, statusPending) => (
+              <ProjectStatusBadge project={project} handleUpdate={handleUpdate} statusPending={statusPending} align="start" />
             )}
           </ProjectInlineCell>
         ),

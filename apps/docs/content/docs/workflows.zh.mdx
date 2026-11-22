@@ -58,6 +58,10 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 设置了 `keep_other_assignee: true` 的步骤，在当前负责人是被有意选定的（既不是这一步的处理人，也不是事项离开的那一步的处理人）时会跳过交接。该负责人继续持有事项，若是智能体，则为这一步启动一次运行。该选项默认关闭，通过 API 或 CLI 设置。它是临时的：按事项配置的工作流（CHE-5024）将取代它。
 
+设置了 `chain_same_owner: true` 的步骤，在智能体把事项移入该步骤、且该智能体就是这一步的处理人时，不会启动新的运行，前提是该智能体的运行所开始的那一步的处理人类型相同（智能体、项目负责人等）。智能体继续在自己的运行中工作，状态响应的 `step_brief` 携带这一步的说明，`multica issue status` 会打印它。换了智能体、处理人类型改变，或由人移动事项时，仍像以前一样启动运行。批量更新从不链式处理。该选项默认关闭，通过 API 或 CLI 设置。
+
+步骤可以带有自己的 `auto_close: {"mode": "off|warn|block", "top_level": true|false}`。工作区设置 `auto_close` 为 `off` 时是总开关，始终优先。否则，进入该步骤的事项使用步骤的 mode，取代工作区的 mode；没有 `auto_close` 的步骤沿用工作区设置。设置 `top_level: true` 后，没有父事项的根事项也可以被关闭：跳过父事项检查，子事项仍然要求父事项未被停止。在 `block` 模式的步骤上，通往 `done` 的 `pr.merged` 边在合并已到达但关闭检查未通过时，不会把事项移到 `done`，而是立即、仅一次地转到该边的 `on_timeout` 状态，不等待截止时间。该字段默认关闭，通过 API 或 CLI 设置。
+
 ## 在项目中使用
 
 打开项目，在**工作流**属性中选择刚才的工作流。工作区的 `owner`、`admin`，以及担任项目负责人的成员可以切换它。
@@ -69,6 +73,20 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 ## 按标题类型选择工作流
 
 工作区所有者或管理员可在工作区设置中配置 `workflow_by_type`，例如 `{"design": "<工作流 ID>", "plan": "<工作流 ID>"}`。标题以已映射类型开头的新问题（如 `design(x): …`）会使用该工作流，而不是所在项目的工作流。`--workflow`（CLI）或显式选择始终优先。没有对应条目的类型，或对应工作流已不存在时，沿用项目的工作流。`multica issue create` 会打印所选工作流。标题带有已映射类型时，新建窗口会显示将选用的工作流的状态和交接。该映射属于工作区策略：对包括智能体在内的所有创建者生效，不会经过非交互调用方使用显式 `--workflow` 时的运行预算检查。若两个键仅大小写不同，按字母顺序靠前的生效。之后修改标题不会改变工作流；更新响应带有一行 `workflow_hint`（`multica issue update` 会打印），给出移动它的命令。
+
+工作区所有者或管理员可在工作区设置中配置 `quick_first`，让一部分新问题试用 Quick 工作流：`{"workflow_id": "<Quick 工作流 ID>", "types": ["feat", "fix"], "starts_at": "<RFC 3339>", "ends_at": "<RFC 3339>"}`。从 `starts_at`（含）到 `ends_at`（不含），标题类型在 `types` 中、且已遵循完整工作流（所在项目的工作流，或 `workflow_by_type` 指定的工作流）的新根问题按编号分组：偶数编号从 `todo` 起进入 Quick 工作流，奇数编号沿用原工作流。子问题沿用父问题的 Quick 工作流。调用方用 `--workflow` 指定了工作流、状态不是 `todo` 或 `backlog`、已分配给成员或小队，或所在项目的 A/B 分流正处于其时间窗口内，则不参与。被指定为经办人的智能体会保留为问题的作者。设置之前该功能关闭；未设置时，创建行为不变。
+
+每次绑定到 Quick 工作流，都会在该议题的活动中写入一行 `quick_entry`：抽签为两个分组各写一行（`source` 为 `arm`，`arm` 为 `Q` 或 `D`），议题级覆盖到 Quick 时写入 `source` 为 `override` 的一行。Quick 是名为 `Quick` 的工作流，或 `quick_first` 指定的工作流。`full_workflow_id` 由服务器设置为议题紧接此前所遵循的工作流：抽签时是奇数编号保留的路线；覆盖时依次是议题此前的覆盖、其标题类型在 `workflow_by_type` 中的条目、其项目的工作流。若议题没有则省略。调用方不能指定它。
+
+`multica issue workflow escalate <id> --reason "..."` 会把遵循 Quick 的议题移到其最新 `quick_entry` 行所指的完整工作流；调用方不能指定目标，请求中的未知字段会被拒绝。没有 `quick_entry` 行、或该行没有工作流的议题，会以 `no_full_workflow` 拒绝；不遵循 Quick 的议题会以 `not_quick` 拒绝。从 `todo` 或 `investigating` 升级时，除非原因是 `rollback`，否则议题的描述或评论中必须有 `Estimate:` 行，否则以 `estimate_required` 拒绝。一个事务会写入 `workflow_escalated` 行（原因和目标）以及 `call` 为 `escalated` 并带估算值的 `intake_call` 行，然后记录切换。没有运行中的任务时，议题立即进入完整工作流的步骤，并为该步骤的处理人产生一次运行；有运行中的任务时，切换处于待定状态，在最后一个任务结束后生效。已完成的议题会遵循完整工作流，但不会交给任何人；重新打开的 Quick 议题会回到之前的工作流，并为其所在步骤执行一次运行。反向移动受到保护：智能体把议题移入 Quick（`issue update --workflow`）会打开所有者审批卡，批准前不会有任何改变；成员则立即切换。持任务令牌的智能体把议题移到遵循 Quick 的项目（`issue update --project`，且 `project_id` 必须是唯一字段，带其他字段会被 `quick_move_alone` 拒绝），或把项目切换为 Quick（在某个议题的运行中），会打开所有者审批卡，批准前不会有任何改变；成员则立即完成。卡片为 `issue.project.quick_set` 和 `project.workflow.quick_set`：每张卡都会封存所有者看到的绑定，批准时服务器在锁内重新计算，任何差异都会让卡片以 `stale_base` 结束。其他智能体凭证仍会被 `budget_rebinding_requires_interactive` 拒绝。
+
+## 按能力路由工作
+
+工作区设置 `capability_routing` 把工单类型映射到一个作者智能体和一个有序的评审智能体列表，例如 `{"feat": {"author": "<智能体 ID>", "reviewers": ["<智能体 ID>"]}}`。键为小写类型，ID 必须是该工作区的智能体，`reviewers` 不能为空，作者不能同时是评审者。默认未设置，未设置时行为不变。只有 **Author** 和 **Reviewer** 处理人会读取它。它只能通过 `workspace.settings` 卡片修改（`multica config propose workspace.settings --set 'capability_routing:=<json>'`）；常规设置保存会保留已存储的值。用 `multica workspace capability-routing` 读取，未设置时输出 `{}`。
+
+**Author** 是可用于“进行中”等步骤的处理人。进入该步骤的工单会交给它的作者：即最近一次把工单带入该步骤的人或智能体；若没有，则取 `capability_routing` 为该工单类型（标题的 Conventional Commit 前缀，如 `feat`）指定的 `author`。修改表不会改变工单已有的作者；有人重新分配工单后，该人成为下次进入时的作者。两者都没有时，该步骤不交给任何人；工作区没有路由任何作者时，工作流 lint 会给出警告（WF015）。用 `multica workflow handoff set <workflow> <status-key> --handler author` 设置。
+
+`reviewer` 步骤把工单交给该工单类型（标题的 Conventional Commit 前缀）所列评审者中第一位可联系、实验室已知、与所有作者的实验室都不同且本身不是作者的人。该步骤上的覆盖、固定处理人，以及同一次写入中指定的处理人，适用同一规则。没有符合条件者或该工单类型没有路由条目时，该次移动被拒绝并返回 `409 review_independence`，其中列出相关实验室，工单保持不变。
 
 ## 把任务交给下一步
 
@@ -102,7 +120,7 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 移除一列时，如果还有任务停在那里，需要为它们选择新状态。其他任务保持不变，这次移动也不会启动智能体。工作流列表下方的状态库可以修改状态名称和颜色，使用同一个状态的地方都会同步变化。
 
-在工作流编辑器中设置**每个 Issue 的最大运行次数**，可限制一个 Issue 在被工作流阻止前最多能启动多少次运行（1 到 1000；留空则使用默认值 15）。修改需要已登录的网页或桌面会话；不改动该字段的保存可从任何客户端进行。旁边的**包含子 Issue 的 PR** 开关决定 PR 守卫是否也读取子 Issue 的 PR（默认开启），遵循同一规则。智能体或令牌不能直接修改这两个字段：会收到 `budget_requires_decision`，需用 `multica config propose workflow.budget` 提出修改，再由所有者用通行密钥批准。智能体或令牌创建 Issue、或把 Issue 改绑到预算更宽的工作流时，同样受此限制（`budget_rebinding_requires_interactive`）。同一个决定即可放行：`multica issue create` 和 `multica issue update` 接受 `--workflow <id> --decision-id <id>`。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
+在工作流编辑器中设置**每个 Issue 的最大运行次数**，可限制一个 Issue 在被工作流阻止前最多能启动多少次运行（1 到 1000；留空则使用默认值 15）。修改需要已登录的网页或桌面会话；不改动该字段的保存可从任何客户端进行。旁边的**包含子 Issue 的 PR** 开关决定 PR 守卫是否也读取子 Issue 的 PR（默认开启），遵循同一规则。智能体或令牌不能直接修改这两个字段：会收到 `budget_requires_decision`，需用 `multica config propose workflow.budget` 提出修改，再由所有者用通行密钥批准。智能体或令牌创建 Issue、或把 Issue 改绑到预算更宽的工作流时，同样受此限制（`budget_rebinding_requires_interactive`）。同一个决定即可放行：`multica issue create` 和 `multica issue update` 接受 `--workflow <id> --decision-id <id>`。 该决定的类别必须为 `spend`，且所有者不能处于通行密钥恢复状态。当工作区通行密钥闸门为 `block` 时，所有者还必须用通行密钥回答；否则写入会被拒绝，并指出缺少的条件。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
 
 设有运行预算的 Issue，侧边栏会显示一个计量条：已用运行数、剩余运行数、80 % 时的警告，以及**运行预算已用完**状态。**提高上限**和**补充**会请求工作区所有者批准更多运行。如果你是所有者，可直接用通行密钥在原处批准；否则请求会发给所有者。在列表和看板中，被预算停住的 Issue 会在状态旁显示**预算已用完**标签。所有者批准后，已决定的卡片和审批面板会显示新的上限，以及被停住的 Issue 之后的结果（运行已入队、运行已开始、状态已恢复，或未恢复的原因），并且无需刷新即可更新。
 
@@ -114,13 +132,24 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 工作区可以在一段时间内，把新的顶层请求留在 **Backlog**，让人先阅读并放行，再由智能体开始工作。规则是工作区设置 `intake_hold`：一个列表，每个项目一条。每条包含 `project_id`、`mode`、`starts_at`、`ends_at`、`exempt_types`、`exempt_labels`、`exempt_escalation_classes`、`exempt_autopilot_ids`、`exempt_issue_ids` 和 `source`。智能体通过工作区设置补丁修改它，由所有者用通行密钥批准。没有条目的项目不受影响。 `source` 为必填项，所有 ID 须为带连字符的小写 UUID；违反任一规则的值在保存时会被拒绝。
 
-模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。在 `block` 模式下，智能体或令牌对被暂缓任务的状态变更会被拒绝，无论任务在 Backlog 中还是从 Backlog 被挂起，返回 HTTP 409 和代码 `intake_hold`；响应体包含 `ends_at`、`fix` 和 `release_paths`。移到 `cancelled` 不会被拒绝。智能体或令牌在该项目中创建任务并指定 `backlog` 和 `cancelled` 之外的状态，同样会被拒绝；不指定状态的创建会落在 Backlog，新任务的元数据键 `intake_hold` 会被设为条目的 `source`。人自己的移动或创建不会被拒绝。在 `warn` 模式下不拒绝任何操作，服务器写一行 `intake_hold_warn` 日志。在状态行中记录放行键不属于本次发布。
+模式有 `off`（不暂缓任何任务）、`warn` 和 `block`。以下条件全部成立时，任务被暂缓：条目的时间窗口已开启（含 `starts_at`，不含 `ends_at`）；任务创建于 `starts_at` 或之后；没有父任务；它在 Backlog 中，或因决策请求从 Backlog 被挂起；没有人放行过它；没有适用的豁免。在 `block` 模式下，智能体或令牌对被暂缓任务的状态变更会被拒绝，无论任务在 Backlog 中还是从 Backlog 被挂起，返回 HTTP 409 和代码 `intake_hold`；响应体包含 `ends_at`、`fix` 和 `release_paths`。移到 `cancelled` 不会被拒绝。智能体或令牌在该项目中创建任务并指定 `backlog` 和 `cancelled` 之外的状态，同样会被拒绝；不指定状态的创建会落在 Backlog，新任务的元数据键 `intake_hold` 会被设为条目的 `source`。人自己的移动或创建不会被拒绝。在 `warn` 模式下不拒绝任何操作，服务器写一行 `intake_hold_warn` 日志。
 
 `GET /api/issues/{id}` 返回 `intake_hold` 字段，包含 `source`、`held`、`owned`、`reason`、`ends_at` 和 `exempt_after`。`owned` 在 `ends_at` 之后仍为 true，因此可以区分暂缓覆盖过的任务和从未覆盖的任务。有父任务的任务和没有条目的项目不返回该字段，列表接口也不返回。`reason` 取 `held`、`ended`、`not_started`、`mode_off`、`created_before_start`、`left_backlog`、`released_by_member`、`exempt_type`、`exempt_label`、`exempt_escalation_class`、`exempt_autopilot` 或 `exempt_issue_id`。标题没有类型的任务（例如 `plain words`）会被暂缓。优先级不豁免任何任务。
 
-智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。 事项仍被保留时，请求保持完整流程，但其答复或其他决策事件（撤回、过期、重新提问、收回）的投递不会启动任何运行。该投递以 `skipped_ineligible` 结案，不会重试。在 `warn` 模式下，投递照常执行。创建了该暂缓任务的运行，在它仍在运行期间，也可以在这个任务上发起该请求；没有创建该任务的智能体不能发起，创建它的运行发出的 `reversible` 请求会被拒绝。请求会引用该任务上的一条评论，所以创建它的运行须先在任务上发表评论。
+智能体需要人就支出、部署、发布、不可撤销的操作或产品方向做决定时，会用决策请求询问。如果条目在 `exempt_escalation_classes` 中列出该类别，这个人的回答会在回答 10 分钟后，解除这一个任务的暂缓。在此之前 `held` 保持 true，`exempt_after` 显示豁免开始的时间。已撤回的回答不豁免任何任务，`reversible` 请求也永远不豁免。 事项仍被保留时，请求保持完整流程，但其答复或其他决策事件（撤回、过期、重新提问、收回）的投递不会启动任何运行。该投递以 `skipped_ineligible` 结案，不会重试。在 `warn` 模式下，投递照常执行。 负责人等待步骤中的等待阶段（关闭并以 `skipped_ineligible` 结案，不启动恢复运行）、某人在未决操作卡片上发送的讨论消息（评论会保存，唤醒为 `skipped_ineligible`）以及某人对已执行操作的撤销（撤销会保存，不启动任何运行）也是如此。创建了该暂缓任务的运行，在它仍在运行期间，也可以在这个任务上发起该请求；没有创建该任务的智能体不能发起，创建它的运行发出的 `reversible` 请求会被拒绝。请求会引用该任务上的一条评论，所以创建它的运行须先在任务上发表评论。
 
-人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。
+人放行任务有两种方式：以本人身份登录网页应用、桌面应用或 CLI，把任务移出 Backlog；或者把任务从它由 Backlog 挂起所在的状态移出，由服务器记录这次放行。属于智能体或云运行时的令牌从不放行任务。服务器把放行记录在这个人自己的状态行里：details 中的键 `intake_release`，值为条目的 `source`。只有当人的移动把状态改成 `backlog` 以外的值，并且任务仍被一个开启的条目覆盖时，才会写入该键。挂起、取消挂起、系统移动，以及智能体或云运行时的移动都不带这个键。把任务移出挂起状态时，正是凭这个键放行；即使移动在挂起之前开始、在挂起之后才记录，放行依然保留。
+
+## 按 intake 或 QA 证据限制步骤 [#intake-qa-gates]
+
+步骤可以设置进入关卡：状态移入该步骤时必须满足的条件。有两个关卡会读取智能体写在事项上的内容。把它们加入步骤的 `entry` 列表，例如 `{"guard": "intake_simple", "mode": "warn", "param": "1"}`。模式为 `off`、`warn` 或 `block`；未列出的关卡视为关闭，全部关闭时事项的移动与以前一致。`warn` 模式下移动照常通过，事项上记录一条警告；`block` 模式下移动会被拒绝，并给出未通过的事实和修复方法，除非关卡把 `member_override` 设为 `false`，否则成员可以填写理由后放行。
+
+- `intake_simple`：事项的描述或评论里有 `Estimate:`、`Repos:`、`Schema change:`、`Security change:`、`Human decision:` 这几行，且答案表明这是个简单事项时通过。每类行以最新的一条为准。缺少某行或无法读取、估时（如 `1h`、`45m`）超过关卡的 `param`（单位为小时，大于 0 且不超过 24）、`Repos:` 列出多个仓库、是/否行为 `yes`，或事项存在未关闭的决策请求时，都会失败。`param` 必填。
+- `qa_proof`：执行移动的智能体在事项进入当前步骤之后写过一条评论，其中有一行 `QA:`，值为链接（`https://…`）或其后紧跟代码块，并且该智能体自己设置了事项的 `post_close_work` 元数据（最新一次写入）时通过。其他主体或之前的运行留下的值不算。它不接受 `param`。其他人写的评论不算。
+
+两个关卡都按失败处理读不出的值。两者都不能用作流转守卫。每次评估 `intake_simple`，事项的活动记录里都会新增一条 `intake_call`，包含 `call`（`simple` 或 `rejected`）、原始的 `estimate` 和 `step`。
+
+`pr.none_open` 是第三个进入关卡，它读取的是 PR，而不是智能体写下的内容。当事项没有关联任何打开或草稿状态的 PR（工作流包含子事项 PR 时，子事项也一并检查）时通过。已合并或已关闭的 PR 不会阻止它，没有 PR 的事项可以通过。把它放在智能体用来关闭事项的步骤上（例如 `agent_accepted`），并给前一个步骤添加指向该步骤的 `agent_done` 边，智能体就能关闭没有可合并内容的 `in_review` 事项。只要有 PR 处于打开状态，智能体就不能使用这条捷径：拒绝信息会逐个列出打开的 PR（例如 `acme/widget#12 (draft)`）和修复方法，即合并或关闭它。与其他进入关卡一样，它不能用作流转守卫，`multica workflow lint` 接受它出现在 `entry` 中。
 
 ## 相关指引
 
