@@ -1098,6 +1098,8 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	if n := resolveDaemonIntOverride(maxFlag, "MULTICA_DAEMON_MAX_CONCURRENT_TASKS", fileCfg.MaxConcurrentTasks); n > 0 {
 		overrides.MaxConcurrentTasks = n
 	}
+	// The env var is read by LoadConfig and beats the persisted value.
+	overrides.ReservedChatSlots = fileCfg.ReservedChatSlots
 	// --no-auto-update / MULTICA_DAEMON_AUTO_UPDATE=false / config.json
 	// disable_auto_update are all single-direction: none of them can force
 	// auto-update *on*, they can only turn it off. Env "true" is not

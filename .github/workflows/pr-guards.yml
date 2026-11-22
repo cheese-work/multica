@@ -140,6 +140,35 @@ jobs:
       - name: Check fork source and test preservation
         run: node scripts/fork-sync-guard.mjs
 
+  # CHE-8818 (plan r9 S2b): refuses new workspace identity literals (agent and member UUIDs, host tokens, people names)
+  # in fork runtime code. Data only: the PR head is fetched, never checked out; the script, denylist and baseline come
+  # from the trusted workflow commit. An advisory check until Cheese decides to require it (a branch-protection call).
+  identity-literals:
+    name: Identity literals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Fetch PR head as data without checking it out
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+      - name: Refuse new identity literals
+        run: node scripts/identity-literals.mjs
+
   # CHE-5208 (CHE-5194 T5b): the blocking backstop for the merge-method tag and the review policy; see pr-guard-rules.yml.
   # An edit that invalidates a green result re-runs it from pr-guard-rules-edit.yml. Making this check required is a
   # branch-protection change, Cheese's call.

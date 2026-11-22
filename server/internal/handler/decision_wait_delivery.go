@@ -666,8 +666,18 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	if err != nil {
 		return false, err
 	}
+	// A held issue gets no dispatch (CHE-6911 E3, row 3). The episode still closes
+	// and its items are acknowledged skipped_ineligible, so nothing is retried; no
+	// wakeup is captured, so a later release cannot replay the answer. A
+	// continuation into a running task starts no run and is not changed.
+	heldSkip := false
+	if !verdict.running.Valid {
+		if heldSkip, err = intakeHoldSkips(ctx, transaction, uuidToString(snapshot.issue.ID), "decision_episode"); err != nil {
+			return false, err
+		}
+	}
 	for _, answer := range snapshot.answers {
-		if episodeLiveAnswer(answer) {
+		if episodeLiveAnswer(answer) && !heldSkip {
 			if err := captureDecisionAnswerWakeup(ctx, transaction, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
 				return false, err
 			}
@@ -675,7 +685,9 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	}
 	outcome, continuation := "planned_input", verdict.running
 	var queued db.AgentTaskQueue
-	if !verdict.running.Valid {
+	if heldSkip {
+		outcome = "skipped_ineligible"
+	} else if !verdict.running.Valid {
 		if outcome, queued, err = handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary); errors.Is(err, service.ErrRunBudgetExhausted) {
 			return suspend(suspendKindRunBudget, db.AgentTaskQueue{})
 		} else if err != nil {
@@ -697,7 +709,7 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	if rows, err := queries.RecordDecisionWaitResume(ctx, db.RecordDecisionWaitResumeParams{WorkspaceID: workspaceID, ID: wait.ID, ResumeTaskID: continuation, ResumeOutcome: pgtype.Text{String: outcome, Valid: true}}); err != nil || rows != 1 {
 		return false, errors.Join(err, errors.New("decision episode resume record changed"))
 	}
-	if outcome != "run_enqueued" {
+	if outcome != "run_enqueued" && !heldSkip {
 		step := pgtype.Text{String: snapshot.issue.Status, Valid: true}
 		if err := queries.SetTaskWorkflowStep(ctx, db.SetTaskWorkflowStepParams{WorkflowStep: step, ID: continuation}); err != nil {
 			return false, err

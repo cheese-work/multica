@@ -100,7 +100,8 @@ func (d *Daemon) runBackgroundTask(ctx context.Context, task Task, provider stri
 			Provider: provider, Model: model,
 			InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
 			CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks: u.CostUSDTicks,
+			CacheWrite1hTokens: u.CacheWrite1hTokens,
+			CostUSDTicks:       u.CostUSDTicks,
 		})
 	}
 	if result.Status != "completed" {

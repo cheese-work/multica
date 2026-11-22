@@ -250,6 +250,7 @@ type AgentTaskQueue struct {
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 	TriggerKind               pgtype.Text        `json:"trigger_kind"`
 	HandoffDispatchID         pgtype.UUID        `json:"handoff_dispatch_id"`
+	FirstDispatchedAt         pgtype.Timestamptz `json:"first_dispatched_at"`
 }
 
 type AgentToLabel struct {
@@ -1007,6 +1008,15 @@ type CiWatchEvent struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
+type ClaimPollStat struct {
+	Minute       pgtype.Timestamptz `json:"minute"`
+	Path         string             `json:"path"`
+	Outcome      string             `json:"outcome"`
+	Count        int64              `json:"count"`
+	SumMs        float64            `json:"sum_ms"`
+	BucketCounts []int64            `json:"bucket_counts"`
+}
+
 type ClientUsageDaily struct {
 	UserID          pgtype.UUID        `json:"user_id"`
 	ClientType      string             `json:"client_type"`
@@ -1070,6 +1080,8 @@ type Comment struct {
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
 	ExternalRead        bool               `json:"external_read"`
+	NotifyOnly          pgtype.Bool        `json:"notify_only"`
+	AskSourceRootID     pgtype.UUID        `json:"ask_source_root_id"`
 }
 
 type CommentContentEdit struct {
@@ -1331,6 +1343,15 @@ type DecisionAnswer struct {
 	AnsweredLabel           pgtype.Text        `json:"answered_label"`
 	StateVersion            int64              `json:"state_version"`
 	HindsightAckedVersion   int64              `json:"hindsight_acked_version"`
+	UndoUntil               pgtype.Timestamptz `json:"undo_until"`
+}
+
+type DecisionBackingLane struct {
+	SessionID   pgtype.UUID        `json:"session_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatorID   pgtype.UUID        `json:"creator_id"`
+	TopicID     pgtype.UUID        `json:"topic_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type DecisionBoundWrite struct {
@@ -1389,6 +1410,18 @@ type DecisionIntentTarget struct {
 	ConsumedByRequestID pgtype.UUID        `json:"consumed_by_request_id"`
 }
 
+type DecisionPick struct {
+	ID                pgtype.UUID        `json:"id"`
+	DecisionRequestID pgtype.UUID        `json:"decision_request_id"`
+	Revision          int32              `json:"revision"`
+	MemberID          pgtype.UUID        `json:"member_id"`
+	FirstShownAt      pgtype.Timestamptz `json:"first_shown_at"`
+	PickedAt          pgtype.Timestamptz `json:"picked_at"`
+	ReadMs            pgtype.Int4        `json:"read_ms"`
+	Matched           pgtype.Bool        `json:"matched"`
+	Surface           string             `json:"surface"`
+}
+
 type DecisionRequest struct {
 	ID                       pgtype.UUID        `json:"id"`
 	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
@@ -1431,6 +1464,22 @@ type DecisionRequest struct {
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 	ReadAt                   pgtype.Timestamptz `json:"read_at"`
+	Route                    pgtype.Text        `json:"route"`
+	WouldAutoApply           pgtype.Bool        `json:"would_auto_apply"`
+	AutoApplyRuleID          pgtype.UUID        `json:"auto_apply_rule_id"`
+	ReaskOfRequestID         pgtype.UUID        `json:"reask_of_request_id"`
+}
+
+type DecisionSnooze struct {
+	ID                pgtype.UUID        `json:"id"`
+	MemberID          pgtype.UUID        `json:"member_id"`
+	DecisionRequestID pgtype.UUID        `json:"decision_request_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UntilAt           pgtype.Timestamptz `json:"until_at"`
+	CondIssueID       pgtype.UUID        `json:"cond_issue_id"`
+	CondStatus        pgtype.Text        `json:"cond_status"`
+	ClearedAt         pgtype.Timestamptz `json:"cleared_at"`
+	ClearReason       pgtype.Text        `json:"clear_reason"`
 }
 
 type DecisionWait struct {
@@ -2791,6 +2840,14 @@ type IssueWorkflowLintOverride struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueWorkflowSwitchPending struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -3977,8 +4034,9 @@ type TaskUsage struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
-	CostUsdTicks  pgtype.Int8 `json:"cost_usd_ticks"`
-	CreditsMicros pgtype.Int8 `json:"credits_micros"`
+	CostUsdTicks       pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros      pgtype.Int8 `json:"credits_micros"`
+	CacheWrite1hTokens pgtype.Int8 `json:"cache_write_1h_tokens"`
 }
 
 type TaskUsageHourly struct {
@@ -4003,6 +4061,8 @@ type TaskUsageHourly struct {
 	UncostedOutputTokens     pgtype.Int8 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  pgtype.Int8 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens pgtype.Int8 `json:"uncosted_cache_write_tokens"`
+	// Of uncosted_cache_write_tokens, the tokens written with the 1-hour TTL. NULL on buckets not recomputed since this column existed; readers COALESCE to 0 (5-minute rate).
+	UncostedCacheWrite1hTokens pgtype.Int8 `json:"uncosted_cache_write_1h_tokens"`
 }
 
 type TaskUsageHourlyDirty struct {

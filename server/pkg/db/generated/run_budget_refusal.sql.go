@@ -306,7 +306,8 @@ SET state = 'resume_pending', state_reason = NULL, action_id = $1::uuid, resume_
     hook_phase = CASE WHEN hook_phase = 'intent' THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase = 'intent' THEN 'resume_pending' ELSE hook_reason END,
     updated_at = now()
-WHERE id = $3::uuid AND issue_id = $4::uuid AND state IN ('open', 'still_blocked', 'resume_pending')
+WHERE id = $3::uuid AND issue_id = $4::uuid AND ($5::int IS NULL OR hook_generation = $5::int)
+  AND state IN ('open', 'still_blocked', 'resume_pending')
 RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id
 `
 
@@ -315,6 +316,7 @@ type LinkRunBudgetRefusalParams struct {
 	ResumeWindowID string      `json:"resume_window_id"`
 	ID             pgtype.UUID `json:"id"`
 	IssueID        pgtype.UUID `json:"issue_id"`
+	Generation     pgtype.Int4 `json:"generation"`
 }
 
 // Link (CHE-2798 P2r, CHE-2860): a budget approval claims the refusal it answers.
@@ -322,13 +324,17 @@ type LinkRunBudgetRefusalParams struct {
 // cancelled and the worker admits the run directly. A refusal still waiting for
 // its worker is linked again: the latest approval's action and window win, so a
 // top-up that commits while the worker is rolling back is not lost. No row back:
-// the refusal is superseded or already resumed.
+// the refusal is superseded or already resumed, or it was revived since the
+// approval's card was opened (its hook_generation moved on): an approval answers
+// the occurrence it was asked for (CHE-6198). A NULL generation links whatever
+// occurrence waits, for the workflow budget change that answers no one card.
 func (q *Queries) LinkRunBudgetRefusal(ctx context.Context, arg LinkRunBudgetRefusalParams) (RunBudgetRefusal, error) {
 	row := q.db.QueryRow(ctx, linkRunBudgetRefusal,
 		arg.ActionID,
 		arg.ResumeWindowID,
 		arg.ID,
 		arg.IssueID,
+		arg.Generation,
 	)
 	var i RunBudgetRefusal
 	err := row.Scan(

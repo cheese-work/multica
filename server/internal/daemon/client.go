@@ -306,14 +306,30 @@ func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []s
 }
 
 func (c *Client) claimTasksWithHints(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int) (claimTasksResult, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
-	defer cancel()
-	var resp claimTasksResult
-	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", map[string]any{
+	return c.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, nil)
+}
+
+// claimTasksBody is the shared request body of the batch claim, over HTTP and
+// the tasks.claim WS RPC. maxNonDMTasks (nil = no limit) caps how many of the
+// returned tasks may be non-DM tasks (issue or group channel tasks), which
+// keeps reserved_chat_slots free for DM runs.
+func claimTasksBody(daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int) map[string]any {
+	body := map[string]any{
 		"daemon_id":   daemonID,
 		"runtime_ids": runtimeIDs,
 		"max_tasks":   maxTasks,
-	}, &resp); err != nil {
+	}
+	if maxNonDMTasks != nil {
+		body["max_non_dm_tasks"] = *maxNonDMTasks
+	}
+	return body
+}
+
+func (c *Client) claimTasksWithLimit(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int) (claimTasksResult, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
+	defer cancel()
+	var resp claimTasksResult
+	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", claimTasksBody(daemonID, runtimeIDs, maxTasks, maxNonDMTasks), &resp); err != nil {
 		return claimTasksResult{}, err
 	}
 	return resp, nil

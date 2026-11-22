@@ -65,6 +65,55 @@ describe("workflow schemas (MUL-7420)", () => {
     expect(parsed).toEqual({ workflows: [], total: 0 });
   });
 
+  it("keeps author and reviewer handler types, param and step flags (CHE-7673)", () => {
+    const steps = [
+      {
+        status_key: "in_progress",
+        handler: { type: "author", param: "coding" },
+        instructions: "",
+        advance_on_ci_green: true,
+        keep_other_assignee: true,
+      },
+      { status_key: "agent_review", handler: { type: "reviewer", param: "coding" }, instructions: "" },
+    ];
+    const parsed = IssueWorkflowSchema.parse({ ...baseWorkflow, steps });
+    expect(parsed.steps[0]?.handler).toEqual({ type: "author", param: "coding" });
+    expect(parsed.steps[1]?.handler).toEqual({ type: "reviewer", param: "coding" });
+    expect(parsed.steps[0]?.advance_on_ci_green).toBe(true);
+    expect(parsed.steps[0]?.keep_other_assignee).toBe(true);
+    // Round trip: parsing the parsed value changes nothing.
+    expect(IssueWorkflowSchema.parse(parsed).steps).toEqual(parsed.steps);
+  });
+
+  it("still degrades an unknown handler type to none (CHE-7673)", () => {
+    const parsed = IssueWorkflowSchema.parse({
+      ...baseWorkflow,
+      steps: [{ status_key: "todo", handler: { type: "robot" }, instructions: "" }],
+    });
+    expect(parsed.steps[0]?.handler.type).toBe("none");
+  });
+
+  it("keeps entry gate param and projects so a save does not drop them (CHE-7673)", () => {
+    const entry = [
+      { guard: "estimate", mode: "warn", member_override: false, param: "4h", projects: ["project-1"] },
+    ];
+    const parsed = IssueWorkflowSchema.parse({
+      ...baseWorkflow,
+      steps: [{ status_key: "in_progress", handler: { type: "none" }, instructions: "", entry }],
+    });
+    expect(parsed.steps[0]?.entry).toEqual(entry);
+  });
+
+  it("falls back to an empty list for a malformed author step (CHE-7673)", () => {
+    const parsed = parseWithFallback(
+      { workflows: [{ ...baseWorkflow, steps: [{ status_key: "todo", handler: "author", entry: [{ mode: "warn" }] }] }], total: 1 },
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { endpoint: "GET /api/workflows" },
+    );
+    expect(parsed).toEqual({ workflows: [], total: 0 });
+  });
+
   it("keeps a sub-workflow step so a save does not drop it (CHE-2031)", () => {
     const sub_workflow = { workflow_id: "wf-2", stage: 1 };
     const parsed = IssueWorkflowSchema.parse({

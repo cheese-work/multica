@@ -20,14 +20,14 @@ var (
 	ErrRunBudgetRefusalMismatch = errors.New("run-budget refusal does not match the issue and window")
 )
 
-// FindOpenRunBudgetRefusal returns the id of the issue's non-terminal refusal
-// for one window.
-func FindOpenRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, windowID string) (pgtype.UUID, error) {
+// FindOpenRunBudgetRefusal returns the id and the hook generation (the
+// occurrence) of the issue's non-terminal refusal for one window.
+func FindOpenRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, windowID string) (pgtype.UUID, int32, error) {
 	row, err := q.GetOpenRunBudgetRefusal(ctx, db.GetOpenRunBudgetRefusalParams{IssueID: issueID, WindowID: windowID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return pgtype.UUID{}, ErrRunBudgetRefusalNotFound
+		return pgtype.UUID{}, 0, ErrRunBudgetRefusalNotFound
 	}
-	return row.ID, err
+	return row.ID, row.HookGeneration, err
 }
 
 // RunBudgetRefusalBinds is the approval check: the refusal named in a budget

@@ -9,7 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -18,29 +20,21 @@ import (
 // itself, so the step's agent does not start a run that only closes it.
 
 const (
-	statusAgentAccepted    = "agent_accepted"
-	statusMerged           = "merged"
-	postCloseWorkKey       = "post_close_work"
-	deliveryStopKey        = "delivery_stop"
-	cheeseStopPrefix       = "Blockers: Cheese stop"
-	activityAutoClosed     = "auto_closed"
-	activityAutoCloseWould = "auto_close_would_close"
+	statusAgentAccepted      = "agent_accepted"
+	statusMerged             = "merged"
+	postCloseWorkKey         = "post_close_work"
+	deliveryStopKey          = "delivery_stop"
+	cheeseStopPrefix         = "Blockers: Cheese stop"
+	activityAutoClosed       = "auto_closed"
+	activityAutoCloseWould   = "auto_close_would_close"
+	activityAutoClosePending = "auto_close_pending_merge"
+	activityAutoCloseEnded   = "auto_close_pending_ended"
 )
-
-var errAutoCloseShape = errors.New(`auto_close must be an object {"mode": "off"|"warn"|"block"}`)
 
 // validateAutoClosePatch checks the auto_close request field: an object holding
 // exactly a mode of off, warn or block. The read side is autoCloseMode.
 func validateAutoClosePatch(raw json.RawMessage) error {
-	var patch map[string]any
-	if err := json.Unmarshal(raw, &patch); err != nil || len(patch) != 1 {
-		return errAutoCloseShape
-	}
-	mode, _ := patch["mode"].(string)
-	if mode != "off" && mode != "warn" && mode != "block" {
-		return errAutoCloseShape
-	}
-	return nil
+	return decisionaction.ValidateModeSetting("auto_close", raw)
 }
 
 // autoCloseMode reads workspace settings.auto_close.mode. An unset key is the
@@ -68,26 +62,99 @@ func (h *Handler) autoCloseMode(ctx context.Context, workspaceID pgtype.UUID) st
 	return setting.Mode
 }
 
+// stepAutoClose returns the auto_close setting of the step the issue sits on,
+// or nil when the step sets none or the workflow cannot be read.
+func (h *Handler) stepAutoClose(ctx context.Context, issue db.Issue) *issueworkflow.AutoClose {
+	def, err := h.issueWorkflowDef(ctx, issue)
+	if err != nil || def == nil {
+		return nil
+	}
+	if step, ok := def.Step(issue.Status); ok {
+		return step.AutoClose
+	}
+	return nil
+}
+
+// autoCloseSettings is the mode and top_level that apply to the issue's step
+// (CHE-7672). The workspace mode off is the kill switch; otherwise the step's
+// mode wins, and a step with no auto_close follows the workspace.
+func (h *Handler) autoCloseSettings(ctx context.Context, issue db.Issue) (mode string, topLevel bool) {
+	mode = h.autoCloseMode(ctx, issue.WorkspaceID)
+	if mode == "off" {
+		return mode, false
+	}
+	if step := h.stepAutoClose(ctx, issue); step != nil {
+		return step.Mode, step.TopLevel
+	}
+	return mode, false
+}
+
 // entersAutoCloseStep reports whether entering status can close the issue.
 func entersAutoCloseStep(status string) bool {
 	return status == statusAgentAccepted || status == statusMerged
 }
 
-// autoCloseOnEntry runs for an issue that just entered agent_accepted or merged. It
-// returns done = true when block mode closed the issue, so the caller starts no
-// run; otherwise it returns a func the caller runs after its own dispatch (warn
-// mode: one activity row naming the run that followed), or nil.
-func (h *Handler) autoCloseOnEntry(ctx context.Context, issue db.Issue, intentID pgtype.UUID) (done bool, after func(started bool, agentID pgtype.UUID)) {
-	mode := h.autoCloseMode(ctx, issue.WorkspaceID)
+// closeOutcome is what closeOrDispatch decides for an issue on an auto-close step.
+type closeOutcome string
+
+const (
+	// closeOutcomeClosed: every predicate holds; the issue takes its done edge and no run starts.
+	closeOutcomeClosed closeOutcome = "closed"
+	// closeOutcomePendingMerge: only the merge of the PASS's head is missing, and
+	// the issue's own workflow_edges watcher waits for it; no run starts.
+	closeOutcomePendingMerge closeOutcome = "pending_merge"
+	// closeOutcomeDispatch: the step's handler run starts.
+	closeOutcomeDispatch closeOutcome = "dispatch"
+)
+
+// closeDecision is one close check. WouldClose is set in warn mode when block
+// would have closed: the run still starts, and the caller logs the difference.
+type closeDecision struct {
+	Outcome    closeOutcome
+	Predicates string
+	WouldClose bool
+}
+
+// closeOrDispatch is the one close check (CHE-7671), read-only. The status-write
+// dispatch, the edge transaction and the pr.merged bridge call it before they
+// enqueue a run on an auto-close step. Only block mode closes or waits: off and
+// warn always dispatch.
+func (h *Handler) closeOrDispatch(ctx context.Context, issue db.Issue) closeDecision {
+	mode, topLevel := h.autoCloseSettings(ctx, issue)
 	if mode == "off" {
-		return false, nil
+		return closeDecision{Outcome: closeOutcomeDispatch}
 	}
-	read, ok := h.autoCloseCheck(ctx, issue)
-	if !ok {
-		return false, nil
-	}
+	read, state := h.autoCloseCheck(ctx, issue, topLevel)
 	predicates := strings.Join(read, ",")
-	if mode == "warn" {
+	switch {
+	case state == closeStateHolds && mode == "block":
+		return closeDecision{Outcome: closeOutcomeClosed, Predicates: predicates}
+	case state == closeStateHolds:
+		return closeDecision{Outcome: closeOutcomeDispatch, Predicates: predicates, WouldClose: true}
+	case state == closeStateAwaitingMerge && mode == "block":
+		return closeDecision{Outcome: closeOutcomePendingMerge, Predicates: predicates}
+	}
+	return closeDecision{Outcome: closeOutcomeDispatch}
+}
+
+// autoCloseOnEntry runs for an issue that just entered agent_accepted or merged. It
+// returns done = true when no run should start: block mode closed the issue, or
+// it waits for the merge. Otherwise it returns a func the caller runs after its
+// own dispatch (warn mode: one activity row naming the run that followed), or nil.
+func (h *Handler) autoCloseOnEntry(ctx context.Context, issue db.Issue, intentID pgtype.UUID) (done bool, after func(started bool, agentID pgtype.UUID)) {
+	d := h.closeOrDispatch(ctx, issue)
+	switch {
+	case d.Outcome == closeOutcomePendingMerge:
+		h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoClosePending, map[string]string{"predicates": d.Predicates})
+		h.skipHandoffIntent(ctx, intentID, "pending_merge")
+		return true, nil
+	case d.Outcome == closeOutcomeClosed:
+		if !h.closeIssue(ctx, issue, d.Predicates) {
+			return false, nil
+		}
+		h.skipHandoffIntent(ctx, intentID, "auto_closed")
+		return true, nil
+	case d.WouldClose:
 		return false, func(started bool, agentID pgtype.UUID) {
 			runID := ""
 			if started {
@@ -95,32 +162,108 @@ func (h *Handler) autoCloseOnEntry(ctx context.Context, issue db.Issue, intentID
 					runID = uuidToString(id)
 				}
 			}
-			h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoCloseWould, map[string]string{"predicates": predicates, "run_id": runID})
+			h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoCloseWould, map[string]string{"predicates": d.Predicates, "run_id": runID})
 		}
 	}
+	return false, nil
+}
+
+// pendingMergeLive reports whether the issue entered its step without a run to
+// wait for the merge: the newest of its pending, pending-ended and status rows
+// is the pending one.
+func (h *Handler) pendingMergeLive(ctx context.Context, issueID pgtype.UUID) bool {
+	rows, err := h.Queries.ListActivitiesForIssue(ctx, db.ListActivitiesForIssueParams{IssueID: issueID, Limit: 200})
+	if err != nil {
+		return false
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		switch rows[i].Action {
+		case activityAutoClosePending:
+			return true
+		case activityAutoCloseEnded, "status_changed":
+			return false
+		}
+	}
+	return false
+}
+
+// settlePendingMerge runs when a pr.merged edge to done fires for an issue that
+// is waiting for its merge without a run (CHE-7671). The predicates are read
+// again: a new head without a PASS, a new live wakeup or any other broken
+// predicate dispatches the step's handler instead of closing, and the watcher
+// is dropped because that handler now owns the step. It reports whether it
+// handled the edge; false leaves the edge to its old path.
+func (h *Handler) settlePendingMerge(ctx context.Context, issue db.Issue, watcherID pgtype.UUID) (bool, error) {
+	if !entersAutoCloseStep(issue.Status) || !h.pendingMergeLive(ctx, issue.ID) {
+		return false, nil
+	}
+	d := h.closeOrDispatch(ctx, issue)
+	switch {
+	case d.Outcome == closeOutcomePendingMerge:
+		return true, nil
+	case d.Outcome == closeOutcomeClosed && h.closeIssue(ctx, issue, d.Predicates):
+		return true, nil
+	}
+	started := h.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
+		IssueID: issue.ID, AgentID: issue.AssigneeID, AssigneeType: issue.AssigneeType.String,
+	}, "system", "", "")
+	if !started {
+		return true, nil // the pending state stays: the next look tries again
+	}
+	h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoCloseEnded, map[string]string{"predicates": d.Predicates, "outcome": "dispatch"})
+	return true, h.Queries.DeleteWorkflowEdges(ctx, watcherID)
+}
+
+// closeIssue takes the issue's done edge in its own transaction and records it.
+// A failed move keeps the step's run.
+func (h *Handler) closeIssue(ctx context.Context, issue db.Issue, predicates string) bool {
 	moved, _, err := h.tryMoveIssueOnEdge(ctx, issue, "done", "auto_close", map[string]any{"predicates": predicates}, false)
 	if err != nil || !moved {
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			slog.Warn("auto close: move failed; the step's run starts", "err", err, "issue_id", uuidToString(issue.ID))
 		}
-		return false, nil
+		return false
 	}
 	h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoClosed, map[string]string{"predicates": predicates})
-	h.skipHandoffIntent(ctx, intentID, "auto_closed")
-	return true, nil
+	return true
 }
+
+// closeState is how far the predicates hold.
+type closeState int
+
+const (
+	closeStateRejected closeState = iota
+	closeStateAwaitingMerge
+	closeStateHolds
+)
 
 // autoCloseCheck evaluates the predicates in order and stops at the first that
 // does not hold or cannot be read. It returns the predicates read and held.
-func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []string, ok bool) {
+// closeStateAwaitingMerge: a clean PASS names the head of an open PR, every
+// other predicate holds, and the issue's own watcher and a pr.merged done edge
+// will deliver the merge.
+func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue, topLevel bool) (read []string, state closeState) {
 	q := h.Queries
+	var (
+		mergeEdge     bool
+		awaitingMerge bool
+		ownWatcher    int64
+	)
 	checks := []struct {
 		name string
 		hold func() (bool, error)
 	}{
-		{"done_edge", func() (bool, error) { return h.hasDoneEdge(ctx, issue) }},
-		{"has_parent", func() (bool, error) { return issue.ParentIssueID.Valid, nil }},
-		{"verdict_pass_current", func() (bool, error) { return h.autoCloseVerdictHolds(ctx, issue) }},
+		{"done_edge", func() (bool, error) {
+			agentDone, onMerge, err := h.doneEdges(ctx, issue)
+			mergeEdge = onMerge
+			return agentDone || onMerge, err
+		}},
+		{"has_parent", func() (bool, error) { return issue.ParentIssueID.Valid || topLevel, nil }},
+		{"verdict_pass_current", func() (bool, error) {
+			holds, awaiting, err := h.autoCloseVerdictHolds(ctx, issue)
+			awaitingMerge = awaiting
+			return holds || awaiting, err
+		}},
 		{"prs_merged_into_default", func() (bool, error) { return h.linkedPRsMergedIntoDefault(ctx, issue) }},
 		{"no_open_child", func() (bool, error) { open, err := h.hasOpenChildren(ctx, issue); return !open, err }},
 		{"no_open_decision", func() (bool, error) {
@@ -129,10 +272,14 @@ func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []st
 		}},
 		{"no_live_wakeup", func() (bool, error) {
 			n, err := q.CountIssueWakeupsLiveAtEntry(ctx, db.CountIssueWakeupsLiveAtEntryParams{IssueID: issue.ID, Step: issue.Status})
-			return n == 0, err
+			ownWatcher = n.Own
+			return n.Other == 0, err
 		}},
 		{"no_cheese_stop", func() (bool, error) { return !hasCheeseStopLine(issue.Description.String), nil }},
 		{"parent_not_stopped", func() (bool, error) {
+			if topLevel && !issue.ParentIssueID.Valid {
+				return true, nil
+			}
 			parent, err := q.GetIssue(ctx, issue.ParentIssueID)
 			return err == nil && metadataString(parent.Metadata, deliveryStopKey) != "stopped", err
 		}},
@@ -142,27 +289,44 @@ func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue) (read []st
 		held, err := c.hold()
 		if err != nil {
 			slog.Warn("auto close: predicate unreadable; the step's run starts", "predicate", c.name, "err", err, "issue_id", uuidToString(issue.ID))
-			return read, false
+			return read, closeStateRejected
 		}
 		if !held {
-			return read, false
+			return read, closeStateRejected
+		}
+		if c.name == "verdict_pass_current" && awaitingMerge {
+			continue
 		}
 		read = append(read, c.name)
 	}
-	return read, true
+	if awaitingMerge {
+		if mergeEdge && ownWatcher > 0 {
+			return read, closeStateAwaitingMerge
+		}
+		return read, closeStateRejected
+	}
+	return read, closeStateHolds
 }
 
-func (h *Handler) hasDoneEdge(ctx context.Context, issue db.Issue) (bool, error) {
+// doneEdges reports which done edges the issue's step has: agent_done, and
+// pr.merged (the merge wait that the issue's own watcher carries).
+func (h *Handler) doneEdges(ctx context.Context, issue db.Issue) (agentDone, onMerge bool, err error) {
 	def, err := h.issueWorkflowDef(ctx, issue)
 	if err != nil || def == nil {
-		return false, err
+		return false, false, err
 	}
 	for _, e := range def.EdgesOf(issue.Status) {
-		if e.To == "done" && e.Guard == issueworkflow.GuardAgentDone {
-			return true, nil
+		if e.To != "done" {
+			continue
+		}
+		if e.Guard == issueworkflow.GuardAgentDone {
+			agentDone = true
+		}
+		if g, err := issueworkflow.ParseGuard(e.Guard); err == nil && g.Kind == issueworkflow.GuardPRMerged {
+			onMerge = true
 		}
 	}
-	return false, nil
+	return agentDone, onMerge, nil
 }
 
 // autoCloseVerdictHolds: the newest verdict row is a PASS without a P0/P1
@@ -170,14 +334,15 @@ func (h *Handler) hasDoneEdge(ctx context.Context, issue db.Issue) (bool, error)
 // nothing voided it since, and the candidate is the one it reviewed: every
 // linked PR merged at the head the PASS names, or, with no PR, no attachment,
 // description revision or comment (other than the reviewer's) newer than the
-// PASS. Anything unreadable keeps the handler run.
-func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (bool, error) {
+// PASS. awaitingMerge: the same, except that a linked PR is still open or draft
+// at the PASS's head. Anything unreadable keeps the handler run.
+func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (holds, awaitingMerge bool, err error) {
 	verdict, err := h.Queries.GetLatestIssueVerdict(ctx, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && verdict.Action != activityPassed) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	var details struct {
 		Findings string `json:"findings"`
@@ -185,34 +350,41 @@ func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (bo
 	}
 	var findings []ReviewFinding
 	if err := json.Unmarshal(verdict.Details, &details); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := json.Unmarshal([]byte(details.Findings), &findings); err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, f := range findings {
 		if f.Severity == "P0" || f.Severity == "P1" {
-			return false, nil
+			return false, false, nil
 		}
 	}
 	voided, err := h.Queries.CountIssueVerdictBreaksSince(ctx, db.CountIssueVerdictBreaksSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt})
 	if err != nil || voided > 0 {
-		return false, err
+		return false, false, err
 	}
 	prs, err := h.Queries.ListIssuePullRequestHeads(ctx, issue.ID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if len(prs) == 0 {
 		newer, err := h.Queries.CountIssueTextCandidateChangesSince(ctx, db.CountIssueTextCandidateChangesSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt, ReviewerID: verdict.ActorID})
-		return newer == 0, err
+		return newer == 0, false, err
 	}
 	for _, pr := range prs {
-		if details.HeadSHA == "" || pr.State != "merged" || pr.HeadSha != details.HeadSHA {
-			return false, nil
+		if details.HeadSHA == "" || pr.HeadSha != details.HeadSHA {
+			return false, false, nil
+		}
+		switch pr.State {
+		case "merged":
+		case "open", "draft":
+			awaitingMerge = true
+		default:
+			return false, false, nil
 		}
 	}
-	return true, nil
+	return !awaitingMerge, awaitingMerge, nil
 }
 
 // linkedPRsMergedIntoDefault: on entry to merged, every linked PR merged into

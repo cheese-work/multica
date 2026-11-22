@@ -40,6 +40,7 @@ var issueViewFilterDimensions = []struct {
 	{"label", "label_ids"},
 	{"relation", "relations"},
 	{"dueDate", "due_dates"},
+	{"createdVia", "created_via"},
 }
 
 var issueViewSorts = []string{
@@ -196,6 +197,8 @@ func issueViewConditionValues(dimension string, values []string) []string {
 		return issueViewKeep(values, issueViewOneOf(issueTableRelations))
 	case "dueDate":
 		return issueViewKeep(values, issueViewOneOf(issueTableDueDates))
+	case "createdVia":
+		return issueViewKeep(values, issueViewOneOf(issueTableCreatedVia))
 	case "assignee", "creator":
 		return issueViewKeep(values, func(value string) bool {
 			if value == issueTableFilterNoneValue {
@@ -388,6 +391,7 @@ func issueViewTableQuery(view db.IssueView, today string, activeProperties map[s
 	labelIDs := issueViewStrings(query["labelFilters"], issueViewAny)
 	relations := issueViewStrings(query["relationFilters"], issueViewOneOf(issueTableRelations))
 	dueDates := issueViewUniqueStrings(issueViewStrings(query["dueDateFilters"], issueViewOneOf(issueTableDueDates)))
+	createdVia := issueViewUniqueStrings(issueViewStrings(query["createdViaFilters"], issueViewOneOf(issueTableCreatedVia)))
 	negated := issueViewStrings(query["negatedFilters"], func(dimension string) bool {
 		_, ok := issueViewFilterField(dimension)
 		return ok
@@ -420,6 +424,7 @@ func issueViewTableQuery(view db.IssueView, today string, activeProperties map[s
 		"label":         len(labelIDs) > 0,
 		"relation":      len(relations) > 0,
 		"dueDate":       len(dueDates) > 0,
+		"createdVia":    len(createdVia) > 0,
 	}
 	var negate []string
 	for _, d := range issueViewFilterDimensions {
@@ -439,6 +444,7 @@ func issueViewTableQuery(view db.IssueView, today string, activeProperties map[s
 		LabelIDs:          labelIDs,
 		Relations:         relations,
 		DueDates:          dueDates,
+		CreatedVia:        createdVia,
 		Negate:            negate,
 		WorkingOnly:       issueViewBool(query["agentRunningFilter"]),
 	}

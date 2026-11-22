@@ -66,6 +66,10 @@ func TestIssueMetadataCheckRejectsNonPrimitive(t *testing.T) {
 
 // Only setIssueMetadataValue may reference the SetIssueMetadataKey query
 // (call or method value), whatever the receiver or context spelling.
+// One exception: IssueService.Create writes the intake hold marker inside
+// its create transaction. service cannot import handler (import cycle), and
+// the helper's guards cannot fail there: fixed valid key, string value, brand
+// new issue (CHE-7544, PR 1869).
 func TestIssueMetadataSingleWriter(t *testing.T) {
 	var refs []string
 	err := filepath.WalkDir("../..", func(path string, d os.DirEntry, err error) error {
@@ -107,7 +111,10 @@ func TestIssueMetadataSingleWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(refs) != 1 || !strings.HasPrefix(refs[0], "../../internal/handler/issue_metadata.go:") || !strings.HasSuffix(refs[0], " in setIssueMetadataValue") {
-		t.Fatalf("want exactly one SetIssueMetadataKey reference, inside setIssueMetadataValue; got: %v", refs)
+	ok := len(refs) == 2 &&
+		strings.HasPrefix(refs[0], "../../internal/handler/issue_metadata.go:") && strings.HasSuffix(refs[0], " in setIssueMetadataValue") &&
+		strings.HasPrefix(refs[1], "../../internal/service/issue.go:") && strings.HasSuffix(refs[1], " in Create")
+	if !ok {
+		t.Fatalf("want SetIssueMetadataKey referenced only in setIssueMetadataValue and IssueService.Create (intake hold); got: %v", refs)
 	}
 }

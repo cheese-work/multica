@@ -11,6 +11,69 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimDueHandoffDispatches = `-- name: ClaimDueHandoffDispatches :many
+UPDATE issue_handoff_dispatch
+SET attempts = attempts + 1,
+    next_attempt_at = $1::timestamptz + (CASE WHEN attempts < 2 THEN 30 ELSE 60 END) * interval '1 second'
+WHERE id IN (
+    SELECT d.id FROM issue_handoff_dispatch d
+    WHERE d.state = 'pending'
+      AND d.created_at <= $2::timestamptz
+      AND d.next_attempt_at <= $1::timestamptz
+    ORDER BY d.created_at
+    LIMIT $3
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, workspace_id, issue_id, status_history_id, target_type, target_id, actor_type, actor_id, source_task_id, context_comment_ids, handoff_write, state, task_id, skip_reason, attempts, next_attempt_at, created_at
+`
+
+type ClaimDueHandoffDispatchesParams struct {
+	Now           pgtype.Timestamptz `json:"now"`
+	CreatedBefore pgtype.Timestamptz `json:"created_before"`
+	BatchSize     int32              `json:"batch_size"`
+}
+
+// The recovery sweep's claim (CHE-5488). Counts the attempt and pushes
+// next_attempt_at out by its backoff (30 s, 30 s, then 60 s), so the claim is
+// also the lease: another sweeper skips the row until the backoff ends.
+func (q *Queries) ClaimDueHandoffDispatches(ctx context.Context, arg ClaimDueHandoffDispatchesParams) ([]IssueHandoffDispatch, error) {
+	rows, err := q.db.Query(ctx, claimDueHandoffDispatches, arg.Now, arg.CreatedBefore, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueHandoffDispatch{}
+	for rows.Next() {
+		var i IssueHandoffDispatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.StatusHistoryID,
+			&i.TargetType,
+			&i.TargetID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.SourceTaskID,
+			&i.ContextCommentIds,
+			&i.HandoffWrite,
+			&i.State,
+			&i.TaskID,
+			&i.SkipReason,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createHandoffDispatch = `-- name: CreateHandoffDispatch :one
 INSERT INTO issue_handoff_dispatch (
     id, workspace_id, issue_id, status_history_id, target_type, target_id,
@@ -149,6 +212,45 @@ func (q *Queries) GetTaskByHandoffDispatch(ctx context.Context, handoffDispatchI
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const handoffDispatchSuperseded = `-- name: HandoffDispatchSuperseded :one
+SELECT
+    NOT EXISTS (SELECT 1 FROM issue i WHERE i.id = $1
+                  AND i.assignee_type = $2::text AND i.assignee_id = $3)
+    OR EXISTS (SELECT 1 FROM activity_log a
+               WHERE a.issue_id = $1 AND a.action = 'status_changed'
+                 AND a.id IS DISTINCT FROM $4::uuid
+                 AND a.created_at > COALESCE(
+                     (SELECT h.created_at FROM activity_log h WHERE h.id = $4::uuid),
+                     $5::timestamptz))
+    OR EXISTS (SELECT 1 FROM activity_log h JOIN issue i ON i.id = h.issue_id
+               WHERE h.id = $4::uuid
+                 AND h.details->>'to' IS NOT NULL AND h.details->>'to' <> i.status)
+    AS superseded
+`
+
+type HandoffDispatchSupersededParams struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	TargetType      string             `json:"target_type"`
+	TargetID        pgtype.UUID        `json:"target_id"`
+	StatusHistoryID pgtype.UUID        `json:"status_history_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+// True when the issue is no longer where the intent's write left it: gone,
+// handed to someone else, or moved again since the intent's status-history row.
+func (q *Queries) HandoffDispatchSuperseded(ctx context.Context, arg HandoffDispatchSupersededParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, handoffDispatchSuperseded,
+		arg.IssueID,
+		arg.TargetType,
+		arg.TargetID,
+		arg.StatusHistoryID,
+		arg.CreatedAt,
+	)
+	var superseded pgtype.Bool
+	err := row.Scan(&superseded)
+	return superseded, err
 }
 
 const linkTaskToHandoffDispatch = `-- name: LinkTaskToHandoffDispatch :exec
