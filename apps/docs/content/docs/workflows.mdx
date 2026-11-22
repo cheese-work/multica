@@ -104,13 +104,13 @@ You can see the handoff and its instructions in the issue's timeline. Open the w
 
 ## When a PR merges [#pr-merged]
 
-A merge changes a status through one workspace setting: **Settings → Code → After PRs merge, move the issue to**. See [GitHub integration](/github-integration). The workflow board draws that rule. A dashed arrow labelled **PR merged** runs from an **Any step** marker into the step the setting names, and that step's card says **Set in Settings → Code**. The arrow is read-only: you can't select, move or delete it in the editor, and it is never saved in the workflow. With **Don't change**, no arrow is drawn. If the setting names a status the workflow doesn't list, the editor shows one line saying that PR merges change no status in this workflow, and which status Settings → Code names.
+A merge changes a status through one workspace setting: **Settings → Code → After PRs merge, move the issue to**. See [GitHub integration](/github-integration). The rule is set and shown only there. The workflow board and editor don't draw it, and it is never saved in the workflow. With **Don't change**, a merge moves no issue. If the workflow doesn't list the status the setting names, the issue doesn't move.
 
 When that step has a handler, the merge hands the issue to it and starts its run, like any other move.
 
 ### The `pr.merged` transition is deprecated
 
-An older workflow can store a transition guarded by `pr.merged`. While the setting is not **Don't change**, a stored `pr.merged` transition no longer moves issues itself: it runs the same check as the setting. The editor's guard list no longer offers `pr.merged`, a save that adds one is refused with a message that points to Settings → Code, and a stored one is marked as deprecated. With **Don't change**, stored transitions work as before. They will be removed in a later release.
+An older workflow can store a transition guarded by `pr.merged`. While the setting is not **Don't change**, a stored `pr.merged` transition no longer moves issues itself: it runs the same check as the setting. The editor's guard list still offers `pr.merged`, but while a merge status is chosen a save that adds one is refused with a message that points to Settings → Code. With **Don't change**, stored transitions work as before. They will be removed in a later release.
 
 ## Adjust a workflow
 
