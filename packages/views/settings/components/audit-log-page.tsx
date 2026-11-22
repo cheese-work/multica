@@ -9,6 +9,7 @@ import type { AuditEvent } from "@multica/core/types";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
 import { formatInTimeZone } from "../../common/format-in-time-zone";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
@@ -54,7 +55,13 @@ export function AuditLogPage() {
       <div role="group" aria-label={t(($) => $.audit_log.filters.label)} className="flex flex-wrap items-end gap-3">
         <FilterField label={t(($) => $.audit_log.filters.kind)}>
           {(id) => (
-            <select id={id} className={CONTROL_CLASS} value={kind} onChange={(e) => setKind(e.target.value)}>
+            <select
+              // ui-pattern-ref: allow native select keeps the OS picker, optgroups and a labelled option list; Select has no optgroup support
+              id={id}
+              className={CONTROL_CLASS}
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+            >
               <option value="">{t(($) => $.audit_log.filters.kind_all)}</option>
               {KIND_PREFIXES.map((prefix) => (
                 <option key={prefix} value={`${prefix}.`}>{t(($) => $.audit_log.kinds[prefix])}</option>
@@ -64,7 +71,13 @@ export function AuditLogPage() {
         </FilterField>
         <FilterField label={t(($) => $.audit_log.filters.actor)}>
           {(id) => (
-            <select id={id} className={CONTROL_CLASS} value={actor} onChange={(e) => setActor(e.target.value)}>
+            <select
+              // ui-pattern-ref: allow native select keeps the OS picker, optgroups and a labelled option list; Select has no optgroup support
+              id={id}
+              className={CONTROL_CLASS}
+              value={actor}
+              onChange={(e) => setActor(e.target.value)}
+            >
               <option value="">{t(($) => $.audit_log.filters.actor_all)}</option>
               <optgroup label={t(($) => $.audit_log.actor_types.member)}>
                 {members.map((m) => (
@@ -81,12 +94,12 @@ export function AuditLogPage() {
         </FilterField>
         <FilterField label={t(($) => $.audit_log.filters.since)}>
           {(id) => (
-            <input id={id} type="datetime-local" className={CONTROL_CLASS} value={since} onChange={(e) => setSince(e.target.value)} />
+            <Input id={id} type="datetime-local" className="w-auto" value={since} onChange={(e) => setSince(e.target.value)} />
           )}
         </FilterField>
         <FilterField label={t(($) => $.audit_log.filters.until)}>
           {(id) => (
-            <input id={id} type="datetime-local" className={CONTROL_CLASS} value={until} onChange={(e) => setUntil(e.target.value)} />
+            <Input id={id} type="datetime-local" className="w-auto" value={until} onChange={(e) => setUntil(e.target.value)} />
           )}
         </FilterField>
         {filtered && (
@@ -256,7 +269,7 @@ function Diff({ before, after }: { before: Record<string, unknown>; after: Recor
 function Marker() {
   const { t } = useT("settings");
   return (
-    <span className="rounded bg-muted px-1.5 text-caption italic" title={t(($) => $.audit_log.changed_hint)}>
+    <span className="rounded-xs bg-muted px-1.5 text-caption italic" title={t(($) => $.audit_log.changed_hint)}>
       {t(($) => $.audit_log.changed)}
     </span>
   );
