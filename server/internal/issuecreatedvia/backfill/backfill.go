@@ -117,7 +117,7 @@ func (d decision) changes() bool {
 // decide applies rule v1 to one row. Platform create paths that have no row in
 // the plan table (release issues, CI-watch issues) are checked before rules 8
 // and 9: they store `autopilot` at create, so old rows must match.
-func decide(ctx context.Context, q *db.Queries, r row) (decision, error) {
+func decide(ctx context.Context, q issuecreatedvia.Querier, r row) (decision, error) {
 	d := decision{row: r}
 	origin := r.OriginType.String
 	switch r.CreatorType {
@@ -155,13 +155,23 @@ func decide(ctx context.Context, q *db.Queries, r row) (decision, error) {
 		}
 		return d, fmt.Errorf("read origin task %x: %w", r.OriginID.Bytes, err)
 	}
-	in := issuecreatedvia.BuildInput(ctx, q, issuecreatedvia.Request{
+	in, err := issuecreatedvia.BuildInputStrict(ctx, q, issuecreatedvia.Request{
 		WorkspaceID:  r.WorkspaceID,
 		CreatorAgent: true,
 		AgentID:      r.CreatorID,
 		TaskID:       r.OriginID,
 		ParentID:     r.ParentID,
 	})
+	if err != nil {
+		// A row the lookup says is gone (task chain, trigger comment, parent)
+		// cannot be classified: leave it unchanged. Any other failure may be
+		// transient and would store a guess, so the run stops.
+		if errors.Is(err, pgx.ErrNoRows) {
+			d.Unresolved = true
+			return d, nil
+		}
+		return d, fmt.Errorf("classify issue %x: %w", r.ID.Bytes, err)
+	}
 	d.Value = issuecreatedvia.Classify(in)
 	if in.Task != nil && in.Task.EvidenceKindNull && !in.Task.HasChatSession && (d.Value == issuecreatedvia.Comment || d.Value == issuecreatedvia.Agent) {
 		d.Legacy = true

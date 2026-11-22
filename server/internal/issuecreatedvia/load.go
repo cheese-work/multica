@@ -2,6 +2,7 @@ package issuecreatedvia
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -37,27 +38,50 @@ func ForCreate(ctx context.Context, q Querier, r Request) string {
 	return Classify(BuildInput(ctx, q, r))
 }
 
-// BuildInput loads what Classify reads. The create path and the backfill both
-// call it, so they cannot drift apart.
+// BuildInput loads what Classify reads. The create path calls it: a failed
+// lookup is logged and the input falls back to the agent default.
 func BuildInput(ctx context.Context, q Querier, r Request) Input {
-	in := Input{OriginType: r.OriginType, CreatorAgent: r.CreatorAgent, Channel: r.Channel}
-	if r.CreatorAgent && r.OriginType != OriginQuickCreate && r.OriginType != OriginAutopilot && r.TaskID.Valid {
-		in.Task = loadTask(ctx, q, r)
-		if in.Task != nil && r.ParentID.Valid {
-			in.ParentMadeBySameTask = parentMadeBy(ctx, q, r)
-		}
-	}
+	in, _ := buildInput(ctx, q, r, false)
 	return in
 }
 
-func loadTask(ctx context.Context, q Querier, r Request) *TaskFacts {
+// BuildInputStrict is BuildInput for the backfill: a failed lookup returns the
+// error instead of a guessed input, so a stored row is never classified from a
+// partial read. A row that is simply gone wraps pgx.ErrNoRows.
+func BuildInputStrict(ctx context.Context, q Querier, r Request) (Input, error) {
+	return buildInput(ctx, q, r, true)
+}
+
+func buildInput(ctx context.Context, q Querier, r Request, strict bool) (Input, error) {
+	in := Input{OriginType: r.OriginType, CreatorAgent: r.CreatorAgent, Channel: r.Channel}
+	if r.CreatorAgent && r.OriginType != OriginQuickCreate && r.OriginType != OriginAutopilot && r.TaskID.Valid {
+		task, err := loadTask(ctx, q, r, strict)
+		if err != nil {
+			return in, err
+		}
+		in.Task = task
+		if in.Task != nil && r.ParentID.Valid {
+			made, err := parentMadeBy(ctx, q, r, strict)
+			if err != nil {
+				return in, err
+			}
+			in.ParentMadeBySameTask = made
+		}
+	}
+	return in, nil
+}
+
+func loadTask(ctx context.Context, q Querier, r Request, strict bool) (*TaskFacts, error) {
 	task, err := q.GetAgentTask(ctx, r.TaskID)
 	if err != nil {
+		if strict {
+			return nil, fmt.Errorf("origin task %x: %w", r.TaskID.Bytes, err)
+		}
 		slog.Warn("created_via: origin task lookup failed", "task_id", r.TaskID.Bytes, "error", err)
-		return nil
+		return nil, nil
 	}
 	if task.AgentID != r.AgentID {
-		return nil
+		return nil, nil
 	}
 	// A retry or rerun with no chat or comment evidence of its own takes the
 	// value of the task it repeats.
@@ -71,6 +95,9 @@ func loadTask(ctx context.Context, q Querier, r Request) *TaskFacts {
 		}
 		prev, err := q.GetAgentTask(ctx, next)
 		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("repeated task %x: %w", next.Bytes, err)
+			}
 			slog.Warn("created_via: repeated task lookup failed", "task_id", next.Bytes, "error", err)
 			break
 		}
@@ -87,22 +114,28 @@ func loadTask(ctx context.Context, q Querier, r Request) *TaskFacts {
 		(f.EvidenceKind == "comment" || f.EvidenceKindNull) {
 		c, err := q.GetComment(ctx, task.TriggerCommentID)
 		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("trigger comment %x: %w", task.TriggerCommentID.Bytes, err)
+			}
 			slog.Warn("created_via: trigger comment lookup failed", "comment_id", task.TriggerCommentID.Bytes, "error", err)
 		} else {
 			f.TriggerCommentByMember = c.AuthorType == "member"
 		}
 	}
-	return f
+	return f, nil
 }
 
 func hasOwnEvidence(t db.AgentTaskQueue) bool {
 	return t.ChatSessionID.Valid || t.AutopilotRunID.Valid || t.TriggerEvidenceKind.String == "comment"
 }
 
-func parentMadeBy(ctx context.Context, q Querier, r Request) bool {
+func parentMadeBy(ctx context.Context, q Querier, r Request, strict bool) (bool, error) {
 	p, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: r.ParentID, WorkspaceID: r.WorkspaceID})
 	if err != nil {
-		return false
+		if strict {
+			return false, fmt.Errorf("parent issue %x: %w", r.ParentID.Bytes, err)
+		}
+		return false, nil
 	}
-	return p.OriginType.String == OriginAgentCreate && p.OriginID == r.TaskID
+	return p.OriginType.String == OriginAgentCreate && p.OriginID == r.TaskID, nil
 }
