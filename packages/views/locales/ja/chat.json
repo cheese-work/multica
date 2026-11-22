@@ -556,6 +556,8 @@
     "composer_note": "メモ（任意）",
     "composer_reason": "理由（任意）",
     "send_discuss": "さらに相談（{{shortcut}}）",
+    "discuss_hint_empty": "何も入力していない場合は、メッセージ欄にカーソルを移します。",
+    "discuss_hint_typed": "承認も却下もしません。",
     "send_approve": "パスキーで承認（{{shortcut}}）",
     "send_reject": "却下を確定（{{shortcut}}）",
     "choice_item": "{{issue}} の決定",

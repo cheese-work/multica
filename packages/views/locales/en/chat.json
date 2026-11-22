@@ -574,6 +574,8 @@
     "composer_note": "Note (optional)",
     "composer_reason": "Reason (optional)",
     "send_discuss": "Discuss more ({{shortcut}})",
+    "discuss_hint_empty": "With nothing typed, this puts the cursor in the message box.",
+    "discuss_hint_typed": "Does not approve or reject.",
     "send_approve": "Approve with passkey ({{shortcut}})",
     "send_reject": "Confirm Reject ({{shortcut}})",
     "choice_item": "Decision for {{issue}}",

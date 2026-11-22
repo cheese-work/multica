@@ -556,6 +556,8 @@
     "composer_note": "备注（可选）",
     "composer_reason": "原因（可选）",
     "send_discuss": "继续讨论（{{shortcut}}）",
+    "discuss_hint_empty": "未输入内容时，光标会移到消息框。",
+    "discuss_hint_typed": "不会批准或拒绝。",
     "send_approve": "用通行密钥批准（{{shortcut}}）",
     "send_reject": "确认拒绝（{{shortcut}}）",
     "choice_item": "{{issue}} 的决定",

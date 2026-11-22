@@ -556,6 +556,8 @@
     "composer_note": "메모 (선택)",
     "composer_reason": "사유 (선택)",
     "send_discuss": "더 논의 ({{shortcut}})",
+    "discuss_hint_empty": "입력한 내용이 없으면 메시지 입력란으로 커서를 옮깁니다.",
+    "discuss_hint_typed": "승인도 거부도 하지 않습니다.",
     "send_approve": "패스키로 승인 ({{shortcut}})",
     "send_reject": "거절 확정 ({{shortcut}})",
     "choice_item": "{{issue}} 결정",

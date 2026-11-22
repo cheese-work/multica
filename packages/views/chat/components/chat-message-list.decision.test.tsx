@@ -110,7 +110,8 @@ describe("ChatMessageList — decision cards", () => {
     expect(region).toHaveTextContent(requestCard.ask);
     expect(screen.getByRole("link", { name: "CHE-2088" })).toHaveAttribute("href", "/acme/issues/issue-1");
     expect(screen.getByRole("link", { name: "Source comment" })).toHaveAttribute("href", "/acme/issues/issue-1#comment-source-1");
-    expect(region).toHaveTextContent("12:00 ICT");
+    // An open card draws no timestamp (the lock's open states have none).
+    expect(region.querySelector("time")).toBeNull();
   });
 
   it("keeps the original request row when a cancellation notice references the same request", () => {

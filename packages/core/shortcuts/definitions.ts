@@ -215,14 +215,14 @@ export function isPlainShortcut(
   return shortcutChordEquals(shortcut, createShortcutChord(key));
 }
 
-export function formatShortcut(
-  shortcut: ShortcutChord | null,
-  platform: ShortcutPlatform = getShortcutPlatform(),
-): string {
-  if (!shortcut) return "—";
+function shortcutParts(
+  shortcut: ShortcutChord,
+  platform: ShortcutPlatform,
+  enter: string,
+): string[] {
   const { modifiers } = shortcut;
   const keyLabels: Record<string, string> = {
-    Enter: platform === "macos" ? "↵" : "Enter",
+    Enter: enter,
     Backspace: platform === "macos" ? "⌫" : "Backspace",
     Delete: platform === "macos" ? "⌦" : "Delete",
     Escape: "Esc",
@@ -246,7 +246,7 @@ export function formatShortcut(
       modifiers.shift ? "⇧" : "",
       modifiers.meta ? "Meta" : "",
       key,
-    ].join("");
+    ].filter(Boolean);
   }
 
   return [
@@ -256,7 +256,26 @@ export function formatShortcut(
     modifiers.alt ? "Alt" : null,
     modifiers.shift ? "Shift" : null,
     key,
-  ].filter(Boolean).join("+");
+  ].filter((part): part is string => !!part);
+}
+
+export function formatShortcut(
+  shortcut: ShortcutChord | null,
+  platform: ShortcutPlatform = getShortcutPlatform(),
+): string {
+  if (!shortcut) return "—";
+  return shortcutParts(shortcut, platform, platform === "macos" ? "↵" : "Enter").join(
+    platform === "macos" ? "" : "+",
+  );
+}
+
+/** The decision card's written key: "⌘ + ⏎" on macOS, "Ctrl + ⏎" elsewhere. */
+export function formatShortcutKeycap(
+  shortcut: ShortcutChord | null,
+  platform: ShortcutPlatform = getShortcutPlatform(),
+): string {
+  if (!shortcut) return "—";
+  return shortcutParts(shortcut, platform, "⏎").join(" + ");
 }
 
 export function isEditableShortcutTarget(target: EventTarget | null): boolean {

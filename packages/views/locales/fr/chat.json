@@ -574,6 +574,8 @@
     "composer_note": "Note (facultatif)",
     "composer_reason": "Motif (facultatif)",
     "send_discuss": "Discuter davantage ({{shortcut}})",
+    "discuss_hint_empty": "Sans texte saisi, cela place le curseur dans la zone de message.",
+    "discuss_hint_typed": "N’approuve ni ne rejette.",
     "send_approve": "Approuver avec une clé d'accès ({{shortcut}})",
     "send_reject": "Confirmer le rejet ({{shortcut}})",
     "choice_item": "Décision pour {{issue}}",

@@ -273,7 +273,8 @@ describe("DecisionRequestCard direction B v9", () => {
       view(open);
       expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "open");
       expect(screen.queryByTestId("decision-request-fold-toggle")).toBeNull();
-      expect(screen.queryByTestId("decision-request-effect")).toBeNull();
+      // The decided summary (and its receipt) belongs to a decided card; an open card's effect line is not it.
+      expect(screen.queryByTestId("decision-summary")).toBeNull();
     });
   });
 });

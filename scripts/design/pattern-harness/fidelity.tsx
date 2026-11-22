@@ -8,6 +8,7 @@ import { I18nProvider } from "../../../packages/core/i18n/provider"; // not the 
 import { RESOURCES } from "@multica/views/locales";
 import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { setApiInstance } from "@multica/core/api";
+import { configureShortcutPlatform } from "@multica/core/shortcuts";
 import { registerAuthStore } from "@multica/core/auth";
 import { decisionArtifactKeys } from "@multica/core/issues/decision-artifacts";
 import { workspaceListOptions } from "../../../packages/core/workspace/queries";
@@ -15,6 +16,9 @@ import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
 import { NavigationProvider } from "../../../packages/views/navigation/context";
 import { DecisionRequestCard } from "../../../packages/views/chat/components/decision-request-card";
 import "./globals.css";
+
+// The lock writes its send key for macOS ("(⌘ + ⏎)"); the headless browser runs on Linux.
+configureShortcutPlatform("macos");
 
 const WS = "ws-harness";
 const NOW = "2026-11-13T09:00:00Z";

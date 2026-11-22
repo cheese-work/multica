@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createShortcutChord,
   formatShortcut,
+  formatShortcutKeycap,
   isShortcutAllowedForAction,
   isReservedShortcut,
   parseLegacyShortcut,
@@ -155,6 +156,15 @@ describe("keyboard shortcut definitions", () => {
     expect(formatShortcut(shortcut, "macos")).toBe("⌘↵");
     expect(formatShortcut(shortcut, "windows")).toBe("Ctrl+Enter");
     expect(formatShortcut(shortcut, "linux")).toBe("Ctrl+Enter");
+  });
+
+  it("writes the decision card's key as text: ⌘ + ⏎ on macOS, Ctrl + ⏎ elsewhere", () => {
+    const shortcut = createShortcutChord("Enter", { primary: true });
+    expect(formatShortcutKeycap(shortcut, "macos")).toBe("⌘ + ⏎");
+    expect(formatShortcutKeycap(shortcut, "windows")).toBe("Ctrl + ⏎");
+    expect(formatShortcutKeycap(shortcut, "linux")).toBe("Ctrl + ⏎");
+    expect(formatShortcutKeycap(createShortcutChord("Enter", { primary: true, shift: true }), "macos")).toBe("⌘ + ⇧ + ⏎");
+    expect(formatShortcutKeycap(null, "macos")).toBe("—");
   });
 
   it("detects modern and legacy browser platform signals", () => {
