@@ -32,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/scheduler"
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/selfhosttelemetry"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -311,6 +312,30 @@ func jwtSecretBootError(jwtSecret, appEnv string) error {
 	return auth.ValidateJWTSecret(jwtSecret)
 }
 
+// secretsKeyBootError refuses a production boot without a usable scoped-secrets
+// key (MULTICA_SECRETS_KEY). Outside production a missing or malformed key only
+// disables the feature; the router logs that. The text never carries key material.
+func secretsKeyBootError(status secrets.KeyStatus, appEnv string) error {
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "production") || status == secrets.KeyOK {
+		return nil
+	}
+	msg := "MULTICA_SECRETS_KEY is required: generate one with `openssl rand -base64 32`, set it in the server environment and keep a backup copy"
+	if status == secrets.KeyMalformed {
+		msg += " (value is not base64 of 32 bytes)"
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+// exitOnSecretsKeyBootError stops the process when secretsKeyBootError rejects
+// the environment. main and the subprocess boot test share it.
+func exitOnSecretsKeyBootError() {
+	_, status, _ := secrets.LoadKeyring(os.Getenv)
+	if err := secretsKeyBootError(status, os.Getenv("APP_ENV")); err != nil {
+		slog.Error("refusing to start: "+err.Error(), "app_env", os.Getenv("APP_ENV"))
+		os.Exit(1)
+	}
+}
+
 // newMainHTTPServer builds the public HTTP server with the production timeout
 // defaults. These values are load-bearing safety settings, not cosmetic tuning,
 // so they live in one helper that main() and the config regression test share.
@@ -343,6 +368,7 @@ func main() {
 		)
 		os.Exit(1)
 	}
+	exitOnSecretsKeyBootError()
 	if os.Getenv("JWT_SECRET") == "" {
 		slog.Warn("JWT_SECRET is not set — using insecure dev default (allowed only because APP_ENV is not production).")
 	}

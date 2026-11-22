@@ -508,19 +508,23 @@ setup_server() {
   if [ ! -f .env ]; then
     info "Creating .env with random secrets..."
     cp .env.example .env
-    local jwt pgpass
+    local jwt pgpass secrets_key
     jwt=$(openssl rand -hex 32)
     pgpass=$(openssl rand -hex 24)
+    # base64 of 32 bytes (44 chars); contains "/" so sed uses "#" as delimiter
+    secrets_key=$(openssl rand -base64 32)
     if [ "$(uname -s)" = "Darwin" ]; then
       sed -i '' "s/^JWT_SECRET=.*/JWT_SECRET=$jwt/" .env
       sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pgpass/" .env
       sed -i '' -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$pgpass\2#" .env
+      sed -i '' "s#^MULTICA_SECRETS_KEY=.*#MULTICA_SECRETS_KEY=$secrets_key#" .env
     else
       sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$jwt/" .env
       sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pgpass/" .env
       sed -i -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$pgpass\2#" .env
+      sed -i "s#^MULTICA_SECRETS_KEY=.*#MULTICA_SECRETS_KEY=$secrets_key#" .env
     fi
-    ok "Generated .env with random JWT_SECRET and POSTGRES_PASSWORD"
+    ok "Generated .env with random JWT_SECRET, POSTGRES_PASSWORD and MULTICA_SECRETS_KEY"
   else
     ok "Using existing .env"
   fi
