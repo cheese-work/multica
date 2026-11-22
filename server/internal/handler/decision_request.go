@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -133,6 +134,9 @@ type decisionRequestResult struct {
 	// when this request made none; ParkedIssue is the issue as written.
 	ParkedIssue    db.Issue
 	ParkedActivity *db.ActivityLog
+	// AskStub is the system reply a card placed in a new thread (decision_card_thread)
+	// left in its source thread; nil when the card has no source.
+	AskStub *db.CreateCommentRow
 }
 
 // createDecisionRequest creates the request, or finds the same-task retry of
@@ -663,6 +667,28 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		}
 		action = &stored
 	}
+	// decision_card_thread=on (T3): the card is its own thread and mentions the asked
+	// person. A DM agent's ask stays in its DM, and an ask that attaches to an intent
+	// comment keeps that comment's place.
+	cardThread := false
+	if !input.dmSession().Valid {
+		workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+		if err != nil {
+			return empty, err
+		}
+		if cardThread, err = decisiontx.CardThreadOn(workspace.Settings); err != nil {
+			return empty, err
+		}
+	}
+	var askSource pgtype.UUID
+	if cardThread && tag == nil {
+		// A new root: the parent only names the source thread, so the reply rules
+		// (resolution clear, parent link) do not apply.
+		if root != nil {
+			askSource = root.ID
+		}
+		root, parentID = nil, pgtype.UUID{}
+	}
 	var cleared []db.Comment
 	if root != nil {
 		cleared, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
@@ -671,7 +697,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		}
 	}
 	content := decisionAskContent(input)
-	if input.CardLintMode != "" && input.CardLintMode != "off" {
+	if input.CardLintMode != "" && input.CardLintMode != "off" || cardThread {
 		human, err := queries.GetUser(ctx, session.CreatorID)
 		if err != nil {
 			return empty, err
@@ -685,7 +711,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if attach {
 		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: content})
 	} else {
-		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: content, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
+		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: content, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}, AskSourceRootID: askSource}
 		if tag == nil {
 			commentParams.DecisionIntentID = intent.ID
 		}
@@ -695,6 +721,16 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	}
 	if err != nil {
 		return empty, err
+	}
+	var askStub *db.CreateCommentRow
+	var warnings []string
+	if askSource.Valid {
+		stub, err := queries.CreateComment(ctx, askSourceStubParams(issue, askSource, comment.ID, content))
+		if err != nil {
+			return empty, err
+		}
+		askStub = &stub
+		warnings = append(warnings, fmt.Sprintf("Card placed in a new thread %s; thread %s got a link.", uuidToString(comment.ID), uuidToString(askSource)))
 	}
 	var message db.ChatMessage
 	if input.Batch.writesCard() {
@@ -730,7 +766,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
-	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action}, nil
+	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action, AskStub: askStub, Warnings: warnings}, nil
 }
 
 // createSingleCallDecisionTx is the request path without an intent comment: it
@@ -960,7 +996,7 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	}
 	result.CreatedSession = createdSession
 	result.BackingLane = backing
-	result.Warnings = warnings
+	result.Warnings = append(warnings, result.Warnings...)
 	return result, nil
 }
 
