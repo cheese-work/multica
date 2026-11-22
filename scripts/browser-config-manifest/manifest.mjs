@@ -69,11 +69,12 @@ export function buildManifest(facts, env) {
     allowlist: audiences(env[AUDIENCES_ENV]),
     signing_key_ids: keyIds(env[SIGNING_KEYS_ENV]),
     credential_mode: need(facts, "credential_mode", (v) => CREDENTIAL_MODES.has(v), "want none, per-gateway or install-token"),
-    // Listener set: the internal listener address, or null when unset.
-    listener: facts.listener ?? null,
+    // Listener set or unset only; the address is an environment field.
+    listener_set: typeof facts.listener === "string" && facts.listener !== "",
   };
   const e = facts.environment ?? {};
   const environment = {
+    listener_addr: typeof facts.listener === "string" && facts.listener !== "" ? facts.listener : null,
     events_url: e.events_url ?? null,
     jwks_url: e.jwks_url ?? null,
     edge_urls: need(e, "edge_urls", (v) => v && typeof v === "object", "want an object"),

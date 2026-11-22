@@ -56,6 +56,26 @@ test("invariant hash ignores the environment section; manifest hash does not", (
   assert.notEqual(a.manifest_sha256, b.manifest_sha256);
 });
 
+test("two distinct listener addresses share the invariant hash and differ in the full hash", () => {
+  const f = facts();
+  f.listener = "10.9.0.7:9100";
+  const a = buildManifest(facts(), env());
+  const b = buildManifest(f, env());
+  assert.equal(a.invariant.listener_set, true);
+  assert.equal(a.invariant_sha256, b.invariant_sha256);
+  assert.notEqual(a.manifest_sha256, b.manifest_sha256);
+  assert.equal(b.environment.listener_addr, "10.9.0.7:9100");
+});
+
+test("listener set versus unset moves the invariant hash", () => {
+  const f = facts();
+  delete f.listener;
+  const unset = buildManifest(f, env());
+  assert.equal(unset.invariant.listener_set, false);
+  assert.equal(unset.environment.listener_addr, null);
+  assert.notEqual(unset.invariant_sha256, buildManifest(facts(), env()).invariant_sha256);
+});
+
 test("an invariant change moves both hashes", () => {
   const a = buildManifest(facts(), env());
   const b = buildManifest(facts(), { ...env(), [AUDIENCES_ENV]: "steel-gateway/c00" });
