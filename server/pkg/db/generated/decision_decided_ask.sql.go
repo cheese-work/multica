@@ -22,7 +22,7 @@ SELECT request.id, request.issue_id, request.status, request.kind, request.escal
        action.secret_slots AS action_secret_slots, action.state AS action_state, action.revoked_at AS action_revoked_at
 FROM decision_request request
 LEFT JOIN LATERAL (
-    SELECT id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version FROM decision_answer a WHERE a.decision_request_id = request.id
+    SELECT id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version, undo_until FROM decision_answer a WHERE a.decision_request_id = request.id
     ORDER BY a.created_at DESC, a.id DESC LIMIT 1
 ) answer ON TRUE
 LEFT JOIN decision_action action ON action.decision_request_id = request.id
