@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -258,4 +259,75 @@ func (h *Handler) taskMadeTypedAsk(r *http.Request, issue db.Issue, task db.Agen
 		}
 	}
 	return false
+}
+
+// Typed asks (A4, CHE-7292): an agent comment with --ask <member> or a move with
+// --waiting-on member:<id> names who acts next. The server stores one block
+// event for it and the recovery pass sends the notice once the run ends, so the
+// member hears of the ask even when the agent never mentions them. The event key
+// is the comment id, or the issue, both statuses, the member and the issue
+// revision of a move, so a repeat sends one notice. It follows the S4 and S5
+// switches: off sends nothing. A chat-lane run or a call with no task sends
+// nothing either, as there is no ended run to recover.
+const (
+	askNoticeKind  = "ask_notice"
+	moveNoticeKind = "wait_notice"
+)
+
+func (h *Handler) typedNoticeOn(r *http.Request, workspaceID pgtype.UUID, task *db.AgentTaskQueue, modeOf func([]byte) (askguard.Mode, error)) bool {
+	if task == nil || task.ChatSessionID.Valid {
+		return false
+	}
+	workspace, err := h.Queries.GetWorkspace(r.Context(), workspaceID)
+	if err != nil {
+		slog.Warn("typed ask notice: read workspace failed", "error", err)
+		return false
+	}
+	mode, err := modeOf(workspace.Settings)
+	return err == nil && mode != askguard.ModeOff
+}
+
+// typedAskCommentMember returns the member a comment's --ask names when the
+// comment is to be noticed, else an invalid UUID. S4 already validated ask.
+func (h *Handler) typedAskCommentMember(r *http.Request, issue db.Issue, authorType string, task *db.AgentTaskQueue, ask string) pgtype.UUID {
+	if authorType != "agent" || ask == "" || !h.typedNoticeOn(r, issue.WorkspaceID, task, askguard.WaitingAudienceModeFromSettings) {
+		return pgtype.UUID{}
+	}
+	member, err := util.ParseUUID(ask)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return member
+}
+
+// recordTypedAskComment stores the notice event of a committed --ask comment.
+// Pass the transaction's Queries so the event commits with the comment.
+func recordTypedAskComment(r *http.Request, queries *db.Queries, issue db.Issue, task *db.AgentTaskQueue, member pgtype.UUID, comment db.Comment) error {
+	op := askguard.Op{IssueID: issue.ID, TaskID: task.ID, MemberID: member, Kind: askNoticeKind, Payload: []byte(uuidToString(comment.ID)), Source: comment.Content}
+	return askguard.Guard{Queries: queries}.RecordNotice(r.Context(), issue.WorkspaceID, op)
+}
+
+// recordTypedWaitingMove stores the notice event of a move that named a member.
+func (h *Handler) recordTypedWaitingMove(r *http.Request, prevStatus string, issue db.Issue, waitingOn *string) {
+	if waitingOn == nil {
+		return
+	}
+	id, found := strings.CutPrefix(*waitingOn, "member:")
+	if !found {
+		return
+	}
+	var task *db.AgentTaskQueue
+	if t, ok := h.taskFromRequestHeader(r); ok {
+		task = &t
+	}
+	member, err := util.ParseUUID(id)
+	if err != nil || !h.typedNoticeOn(r, issue.WorkspaceID, task, askguard.WaitingOnModeFromSettings) {
+		return
+	}
+	key := fmt.Sprintf("%s|%s|%s|%s|%d", uuidToString(issue.ID), prevStatus, issue.Status, id, issue.Revision)
+	source := fmt.Sprintf("The run moved this issue from %s to %s and named you to act next.", prevStatus, issue.Status)
+	op := askguard.Op{IssueID: issue.ID, TaskID: task.ID, MemberID: member, Kind: moveNoticeKind, Payload: []byte(key), Source: source}
+	if err := (askguard.Guard{Queries: h.Queries}).RecordNotice(r.Context(), issue.WorkspaceID, op); err != nil {
+		slog.Error("typed ask notice: record move failed; no notice will be sent", "error", err, "issue_id", uuidToString(issue.ID))
+	}
 }

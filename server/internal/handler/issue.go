@@ -5396,6 +5396,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.followDecisionSteward(r.Context(), issue)
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
+	if statusChanged && actorType == "agent" {
+		h.recordTypedWaitingMove(r, prevIssue.Status, issue, req.WaitingOn)
+	}
 	priorityChanged := req.Priority != nil && prevIssue.Priority != issue.Priority
 	// project_changed gates the client's per-project issue-list refetch the way
 	// status/assignee flags gate theirs. Without it the client must diff
