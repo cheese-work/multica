@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // B2 (CHE-7409): the dequeued webhook stores a pending intake row with the
@@ -118,5 +119,50 @@ func TestQueueWebhooksMoveTheQueueState(t *testing.T) {
 	}
 	if got := readMQIntake(t, 740913); len(got) != 1 {
 		t.Errorf("intake rows = %d; want 1, from the dequeued delivery only", len(got))
+	}
+}
+
+// A settings write that commits before the intake commits is the routing the
+// intake must record: the intake reads the workspace row under a lock it holds
+// to its commit, so it waits for an in-flight settings write (CHE-9060 review).
+func TestDequeuedWebhookWaitsForAnInFlightRoutingWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 740904
+	fx := newPRMergeWebhookFixture(t, installationID)
+	cleanMQ(t)
+	body := buildDequeuedPRWebhookBody(fx.child.Identifier+": queued", 740914, installationID)
+
+	ctx := context.Background()
+	settingsTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer settingsTx.Rollback(ctx)
+	if _, err := settingsTx.Exec(ctx, `UPDATE workspace SET settings = settings || '{"merge_queue_dequeue_routing":"off"}'::jsonb WHERE id = $1`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		postSignedGitHubWebhook(t, fx.secret, body, "guid-7409-w1")
+	}()
+	select {
+	case <-done:
+		t.Fatal("the intake finished while a routing write was in flight; it must wait and record the committed value")
+	case <-time.After(750 * time.Millisecond):
+	}
+	if err := settingsTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the intake did not finish after the routing write committed")
+	}
+	if got := readMQIntake(t, 740914); len(got) != 0 {
+		t.Fatalf("intake rows = %+v; want none, routing was off at the intake commit", got)
 	}
 }

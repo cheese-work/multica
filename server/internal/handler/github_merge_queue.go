@@ -46,10 +46,18 @@ func recordMergeQueue(ctx context.Context, tx pgx.Tx, ws db.Workspace, p *ghPull
 	if state != mergequeue.QueueDequeued {
 		return nil
 	}
+	// Routing is read here, in the webhook's transaction, under a share lock on
+	// the workspace row that lasts to the commit. A settings write is blocked
+	// until then, or has committed first and is read: the row records the value
+	// at its commit, never the one the caller loaded before the transaction.
+	var settings []byte
+	if err := tx.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1 FOR SHARE`, ws.ID).Scan(&settings); err != nil {
+		return fmt.Errorf("github: merge queue routing: %w", err)
+	}
 	delivery, _ := ctx.Value(deliveryIDKey{}).(string)
 	if _, _, err := mergequeue.InsertIntake(ctx, tx, mergequeue.IntakeInput{
 		WS: uuid.UUID(ws.ID.Bytes), Owner: owner, Repo: repo, PR: int(pr), DeliveryID: delivery,
-		Routing: mergequeue.RoutingFromSettings(ws.Settings),
+		Routing: mergequeue.RoutingFromSettings(settings),
 	}); err != nil {
 		return fmt.Errorf("github: merge queue intake: %w", err)
 	}
