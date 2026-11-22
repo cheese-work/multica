@@ -1,13 +1,8 @@
 package issueworkflow
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"sort"
 	"strings"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // SettingsKeyQuickCreateDiscovery is the workspace settings key (CHE-9075,
@@ -28,54 +23,18 @@ func QuickCreateDiscovery(settings []byte) bool {
 	return strings.ToLower(strings.TrimSpace(parsed.Discovery)) == "on"
 }
 
-// QuickCreateDiscoveryApplies reports whether a quick-create run may file an
-// unclear request in Discovery: the setting is on and the workflow the new
-// issue will follow lists the `investigating` step. projectID is the project
-// the modal pinned (invalid when none). Without a project the issue takes the
-// workspace Default. Every workflow the title-type map can route a title to
-// must have the step too, because the agent picks the title.
-func QuickCreateDiscoveryApplies(ctx context.Context, q Querier, settings []byte, workspaceID, projectID pgtype.UUID) (bool, error) {
-	if !QuickCreateDiscovery(settings) {
-		return false, nil
+// DiscoveryFallback is the status a quick-create issue takes when its run asked
+// for Discovery. The run cannot see which workflow the server will pick (a
+// title type or an agent-chosen project can route the issue elsewhere), so the
+// server decides on the workflow it picked: a workflow with the `investigating`
+// step keeps the status; any other gets its start status. Every other status
+// passes through unchanged.
+func DiscoveryFallback(def *Definition, status string) string {
+	if status != DiscoveryStatusKey || (def != nil && def.Has(DiscoveryStatusKey)) {
+		return status
 	}
-	var def *Definition
-	var err error
-	if projectID.Valid {
-		def, _, err = ForProject(ctx, q, workspaceID, projectID)
-	} else {
-		def, err = OutsideProject(ctx, q, workspaceID)
+	if def == nil {
+		return StartStatus
 	}
-	if err != nil || def == nil || !def.Has(DiscoveryStatusKey) {
-		return false, err
-	}
-	for _, id := range workflowTypeIDs(settings) {
-		def, _, err := ForIssue(ctx, q, workspaceID, id, projectID)
-		if errors.Is(err, ErrOverrideMissing) {
-			continue // the title-type reader ignores a dangling entry
-		}
-		if err != nil {
-			return false, err
-		}
-		if def == nil || !def.Has(DiscoveryStatusKey) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// workflowTypeIDs returns the valid workflow ids of workflow_by_type, sorted.
-func workflowTypeIDs(settings []byte) []pgtype.UUID {
-	var parsed struct {
-		ByType map[string]string `json:"workflow_by_type"`
-	}
-	_ = json.Unmarshal(settings, &parsed)
-	var ids []pgtype.UUID
-	for _, raw := range parsed.ByType {
-		var id pgtype.UUID
-		if id.Scan(strings.TrimSpace(raw)) == nil && id.Valid {
-			ids = append(ids, id)
-		}
-	}
-	sort.Slice(ids, func(i, j int) bool { return string(ids[i].Bytes[:]) < string(ids[j].Bytes[:]) })
-	return ids
+	return def.Start()
 }

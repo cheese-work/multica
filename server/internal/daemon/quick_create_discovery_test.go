@@ -35,7 +35,8 @@ func TestQuickCreateDiscoveryOnClassifiesRequest(t *testing.T) {
 		"2 hours or less",
 		"`--status investigating`",
 		"Discovery: <reason>. Reply to veto.",
-		"last line of the description",
+		"issue comment add",
+		"only if it is `investigating`",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("discovery=on prompt missing %q\n%s", want, out)
@@ -49,15 +50,17 @@ func TestQuickCreateDiscoveryOnClassifiesRequest(t *testing.T) {
 	}
 }
 
-func TestQuickCreateDiscoveryOnUnpinnedProjectChecksWorkflow(t *testing.T) {
-	out := buildQuickCreatePrompt(Task{QuickCreatePrompt: "x", QuickCreateDiscovery: true, QuickCreateFill: true})
-	for _, want := range []string{"multica project get", "multica workflow get"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("fill + unpinned project: missing %q", want)
+func TestQuickCreateDiscoveryOnNeedsNoProjectLookup(t *testing.T) {
+	// The server judges the workflow it picks, so the run never looks one up.
+	for _, task := range []Task{
+		{QuickCreatePrompt: "x", QuickCreateDiscovery: true, QuickCreateFill: true},
+		{QuickCreatePrompt: "x", QuickCreateDiscovery: true, ProjectID: "11111111-1111-1111-1111-111111111111"},
+	} {
+		out := buildQuickCreatePrompt(task)
+		for _, bad := range []string{"multica project get", "multica workflow get", "last line of the description"} {
+			if strings.Contains(out, bad) {
+				t.Errorf("prompt contains %q:\n%s", bad, out)
+			}
 		}
-	}
-	pinned := buildQuickCreatePrompt(Task{QuickCreatePrompt: "x", QuickCreateDiscovery: true, QuickCreateFill: true, ProjectID: "11111111-1111-1111-1111-111111111111"})
-	if strings.Contains(pinned, "multica workflow get") {
-		t.Error("a pinned project is checked server-side; the prompt must not ask the agent to")
 	}
 }

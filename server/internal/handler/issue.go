@@ -4117,6 +4117,13 @@ func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProject
 	return id, def, project, true
 }
 
+// quickCreateDiscoveryOn reads the workspace's quick_create_discovery setting.
+// A read failure counts as off.
+func (h *Handler) quickCreateDiscoveryOn(r *http.Request, wsUUID pgtype.UUID) bool {
+	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	return err == nil && issueworkflow.QuickCreateDiscovery(ws.Settings)
+}
+
 // titleTypeWorkflowHint is the one-line note for a title edit whose type maps
 // to a workflow other than the issue's own. The edit never moves the workflow.
 func (h *Handler) titleTypeWorkflowHint(r *http.Request, issue db.Issue) string {
@@ -4282,6 +4289,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// CHE-9075: a quick-create run that asked for Discovery gets it only when the
+	// workflow picked for this issue lists the step; otherwise the start status.
+	discoveryAsked := status == issueworkflow.DiscoveryStatusKey && req.OriginType != nil && *req.OriginType == "quick_create" &&
+		h.quickCreateDiscoveryOn(r, wsUUID)
 	// Outside any project, with no override, the issue takes the Default's
 	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
 	if !workflowProjectID.Valid && createWorkflow == nil {
@@ -4290,6 +4301,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 			return
+		}
+		if discoveryAsked {
+			status = issueworkflow.DiscoveryFallback(outside, status)
 		}
 		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
 			writeIssueWorkflowError(w, err)
@@ -4300,6 +4314,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		// A creator who picked no status gets the workflow's start status.
 		if req.Status == "" {
 			status = createWorkflow.Start()
+		}
+		if discoveryAsked {
+			status = issueworkflow.DiscoveryFallback(createWorkflow, status)
 		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
