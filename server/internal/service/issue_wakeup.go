@@ -1502,6 +1502,14 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err != nil {
 		return err
 	}
+	// A live-join item whose host run completed settles like a run that took
+	// its inputs; an open one holds the pass below.
+	live, err := readLiveItems(ctx, q, w, receipts)
+	if err != nil {
+		return err
+	}
+	receipts = live.withoutSettled(receipts)
+	taken = append(taken, live.settled...)
 	for _, run := range taken {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err
@@ -1513,6 +1521,10 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		w.LastTaskID = run.task.ID
 		details := wakeupTriggerDetails(run.task, run.receipts)
 		details["outcome"] = wakeupOutcomeMerged
+		if run.outcome != "" {
+			details["outcome"] = run.outcome
+			details["firing_id"] = util.UUIDToString(run.firingID)
+		}
 		if err := note(wakeupActivityTriggered, details); err != nil {
 			return err
 		}
@@ -1558,6 +1570,19 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastTaskID: w.LastTaskID}); err != nil {
 			return err
 		}
+	}
+	if live.holdRun.Valid {
+		// As while a run of the agent waits: timers advance, inputs stay, and a
+		// once rule stays on until its firing is settled.
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastError: liveHoldReason(live.holdRun)}); err != nil {
+			return err
+		}
+		if timedOut {
+			if err := markTimedOut(); err != nil {
+				return err
+			}
+		}
+		return commit()
 	}
 	if len(receipts) == 0 {
 		if timedOut {

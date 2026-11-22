@@ -308,7 +308,15 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 	var receipts []db.IssueWakeupReceipt
 	var held, free, back []pgtype.UUID
 	blocking := anyDeferred(pending) && timeWakeupSkipMode(ctx, q, issue.WorkspaceID) == "block"
+	inItem, err := receiptsInLiveItems(ctx, q, w.ID)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, r := range pending {
+		if inItem[r.ID] {
+			// A live-join item holds this input; its ack settles the firing.
+			continue
+		}
 		if blocking && anyDeferred([]db.IssueWakeupReceipt{r}) {
 			// CHE-6968: a deferred fire waits for its own change or expiry; a run
 			// claimed for another reason must not consume it.
@@ -523,6 +531,10 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 type takenRun struct {
 	task     db.AgentTaskQueue
 	receipts []db.IssueWakeupReceipt
+	// outcome and firingID are set for a live-join item settled by its host
+	// run; outcome is empty for a run that started with the inputs.
+	outcome  string
+	firingID pgtype.UUID
 }
 
 // takenReceipts sorts a rule's pending inputs by the run a claim reserved them
