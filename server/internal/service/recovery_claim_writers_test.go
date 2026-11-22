@@ -232,6 +232,68 @@ func TestRetryBudgetIsSharedAcrossWriters(t *testing.T) {
 	}
 }
 
+// All three writers draw on one budget: a native retry and a recurring
+// reservation spend the lineage's two retries, and then no writer (native,
+// recurring or watchdog) dispatches a third.
+func TestRetryBudgetIsSharedByRecurringNativeAndWatchdog(t *testing.T) {
+	o := newClaimWritersFixture(t)
+	ctx := context.Background()
+	issue := parseTestUUID(t, o.issueID)
+	root := o.failedRun(t, testutil.Cols{"max_attempts": 3})
+
+	// Retry one: the native writer.
+	parent, err := o.q.GetAgentTask(ctx, parseTestUUID(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent)
+	if err != nil || child == nil {
+		t.Fatalf("native retry = %v err=%v, want the first retry", child, err)
+	}
+	failed := util.UUIDToString(child.ID)
+	o.Cleanup(t, "DELETE FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1 OR rerun_of_task_id=$1", failed)
+	// Retry two: the recurring writer reserves a recovery for the failed retry,
+	// which must look like a provider failure of the wakeup's trigger.
+	wakeupID := o.wakeup(t, "every", "continuous", nil)
+	o.Exec(t, `UPDATE agent_task_queue SET status='failed', failure_reason='agent_error.provider_server_error', completed_at=now(), max_attempts=3,
+		context=jsonb_build_object('wakeup_id', $2::text) WHERE id=$1`, failed, wakeupID)
+	attempt := func() *providerFailureRecoveryAttempt {
+		return &providerFailureRecoveryAttempt{
+			FailedTaskID: parseTestUUID(t, failed), FailedAt: time.Now().UTC().Add(-2 * time.Hour), ProbeAt: time.Now().UTC(), ProbeStatus: 401,
+			Scope: providerFailureRecoveryScope{Kind: "issue_wakeup", TriggerID: parseTestUUID(t, wakeupID)},
+		}
+	}
+	reserved, err := o.svc.TaskSvc.reserveProviderFailureRecovery(ctx, o.q, attempt(), pgtype.UUID{}, dbid.NewV7())
+	if err != nil || !reserved {
+		t.Fatalf("recurring reservation reserved=%t err=%v, want true (second retry)", reserved, err)
+	}
+
+	// The budget is spent: no writer may add a third retry. The native writer
+	// and the watchdog only act on a generic failure reason.
+	o.Exec(t, "UPDATE agent_task_queue SET failure_reason='timeout' WHERE id=$1", failed)
+	failedTask, err := o.q.GetAgentTask(ctx, parseTestUUID(t, failed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, failedTask); err != nil || again != nil {
+		t.Fatalf("native retry past the budget = %v err=%v, want none", again, err)
+	}
+	if task, err := o.svc.TaskSvc.RerunIssue(ctx, issue, parseTestUUID(t, failed), pgtype.UUID{}, pgtype.UUID{}, false, nil); err == nil {
+		t.Fatalf("watchdog rerun admitted past the budget: %v", task)
+	}
+	o.Exec(t, "DELETE FROM provider_failure_recovery WHERE failed_task_id=$1", failed)
+	o.Exec(t, "UPDATE agent_task_queue SET failure_reason='agent_error.provider_server_error' WHERE id=$1", failed)
+	if reserved, err := o.svc.TaskSvc.reserveProviderFailureRecovery(ctx, o.q, attempt(), pgtype.UUID{}, dbid.NewV7()); err != nil || reserved {
+		t.Fatalf("recurring reservation past the budget reserved=%t err=%v, want false", reserved, err)
+	}
+	if got := o.Count(t, `SELECT count(*) FROM recovery_claim WHERE lineage_root_task_id=$1 AND state<>'released'`, root); got != 2 {
+		t.Fatalf("claims in the lineage = %d, want 2 (one native, one recurring)", got)
+	}
+	if got := o.derived(t, failed); got != 0 {
+		t.Fatalf("tasks minted from the failed retry = %d, want 0", got)
+	}
+}
+
 // seedClaim writes a claim row for a failed run, as if its writer had run
 // `age` ago and then stopped (crash or rollback) in the given state.
 func (o ownerFixture) seedClaim(t *testing.T, failed, state, successor string, age time.Duration) {
