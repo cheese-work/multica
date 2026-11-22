@@ -155,6 +155,8 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
 ```
 
+エージェントのコメントが長いスレッドの奥でメンバーをメンションした場合、サーバーはエージェントが `--from-thread` を渡したときと同じように、そのコメントを新しい質問スレッドへ移すことがあります。ワークスペース設定 `long_thread_member_ask`（既定は `off`、`warn`、`move`）で動作が決まり、`long_thread_member_ask_min`（3〜100、既定 10）が適用されるスレッドの大きさです（ルートを含む）。メンションされたメンバーの誰もスレッドの直近 3 件のコメントを書いていない場合にのみ適用されます。`--notify-only`、決定の種類、`--supersedes`、`--resolve-thread` を付けたコメントは移動されません。`move` ではレスポンスに `placement`（`moved`、`source_root_id`、`reason`）とヒントが付き、`warn` ではコメントはその場に投稿され、`--from-thread` を示すヒントが付きます。コメントの編集で移動されることはありません。
+
 `multica decision request` の `--recovers <event-id>` は、そのリクエストが ask ガードのイベント（拒否された操作や復旧通知に示されたもの）への回答であることを示します。サーバーは、イベントがこの課題にあり、リクエストが問い合わせる本人に対して発生したものである場合に限り、リクエストと同じトランザクションでそのイベントを解消します。ある人へのリクエストが別の人のイベントを解消することはなく、`--recovers` のないリクエストは何も解消しません。別の課題や別の人のイベントは `400` で拒否されます。1 つのリクエストが復旧できるイベントは 1 件だけです。同じリクエストの再試行が 2 件目のイベントを指定すると `400` で拒否されます。
 
 `--wait`（`multica decision request` と `multica decision ask`）は、リクエストが開いている間、課題を保留にするようサーバーに求めます。ほかに進められる作業がないときだけ付けてください。課題が保留になるのは、ワークスペース設定 `decision_ask_park` が `on_wait` のときだけです。既定の `always` では、すべてのリクエストが保留にし、`--wait` は何も変えません。`blocked` の課題はどちらでも保留になります。`--wait` がなければ、課題のステータスと担当者は変わらず、回答は依頼したエージェントを起こします。

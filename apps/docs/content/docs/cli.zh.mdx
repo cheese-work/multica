@@ -155,6 +155,8 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
 ```
 
+智能体的评论如果在很长的讨论串深处提及某位成员，服务器可以把它移到新的提问讨论串，效果等同于智能体传入了 `--from-thread`。由工作区设置 `long_thread_member_ask`（默认 `off`，可选 `warn`、`move`）决定；`long_thread_member_ask_min`（3 到 100，默认 10）是开始适用的讨论串大小（含根评论）。只有被提及的成员都没有写过该讨论串最近 3 条评论时才适用。带有 `--notify-only`、决策类型、`--supersedes` 或 `--resolve-thread` 的评论不会被移动。在 `move` 下，响应包含 `placement`（`moved`、`source_root_id`、`reason`）和一条提示；在 `warn` 下，评论原地发布，并附带指向 `--from-thread` 的提示。编辑评论不会移动它。
+
 `multica decision request` 的 `--recovers <event-id>` 表示该请求是对某个 ask 守卫事件的答复，例如被拒绝的操作或恢复通知中指明的事件。只有当事件属于该请求所在的任务、且是为请求所询问的那个人产生时，服务器才会在请求的同一事务中清除该事件。针对某人的请求不会清除另一个人的事件；不带 `--recovers` 的请求不会清除任何事件。其他任务或其他人的事件会以 `400` 拒绝。一个请求只恢复一个事件：同一请求的重试若指向第二个事件，会以 `400` 拒绝。
 
 `--wait`（用于 `multica decision request` 和 `multica decision ask`）请求服务器在该请求未关闭期间挂起任务。只有在没有其他事可做时才使用它。只有当工作区设置 `decision_ask_park` 为 `on_wait` 时，任务才会被挂起。默认值 `always` 下，每个请求都会挂起任务，`--wait` 不起作用。`blocked` 的任务无论如何都会被挂起。不带 `--wait` 时，任务的状态和负责人保持不变，答复会唤醒提问的智能体。

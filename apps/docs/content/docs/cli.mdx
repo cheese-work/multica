@@ -155,6 +155,8 @@ To ask a short question without growing a long thread, open an ask thread: `--fr
 multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
 ```
 
+An agent comment that mentions a member deep inside a long thread can be moved by the server into a new ask thread, as if the agent had passed `--from-thread`. The workspace setting `long_thread_member_ask` (`off` by default, `warn`, `move`) decides; `long_thread_member_ask_min` (3 to 100, default 10) is the thread size from which it applies, root included. It applies only when none of the mentioned members wrote one of the last 3 comments of the thread. A comment with `--notify-only`, a decision kind, `--supersedes` or `--resolve-thread` is never moved. Under `move` the response carries `placement` (`moved`, `source_root_id`, `reason`) and a hint; under `warn` the comment posts in place with a hint that names `--from-thread`. Editing a comment never moves it.
+
 ## Forking a web DM
 
 From the source DM's running chat task, copy the DM into a new child DM:
