@@ -113,7 +113,7 @@ func (s *CredentialService) inTx(ctx context.Context, fn func(q *db.Queries) err
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a commit
+	defer tx.Rollback(ctx)
 	if err := fn(db.New(tx)); err != nil {
 		return err
 	}
