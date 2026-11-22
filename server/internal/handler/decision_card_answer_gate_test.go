@@ -101,7 +101,7 @@ func (card *gatedCard) signed(issued answerChallenge, option, text string) decis
 	if err != nil {
 		card.test.Fatal(err)
 	}
-	return decisionCardAnswerInput{Option: option, Text: text, AnswerRevision: issued.AnswerRevision, PolicyRevision: issued.PolicyRevision, Assertion: assertion}
+	return decisionCardAnswerInput{Option: option, Text: text, AnswerRevision: &issued.AnswerRevision, PolicyRevision: issued.PolicyRevision, Assertion: assertion}
 }
 
 func (card *gatedCard) wantRefusal(err error, status int, code string) {
@@ -264,7 +264,7 @@ func TestGatedAnswerRefusesExpiredSupersededAndConsumedProof(test *testing.T) {
 			test.Fatal(err)
 		}
 		withdrawAndReopen(test, card)
-		input.AnswerRevision++
+		*input.AnswerRevision++
 		_, err := card.answer(gatedSession, input)
 		card.wantRefusal(err, http.StatusForbidden, "assertion_rejected")
 	})

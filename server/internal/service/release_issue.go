@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -64,6 +65,8 @@ func (s *IssueService) CreateRelease(ctx context.Context, d ReleaseDeploy) (issu
 		Status:      "todo", Priority: "none",
 		CreatorType: "member", CreatorID: owner,
 		AllowDuplicate: true,
+		// Made by the platform, not a person: an automated rule (CHE-6376).
+		CreatedVia: pgtype.Text{String: issuecreatedvia.Autopilot, Valid: true},
 	}, IssueCreateOpts{})
 	var pgErr *pgconn.PgError
 	switch {

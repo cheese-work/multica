@@ -62,8 +62,8 @@ for (const colour of colours) {
   const mount = service.volumes.find((volume) => volume.target === "/app/feature-flags.yaml");
   ok(mount?.type === "bind" && mount.source === flagsFile && mount.read_only === true, `${colour} generic flags mount`);
   const withoutFlags = structuredClone(service);
-  for (const k of ["MULTICA_FEATURE_FLAGS_FILE", "MULTICA_WEBAUTHN_RP_ID", "MULTICA_WEBAUTHN_ORIGINS", "MULTICA_PASSKEY_ENROLL_KEY", "MULTICA_REVIEW_ADMISSION", "MULTICA_REVIEW_ADMISSION_CHECKS", "MULTICA_REVIEW_ADMISSION_REVIEWERS"]) delete withoutFlags.environment[k]; // passkey keys: CHE-4787; admission keys: CHE-4982
-  withoutFlags.volumes = withoutFlags.volumes.filter((volume) => volume.target !== "/app/feature-flags.yaml");
+  for (const k of ["MULTICA_FEATURE_FLAGS_FILE", "MULTICA_WEBAUTHN_RP_ID", "MULTICA_WEBAUTHN_ORIGINS", "MULTICA_PASSKEY_ENROLL_KEY", "MULTICA_REVIEW_ADMISSION", "MULTICA_REVIEW_ADMISSION_CHECKS", "MULTICA_REVIEW_ADMISSION_REVIEWERS", "MULTICA_MERGE_RECEIPT_OIDC_POLICY", "MULTICA_MERGE_RECEIPT_WORKSPACE_ID"]) delete withoutFlags.environment[k]; // passkey keys: CHE-4787; admission keys: CHE-4982; merge-receipt keys and /etc/multica mount: CHE-7507
+  withoutFlags.volumes = withoutFlags.volumes.filter((volume) => volume.target !== "/app/feature-flags.yaml" && volume.target !== "/etc/multica");
   eq(withoutFlags, baseline, `${colour} flags-only leaves other fields unchanged`);
 }
 ok(!("jev_gateway" in flagsOnly.networks), "flags-only declares no Jev network");
@@ -90,7 +90,7 @@ for (const c of colours) {
   const flagMount = s.volumes.find((v) => v.target === "/app/feature-flags.yaml");
   ok(flagMount && flagMount.type === "bind" && flagMount.source === flagsFile && flagMount.read_only === true, `${c} flags mount: ${JSON.stringify(flagMount)}`);
   // Existing volumes, ports and data bindings untouched.
-  eq(s.volumes.filter((v) => v.target !== "/app/feature-flags.yaml"), off.services[`backend-${c}`].volumes, `${c} volumes`);
+  eq(s.volumes.filter((v) => v.target !== "/app/feature-flags.yaml" && v.target !== "/etc/multica"), off.services[`backend-${c}`].volumes, `${c} volumes`);
   eq(s.ports, off.services[`backend-${c}`].ports, `${c} ports`);
   // Gateway membership alongside the project network; no static pins.
   eq(Object.keys(s.networks).sort(), ["default", "jev_gateway"], `${c} networks`);
@@ -102,7 +102,7 @@ for (const c of colours) {
   // Jev stays scoped: no global override, no legacy credential.
   ok(!("FF_JEV_ENABLED" in env) && !("JEV_API_KEY" in env), `${c} carries a global Jev override`);
   // Everything else on the service is unchanged.
-  const strip = (x) => { const y = structuredClone(x); for (const k of ["MULTICA_JEV_SECRET_KEY", "MULTICA_FEATURE_FLAGS_FILE", "DATABASE_URL", "MULTICA_WEBAUTHN_RP_ID", "MULTICA_WEBAUTHN_ORIGINS", "MULTICA_PASSKEY_ENROLL_KEY", "MULTICA_REVIEW_ADMISSION", "MULTICA_REVIEW_ADMISSION_CHECKS", "MULTICA_REVIEW_ADMISSION_REVIEWERS"]) delete y.environment[k]; delete y.volumes; delete y.networks; return y; };
+  const strip = (x) => { const y = structuredClone(x); for (const k of ["MULTICA_JEV_SECRET_KEY", "MULTICA_FEATURE_FLAGS_FILE", "DATABASE_URL", "MULTICA_WEBAUTHN_RP_ID", "MULTICA_WEBAUTHN_ORIGINS", "MULTICA_PASSKEY_ENROLL_KEY", "MULTICA_REVIEW_ADMISSION", "MULTICA_REVIEW_ADMISSION_CHECKS", "MULTICA_REVIEW_ADMISSION_REVIEWERS", "MULTICA_MERGE_RECEIPT_OIDC_POLICY", "MULTICA_MERGE_RECEIPT_WORKSPACE_ID"]) delete y.environment[k]; delete y.volumes; delete y.networks; return y; };
   eq(strip(s), strip(off.services[`backend-${c}`]), `${c} other fields`);
   eq(on.services[`frontend-${c}`], off.services[`frontend-${c}`], `frontend-${c}`);
 }

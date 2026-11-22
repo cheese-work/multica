@@ -143,6 +143,28 @@ type Manager struct {
 
 	ctx     context.Context
 	started bool
+
+	// extraSweeps run on every sweep pass (see AddSweep).
+	extraSweeps []func(ctx context.Context)
+}
+
+// AddSweep registers fn to run on every sweep pass, after the snapshot sweeps.
+// Packages that import this one (ghstack, CHE-4143) hook in here without an
+// import cycle. Call it before Start.
+func (manager *Manager) AddSweep(fn func(ctx context.Context)) {
+	if manager != nil {
+		manager.extraSweeps = append(manager.extraSweeps, fn)
+	}
+}
+
+// RateLimitPause is the remaining per-installation back-off, zero when none.
+func (manager *Manager) RateLimitPause(installationID int64) time.Duration {
+	return manager.rateLimitPause(installationID)
+}
+
+// ExtendRateLimit starts or extends the per-installation back-off.
+func (manager *Manager) ExtendRateLimit(installationID int64, d time.Duration) {
+	manager.extendRateLimit(installationID, d)
 }
 
 // NewManager wires the pipeline. onApplied is called once per PR row whose
@@ -522,17 +544,43 @@ func (manager *Manager) rateLimitPause(installationID int64) time.Duration {
 	pause := until.Sub(manager.now())
 	if pause <= 0 {
 		delete(manager.rateUntil, installationID)
+		slog.Info("ghsnapshot: rate limit ended", "installation_id", installationID, "until", until.UTC().Format(time.RFC3339))
 		return 0
 	}
 	return pause
 }
 
+// RateLimitUntil is the deadline of the installation's current rate-limit
+// pause. The bool is false when no pause is active. The PR read shows it as
+// snapshot_paused_until (CHE-8795), so a stalled snapshot names its reason.
+func (manager *Manager) RateLimitUntil(installationID int64) (time.Time, bool) {
+	if manager == nil {
+		return time.Time{}, false
+	}
+	if manager.rateLimitPause(installationID) <= 0 {
+		return time.Time{}, false
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	until, ok := manager.rateUntil[installationID]
+	return until, ok
+}
+
 func (manager *Manager) extendRateLimit(installationID int64, retryAfter time.Duration) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	until := manager.now().Add(retryAfter)
-	if until.After(manager.rateUntil[installationID]) {
+	now := manager.now()
+	until := now.Add(retryAfter)
+	current, active := manager.rateUntil[installationID]
+	if until.After(current) {
 		manager.rateUntil[installationID] = until
+		// One line per pause: an extension inside an active pause is not a new one.
+		if !active || !current.After(now) {
+			slog.Warn("ghsnapshot: rate limit started",
+				"installation_id", installationID,
+				"retry_after", retryAfter.String(),
+				"until", until.UTC().Format(time.RFC3339))
+		}
 	}
 }
 
@@ -755,6 +803,9 @@ func (manager *Manager) sweepOnce(ctx context.Context) {
 	manager.sweepRecheck(ctx)
 	manager.sweepConflictWatched(ctx)
 	manager.sweepClosedReplays(ctx)
+	for _, fn := range manager.extraSweeps {
+		fn(ctx)
+	}
 }
 
 // sweepClosedReplays hands every closed-PR replay still owed back to the

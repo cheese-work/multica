@@ -19,6 +19,8 @@ const topUpAction = "issue.run_budget.top_up"
 // window opened an hour ago, so a top-up has a window to replace.
 func budgetFixtureIssue(test *testing.T, issueID string) {
 	test.Helper()
+	// mergeEdgeSteps carries a pr.merged edge; a chosen merge status refuses it (CHE-5245).
+	setWorkspacePRMergeStatusForTest(test, "none")
 	workflow := createTestWorkflowSteps(test, "Top-up "+workflowTestSuffix(), mergeEdgeSteps)
 	dbfx.Exec(test, `UPDATE issue_workflow SET max_runs_per_issue = 3, run_budget_since = now() - interval '1 hour' WHERE id = $1`, workflow.ID)
 	dbfx.Exec(test, `UPDATE issue SET workflow_id = $1 WHERE id = $2`, workflow.ID, issueID)

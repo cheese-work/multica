@@ -34,11 +34,11 @@ SELECT (
 -- name: ListIssuePullRequestHeads :many
 -- Every pull request linked to the issue, GitHub and self-hosted, with the head
 -- it stands at (empty when the provider does not record one).
-SELECT pr.state, pr.head_sha::text AS head_sha FROM github_pull_request pr
+SELECT pr.state, pr.head_sha::text AS head_sha, pr.base_ref::text AS base_ref, pr.default_branch::text AS default_branch FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
 UNION ALL
-SELECT pr.state, ''::text AS head_sha FROM vcs_pull_request pr
+SELECT pr.state, ''::text AS head_sha, ''::text AS base_ref, ''::text AS default_branch FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1;
 
@@ -46,11 +46,16 @@ WHERE ipr.issue_id = $1;
 -- Entering a done-category step disables the issue's wakeups in the same
 -- transaction, so "enabled" after the write is always empty. A wakeup that was
 -- live at entry is one still enabled, or disabled at or after the newest move
--- into agent_accepted (that move's own close rule).
-SELECT count(*)::bigint FROM issue_wakeup w
-WHERE w.issue_id = $1 AND (w.enabled OR w.disabled_at >= (
+-- into the step being entered (that move's own close rule). other leaves out
+-- the issue's own workflow_edges watcher (CHE-7671): on an auto-close step it
+-- is the merge wait, not work. own counts that watcher while it is enabled.
+SELECT
+    (count(*) FILTER (WHERE w.system_rule IS DISTINCT FROM 'workflow_edges'))::bigint AS other,
+    (count(*) FILTER (WHERE w.system_rule = 'workflow_edges' AND w.enabled))::bigint AS own
+FROM issue_wakeup w
+WHERE w.issue_id = sqlc.arg('issue_id') AND (w.enabled OR w.disabled_at >= (
     SELECT max(a.created_at) FROM activity_log a
-    WHERE a.issue_id = $1 AND a.action = 'status_changed' AND a.details->>'to' = 'agent_accepted'));
+    WHERE a.issue_id = sqlc.arg('issue_id') AND a.action = 'status_changed' AND a.details->>'to' = sqlc.arg('step')::text));
 
 -- name: GetNewestIssueRunByAgent :one
 SELECT id FROM agent_task_queue

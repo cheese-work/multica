@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"time"
 	"unicode/utf8"
 )
 
@@ -16,10 +17,21 @@ import (
 // short words.
 const fuzzySearchThreshold = 0.4
 
+// fuzzySearchTimeout bounds the fallback (CHE-7519). It is best-effort: the
+// normal search already answered, and a long query made of very common tokens
+// (an owner/repo name) has trigrams that nearly every comment shares, so the
+// scan can outlast the whole request budget. On timeout the caller keeps the
+// empty normal result instead of failing the request with a 503.
+const fuzzySearchTimeout = time.Second
+
 // fuzzySearchSetup is run with SET LOCAL in the fallback's transaction: the
 // operator `<%` compares against pg_trgm.word_similarity_threshold, which has
-// no per-call argument. The value is a package constant, never user input.
-var fuzzySearchSetup = []string{fmt.Sprintf("SET LOCAL pg_trgm.word_similarity_threshold = %v", fuzzySearchThreshold)}
+// no per-call argument, and the fallback gets its own, shorter statement
+// timeout. The values are package constants, never user input.
+var fuzzySearchSetup = []string{
+	fmt.Sprintf("SET LOCAL pg_trgm.word_similarity_threshold = %v", fuzzySearchThreshold),
+	fmt.Sprintf("SET LOCAL statement_timeout = %d", fuzzySearchTimeout/time.Millisecond),
+}
 
 // fuzzySearchMinRunes is the shortest folded query that gets a fallback. Two
 // letters share too few trigrams to score meaningfully.

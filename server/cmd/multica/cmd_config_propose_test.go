@@ -417,3 +417,75 @@ func TestProposeWorkflowBudgetRejectsBadInputWithoutWriting(t *testing.T) {
 		t.Error("a file was written for bad input")
 	}
 }
+
+// CHE-7666: capability_routing is on the settings allow table, so a dry run proposes it.
+func TestProposeCapabilityRoutingDryRunIsAccepted(t *testing.T) {
+	proposeServer(t, map[string]any{"/api/workspaces/ws-1": map[string]any{"settings": map[string]any{}}})
+	table := `{"feat":{"author":"` + proposeAgentID + `","reviewers":["` + proposeSquadID + `"]}}`
+	stdout, err := propose(t, map[string]string{"dry-run": "true", "set": "capability_routing:=" + table}, "workspace.settings")
+	if err != nil {
+		t.Fatalf("dry run refused: %v", err)
+	}
+	if !strings.Contains(stdout, "workspace.settings.patch") || !strings.Contains(stdout, "capability_routing") {
+		t.Fatalf("dry run output = %s", stdout)
+	}
+}
+
+// CHE-7716: a dry run must refuse a mode value the server refuses at request
+// time, before any read, and name the allowed modes.
+func TestProposeModeSettingsDryRunRefusesInvalidMode(t *testing.T) {
+	for _, key := range []string{"auto_close", "blocked_run_skip"} {
+		for name, value := range map[string]string{
+			"unknown mode":   `{"mode":"bogus"}`,
+			"not an object":  `"block"`,
+			"array":          `["block"]`,
+			"missing mode":   `{}`,
+			"extra field":    `{"mode":"block","top_level":true}`,
+			"non-string mod": `{"mode":1}`,
+		} {
+			t.Run(key+"/"+name, func(t *testing.T) {
+				seen := proposeServer(t, map[string]any{"/api/workspaces/ws-1": map[string]any{"settings": map[string]any{}}})
+				stdout, err := propose(t, map[string]string{"dry-run": "true", "set": key + ":=" + value}, "workspace.settings")
+				if err == nil {
+					t.Fatalf("dry run accepted %s; stdout = %s", value, stdout)
+				}
+				for _, mode := range []string{"off", "warn", "block"} {
+					if !strings.Contains(err.Error(), mode) {
+						t.Errorf("error %q does not name mode %q", err, mode)
+					}
+				}
+				if !strings.Contains(err.Error(), key) {
+					t.Errorf("error %q does not name the key", err)
+				}
+				if len(*seen) != 0 {
+					t.Errorf("refused value still read %v", *seen)
+				}
+			})
+		}
+	}
+}
+
+func TestProposeModeSettingsDryRunAcceptsValidMode(t *testing.T) {
+	for _, key := range []string{"auto_close", "blocked_run_skip"} {
+		for _, mode := range []string{"off", "warn", "block"} {
+			t.Run(key+"/"+mode, func(t *testing.T) {
+				proposeServer(t, map[string]any{"/api/workspaces/ws-1": map[string]any{"settings": map[string]any{}}})
+				stdout, err := propose(t, map[string]string{"dry-run": "true", "set": key + `:={"mode":"` + mode + `"}`}, "workspace.settings")
+				if err != nil {
+					t.Fatalf("dry run refused: %v", err)
+				}
+				if !strings.Contains(stdout, "before_sha256:") || !strings.Contains(stdout, "after_sha256:") {
+					t.Fatalf("both digests not printed: %s", stdout)
+				}
+			})
+		}
+	}
+}
+
+// A null removes the key, so the mode check leaves it alone (the server does too).
+func TestProposeModeSettingsDryRunAcceptsNull(t *testing.T) {
+	proposeServer(t, map[string]any{"/api/workspaces/ws-1": map[string]any{"settings": map[string]any{}}})
+	if _, err := propose(t, map[string]string{"dry-run": "true", "set": "auto_close:=null"}, "workspace.settings"); err != nil {
+		t.Fatalf("null refused: %v", err)
+	}
+}

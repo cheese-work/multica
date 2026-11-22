@@ -343,7 +343,11 @@ var issueStatusCmd = &cobra.Command{
 		"To record what a blocked issue waits for, move it with --blocked-on <ref>. It is\n" +
 		"accepted only with status blocked; the ref is stored in metadata blocked_on and\n" +
 		"cleared when the issue leaves blocked. Each form is the target of a wakeup\n" +
-		"condition flag:\n" + blockedOnFormsHelp,
+		"condition flag:\n" + blockedOnFormsHelp + "\n" +
+		"Waiting statuses: " + audienceFixLine + "\n" +
+		"--waiting-on member:<member-id> tells that member they are asked; --waiting-on none\n" +
+		"declares that no person acts next. It is accepted only with in_review, blocked or\n" +
+		"need_decision.",
 	Args: exactArgs(2),
 	RunE: runIssueStatus,
 }
@@ -393,7 +397,7 @@ var issueCommentAddCmd = &cobra.Command{
 		"`multica issue runs <issue-id> --active --output json`). A run that cannot take the message gets the " +
 		"normal trigger; the command reports per run whether it was steered or queued, coalesced, deferred or " +
 		"blocked. If a steered run ends before reading an agent's message, the message is handled in a follow-up " +
-		"run. Steering cannot carry attachments.",
+		"run. Steering cannot carry attachments.\n\n" + audienceFixLine,
 	Args: exactArgs(1),
 	RunE: runIssueCommentAdd,
 }
@@ -771,6 +775,7 @@ func init() {
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("blocked-on", "", "With status blocked: what the issue waits for (see the forms in --help)")
+	issueStatusCmd.Flags().String("waiting-on", "", "With status in_review, blocked or need_decision: who acts next, member:<member-id> or none")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
@@ -836,6 +841,8 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
+	issueCommentAddCmd.Flags().String("ask", "", "Member id (UUID) of the person who acts next on this comment; use on a comment on an issue in in_review, blocked or need_decision. Cannot combine with --no-ask, --notify-only or a decision flag")
+	issueCommentAddCmd.Flags().Bool("no-ask", false, "Declare that no person acts next on this comment. Cannot combine with --ask, --notify-only or a decision flag")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
@@ -2551,6 +2558,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	waitingOn, err := parseWaitingOnFlag(cmd, status)
+	if err != nil {
+		return err
+	}
 
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -2578,6 +2589,9 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("resolve --duplicate-of issue: %w", err)
 		}
 		body["duplicate_of_issue_id"] = original.ID
+	}
+	if waitingOn != "" {
+		body["waiting_on"] = waitingOn
 	}
 	if noStart {
 		body["suppress_run"] = true
@@ -2611,6 +2625,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	output, _ := cmd.Flags().GetString("output")
 	if output == "json" {
 		return cli.PrintJSON(os.Stdout, result)
+	}
+	// A chained move starts no run, so the entered step's text comes back here.
+	if brief := strVal(result, "step_brief"); brief != "" {
+		fmt.Fprintln(os.Stdout, brief)
 	}
 	return nil
 }
@@ -3144,6 +3162,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
 		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
 	}
+	askID, noAsk, err := audienceFlags(cmd, notifyOnly || decisionRecord || decisionIntent || decisionVeto)
+	if err != nil {
+		return err
+	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
@@ -3251,6 +3273,12 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if notifyOnly {
 		body["notify_only"] = true
+	}
+	if askID != "" {
+		body["ask"] = askID
+	}
+	if noAsk {
+		body["no_ask"] = true
 	}
 	if decisionRecord {
 		body["decision_record"] = true

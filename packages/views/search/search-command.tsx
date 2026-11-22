@@ -211,6 +211,8 @@ function PaletteFrame({
       setChips(chips.slice(0, -1));
       return;
     }
+    // Enter does not wait for the pause before the full ranked search (CHE-7337).
+    if (!current && e.key === "Enter") model.server.searchNow();
     // ⇧↵ treats an input that read as an instruction as a plain search.
     if (!current && e.key === "Enter" && e.shiftKey && model.delegate) {
       e.preventDefault();

@@ -26,7 +26,10 @@ import {
 // only with a named reason in SKIPPED.
 test.use({ ...devices["Pixel 7"] });
 
-const SKIPPED: Record<string, string> = {};
+const SKIPPED: Record<string, string> = {
+  "issue.project.quick_set": "needs a project on a Quick workflow with sealed bindings; the Go tests in quick_move_action_test.go cover request, approval and application",
+  "project.workflow.quick_set": "needs a project switch plan with sealed bindings; the Go tests in quick_move_action_test.go cover request, approval and application",
+};
 
 type Propose = (seed: DmBudgetSeed, api: TestApiClient) => Promise<Record<string, unknown>>;
 
@@ -68,6 +71,8 @@ const TYPES: Record<string, Propose> = {
     await withDb((db) => db.query(`UPDATE issue SET workflow_id = NULL WHERE id = $1`, [seed.issueId]));
     return { issue_id: seed.issueId, project_id: (await api.createProject("CHE-6247 card")).id };
   },
+  "issue.project.quick_set": async () => ({}),
+  "project.workflow.quick_set": async () => ({}),
   "agent.env.patch": async (seed) => ({ agent_id: seed.agentId, set: { CARD_RENDER_CHECK: "1" } }),
   "agent.copy": async (seed) => ({ source_agent_id: seed.agentId, name: "Card copy", runtime_id: await runtimeOf(seed), description: "" }),
   "issue.run_guard.allow": async (seed) => {

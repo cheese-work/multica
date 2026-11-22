@@ -1,6 +1,19 @@
 import type { ZodType } from "zod";
 import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
-import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
+import {
+  AgentRuntimeSchema,
+  EMPTY_MACHINE_AUDIT,
+  EMPTY_MACHINE_HISTORY,
+  EMPTY_MACHINE_PLANNED,
+  EMPTY_RUNTIME,
+  MachineAuditPageSchema,
+  MachineHistoryPageSchema,
+  MachinePlannedSchema,
+  RuntimePauseSchema,
+  type MachineAuditPage,
+  type MachineHistoryPage,
+  type MachinePlanned,
+} from "../runtimes/schema";
 import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
@@ -869,6 +882,14 @@ function isReplayableBody(body: BodyInit | null | undefined): boolean {
   return false;
 }
 
+function machinePageQuery(page?: { cursor?: string; limit?: number }): string {
+  const q = new URLSearchParams();
+  if (page?.cursor) q.set("cursor", page.cursor);
+  if (page?.limit) q.set("limit", String(page.limit));
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 export class ApiClient {
   private baseUrl: string;
   private token: string | null = null;
@@ -1352,11 +1373,12 @@ export class ApiClient {
     );
   }
 
-  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
+  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; title_only?: boolean; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
     const search = new URLSearchParams({ q: params.q });
     if (params.limit !== undefined) search.set("limit", String(params.limit));
     if (params.offset !== undefined) search.set("offset", String(params.offset));
     if (params.include_closed) search.set("include_closed", "true");
+    if (params.title_only) search.set("title_only", "true");
     const raw = await this.fetch<unknown>(
       `/api/issues/search?${search}`,
       params.signal ? { signal: params.signal } : undefined,
@@ -2735,6 +2757,23 @@ export class ApiClient {
       { reason, paused_by: null, paused_at: "", expires_at: "" },
       { endpoint: "pauseRuntimeMachine" },
     );
+  }
+
+  // Machine tabs (CHE-5709). History and planned follow runtime visibility; the
+  // audit log is for human workspace owners and admins. No access reads as 404.
+  async getMachineHistory(runtimeId: string, page?: { cursor?: string; limit?: number }): Promise<MachineHistoryPage> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/machine/history${machinePageQuery(page)}`);
+    return parseWithFallback(raw, MachineHistoryPageSchema, EMPTY_MACHINE_HISTORY, { endpoint: "getMachineHistory" });
+  }
+
+  async getMachineAudit(runtimeId: string, page?: { cursor?: string; limit?: number }): Promise<MachineAuditPage> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/machine/audit${machinePageQuery(page)}`);
+    return parseWithFallback(raw, MachineAuditPageSchema, EMPTY_MACHINE_AUDIT, { endpoint: "getMachineAudit" });
+  }
+
+  async getMachinePlanned(runtimeId: string): Promise<MachinePlanned> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/machine/planned`);
+    return parseWithFallback(raw, MachinePlannedSchema, EMPTY_MACHINE_PLANNED, { endpoint: "getMachinePlanned" });
   }
 
   // Idempotent: resuming a machine that is not paused still answers 204.

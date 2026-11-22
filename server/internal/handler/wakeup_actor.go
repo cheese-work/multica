@@ -92,6 +92,15 @@ func (h *Handler) beginWakeupWrite(ctx context.Context) (pgx.Tx, error) {
 				return nil, err
 			}
 		}
+		sort.Slice(scope.runProjectIDs, func(first, second int) bool {
+			return uuidToString(scope.runProjectIDs[first]) < uuidToString(scope.runProjectIDs[second])
+		})
+		for _, projectID := range scope.runProjectIDs {
+			if err := service.RequireProjectWrite(ctx, queries, scope.workspaceID, projectID, scope.taskID); err != nil {
+				_ = tx.Rollback(ctx)
+				return nil, err
+			}
+		}
 		for _, observed := range scope.issues {
 			current, err := queries.LockWakeupIssue(ctx, observed.ID)
 			if err == nil && current.ProjectID != observed.ProjectID {

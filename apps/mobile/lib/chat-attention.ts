@@ -55,3 +55,27 @@ export function attentionAge(since: string, now: number): AttentionAge | null {
   if (minutes < 1440) return { unit: "hours", count: Math.floor(minutes / 60) };
   return { unit: "days", count: Math.floor(minutes / 1440) };
 }
+
+/** Wait past the server's instant so the refetch lands after the change. */
+export const REFRESH_SLACK_MS = 500;
+/** Floor for a refetch timer, so a stale next_change_at cannot spin. */
+export const REFRESH_MIN_MS = 5_000;
+/** setTimeout overflows past 2^31-1 ms; an early refetch is harmless. */
+export const REFRESH_MAX_MS = 2_147_483_647;
+
+/** Earliest `next_change_at` across the sessions (epoch ms), or null when none is scheduled. */
+export function nextAttentionChange(sessions: ChatSession[]): number | null {
+  const times = sessions.map((s) => Date.parse(s.next_change_at ?? "")).filter(Number.isFinite);
+  return times.length === 0 ? null : Math.min(...times);
+}
+
+/**
+ * Milliseconds until the attention projection next changes (a later reminder
+ * falling due, a 4 h or 24 h crossing), or null when nothing is scheduled.
+ * The sessions cache never goes stale on its own, so the screen refetches then.
+ */
+export function attentionRefreshDelay(sessions: ChatSession[], now: number): number | null {
+  const next = nextAttentionChange(sessions);
+  if (next === null) return null;
+  return Math.min(Math.max(next - now + REFRESH_SLACK_MS, REFRESH_MIN_MS), REFRESH_MAX_MS);
+}

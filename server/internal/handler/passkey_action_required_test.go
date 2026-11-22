@@ -298,7 +298,7 @@ func TestPasskeyRequired_ArchiveStatusRefusesMachineCredentials(t *testing.T) {
 	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK).JSON(&list)
 	def := list.Workflows[0]
 	patch := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
-		"steps": statusSteps("in_progress", entry.Key),
+		"steps": statusSteps("in_progress", entry.Key), "lint_override": "bare-status fixture",
 	}), "id", def.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, patch).Want(http.StatusOK)
 	var seeded string

@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>CHE-6385 · motion · played</title><style>
+*{margin:0;box-sizing:border-box}:root{--s:#fff;--fg:oklch(.141 .005 285.8);--m:oklch(.505 .016 285.9);--sb:oklch(.92 .004 286.3);--h:oklch(.967 .001 286.4);--br:oklch(.56079497 .19449888 256.41258418);--bf:oklch(.985 0 0);--e:cubic-bezier(.2,0,0,1)}
+body{width:1440px;background:var(--s);color:var(--fg);font:13px/18px "Helvetica Neue",Helvetica,Arial,"Liberation Sans",sans-serif;padding:24px 36px}
+h1{font-size:18px;line-height:26px;font-weight:600}.meta{color:var(--m);font-size:12px;line-height:16px;margin:4px 0 16px;max-width:110ch}
+.g{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}.t{border:1px solid var(--sb);border-radius:12px;padding:12px;height:176px;position:relative;overflow:hidden}.t h3{font-size:12px;line-height:16px;font-weight:600}.t p{font-size:11px;line-height:14px;color:var(--m)}.st{position:absolute;left:12px;right:12px;top:58px;height:100px}
+.bx{border:1px solid var(--sb);border-radius:8px;padding:8px 10px;background:var(--s);font-size:12px}
+.a1{animation:dis 2.4s var(--e) infinite}@keyframes dis{0%,40%{opacity:1}50%{opacity:0}60%,100%{opacity:1}}
+.a2{animation:pop 2.4s var(--e) infinite;box-shadow:0 8px 24px rgb(0 0 0/.14)}@keyframes pop{0%{opacity:0;transform:translateY(8px)}6%,70%{opacity:1;transform:none}76%,100%{opacity:0;transform:translateY(8px)}}
+.a3{position:absolute;left:0;right:0;bottom:-12px;height:60px;border:1px solid var(--sb);border-radius:16px 16px 0 0;background:var(--s);animation:sh2 2.4s var(--e) infinite;box-shadow:0 -6px 16px rgb(0 0 0/.12);padding:10px;font-size:12px}@keyframes sh2{0%{transform:translateY(100%)}9%,70%{transform:none}80%,100%{transform:translateY(100%)}}
+.ch{display:inline-block;animation:rot 2.4s var(--e) infinite}@keyframes rot{0%,30%{transform:rotate(0)}36%,80%{transform:rotate(90deg)}86%,100%{transform:rotate(0)}}
+.a5{animation:tint 2.4s ease-out infinite}@keyframes tint{0%{background:color-mix(in oklch,var(--br) 18%,transparent)}50%,100%{background:transparent}}
+.a6{animation:hov 1.6s ease-out infinite}@keyframes hov{0%,30%{background:var(--s)}35%,70%{background:var(--h)}75%,100%{background:var(--s)}}
+.tg{width:36px;height:20px;border-radius:10px;background:var(--sb);position:relative;display:inline-block;animation:tgb 2s ease-out infinite}.tg::after{content:"";position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:var(--s);box-shadow:0 1px 2px rgb(0 0 0/.3);animation:tgl 2s ease-out infinite}@keyframes tgb{0%,30%{background:var(--sb)}36%,80%{background:var(--br)}86%,100%{background:var(--sb)}}@keyframes tgl{0%,30%{transform:translateX(0)}36%,80%{transform:translateX(16px)}86%,100%{transform:translateX(0)}}
+.ud{width:8px;height:8px;border-radius:50%;background:var(--br);display:inline-block;animation:ud 2.4s ease-out infinite}@keyframes ud{0%,40%{opacity:1}46%,90%{opacity:0}96%,100%{opacity:1}}
+.sk{height:12px;border-radius:6px;background:linear-gradient(90deg,var(--h),var(--sb),var(--h));background-size:200% 100%;animation:sk 1.2s linear infinite;margin-bottom:8px}@keyframes sk{from{background-position:200% 0}to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){*,*::after{animation:none!important}.a2,.a3{opacity:1;transform:none}}
+</style></head><body><h1>CHE-6385 · motion · played</h1>
+<p class="meta">Each tile loops one row of the motion spec. With "reduce motion" on, every tile stops and shows its end state, which is the reduced-motion fallback in the spec.</p>
+<div class="g">
+<div class="t" data-doop-id="m1"><h3>view change dissolve</h3><p>opacity, 150 ms</p><div class="st"><div class="bx a1"><b>Following all 9 threads.</b><br>4 with you, 5 folded.</div></div></div>
+<div class="t" data-doop-id="m2"><h3>view popover open and close</h3><p>opacity + y, 150 ms</p><div class="st"><div class="bx a2"><b>View</b><br>Focus · Follow · All</div></div></div>
+<div class="t" data-doop-id="m3"><h3>phone view sheet</h3><p>transform y, 200 ms</p><div class="st" style="overflow:hidden"><div class="a3"><b>View</b> · Follow</div></div></div>
+<div class="t" data-doop-id="m4"><h3>fold row open</h3><p>opacity + chevron, 150 ms</p><div class="st"><div class="bx">Agents only · Resolved <span class="ch">›</span></div></div></div>
+<div class="t" data-doop-id="m5"><h3>jump to waiting thread</h3><p>scroll 250 ms, tint 1200 ms</p><div class="st"><div class="bx a5"><b>Waiting on you</b><br>Which cap for the retry?</div></div></div>
+<div class="t" data-doop-id="m6"><h3>control hover</h3><p>background-color, 100 ms</p><div class="st"><div class="bx a6">Agents only · Result</div></div></div>
+<div class="t" data-doop-id="m7"><h3>switch toggle</h3><p>colour + thumb, 120 ms</p><div class="st"><div class="bx" style="display:flex;align-items:center;gap:12px"><span style="flex:1">Unread marker</span><span class="tg"></span></div></div></div>
+<div class="t" data-doop-id="m8"><h3>unread clear</h3><p>opacity, 120 ms</p><div class="st"><div class="bx"><span class="ud"></span> With you · 1 new</div></div></div>
+<div class="t" data-doop-id="m9"><h3>skeleton shimmer</h3><p>background-position, 1200 ms loop</p><div class="st"><div class="sk"></div><div class="sk" style="width:60%"></div></div></div>
+<div class="t" data-doop-id="m10"><h3>card decided collapse</h3><p>opacity, 150 ms</p><div class="st"><div class="bx a1"><b>Cap the ack retry at?</b><br>You picked "30 s"</div></div></div>
+</div></body></html>

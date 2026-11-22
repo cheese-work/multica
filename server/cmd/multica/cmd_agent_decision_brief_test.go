@@ -149,3 +149,35 @@ func TestAgentDecisionBriefMarkdownListsAskFailures(t *testing.T) {
 		}
 	}
 }
+
+// S4b (CHE-8821): the brief prints decider_display; an older server sends none,
+// so the raw value prints.
+func TestAgentDecisionBriefMarkdownPrintsDeciderDisplay(t *testing.T) {
+	record := func(extra map[string]any) map[string]any {
+		rec := map[string]any{"identifier": "CHE-7", "gate": "screenshot_evidence", "state": "effective", "decider": "Jev for Cheese", "confidence": 0.8,
+			"review_target_at": "2026-10-31T10:00:00Z", "link": "https://app/x/issues/CHE-7#comment-c3", "veto_line": "Veto: decision:i3 sha member:u1"}
+		for k, v := range extra {
+			rec[k] = v
+		}
+		return rec
+	}
+	cases := map[string]struct {
+		rec  map[string]any
+		want string
+	}{
+		"display":       {record(map[string]any{"decider_display": "Delegate One for Cheese"}), "Decided by Delegate One for Cheese (agent decision, confidence 0.8)."},
+		"field_absent":  {record(nil), "Decided by Jev for Cheese (agent decision, confidence 0.8)."},
+		"display_empty": {record(map[string]any{"decider_display": ""}), "Decided by Jev for Cheese (agent decision, confidence 0.8)."},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var b strings.Builder
+			if err := writeAgentDecisionMarkdown(&b, map[string]any{"enabled": true, "decisions": []any{tc.rec}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(b.String(), tc.want) {
+				t.Errorf("markdown lacks %q:\n%s", tc.want, b.String())
+			}
+		})
+	}
+}

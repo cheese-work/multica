@@ -51,7 +51,7 @@ func TestCannotDoBlockRefusesTheCommandsAnAgentRunCannotRun(test *testing.T) {
 	} {
 		test.Run(name, func(test *testing.T) {
 			ask := cannotDoAsk(test, agentRun(command))
-			_, err := ask.CheckCannotDo("block", testCatalog)
+			_, err := ask.CheckCannotDo("block", testCatalog, "")
 			if err == nil {
 				test.Fatal("want refusal")
 			}
@@ -77,7 +77,7 @@ func TestCannotDoAcceptsWhatAnAgentRunCanRun(test *testing.T) {
 	} {
 		test.Run(name, func(test *testing.T) {
 			ask := cannotDoAsk(test, agentRun(command))
-			hints, err := ask.CheckCannotDo("block", testCatalog)
+			hints, err := ask.CheckCannotDo("block", testCatalog, "")
 			if err != nil || len(hints) != 0 {
 				test.Fatalf("err %v hints %v, want accepted", err, hints)
 			}
@@ -87,23 +87,23 @@ func TestCannotDoAcceptsWhatAnAgentRunCanRun(test *testing.T) {
 
 func TestCannotDoSurfaceKey(test *testing.T) {
 	ask := cannotDoAsk(test, map[string]any{"after_choice": "agent_run", "agent_surface": "firebase_console"})
-	_, err := ask.CheckCannotDo("block", testCatalog)
+	_, err := ask.CheckCannotDo("block", testCatalog, "")
 	if err == nil || !strings.Contains(err.Error(), "firebase_console") || !strings.Contains(err.Error(), "Publish") {
 		test.Fatalf("err = %v, want the key and the human step", err)
 	}
 	ask = cannotDoAsk(test, map[string]any{"after_choice": "agent_run", "agent_surface": "unlisted"})
-	if _, err := ask.CheckCannotDo("block", testCatalog); err != nil {
+	if _, err := ask.CheckCannotDo("block", testCatalog, ""); err != nil {
 		test.Fatalf("unlisted surface refused: %v", err)
 	}
 }
 
 func TestCannotDoWrapperNeedsTheCommandItself(test *testing.T) {
 	ask := cannotDoAsk(test, agentRun([]string{"env", "X=1", "multica", "daemon", "restart"}))
-	_, err := ask.CheckCannotDo("block", testCatalog)
+	_, err := ask.CheckCannotDo("block", testCatalog, "")
 	if err == nil || !strings.Contains(err.Error(), "give the command itself as argv") {
 		test.Fatalf("err = %v, want the wrapper line", err)
 	}
-	hints, err := ask.CheckCannotDo("warn", testCatalog)
+	hints, err := ask.CheckCannotDo("warn", testCatalog, "")
 	if err != nil || len(hints) != 1 || !strings.Contains(hints[0], "give the command itself as argv") {
 		test.Fatalf("warn = %v %v, want one wrapper hint", hints, err)
 	}
@@ -111,18 +111,18 @@ func TestCannotDoWrapperNeedsTheCommandItself(test *testing.T) {
 
 func TestCannotDoHumanStepsOptionIsAccepted(test *testing.T) {
 	ask := cannotDoAsk(test, map[string]any{"after_choice": "human_steps"})
-	if hints, err := ask.CheckCannotDo("block", testCatalog); err != nil || len(hints) != 0 {
+	if hints, err := ask.CheckCannotDo("block", testCatalog, ""); err != nil || len(hints) != 0 {
 		test.Fatalf("err %v hints %v", err, hints)
 	}
 }
 
 func TestCannotDoModes(test *testing.T) {
 	ask := cannotDoAsk(test, agentRun([]string{"multica", "daemon", "restart"}))
-	hints, err := ask.CheckCannotDo("warn", testCatalog)
+	hints, err := ask.CheckCannotDo("warn", testCatalog, "")
 	if err != nil || len(hints) != 1 || !strings.Contains(hints[0], "daemon_restart") {
 		test.Fatalf("warn = %v %v, want one hint", hints, err)
 	}
-	hints, err = ask.CheckCannotDo("off", testCatalog)
+	hints, err = ask.CheckCannotDo("off", testCatalog, "")
 	if err != nil || len(hints) != 0 {
 		test.Fatalf("off = %v %v, want nothing", hints, err)
 	}
@@ -135,14 +135,14 @@ func TestCannotDoMissingAfterChoice(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if _, err := ask.CheckCannotDo("block", testCatalog); err == nil || !strings.Contains(err.Error(), "ask.options[0].after_choice") {
+	if _, err := ask.CheckCannotDo("block", testCatalog, ""); err == nil || !strings.Contains(err.Error(), "ask.options[0].after_choice") {
 		test.Fatalf("block err = %v, want the field name", err)
 	}
-	hints, err := ask.CheckCannotDo("warn", testCatalog)
+	hints, err := ask.CheckCannotDo("warn", testCatalog, "")
 	if err != nil || len(hints) != 1 || !strings.Contains(hints[0], "after_choice") {
 		test.Fatalf("warn = %v %v, want one hint", hints, err)
 	}
-	if hints, err := ask.CheckCannotDo("off", testCatalog); err != nil || len(hints) != 0 {
+	if hints, err := ask.CheckCannotDo("off", testCatalog, ""); err != nil || len(hints) != 0 {
 		test.Fatalf("off = %v %v", hints, err)
 	}
 }
@@ -154,7 +154,7 @@ func TestDecodeRefusesBadTypedFields(test *testing.T) {
 	}{
 		"command as one string":      {map[string]any{"after_choice": "agent_run", "agent_commands": []any{"multica daemon restart"}}, "ask.options[0].agent_commands[0] must be an argv array of strings"},
 		"empty argv":                 {map[string]any{"after_choice": "agent_run", "agent_commands": []any{[]any{}}}, "ask.options[0].agent_commands[0] must not be empty"},
-		"bad after_choice":           {map[string]any{"after_choice": "maybe"}, "ask.options[0].after_choice must be agent_run, human_steps or record_only"},
+		"bad after_choice":           {map[string]any{"after_choice": "maybe"}, "ask.options[0].after_choice must be agent_run, human_steps, record_only or server_action"},
 		"agent_run with nothing":     {map[string]any{"after_choice": "agent_run"}, "ask.options[0].after_choice agent_run needs agent_commands or agent_surface"},
 		"commands without agent_run": {map[string]any{"after_choice": "human_steps", "agent_commands": []any{[]any{"multica", "status"}}}, "ask.options[0].agent_commands needs after_choice agent_run"},
 	}
@@ -176,8 +176,8 @@ func TestDecodeRefusesBadTypedFields(test *testing.T) {
 
 func TestCannotDoFromSettings(test *testing.T) {
 	mode, catalog, err := CannotDoFromSettings(nil)
-	if err != nil || mode != "off" || len(catalog) != 2 || catalog[0].Key != "daemon_restart" {
-		test.Fatalf("absent = %q %v %v, want off and the two built-in entries", mode, catalog, err)
+	if err != nil || mode != "off" || len(catalog) != 4 || catalog[0].Key != "daemon_restart" {
+		test.Fatalf("absent = %q %v %v, want off and the three built-in entries", mode, catalog, err)
 	}
 	mode, catalog, err = CannotDoFromSettings([]byte(`{"agent_cannot_do_mode":"block","agent_cannot_do":[{"key":"x","tool":"gh","subcommand":["pr","merge"],"human_step":"Merge it yourself."}]}`))
 	if err != nil || mode != "block" || len(catalog) != 1 || catalog[0].Key != "x" {
@@ -199,6 +199,151 @@ func TestCannotDoFromSettings(test *testing.T) {
 	} {
 		if _, _, err := CannotDoFromSettings([]byte(bad)); err == nil {
 			test.Errorf("settings %s accepted", bad)
+		}
+	}
+}
+
+// CHE-7359 (T2): a typed option carries out what a relay run would only repeat.
+
+func TestCannotDoBlockRefusesRelayOnlyStatusAndAssign(test *testing.T) {
+	for name, tc := range map[string]struct {
+		command []string
+		fix     string
+	}{
+		"status":        {[]string{"$MULTICA_CLI_PATH", "issue", "status", "CHE-1", "done"}, "issue.status.set"},
+		"status global": {[]string{"/usr/bin/multica", "--profile", "dev", "issue", "status", "CHE-1", "done", "--no-start"}, "issue.status.set"},
+		"assign":        {[]string{"multica", "issue", "assign", "CHE-1", "--to", "Tofu"}, "issue.assign"},
+	} {
+		test.Run(name, func(test *testing.T) {
+			ask := cannotDoAsk(test, agentRun(tc.command))
+			_, err := ask.CheckCannotDo("block", testCatalog, "")
+			if err == nil || !strings.Contains(err.Error(), tc.fix) || !strings.Contains(err.Error(), "ask.options[0]") || strings.Contains(err.Error(), "\n") {
+				test.Fatalf("err = %v, want a one-line refusal with %q", err, tc.fix)
+			}
+			hints, err := ask.CheckCannotDo("warn", testCatalog, "")
+			if err != nil || len(hints) != 1 || !strings.Contains(hints[0], tc.fix) {
+				test.Fatalf("warn = %v %v, want one hint with %q", hints, err, tc.fix)
+			}
+			if hints, err := ask.CheckCannotDo("off", testCatalog, ""); err != nil || len(hints) != 0 {
+				test.Fatalf("off = %v %v, want nothing", hints, err)
+			}
+		})
+	}
+}
+
+// The refusal must name a replacement that typed-option validation accepts: server_action carries the action.
+func TestCannotDoRelayRefusalNamesAReplacementThatDecodes(test *testing.T) {
+	ask := cannotDoAsk(test, agentRun([]string{"multica", "issue", "status", "CHE-1", "done"}))
+	_, err := ask.CheckCannotDo("block", testCatalog, "")
+	if err == nil || !strings.Contains(err.Error(), "after_choice server_action") || strings.Contains(err.Error(), "record_only") {
+		test.Fatalf("err = %v, want after_choice server_action and no record_only", err)
+	}
+	replacement := cannotDoAsk(test, map[string]any{
+		"after_choice": "server_action",
+		"action":       map[string]any{"type": "issue.status.set", "params": map[string]any{"status": "done"}},
+	})
+	if replacement.Options[0].AfterChoice != AfterServerAction || replacement.Options[0].Action == nil {
+		test.Fatalf("replacement option = %+v, want a server_action option with an action", replacement.Options[0])
+	}
+}
+
+func TestCannotDoAcceptsReadsAndMixedCommands(test *testing.T) {
+	for name, commands := range map[string][][]string{
+		"issue get":             {{"$MULTICA_CLI_PATH", "issue", "get", "CHE-1"}},
+		"status and a build":    {{"multica", "issue", "status", "CHE-1", "done"}, {"make", "test"}},
+		"status and issue list": {{"multica", "issue", "status", "CHE-1", "done"}, {"multica", "issue", "list"}},
+	} {
+		test.Run(name, func(test *testing.T) {
+			ask := cannotDoAsk(test, agentRun(commands...))
+			if hints, err := ask.CheckCannotDo("block", testCatalog, ""); err != nil || len(hints) != 0 {
+				test.Fatalf("err %v hints %v, want accepted", err, hints)
+			}
+		})
+	}
+}
+
+func TestCannotDoRefusesCommandsThatNeedThePasskeyCard(test *testing.T) {
+	for name, command := range map[string][]string{
+		"propose":      {"$MULTICA_CLI_PATH", "decision", "propose", "--type", "workspace.settings.patch"},
+		"budget raise": {"multica", "issue", "budget", "raise", "CHE-1", "--cap", "36"},
+		"top up":       {"multica", "issue", "budget", "top-up", "CHE-1"},
+	} {
+		test.Run(name, func(test *testing.T) {
+			ask := cannotDoAsk(test, agentRun(command))
+			_, err := ask.CheckCannotDo("block", testCatalog, "")
+			if err == nil || !strings.Contains(err.Error(), "--action-file") || !strings.Contains(err.Error(), "passkey") {
+				test.Fatalf("err = %v, want the --action-file fix", err)
+			}
+		})
+	}
+}
+
+func TestCannotDoAllowedAgents(test *testing.T) {
+	const listed, other = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	catalog := []CannotDo{{Key: "c00_restart", Tool: "docker", Subcommand: []string{"compose", "restart"}, HumanStep: "Run it on C00.", AllowedAgents: []string{listed}}}
+	ask := cannotDoAsk(test, agentRun([]string{"docker", "compose", "restart", "doop"}))
+	if _, err := ask.CheckCannotDo("block", catalog, listed); err != nil {
+		test.Fatalf("listed asker refused: %v", err)
+	}
+	for _, asker := range []string{other, ""} {
+		_, err := ask.CheckCannotDo("block", catalog, asker)
+		if err == nil || !strings.Contains(err.Error(), "c00_restart") || !strings.Contains(err.Error(), "Run it on C00.") || !strings.Contains(err.Error(), "issue.assign") {
+			test.Fatalf("asker %q: err = %v, want the key, the human step and issue.assign", asker, err)
+		}
+	}
+	ask = cannotDoAsk(test, agentRun([]string{"docker", "ps"}))
+	if _, err := ask.CheckCannotDo("block", catalog, other); err != nil {
+		test.Fatalf("unmatched command refused: %v", err)
+	}
+}
+
+func TestBuiltinCatalogHasTheC00Entry(test *testing.T) {
+	_, catalog, err := CannotDoFromSettings(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, entry := range catalog {
+		if entry.Key == "c00_restart" && len(entry.AllowedAgents) == 1 {
+			return
+		}
+	}
+	test.Fatalf("catalog %v has no c00_restart entry with one allowed agent", catalog)
+}
+
+// The restart receipt on CHE-7149 (comment 01a1ef20) ran `docker container restart <id>` on C00.
+func TestBuiltinC00EntryRefusesTheEvidencedRestart(test *testing.T) {
+	_, catalog, err := CannotDoFromSettings(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	const other = "22222222-2222-4222-8222-222222222222"
+	for name, command := range map[string][]string{
+		"container restart": {"docker", "container", "restart", "69b1c6109659"},
+		"compose restart":   {"docker", "compose", "restart", "doop"},
+	} {
+		test.Run(name, func(test *testing.T) {
+			ask := cannotDoAsk(test, agentRun(command))
+			if _, err := ask.CheckCannotDo("block", catalog, c00HermesDevops); err != nil {
+				test.Fatalf("listed C00 agent refused: %v", err)
+			}
+			_, err := ask.CheckCannotDo("block", catalog, other)
+			if err == nil || !strings.Contains(err.Error(), "c00_") || !strings.Contains(err.Error(), "issue.assign") {
+				test.Fatalf("unlisted asker: err = %v, want a c00 refusal naming issue.assign", err)
+			}
+		})
+	}
+}
+
+func TestParseCannotDoAllowedAgents(test *testing.T) {
+	entry := func(ids string) string {
+		return `[{"key":"k","tool":"gh","human_step":"x","allowed_agents":` + ids + `}]`
+	}
+	if _, err := ParseCannotDo([]byte(entry(`["11111111-1111-4111-8111-111111111111"]`))); err != nil {
+		test.Fatalf("good: %v", err)
+	}
+	for _, bad := range []string{`["Tofu"]`, `[""]`, `["11111111-1111-4111-8111-111111111111","11111111-1111-4111-8111-111111111111"]`, `"x"`} {
+		if _, err := ParseCannotDo([]byte(entry(bad))); err == nil {
+			test.Errorf("allowed_agents %s accepted", bad)
 		}
 	}
 }

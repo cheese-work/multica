@@ -22,6 +22,8 @@ const (
 	ReasonPermissionRemoved = "permission_removed"
 	ReasonPluginDisabled    = "plugin_disabled"
 	ReasonRevokeAll         = "revoke_all"
+	ReasonDecisionWithdrawn = "decision_withdrawn"
+	ReasonDecisionExpired   = "decision_expired"
 )
 
 // Filter picks the leases to revoke. WorkspaceID is required. Any other valid field narrows the
@@ -33,12 +35,17 @@ type Filter struct {
 	UserID      pgtype.UUID
 	AgentID     pgtype.UUID
 	ProfileID   pgtype.UUID
+	DecisionID  pgtype.UUID
 }
 
 // Revoker ends leases and tells the gateway at once.
 type Revoker struct {
 	Queries *db.Queries
 	Bus     *events.Bus
+	// Pool and Audit record each revoke inside the transaction that ends the leases
+	// (CHE-4744). Audit needs Pool.
+	Pool  TxBeginner
+	Audit AuditFunc
 }
 
 // ErrNoWorkspace rejects a filter without a workspace: it would match every workspace.
@@ -54,33 +61,94 @@ func (r *Revoker) Revoke(ctx context.Context, f Filter, reason string) ([]db.Bro
 	if !f.WorkspaceID.Valid {
 		return nil, ErrNoWorkspace
 	}
-	dropped, err := r.Queries.DeleteQueuedBrowserLeases(ctx, db.DeleteQueuedBrowserLeasesParams{
-		WorkspaceID: f.WorkspaceID,
-		LeaseID:     f.LeaseID,
-		TaskID:      f.TaskID,
-		UserID:      f.UserID,
-		AgentID:     f.AgentID,
-		ProfileID:   f.ProfileID,
+	var dropped []db.BrowserLease
+	err := r.inTx(ctx, func(q *db.Queries) error {
+		rows, err := q.DeleteQueuedBrowserLeases(ctx, db.DeleteQueuedBrowserLeasesParams{
+			WorkspaceID: f.WorkspaceID,
+			LeaseID:     f.LeaseID,
+			TaskID:      f.TaskID,
+			UserID:      f.UserID,
+			AgentID:     f.AgentID,
+			ProfileID:   f.ProfileID,
+			DecisionID:  f.DecisionID,
+		})
+		if err != nil {
+			return fmt.Errorf("drop queued browser leases: %w", err)
+		}
+		for _, l := range rows {
+			// A queued lease never started or ended; the revoke reason is all it has to say.
+			l.EndReason = pgtype.Text{String: reason, Valid: true}
+			if err := r.audit(ctx, q, l); err != nil {
+				return err
+			}
+		}
+		dropped = rows
+		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("drop queued browser leases: %w", err)
+		return nil, err
 	}
 	r.publish(dropped, reason)
 
-	ended, err := r.Queries.EndBrowserLeases(ctx, db.EndBrowserLeasesParams{
-		Reason:      reason,
-		WorkspaceID: f.WorkspaceID,
-		LeaseID:     f.LeaseID,
-		TaskID:      f.TaskID,
-		UserID:      f.UserID,
-		AgentID:     f.AgentID,
-		ProfileID:   f.ProfileID,
+	var ended []db.BrowserLease
+	err = r.inTx(ctx, func(q *db.Queries) error {
+		rows, err := q.EndBrowserLeases(ctx, db.EndBrowserLeasesParams{
+			Reason:      reason,
+			WorkspaceID: f.WorkspaceID,
+			LeaseID:     f.LeaseID,
+			TaskID:      f.TaskID,
+			UserID:      f.UserID,
+			AgentID:     f.AgentID,
+			ProfileID:   f.ProfileID,
+			DecisionID:  f.DecisionID,
+		})
+		if err != nil {
+			return fmt.Errorf("end browser leases: %w", err)
+		}
+		for _, l := range rows {
+			if err := r.audit(ctx, q, l); err != nil {
+				return err
+			}
+		}
+		ended = rows
+		return nil
 	})
 	if err != nil {
-		return dropped, fmt.Errorf("end browser leases: %w", err)
+		return dropped, err
 	}
 	r.publish(ended, reason)
 	return append(dropped, ended...), nil
+}
+
+// ErrAuditNeedsPool rejects a Revoker that must audit but cannot open the transaction that
+// keeps the audit row and the revoke together.
+var ErrAuditNeedsPool = errors.New("browserlease: a Revoker with Audit needs a Pool")
+
+// inTx runs fn in one transaction when the Revoker audits, so the revoke and its audit rows
+// commit or roll back together. Without Audit it runs fn on the plain queries.
+func (r *Revoker) inTx(ctx context.Context, fn func(q *db.Queries) error) error {
+	if r.Audit == nil {
+		return fn(r.Queries)
+	}
+	if r.Pool == nil {
+		return ErrAuditNeedsPool
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := fn(r.Queries.WithTx(tx)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *Revoker) audit(ctx context.Context, q *db.Queries, l db.BrowserLease) error {
+	if r.Audit == nil {
+		return nil
+	}
+	return r.Audit(ctx, q, AuditRevoke, l)
 }
 
 func (r *Revoker) publish(leases []db.BrowserLease, reason string) {
@@ -126,4 +194,18 @@ func (r *Revoker) onTaskEnd(e events.Event, reason string) {
 	if _, err := r.Revoke(context.Background(), Filter{WorkspaceID: workspaceID, TaskID: taskID}, reason); err != nil {
 		slog.Error("browser lease: revoke on task end failed", "task_id", e.TaskID, "reason", reason, "error", err)
 	}
+}
+
+// ErrNoDecision rejects a decision revoke without a decision id: the empty filter would match
+// every lease of the workspace.
+var ErrNoDecision = errors.New("browserlease: revoke by decision needs a decision id")
+
+// RevokeDecision ends every queued or active lease bound to the decision (CHE-4742, W3-13).
+// Call it once the decision is withdrawn or has expired, with ReasonDecisionWithdrawn or
+// ReasonDecisionExpired. Leases bound to another decision, or to none, stay live.
+func (r *Revoker) RevokeDecision(ctx context.Context, workspaceID, decisionID pgtype.UUID, reason string) ([]db.BrowserLease, error) {
+	if !decisionID.Valid {
+		return nil, ErrNoDecision
+	}
+	return r.Revoke(ctx, Filter{WorkspaceID: workspaceID, DecisionID: decisionID}, reason)
 }

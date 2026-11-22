@@ -286,6 +286,7 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		a, ok := byCanonical[sessions[i].ID]
 		if !ok {
 			sessions[i].StaleLevel = service.AttentionNone
+			sessions[i].AttentionKeys, sessions[i].AttentionAskIDs = []string{}, []string{} // wire: [] not null
 			continue
 		}
 		sessions[i].StaleLevel = a.StaleLevel
@@ -1016,6 +1017,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// attempt, and a retry that overlaps its first send waits for it. A keyed send's refusal is
 	// held back and re-checked under the session lock; the lock tx never overlaps another
 	// pool connection. An unrefused send replays inside its own transaction.
+	if hidden, err := h.Queries.IsDecisionBackingLane(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check chat session")
+		return
+	} else if hidden {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "this chat is a decision backing lane and takes no member messages", "reason": "decision_backing_lane"})
+		return
+	}
 	var agent db.Agent
 	var actorType, actorID string
 	if !h.gateKeyedSend(w, r, session, req.ClientMessageID, func(w http.ResponseWriter) bool {
@@ -1674,6 +1682,9 @@ func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSessio
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	if err := qtx.MarkDecisionRequestsRead(ctx, session.ID); err != nil {
 		return nil, err
 	}
 	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
