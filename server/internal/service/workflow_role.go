@@ -106,7 +106,8 @@ type IssueAuthor struct {
 // or a step after the work (review, decision, merge, acceptance, block) or no
 // step at all (a wakeup run). The Default workflow hands its review step to an
 // agent handler, so the step, not only the role, keeps a reviewer's own run out
-// (CHE-9002). A task with no row counts (fail closed), so an issue from before
+// (CHE-9002). Every task of the agent that authored a linked PR counts too,
+// whatever its step. A task with no row counts (fail closed), so an issue from before
 // this evidence existed has only authors. labOf maps an exact provider and model to a lab, or
 // "" when the registry does not list it; that becomes LabUnknown.
 func IssueAuthors(ctx context.Context, q *db.Queries, issueID pgtype.UUID, labOf func(provider, model string) string) ([]IssueAuthor, error) {

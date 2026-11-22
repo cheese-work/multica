@@ -363,6 +363,11 @@ WHERE t.issue_id = $1
               AND a.details->>'task_id' = t.id::text
               AND a.details->>'role' IS DISTINCT FROM 'reviewer'
               AND COALESCE(a.details->>'status', '') NOT IN ('', 'agent_review', 'in_review', 'need_decision', 'merged', 'approved', 'agent_accepted', 'blocked'))
+    AND NOT EXISTS (
+      SELECT 1 FROM issue_pull_request l JOIN github_pull_request p ON p.id = l.pull_request_id
+      WHERE l.issue_id = t.issue_id AND p.branch IS NOT NULL AND p.branch <> ''
+        AND (right(p.branch, 12) = right(replace(t.id::text, '-', ''), 12)
+             OR (t.branch_name = p.branch AND t.created_at <= p.pr_created_at)))
   )
 ORDER BY t.created_at, t.id
 `
@@ -378,7 +383,10 @@ type ListIssueAuthorTasksRow struct {
 // all of them except a task whose every workflow_role row is a reviewer role or
 // a step after the work (a review, a decision, a merge, an acceptance, a block)
 // or no step at all (a wakeup run; CHE-9002). A task with no row counts (fail
-// closed), and so does a row at any other step, such as todo or in_progress. The lab inputs come from the
+// closed), and so does a row at any other step, such as todo or in_progress. So does
+// any task of the agent that authored a linked PR, whatever its step: the task
+// whose key ends the PR branch, or one that ran on that branch before the PR
+// opened (same match as ListGitHubReviewAuthorCandidates). The lab inputs come from the
 // task row: the model the daemon applied and its runtime's provider.
 func (q *Queries) ListIssueAuthorTasks(ctx context.Context, issueID pgtype.UUID) ([]ListIssueAuthorTasksRow, error) {
 	rows, err := q.db.Query(ctx, listIssueAuthorTasks, issueID)
