@@ -284,6 +284,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 		return empty, err
 	}
 	handler.DecisionWorker.Notify()
+	handler.loopBackDecisionAnswer(ctx, decision, answer, userID)
 	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared, Covered: covered}, nil
 }
 
